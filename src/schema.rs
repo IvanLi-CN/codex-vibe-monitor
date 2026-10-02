@@ -5132,7 +5132,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .await
         .context("failed to ensure pricing_settings_models.cache_write_per_1m")?;
     ensure_pricing_settings_catalog_migrations(pool).await?;
-
+    crate::models_dev_sync_memory::ensure_models_dev_sync_memory(pool).await?;
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS oauth_bridge_settings (

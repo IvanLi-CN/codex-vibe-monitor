@@ -41,7 +41,7 @@ pub(crate) fn register_invocation_timeline_routes(
             axum::routing::get(fetch_timeline),
         )
         .route(
-            "/api/stats/invocation-timeline/:as_of",
+            "/api/stats/invocation-timeline/{as_of}",
             axum::routing::delete(release_timeline_snapshot),
         )
 }
@@ -1011,7 +1011,7 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
             ) else {
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "invocation_timeline_snapshot",
                 &crate::maintenance_store::task_title_for_observation(
                     "invocation_timeline_snapshot",
@@ -1021,48 +1021,57 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
                 "processing",
             );
             let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
-            tokio::select! {
+            let cleanup_result = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
-                result = cleanup => match result {
-                    Ok(result) if result.skipped.is_some() => {
-                        let metrics = timeline_snapshot_diagnostics();
-                        tracing::debug!(
-                            reason = %result.skipped.as_deref().unwrap_or("unknown"),
-                            active_snapshots = metrics.active_snapshots,
-                            active_rows = metrics.active_rows,
-                            active_bytes = metrics.active_bytes,
-                            pending_release_tokens = metrics.pending_release_tokens,
-                            release_queue_overflows = metrics.release_queue_overflows,
-                            active_token_limit_rejections = metrics.active_token_limit_rejections,
-                            snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
-                            snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
-                            aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
-                            aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
-                            "invocation timeline cleanup skipped"
-                        );
-                    }
-                    Ok(result) => {
-                        let metrics = timeline_snapshot_diagnostics();
-                        tracing::info!(
-                            scanned_tokens = result.scanned_tokens,
-                            deleted_tokens = result.deleted_tokens,
-                            deleted_rows = result.deleted_rows,
-                            active_snapshots = metrics.active_snapshots,
-                            active_rows = metrics.active_rows,
-                            active_bytes = metrics.active_bytes,
-                            pending_release_tokens = metrics.pending_release_tokens,
-                            release_queue_overflows = metrics.release_queue_overflows,
-                            active_token_limit_rejections = metrics.active_token_limit_rejections,
-                            snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
-                            snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
-                            aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
-                            aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
-                            "invocation timeline background snapshot cleanup completed"
-                        );
-                    }
-                    Err(error) => {
-                        tracing::warn!(?error, "invocation timeline background snapshot cleanup failed");
-                    }
+                result = cleanup => result,
+            };
+            observation.finish_with_status(if cleanup_result.is_ok() {
+                "success"
+            } else {
+                "failed"
+            });
+            match cleanup_result {
+                Ok(result) if result.skipped.is_some() => {
+                    let metrics = timeline_snapshot_diagnostics();
+                    tracing::debug!(
+                        reason = %result.skipped.as_deref().unwrap_or("unknown"),
+                        active_snapshots = metrics.active_snapshots,
+                        active_rows = metrics.active_rows,
+                        active_bytes = metrics.active_bytes,
+                        pending_release_tokens = metrics.pending_release_tokens,
+                        release_queue_overflows = metrics.release_queue_overflows,
+                        active_token_limit_rejections = metrics.active_token_limit_rejections,
+                        snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
+                        snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
+                        aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
+                        aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
+                        "invocation timeline cleanup skipped"
+                    );
+                }
+                Ok(result) => {
+                    let metrics = timeline_snapshot_diagnostics();
+                    tracing::info!(
+                        scanned_tokens = result.scanned_tokens,
+                        deleted_tokens = result.deleted_tokens,
+                        deleted_rows = result.deleted_rows,
+                        active_snapshots = metrics.active_snapshots,
+                        active_rows = metrics.active_rows,
+                        active_bytes = metrics.active_bytes,
+                        pending_release_tokens = metrics.pending_release_tokens,
+                        release_queue_overflows = metrics.release_queue_overflows,
+                        active_token_limit_rejections = metrics.active_token_limit_rejections,
+                        snapshot_row_limit_rejections = metrics.snapshot_row_limit_rejections,
+                        snapshot_byte_limit_rejections = metrics.snapshot_byte_limit_rejections,
+                        aggregate_row_limit_rejections = metrics.aggregate_row_limit_rejections,
+                        aggregate_byte_limit_rejections = metrics.aggregate_byte_limit_rejections,
+                        "invocation timeline background snapshot cleanup completed"
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        ?error,
+                        "invocation timeline background snapshot cleanup failed"
+                    );
                 }
             }
         }

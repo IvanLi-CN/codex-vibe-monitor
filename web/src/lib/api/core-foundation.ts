@@ -1663,6 +1663,7 @@ export interface ModelsDevPriceCandidate {
   providerId: string;
   providerName: string;
   docUrl: string | null;
+  status: string | null;
   inputPer1m: number | null;
   outputPer1m: number | null;
   cacheReadPer1m: number | null;
@@ -1672,12 +1673,45 @@ export interface ModelsDevPriceCandidate {
   importable: boolean;
 }
 
+export interface ModelsDevProviderSelection {
+  providerId: string;
+  selected: boolean;
+}
+
+export interface ModelsDevModelSelection {
+  model: string;
+  providerId: string;
+  selected: boolean;
+}
+
+export interface ModelsDevQuoteProviderChoice {
+  model: string;
+  providerId: string;
+}
+
+export interface ModelsDevSyncMemoryState {
+  catalogBaselineInitialized: boolean;
+  providerSelectionInitialized: boolean;
+  providerSelections: ModelsDevProviderSelection[];
+  modelSelections: ModelsDevModelSelection[];
+  quoteProviderChoices: ModelsDevQuoteProviderChoice[];
+  unviewedModelIds: string[];
+}
+
+export interface ModelsDevSyncMemoryPatch {
+  providerSelections?: ModelsDevProviderSelection[];
+  modelSelections?: ModelsDevModelSelection[];
+  quoteProviderChoices?: ModelsDevQuoteProviderChoice[];
+  viewedModelIds?: string[];
+}
+
 export interface ModelsDevSyncPreview {
   fetchedAt: string;
   providerCount: number;
   candidateCount: number;
   providers: ModelsDevSyncProvider[];
   candidates: ModelsDevPriceCandidate[];
+  syncState: ModelsDevSyncMemoryState;
 }
 
 export interface ManagedModelDeleteResponse {
@@ -2625,6 +2659,8 @@ export interface ManagedTask {
   nextCatchupAt?: string | null;
   catchupReason?: string | null;
   isManual: boolean;
+  displayColorLight?: string | null;
+  displayColorDark?: string | null;
   effectiveSchedule?: {
     source: string;
     intervalSecs?: number | null;
@@ -2641,6 +2677,7 @@ export interface ManagedTask {
 
 export interface CurrentTaskExecution {
   executionId: number;
+  executionUid: string;
   taskKey: string;
   title: string;
   activeChildTaskKey?: string | null;
@@ -2655,6 +2692,71 @@ export interface CurrentTaskExecution {
 export interface TaskRuntimeSnapshot {
   observedAt: string;
   activeRuns: CurrentTaskExecution[];
+  queuedRuns: QueuedTaskRun[];
+  queuedRunsAvailable: boolean;
+  admissionWaits: TaskAdmissionWait[];
+  admissionWaitsAvailable: boolean;
+}
+
+export interface QueuedTaskRun {
+  runId: number;
+  taskKey: string;
+  title: string;
+  triggerKind: string;
+  requestedAt: string;
+  waitingMs: number;
+  position: number;
+}
+
+export interface TaskAdmissionWait {
+  id: string;
+  taskKey: string;
+  title: string;
+  reason: string;
+  startedAt: string;
+  waitingMs: number;
+  retryAt?: string | null;
+}
+
+export interface TaskTimelineSegment {
+  segmentId: string;
+  kind: "execution" | "deferral" | "coverage_gap";
+  taskKey: string;
+  title: string;
+  startedAt: string;
+  lastObservedAt: string;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  status: string;
+  triggerKind?: string | null;
+  executionClass?: string | null;
+  reason?: string | null;
+  retryAt?: string | null;
+  activeChildTaskKey?: string | null;
+  activeChildTitle?: string | null;
+  managedRunId?: number | null;
+  sessionId: string;
+  revision: number;
+}
+
+export interface TaskTimelineCoverage {
+  sessionId: string;
+  startedAt: string;
+  lastSeenAt: string;
+  endedAt?: string | null;
+  droppedEvents: number;
+}
+
+export interface TaskTimelinePage {
+  observedAt: string;
+  windowStart: string;
+  windowEnd: string;
+  watermark: number;
+  segments: TaskTimelineSegment[];
+  coverage: TaskTimelineCoverage[];
+  nextCursor?: string | null;
+  resetRequired: boolean;
+  replace?: boolean;
 }
 
 export interface ManagedTaskProgress {
@@ -3214,7 +3316,13 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
     const id = typeof value.id === "string" ? value.id.trim() : "";
     const name = typeof value.name === "string" ? value.name.trim() : "";
     if (!id || !name) return [];
-    return [{ id, name, docUrl: typeof value.docUrl === "string" ? value.docUrl : null }];
+    return [
+      {
+        id,
+        name,
+        docUrl: typeof value.docUrl === "string" ? value.docUrl : null,
+      },
+    ];
   });
   const candidates = candidatesRaw.flatMap((item): ModelsDevPriceCandidate[] => {
     const value = (item ?? {}) as Record<string, unknown>;
@@ -3233,6 +3341,7 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
         providerId,
         providerName,
         docUrl: typeof value.docUrl === "string" ? value.docUrl : null,
+        status: typeof value.status === "string" ? value.status : null,
         inputPer1m: normalizeFiniteNumber(value.inputPer1m) ?? null,
         outputPer1m: normalizeFiniteNumber(value.outputPer1m) ?? null,
         cacheReadPer1m: normalizeFiniteNumber(value.cacheReadPer1m) ?? null,
@@ -3251,6 +3360,53 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
     candidateCount: normalizeFiniteNumber(payload.candidateCount) ?? candidates.length,
     providers,
     candidates,
+    syncState: normalizeModelsDevSyncMemoryState(payload.syncState),
+  };
+}
+
+function normalizeModelsDevSyncMemoryState(raw: unknown): ModelsDevSyncMemoryState {
+  const value = (raw ?? {}) as Record<string, unknown>;
+  const providerSelections = Array.isArray(value.providerSelections)
+    ? value.providerSelections.flatMap((item): ModelsDevProviderSelection[] => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        return typeof entry.providerId === "string" && typeof entry.selected === "boolean"
+          ? [{ providerId: entry.providerId, selected: entry.selected }]
+          : [];
+      })
+    : [];
+  const modelSelections = Array.isArray(value.modelSelections)
+    ? value.modelSelections.flatMap((item): ModelsDevModelSelection[] => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        return typeof entry.model === "string" &&
+          typeof entry.providerId === "string" &&
+          typeof entry.selected === "boolean"
+          ? [
+              {
+                model: entry.model,
+                providerId: entry.providerId,
+                selected: entry.selected,
+              },
+            ]
+          : [];
+      })
+    : [];
+  const quoteProviderChoices = Array.isArray(value.quoteProviderChoices)
+    ? value.quoteProviderChoices.flatMap((item): ModelsDevQuoteProviderChoice[] => {
+        const entry = (item ?? {}) as Record<string, unknown>;
+        return typeof entry.model === "string" && typeof entry.providerId === "string"
+          ? [{ model: entry.model, providerId: entry.providerId }]
+          : [];
+      })
+    : [];
+  return {
+    catalogBaselineInitialized: value.catalogBaselineInitialized === true,
+    providerSelectionInitialized: value.providerSelectionInitialized === true,
+    providerSelections,
+    modelSelections,
+    quoteProviderChoices,
+    unviewedModelIds: Array.isArray(value.unviewedModelIds)
+      ? value.unviewedModelIds.filter((item): item is string => typeof item === "string")
+      : [],
   };
 }
 
@@ -4341,7 +4497,11 @@ export function normalizePoolRoutingSelectionAudit(raw: unknown): PoolRoutingSel
     const phase = typeof admission.phase === "string" ? admission.phase.trim() : "";
     const verificationSuccessCount = normalizeFiniteNumber(admission.verificationSuccessCount);
     if (decision && phase && verificationSuccessCount != null) {
-      normalized.handoffAdmission = { decision, phase, verificationSuccessCount };
+      normalized.handoffAdmission = {
+        decision,
+        phase,
+        verificationSuccessCount,
+      };
       const generation = normalizeFiniteNumber(admission.generation);
       if (generation != null) normalized.handoffAdmission.generation = generation;
       if (typeof admission.trigger === "string" && admission.trigger.trim()) {
@@ -5054,7 +5214,9 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
       unattributedAnonBytes: number(process.unattributedAnonBytes),
       pressureLevel: optionalString(process.pressureLevel) ?? "unknown",
     },
-    allocator: { mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown" },
+    allocator: {
+      mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown",
+    },
     writerAccounting: {
       state: optionalString(writer.state) ?? "unknown",
       pendingDepth: number(writer.pendingDepth),
@@ -5389,6 +5551,10 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
     nextCatchupAt: typeof payload.nextCatchupAt === "string" ? payload.nextCatchupAt : null,
     catchupReason: typeof payload.catchupReason === "string" ? payload.catchupReason : null,
     isManual: payload.isManual,
+    displayColorLight:
+      typeof payload.displayColorLight === "string" ? payload.displayColorLight : null,
+    displayColorDark:
+      typeof payload.displayColorDark === "string" ? payload.displayColorDark : null,
     effectiveSchedule:
       schedule && typeof schedule.source === "string"
         ? {
@@ -5781,7 +5947,107 @@ export async function fetchManagedTasks(): Promise<ManagedTask[]> {
 }
 
 export async function fetchManagedTaskRuntime(): Promise<TaskRuntimeSnapshot> {
-  return fetchJson<TaskRuntimeSnapshot>("/api/system/managed-tasks/runtime");
+  const response = await fetchJson<TaskRuntimeSnapshot>("/api/system/managed-tasks/runtime");
+  return {
+    ...response,
+    activeRuns: response.activeRuns ?? [],
+    queuedRuns: response.queuedRuns ?? [],
+    queuedRunsAvailable: response.queuedRunsAvailable ?? false,
+    admissionWaits: response.admissionWaits ?? [],
+    admissionWaitsAvailable: response.admissionWaitsAvailable ?? false,
+  };
+}
+
+function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null {
+  const payload = asRecord(raw);
+  if (
+    !payload ||
+    typeof payload.segmentId !== "string" ||
+    typeof payload.taskKey !== "string" ||
+    typeof payload.startedAt !== "string" ||
+    typeof payload.lastObservedAt !== "string" ||
+    (payload.kind !== "execution" && payload.kind !== "deferral" && payload.kind !== "coverage_gap")
+  ) {
+    return null;
+  }
+  return {
+    segmentId: payload.segmentId,
+    kind: payload.kind,
+    taskKey: payload.taskKey,
+    title: typeof payload.title === "string" ? payload.title : payload.taskKey,
+    startedAt: payload.startedAt,
+    lastObservedAt: payload.lastObservedAt,
+    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    durationMs: normalizeFiniteNumber(payload.durationMs) ?? null,
+    status: typeof payload.status === "string" ? payload.status : "unknown",
+    triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : null,
+    executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
+    reason: typeof payload.reason === "string" ? payload.reason : null,
+    retryAt: typeof payload.retryAt === "string" ? payload.retryAt : null,
+    activeChildTaskKey:
+      typeof payload.activeChildTaskKey === "string" ? payload.activeChildTaskKey : null,
+    activeChildTitle:
+      typeof payload.activeChildTitle === "string" ? payload.activeChildTitle : null,
+    managedRunId: normalizeFiniteNumber(payload.managedRunId) ?? null,
+    sessionId: typeof payload.sessionId === "string" ? payload.sessionId : "unknown",
+    revision: normalizeFiniteNumber(payload.revision) ?? 0,
+  };
+}
+
+function normalizeTaskTimelineCoverage(raw: unknown): TaskTimelineCoverage | null {
+  const payload = asRecord(raw);
+  if (
+    !payload ||
+    typeof payload.sessionId !== "string" ||
+    typeof payload.startedAt !== "string" ||
+    typeof payload.lastSeenAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    sessionId: payload.sessionId,
+    startedAt: payload.startedAt,
+    lastSeenAt: payload.lastSeenAt,
+    endedAt: typeof payload.endedAt === "string" ? payload.endedAt : null,
+    droppedEvents: normalizeFiniteNumber(payload.droppedEvents) ?? 0,
+  };
+}
+
+export async function fetchManagedTaskTimeline(
+  query: {
+    from?: string;
+    to?: string;
+    cursor?: string;
+    afterRevision?: number;
+    limit?: number;
+  } = {},
+): Promise<TaskTimelinePage> {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) params.set(key, String(value));
+  }
+  const suffix = params.size > 0 ? `?${params.toString()}` : "";
+  const payload = asRecord(await fetchJson<unknown>(`/api/system/managed-tasks/timeline${suffix}`));
+  if (!payload) throw new Error("Invalid managed task timeline response");
+  return {
+    observedAt:
+      typeof payload.observedAt === "string" ? payload.observedAt : new Date().toISOString(),
+    windowStart: typeof payload.windowStart === "string" ? payload.windowStart : "",
+    windowEnd: typeof payload.windowEnd === "string" ? payload.windowEnd : "",
+    watermark: normalizeFiniteNumber(payload.watermark) ?? 0,
+    segments: Array.isArray(payload.segments)
+      ? payload.segments
+          .map(normalizeTaskTimelineSegment)
+          .filter((segment): segment is TaskTimelineSegment => segment != null)
+      : [],
+    coverage: Array.isArray(payload.coverage)
+      ? payload.coverage
+          .map(normalizeTaskTimelineCoverage)
+          .filter((coverage): coverage is TaskTimelineCoverage => coverage != null)
+      : [],
+    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
+    resetRequired: payload.resetRequired === true,
+  };
 }
 
 export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDetail> {
@@ -5793,7 +6059,11 @@ export async function fetchManagedTask(taskKey: string): Promise<ManagedTaskDeta
 
 export async function updateManagedTask(
   taskKey: string,
-  payload: { enabled?: boolean; intervalSecs?: number | null; cronExpr?: string | null },
+  payload: {
+    enabled?: boolean;
+    intervalSecs?: number | null;
+    cronExpr?: string | null;
+  },
 ): Promise<ManagedTaskDetail> {
   const response = await fetchJson<unknown>(
     `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
@@ -5852,12 +6122,30 @@ export async function updatePricingSettings(payload: PricingSettings): Promise<P
   return normalizePricingSettings(response);
 }
 
-export async function previewModelsDevPriceSync(): Promise<ModelsDevSyncPreview> {
+export async function previewModelsDevPriceSync(
+  options: { signal?: AbortSignal } = {},
+): Promise<ModelsDevSyncPreview> {
   const response = await fetchJson<unknown>("/api/settings/models/sync/preview", {
     method: "POST",
     body: JSON.stringify({}),
+    signal: options.signal,
   });
   return normalizeModelsDevSyncPreview(response);
+}
+
+export async function fetchModelsDevSyncMemory(): Promise<ModelsDevSyncMemoryState> {
+  const response = await fetchJson<unknown>("/api/settings/models/sync/state");
+  return normalizeModelsDevSyncMemoryState(response);
+}
+
+export async function updateModelsDevSyncMemory(
+  payload: ModelsDevSyncMemoryPatch,
+): Promise<ModelsDevSyncMemoryState> {
+  const response = await fetchJson<unknown>("/api/settings/models/sync/state", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+  return normalizeModelsDevSyncMemoryState(response);
 }
 
 export async function applyModelsDevPriceSync(entries: PricingEntry[]): Promise<PricingSettings> {

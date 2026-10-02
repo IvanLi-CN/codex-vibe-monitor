@@ -6,6 +6,7 @@ export type StorybookPageSsePayload = BroadcastPayload | SubscriptionTopicEnvelo
 export interface StorybookPageSseController {
   emit: (payload: StorybookPageSsePayload) => void;
   emitOpen: () => void;
+  emitError: () => void;
   reset: () => void;
 }
 

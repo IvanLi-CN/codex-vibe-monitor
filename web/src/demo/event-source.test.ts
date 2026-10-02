@@ -22,6 +22,7 @@ import { DemoTopicEventSource, isDemoTopicEventSourcePath } from "./event-source
 describe("DemoTopicEventSource", () => {
   afterEach(() => {
     vi.useRealTimers();
+    window.history.replaceState({}, "", "/");
     mocks.resolveDemoTopicPayload.mockReset();
     mocks.subscribeToDemoRealtime.mockReset();
   });
@@ -64,6 +65,38 @@ describe("DemoTopicEventSource", () => {
     expect(mocks.subscribeToDemoRealtime).not.toHaveBeenCalled();
   });
 
+  it("supports deterministic connecting and post-snapshot disconnect states", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockResolvedValue({ backend: "demo" });
+    const encodedTopics = btoa(JSON.stringify([{ topic: "app.version" }]));
+
+    window.history.replaceState({}, "", "/#/system/tasks?demoSse=connecting");
+    const connecting = new DemoTopicEventSource(`/events?attempt=1&topics=${encodedTopics}`);
+    const connectingEvents: string[] = [];
+    connecting.addEventListener("open", () => connectingEvents.push("open"));
+    connecting.addEventListener("error", () => connectingEvents.push("error"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connecting.readyState).toBe(DemoTopicEventSource.CONNECTING);
+    expect(connectingEvents).toEqual([]);
+    connecting.close();
+
+    window.history.replaceState({}, "", "/#/system/tasks?demoSse=disconnect");
+    const disconnected = new DemoTopicEventSource(`/events?attempt=8&topics=${encodedTopics}`);
+    const disconnectedEvents: string[] = [];
+    disconnected.addEventListener("open", () => disconnectedEvents.push("open"));
+    disconnected.addEventListener("message", () => disconnectedEvents.push("snapshot"));
+    disconnected.addEventListener("error", () => disconnectedEvents.push("error"));
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(900);
+    expect(disconnectedEvents).toEqual(["open", "snapshot", "error"]);
+    expect(disconnected.readyState).toBe(DemoTopicEventSource.CLOSED);
+
+    const retry = new DemoTopicEventSource(`/events?attempt=9&topics=${encodedTopics}`);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(retry.readyState).toBe(DemoTopicEventSource.CONNECTING);
+    retry.close();
+  });
+
   it("limits empty-record revisions to the dashboard activity topic", async () => {
     vi.useFakeTimers();
     mocks.resolveDemoTopicPayload.mockResolvedValue({ liveRevision: 1 });
@@ -92,6 +125,47 @@ describe("DemoTopicEventSource", () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(liveTopics).toEqual(["dashboard.activity.current"]);
+    source.close();
+  });
+
+  it("publishes live task runtime and timeline events to both demo topics", async () => {
+    vi.useFakeTimers();
+    mocks.resolveDemoTopicPayload.mockImplementation(async (topic: { topic: string }) => ({
+      observedAt: "2026-10-01T00:00:00.000Z",
+      topic: topic.topic,
+    }));
+    let publishRealtime: ((payload: DemoRealtimePayload) => void) | undefined;
+    mocks.subscribeToDemoRealtime.mockImplementation((listener) => {
+      publishRealtime = listener;
+      return vi.fn();
+    });
+    const topics = [
+      { topic: "system.managed-tasks.runtime" },
+      { topic: "system.managed-tasks.timeline" },
+    ];
+    const encodedTopics = btoa(JSON.stringify(topics));
+    const source = new DemoTopicEventSource(`/events?topics=${encodedTopics}`);
+    const messages: Array<{ type: string; topic: { topic: string } }> = [];
+    source.addEventListener("message", (event) => {
+      messages.push(JSON.parse((event as MessageEvent<string>).data));
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(
+      messages
+        .filter((message) => message.type === "snapshot")
+        .map((message) => message.topic.topic),
+    ).toEqual(topics.map((topic) => topic.topic));
+
+    publishRealtime?.({
+      type: "records",
+      records: [{ taskKey: "retention_archive" }],
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      messages.filter((message) => message.type === "live").map((message) => message.topic.topic),
+    ).toEqual(topics.map((topic) => topic.topic));
     source.close();
   });
 

@@ -20,6 +20,7 @@ const TASK_RUN_RETENTION_DAYS: i64 = 90;
 const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
+const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
 const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
@@ -102,6 +103,8 @@ pub(crate) struct ManagedTask {
     pub(crate) next_catchup_at: Option<String>,
     pub(crate) catchup_reason: Option<String>,
     pub(crate) is_manual: bool,
+    pub(crate) display_color_light: Option<String>,
+    pub(crate) display_color_dark: Option<String>,
     #[serde(skip)]
     pub(crate) schedule_source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -299,6 +302,63 @@ struct RetentionBacklogObservationRow {
     retention_days: i64,
     cutoff: String,
     source_max_invocation_id: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct QueuedTaskRun {
+    pub(crate) run_id: i64,
+    pub(crate) task_key: String,
+    pub(crate) title: String,
+    pub(crate) trigger_kind: String,
+    pub(crate) requested_at: String,
+    pub(crate) waiting_ms: i64,
+    pub(crate) position: i64,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskAdmissionWait {
+    pub(crate) id: String,
+    pub(crate) task_key: String,
+    pub(crate) title: String,
+    pub(crate) reason: String,
+    pub(crate) started_at: String,
+    pub(crate) waiting_ms: i64,
+    pub(crate) retry_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TimelineSegment {
+    pub(crate) segment_id: String,
+    pub(crate) kind: String,
+    pub(crate) task_key: String,
+    pub(crate) title: String,
+    pub(crate) started_at: String,
+    pub(crate) last_observed_at: String,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) duration_ms: Option<i64>,
+    pub(crate) status: String,
+    pub(crate) trigger_kind: Option<String>,
+    pub(crate) execution_class: Option<String>,
+    pub(crate) reason: Option<String>,
+    pub(crate) retry_at: Option<String>,
+    pub(crate) active_child_task_key: Option<String>,
+    pub(crate) active_child_title: Option<String>,
+    pub(crate) managed_run_id: Option<i64>,
+    pub(crate) session_id: String,
+    pub(crate) revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TimelineCoverage {
+    pub(crate) session_id: String,
+    pub(crate) started_at: String,
+    pub(crate) last_seen_at: String,
+    pub(crate) ended_at: Option<String>,
+    pub(crate) dropped_events: i64,
 }
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
@@ -666,7 +726,66 @@ pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
         .await?;
     ensure_schema(&pool).await?;
     seed_tasks(&pool).await?;
+    ensure_task_colors(&pool).await?;
     Ok(MaintenanceStore { pool })
+}
+
+async fn ensure_task_colors(pool: &Pool<Sqlite>) -> Result<()> {
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        "SELECT task_key,display_color_light,display_color_dark FROM managed_tasks ORDER BY task_key",
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut used = HashSet::new();
+    let mut next_hue = 0.0_f64;
+    for (task_key, light, dark) in rows {
+        if let (Some(light), Some(dark)) = (&light, &dark) {
+            used.insert((light.clone(), dark.clone()));
+            continue;
+        }
+        loop {
+            let hue = next_hue % 360.0;
+            next_hue += 137.507_764;
+            let generated = (hsl_hex(hue, 0.72, 0.43), hsl_hex(hue, 0.76, 0.66));
+            let colors = (
+                light.clone().unwrap_or_else(|| generated.0.clone()),
+                dark.clone().unwrap_or_else(|| generated.1.clone()),
+            );
+            if used.insert(colors.clone()) {
+                sqlx::query(
+                    "UPDATE managed_tasks SET display_color_light=COALESCE(display_color_light,?),display_color_dark=COALESCE(display_color_dark,?) WHERE task_key=?",
+                )
+                .bind(&generated.0)
+                .bind(&generated.1)
+                .bind(&task_key)
+                .execute(pool)
+                .await?;
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn hsl_hex(hue: f64, saturation: f64, lightness: f64) -> String {
+    let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
+    let sector = hue / 60.0;
+    let x = chroma * (1.0 - (sector.rem_euclid(2.0) - 1.0).abs());
+    let (red, green, blue) = match sector as u8 {
+        0 => (chroma, x, 0.0),
+        1 => (x, chroma, 0.0),
+        2 => (0.0, chroma, x),
+        3 => (0.0, x, chroma),
+        4 => (x, 0.0, chroma),
+        _ => (chroma, 0.0, x),
+    };
+    let offset = lightness - chroma / 2.0;
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        ((red + offset) * 255.0).round() as u8,
+        ((green + offset) * 255.0).round() as u8,
+        ((blue + offset) * 255.0).round() as u8,
+    )
 }
 
 fn validate_cron_expr(expr: Option<&str>) -> Result<()> {
@@ -1020,6 +1139,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
           next_catchup_at TEXT, catchup_reason TEXT,
           is_manual INTEGER NOT NULL DEFAULT 0, schedule_source TEXT,
+          display_color_light TEXT, display_color_dark TEXT,
           updated_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS managed_task_progress (
@@ -1049,7 +1169,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           trigger_kind TEXT NOT NULL DEFAULT 'unknown', started_at TEXT NOT NULL, finished_at TEXT,
           duration_ms INTEGER, status TEXT NOT NULL, summary TEXT,
           processed_count INTEGER, updated_count INTEGER, error_detail TEXT,
-          completion TEXT, core_completion TEXT, details TEXT
+          completion TEXT, core_completion TEXT, details TEXT,
+          execution_uid TEXT, actual_started_at TEXT, actual_finished_at TEXT,
+          actual_duration_ms INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS task_timeline_segments (
+          segment_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
+          task_key TEXT NOT NULL, title TEXT NOT NULL, started_at TEXT NOT NULL,
+          last_observed_at TEXT NOT NULL, finished_at TEXT, duration_ms INTEGER,
+          status TEXT NOT NULL, trigger_kind TEXT, execution_class TEXT,
+          reason TEXT, retry_at TEXT, active_child_task_key TEXT, active_child_title TEXT,
+          managed_run_id INTEGER, revision INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_timeline_segments_started
+          ON task_timeline_segments(started_at, segment_id);
+        CREATE INDEX IF NOT EXISTS idx_task_timeline_segments_open
+          ON task_timeline_segments(kind, status, task_key);
+        CREATE TABLE IF NOT EXISTS task_timeline_coverage (
+          session_id TEXT PRIMARY KEY, started_at TEXT NOT NULL, last_seen_at TEXT NOT NULL,
+          ended_at TEXT, dropped_events INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_started
           ON managed_task_runs(task_key, started_at DESC);
@@ -1093,6 +1231,10 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("completion", "TEXT"),
         ("core_completion", "TEXT"),
         ("details", "TEXT"),
+        ("execution_uid", "TEXT"),
+        ("actual_started_at", "TEXT"),
+        ("actual_finished_at", "TEXT"),
+        ("actual_duration_ms", "INTEGER"),
     ] {
         let present: Option<i64> = sqlx::query_scalar(&format!(
             "SELECT 1 FROM pragma_table_info('managed_task_runs') WHERE name = '{column}'"
@@ -1107,6 +1249,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
         }
     }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_managed_task_runs_execution_uid ON managed_task_runs(execution_uid)",
+    )
+    .execute(pool)
+    .await?;
     for (column, definition) in [
         ("unit", "TEXT"),
         ("source_scope", "TEXT"),
@@ -1151,7 +1298,12 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .execute(pool)
             .await?;
     }
-    for (column, definition) in [("next_catchup_at", "TEXT"), ("catchup_reason", "TEXT")] {
+    for (column, definition) in [
+        ("next_catchup_at", "TEXT"),
+        ("catchup_reason", "TEXT"),
+        ("display_color_light", "TEXT"),
+        ("display_color_dark", "TEXT"),
+    ] {
         let present: Option<i64> = sqlx::query_scalar(&format!(
             "SELECT 1 FROM pragma_table_info('managed_tasks') WHERE name = '{column}'"
         ))
@@ -1276,6 +1428,311 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 }
 
 impl MaintenanceStore {
+    pub(crate) async fn start_timeline_session(
+        &self,
+        session_id: &str,
+        started_at: &str,
+    ) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT OR IGNORE INTO maintenance_metadata(key,value,updated_at) VALUES('task_timeline_revision','0',?)")
+            .bind(started_at)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query("UPDATE maintenance_metadata SET value=CAST(value AS INTEGER)+1,updated_at=? WHERE key='task_timeline_revision'")
+            .bind(started_at)
+            .execute(&mut *transaction)
+            .await?;
+        let revision = sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(value AS INTEGER) FROM maintenance_metadata WHERE key='task_timeline_revision'",
+        )
+        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE task_timeline_segments SET status='interrupted',revision=? WHERE status IN ('running','waiting')",
+        )
+        .bind(revision)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE task_timeline_coverage SET ended_at=last_seen_at WHERE ended_at IS NULL",
+        )
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "INSERT INTO task_timeline_coverage(session_id,started_at,last_seen_at,dropped_events) VALUES(?,?,?,0) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,last_seen_at=excluded.last_seen_at,ended_at=NULL,dropped_events=0",
+        )
+        .bind(session_id)
+        .bind(started_at)
+        .bind(started_at)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn write_timeline_batch(
+        &self,
+        session_id: &str,
+        events: &[crate::task_timeline::TimelineEvent],
+        dropped_events: u64,
+        observed_at: &str,
+        heartbeat: bool,
+    ) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("INSERT OR IGNORE INTO maintenance_metadata(key,value,updated_at) VALUES('task_timeline_revision','0',?)")
+            .bind(observed_at)
+            .execute(&mut *transaction)
+            .await?;
+        let prior_dropped = sqlx::query_scalar::<_, i64>(
+            "SELECT dropped_events FROM task_timeline_coverage WHERE session_id=?",
+        )
+        .bind(session_id)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .unwrap_or(0);
+        let dropped_events = dropped_events.min(i64::MAX as u64) as i64;
+        let revision_increments =
+            (!events.is_empty() || heartbeat || dropped_events > prior_dropped) as i64;
+        if revision_increments > 0 {
+            sqlx::query("UPDATE maintenance_metadata SET value=CAST(value AS INTEGER)+?,updated_at=? WHERE key='task_timeline_revision'")
+                .bind(revision_increments)
+                .bind(observed_at)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        let revision = sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(value AS INTEGER) FROM maintenance_metadata WHERE key='task_timeline_revision'",
+        )
+        .fetch_one(&mut *transaction)
+        .await?;
+        for event in events {
+            match event {
+                crate::task_timeline::TimelineEvent::ExecutionStarted {
+                    id,
+                    task_key,
+                    title,
+                    trigger_kind,
+                    execution_class,
+                    started_at,
+                    managed_run_id,
+                } => {
+                    sqlx::query("INSERT OR IGNORE INTO task_timeline_segments(segment_id,session_id,kind,task_key,title,started_at,last_observed_at,status,trigger_kind,execution_class,managed_run_id,revision) VALUES(?,?,'execution',?,?,?,?, 'running',?,?,?,?)")
+                        .bind(id).bind(session_id).bind(task_key).bind(title).bind(started_at)
+                        .bind(started_at).bind(trigger_kind).bind(execution_class)
+                        .bind(managed_run_id).bind(revision)
+                        .execute(&mut *transaction).await?;
+                    if let Some(run_id) = managed_run_id {
+                        sqlx::query("UPDATE managed_task_runs SET execution_uid=?,actual_started_at=? WHERE id=?")
+                            .bind(id).bind(started_at).bind(run_id)
+                            .execute(&mut *transaction).await?;
+                    }
+                }
+                crate::task_timeline::TimelineEvent::ExecutionFinished {
+                    id,
+                    finished_at,
+                    duration_ms,
+                    status,
+                } => {
+                    sqlx::query("UPDATE task_timeline_segments SET finished_at=?,last_observed_at=?,duration_ms=?,status=?,revision=? WHERE segment_id=? AND kind='execution'")
+                        .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
+                        .bind(status).bind(revision).bind(id)
+                        .execute(&mut *transaction).await?;
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=? WHERE execution_uid=?")
+                        .bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::ExecutionUnknown {
+                    id,
+                    last_observed_at,
+                } => {
+                    sqlx::query("UPDATE task_timeline_segments SET finished_at=NULL,last_observed_at=?,duration_ms=NULL,status='unknown',revision=? WHERE segment_id=? AND kind='execution'")
+                        .bind(last_observed_at).bind(revision).bind(id)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::ExecutionChildChanged {
+                    id,
+                    task_key,
+                    title,
+                } => {
+                    sqlx::query("UPDATE task_timeline_segments SET active_child_task_key=?,active_child_title=?,revision=? WHERE segment_id=? AND kind='execution' AND status='running'")
+                        .bind(task_key).bind(title).bind(revision).bind(id)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::CoverageGap {
+                    id,
+                    started_at,
+                    finished_at,
+                    reason,
+                } => {
+                    sqlx::query("INSERT INTO task_timeline_segments(segment_id,session_id,kind,task_key,title,started_at,last_observed_at,finished_at,status,reason,revision) VALUES(?,?,'coverage_gap','__timeline__','观测缺口',?,?,?,'unknown',?,?) ON CONFLICT(segment_id) DO UPDATE SET last_observed_at=excluded.last_observed_at,finished_at=excluded.finished_at,reason=excluded.reason,revision=excluded.revision")
+                        .bind(id).bind(session_id).bind(started_at).bind(finished_at)
+                        .bind(finished_at).bind(reason).bind(revision)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::DeferralStarted {
+                    id,
+                    task_key,
+                    reason,
+                    retry_at,
+                    started_at,
+                } => {
+                    let title = task_title_for_observation(task_key);
+                    sqlx::query("INSERT OR IGNORE INTO task_timeline_segments(segment_id,session_id,kind,task_key,title,started_at,last_observed_at,status,reason,retry_at,revision) VALUES(?,?,'deferral',?,?,?,?, 'waiting',?,?,?)")
+                        .bind(id).bind(session_id).bind(task_key).bind(title).bind(started_at)
+                        .bind(started_at).bind(reason).bind(retry_at).bind(revision)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::DeferralFinished { id, finished_at } => {
+                    sqlx::query("UPDATE task_timeline_segments SET finished_at=?,last_observed_at=?,status='released',revision=? WHERE segment_id=? AND kind='deferral'")
+                        .bind(finished_at).bind(finished_at).bind(revision).bind(id)
+                        .execute(&mut *transaction).await?;
+                }
+            }
+        }
+        if heartbeat || !events.is_empty() || dropped_events > prior_dropped {
+            sqlx::query("UPDATE task_timeline_coverage SET last_seen_at=?,dropped_events=MAX(dropped_events,?) WHERE session_id=?")
+                .bind(observed_at).bind(dropped_events).bind(session_id)
+                .execute(&mut *transaction).await?;
+        }
+        if heartbeat {
+            sqlx::query("UPDATE task_timeline_segments SET last_observed_at=?,revision=? WHERE session_id=? AND status IN ('running','waiting')")
+                .bind(observed_at).bind(revision).bind(session_id)
+                .execute(&mut *transaction).await?;
+        }
+        let cutoff = format_utc_iso_millis(
+            Utc::now() - ChronoDuration::hours(TASK_TIMELINE_RETENTION_HOURS),
+        );
+        sqlx::query("DELETE FROM task_timeline_segments WHERE status NOT IN ('running','waiting') AND COALESCE(finished_at,last_observed_at) < ?")
+            .bind(&cutoff)
+            .execute(&mut *transaction)
+            .await?;
+        sqlx::query(
+            "DELETE FROM task_timeline_coverage WHERE ended_at IS NOT NULL AND ended_at < ?",
+        )
+        .bind(cutoff)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn finish_timeline_session(
+        &self,
+        session_id: &str,
+        ended_at: &str,
+    ) -> Result<()> {
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query("UPDATE task_timeline_segments SET status='interrupted' WHERE session_id=? AND status IN ('running','waiting')")
+            .bind(session_id).execute(&mut *transaction).await?;
+        sqlx::query(
+            "UPDATE task_timeline_coverage SET ended_at=?,last_seen_at=? WHERE session_id=?",
+        )
+        .bind(ended_at)
+        .bind(ended_at)
+        .bind(session_id)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn timeline_revision(&self) -> Result<i64> {
+        Ok(sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(value AS INTEGER) FROM maintenance_metadata WHERE key='task_timeline_revision'",
+        )
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0))
+    }
+
+    pub(crate) async fn list_timeline_segments(
+        &self,
+        from: &str,
+        to: &str,
+        watermark: i64,
+        after_revision: Option<i64>,
+        offset: u64,
+        limit: usize,
+    ) -> Result<Vec<TimelineSegment>> {
+        let rows = sqlx::query_as::<_, TimelineSegment>("SELECT segment_id,kind,task_key,title,started_at,last_observed_at,finished_at,duration_ms,status,trigger_kind,execution_class,reason,retry_at,active_child_task_key,active_child_title,managed_run_id,session_id,revision FROM task_timeline_segments WHERE started_at<=? AND COALESCE(finished_at,last_observed_at)>=? AND revision<=? AND (? IS NULL OR revision>?) ORDER BY started_at,segment_id LIMIT ? OFFSET ?")
+            .bind(to).bind(from).bind(watermark).bind(after_revision).bind(after_revision)
+            .bind(limit.min(500) as i64).bind(offset.min(i64::MAX as u64) as i64)
+            .fetch_all(&self.pool).await?;
+        Ok(rows)
+    }
+
+    pub(crate) async fn list_timeline_coverage(&self) -> Result<Vec<TimelineCoverage>> {
+        Ok(sqlx::query_as::<_, TimelineCoverage>("SELECT session_id,started_at,last_seen_at,ended_at,dropped_events FROM task_timeline_coverage ORDER BY started_at DESC LIMIT 50")
+            .fetch_all(&self.pool).await?)
+    }
+
+    pub(crate) async fn list_queued_runs(&self) -> Result<Vec<QueuedTaskRun>> {
+        let rows = sqlx::query_as::<_, (i64, String, String, String, String)>("SELECT r.id,r.task_key,COALESCE(t.title,r.task_key),r.trigger_kind,r.started_at FROM managed_task_runs r LEFT JOIN managed_tasks t ON t.task_key=r.task_key WHERE r.status='requested' ORDER BY r.id LIMIT 500")
+            .fetch_all(&self.pool).await?;
+        let now = Utc::now();
+        Ok(rows
+            .into_iter()
+            .enumerate()
+            .map(
+                |(index, (run_id, task_key, title, trigger_kind, requested_at))| {
+                    let waiting_ms = chrono::DateTime::parse_from_rfc3339(&requested_at)
+                        .map(|started| {
+                            (now - started.with_timezone(&Utc))
+                                .num_milliseconds()
+                                .max(0)
+                        })
+                        .unwrap_or(0);
+                    QueuedTaskRun {
+                        run_id,
+                        task_key,
+                        title,
+                        trigger_kind,
+                        requested_at,
+                        waiting_ms,
+                        position: index as i64 + 1,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    pub(crate) async fn list_current_task_deferrals(&self) -> Result<Vec<TaskAdmissionWait>> {
+        let freshness_cutoff = format_utc_iso_millis(Utc::now() - ChronoDuration::seconds(60));
+        let session_id = sqlx::query_scalar::<_, String>(
+            "SELECT session_id FROM task_timeline_coverage WHERE ended_at IS NULL AND last_seen_at>=? ORDER BY started_at DESC LIMIT 1",
+        )
+        .bind(&freshness_cutoff)
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("task timeline observation is unavailable"))?;
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>)>("SELECT segment_id,task_key,title,reason,started_at,retry_at FROM task_timeline_segments WHERE kind='deferral' AND status='waiting' AND session_id=? AND last_observed_at>=? ORDER BY started_at,segment_id")
+            .bind(session_id)
+            .bind(&freshness_cutoff)
+            .fetch_all(&self.pool).await?;
+        let now = Utc::now();
+        Ok(rows
+            .into_iter()
+            .map(|(id, task_key, title, reason, started_at, retry_at)| {
+                let waiting_ms = chrono::DateTime::parse_from_rfc3339(&started_at)
+                    .map(|started| {
+                        (now - started.with_timezone(&Utc))
+                            .num_milliseconds()
+                            .max(0)
+                    })
+                    .unwrap_or(0);
+                TaskAdmissionWait {
+                    id,
+                    task_key,
+                    title,
+                    reason,
+                    started_at,
+                    waiting_ms,
+                    retry_at,
+                }
+            })
+            .collect())
+    }
+
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
@@ -2120,7 +2577,7 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
-        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,schedule_source FROM managed_tasks ORDER BY task_key")
+        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks ORDER BY task_key")
             .fetch_all(&self.pool).await?;
         Ok(tasks
             .into_iter()
@@ -2130,7 +2587,7 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
-        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,schedule_source FROM managed_tasks WHERE task_key=?")
+        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
         let Some(task) = task.map(decorate_effective_schedule).map(decorate_task) else {
             return Ok(None);
@@ -2353,17 +2810,17 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use crate::format_utc_iso_millis;
     use chrono::TimeZone;
     use chrono::{Duration as ChronoDuration, Timelike, Utc};
     use sqlx::SqlitePool;
+    use std::collections::HashSet;
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        cron_day_matches, ensure_schema, floor_utc_hour, next_trigger_at, sanitize_task_detail,
-        seed_tasks, task_enabled_by_default, validate_cron_expr,
+        cron_day_matches, ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at,
+        sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
     };
-    use crate::format_utc_iso_millis;
-
     #[tokio::test]
     async fn schema_repair_preserves_duplicate_active_run_history() {
         let pool = SqlitePool::connect("sqlite::memory:")
@@ -2426,6 +2883,492 @@ mod tests {
         .await
         .expect("count active runs");
         assert_eq!(active_count, 1);
+    }
+
+    #[tokio::test]
+    async fn timeline_upgrade_is_repeatable_and_preserves_task_controls_and_colors() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect timeline migration fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        sqlx::query("UPDATE managed_tasks SET enabled=0,interval_secs=123,cron_expr=NULL WHERE task_key='retention_archive'")
+            .execute(&pool)
+            .await
+            .expect("set existing task control overrides");
+        sqlx::query("UPDATE managed_tasks SET cron_expr='5 * * * *',interval_secs=NULL WHERE task_key='upstream_account_maintenance'")
+            .execute(&pool)
+            .await
+            .expect("set a cron override");
+        ensure_task_colors(&pool)
+            .await
+            .expect("persist task colors");
+        let color_before: (String, String) = sqlx::query_as(
+            "SELECT display_color_light,display_color_dark FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load persisted task colors");
+        let distinct_colors: i64 = sqlx::query_scalar(
+            "SELECT COUNT(DISTINCT display_color_light || ':' || display_color_dark) FROM managed_tasks",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count task colors");
+        assert_eq!(
+            distinct_colors,
+            (MANAGED_TASKS.len() + STARTUP_BACKFILL_TASKS.len()) as i64
+        );
+
+        ensure_schema(&pool)
+            .await
+            .expect("repeat maintenance schema upgrade");
+        seed_tasks(&pool).await.expect("repeat task registry seed");
+        ensure_task_colors(&pool)
+            .await
+            .expect("repeat task color assignment");
+        let task: (bool, Option<i64>, Option<String>, String, String) = sqlx::query_as(
+            "SELECT enabled,interval_secs,cron_expr,display_color_light,display_color_dark FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated task");
+        assert!(!task.0);
+        assert_eq!(task.1, Some(123));
+        assert_eq!(task.2, None);
+        assert_eq!((task.3, task.4), color_before);
+        let cron_override: (bool, Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key='upstream_account_maintenance'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load migrated cron override");
+        assert!(cron_override.0);
+        assert_eq!(cron_override.1, None);
+        assert_eq!(cron_override.2.as_deref(), Some("5 * * * *"));
+        let timeline_table_exists: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='task_timeline_segments'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("check timeline table");
+        assert_eq!(timeline_table_exists, 1);
+    }
+
+    #[tokio::test]
+    async fn timeline_history_records_actual_execution_and_restart_gaps() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect timeline history fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        ensure_task_colors(&pool)
+            .await
+            .expect("seed stable task colors");
+        let store = MaintenanceStore { pool };
+        sqlx::query("INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,duration_ms,status) VALUES('retention_archive','manual','2026-10-02T00:00:00.000Z',777,'running')")
+            .execute(&store.pool)
+            .await
+            .expect("insert legacy-semantics run");
+        let run_id = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM managed_task_runs WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("load managed run id");
+        store
+            .start_timeline_session("session-one", "2026-10-02T00:00:00.000Z")
+            .await
+            .expect("start first observation session");
+        let events = [
+            crate::task_timeline::TimelineEvent::ExecutionStarted {
+                id: "execution-one".to_string(),
+                task_key: "retention_archive".to_string(),
+                title: "数据保留与归档".to_string(),
+                trigger_kind: "manual".to_string(),
+                execution_class: Some("maintenance_retention".to_string()),
+                started_at: "2026-10-02T00:00:01.000Z".to_string(),
+                managed_run_id: Some(run_id),
+            },
+            crate::task_timeline::TimelineEvent::DeferralStarted {
+                id: "deferral-one".to_string(),
+                task_key: "retention_archive".to_string(),
+                reason: "pressure_cooldown".to_string(),
+                retry_at: None,
+                started_at: "2026-10-02T00:00:02.000Z".to_string(),
+            },
+        ];
+        store
+            .write_timeline_batch("session-one", &events, 0, "2026-10-02T00:00:03.000Z", false)
+            .await
+            .expect("write execution and deferral starts");
+        let ends = [
+            crate::task_timeline::TimelineEvent::ExecutionFinished {
+                id: "execution-one".to_string(),
+                finished_at: "2026-10-02T00:00:06.000Z".to_string(),
+                duration_ms: 5_000,
+                status: "failed".to_string(),
+            },
+            crate::task_timeline::TimelineEvent::DeferralFinished {
+                id: "deferral-one".to_string(),
+                finished_at: "2026-10-02T00:00:05.000Z".to_string(),
+            },
+        ];
+        store
+            .write_timeline_batch("session-one", &ends, 2, "2026-10-02T00:00:07.000Z", false)
+            .await
+            .expect("write execution and deferral finishes");
+        let actual_fields: (String, i64, String, i64) = sqlx::query_as(
+            "SELECT started_at,duration_ms,actual_started_at,actual_duration_ms FROM managed_task_runs WHERE id=?",
+        )
+        .bind(run_id)
+        .fetch_one(&store.pool)
+        .await
+        .expect("read legacy and actual execution fields");
+        assert_eq!(actual_fields.0, "2026-10-02T00:00:00.000Z");
+        assert_eq!(actual_fields.1, 777);
+        assert_eq!(actual_fields.2, "2026-10-02T00:00:01.000Z");
+        assert_eq!(actual_fields.3, 5_000);
+
+        let open_events = [
+            crate::task_timeline::TimelineEvent::ExecutionStarted {
+                id: "execution-unknown".to_string(),
+                task_key: "retention_archive".to_string(),
+                title: "数据保留与归档".to_string(),
+                trigger_kind: "interval".to_string(),
+                execution_class: None,
+                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+                managed_run_id: None,
+            },
+            crate::task_timeline::TimelineEvent::ExecutionUnknown {
+                id: "execution-unknown".to_string(),
+                last_observed_at: "2026-10-02T00:00:09.000Z".to_string(),
+            },
+            crate::task_timeline::TimelineEvent::ExecutionStarted {
+                id: "execution-open".to_string(),
+                task_key: "pool_orphan_recovery".to_string(),
+                title: "连接池孤儿记录恢复".to_string(),
+                trigger_kind: "interval".to_string(),
+                execution_class: None,
+                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+                managed_run_id: None,
+            },
+            crate::task_timeline::TimelineEvent::DeferralStarted {
+                id: "deferral-open".to_string(),
+                task_key: "pool_orphan_recovery".to_string(),
+                reason: "resource_busy".to_string(),
+                retry_at: None,
+                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+            },
+            crate::task_timeline::TimelineEvent::CoverageGap {
+                id: "write-gap".to_string(),
+                started_at: "2026-10-02T00:00:09.000Z".to_string(),
+                finished_at: "2026-10-02T00:00:10.000Z".to_string(),
+                reason: "maintenance_store_write_unavailable".to_string(),
+            },
+        ];
+        sqlx::query("CREATE TRIGGER reject_pending_timeline_write BEFORE INSERT ON task_timeline_segments BEGIN SELECT RAISE(ABORT, 'simulated maintenance write failure'); END")
+            .execute(&store.pool)
+            .await
+            .expect("simulate shutdown persistence failure");
+        let unpersisted = crate::task_timeline::TimelineEvent::ExecutionStarted {
+            id: "lost-on-shutdown".to_string(),
+            task_key: "retention_archive".to_string(),
+            title: "数据保留与归档".to_string(),
+            trigger_kind: "manual".to_string(),
+            execution_class: None,
+            started_at: "2026-10-02T00:00:12.000Z".to_string(),
+            managed_run_id: None,
+        };
+        assert!(
+            store
+                .write_timeline_batch(
+                    "session-one",
+                    &[unpersisted],
+                    0,
+                    "2026-10-02T00:00:13.000Z",
+                    true,
+                )
+                .await
+                .is_err()
+        );
+        sqlx::query("DROP TRIGGER reject_pending_timeline_write")
+            .execute(&store.pool)
+            .await
+            .expect("restore maintenance writes");
+        store
+            .write_timeline_batch(
+                "session-one",
+                &open_events,
+                2,
+                "2026-10-02T00:00:09.000Z",
+                false,
+            )
+            .await
+            .expect("write open execution and deferral");
+        store
+            .start_timeline_session("session-two", "2026-10-02T00:00:20.000Z")
+            .await
+            .expect("recover open observations after restart");
+        let coverage: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT session_id,last_seen_at,ended_at FROM task_timeline_coverage ORDER BY started_at",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .expect("read coverage after failed shutdown persistence");
+        assert_eq!(coverage[0].0, "session-one");
+        assert_eq!(coverage[0].1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(coverage[0].2.as_deref(), Some("2026-10-02T00:00:09.000Z"));
+        assert_eq!(coverage[1].0, "session-two");
+        assert_eq!(coverage[1].1, "2026-10-02T00:00:20.000Z");
+        let missing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM task_timeline_segments WHERE segment_id='lost-on-shutdown'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("ensure unpersisted execution was not fabricated");
+        assert_eq!(missing, 0);
+        let recovered: Vec<(String, String, Option<String>, String)> = sqlx::query_as(
+            "SELECT segment_id,status,finished_at,last_observed_at FROM task_timeline_segments WHERE segment_id IN ('execution-open','deferral-open') ORDER BY segment_id",
+        )
+        .fetch_all(&store.pool)
+        .await
+        .expect("read restart-recovered observations");
+        assert_eq!(recovered.len(), 2);
+        assert!(recovered.iter().all(|row| row.1 == "interrupted"));
+        assert!(recovered.iter().all(|row| row.2.is_none()));
+        assert!(
+            recovered
+                .iter()
+                .all(|row| row.3 == "2026-10-02T00:00:08.000Z")
+        );
+        let gap: (String, String, Option<String>, String) = sqlx::query_as(
+            "SELECT kind,started_at,finished_at,reason FROM task_timeline_segments WHERE segment_id='write-gap'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read persisted maintenance-store gap");
+        assert_eq!(gap.0, "coverage_gap");
+        assert_eq!(gap.1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(gap.2.as_deref(), Some("2026-10-02T00:00:10.000Z"));
+        assert_eq!(gap.3, "maintenance_store_write_unavailable");
+        let unknown: (Option<String>, Option<i64>, String) = sqlx::query_as(
+            "SELECT finished_at,duration_ms,status FROM task_timeline_segments WHERE segment_id='execution-unknown'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read unknown execution terminal");
+        assert_eq!(unknown.0, None);
+        assert_eq!(unknown.1, None);
+        assert_eq!(unknown.2, "unknown");
+    }
+
+    #[tokio::test]
+    async fn dropped_event_gaps_are_persisted_as_bounded_intervals() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect timeline gap fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        ensure_task_colors(&pool)
+            .await
+            .expect("seed stable task colors");
+        let store = MaintenanceStore { pool };
+        store
+            .start_timeline_session("drop-session", "2026-10-02T00:00:00.000Z")
+            .await
+            .expect("start drop session");
+        let first = crate::task_timeline::TimelineEvent::CoverageGap {
+            id: "drop-gap".to_string(),
+            started_at: "2026-10-02T00:00:05.000Z".to_string(),
+            finished_at: "2026-10-02T00:00:06.000Z".to_string(),
+            reason: "event_channel_overflow".to_string(),
+        };
+        store
+            .write_timeline_batch(
+                "drop-session",
+                &[first],
+                1,
+                "2026-10-02T00:00:06.000Z",
+                false,
+            )
+            .await
+            .expect("persist first overflow interval");
+        let extended = crate::task_timeline::TimelineEvent::CoverageGap {
+            id: "drop-gap".to_string(),
+            started_at: "2026-10-02T00:00:05.000Z".to_string(),
+            finished_at: "2026-10-02T00:00:09.000Z".to_string(),
+            reason: "event_channel_overflow".to_string(),
+        };
+        store
+            .write_timeline_batch(
+                "drop-session",
+                &[extended],
+                4,
+                "2026-10-02T00:00:09.000Z",
+                false,
+            )
+            .await
+            .expect("extend overflow interval");
+
+        let persisted: (String, String, i64) = sqlx::query_as(
+            "SELECT started_at,finished_at,revision FROM task_timeline_segments WHERE segment_id='drop-gap'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read localized overflow interval");
+        let dropped_total: i64 = sqlx::query_scalar(
+            "SELECT dropped_events FROM task_timeline_coverage WHERE session_id='drop-session'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read cumulative drop count");
+        assert_eq!(persisted.0, "2026-10-02T00:00:05.000Z");
+        assert_eq!(persisted.1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(persisted.2, 3);
+        assert_eq!(dropped_total, 4);
+    }
+
+    #[tokio::test]
+    async fn current_admission_waits_require_fresh_recorder_coverage() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect admission wait fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        ensure_task_colors(&pool).await.expect("seed task colors");
+        let store = MaintenanceStore { pool };
+        let now = Utc::now();
+        let observed_at = format_utc_iso_millis(now);
+        store
+            .start_timeline_session("admission-session", &observed_at)
+            .await
+            .expect("start fresh recorder coverage");
+        let wait = crate::task_timeline::TimelineEvent::DeferralStarted {
+            id: "active-admission-wait".to_string(),
+            task_key: "retention_archive".to_string(),
+            reason: "pressure_cooldown".to_string(),
+            retry_at: None,
+            started_at: observed_at.clone(),
+        };
+        store
+            .write_timeline_batch("admission-session", &[wait], 0, &observed_at, false)
+            .await
+            .expect("persist active admission wait");
+        let waits = store
+            .list_current_task_deferrals()
+            .await
+            .expect("read fresh admission wait");
+        assert_eq!(waits.len(), 1);
+        assert_eq!(waits[0].id, "active-admission-wait");
+
+        let stale_at = format_utc_iso_millis(now - ChronoDuration::minutes(2));
+        sqlx::query(
+            "UPDATE task_timeline_coverage SET last_seen_at=? WHERE session_id='admission-session'",
+        )
+        .bind(&stale_at)
+        .execute(&store.pool)
+        .await
+        .expect("age recorder coverage");
+        sqlx::query("UPDATE task_timeline_segments SET last_observed_at=? WHERE segment_id='active-admission-wait'")
+            .bind(&stale_at)
+            .execute(&store.pool)
+            .await
+            .expect("age the open wait interval");
+        assert!(store.list_current_task_deferrals().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn timeline_pages_use_a_fixed_watermark_and_return_later_revisions_once() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect timeline paging fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        ensure_task_colors(&pool)
+            .await
+            .expect("seed stable task colors");
+        let store = MaintenanceStore { pool };
+        let now = Utc::now();
+        let started = (0..3)
+            .map(
+                |index| crate::task_timeline::TimelineEvent::ExecutionStarted {
+                    id: format!("page-run-{index}"),
+                    task_key: "retention_archive".to_string(),
+                    title: "数据保留与归档".to_string(),
+                    trigger_kind: "interval".to_string(),
+                    execution_class: None,
+                    started_at: format_utc_iso_millis(
+                        now - ChronoDuration::seconds(60 - index * 20),
+                    ),
+                    managed_run_id: None,
+                },
+            )
+            .collect::<Vec<_>>();
+        let observed_at = format_utc_iso_millis(now);
+        store
+            .start_timeline_session("paging-session", &observed_at)
+            .await
+            .expect("start timeline paging session");
+        store
+            .write_timeline_batch("paging-session", &started, 0, &observed_at, false)
+            .await
+            .expect("write timeline paging rows");
+
+        let first = crate::task_timeline::timeline_page(&store, None, None, None, None, 2)
+            .await
+            .expect("read first fixed-watermark page");
+        assert_eq!(first.segments.len(), 2);
+        let cursor = first.next_cursor.clone().expect("first page cursor");
+        let second =
+            crate::task_timeline::timeline_page(&store, Some(&cursor), None, None, None, 2)
+                .await
+                .expect("read second fixed-watermark page");
+        assert_eq!(second.segments.len(), 1);
+        assert!(second.next_cursor.is_none());
+        assert_eq!(first.watermark, second.watermark);
+        let ids = first
+            .segments
+            .iter()
+            .chain(&second.segments)
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(ids.len(), 3);
+
+        let finish = [crate::task_timeline::TimelineEvent::ExecutionFinished {
+            id: "page-run-0".to_string(),
+            finished_at: observed_at.clone(),
+            duration_ms: 60_000,
+            status: "success".to_string(),
+        }];
+        store
+            .write_timeline_batch("paging-session", &finish, 0, &observed_at, false)
+            .await
+            .expect("finish one timeline row");
+        let delta = crate::task_timeline::timeline_page(
+            &store,
+            None,
+            Some(first.watermark),
+            None,
+            None,
+            500,
+        )
+        .await
+        .expect("read timeline revision delta");
+        assert_eq!(delta.segments.len(), 1);
+        assert_eq!(delta.segments[0].segment_id, "page-run-0");
+        assert_eq!(delta.segments[0].status, "success");
+        assert!(delta.watermark > first.watermark);
     }
 
     #[test]

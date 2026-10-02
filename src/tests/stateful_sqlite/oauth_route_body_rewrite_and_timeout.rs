@@ -2368,7 +2368,7 @@ async fn pool_openai_v1_responses_records_post_terminal_downstream_write_error_a
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
     let app = Router::new()
-        .route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+        .route("/v1/{*path}", any(proxy_openai_v1_with_connect_info))
         .with_state(state.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -2727,7 +2727,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     });
 
     let app = Router::new()
-        .route("/v1/*path", any(proxy_openai_v1))
+        .route("/v1/{*path}", any(proxy_openai_v1))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -2767,7 +2767,7 @@ fn pool_openai_v1_e2e_stream_survives_short_request_timeout() {
         insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
         let app = Router::new()
-            .route("/v1/*path", any(proxy_openai_v1))
+            .route("/v1/{*path}", any(proxy_openai_v1))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -2809,7 +2809,7 @@ fn pool_openai_v1_times_out_before_first_chunk_with_short_request_timeout() {
         insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
         let app = Router::new()
-            .route("/v1/*path", any(proxy_openai_v1))
+            .route("/v1/{*path}", any(proxy_openai_v1))
             .with_state(state);
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -2854,7 +2854,7 @@ async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
 
     let app = Router::new()
-        .route("/v1/*path", any(proxy_openai_v1))
+        .route("/v1/{*path}", any(proxy_openai_v1))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

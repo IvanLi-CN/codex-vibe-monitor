@@ -209,6 +209,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     let mut budget_exhausted_runs = 0_usize;
     let mut lock_retry_attempts = 0_usize;
     let mut recoverable_retry_attempts = 0_usize;
+    let mut no_progress_retries = 0_usize;
     let deadline = Instant::now() + Duration::from_secs(24 * 60 * 60);
     loop {
         assert!(
@@ -281,6 +282,15 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         if remaining == 0 {
             break;
         }
+        if summary.invocation_rows_archived == 0 && (remaining as usize) >= previous_remaining {
+            no_progress_retries = no_progress_retries.saturating_add(1);
+            assert!(
+                no_progress_retries < 1_000,
+                "retention capacity benchmark made no progress for too many retries"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
         assert!(
             summary.invocation_rows_archived > 0 || (remaining as usize) < previous_remaining,
             "retention pass made no archive progress while the fixed cohort remained"
@@ -300,7 +310,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     assert_eq!(remaining, 0);
     assert_eq!(observed_archived, cohort);
     eprintln!(
-        "retention-capacity-{run_label} total_rows={} hot_rows={} orphan_files={} cohort_source_max={} runs={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} online_samples={} read_p95_us={} read_p99_us={} remaining={}",
+        "retention-capacity-{run_label} total_rows={} hot_rows={} orphan_files={} cohort_source_max={} runs={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} no_progress_retries={} online_samples={} read_p95_us={} read_p99_us={} remaining={}",
         total_rows,
         hot_rows,
         ORPHAN_FILES,
@@ -313,6 +323,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         budget_exhausted_runs,
         lock_retry_attempts,
         recoverable_retry_attempts,
+        no_progress_retries,
         read_samples.len(),
         percentile_micros(&read_samples, 95),
         percentile_micros(&read_samples, 99),

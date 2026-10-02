@@ -4,9 +4,9 @@
 
 ## Current Status
 
-- Implementation: complete for the accepted scope
+- Implementation: current execution observation, effective schedules, separate dispatcher/admission waits, stable task colors, durable execution timelines, and task-deferral intervals are implemented; visual evidence is confirmed and persisted, while delivery remains subject to current-candidate backend profiles, empirical service acceptance, Tier 3 review, and CI.
 - Lifecycle: active
-- Catalog note: Runtime snapshots are process-local; task history remains in the maintenance SQLite database.
+- Catalog note: Runtime snapshots remain process-local, while execution identity and historical intervals are persisted in the maintenance SQLite database and merged by execution UID when both sources overlap.
 
 ## Implementation Coverage
 
@@ -14,6 +14,11 @@
 - `REQ-TASK-OPS-002`: `src/maintenance_store.rs` decorates the 21 root tasks and 16 startup-backfill children without persisting computed defaults; `web/src/lib/api/core-foundation.ts` carries the additive response fields.
 - `REQ-TASK-OPS-003`: `OptionalField` deserialization in `src/api/slices/system_routes_and_tasks.rs` preserves PATCH omission/null/value; `MaintenanceStore::update_control` applies the six-task allowlist and reset behavior.
 - `REQ-TASK-OPS-004`: `web/src/pages/system/SystemTasksPage.tsx`, `SystemTaskDetailPage.tsx`, demo handlers, unit coverage, and the system workspace Storybook state provide the running section, filters, schedule policy display, and responsive catalog.
+- `REQ-TASK-OPS-005`: `src/maintenance_store.rs` reads actual FIFO `requested` rows and active worker admission deferrals; `src/api/slices/system_routes_and_tasks.rs` reports each source's availability separately. Normal future schedules are excluded.
+- `REQ-TASK-OPS-006`: task light/dark colors are persisted in the managed-task metadata, assigned only when absent, and shared by catalog dots, current work, and timeline segments.
+- `REQ-TASK-OPS-007`: `src/task_timeline.rs` records actual start/end/duration independently of legacy request-time fields; runtime snapshots and revision-based timeline deltas are delivered through `system.managed-tasks.runtime` and `system.managed-tasks.timeline` SSE topics. The page does not poll either HTTP endpoint. A shared one-second clock advances the 12-hour view and open durations between events; connection loss is visible and stops runtime extrapolation after the bounded grace period. Overlap packing and dense short-run aggregation are rendered by `web/src/features/system/TaskTimelineChart.tsx`. The API and maintenance history retain their longer read/retention range.
+- `REQ-TASK-OPS-008`: scheduler boundaries record resource-busy and pressure-cooldown deferrals, which share the execution time axis in one pressure row; overlapping causes remain individually inspectable, retention pressure source aliases map to the managed retention task, and explicit coverage and maintenance-write gaps remain unknown rather than healthy.
+- `REQ-TASK-OPS-009`: a bounded nonblocking event channel persists executions, deferrals, coverage sessions, and revisions to maintenance storage; channel overflow is localized as an explicit interval, shutdown flushes retry a bounded number of times and leave coverage open after persistent failure, startup closes unconfirmed coverage at the last confirmed boundary, retention preserves a 48-hour buffer, and the window endpoint uses fixed-watermark pages plus revision deltas.
 - Startup-backfill control updates compensate a two-store failure by restoring the maintenance control row when the progress store rejects an enablement change. Opening an older row that contains both interval and cron values keeps cron authoritative and recomputes its persisted next trigger.
 
 ## Verification Commands
@@ -35,20 +40,32 @@
 
 ## Rollout Facts
 
-- No persistent schema migration is introduced. Existing maintenance database rows and custom overrides are read as-is.
+- The timeline adds idempotent columns and tables to the maintenance SQLite database. Existing `started_at` and `duration_ms` fields keep their request-time meanings; old rows do not receive reconstructed execution intervals. Existing enablement and schedule overrides are preserved.
 - Computed policy fields are response metadata; reads do not rewrite `interval_secs`, `cron_expr`, or `next_trigger_at`.
 - Unsupported existing overrides remain visible and can be cleared explicitly. Startup-only actions are not replayed by reset; their default behavior applies on the next process start.
+- Observation writes use a bounded asynchronous channel and never write to the business database. Saturation or maintenance-store failures surface as coverage gaps.
 
-## Validation Notes
+## Historical Verification
 
-- The shared testbox backend lightweight, stateful-SQLite, and archive-file-io profiles passed for the candidate. Its web lane could not run because Bun is not installed there.
-- Implementation candidate `ace97c2c42e52075b3858cdc521fca385a7e0f2b` was checked with an isolated local production router on a leased port and fresh SQLite files. Health returned `ok`, the catalog returned 37 rows with the corrected retention policy source and projection execution classes, the runtime endpoint returned real `raw_payload_metrics_inventory` and `long_term_projection` active instances with execution ids, phases, start times, elapsed milliseconds, and execution classes, a managed dashboard run completed successfully, interval-to-cron and cron-to-interval overrides both returned HTTP 200 while clearing the previous schedule field, the approved dual-null reset returned HTTP 200, and an unsupported new override returned HTTP 400. The reset response preserved `enabled` and reported the system-default policy. The task Storybook interactions and frontend full suite also passed; managed summary workers now stop active refreshes on shutdown, dashboard projection reconciliation is joined and cancellation-aware, long-term initial materialization shares the projection lease and observation, projection supervisors are joined during shutdown, and legacy backfill enablement is preserved even when the original defaults marker already exists. The detailed response card is `./assets/current-candidate-empirical.json`.
-- The mock-only Web Demo supplied the desktop and mobile evidence recorded in `SPEC.md`; both screenshots were confirmed by the owner and are committed under `./assets/`.
-- The runtime route and PATCH tri-state have focused unit and local HTTP coverage; no persistent schema migration or default-value backfill is required.
+The evidence below records earlier implementation candidates and is not current-candidate proof. The active delivery flow owns current validation and empirical acceptance evidence.
+
+- The shared testbox `lightweight`, `stateful-sqlite`, and `archive-file-io` profiles passed with 1,265, 1,377, and 299 tests respectively. `cargo fmt --all -- --check`, locked all-target/all-feature `cargo check`, and locked all-target/all-feature Clippy with warnings denied passed.
+- Web unit tests passed (1,691 passed, 6 skipped); the focused timeline suite passed all 6 tests and the `SystemWorkspace` Storybook suite passed all 36 interactions. `bun run typecheck:web`, `bun run lint:web`, and `bun run build` passed. Lint reported 92 existing warnings; build reported stale Browserslist data and large chunks.
+- An isolated production binary ran against three fresh SQLite files. HTTP snapshots showed six simultaneous FIFO requests with positions 1–6, distinct from active admission deferrals; the waits later released. Eight manual execution intervals (including two separate runs of the same task) persisted as eight unique successful IDs with measured actual durations. The service ran and recorded intervals while no page was open.
+- After graceful shutdown and restart against the same maintenance database, both coverage sessions retained explicit start/end boundaries, the downtime remained outside observed coverage, and both sessions reported zero dropped events. The eight execution IDs remained unique, history was readable over HTTP, and the runtime did not resurrect an old execution as active. A separate cloned maintenance database with 510 pagination fixtures returned 500 rows plus 169 rows over HTTP; both pages shared watermark 78 with no duplicate IDs, and `afterRevision=78` later returned 16 new segments at watermark 86. The persisted catalog exposed 37 distinct light/dark task color pairs.
+- Owner-confirmed mock-only evidence now covers the desktop dark disconnected state, desktop light connecting state, and mobile light 12-hour chart without row labels. The desktop and mobile comparisons use the exact assets in the rebased `origin/main` commit `7037e63e` and were reviewed with their heatmaps before confirmation.
+
+## Earlier Candidate Verification
+
+- Candidate `1ae7f784164f59878d4afae6c3d4bfc923634498` passed `cargo fmt --all -- --check`, the full Web unit suite (1,711 passed, 6 skipped), the focused `SystemWorkspace` Storybook suite (37 passed), Web typecheck, lint, and build. Lint reported 92 existing warnings; build reported stale Browserslist data and a large-chunk warning.
+- Targeted Rust regressions passed: managed-task execution identity (3), timeline/SSE/persistence tests (12), managed-task contract tests (7), and fresh recorder coverage for admission waits (1).
+- Shared testbox profiles, all-target/all-feature Rust check and Clippy, and isolated production-service acceptance have not been rerun after syncing `origin/main`; the testbox currently responds to ping but its SSH service times out during banner exchange. Earlier candidate evidence is not used as current-candidate proof.
+- Tier 3 formal review lanes and PR CI had not started on that earlier candidate.
 
 ## Related Changes
 
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
+- `docs/adr/0026-durable-task-execution-and-deferral-timelines.md`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 
 ## References

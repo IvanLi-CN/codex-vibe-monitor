@@ -30,15 +30,15 @@ pub(crate) async fn proxy_openai_v1(
 
 pub(crate) async fn proxy_openai_v1_with_connect_info(
     State(state): State<Arc<AppState>>,
-    connect_info: Option<ConnectInfo<SocketAddr>>,
+    connect_info: Result<ConnectInfo<SocketAddr>, axum::extract::rejection::ExtensionRejection>,
     downstream_transport: Option<Extension<DownstreamTransportObserver>>,
-    ws: Option<WebSocketUpgrade>,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if let Some(ws) = ws
+    if let Ok(ws) = ws
         && is_websocket_upgrade_request(&headers)
     {
         let websocket_enabled = state.proxy_model_settings.read().await.websocket_enabled;
@@ -56,7 +56,7 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         }
         return proxy_openai_v1_ws_common(
             state,
-            connect_info.map(|info| info.0.ip()),
+            connect_info.as_ref().ok().map(|info| info.0.ip()),
             ws,
             original_uri,
             method,
@@ -70,7 +70,7 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
         method,
         headers,
         body,
-        connect_info.map(|info| info.0.ip()),
+        connect_info.as_ref().ok().map(|info| info.0.ip()),
         downstream_transport.map(|Extension(observer)| observer),
     ))
     .await

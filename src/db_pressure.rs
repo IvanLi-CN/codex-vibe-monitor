@@ -226,7 +226,7 @@ impl DbPressureGate {
 
     pub(crate) fn try_begin_background(
         &self,
-        _task: &'static str,
+        task: &'static str,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         #[cfg(test)]
         if self.bypass_for_test_global {
@@ -241,23 +241,34 @@ impl DbPressureGate {
         let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
         if pressure_until_ms > now_ms {
             self.background_skips.fetch_add(1, Ordering::Relaxed);
-            return Err(DbPressureDenyReason::PressureCooldown {
+            let reason = DbPressureDenyReason::PressureCooldown {
                 remaining_ms: pressure_until_ms.saturating_sub(now_ms),
-            });
+            };
+            crate::task_timeline::note_background_denial(
+                task,
+                "pressure_cooldown",
+                match reason {
+                    DbPressureDenyReason::PressureCooldown { remaining_ms } => Some(remaining_ms),
+                    DbPressureDenyReason::BackgroundBusy => None,
+                },
+            );
+            return Err(reason);
         }
         if self.priority_waiters.load(Ordering::Acquire) > 0 {
             self.background_skips.fetch_add(1, Ordering::Relaxed);
+            crate::task_timeline::note_background_denial(task, "resource_busy", None);
             return Err(DbPressureDenyReason::BackgroundBusy);
         }
 
-        let permit = self
-            .background_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| {
+        let permit = match self.background_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
-                DbPressureDenyReason::BackgroundBusy
-            })?;
+                crate::task_timeline::note_background_denial(task, "resource_busy", None);
+                return Err(DbPressureDenyReason::BackgroundBusy);
+            }
+        };
+        crate::task_timeline::clear_background_denial(task);
 
         Ok(DbBackgroundPermit {
             _permit: Some(permit),
@@ -268,7 +279,7 @@ impl DbPressureGate {
 
     pub(crate) async fn begin_background_with_busy_wait(
         &self,
-        _task: &'static str,
+        task: &'static str,
         max_wait: Duration,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         #[cfg(test)]
@@ -286,26 +297,34 @@ impl DbPressureGate {
             let pressure_until_ms = self.pressure_until_epoch_ms.load(Ordering::Acquire);
             if pressure_until_ms > now_ms {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
-                return Err(DbPressureDenyReason::PressureCooldown {
-                    remaining_ms: pressure_until_ms.saturating_sub(now_ms),
-                });
+                let remaining_ms = pressure_until_ms.saturating_sub(now_ms);
+                crate::task_timeline::note_background_denial(
+                    task,
+                    "pressure_cooldown",
+                    Some(remaining_ms),
+                );
+                return Err(DbPressureDenyReason::PressureCooldown { remaining_ms });
             }
             if self.priority_waiters.load(Ordering::Acquire) > 0 {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
+                crate::task_timeline::note_background_denial(task, "resource_busy", None);
                 return Err(DbPressureDenyReason::BackgroundBusy);
             }
 
             if let Ok(permit) = self.background_slots.clone().try_acquire_owned() {
+                crate::task_timeline::clear_background_denial(task);
                 return Ok(DbBackgroundPermit {
                     _permit: Some(permit),
                     started_at: Instant::now(),
                     eligibility: Some(self.eligibility.clone()),
                 });
             }
+            crate::task_timeline::note_background_denial(task, "resource_busy", None);
 
             let elapsed = started_at.elapsed();
             if elapsed >= max_wait {
                 self.background_skips.fetch_add(1, Ordering::Relaxed);
+                crate::task_timeline::note_background_denial(task, "resource_busy", None);
                 return Err(DbPressureDenyReason::BackgroundBusy);
             }
             let remaining = max_wait.saturating_sub(elapsed);
@@ -317,11 +336,11 @@ impl DbPressureGate {
     /// background work cannot overtake the recovery worker at the next permit release.
     pub(crate) async fn begin_priority_background_with_queue_wait(
         &self,
-        _task: &'static str,
+        task: &'static str,
         max_wait: Duration,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         let reservation = self.reserve_priority_background();
-        self.begin_reserved_priority_background(reservation, max_wait)
+        self.begin_reserved_priority_background(reservation, max_wait, Some(task))
             .await
     }
 
@@ -348,6 +367,7 @@ impl DbPressureGate {
         &self,
         reservation: DbBackgroundPriorityReservation,
         max_wait: Duration,
+        task: Option<&'static str>,
     ) -> Result<DbBackgroundPermit, DbPressureDenyReason> {
         #[cfg(test)]
         if self.bypass_for_test_global {
@@ -365,22 +385,35 @@ impl DbPressureGate {
         if pressure_until_ms > now_ms {
             drop(reservation);
             self.background_skips.fetch_add(1, Ordering::Relaxed);
-            return Err(DbPressureDenyReason::PressureCooldown {
-                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
-            });
+            let remaining_ms = pressure_until_ms.saturating_sub(now_ms);
+            if let Some(task) = task {
+                crate::task_timeline::note_background_denial(
+                    task,
+                    "pressure_cooldown",
+                    Some(remaining_ms),
+                );
+            }
+            return Err(DbPressureDenyReason::PressureCooldown { remaining_ms });
         }
 
-        let permit =
-            match tokio::time::timeout(max_wait, self.background_slots.clone().acquire_owned())
-                .await
-            {
-                Ok(Ok(permit)) => permit,
-                Ok(Err(_)) | Err(_) => {
-                    drop(reservation);
-                    self.background_skips.fetch_add(1, Ordering::Relaxed);
-                    return Err(DbPressureDenyReason::BackgroundBusy);
+        let permit = match self.background_slots.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                if let Some(task) = task {
+                    crate::task_timeline::note_background_denial(task, "resource_busy", None);
                 }
-            };
+                match tokio::time::timeout(max_wait, self.background_slots.clone().acquire_owned())
+                    .await
+                {
+                    Ok(Ok(permit)) => permit,
+                    Ok(Err(_)) | Err(_) => {
+                        drop(reservation);
+                        self.background_skips.fetch_add(1, Ordering::Relaxed);
+                        return Err(DbPressureDenyReason::BackgroundBusy);
+                    }
+                }
+            }
+        };
 
         drop(reservation);
 
@@ -391,11 +424,20 @@ impl DbPressureGate {
         if pressure_until_ms > now_ms {
             drop(permit);
             self.background_skips.fetch_add(1, Ordering::Relaxed);
-            return Err(DbPressureDenyReason::PressureCooldown {
-                remaining_ms: pressure_until_ms.saturating_sub(now_ms),
-            });
+            let remaining_ms = pressure_until_ms.saturating_sub(now_ms);
+            if let Some(task) = task {
+                crate::task_timeline::note_background_denial(
+                    task,
+                    "pressure_cooldown",
+                    Some(remaining_ms),
+                );
+            }
+            return Err(DbPressureDenyReason::PressureCooldown { remaining_ms });
         }
 
+        if let Some(task) = task {
+            crate::task_timeline::clear_background_denial(task);
+        }
         Ok(DbBackgroundPermit {
             _permit: Some(permit),
             started_at,
@@ -430,6 +472,7 @@ impl DbPressureGate {
         let cooldown_ms = duration_ms_u64(self.pressure_cooldown);
         let until_ms = now_ms.saturating_add(cooldown_ms);
         update_atomic_max(&self.pressure_until_epoch_ms, until_ms);
+        crate::task_timeline::note_background_denial(task, "pressure_cooldown", Some(cooldown_ms));
         let events = self.pressure_events.fetch_add(1, Ordering::Relaxed) + 1;
         self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
         self.eligibility.notify.notify_waiters();
@@ -697,7 +740,7 @@ mod tests {
         let recovery_gate = gate.clone();
         let recovery = tokio::spawn(async move {
             recovery_gate
-                .begin_reserved_priority_background(reservation, Duration::from_secs(1))
+                .begin_reserved_priority_background(reservation, Duration::from_secs(1), None)
                 .await
         });
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -719,7 +762,7 @@ mod tests {
         let gate = Arc::new(DbPressureGate::new(1, Duration::from_secs(1)));
         let first_reservation = gate.reserve_priority_background();
         let first = gate
-            .begin_reserved_priority_background(first_reservation, Duration::from_secs(1))
+            .begin_reserved_priority_background(first_reservation, Duration::from_secs(1), None)
             .await
             .expect("first recovery page admission");
 
@@ -733,7 +776,7 @@ mod tests {
             "a queued recovery continuation must own the next admission"
         );
         let second = gate
-            .begin_reserved_priority_background(next_reservation, Duration::from_secs(1))
+            .begin_reserved_priority_background(next_reservation, Duration::from_secs(1), None)
             .await
             .expect("chained recovery page admission");
         drop(second);
