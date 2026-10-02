@@ -160,6 +160,14 @@ impl StartupBackfillScheduler {
     }
 
     fn take_pressure_deferred_tasks(&self, now: DateTime<Utc>) -> Vec<StartupBackfillTask> {
+        self.take_pressure_deferred_tasks_matching(now, None)
+    }
+
+    fn take_pressure_deferred_tasks_matching(
+        &self,
+        now: DateTime<Utc>,
+        allowed_tasks: Option<&[StartupBackfillTask]>,
+    ) -> Vec<StartupBackfillTask> {
         let Ok(mut pressure_tasks) = self.pressure_deferred_tasks.lock() else {
             return Vec::new();
         };
@@ -170,7 +178,8 @@ impl StartupBackfillScheduler {
             .iter()
             .copied()
             .filter(|task| {
-                pressure_tasks.contains(task)
+                allowed_tasks.is_none_or(|allowed| allowed.contains(task))
+                    && pressure_tasks.contains(task)
                     && next_due.get(task).is_some_and(|deadline| *deadline <= now)
             })
             .collect::<Vec<_>>();
@@ -3694,7 +3703,12 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     if cancel.is_cancelled() {
         return;
     }
-    let tasks = STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks(Utc::now());
+    let startup_backfill_root_skipped =
+        crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
+    let prompt_cache_task = [StartupBackfillTask::PromptCacheConversationsMaterialization];
+    let allowed_tasks = startup_backfill_root_skipped.then_some(prompt_cache_task.as_slice());
+    let tasks =
+        STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks_matching(Utc::now(), allowed_tasks);
     if tasks.is_empty() {
         return;
     }
@@ -3702,7 +3716,63 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
         task_count = tasks.len(),
         "pressure eligibility changed; dispatching deferred startup backfill tasks"
     );
-    run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate).await;
+    run_background_startup_backfill_pass_with_root_state(
+        state,
+        cancel,
+        Some(&tasks),
+        gate,
+        startup_backfill_root_skipped,
+    )
+    .await;
+}
+
+fn prompt_cache_tasks_when_startup_backfill_root_is_skipped(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> Vec<StartupBackfillTask> {
+    selected_tasks
+        .unwrap_or(StartupBackfillTask::ordered_tasks())
+        .iter()
+        .copied()
+        .filter(|task| *task == StartupBackfillTask::PromptCacheConversationsMaterialization)
+        .collect()
+}
+
+async fn run_background_startup_backfill_pass_with_gate(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillMaintenancePass {
+    let startup_backfill_root_skipped =
+        crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
+    run_background_startup_backfill_pass_with_root_state(
+        state,
+        cancel,
+        selected_tasks,
+        gate,
+        startup_backfill_root_skipped,
+    )
+    .await
+}
+
+async fn run_background_startup_backfill_pass_with_root_state(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+    startup_backfill_root_skipped: bool,
+) -> StartupBackfillMaintenancePass {
+    if startup_backfill_root_skipped {
+        // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
+        let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
+        if tasks.is_empty() {
+            return StartupBackfillMaintenancePass::default();
+        }
+        return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
+            .await;
+    }
+
+    run_startup_backfill_maintenance_pass_with_gate(state, cancel, selected_tasks, gate).await
 }
 
 pub(crate) fn spawn_startup_backfill_maintenance(
@@ -3723,9 +3793,13 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         let mut startup_prep_pending = prep_pending;
         let mut startup_prep_retry_at = startup_prep_pending
             .then(|| Instant::now() + Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS));
-        if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
-            run_startup_backfill_maintenance_pass(state.clone(), &cancel, None).await;
-        }
+        run_background_startup_backfill_pass_with_gate(
+            state.clone(),
+            &cancel,
+            None,
+            crate::db_pressure::global_db_pressure_gate(),
+        )
+        .await;
         // Register before either P2 supervisor is scheduled so long-term pruning cannot
         // reclaim a terminal event ahead of the minute projection consumer.
         state
@@ -3766,16 +3840,18 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 _ = STARTUP_BACKFILL_SCHEDULER.wait_for_wake(observed_generation) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
                     let tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
-                    if !tasks.is_empty()
-                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
-                    {
-                        run_startup_backfill_maintenance_pass(state.clone(), &cancel, Some(&tasks)).await;
+                    if !tasks.is_empty() {
+                        run_background_startup_backfill_pass_with_gate(
+                            state.clone(),
+                            &cancel,
+                            Some(&tasks),
+                            crate::db_pressure::global_db_pressure_gate(),
+                        )
+                        .await;
                     }
                 }
                 _ = gate.wait_for_eligibility_change(observed_pressure_eligibility) => {
-                    if !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await {
-                        run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, gate).await;
-                    }
+                    run_pressure_eligible_startup_backfill_tasks(state.clone(), &cancel, gate).await;
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
@@ -3796,13 +3872,12 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                         });
                     }
                     let due_tasks = STARTUP_BACKFILL_SCHEDULER.drain_due_tasks(Utc::now());
-                    if !due_tasks.is_empty()
-                        && !crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await
-                    {
-                        run_startup_backfill_maintenance_pass(
+                    if !due_tasks.is_empty() {
+                        run_background_startup_backfill_pass_with_gate(
                             state.clone(),
                             &cancel,
                             Some(&due_tasks),
+                            crate::db_pressure::global_db_pressure_gate(),
                         )
                         .await;
                     }

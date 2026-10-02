@@ -275,6 +275,48 @@ fn pressure_defer_schedules_one_deadline_and_dispatches_once() {
     assert_eq!(deferred.deferred_task_count, 1);
 }
 
+#[test]
+fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
+    let prompt_cache_task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let selected = [
+        StartupBackfillTask::ProxyUsage,
+        prompt_cache_task,
+        StartupBackfillTask::ReasoningEffort,
+    ];
+
+    assert_eq!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(Some(&selected)),
+        vec![prompt_cache_task]
+    );
+    assert_eq!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(None),
+        vec![prompt_cache_task]
+    );
+    assert!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(Some(&[
+            StartupBackfillTask::ProxyUsage,
+        ]))
+        .is_empty()
+    );
+
+    let scheduler = StartupBackfillScheduler::default();
+    let generic_task = StartupBackfillTask::ProxyUsage;
+    let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
+        .expect("valid fixed pressure deadline");
+    scheduler.defer_for_pressure(generic_task, deadline);
+    scheduler.defer_for_pressure(prompt_cache_task, deadline);
+
+    assert_eq!(
+        scheduler.take_pressure_deferred_tasks_matching(deadline, Some(&[prompt_cache_task])),
+        vec![prompt_cache_task]
+    );
+    assert_eq!(
+        scheduler.take_pressure_deferred_tasks(deadline),
+        vec![generic_task],
+        "root-disabled dispatch must leave generic pressure work queued"
+    );
+}
+
 #[tokio::test]
 async fn pressure_eligibility_change_preserves_background_busy_deadline() {
     let scheduler = Arc::new(StartupBackfillScheduler::default());
