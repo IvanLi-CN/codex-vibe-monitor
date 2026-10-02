@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.84.0",
+  "base_stable_version": "2.83.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-02T15:39:30Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.84.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6921d071d2f63ce6c8e8aaac970e18f446dee01c",
+  "pr_number": 1066,
+  "pr_title": "feat(system): add durable managed task timeline",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.84.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.84.0",
+  "target_sha": "9b7967f26fbeb51bcdb586e73b0db7013a308292",
+  "type_label": "type:minor"
+}
