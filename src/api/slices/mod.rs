@@ -38,11 +38,11 @@ pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc
             get(list_external_api_keys).post(create_external_api_key),
         )
         .route(
-            "/api/settings/external-api-keys/:id/rotate",
+            "/api/settings/external-api-keys/{id}/rotate",
             post(rotate_external_api_key),
         )
         .route(
-            "/api/settings/external-api-keys/:id/disable",
+            "/api/settings/external-api-keys/{id}/disable",
             post(disable_external_api_key),
         )
         .route(
@@ -73,7 +73,7 @@ pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc
             post(post_forward_proxy_refresh_subscriptions),
         )
         .route(
-            "/api/settings/forward-proxy/nodes/:proxy_key/test-stream",
+            "/api/settings/forward-proxy/nodes/{proxy_key}/test-stream",
             get(stream_forward_proxy_node_latency_test),
         )
         .route(

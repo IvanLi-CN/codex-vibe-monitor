@@ -70,8 +70,7 @@ export const Generate: Story = {
     const button = canvas.getByRole("button", { name: /generate oauth url/i });
 
     await userEvent.hover(button);
-    await new Promise((resolve) => window.setTimeout(resolve, 330));
-    const popover = within(document.body).getByRole("dialog");
+    const popover = await within(document.body).findByRole("dialog");
     await userEvent.unhover(button);
     await new Promise((resolve) => window.setTimeout(resolve, 300));
     await expect(within(document.body).getByRole("dialog")).toBe(popover);

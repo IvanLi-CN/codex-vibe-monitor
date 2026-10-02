@@ -131,7 +131,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
             get(list_mailboxes_handler).post(create_mailbox_handler),
         )
         .route("/api/mailboxes/ensure", post(ensure_mailbox_handler))
-        .route("/api/mailboxes/:email_id", delete(delete_mailbox_handler))
+        .route("/api/mailboxes/{email_id}", delete(delete_mailbox_handler))
         .route("/api/messages", get(messages_handler))
         .with_state(stub.clone());
     let listener = TcpListener::bind("127.0.0.1:0")
