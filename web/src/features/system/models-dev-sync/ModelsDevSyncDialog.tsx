@@ -1,5 +1,5 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../../components/ui/alert";
 import { Button } from "../../../components/ui/button";
 import {
@@ -47,6 +47,7 @@ type DialogState = "loading" | "ready" | "error" | "applying" | "applied";
 interface ModelsDevSyncDialogProps {
   open: boolean;
   onOpenChange(open: boolean): void;
+  returnFocusRef: RefObject<HTMLButtonElement | null>;
   pricesByModel: ReadonlyMap<string, PricingEntry>;
   onPricesApplied(
     pricing: Awaited<ReturnType<typeof applyModelsDevPriceSync>>,
@@ -319,7 +320,7 @@ function ProviderPicker({
         align="end"
         side="bottom"
         collisionPadding={12}
-        className="flex max-h-[min(30rem,calc(100dvh-1.5rem))] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden p-2"
+        className="z-[82] flex max-h-[min(30rem,var(--radix-popover-content-available-height))] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden p-2"
         aria-label={t("system.models.providerPicker")}
       >
         <Input
@@ -356,7 +357,7 @@ function ProviderPicker({
             {t("system.models.clearAll")}
           </Button>
         </div>
-        <fieldset className="min-h-0 flex-1 overflow-y-auto">
+        <fieldset className="min-h-0 max-h-[min(22rem,calc(100dvh-8rem))] flex-1 overflow-y-auto">
           <legend className="sr-only">{t("system.models.providerPicker")}</legend>
           {visibleProviders.length ? (
             visibleProviders.map((provider) => (
@@ -388,6 +389,7 @@ function ProviderPicker({
 export function ModelsDevSyncDialog({
   open,
   onOpenChange,
+  returnFocusRef,
   pricesByModel,
   onPricesApplied,
 }: ModelsDevSyncDialogProps) {
@@ -557,7 +559,14 @@ export function ModelsDevSyncDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden desktop:min-h-[min(35rem,calc(100dvh-1.25rem))] desktop:w-[min(78rem,calc(100vw-2rem))]">
+      <DialogContent
+        className="flex max-h-[calc(100dvh-0.75rem)] flex-col overflow-hidden desktop:min-h-[min(35rem,calc(100dvh-1.25rem))] desktop:w-[min(78rem,calc(100vw-2rem))]"
+        onCloseAutoFocus={(event) => {
+          if (!returnFocusRef.current) return;
+          event.preventDefault();
+          returnFocusRef.current.focus();
+        }}
+      >
         <div className="flex min-h-0 flex-1 flex-col px-4 pb-4 pt-4 desktop:px-6 desktop:pt-5">
           <div className="flex shrink-0 items-start justify-between gap-4">
             <DialogHeader className="min-w-0">

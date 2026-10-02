@@ -876,6 +876,38 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
   },
 };
 
+const STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW: ModelsDevSyncPreview = (() => {
+  const template = STORYBOOK_MODELS_DEV_PREVIEW.candidates.find(
+    (candidate) => candidate.model === "deepseek-v3.2",
+  );
+  if (!template) throw new Error("Storybook viewport fixture needs a DeepSeek candidate");
+  const filler = Array.from({ length: 18 }, (_, index) => ({
+    ...template,
+    model: `sync-viewport-${String(index).padStart(2, "0")}`,
+    name: `Viewport model ${index + 1}`,
+  }));
+  const newlyDiscovered = {
+    ...template,
+    model: "zz-model-view-lifecycle",
+    name: "Viewport lifecycle model",
+  };
+  const additionalProviders = Array.from({ length: 24 }, (_, index) => {
+    const providerNumber = String(index + 1).padStart(2, "0");
+    return {
+      id: `scroll-provider-${providerNumber}`,
+      name: `Scrollable Provider ${providerNumber}`,
+      docUrl: null,
+    };
+  });
+  return {
+    ...STORYBOOK_MODELS_DEV_PREVIEW,
+    providerCount: STORYBOOK_MODELS_DEV_PREVIEW.providers.length + additionalProviders.length,
+    providers: [...STORYBOOK_MODELS_DEV_PREVIEW.providers, ...additionalProviders],
+    candidateCount: STORYBOOK_MODELS_DEV_PREVIEW.candidates.length + filler.length + 1,
+    candidates: [...STORYBOOK_MODELS_DEV_PREVIEW.candidates, ...filler, newlyDiscovered],
+  };
+})();
+
 const STORYBOOK_EXTERNAL_API_KEYS: ExternalApiKeySummary[] = [
   {
     id: 11,
@@ -899,6 +931,9 @@ function buildSystemWorkspaceRequestHandler(
   retentionTaskDetailOverride?: ManagedTaskDetail,
   syncMemoryOverride?: ModelsDevSyncMemoryState,
   failModelSelectionSave = false,
+  modelsDevPreviewOverride?: ModelsDevSyncPreview,
+  delayViewedAcknowledgment = false,
+  delaySelectionMemorySave = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
@@ -1131,6 +1166,15 @@ function buildSystemWorkspaceRequestHandler(
 
     if (url.pathname === "/api/settings/models/sync/state" && method === "PATCH") {
       const body = parseBody<ModelsDevSyncMemoryPatch>({});
+      if (delayViewedAcknowledgment && (body.viewedModelIds?.length ?? 0) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
+      if (
+        delaySelectionMemorySave &&
+        ((body.modelSelections?.length ?? 0) > 0 || (body.providerSelections?.length ?? 0) > 0)
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+      }
       if ((body.modelSelections?.length ?? 0) > 0 && modelSelectionFailuresRemaining > 0) {
         modelSelectionFailuresRemaining -= 1;
         return jsonResponse({ message: "Selection memory is temporarily unavailable" }, 502);
@@ -1165,7 +1209,10 @@ function buildSystemWorkspaceRequestHandler(
         previewFailuresRemaining -= 1;
         return jsonResponse({ message: "models.dev is temporarily unavailable" }, 502);
       }
-      return jsonResponse({ ...clone(STORYBOOK_MODELS_DEV_PREVIEW), syncState: clone(syncMemory) });
+      return jsonResponse({
+        ...clone(modelsDevPreviewOverride ?? STORYBOOK_MODELS_DEV_PREVIEW),
+        syncState: clone(syncMemory),
+      });
     }
 
     if (url.pathname === "/api/settings/models/sync/apply" && method === "POST") {
@@ -1278,6 +1325,9 @@ const meta = {
               context.parameters.retentionTaskDetailOverride as ManagedTaskDetail | undefined,
               context.parameters.syncMemoryOverride as ModelsDevSyncMemoryState | undefined,
               context.parameters.failModelSelectionSave === true,
+              context.parameters.modelsDevPreviewOverride as ModelsDevSyncPreview | undefined,
+              context.parameters.delayViewedAcknowledgment === true,
+              context.parameters.delaySelectionMemorySave === true,
             )}
           >
             <FullPageStorySurface>
@@ -2271,6 +2321,10 @@ export const ModelsSyncReviewShortDark: Story = {
 export const ModelsSyncControls: Story = {
   ...ModelsSyncReview,
   tags: ["test"],
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    delaySelectionMemorySave: true,
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
@@ -2288,8 +2342,173 @@ export const ModelsSyncControls: Story = {
     deepSeek.focus();
     await userEvent.keyboard(" ");
     await expect(deepSeek).not.toBeChecked();
+    await userEvent.keyboard(" ");
+    await expect(deepSeek).toBeChecked();
     await userEvent.keyboard("{Escape}");
     await expect(providerPicker).toHaveFocus();
+    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
+    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+
+    const modelCheckbox = page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" });
+    modelCheckbox.focus();
+    await userEvent.keyboard(" ");
+    await expect(modelCheckbox).not.toBeChecked();
+    await userEvent.keyboard(" ");
+    await expect(modelCheckbox).toBeChecked();
+    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
+    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+
+    const dialog = page.getByRole("dialog");
+    const selectAll = page.getByRole("button", { name: "全选" });
+    selectAll.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
+    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await expect(page.getByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" })).toBeChecked();
+    const invert = page.getByRole("button", { name: "反选" });
+    invert.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(
+      page.getByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" }),
+    ).not.toBeChecked();
+    selectAll.focus();
+    await userEvent.keyboard("{Enter}");
+
+    const apply = page.getByRole("button", { name: /同步所选/ });
+    apply.focus();
+    await userEvent.keyboard("{Tab}");
+    await expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true);
+    apply.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByText(/已更新 \d+ 个模型价格/)).resolves.toBeVisible();
+    const done = page.getByRole("button", { name: "完成" });
+    done.focus();
+    await userEvent.keyboard("{Enter}");
+
+    const openSync = canvas.getByRole("button", { name: "全部同步" });
+    await expect(openSync).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    const cancel = page.getByRole("button", { name: "取消" });
+    cancel.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await expect(openSync).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await expect(openSync).toHaveFocus();
+  },
+};
+
+const STORYBOOK_VIEWPORT_MODEL_MEMORY: ModelsDevSyncMemoryState = {
+  ...STORYBOOK_MODELS_DEV_PREVIEW.syncState,
+  unviewedModelIds: ["zz-model-view-lifecycle"],
+};
+
+export const ModelsSyncNewModelViewportAcknowledgment: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    modelsDevPreviewOverride: STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW,
+    syncMemoryOverride: STORYBOOK_VIEWPORT_MODEL_MEMORY,
+    delayViewedAcknowledgment: true,
+    delaySelectionMemorySave: true,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "审核模型价格" });
+    await expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true);
+
+    const providerPicker = page.getByRole("button", { name: "筛选供应商" });
+    await userEvent.click(providerPicker);
+    const lastProvider = page.getByRole("checkbox", {
+      name: "Scrollable Provider 24 scroll-provider-24",
+    });
+    const providerList = lastProvider.closest("fieldset");
+    const providerRow = lastProvider.closest("label");
+    await expect(providerList).toBeTruthy();
+    await expect(providerRow).toBeTruthy();
+    const providerListRect = providerList!.getBoundingClientRect();
+    await expect(providerRow!.getBoundingClientRect().bottom).toBeGreaterThan(
+      providerListRect.bottom,
+    );
+    await expect(providerList!.scrollHeight).toBeGreaterThan(providerList!.clientHeight);
+    providerList!.scrollTo({ top: providerList!.scrollHeight, behavior: "instant" });
+    providerList!.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await waitFor(() => expect(providerList!.scrollTop).toBeGreaterThan(0));
+    await waitFor(() => {
+      const listRect = providerList!.getBoundingClientRect();
+      const rowRect = providerRow!.getBoundingClientRect();
+      expect(rowRect.top).toBeGreaterThanOrEqual(listRect.top);
+      expect(rowRect.bottom).toBeLessThanOrEqual(listRect.bottom);
+    });
+    lastProvider.focus();
+    await userEvent.keyboard(" ");
+    await expect(lastProvider).toBeChecked();
+    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
+    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await userEvent.keyboard("{Escape}");
+    await expect(providerPicker).toHaveFocus();
+
+    const modelList = await page.findByRole("region", { name: "模型价格候选列表" });
+    await expect(page.queryByText("zz-model-view-lifecycle")).not.toBeInTheDocument();
+
+    modelList.scrollTop = modelList.scrollHeight;
+    modelList.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
+    const newModelBadge = page.getByRole("img", { name: "新发现的模型" });
+    await expect(newModelBadge).toBeVisible();
+    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
+    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await expect(newModelBadge).toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: "取消" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
+    await expect(page.queryByRole("img", { name: "新发现的模型" })).not.toBeInTheDocument();
+  },
+};
+
+export const ModelsSyncProviderPickerShort: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { viewport: { value: "short1280x500", isRotated: false } },
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    modelsDevPreviewOverride: STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW,
+    docs: {
+      description: {
+        story: "The provider picker stays above the dialog and within a short viewport.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 1280, 500);
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "审核模型价格" });
+    await userEvent.click(page.getByRole("button", { name: "筛选供应商" }));
+
+    const providerList = page.getByRole("group", { name: "筛选供应商" });
+    const popover = providerList.closest<HTMLElement>("[data-radix-popper-content-wrapper]")
+      ?.firstElementChild as HTMLElement | null;
+    await expect(popover).toBeTruthy();
+    const viewport = canvasElement.ownerDocument.defaultView!;
+    const popoverRect = popover!.getBoundingClientRect();
+    await expect(popoverRect.top).toBeGreaterThanOrEqual(0);
+    await expect(popoverRect.bottom).toBeLessThanOrEqual(viewport.innerHeight);
+    const dialogHost = dialog.parentElement;
+    await expect(dialogHost).toBeTruthy();
+    await expect(Number.parseInt(viewport.getComputedStyle(popover!).zIndex, 10)).toBeGreaterThan(
+      Number.parseInt(viewport.getComputedStyle(dialogHost!).zIndex, 10),
+    );
+    await expect(providerList.scrollHeight).toBeGreaterThan(providerList.clientHeight);
   },
 };
 

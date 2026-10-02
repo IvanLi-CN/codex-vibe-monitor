@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
@@ -97,6 +97,7 @@ export default function SystemModelsPage() {
   const [savingPrice, setSavingPrice] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
   const [syncOpen, setSyncOpen] = useState(false);
+  const syncTriggerRef = useRef<HTMLButtonElement>(null);
 
   const reloadSettings = useCallback(async () => {
     const loaded = await fetchSettings();
@@ -313,7 +314,7 @@ export default function SystemModelsPage() {
             <AppIcon name="plus" className="mr-2 h-4 w-4" aria-hidden />
             {t("system.models.add")}
           </Button>
-          <Button type="button" onClick={() => setSyncOpen(true)}>
+          <Button ref={syncTriggerRef} type="button" onClick={() => setSyncOpen(true)}>
             <AppIcon name="sync" className="mr-2 h-4 w-4" aria-hidden />
             {t("system.models.syncAll")}
           </Button>
@@ -628,6 +629,7 @@ export default function SystemModelsPage() {
       <ModelsDevSyncDialog
         open={syncOpen}
         onOpenChange={setSyncOpen}
+        returnFocusRef={syncTriggerRef}
         pricesByModel={pricesByModel}
         onPricesApplied={handleSyncPricesApplied}
       />

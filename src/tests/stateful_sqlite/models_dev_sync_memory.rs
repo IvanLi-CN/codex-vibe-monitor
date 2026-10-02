@@ -146,7 +146,7 @@ async fn sync_memory_initializes_catalog_baseline_and_persists_sparse_choices() 
 }
 
 #[tokio::test]
-async fn sync_memory_concurrent_patches_preserve_independent_keys_and_last_same_key_write() {
+async fn sync_memory_concurrent_patches_preserve_choices_and_view_acknowledgments() {
     let pool = test_current_schema_pool().await;
     record_catalog_success(
         &pool,
@@ -164,11 +164,7 @@ async fn sync_memory_concurrent_patches_preserve_independent_keys_and_last_same_
         ..Default::default()
     };
     let second = crate::api::ModelsDevSyncMemoryPatch {
-        model_selections: vec![ModelSelectionChange {
-            model: "model-a".to_string(),
-            provider_id: "provider-a".to_string(),
-            selected: true,
-        }],
+        viewed_model_ids: vec!["model-a".to_string()],
         ..Default::default()
     };
     let (first_result, second_result) = tokio::join!(
@@ -176,7 +172,36 @@ async fn sync_memory_concurrent_patches_preserve_independent_keys_and_last_same_
         patch_models_dev_sync_memory(&pool, second),
     );
     first_result.expect("save provider choice");
-    second_result.expect("save model choice");
+    second_result.expect("acknowledge the model as viewed");
+
+    let same_key_true = crate::api::ModelsDevSyncMemoryPatch {
+        model_selections: vec![ModelSelectionChange {
+            model: "model-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            selected: true,
+        }],
+        ..Default::default()
+    };
+    let same_key_false = crate::api::ModelsDevSyncMemoryPatch {
+        model_selections: vec![ModelSelectionChange {
+            model: "model-a".to_string(),
+            provider_id: "provider-a".to_string(),
+            selected: false,
+        }],
+        ..Default::default()
+    };
+    let (true_result, false_result) = tokio::join!(
+        patch_models_dev_sync_memory(&pool, same_key_true),
+        patch_models_dev_sync_memory(&pool, same_key_false),
+    );
+    true_result.expect("concurrently select the model");
+    false_result.expect("concurrently clear the model selection");
+
+    let after_same_key_race = load_models_dev_sync_memory(&pool)
+        .await
+        .expect("load same-key concurrent state");
+    assert_eq!(after_same_key_race.model_selections.len(), 1);
+    assert!(after_same_key_race.unviewed_model_ids.is_empty());
 
     let same_key = crate::api::ModelsDevSyncMemoryPatch {
         model_selections: vec![ModelSelectionChange {
@@ -195,6 +220,7 @@ async fn sync_memory_concurrent_patches_preserve_independent_keys_and_last_same_
         .expect("load concurrently updated state");
     assert!(!state.provider_selections[0].selected);
     assert!(!state.model_selections[0].selected);
+    assert!(state.unviewed_model_ids.is_empty());
     assert!(state.catalog_baseline_initialized);
 }
 
