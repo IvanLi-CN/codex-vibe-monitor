@@ -340,6 +340,7 @@ def log_snapshot(phase, round_index, started_at):
         state = snapshot()
     except (sqlite3.Error, OSError, IndexError) as error:
         state = {'snapshot_error': str(error)[:200]}
+    state['materialization_phase'] = state.pop('phase', None)
     state.update({
         'phase': phase,
         'round': round_index,
@@ -371,7 +372,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
     first_state = log_snapshot('input-start', round_index, start)
     coordinator_priority_observed = first_state.get('priority_yield_run_count', 0) > 0
     baseline_cursor = (
-        first_state.get('phase'),
+        first_state.get('materialization_phase'),
         first_state.get('outer_cursor'),
         first_state.get('completed_keys'),
         first_state.get('queue_count'),
@@ -429,7 +430,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
                 state = log_snapshot('input', round_index, start)
                 coordinator_priority_observed |= state.get('priority_yield_run_count', 0) > 0
                 cursor = (
-                    state.get('phase'),
+                    state.get('materialization_phase'),
                     state.get('outer_cursor'),
                     state.get('completed_keys'),
                     state.get('queue_count'),
@@ -643,7 +644,7 @@ def candidate_observe(round_index, duration_seconds):
     states = []
     initial = log_snapshot('observe-start', round_index, start)
     start_cursor = (
-        initial.get('phase'),
+        initial.get('materialization_phase'),
         initial.get('outer_cursor'),
         initial.get('completed_keys'),
         initial.get('queue_count'),
@@ -651,7 +652,7 @@ def candidate_observe(round_index, duration_seconds):
         initial.get('staging_max_cursor'),
     )
     if (
-        initial.get('phase') == 'complete'
+        initial.get('materialization_phase') == 'complete'
         and initial.get('queue_count') == 0
         and initial.get('staging_count') == 0
         and initial.get('stats_marker') is True
@@ -666,7 +667,7 @@ def candidate_observe(round_index, duration_seconds):
             state = log_snapshot('observe', round_index, start)
             states.append(state)
             current_cursor = (
-                state.get('phase'),
+                state.get('materialization_phase'),
                 state.get('outer_cursor'),
                 state.get('completed_keys'),
                 state.get('queue_count'),
@@ -682,7 +683,7 @@ def candidate_observe(round_index, duration_seconds):
             ):
                 unexpected_disabled = True
             if (
-                state.get('phase') == 'complete'
+                state.get('materialization_phase') == 'complete'
                 and state.get('queue_count') == 0
                 and state.get('staging_count') == 0
                 and state.get('stats_marker') is True
