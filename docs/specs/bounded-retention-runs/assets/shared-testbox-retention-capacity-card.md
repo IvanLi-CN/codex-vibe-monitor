@@ -2,40 +2,52 @@
 
 ## Candidate
 
-- Base: `origin/main@9b7967f26fbeb51bcdb586e73b0db7013a308292`
-- Measured source: `9f6ab720` (`fix(retention): schedule catch-up from managed runs`); the later dispatcher-gate and catch-up-clear fixes are not re-benchmarked here.
+- Base: `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`
+- Measured production source: `1b15332d` (`test(retention): honor recovery retry deadlines`); the only later source change is the benchmark-only partial-run output described below.
 - Host: `codex-testbox` (`192.168.31.15`)
 - Seed: fixed deterministic fixture, 1,300,000 expired invocation rows
-- Skew: 500,000 rows share one Prompt key; 64 sparse orphan raw files
+- Skew: 500,000 rows share one Prompt key; 64 sparse orphan raw files; 64 invocation-linked request/response raw rows
 - Cohort: `source_max_invocation_id=1,300,000`; batch cap 64 rows; raw compression disabled
-- Workload: concurrent online reader and writer, 512 read samples
+- Workload: concurrent online reader and writer inserting 1,024 expired rows outside the fixed cohort, 512 read samples
 
-The current-head harness cleared the fixed cohort in 38 bounded runs. The first pressure-only runs recorded `sqlite_pressure`; the productive runs stopped at the 60,000 ms work budget until the final partial run. The final run settled in 39 ms and observed zero remaining rows. This is a single candidate harness observation, not the three-run A7 capacity gate.
+Three release-build candidate runs cleared the fixed cohort. `observed_archived` and the final SQL count are the authoritative cohort measurements; `summary_archived` is lower because prepared archive recovery can remove source rows without counting them as a new invocation batch in that run summary.
 
 ```text
-retention-capacity-candidate total_rows=1300000 hot_rows=500000 orphan_files=64 cohort_source_max=1300000 runs=38 adaptive=true elapsed_ms=988199 summary_archived=1208070 observed_archived=1300000 budget_exhausted_runs=15 lock_retries=22 recoverable_retries=0 no_progress_retries=0 online_samples=512 read_p95_us=63 read_p99_us=97 remaining=0
+candidate #1: runs=55 elapsed_ms=786679 summary_archived=375750 observed_archived=1300000 budget_exhausted_runs=4 lock_retries=50 read_p95_us=118 read_p99_us=631 raw_links_remaining=0 remaining=0
+candidate #2: runs=53 elapsed_ms=766679 summary_archived=350022 observed_archived=1300000 budget_exhausted_runs=3 lock_retries=49 read_p95_us=67 read_p99_us=90 raw_links_remaining=0 remaining=0
+candidate #3: runs=51 elapsed_ms=786364 summary_archived=344518 observed_archived=1300000 budget_exhausted_runs=4 lock_retries=46 read_p95_us=60 read_p99_us=90 raw_links_remaining=0 remaining=0
 ```
 
-`observed_archived` is the authoritative fixed-cohort measurement. `summary_archived` is the run-summary counter and is lower because recovery and already-prepared archive work can remove source rows without being counted as a new invocation batch in that summary. The final SQL count and bounded source upper bound reached the cohort terminal state. The fixture did not attach raw files to invocation rows, so raw publication/ownership is outside this card.
+Candidate medians are `elapsed_ms=786679`, `runs=53`, `read_p95_us=67`, and `read_p99_us=90`. Every run ended with `remaining=0`, `raw_links_remaining=0`, and no recoverable or fatal failure. The productive runs stopped at the 60,000 ms work budget and resumed in later runs; pressure-only runs reported `sqlite_pressure`.
+
+Logs:
+
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/candidate-final-run2.log`
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/candidate-final-run3.log`
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/candidate-final-run4.log`
 
 ## Development Baseline
 
-The baseline used the same fixture, seed, online reader/writer, and fixed cohort. An initial unpatched run failed at the old archive write path with SQLite extended error 517 (`database is locked`) and then made no progress. A bounded-retry rerun made only 64 rows per run: run 1 took 107,144 ms and run 2 took 75,192 ms, both stopped at `retention_work_budget`; it was stopped after those two identical low-throughput observations because completing the cohort at that rate would exceed the 24-hour acceptance window. The raw logs are retained at:
+The baseline used the same fixture, seed, online reader/writer, and fixed cohort from `origin/main`. The old path was unable to keep up with the online expired-row writer: each controlled run submitted only 192 rows across three 60-second budget passes and left 1,299,808 cohort rows. The benchmark's optional `CVM_RETENTION_TEST_MAX_RUNS=3` mode stops after those three passes and still emits the 512 online read samples, so the baseline result is measurable without waiting for a cohort that cannot clear in the 24-hour window.
 
-`/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-capacity-1.log`
+```text
+baseline #1: elapsed_ms=204462 summary_archived=192 observed_archived=192 budget_exhausted_runs=3 read_p95_us=58 read_p99_us=87 raw_links_remaining=0 remaining=1299808 complete=false
+baseline #2: elapsed_ms=198535 summary_archived=192 observed_archived=192 budget_exhausted_runs=3 read_p95_us=52 read_p99_us=99 raw_links_remaining=0 remaining=1299808 complete=false
+baseline #3: elapsed_ms=243959 summary_archived=192 observed_archived=192 budget_exhausted_runs=3 read_p95_us=53 read_p99_us=75 raw_links_remaining=0 remaining=1299808 complete=false
+```
 
-`/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-capacity-final.log`
+Baseline medians are `read_p95_us=53` and `read_p99_us=87`. Logs:
 
-This is a useful harness regression result: the old implementation could not submit the cohort within the declared budget under the online lock load, so it cannot produce a complete baseline p95/p99 distribution before the capacity window expires. The candidate's p95/p99 must therefore be read as an absolute online-probe observation, not as a claim of a numeric baseline comparison. The harness also uses the current head with adaptive mode toggled rather than compiling the merge-base implementation.
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-final-run1-partial.log`
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-final-run2-partial.log`
+- `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-final-run3-partial.log`
 
 ## Acceptance Interpretation
 
-- Fixed cohort completion: observed for the candidate harness (`remaining=0`); not a full A7 pass.
-- Bounded execution: pass; productive runs stop at approximately 60 seconds and report `retention_work_budget`.
-- Lock/pressure behavior: observed for the candidate harness; 22 lock-pressure retries were recoverable and no run leaked a lock.
-- Online latency: candidate measured 63 microseconds p95 and 97 microseconds p99 over 512 reads; numeric baseline comparison remains unavailable while the old path fails before producing a comparable sample set.
-- Three-run statistical median: not claimed. This card records one candidate run and two controlled baseline rounds showing the same bounded-throughput failure; it does not turn that limitation into a pass.
+- Fixed cohort completion: candidate passed in all three runs, within minutes rather than the 24-hour budget; baseline did not clear and was still at 1,299,808 rows after the controlled window.
+- Bounded execution: passed; candidate productive runs stop at approximately 60 seconds and report `retention_work_budget` before the next run.
+- Lock/pressure behavior: passed for the candidate fixture; pressure retries were recoverable, raw links reached zero, and no run reported a fatal or recoverable failure.
+- Online latency: measured, but not a clean non-regression claim. Candidate medians (`67/90us`) are slightly above the baseline medians (`53/87us`) on this shared host while doing substantially more archive work. The absolute tails remain sub-millisecond, but A7's strict "not worse" latency clause is not marked verified from these samples.
+- Three-run capacity evidence: throughput and completion are demonstrated; the latency comparison remains the remaining empirical qualification for a full A7 sign-off.
 
-The baseline failure and harness scope mean the full A7 “candidate versus three-run baseline p95/p99 median” comparison is not satisfied by this card. The candidate shows bounded database-row progress under the same online probe, ending with a zero fixed cohort; this card does not establish 24-hour production capacity, continuous new-expiry handling, or complete raw-file Verified Archive behavior.
-
-The benchmark source now includes a follow-up fixture with invocation-linked request/response raw files and a writer that inserts new expired invocations outside the fixed source cohort. That follow-up harness passed a small 2,000-row smoke run locally, but has not yet produced a shared-testbox release-build result and is not included in the capacity numbers above.
+The benchmark source also retains the invocation-linked raw-file and cohort-external writer fixture. Those linked rows are included in the three candidate runs above, and `raw_links_remaining=0` confirms the verified archive ownership boundary for the fixed cohort. This card does not claim production capacity beyond the tested seed, online mix, or shared-testbox limits.

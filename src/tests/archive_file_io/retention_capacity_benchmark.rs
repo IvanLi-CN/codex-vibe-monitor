@@ -32,6 +32,13 @@ fn benchmark_hot_rows(total_rows: usize) -> usize {
         .min(total_rows)
 }
 
+fn benchmark_max_runs() -> Option<usize> {
+    std::env::var("CVM_RETENTION_TEST_MAX_RUNS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value| *value > 0)
+}
+
 async fn suspend_invocation_triggers(pool: &SqlitePool) -> Vec<String> {
     let trigger_sql = sqlx::query_as::<_, (String, String)>(
         "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'codex_invocations' AND sql IS NOT NULL ORDER BY name",
@@ -286,6 +293,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     let started_at = Instant::now();
     let adaptive = std::env::var_os("CVM_RETENTION_TEST_ADAPTIVE").is_some();
     let run_label = if adaptive { "candidate" } else { "baseline" };
+    let max_runs = benchmark_max_runs();
     let mut run_count = 0_usize;
     let mut submitted = 0_usize;
     let mut observed_archived = 0_usize;
@@ -362,7 +370,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
             observed_archived >= previous_archived,
             "fixed cohort count moved backwards while measuring retention progress"
         );
-        if remaining == 0 {
+        if remaining == 0 || max_runs.is_some_and(|limit| run_count >= limit) {
             break;
         }
         if summary.invocation_rows_archived == 0 && (remaining as usize) >= previous_remaining {
@@ -391,8 +399,10 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     .fetch_one(&pool)
     .await
     .expect("verify fixed cohort completion");
-    assert_eq!(remaining, 0);
-    assert_eq!(observed_archived, cohort);
+    let complete = remaining == 0;
+    if complete {
+        assert_eq!(observed_archived, cohort);
+    }
     let raw_links_remaining: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE owner_kind='invocation' AND owner_id <= ?",
     )
@@ -400,9 +410,11 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     .fetch_one(&pool)
     .await
     .expect("count fixed-cohort raw links");
-    assert_eq!(raw_links_remaining, 0);
+    if complete {
+        assert_eq!(raw_links_remaining, 0);
+    }
     eprintln!(
-        "retention-capacity-{run_label} total_rows={} hot_rows={} raw_linked_rows={} new_expired_rows={} orphan_files={} cohort_source_max={} runs={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} no_progress_retries={} online_samples={} read_p95_us={} read_p99_us={} raw_links_remaining={} remaining={}",
+        "retention-capacity-{run_label} total_rows={} hot_rows={} raw_linked_rows={} new_expired_rows={} orphan_files={} cohort_source_max={} runs={} max_runs={:?} complete={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} no_progress_retries={} online_samples={} read_p95_us={} read_p99_us={} raw_links_remaining={} remaining={}",
         total_rows,
         hot_rows,
         RAW_LINKED_ROWS,
@@ -410,6 +422,8 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         ORPHAN_FILES,
         cohort_source_max,
         run_count,
+        max_runs,
+        complete,
         adaptive,
         elapsed_ms,
         submitted,
