@@ -376,7 +376,11 @@ def progress_eligibility(state, now_utc=None):
         reason = state.get('scheduler_defer_reason') or ''
         priority_wait = state.get('latest_defer_reason') == 'coordinator_priority'
         database_wait = reason == 'background_busy' or reason.startswith('pressure_cooldown')
-        if deadline > now and (priority_wait or database_wait):
+        # A future scheduler deadline is itself a non-runnable window. The
+        # observer must start the 30-second no-pressure clock only after that
+        # bounded retry becomes due; otherwise a scheduled continuation is
+        # misreported as a stalled eligible task.
+        if deadline > now and (priority_wait or database_wait or state.get('scheduler_status') in {'idle', 'running'}):
             return 'pressure_deadline'
     return 'eligible'
 
