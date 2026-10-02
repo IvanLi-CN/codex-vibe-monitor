@@ -1023,9 +1023,29 @@ _Avoid_: 对外调用, 上游尝试, 日志行
 A read-only description of the execution or resource-deferral rules that actually apply to a Managed Task. It remains undefined when no corresponding rule exists and does not grant operators a configurable cross-task execution rank.
 _Avoid_: 可编辑任务优先级, 人工重要性标签, 跨任务排队顺序
 
+**待执行请求（Queued Task Request）**:
+An accepted request for a Managed Task that is waiting in its dispatcher's execution queue. Its request time and queue position describe waiting rather than actual work or a guaranteed execution time.
+_Avoid_: 到期即入队, 下次计划检查, 已请求即运行中
+
+**准入延后任务（Admission-Deferred Task）**:
+A Managed Task waiting for pressure or execution-resource admission at an observed scheduling boundary. This wait establishes neither a dispatcher queue position nor an actual execution interval.
+_Avoid_: 统一 FIFO 队列, 等待下次定时, 未观测的积压
+
+**任务让行状态（Task Deferral State）**:
+The observed pressure or resource-admission condition that delays Managed Task scheduling or work, together with its reason and affected tasks when known. It describes task admission independently of overall runtime health.
+_Avoid_: 系统整体健康等级, 任意降级告警, 单个任务执行结果
+
 **当前执行实例（Current Task Execution）**:
 The actual ongoing work of a Managed Task, with its execution start and elapsed time independent of when a request was queued or a history record was published. A backfill parent and its active child describe one execution instance rather than two concurrent tasks.
 _Avoid_: 已请求即运行中, 最新历史记录, 父子重复计数
+
+**任务执行区间（Task Execution Interval）**:
+The observed interval of actual work within a Task Run, beginning when execution starts and ending when execution stops; an ongoing execution has an open end. Request time, queue waiting, and observation publication time are separate from this interval.
+_Avoid_: 入队即开始, 计划执行时段, 历史写入时段
+
+**任务标识色（Task Identity Color）**:
+A stable visual identity assigned to a Managed Task and shared by its catalog dot and execution bars across runs. It identifies the task independently of its trigger, enablement, execution outcome, or system pressure state.
+_Avoid_: 每次运行随机配色, 状态色, 目录排序色
 
 **任务进度快照（Task Progress Snapshot）**:
 The latest durable operational state for a Managed Task, including phase, unit-aware total and completed counts, cursor or checkpoint, last update, and an optional estimate. Unknown or open-ended work remains explicitly unknown instead of being represented as zero or complete.

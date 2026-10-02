@@ -32,6 +32,12 @@ function ensureStorybookPageSseController() {
         eventSource.dispatchEvent(event);
       });
     },
+    emitError: () => {
+      const event = new Event("error");
+      storybookPageEventSources.forEach((eventSource) => {
+        eventSource.dispatchEvent(event);
+      });
+    },
     reset: () => {
       Array.from(storybookPageEventSources).forEach((eventSource) => {
         eventSource.close();

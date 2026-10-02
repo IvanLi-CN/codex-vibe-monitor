@@ -1462,14 +1462,20 @@ pub(crate) fn spawn_system_status_snapshot_maintenance(state: Arc<AppState>) {
             else {
                 continue;
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "system_status_snapshot",
                 &crate::maintenance_store::task_title_for_observation("system_status_snapshot"),
                 "interval",
                 crate::maintenance_store::task_execution_class("system_status_snapshot"),
                 "processing",
             );
-            if let Err(error) = refresh_system_status_snapshot_with_deadline(state.as_ref()).await {
+            let refresh_result = refresh_system_status_snapshot_with_deadline(state.as_ref()).await;
+            observation.finish_with_status(if refresh_result.is_ok() {
+                "success"
+            } else {
+                "failed"
+            });
+            if let Err(error) = refresh_result {
                 warn!(
                     ?error,
                     "system status background refresh failed; retaining last-good snapshot"
@@ -1605,7 +1611,7 @@ pub(crate) async fn finish_system_task_run(
     detail: Option<String>,
 ) -> bool {
     if let Some(observation) = handle.observation.as_ref() {
-        observation.finish();
+        observation.finish_with_status(status.as_str());
     }
     let finished_at = format_utc_iso_millis(Utc::now());
     let duration_ms = handle
@@ -1700,7 +1706,7 @@ pub(crate) async fn finish_system_task_run_reliably(
     detail: Option<String>,
 ) -> bool {
     if let Some(observation) = handle.observation.as_ref() {
-        observation.finish();
+        observation.finish_with_status(status.as_str());
     }
     #[cfg(test)]
     {
@@ -2074,9 +2080,87 @@ pub(crate) async fn list_managed_tasks(
 pub(crate) async fn get_managed_task_runtime(
     State(_state): State<Arc<AppState>>,
 ) -> Result<Json<crate::TaskRuntimeSnapshot>, ApiError> {
-    crate::task_runtime_snapshot()
-        .map(Json)
-        .map_err(ApiError::unavailable)
+    let mut snapshot = crate::task_runtime_snapshot().map_err(ApiError::unavailable)?;
+    if let Some(store) = crate::maintenance_store::global() {
+        match store.list_queued_runs().await {
+            Ok(queued_runs) => {
+                snapshot.queued_runs = queued_runs;
+                snapshot.queued_runs_available = true;
+            }
+            Err(error) => tracing::warn!(%error, "managed task queue snapshot is unavailable"),
+        }
+        match store.list_current_task_deferrals().await {
+            Ok(admission_waits) => {
+                snapshot.admission_waits = admission_waits;
+                snapshot.admission_waits_available = true;
+            }
+            Err(error) => {
+                tracing::warn!(%error, "managed task admission wait snapshot is unavailable")
+            }
+        }
+    }
+    Ok(Json(snapshot))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskTimelineQuery {
+    pub(crate) from: Option<String>,
+    pub(crate) to: Option<String>,
+    pub(crate) cursor: Option<String>,
+    pub(crate) after_revision: Option<i64>,
+    pub(crate) limit: Option<usize>,
+}
+
+pub(crate) async fn get_managed_task_timeline(
+    Query(query): Query<ManagedTaskTimelineQuery>,
+) -> Result<Json<crate::task_timeline::TaskTimelinePage>, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    let from = parse_system_task_run_bound(query.from.as_deref(), "from")?;
+    let to = parse_system_task_run_bound(query.to.as_deref(), "to")?;
+    let end_at = to
+        .as_deref()
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(anyhow!(error)))?
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(Utc::now);
+    let start_at = from
+        .as_deref()
+        .map(DateTime::parse_from_rfc3339)
+        .transpose()
+        .map_err(|error| ApiError::bad_request(anyhow!(error)))?
+        .map(|value| value.with_timezone(&Utc))
+        .unwrap_or_else(|| end_at - chrono::Duration::hours(24));
+    let duration = end_at.signed_duration_since(start_at);
+    if duration < chrono::Duration::zero() || duration > chrono::Duration::hours(24) {
+        return Err(ApiError::bad_request(anyhow!(
+            "timeline window must be between zero and 24 hours"
+        )));
+    }
+    if let Some(cursor) = query.cursor.as_deref() {
+        crate::task_timeline::validate_cursor(cursor).map_err(ApiError::bad_request)?;
+    }
+    if query.after_revision.is_some_and(|revision| revision < 0) {
+        return Err(ApiError::bad_request(anyhow!(
+            "afterRevision must be non-negative"
+        )));
+    }
+    let page = crate::task_timeline::timeline_page(
+        store,
+        query.cursor.as_deref(),
+        query.after_revision,
+        from.as_deref(),
+        to.as_deref(),
+        query.limit.unwrap_or(500).clamp(1, 500),
+    )
+    .await
+    .map_err(ApiError::from)?;
+    Ok(Json(page))
 }
 
 pub(crate) async fn get_managed_task(
@@ -2176,6 +2260,7 @@ pub(crate) async fn run_managed_task_now(
         .request_run(&task_key)
         .await
         .map_err(ApiError::conflict)?;
+    crate::task_timeline::notify_runtime_changed();
     get_managed_task(State(state), AxumPath(task_key)).await
 }
 

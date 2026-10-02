@@ -422,6 +422,9 @@ pub(crate) async fn run() -> Result<()> {
         pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
+    if let Some(store) = crate::maintenance_store::global().cloned() {
+        crate::task_timeline::start_recorder(store).await;
+    }
     // Listen for shutdown before the readiness-gated hydration loop so an unavailable
     // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
     let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
@@ -1082,7 +1085,10 @@ where
         );
     }
 
-    let runtime_result = drain_runtime_after_pending_shutdown(
+    if let Err(error) = managed_task_dispatcher_handle.await {
+        warn!(error = %error, "managed task dispatcher task terminated during shutdown");
+    }
+    drain_runtime_after_pending_shutdown(
         state,
         shutdown_watcher,
         server_handle,
@@ -1094,11 +1100,7 @@ where
         startup_backfill_handle,
         startup_hot_read_hydration_handle,
     )
-    .await;
-    if let Err(error) = managed_task_dispatcher_handle.await {
-        warn!(error = %error, "managed task dispatcher task terminated during shutdown");
-    }
-    runtime_result
+    .await
 }
 
 fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
@@ -1147,6 +1149,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             let Some((run_id, task_key, requested_at, trigger_kind)) = claim else {
                 continue;
             };
+            crate::task_timeline::notify_runtime_changed();
             let Some(_execution_lease) =
                 crate::maintenance_store::try_acquire_task_execution(&task_key)
             else {
@@ -1213,27 +1216,25 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             {
                 warn!(task = %task_key, error = %error, "managed task progress snapshot could not be published");
             }
-            let observation = (!task_key.eq("prompt_cache_materialization")
-                && !task_key.eq("timeseries_minute_projection")
-                && !task_key.eq("startup_backfill")
-                && !task_key.starts_with("startup_backfill."))
-            .then(|| {
-                crate::TaskExecutionObservation::begin(
-                    &task_key,
-                    &crate::maintenance_store::task_title_for_observation(&task_key),
-                    &trigger_kind,
-                    crate::maintenance_store::task_execution_class(&task_key),
-                    "processing",
-                )
-            });
+            let observation = crate::TaskExecutionObservation::begin_for_managed_run(
+                &task_key,
+                &crate::maintenance_store::task_title_for_observation(&task_key),
+                &trigger_kind,
+                crate::maintenance_store::task_execution_class(&task_key),
+                "processing",
+                Some(run_id),
+            );
             let result = tokio::select! {
                 biased;
                 _ = state.shutdown.cancelled() => {
                     Err(anyhow!("managed task cancelled during shutdown"))
                 }
-                result = run_managed_task_once_with_observation(&state, &task_key) => result,
+                result = run_managed_task_once_with_observation(
+                    &state,
+                    &task_key,
+                    run_id,
+                ) => result,
             };
-            drop(observation);
             let (status, summary, detail, completion, core_completion, details) = match result {
                 Ok(execution) => {
                     let status = match execution.completion.as_deref() {
@@ -1259,6 +1260,11 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     None,
                 ),
             };
+            observation.finish_with_status(if state.shutdown.is_cancelled() {
+                "interrupted"
+            } else {
+                status.as_str()
+            });
             let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
             let task_dimension = managed_task_metric_dimension(&task_key);
             state.performance_telemetry.record_duration_ms(
@@ -1563,6 +1569,7 @@ impl ManagedTaskExecution {
 async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
+    run_id: i64,
 ) -> Result<ManagedTaskExecution> {
     if task_key == "retention_archive" {
         let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
@@ -1643,12 +1650,16 @@ async fn run_managed_task_once_with_observation(
             details: Some(details),
         });
     }
-    run_managed_task_once(state, task_key)
+    run_managed_task_once(state, task_key, run_id)
         .await
         .map(ManagedTaskExecution::simple)
 }
 
-async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<String> {
+async fn run_managed_task_once(
+    state: &Arc<AppState>,
+    task_key: &str,
+    run_id: i64,
+) -> Result<String> {
     match task_key {
         "retention_archive" => {
             let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
@@ -1712,9 +1723,13 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
             Ok("长期统计投影刷新完成".to_string())
         }
         "timeseries_minute_projection" => {
-            crate::api::flush_timeseries_minute_projection_managed(state.as_ref(), "managed_task")
-                .await
-                .map_err(|_| anyhow!("分钟时序投影刷新失败"))?;
+            crate::api::flush_timeseries_minute_projection_managed(
+                state.as_ref(),
+                "managed_task",
+                run_id,
+            )
+            .await
+            .map_err(|_| anyhow!("分钟时序投影刷新失败"))?;
             Ok("分钟时序投影刷新完成".to_string())
         }
         "raw_payload_metrics_inventory" => {
@@ -1733,6 +1748,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 &state.shutdown,
                 Some(&[task]),
                 Some("prompt_cache_materialization"),
+                Some(run_id),
             )
             .await;
             if pass.had_failure {
@@ -1789,6 +1805,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 &state.shutdown,
                 None,
                 None,
+                Some(run_id),
             )
             .await;
             if pass.had_failure {
@@ -1819,6 +1836,7 @@ async fn run_managed_task_once(state: &Arc<AppState>, task_key: &str) -> Result<
                 &state.shutdown,
                 Some(&[task]),
                 None,
+                Some(run_id),
             )
             .await;
             if pass.had_failure {
@@ -1956,6 +1974,7 @@ pub(crate) async fn drain_runtime_after_shutdown(
 
     state.performance_telemetry.shutdown_and_drain().await;
     state.xray_supervisor.lock().await.shutdown_all().await;
+    crate::task_timeline::drain_after_shutdown().await;
     info!("shutdown complete");
 
     Ok(())
@@ -2509,7 +2528,7 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     }
                 },
             };
-            let _observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin(
                 "forward_proxy_subscription_refresh",
                 &crate::maintenance_store::task_title_for_observation(
                     "forward_proxy_subscription_refresh",
@@ -2520,13 +2539,18 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 ),
                 "processing",
             );
-            if let Err(err) = refresh_forward_proxy_subscriptions(
+            let refresh_result = refresh_forward_proxy_subscriptions(
                 state.clone(),
                 true,
                 Some(startup_known_subscription_keys),
             )
-            .await
-            {
+            .await;
+            observation.finish_with_status(if refresh_result.is_ok() {
+                "success"
+            } else {
+                "failed"
+            });
+            if let Err(err) = refresh_result {
                 if let Some(run) = startup_run.as_ref() {
                     let _ = finish_system_task_run_reliably(
                         state.as_ref(),
@@ -2592,7 +2616,7 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             }
                         },
                     };
-                    let _observation = crate::TaskExecutionObservation::begin(
+                    let observation = crate::TaskExecutionObservation::begin(
                         "forward_proxy_subscription_refresh",
                         &crate::maintenance_store::task_title_for_observation(
                             "forward_proxy_subscription_refresh",
@@ -2603,7 +2627,13 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         ),
                         "processing",
                     );
-                    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
+                    let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), false, None).await;
+                    observation.finish_with_status(if refresh_result.is_ok() {
+                        "success"
+                    } else {
+                        "failed"
+                    });
+                    if let Err(err) = refresh_result {
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
                                 state.as_ref(),
@@ -2664,7 +2694,7 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     else {
                         continue;
                     };
-                    let _observation = crate::TaskExecutionObservation::begin(
+                    let observation = crate::TaskExecutionObservation::begin(
                         "pool_orphan_recovery",
                         &crate::maintenance_store::task_title_for_observation(
                             "pool_orphan_recovery",
@@ -2682,6 +2712,11 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                         info!("pool orphan recovery cancelled during execution");
                         break;
                     };
+                    observation.finish_with_status(if result.is_ok() {
+                        "success"
+                    } else {
+                        "failed"
+                    });
                     match result {
                         Ok(outcome) => {
                             if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {

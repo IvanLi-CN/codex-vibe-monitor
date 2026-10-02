@@ -1,4 +1,6 @@
 {
+  "evidence_status": "historical",
+  "note": "Historical production-service observations for candidate ace97c2c42e52075b3858cdc521fca385a7e0f2b. Not current-candidate delivery proof.",
   "candidate_head": "ace97c2c42e52075b3858cdc521fca385a7e0f2b",
   "implementation_commit": "ace97c2c42e52075b3858cdc521fca385a7e0f2b",
   "service": {

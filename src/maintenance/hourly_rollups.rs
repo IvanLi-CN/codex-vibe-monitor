@@ -3557,6 +3557,10 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
             get(get_managed_task_runtime),
         )
         .route(
+            "/api/system/managed-tasks/timeline",
+            get(get_managed_task_timeline),
+        )
+        .route(
             "/api/system/managed-tasks/{task_key}",
             get(get_managed_task).patch(update_managed_task),
         )

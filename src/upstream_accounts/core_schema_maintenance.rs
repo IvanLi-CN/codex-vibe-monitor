@@ -2182,7 +2182,7 @@ pub(crate) fn spawn_upstream_account_maintenance(
                     else {
                         continue;
                     };
-                    let _observation = crate::TaskExecutionObservation::begin(
+                    let observation = crate::TaskExecutionObservation::begin(
                         "upstream_account_maintenance",
                         &crate::maintenance_store::task_title_for_observation(
                             "upstream_account_maintenance",
@@ -2202,6 +2202,11 @@ pub(crate) fn spawn_upstream_account_maintenance(
                         info!("upstream account maintenance cancelled during execution");
                         break;
                     };
+                    observation.finish_with_status(if result.is_ok() {
+                        "success"
+                    } else {
+                        "failed"
+                    });
                     if let Err(err) = result {
                         warn!(error = %err, "failed to run upstream account maintenance");
                     }

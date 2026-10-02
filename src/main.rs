@@ -144,6 +144,7 @@ mod sqlite_batch_writer;
 )]
 mod stats;
 mod task_runtime_observation;
+mod task_timeline;
 mod terminal_journal;
 mod terminal_projection;
 #[cfg(test)]
