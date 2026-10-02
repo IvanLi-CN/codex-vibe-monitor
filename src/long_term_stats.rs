@@ -1,6 +1,10 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+#[path = "long_term_stats/projection_flush.rs"]
+mod projection_flush;
+use projection_flush::flush_long_term_projection;
+
 const LONG_TERM_TIMEZONE: &str = "Asia/Shanghai";
 const LONG_TERM_STATE_ID: i64 = 1;
 const LONG_TERM_STATUS_DISABLED: &str = "disabled";
@@ -3340,34 +3344,6 @@ async fn invalidate_long_term_projection_interval_cache(state: &AppState) {
     let mut runtime = state.long_term_projection_runtime.lock().await;
     runtime.interval_index.clear();
     runtime.loaded_interval_dates.clear();
-}
-
-async fn flush_long_term_projection(
-    state: &AppState,
-    trigger: &'static str,
-) -> Result<LongTermProjectionFlushOutcome> {
-    let Some(_execution_lease) =
-        crate::maintenance_store::try_acquire_task_execution("long_term_projection")
-    else {
-        return Ok(LongTermProjectionFlushOutcome::DeferredByPressure {
-            retry_at: Some(Instant::now() + Duration::from_secs(1)),
-        });
-    };
-    let observation = crate::TaskExecutionObservation::begin(
-        "long_term_projection",
-        &crate::maintenance_store::task_title_for_observation("long_term_projection"),
-        trigger,
-        crate::maintenance_store::task_execution_class("long_term_projection"),
-        "processing",
-    );
-    let result = flush_long_term_projection_unlocked(state, trigger).await;
-    let status = match &result {
-        Ok(LongTermProjectionFlushOutcome::Completed) => "success",
-        Ok(LongTermProjectionFlushOutcome::DeferredByPressure { .. }) => "skipped",
-        Err(_) => "failed",
-    };
-    observation.finish_with_status(status);
-    result
 }
 
 async fn flush_long_term_projection_unlocked(
