@@ -2622,6 +2622,8 @@ export interface ManagedTask {
   intervalSecs?: number | null;
   cronExpr?: string | null;
   nextTriggerAt?: string | null;
+  nextCatchupAt?: string | null;
+  catchupReason?: string | null;
   isManual: boolean;
   effectiveSchedule?: {
     source: string;
@@ -2668,6 +2670,9 @@ export interface ManagedTaskProgress {
   lastProgressAt?: string | null;
   waitReason?: string | null;
   nextRetryAt?: string | null;
+  nextInspectionAt?: string | null;
+  nextCatchupAt?: string | null;
+  catchupState?: string | null;
   stages?: Array<{
     name: string;
     status: string;
@@ -2726,6 +2731,18 @@ export interface ManagedTaskDetail {
   progress?: ManagedTaskProgress | null;
   recentRuns: ManagedTaskRun[];
   performance?: ManagedTaskPerformance | null;
+  retentionBacklogTrend?: RetentionBacklogTrendPoint[] | null;
+}
+
+export interface RetentionBacklogTrendPoint {
+  bucketStart: string;
+  state: "observed" | "missing" | string;
+  observedAt?: string | null;
+  invocationCount?: number | null;
+  maxOverdueSeconds?: number | null;
+  retentionDays?: number | null;
+  cutoff?: string | null;
+  sourceMaxInvocationId?: number | null;
 }
 
 export interface PromptCacheMaterializationRun {
@@ -5369,6 +5386,8 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
     intervalSecs: normalizeFiniteNumber(payload.intervalSecs) ?? null,
     cronExpr: typeof payload.cronExpr === "string" ? payload.cronExpr : null,
     nextTriggerAt: typeof payload.nextTriggerAt === "string" ? payload.nextTriggerAt : null,
+    nextCatchupAt: typeof payload.nextCatchupAt === "string" ? payload.nextCatchupAt : null,
+    catchupReason: typeof payload.catchupReason === "string" ? payload.catchupReason : null,
     isManual: payload.isManual,
     effectiveSchedule:
       schedule && typeof schedule.source === "string"
@@ -5419,6 +5438,10 @@ function normalizeManagedTaskProgress(raw: unknown): ManagedTaskProgress | null 
     lastProgressAt: typeof payload.lastProgressAt === "string" ? payload.lastProgressAt : undefined,
     waitReason: typeof payload.waitReason === "string" ? payload.waitReason : undefined,
     nextRetryAt: typeof payload.nextRetryAt === "string" ? payload.nextRetryAt : undefined,
+    nextInspectionAt:
+      typeof payload.nextInspectionAt === "string" ? payload.nextInspectionAt : undefined,
+    nextCatchupAt: typeof payload.nextCatchupAt === "string" ? payload.nextCatchupAt : undefined,
+    catchupState: typeof payload.catchupState === "string" ? payload.catchupState : undefined,
     stages,
   };
 }
@@ -5488,11 +5511,32 @@ function normalizeManagedTaskDetail(raw: unknown): ManagedTaskDetail {
         .map(normalizeManagedTaskRun)
         .filter((run): run is ManagedTaskRun => run != null)
     : [];
+  const retentionBacklogTrend = Array.isArray(payload?.retentionBacklogTrend)
+    ? payload.retentionBacklogTrend.flatMap((rawPoint) => {
+        const point = asRecord(rawPoint);
+        if (!point || typeof point.bucketStart !== "string" || typeof point.state !== "string") {
+          return [];
+        }
+        return [
+          {
+            bucketStart: point.bucketStart,
+            state: point.state,
+            observedAt: typeof point.observedAt === "string" ? point.observedAt : null,
+            invocationCount: normalizeFiniteNumber(point.invocationCount),
+            maxOverdueSeconds: normalizeFiniteNumber(point.maxOverdueSeconds),
+            retentionDays: normalizeFiniteNumber(point.retentionDays),
+            cutoff: typeof point.cutoff === "string" ? point.cutoff : null,
+            sourceMaxInvocationId: normalizeFiniteNumber(point.sourceMaxInvocationId),
+          },
+        ];
+      })
+    : undefined;
   return {
     task,
     progress: normalizeManagedTaskProgress(payload?.progress),
     recentRuns: runs,
     performance: normalizeManagedTaskPerformance(payload?.performance),
+    retentionBacklogTrend,
   };
 }
 

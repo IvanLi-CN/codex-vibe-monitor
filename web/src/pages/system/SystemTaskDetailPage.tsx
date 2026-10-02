@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
@@ -43,7 +52,29 @@ function formatStartedAt(value?: string | null): string {
   }).format(new Date(timestamp));
 }
 
+function formatTrendHour(value: string): string {
+  const timestamp = Date.parse(value);
+  if (Number.isNaN(timestamp)) return "未知";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    timeZone: "Asia/Shanghai",
+  }).format(new Date(timestamp));
+}
+
 type ScheduleKind = "interval" | "cron";
+
+type RetentionTrendChartDatum = {
+  bucketStart: string;
+  state: string;
+  observedAt?: string | null;
+  retentionDays?: number | null;
+  label: string;
+  invocationCount: number | null;
+  maxOverdueHours: number | null;
+};
 
 export default function SystemTaskDetailPage() {
   const { taskKey = "" } = useParams();
@@ -132,11 +163,29 @@ export default function SystemTaskDetailPage() {
       ? runtimeSampleElapsedMs + Math.max(0, runtimeNow - runtimeSampleClock)
       : activeRuntime?.elapsedMs;
 
+  const retentionBacklogTrend = detail?.retentionBacklogTrend;
+  const retentionTrendChartData = useMemo<RetentionTrendChartDatum[]>(
+    () =>
+      (retentionBacklogTrend ?? []).map((point) => ({
+        ...point,
+        label: formatTrendHour(point.bucketStart),
+        invocationCount: point.state === "observed" ? (point.invocationCount ?? null) : null,
+        maxOverdueHours:
+          point.state === "observed" && point.maxOverdueSeconds != null
+            ? point.maxOverdueSeconds / 3600
+            : null,
+      })),
+    [retentionBacklogTrend],
+  );
+  const hasObservedRetentionTrend = retentionTrendChartData.some(
+    (point) => point.state === "observed",
+  );
   if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
   if (!detail)
     return <div className="surface-panel p-6 text-base-content/65">正在读取任务详情…</div>;
 
   const { task, progress, recentRuns, performance } = detail;
+  const nextCatchupAt = progress?.nextCatchupAt ?? task.nextCatchupAt;
   const save = async (payload: {
     enabled?: boolean;
     intervalSecs?: number | null;
@@ -267,8 +316,25 @@ export default function SystemTaskDetailPage() {
               </div>
             </div>
             <div>
-              <div className="text-xs text-base-content/60">下次运行</div>
-              <div className="mt-1 font-medium">{managedTaskNextTriggerLabel(task)}</div>
+              <div className="text-xs text-base-content/60">下次巡检</div>
+              <div className="mt-1 font-medium">
+                {progress?.nextInspectionAt
+                  ? formatStartedAt(progress.nextInspectionAt)
+                  : managedTaskNextTriggerLabel(task)}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-base-content/60">下次追赶资格</div>
+              <div className="mt-1 font-medium">
+                {nextCatchupAt ? formatStartedAt(nextCatchupAt) : "无"}
+              </div>
+              <div className="mt-1 text-xs text-base-content/60">
+                {progress?.catchupState === "scheduled"
+                  ? `原因：${task.catchupReason ?? progress.waitReason ?? "积压仍在"}`
+                  : progress?.catchupState === "disabled"
+                    ? "任务已停用"
+                    : "积压清空后回到巡检计划"}
+              </div>
             </div>
             <div>
               <div className="text-xs text-base-content/60">有效计划</div>
@@ -412,6 +478,112 @@ export default function SystemTaskDetailPage() {
             ) : null}
           </CardContent>
         </Card>
+        {task.taskKey === "retention_archive" ? (
+          <Card>
+            <CardHeader>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <CardTitle className="text-base">最近 7 天归档积压</CardTitle>
+                <span className="text-xs text-base-content/60">
+                  每小时最后一次准确快照 · UTC 桶，按上海时间显示
+                </span>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {retentionTrendChartData.length === 0 || !hasObservedRetentionTrend ? (
+                <div className="text-sm text-base-content/60">暂无观测数据</div>
+              ) : (
+                <>
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-xs text-base-content/60">
+                      <span>待归档 invocation 条数</span>
+                      <span>缺测留空，不补零</span>
+                    </div>
+                    <div className="h-44 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart
+                          data={retentionTrendChartData}
+                          margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#64748b66" />
+                          <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 10 }} />
+                          <YAxis
+                            width={54}
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => value.toLocaleString()}
+                          />
+                          <Tooltip
+                            labelFormatter={(label, payload) => {
+                              const point = payload?.[0]?.payload as
+                                | RetentionTrendChartDatum
+                                | undefined;
+                              if (point?.state !== "observed") return `${String(label)} · 缺测`;
+                              return `${String(label)} · 观测 ${formatStartedAt(point.observedAt)} · 策略 ${point.retentionDays ?? "未知"} 天`;
+                            }}
+                            formatter={(value) =>
+                              value == null ? "缺测" : Number(value).toLocaleString()
+                            }
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="invocationCount"
+                            stroke="#0ea5e9"
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls={false}
+                            name="invocation"
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-xs text-base-content/60">
+                      <span>最长逾期时间（小时）</span>
+                      <span>空积压显示 0 条、逾期未知</span>
+                    </div>
+                    <div className="h-44 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <LineChart
+                          data={retentionTrendChartData}
+                          margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" stroke="#64748b66" />
+                          <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 10 }} />
+                          <YAxis
+                            width={54}
+                            tick={{ fontSize: 10 }}
+                            tickFormatter={(value) => `${value}h`}
+                          />
+                          <Tooltip
+                            labelFormatter={(label, payload) => {
+                              const point = payload?.[0]?.payload as
+                                | RetentionTrendChartDatum
+                                | undefined;
+                              if (point?.state !== "observed") return `${String(label)} · 缺测`;
+                              return `${String(label)} · 观测 ${formatStartedAt(point.observedAt)} · 策略 ${point.retentionDays ?? "未知"} 天`;
+                            }}
+                            formatter={(value) =>
+                              value == null ? "缺测" : `${Number(value).toFixed(1)}h`
+                            }
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="maxOverdueHours"
+                            stroke="#f59e0b"
+                            strokeWidth={2}
+                            dot={false}
+                            connectNulls={false}
+                            name="overdue"
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
         <Card>
           <CardHeader>
             <CardTitle className="text-base">最近运行</CardTitle>

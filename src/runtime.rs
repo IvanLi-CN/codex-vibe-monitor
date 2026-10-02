@@ -1063,6 +1063,8 @@ where
     }
 
     let managed_task_dispatcher_handle = spawn_managed_task_dispatcher(state.clone());
+    let _retention_backlog_observer_handle =
+        crate::maintenance::spawn_retention_backlog_observer(state.clone(), cancel.clone());
 
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
@@ -1613,6 +1615,9 @@ async fn run_managed_task_once_with_observation(
             "processedCount": summary.processed_row_count(),
             "total": summary.backlog_total,
             "completed": summary.invocation_rows_archived,
+            "backlogRemaining": summary.backlog_total.map(|total| {
+                total.saturating_sub(summary.invocation_rows_archived as i64)
+            }),
             "observedAt": summary.backlog_observed_at,
             "sourceMaxInvocationId": summary.source_max_invocation_id,
             "invocationRowsArchived": summary.invocation_rows_archived,

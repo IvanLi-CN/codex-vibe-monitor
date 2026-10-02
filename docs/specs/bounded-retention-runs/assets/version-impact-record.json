@@ -3,8 +3,8 @@
   "kind": "version-impact-record",
   "status": "candidate-implemented-release-unverified",
   "change": {
-    "description": "Bound retention runs, separate conversation-derived maintenance, and add compatible completion/progress/schedule evidence.",
-    "release_unit_description": "Bounded retention execution and its task observation contract.",
+    "description": "Bound retention runs, automatic catch-up, independent hourly backlog observations, and compatible task evidence.",
+    "release_unit_description": "Bounded retention execution, catch-up scheduling, and its task observation contract.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
@@ -24,9 +24,9 @@
     },
     "verified": {
       "impact": null,
-      "reasoning": "Candidate implementation, shared-testbox profiles, the same-seed million-row comparison, targeted regressions, and v2.71.45/v2.80.2 forward-repair fixtures are recorded. Verified release impact remains unset until the final visual gate is closed.",
+      "reasoning": "The candidate adds a durable catch-up schedule, an idempotent main-database index, and maintenance-database hourly observations. Earlier Prompt-only benchmark and profile records are not current retention capacity evidence; verified release impact remains unset until current-head migration, empirical, visual, and review gates pass.",
       "verified_at": null,
-      "evidence": ["IMPLEMENTATION.md", "assets/shared-testbox-candidate-benchmark-card.md"]
+      "evidence": ["IMPLEMENTATION.md", "assets/persistent-state-migration-record.json", "assets/shared-testbox-candidate-benchmark-card.md"]
     }
   },
   "compatibility_evidence": {
@@ -39,9 +39,9 @@
     "persistent_state": {
       "planned_impact": "minor",
       "applicable": true,
-      "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries; nullable operational outcomes and snapshots in the maintenance database.",
+      "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries, retention catch-up schedule, the main-database eligibility index, and nullable operational outcomes/hourly snapshots in the maintenance database.",
       "source_program_compatibility_range": "Existing retention support boundary v2.71.x through the observed v2.80.2 schema, including intervening migration structures; fixtures required before release.",
-      "evidence": ["src/prompt_cache_conversations.rs", "src/maintenance_store.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "Candidate targeted migration/queue regressions; old-version and interruption fixtures remain pending."]
+      "evidence": ["src/prompt_cache_conversations.rs", "src/maintenance_store.rs", "src/schema.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "Candidate targeted migration/queue regressions; old-version and interruption fixtures remain pending."]
     }
   },
   "release_unit": {

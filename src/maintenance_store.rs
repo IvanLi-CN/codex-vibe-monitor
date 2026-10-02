@@ -99,6 +99,8 @@ pub(crate) struct ManagedTask {
     pub(crate) interval_secs: Option<i64>,
     pub(crate) cron_expr: Option<String>,
     pub(crate) next_trigger_at: Option<String>,
+    pub(crate) next_catchup_at: Option<String>,
+    pub(crate) catchup_reason: Option<String>,
     pub(crate) is_manual: bool,
     #[serde(skip)]
     pub(crate) schedule_source: Option<String>,
@@ -149,6 +151,12 @@ pub(crate) struct TaskProgress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) next_retry_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_inspection_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) next_catchup_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) catchup_state: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) stages: Option<Vec<TaskStage>>,
 }
 
@@ -198,6 +206,38 @@ pub(crate) struct ManagedTaskDetail {
     pub(crate) recent_runs: Vec<TaskRun>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) performance: Option<ManagedTaskPerformance>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) retention_backlog_trend: Option<Vec<RetentionBacklogTrendPoint>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RetentionBacklogTrendPoint {
+    pub(crate) bucket_start: String,
+    pub(crate) state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) observed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invocation_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) max_overdue_seconds: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) retention_days: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cutoff: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_max_invocation_id: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct RetentionBacklogObservation {
+    pub(crate) bucket_start: String,
+    pub(crate) observed_at: String,
+    pub(crate) invocation_count: i64,
+    pub(crate) max_overdue_seconds: Option<i64>,
+    pub(crate) retention_days: i64,
+    pub(crate) cutoff: String,
+    pub(crate) source_max_invocation_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -227,6 +267,9 @@ struct TaskProgressRow {
     last_progress_at: Option<String>,
     wait_reason: Option<String>,
     next_retry_at: Option<String>,
+    next_inspection_at: Option<String>,
+    next_catchup_at: Option<String>,
+    catchup_state: Option<String>,
     stages: Option<String>,
 }
 
@@ -245,6 +288,17 @@ struct TaskRunRow {
     completion: Option<String>,
     core_completion: Option<String>,
     details: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct RetentionBacklogObservationRow {
+    bucket_start: String,
+    observed_at: String,
+    invocation_count: i64,
+    max_overdue_seconds: Option<i64>,
+    retention_days: i64,
+    cutoff: String,
+    source_max_invocation_id: Option<i64>,
 }
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
@@ -792,6 +846,12 @@ fn next_trigger_at(interval_secs: Option<i64>, cron_expr: Option<&str>) -> Optio
         .map(|seconds| format_utc_iso_millis(now + ChronoDuration::seconds(seconds)))
 }
 
+fn floor_utc_hour(value: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    value
+        - ChronoDuration::seconds(i64::from(value.minute() * 60 + value.second()))
+        - ChronoDuration::nanoseconds(i64::from(value.nanosecond()))
+}
+
 fn decorate_effective_schedule(mut task: ManagedTask) -> ManagedTask {
     if task.is_manual {
         return task;
@@ -853,6 +913,9 @@ fn task_progress_from_row(row: TaskProgressRow) -> TaskProgress {
         last_progress_at: row.last_progress_at,
         wait_reason: row.wait_reason,
         next_retry_at: row.next_retry_at,
+        next_inspection_at: row.next_inspection_at,
+        next_catchup_at: row.next_catchup_at,
+        catchup_state: row.catchup_state,
         stages: decode_task_stages(row.stages.as_deref()),
     }
 }
@@ -955,6 +1018,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
           trigger_mode TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
           interval_secs INTEGER, cron_expr TEXT, next_trigger_at TEXT,
+          next_catchup_at TEXT, catchup_reason TEXT,
           is_manual INTEGER NOT NULL DEFAULT 0, schedule_source TEXT,
           updated_at TEXT NOT NULL
         );
@@ -962,7 +1026,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           task_key TEXT PRIMARY KEY REFERENCES managed_tasks(task_key) ON DELETE CASCADE,
           total INTEGER, completed INTEGER, phase TEXT, checkpoint TEXT, eta_seconds INTEGER,
           updated_at TEXT, freshness TEXT NOT NULL DEFAULT 'fresh', unit TEXT, source_scope TEXT,
-          last_progress_at TEXT, wait_reason TEXT, next_retry_at TEXT, stages TEXT
+          last_progress_at TEXT, wait_reason TEXT, next_retry_at TEXT,
+          next_inspection_at TEXT, next_catchup_at TEXT, catchup_state TEXT, stages TEXT
         );
         CREATE TABLE IF NOT EXISTS startup_backfill_progress (
           task_name TEXT PRIMARY KEY,
@@ -993,6 +1058,17 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           value TEXT NOT NULL,
           updated_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS retention_backlog_hourly_observations (
+          bucket_start TEXT PRIMARY KEY,
+          observed_at TEXT NOT NULL,
+          invocation_count INTEGER NOT NULL,
+          max_overdue_seconds INTEGER,
+          retention_days INTEGER NOT NULL,
+          cutoff TEXT NOT NULL,
+          source_max_invocation_id INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_retention_backlog_observations_observed
+          ON retention_backlog_hourly_observations(observed_at);
     "#
     .split(';')
     .map(str::trim)
@@ -1037,6 +1113,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("last_progress_at", "TEXT"),
         ("wait_reason", "TEXT"),
         ("next_retry_at", "TEXT"),
+        ("next_inspection_at", "TEXT"),
+        ("next_catchup_at", "TEXT"),
+        ("catchup_state", "TEXT"),
         ("stages", "TEXT"),
     ] {
         let present: Option<i64> = sqlx::query_scalar(&format!(
@@ -1071,6 +1150,20 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query("ALTER TABLE managed_tasks ADD COLUMN schedule_source TEXT")
             .execute(pool)
             .await?;
+    }
+    for (column, definition) in [("next_catchup_at", "TEXT"), ("catchup_reason", "TEXT")] {
+        let present: Option<i64> = sqlx::query_scalar(&format!(
+            "SELECT 1 FROM pragma_table_info('managed_tasks') WHERE name = '{column}'"
+        ))
+        .fetch_optional(pool)
+        .await?;
+        if present.is_none() {
+            sqlx::query(&format!(
+                "ALTER TABLE managed_tasks ADD COLUMN {column} {definition}"
+            ))
+            .execute(pool)
+            .await?;
+        }
     }
     // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
     // Recompute the persisted trigger at the same time; an interval-derived timestamp is not
@@ -1162,9 +1255,9 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
     let Some(store) = global() else {
         return false;
     };
-    let Some((enabled, interval_secs, cron_expr)) =
-        sqlx::query_as::<_, (bool, Option<i64>, Option<String>)>(
-            "SELECT enabled,interval_secs,cron_expr FROM managed_tasks WHERE task_key=?",
+    let Some((enabled, interval_secs, cron_expr, next_catchup_at)) =
+        sqlx::query_as::<_, (bool, Option<i64>, Option<String>, Option<String>)>(
+            "SELECT enabled,interval_secs,cron_expr,next_catchup_at FROM managed_tasks WHERE task_key=?",
         )
         .bind(task_key)
         .fetch_optional(&store.pool)
@@ -1175,6 +1268,7 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
         return false;
     };
     !enabled
+        || next_catchup_at.is_some()
         || interval_secs.is_some()
         || cron_expr
             .as_deref()
@@ -1568,42 +1662,93 @@ impl MaintenanceStore {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
         let mut transaction = self.pool.begin().await?;
-        let due_tasks = sqlx::query_as::<_, (String, Option<i64>, Option<String>)>(
+        let due_tasks = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
             "SELECT task_key,interval_secs,cron_expr
+                    ,next_trigger_at,next_catchup_at
              FROM managed_tasks
-             WHERE enabled=1 AND is_manual=0 AND next_trigger_at IS NOT NULL
-               AND next_trigger_at <= ?
-             ORDER BY next_trigger_at, task_key",
+             WHERE enabled=1 AND is_manual=0
+               AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
+                 OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
+             ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
         )
+        .bind(&now_text)
         .bind(&now_text)
         .fetch_all(&mut *transaction)
         .await?;
         let mut enqueued = 0_u64;
-        for (task_key, interval_secs, cron_expr) in due_tasks {
-            let next_trigger = next_trigger_at(interval_secs, cron_expr.as_deref());
+        for (task_key, interval_secs, cron_expr, current_trigger_at, current_catchup_at) in
+            due_tasks
+        {
+            let inspection_due = current_trigger_at
+                .as_deref()
+                .is_some_and(|value| value <= now_text.as_str());
+            let catchup_due = current_catchup_at
+                .as_deref()
+                .is_some_and(|value| value <= now_text.as_str());
+            let active_run: Option<i64> = sqlx::query_scalar(
+                "SELECT 1 FROM managed_task_runs
+                 WHERE task_key=? AND status IN ('running','requested') LIMIT 1",
+            )
+            .bind(&task_key)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if active_run.is_some() {
+                continue;
+            }
+            let next_trigger = if inspection_due {
+                next_trigger_at(interval_secs, cron_expr.as_deref())
+            } else {
+                current_trigger_at.clone()
+            };
+            let trigger_kind = if catchup_due { "catchup" } else { "schedule" };
             let inserted = sqlx::query(
                 "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary)
                  VALUES (?,?,?,?,?)
                  ON CONFLICT DO NOTHING",
             )
             .bind(&task_key)
-            .bind("schedule")
+            .bind(trigger_kind)
             .bind(&now_text)
             .bind("requested")
-            .bind("按计划触发")
+            .bind(if catchup_due {
+                "积压追赶触发"
+            } else {
+                "按计划触发"
+            })
             .execute(&mut *transaction)
             .await?;
             enqueued += inserted.rows_affected();
-            sqlx::query(
-                "UPDATE managed_tasks SET next_trigger_at=?, updated_at=? WHERE task_key=?",
-            )
-            .bind(next_trigger)
-            .bind(&now_text)
-            .bind(task_key)
-            .execute(&mut *transaction)
-            .await?;
+            if inserted.rows_affected() > 0 {
+                sqlx::query(
+                    "UPDATE managed_tasks
+                     SET next_trigger_at=?,
+                         next_catchup_at=CASE WHEN ? THEN NULL ELSE next_catchup_at END,
+                         catchup_reason=CASE WHEN ? THEN NULL ELSE catchup_reason END,
+                         updated_at=?
+                     WHERE task_key=?",
+                )
+                .bind(next_trigger)
+                .bind(catchup_due)
+                .bind(catchup_due)
+                .bind(&now_text)
+                .bind(task_key)
+                .execute(&mut *transaction)
+                .await?;
+            }
         }
         transaction.commit().await?;
+        if enqueued > 0 {
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(enqueued)
     }
 
@@ -1676,9 +1821,13 @@ impl MaintenanceStore {
         let now = format_utc_iso_millis(Utc::now());
         let stages = stages.map(serde_json::to_string).transpose()?;
         sqlx::query(
-            "INSERT INTO managed_task_progress(task_key,total,completed,phase,checkpoint,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,stages)
-             VALUES(?,?,?,?,?,?,'fresh',?,?,?,?,?,?)
-             ON CONFLICT(task_key) DO UPDATE SET total=excluded.total,completed=excluded.completed,phase=excluded.phase,checkpoint=excluded.checkpoint,updated_at=excluded.updated_at,freshness='fresh',unit=excluded.unit,source_scope=excluded.source_scope,last_progress_at=excluded.last_progress_at,wait_reason=excluded.wait_reason,next_retry_at=excluded.next_retry_at,stages=excluded.stages",
+            "INSERT INTO managed_task_progress(task_key,total,completed,phase,checkpoint,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages)
+             VALUES(?,?,?,?,?,?,'fresh',?,?,?,?,?,
+                    (SELECT next_trigger_at FROM managed_tasks WHERE task_key=?),
+                    (SELECT next_catchup_at FROM managed_tasks WHERE task_key=?),
+                    (SELECT CASE WHEN enabled=0 THEN 'disabled' WHEN next_catchup_at IS NOT NULL THEN 'scheduled' ELSE 'idle' END FROM managed_tasks WHERE task_key=?),
+                    ?)
+             ON CONFLICT(task_key) DO UPDATE SET total=excluded.total,completed=excluded.completed,phase=excluded.phase,checkpoint=excluded.checkpoint,updated_at=excluded.updated_at,freshness='fresh',unit=excluded.unit,source_scope=excluded.source_scope,last_progress_at=excluded.last_progress_at,wait_reason=excluded.wait_reason,next_retry_at=excluded.next_retry_at,next_inspection_at=excluded.next_inspection_at,next_catchup_at=excluded.next_catchup_at,catchup_state=excluded.catchup_state,stages=excluded.stages",
         )
         .bind(task_key)
         .bind(total)
@@ -1691,6 +1840,9 @@ impl MaintenanceStore {
         .bind(&now)
         .bind(wait_reason)
         .bind(next_retry_at)
+        .bind(task_key)
+        .bind(task_key)
+        .bind(task_key)
         .bind(stages)
         .execute(&self.pool)
         .await?;
@@ -1735,6 +1887,11 @@ impl MaintenanceStore {
     ) -> Result<()> {
         let sanitized = detail.map(sanitize_task_detail);
         let details = details.map(serde_json::to_string).transpose()?;
+        let task_key: Option<String> =
+            sqlx::query_scalar("SELECT task_key FROM managed_task_runs WHERE id=?")
+                .bind(id)
+                .fetch_optional(&self.pool)
+                .await?;
         let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=? WHERE id=?")
             .bind(status)
             .bind(finished_at)
@@ -1743,18 +1900,227 @@ impl MaintenanceStore {
             .bind(sanitized)
             .bind(completion)
             .bind(core_completion)
-            .bind(details)
+            .bind(&details)
             .bind(id)
             .execute(&self.pool)
             .await?;
         if result.rows_affected() == 0 {
             return Err(anyhow!("managed task run {id} was not found"));
         }
+        if task_key.as_deref() == Some("retention_archive") {
+            self.update_retention_catchup_after_finish(
+                completion,
+                details.as_deref(),
+                &format_utc_iso_millis(Utc::now()),
+            )
+            .await?;
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(())
     }
 
+    async fn update_retention_catchup_after_finish(
+        &self,
+        completion: Option<&str>,
+        details: Option<&str>,
+        now: &str,
+    ) -> Result<()> {
+        let Some(details) =
+            details.and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+        else {
+            return Ok(());
+        };
+        let Some(backlog_total) = details.get("total").and_then(serde_json::Value::as_i64) else {
+            return Ok(());
+        };
+        let completed = details
+            .get("invocationRowsArchived")
+            .and_then(serde_json::Value::as_i64)
+            .unwrap_or(0)
+            .max(0);
+        let wait_reason = details
+            .get("waitReason")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty());
+        self.update_retention_catchup_from_summary(
+            completion,
+            Some(backlog_total),
+            completed as usize,
+            wait_reason,
+            now,
+        )
+        .await
+    }
+
+    pub(crate) async fn update_retention_catchup_from_summary(
+        &self,
+        completion: Option<&str>,
+        backlog_total: Option<i64>,
+        completed: usize,
+        wait_reason: Option<&str>,
+        now: &str,
+    ) -> Result<()> {
+        let Some(backlog_total) = backlog_total else {
+            return Ok(());
+        };
+        let completed = completed.min(i64::MAX as usize) as i64;
+        let pending = backlog_total.saturating_sub(completed);
+        if pending <= 0 || completion == Some("completed") {
+            sqlx::query(
+                "UPDATE managed_tasks
+                 SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
+                 WHERE task_key='retention_archive' AND enabled!=0",
+            )
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+            return Ok(());
+        }
+        if matches!(completion, Some("failed") | None) {
+            return Ok(());
+        }
+        let delay_secs = match wait_reason {
+            Some("retention_work_budget") => 1,
+            Some("retention_write_admission") | Some("sqlite_pressure") => 30,
+            Some("retention_recovery_failure") | Some("retry_backoff") => 300,
+            Some(_) => 15,
+            None => 1,
+        };
+        let next_catchup_at =
+            format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(delay_secs));
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_catchup_at=CASE
+                     WHEN enabled=0 THEN NULL
+                     WHEN next_catchup_at IS NULL OR next_catchup_at > ?1 THEN ?1
+                     ELSE next_catchup_at
+                 END,
+                 catchup_reason=CASE WHEN enabled=0 THEN NULL ELSE ?2 END,
+                 updated_at=?3
+             WHERE task_key='retention_archive'",
+        )
+        .bind(&next_catchup_at)
+        .bind(wait_reason.unwrap_or("backlog_remaining"))
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn sync_retention_progress_schedule(&self) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO managed_task_progress(
+                 task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
+             )
+             SELECT task_key,?1,'fresh',next_trigger_at,next_catchup_at,
+                    CASE WHEN enabled=0 THEN 'disabled'
+                         WHEN next_catchup_at IS NOT NULL THEN 'scheduled'
+                         ELSE 'idle' END
+             FROM managed_tasks
+             WHERE task_key='retention_archive'
+             ON CONFLICT(task_key) DO UPDATE SET
+                 updated_at=excluded.updated_at,
+                 freshness='fresh',
+                 next_inspection_at=excluded.next_inspection_at,
+                 next_catchup_at=excluded.next_catchup_at,
+                 catchup_state=excluded.catchup_state",
+        )
+        .bind(format_utc_iso_millis(Utc::now()))
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_retention_backlog_observation(
+        &self,
+        observation: RetentionBacklogObservation,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO retention_backlog_hourly_observations(
+                 bucket_start,observed_at,invocation_count,max_overdue_seconds,
+                 retention_days,cutoff,source_max_invocation_id
+             ) VALUES(?,?,?,?,?,?,?)
+             ON CONFLICT(bucket_start) DO UPDATE SET
+                 observed_at=excluded.observed_at,
+                 invocation_count=excluded.invocation_count,
+                 max_overdue_seconds=excluded.max_overdue_seconds,
+                 retention_days=excluded.retention_days,
+                 cutoff=excluded.cutoff,
+                 source_max_invocation_id=excluded.source_max_invocation_id
+             WHERE excluded.observed_at >= retention_backlog_hourly_observations.observed_at",
+        )
+        .bind(&observation.bucket_start)
+        .bind(&observation.observed_at)
+        .bind(observation.invocation_count)
+        .bind(observation.max_overdue_seconds)
+        .bind(observation.retention_days)
+        .bind(&observation.cutoff)
+        .bind(observation.source_max_invocation_id)
+        .execute(&self.pool)
+        .await?;
+        let cutoff_bucket = floor_utc_hour(Utc::now()) - ChronoDuration::days(8);
+        sqlx::query("DELETE FROM retention_backlog_hourly_observations WHERE bucket_start < ?")
+            .bind(format_utc_iso_millis(cutoff_bucket))
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    async fn retention_backlog_trend(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<RetentionBacklogTrendPoint>> {
+        let bucket_end = floor_utc_hour(now) + ChronoDuration::hours(1);
+        let bucket_start = bucket_end - ChronoDuration::days(7);
+        let rows = sqlx::query_as::<_, RetentionBacklogObservationRow>(
+            "SELECT bucket_start,observed_at,invocation_count,max_overdue_seconds,
+                    retention_days,cutoff,source_max_invocation_id
+             FROM retention_backlog_hourly_observations
+             WHERE bucket_start >= ?1 AND bucket_start < ?2
+             ORDER BY bucket_start",
+        )
+        .bind(format_utc_iso_millis(bucket_start))
+        .bind(format_utc_iso_millis(bucket_end))
+        .fetch_all(&self.pool)
+        .await?;
+        let mut by_bucket = rows
+            .into_iter()
+            .map(|row| (row.bucket_start.clone(), row))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut trend = Vec::with_capacity(7 * 24);
+        let mut bucket = bucket_start;
+        while bucket < bucket_end {
+            let key = format_utc_iso_millis(bucket);
+            if let Some(row) = by_bucket.remove(&key) {
+                trend.push(RetentionBacklogTrendPoint {
+                    bucket_start: row.bucket_start,
+                    state: "observed".to_string(),
+                    observed_at: Some(row.observed_at),
+                    invocation_count: Some(row.invocation_count),
+                    max_overdue_seconds: row.max_overdue_seconds,
+                    retention_days: Some(row.retention_days),
+                    cutoff: Some(row.cutoff),
+                    source_max_invocation_id: row.source_max_invocation_id,
+                });
+            } else {
+                trend.push(RetentionBacklogTrendPoint {
+                    bucket_start: key,
+                    state: "missing".to_string(),
+                    observed_at: None,
+                    invocation_count: None,
+                    max_overdue_seconds: None,
+                    retention_days: None,
+                    cutoff: None,
+                    source_max_invocation_id: None,
+                });
+            }
+            bucket += ChronoDuration::hours(1);
+        }
+        Ok(trend)
+    }
+
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
-        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks ORDER BY task_key")
+        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,schedule_source FROM managed_tasks ORDER BY task_key")
             .fetch_all(&self.pool).await?;
         Ok(tasks
             .into_iter()
@@ -1764,20 +2130,26 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
-        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,is_manual,schedule_source FROM managed_tasks WHERE task_key=?")
+        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,schedule_source FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
         let Some(task) = task.map(decorate_effective_schedule).map(decorate_task) else {
             return Ok(None);
         };
-        let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,stages FROM managed_task_progress WHERE task_key=?")
+        let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages FROM managed_task_progress WHERE task_key=?")
             .bind(task_key).fetch_optional(&self.pool).await?.map(task_progress_from_row);
         let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 10")
             .bind(task_key).fetch_all(&self.pool).await?.into_iter().map(task_run_from_row).collect();
+        let retention_backlog_trend = if task_key == "retention_archive" {
+            Some(self.retention_backlog_trend(Utc::now()).await?)
+        } else {
+            None
+        };
         Ok(Some(ManagedTaskDetail {
             task,
             progress,
             recent_runs,
             performance: None,
+            retention_backlog_trend,
         }))
     }
 
@@ -1798,14 +2170,23 @@ impl MaintenanceStore {
             None
         };
         sqlx::query(
-            "UPDATE managed_tasks SET enabled=?, next_trigger_at=?, updated_at=? WHERE task_key=?",
+            "UPDATE managed_tasks
+             SET enabled=?, next_trigger_at=?,
+                 next_catchup_at=CASE WHEN ? THEN next_catchup_at ELSE NULL END,
+                 catchup_reason=CASE WHEN ? THEN catchup_reason ELSE NULL END,
+                 updated_at=? WHERE task_key=?",
         )
         .bind(enabled as i64)
         .bind(next_trigger_at)
+        .bind(enabled)
+        .bind(enabled)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
         .execute(&self.pool)
         .await?;
+        if task_key == "retention_archive" {
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(true)
     }
 
@@ -1843,6 +2224,9 @@ impl MaintenanceStore {
         };
         sqlx::query("UPDATE managed_tasks SET interval_secs=?, cron_expr=?, next_trigger_at=?, schedule_source='override', updated_at=? WHERE task_key=? AND is_manual=0")
         .bind(interval_secs).bind(cron_expr).bind(next_trigger_at).bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&self.pool).await?;
+        if task_key == "retention_archive" {
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(true)
     }
 
@@ -1913,33 +2297,52 @@ impl MaintenanceStore {
             None
         };
         sqlx::query(
-            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,schedule_source=CASE WHEN ? THEN 'override' ELSE schedule_source END,updated_at=? WHERE task_key=?",
+            "UPDATE managed_tasks
+             SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,
+                 next_catchup_at=CASE WHEN ? THEN next_catchup_at ELSE NULL END,
+                 catchup_reason=CASE WHEN ? THEN catchup_reason ELSE NULL END,
+                 schedule_source=CASE WHEN ? THEN 'override' ELSE schedule_source END,
+                 updated_at=? WHERE task_key=?",
         )
         .bind(next_enabled as i64)
         .bind(next_interval)
         .bind(next_cron)
         .bind(next_trigger_at)
+        .bind(next_enabled)
+        .bind(next_enabled)
         .bind(update_schedule)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
+        if task_key == "retention_archive" {
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(true)
     }
 
     pub(crate) async fn restore_control_state(&self, task: &ManagedTask) -> Result<()> {
         sqlx::query(
-            "UPDATE managed_tasks SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+            "UPDATE managed_tasks
+             SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,
+                 next_catchup_at=CASE WHEN ? THEN next_catchup_at ELSE NULL END,
+                 catchup_reason=CASE WHEN ? THEN catchup_reason ELSE NULL END,
+                 updated_at=? WHERE task_key=?",
         )
         .bind(task.enabled as i64)
         .bind(task.interval_secs)
         .bind(task.cron_expr.as_deref())
         .bind(task.next_trigger_at.as_deref())
+        .bind(task.enabled)
+        .bind(task.enabled)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(&task.task_key)
         .execute(&self.pool)
         .await?;
+        if task.task_key == "retention_archive" {
+            self.sync_retention_progress_schedule().await?;
+        }
         Ok(())
     }
 }
@@ -1951,14 +2354,15 @@ pub(crate) fn path(config: &AppConfig) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
-    use chrono::{Timelike, Utc};
+    use chrono::{Duration as ChronoDuration, Timelike, Utc};
     use sqlx::SqlitePool;
 
     use super::{
-        MANAGED_TASKS, MaintenanceStore, STARTUP_BACKFILL_TASKS, cron_day_matches, ensure_schema,
-        next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
-        validate_cron_expr,
+        MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
+        cron_day_matches, ensure_schema, floor_utc_hour, next_trigger_at, sanitize_task_detail,
+        seed_tasks, task_enabled_by_default, validate_cron_expr,
     };
+    use crate::format_utc_iso_millis;
 
     #[tokio::test]
     async fn schema_repair_preserves_duplicate_active_run_history() {
@@ -2689,5 +3093,191 @@ mod tests {
         assert_eq!(migrated_run.0, "failed");
         assert!(migrated_run.1.is_some());
         assert_eq!(migrated_run.2, Some(0));
+    }
+
+    #[tokio::test]
+    async fn retention_partial_run_schedules_catchup_and_disable_clears_it() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention catch-up fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        let run_id = store
+            .begin_run(
+                "retention_archive",
+                "2026-10-01T00:00:00.000Z",
+                "schedule",
+                None,
+            )
+            .await
+            .expect("begin retention run");
+        store
+            .finish_run_with_observation(
+                run_id,
+                "success",
+                "2026-10-01T00:00:01.000Z",
+                1_000,
+                None,
+                None,
+                Some("partial"),
+                Some("partial"),
+                Some(&serde_json::json!({
+                    "total": 10,
+                    "invocationRowsArchived": 2,
+                    "waitReason": "retention_work_budget"
+                })),
+            )
+            .await
+            .expect("finish retention run");
+        let scheduled = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read catch-up schedule");
+        assert!(scheduled.0.is_some());
+        assert_eq!(scheduled.1.as_deref(), Some("retention_work_budget"));
+
+        store
+            .set_enabled("retention_archive", false)
+            .await
+            .expect("disable retention task");
+        let cleared: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read cleared catch-up schedule");
+        assert_eq!(cleared, (None, None));
+    }
+
+    #[tokio::test]
+    async fn due_retention_catchup_is_enqueued_once_and_keeps_inspection_schedule() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention scheduler fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        let now = Utc::now();
+        let inspection = format_utc_iso_millis(now + ChronoDuration::hours(1));
+        let catchup = format_utc_iso_millis(now - ChronoDuration::seconds(1));
+        sqlx::query(
+            "UPDATE managed_tasks
+             SET next_trigger_at=?, next_catchup_at=?, catchup_reason=?
+             WHERE task_key='retention_archive'",
+        )
+        .bind(&inspection)
+        .bind(&catchup)
+        .bind("retention_work_budget")
+        .execute(&store.pool)
+        .await
+        .expect("seed due catch-up");
+
+        assert_eq!(store.enqueue_due_runs().await.expect("enqueue catch-up"), 1);
+        let run = sqlx::query_as::<_, (String, String)>(
+            "SELECT trigger_kind,status FROM managed_task_runs
+             WHERE task_key='retention_archive' ORDER BY id DESC LIMIT 1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read catch-up run");
+        assert_eq!(run, ("catchup".to_string(), "requested".to_string()));
+        let schedule = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_trigger_at,next_catchup_at FROM managed_tasks
+             WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read advanced schedule");
+        assert_eq!(schedule.0, Some(inspection));
+        assert_eq!(schedule.1, None);
+        assert_eq!(
+            store
+                .enqueue_due_runs()
+                .await
+                .expect("avoid duplicate catch-up"),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn retention_detail_returns_observed_and_missing_hourly_buckets() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention trend fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        let now = Utc::now();
+        let bucket = floor_utc_hour(now);
+        store
+            .record_retention_backlog_observation(RetentionBacklogObservation {
+                bucket_start: format_utc_iso_millis(bucket),
+                observed_at: format_utc_iso_millis(now),
+                invocation_count: 42,
+                max_overdue_seconds: Some(3600),
+                retention_days: 7,
+                cutoff: "2026-09-24 00:00:00".to_string(),
+                source_max_invocation_id: Some(100),
+            })
+            .await
+            .expect("record hourly retention observation");
+        let detail = store
+            .detail("retention_archive")
+            .await
+            .expect("load retention detail")
+            .expect("retention task exists");
+        let trend = detail
+            .retention_backlog_trend
+            .expect("retention trend is present");
+        assert_eq!(trend.len(), 7 * 24);
+        assert!(
+            trend
+                .iter()
+                .any(|point| point.state == "observed" && point.invocation_count == Some(42))
+        );
+        assert!(trend.iter().any(|point| point.state == "missing"));
+
+        store
+            .record_retention_backlog_observation(RetentionBacklogObservation {
+                bucket_start: format_utc_iso_millis(bucket),
+                observed_at: format_utc_iso_millis(now - ChronoDuration::seconds(1)),
+                invocation_count: 7,
+                max_overdue_seconds: Some(99),
+                retention_days: 7,
+                cutoff: "2026-09-24 00:00:00".to_string(),
+                source_max_invocation_id: Some(99),
+            })
+            .await
+            .expect("ignore stale hourly retention observation");
+        store
+            .record_retention_backlog_observation(RetentionBacklogObservation {
+                bucket_start: format_utc_iso_millis(bucket),
+                observed_at: format_utc_iso_millis(now + ChronoDuration::seconds(1)),
+                invocation_count: 0,
+                max_overdue_seconds: None,
+                retention_days: 7,
+                cutoff: "2026-09-24 00:00:00".to_string(),
+                source_max_invocation_id: Some(101),
+            })
+            .await
+            .expect("record latest empty hourly retention observation");
+        let latest = sqlx::query_as::<_, (i64, Option<i64>, Option<i64>)>(
+            "SELECT invocation_count,max_overdue_seconds,source_max_invocation_id
+             FROM retention_backlog_hourly_observations WHERE bucket_start=?",
+        )
+        .bind(format_utc_iso_millis(bucket))
+        .fetch_one(&store.pool)
+        .await
+        .expect("read latest hourly retention observation");
+        assert_eq!(latest, (0, None, Some(101)));
     }
 }

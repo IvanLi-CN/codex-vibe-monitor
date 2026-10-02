@@ -2,9 +2,9 @@
 
 ## Current Status
 
-- Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 的积压追赶、准确停止原因与小时趋势为已收敛需求，尚未实现或验证。
+- Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 已形成当前候选实现，仍需 shared-testbox 容量实测、迁移回归和最终视觉/审查证据。
 - Lifecycle: active。
-- 已发布代码对应最终 topic head `802bbc0da27c791267dfd1240ecc53d60fcaade2`；历史开发基线为 `a02b08f12c84d3c52ce4bae6f2c3e58a31243aab`。新增需求还没有开发候选。
+- 当前候选从 `origin/main@b68295595d875aead33ef31514eaf602279ece94` 建立于 `th/retention-catchup-observability`；交付 commit 在 Step 5C Ready 时补入本记录。
 - 原交付的 shared-testbox 三个资源 profile、旧状态前向修复与 Demo 视觉确认已完成。旧百万行试验验证 Prompt 统计分页收敛，不是 retention 端到端吞吐或 24 小时追赶达标证据。
 
 ## 调查证据与限制
@@ -87,7 +87,7 @@ API 以可选字段或有界历史接口提供已持久化观测、覆盖范围�
 
 ### 新需求的验证缺口
 
-REQ-BRR-016..021 尚无代码候选、迁移或 UI/性能证据。原百万行 benchmark 只运行 Prompt 统计刷新，不执行真实归档链路；其中在线 p95/p99 还高于基线，不能用于通过 VER-BRR-009。
+REQ-BRR-016..021 已有代码候选和定向单元覆盖，但尚无 shared-testbox 的真实 retention 容量卡、完整迁移实证或当前候选的视觉证据。原百万行 benchmark 只运行 Prompt 统计刷新，不执行真实归档链路；其中在线 p95/p99 还高于基线，不能用于通过 VER-BRR-009。
 
 新实测必须运行真实 retention 源行转换、archive 文件准备/证明/发布及 raw 所有权路径，固定百万行存量、倾斜 key、在线读写、文件特征与实际后台竞争，先定义可复现的普通负载；开发基线和候选分别重复三次。每次记录固定 cohort 的剩余量直到实际归零及新增过期量，不能仅用几分钟速率推算 24 小时达标。对线上负载的校准仅使用不含 payload/身份的聚合信息，不复制生产数据库。持续高压另作压力场景，不能偷偷减少代表性在线负载以通过目标。
 
@@ -160,14 +160,14 @@ REQ-BRR-016..021 尚无代码候选、迁移或 UI/性能证据。原百万行 b
 | REQ-BRR-012                     | `src/performance_telemetry.rs`                                                                                                                          | 已修正半开相交桶、覆盖率和最新有样本桶选择；非整点窗口回归已通过                                                                                         |
 | REQ-BRR-008/009/010/011/013/015 | `web/src/lib/api/core-foundation.ts`, `web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/pages/system/taskLabels.ts`, `web/src/demo/handlers.ts` | 已发布可选字段兼容、成果/阶段/单位/计划、未知/过期/统计待刷新显示；原交付的 Storybook、Web 单测、typecheck、lint、build、任务页 E2E 及视觉确认已完成     |
 | REQ-BRR-014                     | `src/maintenance_store.rs`, `src/prompt_cache_conversations.rs`, `src/tests/stateful_sqlite/*`                                                          | 已实现幂等 DDL、主库续作结构、维护库 nullable 字段和代次回归；v2.71.45/v2.80.2 前向修复、重复 DDL、中断 staging/generation 保留及 ready 不回填回归已通过 |
-| REQ-BRR-016/018                 | `src/runtime.rs`, `src/maintenance/retention.rs`, `src/db_pressure.rs`, `src/proxy_sqlite_write_coordinator.rs`, `src/maintenance_store.rs`             | 未实现；需要同一 owner 的自动接续、公平准入、逐批适应、真实停止原因及禁用/恢复回归                                                                       |
+| REQ-BRR-016/018                 | `src/runtime.rs`, `src/maintenance/retention.rs`, `src/db_pressure.rs`, `src/proxy_sqlite_write_coordinator.rs`, `src/maintenance_store.rs`             | 已实现单一 owner 的 catch-up 资格、原因退避、禁用清除及逐批自适应限制；仍需压力/恢复和公平性 shared-testbox 证据                                         |
 | REQ-BRR-017                     | retention 真实发布链路与 shared-testbox 端到端实验                                                                                                      | 未验证；普通负载的固定存量 24 小时归零和在线 p95/p99 对照不能由旧 Prompt benchmark 代替                                                                  |
-| REQ-BRR-019/020                 | `src/maintenance_store.rs`, retention cutoff/时间解析与独立后台采样入口                                                                                 | 未实现；需要准确同次采样、独立小时历史、自然日资格计算、预算及迁移验证                                                                                   |
-| REQ-BRR-021                     | 任务 API、`web/src/pages/system/SystemTaskDetailPage.tsx`、Demo/Storybook                                                                               | 未实现；需要 7 天两指标图表、缺口/新鲜度/旧字段兼容及桌面移动端证据                                                                                      |
+| REQ-BRR-019/020                 | `src/maintenance_store.rs`, `src/maintenance/retention.rs`, runtime observer                                                                            | 已实现 2 秒 SQLite 进度取消、同快照 COUNT/最早资格候选、UTC 小时幂等历史和缺测填充；仍需自然日/故障/迁移及锁释放实证                                     |
+| REQ-BRR-021                     | 任务 API、`web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/lib/api/core-foundation.ts`, Demo/Storybook                                         | 已实现可选 trend API、7 天双图、观测时间/策略 tooltip、缺测断线和追赶字段；仍需桌面/移动视觉证据与交互回归                                               |
 
 ## Compatibility and Migration
 
-已发布基础实现：public API 为 patch（原有字段及 status 保留，新增可选字段），持久化语义为 minor（新的跨页及孤儿续作状态只承诺前向恢复），整体按 minor 发布。原交付记录见 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)。这些记录不包含新增小时历史、自动追赶调度语义或其迁移；新增范围需要在实现候选形成后单独分类并补充验证。
+当前候选仍按 minor 评估：public API 保留原字段及 status 并只增加可选字段；维护库新增小时观测表和任务追赶状态采用幂等前向迁移，旧 Minor 程序不承诺维护新状态。记录见 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)；24 小时容量和最终 release 分类仍未验证。
 
 主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等且不历史扫描；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
 
@@ -175,19 +175,19 @@ REQ-BRR-016..021 尚无代码候选、迁移或 UI/性能证据。原百万行 b
 
 ## Verification and Remaining Gaps
 
-原交付已完成：Rust `cargo fmt --all -- --check`、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings`；Prompt 统计代次/分页、预算入口、retention 和性能窗口定向回归；Web 单测 1,682 项通过、typecheck、lint（仅既有 warning）和 build；Storybook 136 项通过；任务页 E2E 7/7 通过。shared-testbox 三 profile 通过：lightweight 1,246/1,246、stateful-sqlite 1,375/1,375、archive-file-io 299/299。profile 耗时不作为吞吐结论，百万行对照单独记录在 benchmark card；这些旧结果不覆盖新增需求。
+当前候选已完成 Rust fmt/check、维护库 24 项定向回归和 Web typecheck；完整 Clippy、三个 shared-testbox profile、Web 单测/lint/build、Storybook、任务页 E2E、迁移夹具及容量卡仍待当前 head 验证。profile 耗时不作为吞吐结论，旧百万行对照单独记录在 benchmark card；这些旧结果不覆盖新增需求。
 
-百万行同种子对照也已完成：同一测试机上候选 130 万行/热 key 50 万行，刷新 370.8s、在线读 p95/p99 为 238/290ms；开发基线刷新 101.7s、在线读 p95/p99 为 230/253ms；两者精确计数均为 500,000 且队列归零。候选读延迟在本次负载下略高于基线，分页提交带来的总刷新耗时约为基线 3.65 倍，不能把有界执行表述为吞吐提升；证据卡保留该限制。
+上一轮百万行同种子对照只覆盖 Prompt 统计物化：候选 130 万行/热 key 50 万行的刷新耗时为 370.8s，开发基线为 101.7s，在线读 p95/p99 也有差异。它没有执行真实 retention 归档、Verified Archive 提交或固定 cohort 清空，因此不能作为本计划 A7 容量证据；新的 retention capacity card 仍待 shared-testbox 取得有效三次基线/候选结果。
 
-原 Demo 视觉已获确认。仍未验证的是 REQ-BRR-016..021 的自动追赶、公平性/真实停止原因、24 小时存量归零、在线延迟不劣于基线、独立小时采样与新图表；对应 VER-BRR-008..011。任何缺少该证据的验收项保持未验证，不降低门槛。
+旧 Demo 视觉已获确认。当前候选仍需证明自动追赶、公平性/真实停止原因、24 小时存量归零、在线延迟不劣于基线、独立小时采样与新图表；对应 VER-BRR-008..011。任何缺少该证据的验收项保持未验证，不降低门槛。
 
 实施验收对应 SPEC 的 VER-BRR-001..007。代表性大表至少包含超过百万 invocation、稀疏孤儿和单 key 倾斜；同时施加在线读写，验证有界查询、主库锁释放、公平推进及静默后统计收敛。性能门槛不能用 4,000-key/40,000-invocation 小 fixture 代替，也不能从生产的历史时间倒推保证。
 
-Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据；主人已确认当前桌面、移动端和 partial 状态截图准确。
+Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据；当前候选截图等待主人确认，确认前不作为 owner-facing 视觉证据。
 
 ## Visual Evidence
 
-最终 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新。当前截图来自本地 Demo，主人已确认截图准确；这些截图是 owner-facing 的本地 Demo 证据，不冒充生产页面。
+原交付 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。当前候选新增了追赶字段和 7 天双图，Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新；新的桌面/移动截图已生成，待主人确认后再作为 owner-facing 证据写入规范资产。
 
 - [桌面任务详情](assets/retention-task-desktop.png)
 - [移动端完成状态](assets/retention-task-mobile.png)

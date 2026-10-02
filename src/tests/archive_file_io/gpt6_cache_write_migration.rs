@@ -327,3 +327,42 @@ async fn retention_recovery_accepts_prepared_archives_with_legacy_source_identit
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
+
+#[tokio::test]
+async fn retention_recovery_discards_missing_unpublished_prepared_journal() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("missing-prepared-journal").await;
+    let archive_path = config.archive_dir.join(
+        "codex_invocations/2026/07/02/part-0000000000000001-0000000000000040-missing.sqlite.gz",
+    );
+    fs::create_dir_all(archive_path.parent().expect("missing archive path parent"))
+        .expect("create missing archive path parent");
+    sqlx::query(
+        r#"
+        INSERT INTO retention_prepared_archives (
+            prepared_key, dataset, month_key, day_key, part_key, file_path,
+            source_ids_json, source_identity_sha256, state, attempt_count
+        ) VALUES ('missing-prepared-journal', 'codex_invocations', '2026-07', '2026-07-02',
+                  'part-0000000000000001-0000000000000040-missing', ?1, '[]', 'missing', 'preparing', 1)
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("seed missing prepared journal");
+
+    reconcile_retention_prepared_archives_for_test(&pool, &config)
+        .await
+        .expect("reconcile missing prepared journal");
+
+    let remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM retention_prepared_archives WHERE prepared_key = 'missing-prepared-journal'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count missing prepared journal");
+    assert_eq!(remaining, 0);
+    assert!(!archive_path.exists());
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}

@@ -362,6 +362,21 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
 
 const STORYBOOK_MANAGED_TASKS: ManagedTask[] = demoManagedTasks();
 
+const STORYBOOK_RETENTION_BACKLOG_TREND = Array.from({ length: 7 * 24 }, (_, index) => {
+  const bucket = new Date(Date.parse("2026-10-01T00:00:00Z") - (7 * 24 - index) * 3600_000);
+  const missing = index % 19 === 0;
+  return {
+    bucketStart: bucket.toISOString(),
+    state: missing ? "missing" : "observed",
+    observedAt: missing ? null : new Date(bucket.getTime() + 55 * 60_000).toISOString(),
+    invocationCount: missing ? null : Math.max(0, 128_000 - index * 320),
+    maxOverdueSeconds: missing ? null : Math.max(0, 8 * 24 * 3600 - index * 1800),
+    retentionDays: 7,
+    cutoff: new Date(bucket.getTime() - 7 * 24 * 3600_000).toISOString(),
+    sourceMaxInvocationId: missing ? null : 1_000_000 + index * 2_048,
+  };
+});
+
 const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   task: STORYBOOK_MANAGED_TASKS[0],
   progress: {
@@ -377,6 +392,9 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
     lastProgressAt: "2026-10-01T00:12:30Z",
     waitReason: "prompt_cache_materialization_pending",
     nextRetryAt: "2026-10-01T00:13:00Z",
+    nextInspectionAt: "2026-10-01T01:00:00Z",
+    nextCatchupAt: "2026-10-01T00:13:00Z",
+    catchupState: "scheduled",
     stages: [
       { name: "archive", status: "running", completed: 96_000, total: 128_000 },
       {
@@ -427,6 +445,7 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
     observedAt: "2026-10-01T00:12:30Z",
     coverage: 0.92,
   },
+  retentionBacklogTrend: STORYBOOK_RETENTION_BACKLOG_TREND,
 };
 
 function retentionTaskDetailForState(
@@ -435,6 +454,12 @@ function retentionTaskDetailForState(
   const detail = clone(STORYBOOK_RETENTION_TASK_DETAIL);
   const run = detail.recentRuns[0];
   if (!run || !detail.progress) return detail;
+  const catchupState = state === "deferred" || state === "recoverable" ? "scheduled" : "idle";
+  detail.task = {
+    ...detail.task,
+    nextCatchupAt: catchupState === "scheduled" ? detail.progress.nextCatchupAt : null,
+    catchupReason: catchupState === "scheduled" ? detail.progress.waitReason : null,
+  };
   if (state === "completed") {
     detail.progress = {
       ...detail.progress,
@@ -443,6 +468,8 @@ function retentionTaskDetailForState(
       freshness: "fresh",
       waitReason: null,
       nextRetryAt: null,
+      nextCatchupAt: null,
+      catchupState: "idle",
       stages: detail.progress.stages?.map((stage) => ({
         ...stage,
         status: "completed",
@@ -471,6 +498,8 @@ function retentionTaskDetailForState(
       freshness: "fresh",
       waitReason: "sqlite_pressure",
       nextRetryAt: "2026-10-01T00:13:00Z",
+      nextCatchupAt: "2026-10-01T00:13:00Z",
+      catchupState: "scheduled",
       stages: detail.progress.stages?.map((stage) => ({
         ...stage,
         status: "deferred",
@@ -1960,6 +1989,9 @@ export const RetentionTaskDetail: Story = {
     await expect(canvas.getByText("invocations")).toBeVisible();
     await expect(canvas.getByText("partial")).toBeVisible();
     await expect(canvas.getByText("暂不可用（积压 3）")).toBeVisible();
+    await expect(canvas.getByRole("heading", { name: "最近 7 天归档积压" })).toBeVisible();
+    await expect(canvas.getByText("待归档 invocation 条数")).toBeVisible();
+    await expect(canvas.getByText("最长逾期时间（小时）")).toBeVisible();
     await expect(canvas.getByText("prompt_cache")).toBeVisible();
     await expect(canvas.getByText("92.0%")).toBeVisible();
   },
