@@ -1,11 +1,19 @@
 use super::*;
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 const DEFAULT_TOTAL_ROWS: usize = 1_300_000;
 const DEFAULT_HOT_ROWS: usize = 500_000;
 const INSERT_BATCH: usize = 1_000;
 const ONLINE_SAMPLES: usize = 512;
 const ORPHAN_FILES: usize = 64;
+const RAW_LINKED_ROWS: usize = 64;
+const CONTINUOUS_NEW_ROWS: usize = 1_024;
 const HOT_KEY: &str = "retention-capacity-hot-key";
 
 fn benchmark_total_rows() -> usize {
@@ -60,6 +68,19 @@ async fn seed_retention_capacity_fixture(pool: &SqlitePool, config: &AppConfig) 
     let total_rows = benchmark_total_rows();
     let hot_rows = benchmark_hot_rows(total_rows);
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    let raw_dir = &config.proxy_raw_dir;
+    for index in 0..RAW_LINKED_ROWS {
+        fs::write(
+            raw_dir.join(format!("retention-capacity-linked-request-{index:03}.bin")),
+            b"linked-request-fixture",
+        )
+        .expect("write linked request raw fixture");
+        fs::write(
+            raw_dir.join(format!("retention-capacity-linked-response-{index:03}.bin")),
+            b"linked-response-fixture",
+        )
+        .expect("write linked response raw fixture");
+    }
     let mut transaction = pool
         .begin()
         .await
@@ -67,7 +88,7 @@ async fn seed_retention_capacity_fixture(pool: &SqlitePool, config: &AppConfig) 
     for start in (0..total_rows).step_by(INSERT_BATCH) {
         let end = (start + INSERT_BATCH).min(total_rows);
         let mut query = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) ",
+            "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response,request_raw_path,request_raw_codec,request_raw_size,response_raw_path,response_raw_codec,response_raw_size) ",
         );
         query.push_values(start..end, |mut row, index| {
             let payload = if index < hot_rows {
@@ -75,6 +96,18 @@ async fn seed_retention_capacity_fixture(pool: &SqlitePool, config: &AppConfig) 
             } else {
                 "{}".to_string()
             };
+            let request_raw_path = (index < RAW_LINKED_ROWS).then(|| {
+                raw_dir
+                    .join(format!("retention-capacity-linked-request-{index:03}.bin"))
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            let response_raw_path = (index < RAW_LINKED_ROWS).then(|| {
+                raw_dir
+                    .join(format!("retention-capacity-linked-response-{index:03}.bin"))
+                    .to_string_lossy()
+                    .into_owned()
+            });
             row.push_bind(format!("retention-capacity-{index:07}"))
                 .push_bind(&occurred_at)
                 .push_bind(SOURCE_PROXY)
@@ -82,7 +115,13 @@ async fn seed_retention_capacity_fixture(pool: &SqlitePool, config: &AppConfig) 
                 .push_bind(7_i64)
                 .push_bind(0.07_f64)
                 .push_bind(payload)
-                .push_bind("{}");
+                .push_bind("{}")
+                .push_bind(request_raw_path)
+                .push_bind("identity")
+                .push_bind(22_i64)
+                .push_bind(response_raw_path)
+                .push_bind("identity")
+                .push_bind(23_i64);
         });
         query
             .build()
@@ -131,6 +170,15 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     let cohort = seed_retention_capacity_fixture(&pool, &config).await;
     restore_invocation_triggers(&pool, &invocation_triggers).await;
     sqlx::query(
+        "UPDATE codex_invocations
+         SET request_raw_path=request_raw_path,
+             response_raw_path=response_raw_path
+         WHERE request_raw_path IS NOT NULL OR response_raw_path IS NOT NULL",
+    )
+    .execute(&pool)
+    .await
+    .expect("restore raw blob links after fixture load");
+    sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_codex_invocations_occurred_at_id ON codex_invocations (occurred_at, id)",
     )
     .execute(&pool)
@@ -176,13 +224,29 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         samples
     });
     let writer_pool = online_pool.clone();
+    let stop_writer = Arc::new(AtomicBool::new(false));
+    let writer_stop = stop_writer.clone();
+    let writer_expired_at =
+        shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     let writer = tokio::spawn(async move {
-        for _ in 0..ONLINE_SAMPLES {
+        for index in 0..CONTINUOUS_NEW_ROWS {
+            if writer_stop.load(Ordering::Relaxed) {
+                break;
+            }
             let mut lock_retries = 0_u16;
             loop {
                 let result = sqlx::query(
-                    "INSERT INTO retention_capacity_online_writes(written_at) VALUES (STRFTIME('%Y-%m-%dT%H:%M:%fZ','now'))",
+                    "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response)
+                     VALUES (?,?,?,?,?,?,?,?)",
                 )
+                .bind(format!("retention-capacity-online-{index:07}"))
+                .bind(&writer_expired_at)
+                .bind(SOURCE_PROXY)
+                .bind("success")
+                .bind(1_i64)
+                .bind(0.01_f64)
+                .bind("{}")
+                .bind("{}")
                 .execute(&writer_pool)
                 .await
                 .map_err(anyhow::Error::from);
@@ -196,7 +260,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
                 }
             }
             tokio::task::yield_now().await;
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
     });
 
@@ -296,6 +360,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
             "retention pass made no archive progress while the fixed cohort remained"
         );
     }
+    stop_writer.store(true, Ordering::Relaxed);
     let read_samples = reader.await.expect("join online retention reader");
     writer.await.expect("join online retention writer");
     let elapsed_ms = started_at.elapsed().as_millis();
@@ -309,10 +374,20 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
     .expect("verify fixed cohort completion");
     assert_eq!(remaining, 0);
     assert_eq!(observed_archived, cohort);
+    let raw_links_remaining: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM proxy_raw_payload_blob_links WHERE owner_kind='invocation' AND owner_id <= ?",
+    )
+    .bind(cohort_source_max)
+    .fetch_one(&pool)
+    .await
+    .expect("count fixed-cohort raw links");
+    assert_eq!(raw_links_remaining, 0);
     eprintln!(
-        "retention-capacity-{run_label} total_rows={} hot_rows={} orphan_files={} cohort_source_max={} runs={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} no_progress_retries={} online_samples={} read_p95_us={} read_p99_us={} remaining={}",
+        "retention-capacity-{run_label} total_rows={} hot_rows={} raw_linked_rows={} new_expired_rows={} orphan_files={} cohort_source_max={} runs={} adaptive={} elapsed_ms={} summary_archived={} observed_archived={} budget_exhausted_runs={} lock_retries={} recoverable_retries={} no_progress_retries={} online_samples={} read_p95_us={} read_p99_us={} raw_links_remaining={} remaining={}",
         total_rows,
         hot_rows,
+        RAW_LINKED_ROWS,
+        CONTINUOUS_NEW_ROWS,
         ORPHAN_FILES,
         cohort_source_max,
         run_count,
@@ -327,6 +402,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         read_samples.len(),
         percentile_micros(&read_samples, 95),
         percentile_micros(&read_samples, 99),
+        raw_links_remaining,
         remaining,
     );
 

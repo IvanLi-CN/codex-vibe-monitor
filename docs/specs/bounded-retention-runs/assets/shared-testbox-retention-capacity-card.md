@@ -37,3 +37,5 @@ This is a useful harness regression result: the old implementation could not sub
 - Three-run statistical median: not claimed. This card records one candidate run and two controlled baseline rounds showing the same bounded-throughput failure; it does not turn that limitation into a pass.
 
 The baseline failure and harness scope mean the full A7 “candidate versus three-run baseline p95/p99 median” comparison is not satisfied by this card. The candidate shows bounded database-row progress under the same online probe, ending with a zero fixed cohort; this card does not establish 24-hour production capacity, continuous new-expiry handling, or complete raw-file Verified Archive behavior.
+
+The benchmark source now includes a follow-up fixture with invocation-linked request/response raw files and a writer that inserts new expired invocations outside the fixed source cohort. That follow-up harness passed a small 2,000-row smoke run locally, but has not yet produced a shared-testbox release-build result and is not included in the capacity numbers above.
