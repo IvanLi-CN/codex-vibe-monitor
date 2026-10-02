@@ -6,7 +6,7 @@
 
 `web/src/components/ui/` 是当前基础组件层的实现真相源，重点包括：
 
-- `web/src/components/ui/button.tsx`：`default / secondary / outline / ghost / destructive` 五种按钮语义，以及 `default / sm / lg / icon` 四种尺寸。
+- `web/src/components/ui/button.tsx`：`default / secondary / outline / ghost / destructive` 五种按钮语义，以及 `xs / default / sm / lg / icon` 五种尺寸。
 - `web/src/components/ui/input.tsx`：标准输入框，包含边框、placeholder、focus ring、disabled 透明度约束。
 - `web/src/components/ui/card.tsx`：`Card / CardHeader / CardTitle / CardDescription / CardContent / CardFooter`，默认外观由 `surface-card` 提供。
 - `web/src/components/ui/chip.tsx`：所有文本 chip 的唯一公开入口；提供 8 个 semantic tone、10 个 categorical tone、`micro / compact / default / header / mailbox / square` 六档 preset，以及 `asChild` 交互渲染。

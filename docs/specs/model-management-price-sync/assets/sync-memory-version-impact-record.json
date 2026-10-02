@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add system-shared and durable models.dev provider/model selection memory, exact quote-provider choices, and first-discovery/view state.",
+    "release_unit_description": "System Models page sync-memory API, additive SQLite state, and reviewed price synchronization.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "The state API and preview fields are additive. New persistent service-owned state is a user-visible capability and uses additive tables without backfilling or rewriting prior model, price, preset, or cost data.",
+      "assessed_at": "2026-10-01T22:01:46Z",
+      "evidence": [
+        "docs/specs/model-management-price-sync/SPEC.md",
+        "docs/adr/0026-service-owned-price-sync-memory.md",
+        "docs/specs/model-management-price-sync/assets/sync-memory-persistent-state-migration-record.json"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "Implementation remains within the approved additive API and SQLite sync-memory contract."
+      },
+      "reasoning": "The sync-state endpoint and preview additions preserve existing request behavior. Five additive tables hold only new sync-review preferences and discovery state; existing prices, presets, and invocation costs are not transformed.",
+      "reassessed_at": "2026-10-01T23:05:20Z",
+      "evidence": [
+        "docs/specs/model-management-price-sync/SPEC.md",
+        "docs/specs/model-management-price-sync/assets/sync-memory-persistent-state-migration-record.json",
+        "src/api/slices/model_management.rs",
+        "src/models_dev_sync_memory.rs"
+      ]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "The additive sync-state API, transactional persistence, restart behavior, and unchanged existing model/pricing state are verified by the scoped compatibility evidence.",
+      "verified_at": "2026-10-01T23:05:20Z",
+      "evidence": [
+        "docs/specs/model-management-price-sync/IMPLEMENTATION.md",
+        "src/tests/stateful_sqlite/models_dev_sync_memory.rs",
+        "web/src/pages/system/SystemModelsPage.test.tsx",
+        "web/src/features/system/SystemWorkspace.stories.tsx"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing clients may continue using the prior preview and apply contracts; the state route and preview metadata are additive.",
+      "evidence": [
+        "docs/specs/model-management-price-sync/SPEC.md",
+        "src/api/slices/model_management.rs",
+        "src/tests/stateful_sqlite/models_dev_sync_memory.rs",
+        "web/src/lib/api/types.ts",
+        "web/src/pages/system/SystemModelsPage.test.tsx"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Service-shared model/provider selections, quote-provider choices, catalog baseline metadata, and discovered/viewed model IDs.",
+      "source_program_compatibility_range": "Earlier repository versions with managed-model and pricing tables but before the additive sync-memory tables; direct Major skips are not claimed.",
+      "evidence": [
+        "docs/specs/model-management-price-sync/assets/sync-memory-persistent-state-migration-record.json",
+        "src/models_dev_sync_memory.rs",
+        "src/tests/stateful_sqlite/models_dev_sync_memory.rs"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json",
+      "docs/specs/model-management-price-sync/assets/sync-memory-persistent-state-migration-record.json"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "verified public_api=patch",
+      "verified persistent_state=minor",
+      "verified release unit=max(public_api,persistent_state)=minor"
+    ]
+  }
+}

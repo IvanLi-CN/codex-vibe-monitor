@@ -1,13 +1,15 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { managedTasks as demoManagedTasks } from "../../demo/handlers";
 import { I18nProvider } from "../../i18n";
 import type {
   ExternalApiKeySummary,
   ManagedTask,
   ManagedTaskDetail,
+  ModelsDevSyncMemoryPatch,
+  ModelsDevSyncMemoryState,
   ModelsDevSyncPreview,
   PricingEntry,
   SettingsPayload,
@@ -488,7 +490,11 @@ function retentionTaskDetailForState(
         coreCompletion: "deferred",
         budgetExhausted: false,
         waitReason: "sqlite_pressure",
-        promptCacheStats: { state: "unavailable", pending: 3, reason: "sqlite_pressure" },
+        promptCacheStats: {
+          state: "unavailable",
+          pending: 3,
+          reason: "sqlite_pressure",
+        },
       },
     });
   } else if (state === "failed") {
@@ -497,7 +503,10 @@ function retentionTaskDetailForState(
       phase: "failed",
       freshness: "fresh",
       waitReason: "fatal_error",
-      stages: detail.progress.stages?.map((stage) => ({ ...stage, status: "failed" })),
+      stages: detail.progress.stages?.map((stage) => ({
+        ...stage,
+        status: "failed",
+      })),
     };
     Object.assign(run, {
       status: "failed",
@@ -511,7 +520,11 @@ function retentionTaskDetailForState(
         budgetExhausted: false,
         waitReason: "fatal_error",
         fatalError: "archive artifact verification failed",
-        promptCacheStats: { state: "unknown", pending: null, reason: "fatal_error" },
+        promptCacheStats: {
+          state: "unknown",
+          pending: null,
+          reason: "fatal_error",
+        },
       },
     });
   } else if (state === "recoverable") {
@@ -674,7 +687,11 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
         penalized: false,
         stats: {
           oneMinute: { attempts: 14, successRate: 0.93, avgLatencyMs: 182 },
-          fifteenMinutes: { attempts: 168, successRate: 0.94, avgLatencyMs: 190 },
+          fifteenMinutes: {
+            attempts: 168,
+            successRate: 0.94,
+            avgLatencyMs: 190,
+          },
           oneHour: { attempts: 672, successRate: 0.94, avgLatencyMs: 204 },
           oneDay: { attempts: 1612, successRate: 0.95, avgLatencyMs: 216 },
           sevenDays: { attempts: 9120, successRate: 0.95, avgLatencyMs: 228 },
@@ -689,7 +706,11 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
         penalized: false,
         stats: {
           oneMinute: { attempts: 10, successRate: 0.88, avgLatencyMs: 236 },
-          fifteenMinutes: { attempts: 134, successRate: 0.9, avgLatencyMs: 242 },
+          fifteenMinutes: {
+            attempts: 134,
+            successRate: 0.9,
+            avgLatencyMs: 242,
+          },
           oneHour: { attempts: 588, successRate: 0.91, avgLatencyMs: 255 },
           oneDay: { attempts: 1450, successRate: 0.91, avgLatencyMs: 269 },
           sevenDays: { attempts: 8220, successRate: 0.92, avgLatencyMs: 278 },
@@ -771,11 +792,23 @@ const STORYBOOK_MODELS_SETTINGS: SettingsPayload = {
 const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
   fetchedAt: "2026-09-30T00:00:00Z",
   providerCount: 3,
-  candidateCount: 4,
+  candidateCount: 5,
   providers: [
-    { id: "openai", name: "OpenAI", docUrl: "https://platform.openai.com/docs" },
-    { id: "openrouter", name: "OpenRouter", docUrl: "https://openrouter.ai/docs" },
-    { id: "deepseek", name: "DeepSeek", docUrl: "https://api-docs.deepseek.com/" },
+    {
+      id: "openai",
+      name: "OpenAI",
+      docUrl: "https://platform.openai.com/docs",
+    },
+    {
+      id: "openrouter",
+      name: "OpenRouter",
+      docUrl: "https://openrouter.ai/docs",
+    },
+    {
+      id: "deepseek",
+      name: "DeepSeek",
+      docUrl: "https://api-docs.deepseek.com/",
+    },
   ],
   candidates: [
     {
@@ -784,6 +817,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openai",
       providerName: "OpenAI",
       docUrl: "https://platform.openai.com/docs",
+      status: null,
       inputPer1m: 2.25,
       outputPer1m: 11,
       cacheReadPer1m: 0.22,
@@ -798,6 +832,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openrouter",
       providerName: "OpenRouter",
       docUrl: "https://openrouter.ai/docs",
+      status: null,
       inputPer1m: 2.5,
       outputPer1m: 12,
       cacheReadPer1m: null,
@@ -812,6 +847,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "openrouter",
       providerName: "OpenRouter",
       docUrl: "https://openrouter.ai/docs",
+      status: "beta",
       inputPer1m: 3.5,
       outputPer1m: 17,
       cacheReadPer1m: 0.35,
@@ -826,6 +862,7 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       providerId: "deepseek",
       providerName: "DeepSeek",
       docUrl: "https://api-docs.deepseek.com/",
+      status: null,
       inputPer1m: 0.28,
       outputPer1m: 0.42,
       cacheReadPer1m: 0.028,
@@ -834,8 +871,73 @@ const STORYBOOK_MODELS_DEV_PREVIEW: ModelsDevSyncPreview = {
       unsupportedDimensions: ["batch", "image"],
       importable: true,
     },
+    {
+      model: "gpt-4o-mini-legacy",
+      name: "GPT-4o mini legacy",
+      providerId: "openai",
+      providerName: "OpenAI",
+      docUrl: "https://platform.openai.com/docs",
+      status: "deprecated",
+      inputPer1m: 0.15,
+      outputPer1m: 0.6,
+      cacheReadPer1m: null,
+      cacheWritePer1m: null,
+      reasoningPer1m: null,
+      unsupportedDimensions: [],
+      importable: true,
+    },
   ],
+  syncState: {
+    catalogBaselineInitialized: true,
+    providerSelectionInitialized: true,
+    providerSelections: [
+      { providerId: "openai", selected: true },
+      { providerId: "openrouter", selected: true },
+      { providerId: "deepseek", selected: true },
+    ],
+    modelSelections: [
+      { model: "gpt-6-sol", providerId: "openai", selected: false },
+      { model: "gpt-6-sol", providerId: "openrouter", selected: true },
+      { model: "claude-sonnet-4", providerId: "openrouter", selected: false },
+      { model: "deepseek-v3.2", providerId: "deepseek", selected: false },
+      { model: "gpt-4o-mini-legacy", providerId: "openai", selected: false },
+    ],
+    quoteProviderChoices: [{ model: "gpt-6-sol", providerId: "openrouter" }],
+    unviewedModelIds: ["deepseek-v3.2"],
+  },
 };
+
+const STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW: ModelsDevSyncPreview = (() => {
+  const template = STORYBOOK_MODELS_DEV_PREVIEW.candidates.find(
+    (candidate) => candidate.model === "deepseek-v3.2",
+  );
+  if (!template) throw new Error("Storybook viewport fixture needs a DeepSeek candidate");
+  const filler = Array.from({ length: 18 }, (_, index) => ({
+    ...template,
+    model: `sync-viewport-${String(index).padStart(2, "0")}`,
+    name: `Viewport model ${index + 1}`,
+  }));
+  const newlyDiscovered = {
+    ...template,
+    model: "zz-model-view-lifecycle",
+    name: "Viewport lifecycle model",
+  };
+  const additionalProviders = Array.from({ length: 24 }, (_, index) => {
+    const providerNumber = String(index + 1).padStart(2, "0");
+    return {
+      id: `scroll-provider-${providerNumber}`,
+      name: `Scrollable Provider ${providerNumber}`,
+      docUrl: null,
+    };
+  });
+  return {
+    ...STORYBOOK_MODELS_DEV_PREVIEW,
+    providerCount: STORYBOOK_MODELS_DEV_PREVIEW.providers.length + additionalProviders.length,
+    providers: [...STORYBOOK_MODELS_DEV_PREVIEW.providers, ...additionalProviders],
+    candidateCount: STORYBOOK_MODELS_DEV_PREVIEW.candidates.length + filler.length + 1,
+    candidates: [...STORYBOOK_MODELS_DEV_PREVIEW.candidates, ...filler, newlyDiscovered],
+  };
+})();
 
 const STORYBOOK_EXTERNAL_API_KEYS: ExternalApiKeySummary[] = [
   {
@@ -858,10 +960,20 @@ function buildSystemWorkspaceRequestHandler(
   settingsOverride?: SettingsPayload,
   failFirstModelsPreview = false,
   retentionTaskDetailOverride?: ManagedTaskDetail,
+  syncMemoryOverride?: ModelsDevSyncMemoryState,
+  failModelSelectionSave = false,
+  modelsDevPreviewOverride?: ModelsDevSyncPreview,
+  delayViewedAcknowledgment = false,
+  delaySelectionMemorySaveMs = 0,
+  delayModelSyncApplyMs = 0,
+  failFirstModelsApply = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
+  let modelSelectionFailuresRemaining = failModelSelectionSave ? 1 : 0;
+  let modelApplyFailuresRemaining = failFirstModelsApply ? 1 : 0;
+  let syncMemory = clone(syncMemoryOverride ?? STORYBOOK_MODELS_DEV_PREVIEW.syncState);
   const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
   const currentManagedTasks = () =>
     STORYBOOK_MANAGED_TASKS.map((task) => ({
@@ -1082,16 +1194,70 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse({ items: clone(STORYBOOK_EXTERNAL_API_KEYS) });
     }
 
+    if (url.pathname === "/api/settings/models/sync/state" && method === "GET") {
+      return jsonResponse(clone(syncMemory));
+    }
+
+    if (url.pathname === "/api/settings/models/sync/state" && method === "PATCH") {
+      const body = parseBody<ModelsDevSyncMemoryPatch>({});
+      if (delayViewedAcknowledgment && (body.viewedModelIds?.length ?? 0) > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      if (
+        delaySelectionMemorySaveMs > 0 &&
+        ((body.modelSelections?.length ?? 0) > 0 || (body.providerSelections?.length ?? 0) > 0)
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, delaySelectionMemorySaveMs));
+      }
+      if ((body.modelSelections?.length ?? 0) > 0 && modelSelectionFailuresRemaining > 0) {
+        modelSelectionFailuresRemaining -= 1;
+        return jsonResponse({ message: "Selection memory is temporarily unavailable" }, 502);
+      }
+      const providers = new Map(
+        syncMemory.providerSelections.map((item) => [item.providerId, item]),
+      );
+      body.providerSelections?.forEach((item) => providers.set(item.providerId, item));
+      const selections = new Map(
+        syncMemory.modelSelections.map((item) => [`${item.model}\\0${item.providerId}`, item]),
+      );
+      body.modelSelections?.forEach((item) =>
+        selections.set(`${item.model}\\0${item.providerId}`, item),
+      );
+      const quoteChoices = new Map(
+        syncMemory.quoteProviderChoices.map((item) => [item.model, item]),
+      );
+      body.quoteProviderChoices?.forEach((item) => quoteChoices.set(item.model, item));
+      const viewedModelIds = new Set(body.viewedModelIds ?? []);
+      syncMemory = {
+        ...syncMemory,
+        providerSelections: Array.from(providers.values()),
+        modelSelections: Array.from(selections.values()),
+        quoteProviderChoices: Array.from(quoteChoices.values()),
+        unviewedModelIds: syncMemory.unviewedModelIds.filter((model) => !viewedModelIds.has(model)),
+      };
+      return jsonResponse(clone(syncMemory));
+    }
+
     if (url.pathname === "/api/settings/models/sync/preview" && method === "POST") {
       if (previewFailuresRemaining > 0) {
         previewFailuresRemaining -= 1;
         return jsonResponse({ message: "models.dev is temporarily unavailable" }, 502);
       }
-      return jsonResponse(clone(STORYBOOK_MODELS_DEV_PREVIEW));
+      return jsonResponse({
+        ...clone(modelsDevPreviewOverride ?? STORYBOOK_MODELS_DEV_PREVIEW),
+        syncState: clone(syncMemory),
+      });
     }
 
     if (url.pathname === "/api/settings/models/sync/apply" && method === "POST") {
       const body = parseBody<{ entries?: PricingEntry[] }>({});
+      if (delayModelSyncApplyMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayModelSyncApplyMs));
+      }
+      if (modelApplyFailuresRemaining > 0) {
+        modelApplyFailuresRemaining -= 1;
+        return jsonResponse({ message: "model price update failed" }, 502);
+      }
       const selectedEntries = (body.entries ?? []).map((entry) => ({
         ...entry,
         source: "models.dev",
@@ -1133,7 +1299,10 @@ function buildSystemWorkspaceRequestHandler(
     }
 
     if (url.pathname === "/api/settings/pricing" && method === "PUT") {
-      const body = parseBody<{ catalogVersion?: string; entries?: PricingEntry[] }>({});
+      const body = parseBody<{
+        catalogVersion?: string;
+        entries?: PricingEntry[];
+      }>({});
       settings.pricing = {
         catalogVersion: body.catalogVersion ?? settings.pricing.catalogVersion,
         entries: body.entries ?? settings.pricing.entries,
@@ -1190,7 +1359,7 @@ const meta = {
   },
   decorators: [
     (Story, context) => (
-      <I18nProvider>
+      <I18nProvider initialLocale="zh">
         <StorybookSystemWorkspaceMock>
           <StorybookPageEnvironment
             onRequest={buildSystemWorkspaceRequestHandler(
@@ -1198,6 +1367,17 @@ const meta = {
               context.parameters.settingsOverride as SettingsPayload | undefined,
               context.parameters.failFirstModelsPreview === true,
               context.parameters.retentionTaskDetailOverride as ManagedTaskDetail | undefined,
+              context.parameters.syncMemoryOverride as ModelsDevSyncMemoryState | undefined,
+              context.parameters.failModelSelectionSave === true,
+              context.parameters.modelsDevPreviewOverride as ModelsDevSyncPreview | undefined,
+              context.parameters.delayViewedAcknowledgment === true,
+              typeof context.parameters.delaySelectionMemorySaveMs === "number"
+                ? context.parameters.delaySelectionMemorySaveMs
+                : 0,
+              typeof context.parameters.delayModelSyncApplyMs === "number"
+                ? context.parameters.delayModelSyncApplyMs
+                : 0,
+              context.parameters.failFirstModelsApply === true,
             )}
           >
             <FullPageStorySurface>
@@ -1521,7 +1701,9 @@ export const StatusRuntimePressureDegraded: Story = {
 export const StatusRuntimePressureAccountingError: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: runtimePressureStatus("accounting_error") },
+  parameters: {
+    systemStatusOverride: runtimePressureStatus("accounting_error"),
+  },
   play: runtimePressurePlay("核算异常"),
 };
 
@@ -1835,7 +2017,10 @@ function rawInventoryUnavailableStatus(state: RawInventoryUnavailableState): Sys
     ...STORYBOOK_SYSTEM_STATUS,
     rawBodies: { ...STORYBOOK_SYSTEM_STATUS.rawBodies, bytes: 0 },
     requestRawBodies: { ...STORYBOOK_SYSTEM_STATUS.requestRawBodies, bytes: 0 },
-    responseRawBodies: { ...STORYBOOK_SYSTEM_STATUS.responseRawBodies, bytes: 0 },
+    responseRawBodies: {
+      ...STORYBOOK_SYSTEM_STATUS.responseRawBodies,
+      bytes: 0,
+    },
     rawMetricsHealth: {
       state,
       inventoryCursor: 64_000,
@@ -1859,7 +2044,9 @@ function rawInventoryUnavailablePlay(message: string) {
 export const StatusRawInventoryPreparing: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("preparing") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("preparing"),
+  },
   play: rawInventoryUnavailablePlay(
     "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
   ),
@@ -1868,7 +2055,9 @@ export const StatusRawInventoryPreparing: Story = {
 export const StatusRawInventoryDeferred: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("deferred") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("deferred"),
+  },
   play: rawInventoryUnavailablePlay(
     "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
   ),
@@ -1886,7 +2075,9 @@ export const StatusRawInventoryError: Story = {
 export const StatusRawInventoryUnknown: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
-  parameters: { systemStatusOverride: rawInventoryUnavailableStatus("unknown") },
+  parameters: {
+    systemStatusOverride: rawInventoryUnavailableStatus("unknown"),
+  },
   play: rawInventoryUnavailablePlay("Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。"),
 };
 
@@ -1968,7 +2159,9 @@ export const RetentionTaskDetail: Story = {
 export const TaskDetailCompleted: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("completed") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("completed"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/本轮完成/)).resolves.toBeVisible();
@@ -1979,7 +2172,9 @@ export const TaskDetailCompleted: Story = {
 export const TaskDetailDeferred: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("deferred") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("deferred"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/已延期/)).resolves.toBeVisible();
@@ -1991,7 +2186,9 @@ export const TaskDetailDeferred: Story = {
 export const TaskDetailFailed: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("failed") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("failed"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/本轮失败/)).resolves.toBeVisible();
@@ -2002,7 +2199,9 @@ export const TaskDetailFailed: Story = {
 export const TaskDetailRecoverableFailure: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("recoverable") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("recoverable"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText(/部分完成/)).resolves.toBeVisible();
@@ -2014,7 +2213,9 @@ export const TaskDetailRecoverableFailure: Story = {
 export const TaskDetailEmptyHistory: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("empty") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("empty"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("暂无运行记录")).resolves.toBeVisible();
@@ -2026,7 +2227,9 @@ export const TaskDetailEmptyHistory: Story = {
 export const TaskDetailUnknownStale: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
   tags: ["test"],
-  parameters: { retentionTaskDetailOverride: retentionTaskDetailForState("unknown") },
+  parameters: {
+    retentionTaskDetailOverride: retentionTaskDetailForState("unknown"),
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const unknownItems = await canvas.findAllByText("未知");
@@ -2060,11 +2263,13 @@ export const Models: Story = {
   tags: ["test"],
   parameters: {
     settingsOverride: STORYBOOK_MODELS_SETTINGS,
-    viewport: { defaultViewport: "desktop1660" },
     docs: {
-      description: { story: "Merged model directory with local prices and preset switches." },
+      description: {
+        story: "Merged model directory with local prices and preset switches.",
+      },
     },
   },
+  globals: { viewport: { value: "desktop1660", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByRole("heading", { name: "模型" })).resolves.toBeVisible();
@@ -2080,67 +2285,620 @@ export const Models: Story = {
 
 export const ModelsDark: Story = {
   ...Models,
-  globals: { themeMode: "dark" },
+  globals: { ...Models.globals, themeMode: "dark" },
 };
 
 export const ModelsMobile: Story = {
   ...Models,
-  parameters: {
-    ...Models.parameters,
-    viewport: { defaultViewport: "mobile393" },
-  },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
 };
 
 export const ModelsMobileDark: Story = {
   ...ModelsMobile,
-  globals: { themeMode: "dark" },
+  globals: { ...ModelsMobile.globals, themeMode: "dark" },
 };
+
+async function assertCanvasViewport(
+  canvasElement: HTMLElement,
+  width: number,
+  height: number,
+): Promise<void> {
+  const viewport = canvasElement.ownerDocument.defaultView;
+  await expect(viewport?.innerWidth).toBe(width);
+  await expect(viewport?.innerHeight).toBe(height);
+}
+
+async function waitForMemorySave(canvasElement: HTMLElement): Promise<void> {
+  const page = within(canvasElement.ownerDocument.body);
+  const status = "正在保存选择记忆…";
+  await expect(page.findByText(status, {}, { timeout: 5000 })).resolves.toBeVisible();
+  await waitFor(() => expect(page.queryByText(status)).not.toBeInTheDocument(), {
+    timeout: 5000,
+  });
+}
+
+async function waitForViewedModelAcknowledgment(
+  canvasElement: HTMLElement,
+  model: string,
+): Promise<void> {
+  const fetcher = canvasElement.ownerDocument.defaultView?.fetch;
+  await expect(fetcher).toBeDefined();
+  await waitFor(async () => {
+    const response = await fetcher!("/api/settings/models/sync/state");
+    const state = (await response.json()) as ModelsDevSyncMemoryState;
+    expect(state.unviewedModelIds).not.toContain(model);
+  });
+}
+
+async function waitForModelSelectionMemory(
+  canvasElement: HTMLElement,
+  model: string,
+  providerId: string,
+  selected: boolean,
+): Promise<void> {
+  const fetcher = canvasElement.ownerDocument.defaultView?.fetch;
+  await expect(fetcher).toBeDefined();
+  await waitFor(async () => {
+    const response = await fetcher!("/api/settings/models/sync/state");
+    const state = (await response.json()) as ModelsDevSyncMemoryState;
+    expect(state.modelSelections).toContainEqual({ model, providerId, selected });
+  });
+}
+
+async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
+  const canvas = within(canvasElement);
+  await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+  const page = within(canvasElement.ownerDocument.body);
+  await expect(page.findByRole("dialog")).resolves.toBeVisible();
+  const toolbar = page.getByTestId("models-sync-toolbar");
+  await expect(toolbar).toBeVisible();
+  await expect(toolbar.scrollWidth <= toolbar.clientWidth).toBe(true);
+  const providerChoice = await page.findByRole("combobox", {
+    name: "为 gpt-6-sol 选择一个供应商报价",
+  });
+  await expect(providerChoice).toHaveTextContent("OpenRouter (openrouter)");
+  await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
+  await expect(page.getByRole("img", { name: "新发现的模型" })).toBeVisible();
+  await expect(page.findAllByText(/不导入：/)).resolves.toHaveLength(2);
+  await expect(page.queryByText("gpt-4o-mini-legacy")).not.toBeInTheDocument();
+}
 
 export const ModelsSyncReview: Story = {
   ...Models,
+  tags: ["test"],
   parameters: {
     ...Models.parameters,
-    docs: { description: { story: "Preview with a resolved cross-provider price conflict." } },
+    docs: {
+      description: {
+        story: "Preview with a resolved cross-provider price conflict.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 1660, 960);
+    await playModelsSyncReview(canvasElement);
+  },
+};
+
+export const ModelsSyncReviewDark: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { ...ModelsSyncReview.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncReviewMobile: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 393, 852);
+    await playModelsSyncReview(canvasElement);
+    const page = within(canvasElement.ownerDocument.body);
+    const toolbar = page.getByTestId("models-sync-toolbar");
+    await expect(toolbar.getBoundingClientRect().height).toBeLessThanOrEqual(70);
+  },
+};
+
+export const ModelsSyncReviewMobileDark: Story = {
+  ...ModelsSyncReviewMobile,
+  tags: ["test"],
+  globals: { ...ModelsSyncReviewMobile.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncReviewShort: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { viewport: { value: "short1280x500", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 1280, 500);
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog");
+    const toolbar = page.getByTestId("models-sync-toolbar");
+    await expect(toolbar).toBeVisible();
+    await expect(toolbar.getBoundingClientRect().height).toBeLessThan(48);
+    const footer = dialog.querySelector<HTMLElement>("[data-testid='models-sync-dialog-footer']");
+    await expect(footer).toBeTruthy();
+    const viewportHeight = canvasElement.ownerDocument.defaultView?.innerHeight ?? 0;
+    const dialogRect = dialog.getBoundingClientRect();
+    const footerRect = footer!.getBoundingClientRect();
+    await expect(dialogRect.height).toBeLessThanOrEqual(viewportHeight - 8);
+    await expect(footerRect.bottom).toBeLessThanOrEqual(viewportHeight);
+  },
+};
+
+export const ModelsSyncReviewShortDark: Story = {
+  ...ModelsSyncReviewShort,
+  tags: ["test"],
+  globals: { ...ModelsSyncReviewShort.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncControls: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    delaySelectionMemorySaveMs: 250,
+    delayModelSyncApplyMs: 1000,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
-    await expect(page.findByRole("dialog")).resolves.toBeVisible();
-    const providerChoice = await page.findByRole("combobox", {
-      name: "为 gpt-6-sol 选择一个供应商报价",
+    await userEvent.click(page.getByRole("switch", { name: "显示已弃用报价" }));
+    await expect(page.findByText("gpt-4o-mini-legacy")).resolves.toBeVisible();
+
+    const providerPicker = page.getByRole("button", { name: "筛选供应商" });
+    providerPicker.focus();
+    await userEvent.keyboard("{Enter}");
+    const providerSearch = page.getByRole("textbox", {
+      name: "搜索供应商 ID 或名称",
     });
-    await userEvent.click(providerChoice);
-    await userEvent.click(await page.findByRole("option", { name: "OpenRouter (openrouter)" }));
-    await expect(page.getByRole("checkbox", { name: "同步 gpt-6-sol 的价格" })).toBeChecked();
-    await expect(page.getByText("新模型")).toBeVisible();
-    await expect(page.getByText(/不导入：/)).toBeVisible();
+    await userEvent.type(providerSearch, "DeepSeek");
+    const deepSeek = page.getByRole("checkbox", { name: /DeepSeek deepseek/ });
+    await expect(deepSeek).toBeChecked();
+    const pickerContent = providerSearch.closest<HTMLElement>(
+      "[data-radix-popper-content-wrapper]",
+    )!;
+    const picker = within(pickerContent);
+    await userEvent.click(picker.getByRole("button", { name: "清空" }));
+    await expect(deepSeek).not.toBeChecked();
+    await userEvent.click(picker.getByRole("button", { name: "全选" }));
+    await expect(deepSeek).toBeChecked();
+    await userEvent.clear(providerSearch);
+    await userEvent.type(providerSearch, "OpenAI");
+    const openAi = page.getByRole("checkbox", { name: /OpenAI openai/ });
+    await userEvent.click(picker.getByRole("button", { name: "清空" }));
+    await expect(openAi).not.toBeChecked();
+    await expect(deepSeek).toBeChecked();
+    await userEvent.keyboard("{Escape}");
+    await expect(providerPicker).toHaveFocus();
+    await waitForMemorySave(canvasElement);
+
+    await userEvent.click(page.getByRole("button", { name: "取消" }));
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    await userEvent.click(page.getByRole("button", { name: "筛选供应商" }));
+    const reopenedPicker = page.getByRole("textbox", {
+      name: "搜索供应商 ID 或名称",
+    });
+    const reopenedContent = reopenedPicker.closest<HTMLElement>(
+      "[data-radix-popper-content-wrapper]",
+    )!;
+    const reopenedOptions = within(reopenedContent);
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /OpenAI openai/ }),
+    ).not.toBeChecked();
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /DeepSeek deepseek/ }),
+    ).toBeChecked();
+    await expect(
+      reopenedOptions.getByRole("checkbox", { name: /OpenRouter openrouter/ }),
+    ).toBeChecked();
+    await userEvent.keyboard("{Escape}");
+
+    const modelCheckbox = page.getByRole("checkbox", {
+      name: "同步 gpt-6-sol 的价格",
+    });
+    modelCheckbox.focus();
+    await userEvent.keyboard(" ");
+    await expect(modelCheckbox).not.toBeChecked();
+    await userEvent.keyboard(" ");
+    await expect(modelCheckbox).toBeChecked();
+    await waitForMemorySave(canvasElement);
+
+    const dialog = page.getByRole("dialog");
+    const selectAll = page.getByRole("button", { name: "全选" });
+    selectAll.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitForMemorySave(canvasElement);
+    await expect(page.getByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" })).toBeChecked();
+    const invert = page.getByRole("button", { name: "反选" });
+    invert.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(
+      page.getByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" }),
+    ).not.toBeChecked();
+    selectAll.focus();
+    await userEvent.keyboard("{Enter}");
+
+    const apply = page.getByRole("button", { name: /同步所选/ });
+    apply.focus();
+    await userEvent.keyboard("{Tab}");
+    await expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true);
+    apply.focus();
+    await userEvent.keyboard("{Enter}");
+    const cancelDuringApply = page.getByRole("button", { name: "取消" });
+    await expect(
+      page.findByRole("button", { name: /同步中/ }, { timeout: 5000 }),
+    ).resolves.toBeDisabled();
+    await expect(cancelDuringApply).toBeDisabled();
+    await expect(
+      page.findByText(/已更新 \d+ 个模型价格/, {}, { timeout: 5000 }),
+    ).resolves.toBeVisible();
+    const done = page.getByRole("button", { name: "完成" });
+    done.focus();
+    await userEvent.keyboard("{Enter}");
+
+    const openSync = canvas.getByRole("button", { name: "全部同步" });
+    await expect(openSync).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    const cancel = page.getByRole("button", { name: "取消" });
+    cancel.focus();
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await expect(openSync).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect(page.findByRole("dialog")).resolves.toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
+    await expect(openSync).toHaveFocus();
   },
 };
 
-export const ModelsSyncReviewMobile: Story = {
+const STORYBOOK_VIEWPORT_MODEL_MEMORY: ModelsDevSyncMemoryState = {
+  ...STORYBOOK_MODELS_DEV_PREVIEW.syncState,
+  unviewedModelIds: ["zz-model-view-lifecycle"],
+};
+
+export const ModelsSyncNewModelViewportAcknowledgment: Story = {
   ...ModelsSyncReview,
+  tags: ["test"],
   parameters: {
     ...ModelsSyncReview.parameters,
-    viewport: { defaultViewport: "mobile393" },
+    modelsDevPreviewOverride: STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW,
+    syncMemoryOverride: STORYBOOK_VIEWPORT_MODEL_MEMORY,
+    delayViewedAcknowledgment: true,
+    delaySelectionMemorySaveMs: 1000,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "审核模型价格" });
+    await expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true);
+
+    const providerPicker = page.getByRole("button", { name: "筛选供应商" });
+    await userEvent.click(providerPicker);
+    const lastProvider = page.getByRole("checkbox", {
+      name: "Scrollable Provider 24 scroll-provider-24",
+    });
+    const providerList = lastProvider.closest("fieldset");
+    const providerRow = lastProvider.closest("label");
+    await expect(providerList).toBeTruthy();
+    await expect(providerRow).toBeTruthy();
+    const providerListRect = providerList!.getBoundingClientRect();
+    await expect(providerRow!.getBoundingClientRect().bottom).toBeGreaterThan(
+      providerListRect.bottom,
+    );
+    await expect(providerList!.scrollHeight).toBeGreaterThan(providerList!.clientHeight);
+    providerList!.scrollTo({
+      top: providerList!.scrollHeight,
+      behavior: "instant",
+    });
+    providerList!.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await waitFor(() => expect(providerList!.scrollTop).toBeGreaterThan(0));
+    await waitFor(() => {
+      const listRect = providerList!.getBoundingClientRect();
+      const rowRect = providerRow!.getBoundingClientRect();
+      expect(rowRect.top).toBeGreaterThanOrEqual(listRect.top);
+      expect(rowRect.bottom).toBeLessThanOrEqual(listRect.bottom);
+    });
+    lastProvider.focus();
+    await userEvent.keyboard(" ");
+    await expect(lastProvider).toBeChecked();
+    await waitForMemorySave(canvasElement);
+    await userEvent.keyboard("{Escape}");
+    await expect(providerPicker).toHaveFocus();
+
+    const modelList = await page.findByRole("region", {
+      name: "模型价格候选列表",
+    });
+    await expect(page.queryByText("zz-model-view-lifecycle")).not.toBeInTheDocument();
+
+    modelList.scrollTop = modelList.scrollHeight;
+    modelList.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
+    const newModelBadge = page.getByRole("img", { name: "新发现的模型" });
+    await expect(newModelBadge).toBeVisible();
+    await waitForViewedModelAcknowledgment(canvasElement, "zz-model-view-lifecycle");
+    await expect(newModelBadge).toBeVisible();
+
+    await userEvent.click(page.getByRole("button", { name: "取消" }));
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
+    await expect(page.queryByRole("img", { name: "新发现的模型" })).not.toBeInTheDocument();
+  },
+};
+
+export const ModelsSyncProviderPickerShort: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  globals: { viewport: { value: "short1280x500", isRotated: false } },
+  parameters: {
+    ...ModelsSyncReview.parameters,
+    modelsDevPreviewOverride: STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW,
+    docs: {
+      description: {
+        story: "The provider picker stays above the dialog and within a short viewport.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    await assertCanvasViewport(canvasElement, 1280, 500);
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const dialog = await page.findByRole("dialog", { name: "审核模型价格" });
+    await userEvent.click(page.getByRole("button", { name: "筛选供应商" }));
+
+    const providerList = page.getByRole("group", { name: "筛选供应商" });
+    const popover = providerList.closest<HTMLElement>("[data-radix-popper-content-wrapper]")
+      ?.firstElementChild as HTMLElement | null;
+    await expect(popover).toBeTruthy();
+    const viewport = canvasElement.ownerDocument.defaultView!;
+    const popoverRect = popover!.getBoundingClientRect();
+    await expect(popoverRect.top).toBeGreaterThanOrEqual(0);
+    await expect(popoverRect.bottom).toBeLessThanOrEqual(viewport.innerHeight);
+    const dialogHost = dialog.parentElement;
+    await expect(dialogHost).toBeTruthy();
+    await expect(Number.parseInt(viewport.getComputedStyle(popover!).zIndex, 10)).toBeGreaterThan(
+      Number.parseInt(viewport.getComputedStyle(dialogHost!).zIndex, 10),
+    );
+    await expect(providerList.scrollHeight).toBeGreaterThan(providerList.clientHeight);
   },
 };
 
 export const ModelsSyncRetry: Story = {
   ...Models,
+  tags: ["test"],
   parameters: {
     ...Models.parameters,
     failFirstModelsPreview: true,
-    docs: { description: { story: "Retrieval failure and the successful retry path." } },
+    docs: {
+      description: {
+        story: "Retrieval failure and the successful retry path.",
+      },
+    },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
-    await expect(page.findByRole("alert")).resolves.toHaveTextContent(
-      "models.dev is temporarily unavailable",
-    );
-    await userEvent.click(await page.findByRole("button", { name: "重试" }));
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("无法获取 models.dev 目录。");
+    await expect(alert).not.toHaveTextContent("502");
+    await userEvent.click(within(alert).getByRole("button", { name: "重试" }));
     await expect(page.findByText("deepseek-v3.2")).resolves.toBeVisible();
+  },
+};
+
+export const ModelsSyncPreviewError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failFirstModelsPreview: true,
+    docs: {
+      description: {
+        story: "A failed directory preview keeps its retry action inside the error alert.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("无法获取 models.dev 目录。");
+    await expect(alert).not.toHaveTextContent("502");
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncPreviewErrorMobile: Story = {
+  ...ModelsSyncPreviewError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncPreviewErrorDark: Story = {
+  ...ModelsSyncPreviewError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncApplyError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failFirstModelsApply: true,
+    docs: {
+      description: {
+        story: "A failed price update keeps its localized retry action inside the error alert.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 claude-sonnet-4 的价格",
+    });
+    await userEvent.click(checkbox);
+    await waitForModelSelectionMemory(canvasElement, "claude-sonnet-4", "openrouter", true);
+    await userEvent.click(page.getByRole("button", { name: /同步所选/ }));
+
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("无法更新模型价格。");
+    await expect(alert).not.toHaveTextContent("502");
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncApplyErrorMobile: Story = {
+  ...ModelsSyncApplyError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncApplyErrorDark: Story = {
+  ...ModelsSyncApplyError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncSelectionRetry: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failModelSelectionSave: true,
+    docs: {
+      description: {
+        story: "Optimistic selection changes with a retry after a failed memory save.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 deepseek-v3.2 的价格",
+    });
+    await userEvent.click(checkbox);
+    await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
+    await expect(checkbox).toBeChecked();
+    await userEvent.click(page.getByRole("button", { name: /同步所选/ }));
+    await expect(page.findByRole("status")).resolves.toHaveTextContent("已更新");
+    await expect(page.findByRole("alert")).resolves.toHaveTextContent("选择记忆未保存");
+    await userEvent.click(page.getByRole("button", { name: "重试" }));
+    await waitFor(() => {
+      expect(page.queryByRole("alert")).not.toBeInTheDocument();
+    });
+  },
+};
+
+export const ModelsSyncMemorySaveError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failModelSelectionSave: true,
+    docs: {
+      description: {
+        story: "A failed selection-memory save stays visible and retryable during review.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 claude-sonnet-4 的价格",
+    });
+    await userEvent.click(checkbox);
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("选择记忆未保存");
+    await expect(checkbox).toBeChecked();
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncMemorySaveErrorMobile: Story = {
+  ...ModelsSyncMemorySaveError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncMemorySaveErrorDark: Story = {
+  ...ModelsSyncMemorySaveError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
+};
+
+const STORYBOOK_UNAVAILABLE_QUOTE_MEMORY: ModelsDevSyncMemoryState = {
+  ...STORYBOOK_MODELS_DEV_PREVIEW.syncState,
+  providerSelections: [
+    { providerId: "openai", selected: true },
+    { providerId: "openrouter", selected: false },
+    { providerId: "deepseek", selected: true },
+  ],
+};
+
+export const ModelsSyncUnavailableQuote: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    syncMemoryOverride: STORYBOOK_UNAVAILABLE_QUOTE_MEMORY,
+    docs: {
+      description: {
+        story: "A remembered quote stays unresolved while its provider is filtered out.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await expect(page.findByRole("status")).resolves.toHaveTextContent(
+      "已记忆的供应商在当前筛选中不可用",
+    );
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 gpt-6-sol 的价格",
+    });
+    await expect(checkbox).toBeDisabled();
+    const providerChoice = page.getByRole("combobox", {
+      name: "为 gpt-6-sol 选择一个供应商报价",
+    });
+    await userEvent.click(providerChoice);
+    await userEvent.click(page.getByRole("option", { name: "OpenAI (openai)" }));
+    await expect(checkbox).toBeEnabled();
+    await expect(checkbox).not.toBeChecked();
+  },
+};
+
+export const ModelsSyncZeroResults: Story = {
+  ...ModelsSyncReview,
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    await userEvent.type(page.getByRole("textbox", { name: "搜索模型名称或 ID" }), "no-such-model");
+    await expect(page.findByText("没有符合筛选条件的候选。")).resolves.toBeVisible();
+    const dialog = page.getByRole("dialog");
+    const viewportHeight = canvasElement.ownerDocument.defaultView?.innerHeight ?? 0;
+    await expect(dialog.getBoundingClientRect().height).toBeGreaterThanOrEqual(560);
+    await expect(dialog.getBoundingClientRect().height).toBeLessThanOrEqual(viewportHeight - 8);
+    await expect(page.getByRole("button", { name: "取消" })).toBeVisible();
   },
 };

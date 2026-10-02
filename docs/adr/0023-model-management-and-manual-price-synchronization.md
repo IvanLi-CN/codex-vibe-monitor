@@ -22,9 +22,9 @@ Keep one effective local price per model ID. When selected provider groups conta
 
 Import only token price dimensions supported by the existing estimator: input, output, cache read, cache write, and reasoning. Mark other dimensions, such as modality or processing-tier prices, as unsupported in the preview and do not import them. Models without a compatible price are not selectable for price import.
 
-Within the selected provider groups, preselect unambiguous new models and price changes. Do not preselect a locally hand-maintained price; selecting it explicitly authorizes replacing that price with the chosen candidate. No price is written until the user applies “Sync Selected”. Synchronization is user-triggered; there is no scheduled or background catalog import.
+Within the selected provider groups, leave any candidate without a remembered selection unchecked, including new models and price changes. Restore remembered explicit selections and deselections without bypassing provider conflict resolution or import eligibility. The service owns the durable memory of provider scope, explicit quote-provider choices, model/provider checkbox choices, and model discovery; see ADR 0026. Selecting a locally hand-maintained price explicitly authorizes replacing it with the chosen candidate. No price is written until the user applies “Sync Selected”. Synchronization is user-triggered; there is no scheduled or background catalog import.
 
-For checkbox defaults, `source=custom` is the durable marker for a hand-maintained price. Manual edits from the Models page set this source to `custom`; applying a directory quote sets it to `models.dev`. Existing rows that were edited through older interfaces but retain `official` or `temporary` source labels follow those stored labels and may be preselected when their quote changes.
+`source=custom` is the durable marker for a hand-maintained price. Manual edits from the Models page set this source to `custom`; applying a directory quote sets it to `models.dev`. A source label alone never selects a candidate for synchronization.
 
 The official provider pricing page remains the reference for verifying a quote. The application does not automatically compare that page with models.dev or treat a third-party value as billing truth; the user decides which reviewed candidate to store as the local estimate.
 
@@ -40,6 +40,7 @@ The official provider pricing page remains the reference for verifying a quote. 
 ## References
 
 - [ADR 0018: OpenAI GPT-6 pricing and usage semantics](./0018-openai-gpt-6-pricing-and-usage-semantics.md)
+- [ADR 0026: Service-owned price sync memory](./0026-service-owned-price-sync-memory.md)
 - [models.dev](https://models.dev/)
 - `src/app_state.rs`
 - `src/pricing.rs`

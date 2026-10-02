@@ -55,6 +55,10 @@ pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc
             post(post_models_sync_preview),
         )
         .route(
+            "/api/settings/models/sync/state",
+            get(get_models_sync_state).patch(patch_models_sync_state),
+        )
+        .route(
             "/api/settings/models/sync/apply",
             post(post_models_sync_apply),
         )

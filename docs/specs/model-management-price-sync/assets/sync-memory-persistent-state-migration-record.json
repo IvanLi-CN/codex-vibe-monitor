@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Add additive SQLite storage for service-owned model price sync selections, provider filters, quote-provider choices, and discovery/view history.",
+    "release_unit_description": "System-shared models.dev sync memory and reviewed price synchronization.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Explicit provider selections, exact model/provider checkbox choices, quote-provider choices, complete-catalog baseline state, and discovered model first-seen/viewed timestamps.",
+    "storage_implementation": "Five additive SQLite tables: models_dev_sync_metadata, models_dev_sync_provider_selections, models_dev_sync_model_selections, models_dev_sync_quote_provider_choices, and models_dev_sync_discovered_models.",
+    "source_compatibility_range": {
+      "from_program_versions": "Earlier repository versions with the managed model and pricing tables but without sync-memory tables.",
+      "to_program_version": "Candidate release implementing service-owned model sync memory.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Create the singleton metadata table, provider-selection table, composite-key model-selection table, per-model quote-provider table, and per-model discovery/view table with CREATE TABLE IF NOT EXISTS in one SQLite transaction.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "After the first successful complete normalized catalog retrieval, atomically establish the model-ID baseline as viewed and initialize currently present providers as selected. Do not infer model checkbox choices from local prices or proxy presets.",
+        "order": 2,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "For later successful complete catalogs, insert newly encountered exact model IDs as unviewed without removing absent records. Apply sparse selection and provider-choice upserts by their documented keys; viewed acknowledgments only advance existing discovery rows and preserve unrelated records.",
+        "order": 3,
+        "depends_on": ["dml-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "No legacy selection is inferred or backfilled. Existing managed models, preset membership, prices, and historical invocation costs are not changed by sync-memory initialization or updates.",
+        "order": 4,
+        "depends_on": ["ddl-001"],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-001", "dml-001", "dml-002", "backfill-001"],
+    "progress_signals": [
+      "Schema inspection confirms all five additive tables and the singleton metadata row exist.",
+      "The metadata flags distinguish an uninitialized baseline/provider set from an intentionally empty provider selection.",
+      "A successful initial preview marks its complete candidate model-ID set as the baseline; a later new ID remains unviewed until an actual viewport acknowledgment.",
+      "A failed retrieval or parse does not call catalog initialization and leaves discovery history unchanged.",
+      "Sparse patch and restart tests confirm explicit false selections and unrelated records survive."
+    ],
+    "pause_points": [
+      "After idempotent table creation and before the first successful explicit catalog preview.",
+      "Each successful complete catalog observation and each user patch is one bounded SQLite transaction."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "Earlier binaries ignore the additive sync-memory tables and retain their existing managed model, pricing, preset, and history behavior. They do not interpret or rewrite the new sync-memory records.",
+    "faulty_release_recovery": "A forward release may re-enter idempotent table creation. Catalog baseline and subsequent discovery updates are transactional; do not drop the new tables or infer checkbox choices during recovery. Existing applied prices and historical costs remain unchanged.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {"required_test_evidence": []},
+    "minor": {
+      "required_test_evidence": [
+        "The stateful-sqlite profile confirms idempotent schema initialization and restart persistence for selected and explicitly deselected choices.",
+        "The first successful catalog baseline, later exact-ID discovery, provider initialization, and viewed acknowledgment are covered without modifying prices or presets.",
+        "Concurrent independent patches preserve both keys, and same-key successful writes resolve in commit order.",
+        "The sync-state API shares one service-instance state across clients and rejects cross-origin browser writes.",
+        "The relevant API, web, and compatibility checks pass for the candidate source range."
+      ]
+    },
+    "major": {"required_test_evidence": []}
+  }
+}

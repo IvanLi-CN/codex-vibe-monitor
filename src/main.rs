@@ -112,6 +112,7 @@ mod long_term_stats;
 mod maintenance;
 mod maintenance_store;
 mod memory_diagnostics;
+mod models_dev_sync_memory;
 #[expect(
     clippy::too_many_arguments,
     reason = "OAuth bridge adapters preserve upstream request contracts."
