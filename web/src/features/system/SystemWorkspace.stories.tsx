@@ -2666,12 +2666,45 @@ export const ModelsSyncRetry: Story = {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
-    await expect(page.findByRole("alert")).resolves.toHaveTextContent(
-      "models.dev is temporarily unavailable",
-    );
-    await userEvent.click(await page.findByRole("button", { name: "重试" }));
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("models.dev is temporarily unavailable");
+    await userEvent.click(within(alert).getByRole("button", { name: "重试" }));
     await expect(page.findByText("deepseek-v3.2")).resolves.toBeVisible();
   },
+};
+
+export const ModelsSyncPreviewError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failFirstModelsPreview: true,
+    docs: {
+      description: {
+        story: "A failed directory preview keeps its retry action inside the error alert.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("models.dev is temporarily unavailable");
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncPreviewErrorMobile: Story = {
+  ...ModelsSyncPreviewError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncPreviewErrorDark: Story = {
+  ...ModelsSyncPreviewError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
 };
 
 export const ModelsSyncSelectionRetry: Story = {

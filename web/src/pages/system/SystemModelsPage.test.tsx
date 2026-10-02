@@ -405,9 +405,9 @@ describe("SystemModelsPage", () => {
     clickButton("全部同步");
     await flushEffects();
 
-    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
-      "models.dev retrieval failed",
-    );
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("models.dev retrieval failed");
+    expect(alert?.querySelector("button")?.textContent).toContain("重试");
     expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
     expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("priced-only-model");

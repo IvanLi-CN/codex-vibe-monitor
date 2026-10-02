@@ -683,14 +683,22 @@ export function ModelsDevSyncDialog({
           ) : null}
 
           {dialogState === "error" ? (
-            <div className="space-y-4 py-5">
-              <Alert variant="error" role="alert">
-                {syncError ?? t("system.models.fetchFailed")}
+            <div className="py-5">
+              <Alert variant="error" role="alert" className="items-center">
+                <span className="min-w-0 flex-1 break-words">
+                  {syncError ?? t("system.models.fetchFailed")}
+                </span>
+                <Button
+                  type="button"
+                  size="xs"
+                  variant="destructive"
+                  className="shrink-0"
+                  onClick={() => void loadPreview()}
+                >
+                  <AppIcon name="refresh" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                  {t("system.models.retry")}
+                </Button>
               </Alert>
-              <Button type="button" variant="secondary" onClick={() => void loadPreview()}>
-                <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
-                {t("system.models.retry")}
-              </Button>
             </div>
           ) : null}
 
