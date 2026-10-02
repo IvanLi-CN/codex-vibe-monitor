@@ -41,7 +41,8 @@ class Run:
     def compose(self,*args,**kwargs):
         return execute(["docker","compose","-p",self.project,"-f",str(self.compose_file),*args],**kwargs)
     def client(self,*args):
-        result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=600)
+        with (self.root/"client.log").open("a") as log:
+            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=600,stderr=log)
         return json.loads(result)
     def checkpoint(self,name,operation):
         try:
@@ -78,7 +79,7 @@ class Run:
         deadline=time.monotonic()+120
         while time.monotonic()<deadline:
             try:
-                if self.compose("exec","-T","app","curl","-fsS","http://127.0.0.1:8080/health")=="ok": return
+                if self.compose("exec","-T","app","curl","-fsS","http://127.0.0.1:8080/health",stderr=subprocess.DEVNULL)=="ok": return
             except subprocess.SubprocessError: pass
             time.sleep(1)
         raise TimeoutError("application readiness timeout")
@@ -153,6 +154,7 @@ class Run:
                 result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
                 result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
                 assert result["cpuCores"]<1.5,"saturated load cannot establish observability overhead"
+                assert result["durationSeconds"]<=self.args.seconds*1.05,"request backlog cannot establish non-saturated overhead"
                 samples[enabled].append(result);self.compose("stop","app")
                 (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
         comparisons={}

@@ -550,10 +550,17 @@ fn estimate_gpt_6_returns_unknown_cost_when_cache_read_exceeds_input_without_exa
 
 #[tokio::test]
 async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup() {
-    let state = test_state_with_openai_base(
+    let mut state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    let metrics = ObservabilityRuntime::new(true);
+    Arc::get_mut(&mut state)
+        .expect("fixture state has not been shared")
+        .observability = metrics.clone();
+    state
+        .sqlite_batch_writer
+        .bind_observability(metrics.clone());
     let invoke_id = "gpt6-websocket-terminal-usage-refresh";
     let occurred_at = "2026-09-24 12:00:00";
     let mut initial = test_proxy_capture_record(invoke_id, occurred_at);
@@ -664,6 +671,16 @@ async fn websocket_terminal_usage_refresh_updates_invocation_and_hourly_rollup()
     )
     .await
     .expect("skip unrelated duplicate terminal");
+
+    assert!(
+        metrics.render().lines().any(|line| {
+            line.starts_with("cvm_proxy_invocations_total{")
+                && line.contains("endpoint=\"responses\"")
+                && line.contains("outcome=\"success\"")
+                && line.ends_with(" 1")
+        }),
+        "richer, poorer and unrelated duplicate terminals must not recount the invocation"
+    );
 
     let refreshed = sqlx::query_as::<_, (i64, String, Option<i64>, Option<i64>, Option<f64>)>(
         r#"

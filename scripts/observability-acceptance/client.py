@@ -84,6 +84,25 @@ def functional():
         assert status==200,(report,status)
         result=json.loads(body); assert len(result["rows"])<=100 and len(body)<=1024*1024
         assert result["functionSamplingRate"]==0.1
+        assert result["rows"],("empty profiler report after representative traffic",report)
+    # Empty vectors are legitimate for unsupported browser signals, but the
+    # exercised proxy, CPU and SQL panels must contain actual finite observations.
+    observations={}
+    for signal,expression in {
+        "cpuRate":"sum(rate(cvm_process_cpu_seconds_total[1m]))",
+        "proxyCompletions":"sum(cvm_proxy_invocations_total{outcome=\"success\"})",
+        "upstreamAttempts":"sum(cvm_proxy_upstream_attempts_total)",
+        "bodyP95":"histogram_quantile(0.95,sum by (le)(rate(cvm_http_body_duration_seconds_bucket{route=\"/v1/responses\"}[1m])))",
+        "poolP95":"histogram_quantile(0.95,sum by (le)(rate(cvm_sqlite_pool_acquire_duration_seconds_bucket[1m])))",
+        "sqlP95":"histogram_quantile(0.95,sum(rate(hotpath_sql_duration_seconds[1m])))",
+        "sqlSamples":"sum(histogram_count(increase(hotpath_sql_duration_seconds[1m])))",
+        "functionSamples":"sum(histogram_count(increase(hotpath_function_duration_seconds[1m])))",
+    }.items():
+        result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)["data"]["result"]
+        assert len(result)==1,("missing exercised metric",signal)
+        value=float(result[0]["value"][1])
+        assert math.isfinite(value) and value>0,("invalid exercised metric",signal,value)
+        observations[signal]=value
     assert request("http://app:8080","/api/system/observability/hotpath/reset",token=read)[0]==404
     # Shared read limiter is consumed deliberately only after all normal queries.
     statuses=[request("http://app:8080","/api/system/observability/hotpath/functions",token=read)[0] for _ in range(31)]
@@ -92,7 +111,7 @@ def functional():
     assert series and float(series[0]["value"][1])<=5000,series
     up=ok("http://prometheus:9090","/api/v1/query?query=up")["data"]["result"]
     assert len(up)==2 and all(float(row["value"][1])==1 for row in up),up
-    return {"httpsAuth":"passed","dashboards":5,"queries":"passed","reportBounds":"passed","series":float(series[0]["value"][1])}
+    return {"httpsAuth":"passed","dashboards":5,"queries":"passed","reportBounds":"passed","series":float(series[0]["value"][1]),"observations":observations}
 
 def load(seconds,rate):
     def once(sequence):
