@@ -367,6 +367,12 @@ def progress_eligibility(state, now_utc=None):
         return 'snapshot_unavailable'
     if not state.get('maintenance_enabled'):
         return 'operator_disabled'
+    if 'coordinator_priority' in {
+        state.get('latest_defer_reason'), state.get('scheduler_defer_reason'),
+    }:
+        # Priority waits are notification-driven; an expired fallback deadline
+        # alone does not show that the coordinator has made P2 work eligible.
+        return 'pressure_priority'
     due = state.get('scheduler_next_run_after')
     if due:
         deadline = datetime.datetime.fromisoformat(due.replace('Z', '+00:00'))
@@ -374,13 +380,12 @@ def progress_eligibility(state, now_utc=None):
             deadline = deadline.replace(tzinfo=datetime.timezone.utc)
         now = now_utc or datetime.datetime.now(datetime.timezone.utc)
         reason = state.get('scheduler_defer_reason') or ''
-        priority_wait = state.get('latest_defer_reason') == 'coordinator_priority'
         database_wait = reason == 'background_busy' or reason.startswith('pressure_cooldown')
         # A future scheduler deadline is itself a non-runnable window. The
         # observer must start the 30-second no-pressure clock only after that
         # bounded retry becomes due; otherwise a scheduled continuation is
         # misreported as a stalled eligible task.
-        if deadline > now and (priority_wait or database_wait or state.get('scheduler_status') in {'idle', 'running'}):
+        if deadline > now and (database_wait or state.get('scheduler_status') in {'idle', 'running'}):
             return 'pressure_deadline'
     return 'eligible'
 
