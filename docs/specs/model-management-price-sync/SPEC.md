@@ -43,7 +43,7 @@
 
 ### REQ-MODEL-MGMT-004
 
-- The system MUST fetch models.dev only after a user opens synchronization preview; fetch and parse failures MUST leave local state unchanged and allow retry.
+- The system MUST fetch models.dev only after a user opens synchronization preview; fetch and parse failures MUST leave local state unchanged and allow retry. The retry action MUST be inside the shared Alert component that presents the corresponding error.
 - Inputs: a user-triggered preview request.
 - Outputs: retrieval state and provider/model price candidates, or a retryable error.
 
@@ -89,7 +89,7 @@
 ### REQ-MODEL-MGMT-011
 
 - Model sync selections, provider-filter selections, explicit quote-provider choices, and previously encountered model records MUST belong to the service instance and be durably persisted by the server. Different browsers and devices connected to that instance MUST read the same saved memory; a browser-local store or current-dialog state MUST NOT be the authority. Successful saves MUST survive page reloads, browser restarts, and service restarts. Saving sync memory MUST NOT itself apply candidate prices or change proxy presets.
-- User changes to model sync selections, provider-filter selections, and explicit quote-provider choices MUST be saved immediately, independently of whether price synchronization is attempted or succeeds. Canceling or closing the dialog MUST NOT undo successful memory saves. A failed save MUST be visibly reported and allow retry; it MUST NOT be presented as durable success.
+- User changes to model sync selections, provider-filter selections, and explicit quote-provider choices MUST be saved immediately, independently of whether price synchronization is attempted or succeeds. Canceling or closing the dialog MUST NOT undo successful memory saves. A failed save MUST be visibly reported and allow retry; it MUST NOT be presented as durable success. The retry action MUST be inside the shared Alert component that presents the save failure.
 - Saving one choice or a viewed acknowledgment MUST preserve unrelated sync-memory records. Independent concurrent-client changes to different choices MUST both survive; for the same choice, the last successfully accepted server change wins. A new review MUST read the latest saved memory. An instance without sync-memory records MUST use the documented initial defaults without inferring prior checkbox choices from existing local prices or preset membership; initializing memory and changing unrelated settings MUST preserve existing model, price, preset, and history state.
 - Inputs: the service instance's saved sync memory and user selection changes.
 - Outputs: shared, persistent sync memory independent of local applied prices.
@@ -134,6 +134,12 @@
 - Inputs: remembered selections, resolved candidates, local prices, provider/status scope, and model/provider search text.
 - Outputs: a truthful apply count and an explicit price-application set, independent of which rows happen to be on screen.
 
+### REQ-MODEL-MGMT-018
+
+- When applying selected price changes fails, the review MUST keep the current applicable selection available for retry and show a localized error without exposing raw transport details. The retry action MUST remain inside the shared Alert component that presents the error.
+- Inputs: a failed price-application request and the current selected applicable changes.
+- Outputs: a localized retryable error and an in-Alert action that retries the current applicable selection.
+
 ## Verification
 
 ### VER-MODEL-MGMT-001
@@ -146,13 +152,13 @@
 
 - Method: models.dev parser and synchronization API tests with catalog fixtures and failure cases.
 - covers: `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-007`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-010`
-- Pass condition: provider conflicts require an explicit choice; unsupported dimensions are excluded; preview failures write nothing; apply writes exactly selected values.
+- Pass condition: provider conflicts require an explicit choice; unsupported dimensions are excluded; preview failures write nothing and expose retry inside the corresponding shared Alert; apply writes exactly selected values.
 
 ### VER-MODEL-MGMT-003
 
 - Method: web unit tests, TypeScript typecheck, production build, and scenario-bound browser observation.
-- covers: `REQ-MODEL-MGMT-001`, `REQ-MODEL-MGMT-002`, `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-010`
-- Pass condition: the page and sync dialog support search, provider groups, state feedback, price editing, deletion, and selection at desktop/mobile sizes in light/dark themes without overlap.
+- covers: `REQ-MODEL-MGMT-001`, `REQ-MODEL-MGMT-002`, `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-010`, `REQ-MODEL-MGMT-018`
+- Pass condition: the page and sync dialog support search, provider groups, state feedback, price editing, deletion, and selection at desktop/mobile sizes in light/dark themes without overlap; a failed price application shows a localized retry action inside its shared Alert, hides raw transport details, and keeps the current applicable selection available for retry.
 
 ### VER-MODEL-MGMT-004
 
@@ -164,7 +170,7 @@
 
 - Method: server persistence and independent-client fixtures with service restart and an existing local price catalog.
 - covers: `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-011`
-- Pass condition: two independent clients read the same saved provider/model/quote-provider choices and encountered-model records; explicit deselections and an empty provider selection survive dialog cancellation and restart without applying prices; saving memory changes neither local prices nor preset state; initialization does not infer model sync selections from existing local prices or change existing model/history state; a memory-save failure remains visible and retryable; concurrent changes to different choices both persist, and an acknowledgment preserves unrelated choices.
+- Pass condition: two independent clients read the same saved provider/model/quote-provider choices and encountered-model records; explicit deselections and an empty provider selection survive dialog cancellation and restart without applying prices; saving memory changes neither local prices nor preset state; initialization does not infer model sync selections from existing local prices or change existing model/history state; a memory-save failure remains visible and retryable inside its shared Alert; concurrent changes to different choices both persist, and an acknowledgment preserves unrelated choices.
 
 ### VER-MODEL-MGMT-006
 

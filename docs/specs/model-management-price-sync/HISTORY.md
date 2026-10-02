@@ -20,10 +20,11 @@
 - 审阅默认隐藏来源明确标记为已废弃的供应商报价，并提供显示开关；不依据发布时间或模型名称猜测下架状态，隐藏不删除本地价格或历史选择。
 - 模型勾选按模型 ID 与供应商 ID 分别记忆，并恢复明确选择的报价供应商；切换供应商不继承另一报价的勾选，隐藏／缺失时不自动改选其他报价。
 - 搜索继续只影响显示和批量操作范围；实际写入数量与长期勾选意愿分开，同价条目不重复写入，搜索外仍将应用的选择需要明确计数反馈。
+- 目录获取、选择记忆保存和价格应用失败均显示本地化错误；对应重试操作保留在共享 Alert 内，避免传输响应泄漏到界面。
 
 ## Related Changes
 
-- Direct delivery: [PR #1064](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1064), based on `b68295595d875aead33ef31514eaf602279ece94`. Implementation and review-layout commits include `653e1cd8`, `ab6c8ca8`, and `3df25495`; current CI and formal review evidence are tracked on the PR.
+- Direct delivery: [PR #1064](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1064). Before renewed CI and Tier 3 review, the topic branch was synchronized with `main` at `7037e63e`; implementation and review-layout commits include `653e1cd8`, `ab6c8ca8`, and `3df25495`.
 - Compatibility classification: additive API and service-owned SQLite state, verified as `minor` in `assets/sync-memory-version-impact-record.json`; release labels are `type:minor` and `channel:stable`.
 
 ## References

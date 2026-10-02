@@ -966,11 +966,13 @@ function buildSystemWorkspaceRequestHandler(
   delayViewedAcknowledgment = false,
   delaySelectionMemorySaveMs = 0,
   delayModelSyncApplyMs = 0,
+  failFirstModelsApply = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
   let previewFailuresRemaining = failFirstModelsPreview ? 1 : 0;
   let modelSelectionFailuresRemaining = failModelSelectionSave ? 1 : 0;
+  let modelApplyFailuresRemaining = failFirstModelsApply ? 1 : 0;
   let syncMemory = clone(syncMemoryOverride ?? STORYBOOK_MODELS_DEV_PREVIEW.syncState);
   const managedTaskOverrides = new Map<string, Partial<ManagedTask>>();
   const currentManagedTasks = () =>
@@ -1252,6 +1254,10 @@ function buildSystemWorkspaceRequestHandler(
       if (delayModelSyncApplyMs > 0) {
         await new Promise((resolve) => setTimeout(resolve, delayModelSyncApplyMs));
       }
+      if (modelApplyFailuresRemaining > 0) {
+        modelApplyFailuresRemaining -= 1;
+        return jsonResponse({ message: "model price update failed" }, 502);
+      }
       const selectedEntries = (body.entries ?? []).map((entry) => ({
         ...entry,
         source: "models.dev",
@@ -1371,6 +1377,7 @@ const meta = {
               typeof context.parameters.delayModelSyncApplyMs === "number"
                 ? context.parameters.delayModelSyncApplyMs
                 : 0,
+              context.parameters.failFirstModelsApply === true,
             )}
           >
             <FullPageStorySurface>
@@ -2323,6 +2330,21 @@ async function waitForViewedModelAcknowledgment(
   });
 }
 
+async function waitForModelSelectionMemory(
+  canvasElement: HTMLElement,
+  model: string,
+  providerId: string,
+  selected: boolean,
+): Promise<void> {
+  const fetcher = canvasElement.ownerDocument.defaultView?.fetch;
+  await expect(fetcher).toBeDefined();
+  await waitFor(async () => {
+    const response = await fetcher!("/api/settings/models/sync/state");
+    const state = (await response.json()) as ModelsDevSyncMemoryState;
+    expect(state.modelSelections).toContainEqual({ model, providerId, selected });
+  });
+}
+
 async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
@@ -2667,7 +2689,8 @@ export const ModelsSyncRetry: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
     const alert = await page.findByRole("alert");
-    await expect(alert).toHaveTextContent("models.dev is temporarily unavailable");
+    await expect(alert).toHaveTextContent("无法获取 models.dev 目录。");
+    await expect(alert).not.toHaveTextContent("502");
     await userEvent.click(within(alert).getByRole("button", { name: "重试" }));
     await expect(page.findByText("deepseek-v3.2")).resolves.toBeVisible();
   },
@@ -2690,7 +2713,8 @@ export const ModelsSyncPreviewError: Story = {
     await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
     const page = within(canvasElement.ownerDocument.body);
     const alert = await page.findByRole("alert");
-    await expect(alert).toHaveTextContent("models.dev is temporarily unavailable");
+    await expect(alert).toHaveTextContent("无法获取 models.dev 目录。");
+    await expect(alert).not.toHaveTextContent("502");
     await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
   },
 };
@@ -2703,6 +2727,48 @@ export const ModelsSyncPreviewErrorMobile: Story = {
 
 export const ModelsSyncPreviewErrorDark: Story = {
   ...ModelsSyncPreviewError,
+  tags: ["test"],
+  globals: { ...Models.globals, themeMode: "dark" },
+};
+
+export const ModelsSyncApplyError: Story = {
+  ...Models,
+  tags: ["test"],
+  parameters: {
+    ...Models.parameters,
+    failFirstModelsApply: true,
+    docs: {
+      description: {
+        story: "A failed price update keeps its localized retry action inside the error alert.",
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
+    const page = within(canvasElement.ownerDocument.body);
+    const checkbox = await page.findByRole("checkbox", {
+      name: "同步 claude-sonnet-4 的价格",
+    });
+    await userEvent.click(checkbox);
+    await waitForModelSelectionMemory(canvasElement, "claude-sonnet-4", "openrouter", true);
+    await userEvent.click(page.getByRole("button", { name: /同步所选/ }));
+
+    const alert = await page.findByRole("alert");
+    await expect(alert).toHaveTextContent("无法更新模型价格。");
+    await expect(alert).not.toHaveTextContent("502");
+    await expect(within(alert).getByRole("button", { name: "重试" })).toBeEnabled();
+  },
+};
+
+export const ModelsSyncApplyErrorMobile: Story = {
+  ...ModelsSyncApplyError,
+  tags: ["test"],
+  globals: { viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const ModelsSyncApplyErrorDark: Story = {
+  ...ModelsSyncApplyError,
   tags: ["test"],
   globals: { ...Models.globals, themeMode: "dark" },
 };

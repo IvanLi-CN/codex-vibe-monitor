@@ -406,7 +406,8 @@ describe("SystemModelsPage", () => {
     await flushEffects();
 
     const alert = document.body.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain("models.dev retrieval failed");
+    expect(alert?.textContent).toContain("无法获取 models.dev 目录。");
+    expect(alert?.textContent).not.toContain("models.dev retrieval failed");
     expect(alert?.querySelector("button")?.textContent).toContain("重试");
     expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
     expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
@@ -420,6 +421,34 @@ describe("SystemModelsPage", () => {
     expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
     expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("priced-only-model");
+  });
+
+  it("keeps the price-apply retry action inside the localized error alert", async () => {
+    apiMocks.applyModelsDevPriceSync.mockRejectedValueOnce(
+      new Error('Request failed: 502 {"message":"temporary failure"}'),
+    );
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    clickButton("同步所选");
+    await flushEffects();
+
+    const alert = document.body.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("无法更新模型价格。");
+    expect(alert?.textContent).not.toContain("502");
+    expect(alert?.querySelector("button")?.textContent).toContain("重试");
+
+    clickButton("重试");
+    await flushEffects();
+
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector('[role="status"]')?.textContent).toContain("已更新");
   });
 
   it("ignores a preview response after its review was closed and reopened", async () => {

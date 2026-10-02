@@ -494,7 +494,7 @@ export function ModelsDevSyncDialog({
         ),
       );
       setDialogState("ready");
-    } catch (error) {
+    } catch {
       if (
         !mountedRef.current ||
         abortController.signal.aborted ||
@@ -502,14 +502,14 @@ export function ModelsDevSyncDialog({
       ) {
         return;
       }
-      setSyncError(error instanceof Error ? error.message : String(error));
+      setSyncError(t("system.models.fetchFailed"));
       setDialogState("error");
     } finally {
       if (requestId === previewRequestIdRef.current) {
         previewAbortControllerRef.current = null;
       }
     }
-  }, [capturePersistedRevision, restoreFromServer]);
+  }, [capturePersistedRevision, restoreFromServer, t]);
 
   useEffect(() => {
     if (!open) {
@@ -638,14 +638,14 @@ export function ModelsDevSyncDialog({
       setResultCount(applicableEntries.length);
       onPricesApplied(pricing, applicableEntries);
       setDialogState("applied");
-    } catch (error) {
+    } catch {
       if (!mountedRef.current || requestId !== applyRequestIdRef.current) return;
-      setSyncError(error instanceof Error ? error.message : String(error));
+      setSyncError(t("system.models.applyFailed"));
       setDialogState("ready");
     } finally {
       if (requestId === applyRequestIdRef.current) applyingRef.current = false;
     }
-  }, [applicableEntries, onPricesApplied]);
+  }, [applicableEntries, onPricesApplied, t]);
 
   const providers = syncPreview?.providers ?? [];
   const virtualRows = virtualizer.getVirtualItems();
@@ -728,8 +728,18 @@ export function ModelsDevSyncDialog({
           {(dialogState === "ready" || dialogState === "applying") && syncPreview ? (
             <>
               {syncError ? (
-                <Alert variant="error" role="alert" className="mt-3 shrink-0">
-                  {syncError}
+                <Alert variant="error" role="alert" className="mt-3 shrink-0 items-center">
+                  <span className="min-w-0 flex-1 break-words">{syncError}</span>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="destructive"
+                    className="shrink-0"
+                    onClick={() => void applySelected()}
+                  >
+                    <AppIcon name="refresh" className="mr-1.5 h-3.5 w-3.5" aria-hidden />
+                    {t("system.models.retry")}
+                  </Button>
                 </Alert>
               ) : null}
               <div className="mt-4 grid shrink-0 gap-3 desktop:grid-cols-[minmax(0,1fr)_18rem]">
