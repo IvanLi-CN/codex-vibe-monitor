@@ -17,7 +17,7 @@ pub(crate) fn spawn_observability_sampler(state: Arc<AppState>) -> JoinHandle<()
                     sample_cpu(&state.observability);
                     sample_runtime(&state).await;
                     if resource_tick.is_multiple_of(6) {sample_process_health(&state).await;}
-                    resource_tick=resource_tick.wrapping_add(1);
+                    resource_tick=(resource_tick+1)%6;
                 }
             }
         }

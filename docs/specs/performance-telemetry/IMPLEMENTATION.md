@@ -4,6 +4,7 @@
 
 `src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与
 30 秒文件/内存采样、完整 HTTP/body 生命周期、只读报告与有界浏览器接入。
+资源采样节拍固定为六次 CPU 采样，持续运行不会因累计 tick 溢出提前采样。
 自有 Hyper/WS 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
 任务和投影使用实际事件。hotpath 在启动线程之前配置，最终 router 只安装一次
 layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
