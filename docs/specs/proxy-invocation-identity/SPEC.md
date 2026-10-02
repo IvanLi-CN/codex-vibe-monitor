@@ -85,7 +85,7 @@
 
 - Method: Independent business/maintenance SQLite regression tests, scheduler-generation tests, upgrade compatibility checks, and a non-test Linux service-process replay.
 - covers: `REQ-PII-006`
-- Pass condition: Both contradictory legacy business enablement values follow only the maintenance control; pause/resume transactions publish atomically; incomplete pages retain their staging cursor and retry after a bounded delay; same-generation wakes do not erase a retry deadline; all existing HTTP fields remain unchanged; and repeated prompt-cache pages converge to complete statistics with an empty queue.
+- Pass condition: Both contradictory legacy business enablement values follow only the maintenance control; pause/resume transactions publish atomically; incomplete pages retain their staging cursor and retry after a bounded delay; repeated same-generation wakes do not advance an unexpired pressure deadline or start duplicate work; priority yield resumes after the foreground writer completes; actual disablement waits for a new control generation; all existing HTTP fields remain unchanged; and repeated prompt-cache pages converge to complete statistics with an empty queue and no pure-wait run record.
 
 ## Related ADRs
 
