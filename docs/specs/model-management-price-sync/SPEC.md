@@ -387,6 +387,51 @@
   image:
   ![同步审核零结果](./assets/models-sync-review-zero-results.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncApplyError
+  state: light desktop apply failure
+  evidence_note: verifies the localized apply error, warning-toned shared Alert, and compact in-Alert retry action
+  image:
+  ![桌面价格同步失败提示](./assets/models-sync-apply-error-desktop.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 1660x960
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncApplyErrorDark
+  state: dark desktop apply failure
+  evidence_note: verifies the apply-error Alert and in-Alert retry action in the dark theme
+  image:
+  ![深色桌面价格同步失败提示](./assets/models-sync-apply-error-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: System/SystemWorkspace/ModelsSyncApplyErrorMobile
+  state: mobile apply failure
+  evidence_note: verifies that the localized error Alert and compact retry remain readable in the mobile review dialog
+  image:
+  ![手机价格同步失败提示](./assets/models-sync-apply-error-mobile.png)
+
 ## References
 
 - [models.dev API documentation](https://github.com/anomalyco/models.dev/blob/dev/README.md#api)
