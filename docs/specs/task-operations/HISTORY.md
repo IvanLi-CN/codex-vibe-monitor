@@ -22,7 +22,7 @@
 - The accepted implementation includes process-local runtime observation, separate live dispatcher and admission wait lists, stable persisted task colors, a restart-safe execution/deferral timeline, and bounded revision-based reads, alongside the 37-entry capability catalog, safe schedule editing, reset-to-default semantics, combined filters, and responsive detail views.
 - The catalog computes default policy metadata without writing schedule overrides. Existing unsupported overrides remain readable and require an explicit reset; `enabled` is preserved when overrides are cleared.
 - Legacy run-history request timestamps and durations retain their previous meanings; the implementation does not infer actual execution start times from them.
-- The previously confirmed mock-only desktop and mobile evidence is stored in `docs/specs/task-operations/assets/`. Candidate images for this change remain pending owner confirmation and are not yet canonical Spec assets.
+- The owner confirmed the mock-only desktop/mobile timeline and SSE connection-state evidence on 2026-10-02. Canonical assets are stored in `docs/specs/task-operations/assets/`; the mobile capture keeps the 12-hour chart compact without row labels.
 
 ## Related Changes
 

@@ -37,7 +37,7 @@
 ### REQ-TASK-OPS-004
 
 - The web task workspace MUST show all active runtime instances above a compact task catalog, support enabled-state and multi-trigger filters with OR within triggers and AND across filter groups, and keep the runtime section independent from catalog filtering.
-- Visible pages MUST poll runtime state every two seconds, update elapsed time locally every second from server elapsed milliseconds, refresh immediately on foregrounding, avoid overlapping requests, and show an unknown state after observation failure.
+- Current execution and wait state MUST come from the runtime SSE snapshot and subsequent events; visible elapsed time MUST advance locally every second between events. Returning to the foreground MUST immediately re-establish or resume the SSE subscription, and stale or unavailable observations MUST be shown as unknown rather than treated as an empty state.
 
 ### REQ-TASK-OPS-005 — 当前等待任务
 
@@ -142,11 +142,14 @@
 - viewport_strategy: `ui-demo-source + devtools-emulate`
 - desktop_viewport: `1440x900`
 - mobile_viewport: `393x852`
-- state: dark operational scene with an active dashboard projection reconciliation and all trigger filters selected
-- owner_confirmation: confirmed in chat after candidate `f16c2c02`
+- state: 12-hour task timeline with mobile row labels hidden, desktop dark disconnected state, and desktop light connecting state
+- comparison_base: `7037e63e6eb69d9ac1daf3e131c3d98b6ece3184`
+- rendered_candidate: `1ae7f784164f59878d4afae6c3d4bfc923634498`
+- owner_confirmation: confirmed in chat for the displayed baseline, desktop/mobile candidates, heatmaps, and connecting state on 2026-10-02
 - assets:
   - `./assets/task-operations-runtime-desktop.png`
   - `./assets/task-operations-runtime-mobile-393x852.png`
+  - `./assets/task-operations-sse-connecting-desktop.png`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 
 ## References

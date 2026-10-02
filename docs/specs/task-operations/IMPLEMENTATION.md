@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: current execution observation, effective schedules, separate dispatcher/admission waits, stable task colors, durable execution timelines, and task-deferral intervals are implemented; delivery remains subject to final visual confirmation and merge-readiness gates.
+- Implementation: current execution observation, effective schedules, separate dispatcher/admission waits, stable task colors, durable execution timelines, and task-deferral intervals are implemented; visual evidence is confirmed and persisted, while delivery remains subject to current-candidate backend profiles, empirical service acceptance, Tier 3 review, and CI.
 - Lifecycle: active
 - Catalog note: Runtime snapshots remain process-local, while execution identity and historical intervals are persisted in the maintenance SQLite database and merged by execution UID when both sources overlap.
 
@@ -51,7 +51,14 @@
 - Web unit tests passed (1,691 passed, 6 skipped); the focused timeline suite passed all 6 tests and the `SystemWorkspace` Storybook suite passed all 36 interactions. `bun run typecheck:web`, `bun run lint:web`, and `bun run build` passed. Lint reported 92 existing warnings; build reported stale Browserslist data and large chunks.
 - An isolated production binary ran against three fresh SQLite files. HTTP snapshots showed six simultaneous FIFO requests with positions 1–6, distinct from active admission deferrals; the waits later released. Eight manual execution intervals (including two separate runs of the same task) persisted as eight unique successful IDs with measured actual durations. The service ran and recorded intervals while no page was open.
 - After graceful shutdown and restart against the same maintenance database, both coverage sessions retained explicit start/end boundaries, the downtime remained outside observed coverage, and both sessions reported zero dropped events. The eight execution IDs remained unique, history was readable over HTTP, and the runtime did not resurrect an old execution as active. A separate cloned maintenance database with 510 pagination fixtures returned 500 rows plus 169 rows over HTTP; both pages shared watermark 78 with no duplicate IDs, and `afterRevision=78` later returned 16 new segments at watermark 86. The persisted catalog exposed 37 distinct light/dark task color pairs.
-- The earlier task workspace screenshots remain the last owner-confirmed canonical visual evidence. New timeline desktop/mobile and dark-theme candidate images are temporary until the owner confirms this rendered change.
+- Owner-confirmed mock-only evidence now covers the desktop dark disconnected state, desktop light connecting state, and mobile light 12-hour chart without row labels. The desktop and mobile comparisons use the exact assets in the rebased `origin/main` commit `7037e63e` and were reviewed with their heatmaps before confirmation.
+
+## Current Candidate Verification
+
+- Candidate `1ae7f784164f59878d4afae6c3d4bfc923634498` passed `cargo fmt --all -- --check`, the full Web unit suite (1,711 passed, 6 skipped), the focused `SystemWorkspace` Storybook suite (37 passed), Web typecheck, lint, and build. Lint reported 92 existing warnings; build reported stale Browserslist data and a large-chunk warning.
+- Targeted Rust regressions passed: managed-task execution identity (3), timeline/SSE/persistence tests (12), managed-task contract tests (7), and fresh recorder coverage for admission waits (1).
+- Shared testbox profiles, all-target/all-feature Rust check and Clippy, and isolated production-service acceptance have not been rerun after syncing `origin/main`; the testbox currently responds to ping but its SSH service times out during banner exchange. Earlier candidate evidence is not used as current-candidate proof.
+- Tier 3 formal review lanes and PR CI have not started because current-candidate review readiness is not yet satisfied.
 
 ## Related Changes
 
