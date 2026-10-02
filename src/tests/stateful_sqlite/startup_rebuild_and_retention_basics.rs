@@ -1175,13 +1175,8 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
                 .expect("saturate sqlite pool before startup hydration"),
         );
     }
-    // Measure endpoint readiness independently of cold client/TLS initialization
-    // and the host's proxy environment; these requests target this fixture only.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .build()
-        .expect("build local readiness client");
-
+    let builder = reqwest::Client::builder().no_proxy(); // Setup outside readiness timing.
+    let client = builder.build().expect("local readiness client");
     let hydration_handle =
         publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_deadline(
             state.clone(),
@@ -1196,7 +1191,6 @@ async fn startup_hot_read_hydration_keeps_health_ready_under_sqlite_pool_pressur
     .expect("health must not wait for SQLite hydration")
     .expect("health endpoint should respond while SQLite pool is saturated");
     assert_eq!(health.status(), StatusCode::OK);
-
     for endpoint in ["/api/stats/summary?window=today", "/api/system/status"] {
         let response = tokio::time::timeout(
             Duration::from_millis(250),

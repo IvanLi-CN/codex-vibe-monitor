@@ -444,9 +444,7 @@ async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stre
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-
-    // Start the delay when the body is polled, after routing/admission. A producer
-    // spawned earlier can enqueue both chunks before the read timeout even starts.
+    // Delay on body polling so admission cannot prefill the timeout fixture.
     let body = stream::once(async { Ok::<_, io::Error>(Bytes::from_static(b"hello")) }).chain(
         stream::once(async {
             tokio::time::sleep(Duration::from_millis(100)).await;
