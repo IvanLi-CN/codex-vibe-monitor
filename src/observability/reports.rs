@@ -85,10 +85,8 @@ async fn read_report(path: &str) -> Result<Vec<serde_json::Value>> {
         .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_secs(2))
         .build()?;
-    let mut request = client.get(format!("http://127.0.0.1:6770/{path}"));
-    if let Ok(token) = env::var("HOTPATH_METRICS_AUTH_TOKEN") {
-        request = request.bearer_auth(token);
-    }
+    let token = env::var("HOTPATH_METRICS_AUTH_TOKEN").ok();
+    let request = report_request(&client, path, token.as_deref());
     let response = request.send().await?.error_for_status()?;
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
@@ -103,6 +101,19 @@ async fn read_report(path: &str) -> Result<Vec<serde_json::Value>> {
     sanitize_report(path, &value)
 }
 
+fn report_request(
+    client: &reqwest::Client,
+    path: &str,
+    token: Option<&str>,
+) -> reqwest::RequestBuilder {
+    let request = client.get(format!("http://127.0.0.1:6770/{path}"));
+    // Unlike its Prometheus exporter, hotpath's report server compares the raw header.
+    match token {
+        Some(token) => request.header(header::AUTHORIZATION, token),
+        None => request,
+    }
+}
+
 fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
     let (fields, required): (&[&str], &[&str]) = match path {
         "functions_timing" => (
@@ -114,14 +125,7 @@ fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_js
                 "total",
                 "percentiles",
             ],
-            &[
-                "name",
-                "calls",
-                "sampled_calls",
-                "avg",
-                "total",
-                "percentiles",
-            ],
+            &["name", "calls", "sampled_calls", "avg", "total"],
         ),
         "sql" => (
             &[
@@ -170,7 +174,13 @@ fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_js
         }
         let mut safe = serde_json::Map::new();
         for &field in fields {
-            let Some(v) = object.get(field) else { continue };
+            // JsonFunctionEntry flattens its percentile map; the other reports nest it.
+            let v = if field == "percentiles" && path == "functions_timing" {
+                row
+            } else {
+                let Some(v) = object.get(field) else { continue };
+                v
+            };
             match field {
                 "percentiles" => {
                     let object = v.as_object().context("invalid profiler percentiles")?;
@@ -228,7 +238,22 @@ mod tests {
 
     #[test]
     fn report_contract_preserves_sample_counts_and_unknown_timing() {
-        let row = json!({"name":"batch_flush","calls":40,"sampled_calls":0,"avg":"-","total":"-","percentiles":{"p95":"-","arbitrary":"secret"},"location":"private path","raw":"secret"});
+        // Use the dependency's serialized model, including its flattened percentiles.
+        let mut row = serde_json::to_value(hotpath::json::JsonFunctionEntry {
+            id: 1,
+            name: "batch_flush".into(),
+            calls: 40,
+            sampled_calls: 0,
+            avg: "-".into(),
+            total: "-".into(),
+            percent_total: "-".into(),
+            percentiles: HashMap::from([("p95".into(), "-".into())]),
+            location: None,
+        })
+        .unwrap();
+        row["arbitrary"] = json!("secret");
+        row["location"] = json!("private path");
+        row["raw"] = json!("secret");
         let rows = sanitize_report("functions_timing", &json!({"data":vec![row;101]})).unwrap();
         assert_eq!(rows.len(), 100);
         assert_eq!(rows[0]["calls"], 40);
@@ -236,6 +261,18 @@ mod tests {
         assert_eq!(rows[0]["percentiles"], json!({"p95":"-"}));
         assert!(rows[0].get("location").is_none());
         assert!(rows[0].get("raw").is_none());
+    }
+
+    #[test]
+    fn report_requests_match_hotpath_raw_header_authentication() {
+        let client = reqwest::Client::new();
+        let request = report_request(&client, "server", Some("internal-token"))
+            .build()
+            .unwrap();
+        assert_eq!(request.url().as_str(), "http://127.0.0.1:6770/server");
+        assert_eq!(request.headers()[header::AUTHORIZATION], "internal-token");
+        let request = report_request(&client, "sql", None).build().unwrap();
+        assert!(!request.headers().contains_key(header::AUTHORIZATION));
     }
 
     #[test]

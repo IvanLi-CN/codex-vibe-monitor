@@ -106,16 +106,23 @@ class Run:
         profiles=self.root/"cpu/profiles";profiles.mkdir();profiles.chmod(0o770)
         container=self.compose("ps","-q","app")
         build=self.root/"cpu-build";build.mkdir()
-        (build/"binding.json").write_text(json.dumps({"container":container,"profileRoot":str(profiles),"symbolRoot":str(symbols)}))
+        sampler_build=build/"sampler";sampler_build.mkdir()
+        samply=Path(self.args.samply).resolve(strict=True)
+        shutil.copyfile(samply,sampler_build/"samply")
+        shutil.copyfile(self.source/"ops/observability/cpu/Dockerfile",sampler_build/"Dockerfile")
+        sampler_image=self.project+":sampler"
+        with (self.root/"sampler-build.log").open("w") as log:
+            subprocess.run(["docker","build","--label","codex.testbox.agent="+self.args.agent,"-t",sampler_image,str(sampler_build)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=600)
+        sampler_id=execute(["docker","image","inspect","--format","{{.Id}}",sampler_image])
+        (build/"binding.json").write_text(json.dumps({"container":container,"profileRoot":str(profiles),"symbolRoot":str(symbols),"profilerImage":sampler_id}))
         shutil.copyfile(self.source/"scripts/cvm-hotpath-cpu",build/"capture.py")
-        # Root has only PERFMON; paths and container binding are baked into this fixture image.
+        # The driver has no perf capability; only the fixed sampler can attach.
         (build/"Dockerfile").write_text("FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends python3 binutils ca-certificates && rm -rf /var/lib/apt/lists/*\nCOPY binding.json /etc/cvm-observability/cpu.json\nCOPY capture.py /capture.py\nUSER 0:1000\nENTRYPOINT [\"python3\",\"/capture.py\"]\n")
         profiler_image=self.project+":profiler"
         with (self.root/"profiler-build.log").open("w") as log:
             subprocess.run(["docker","build","-t",profiler_image,str(build)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=600)
-        samply=Path(self.args.samply).resolve(strict=True)
         profiler=self.project+"-profiler"
-        command=["docker","run","--name",profiler,"--label","codex.testbox.agent="+self.args.agent,"--cap-drop=ALL","--cap-add=PERFMON","--pid=host","-v",str(self.root)+":"+str(self.root),"-v",str(samply)+":/usr/local/bin/samply:ro","-v","/usr/bin/docker:/usr/local/bin/docker:ro","-v","/var/run/docker.sock:/var/run/docker.sock",profiler_image,"capture","30"]
+        command=["docker","run","--name",profiler,"--label","codex.testbox.agent="+self.args.agent,"--cap-drop=ALL","--pid=host","-v",str(self.root)+":"+str(self.root),"-v","/usr/bin/docker:/usr/local/bin/docker:ro","-v","/var/run/docker.sock:/var/run/docker.sock",profiler_image,"capture","30"]
         with ThreadPoolExecutor(max_workers=1) as executor:
             load=executor.submit(self.client,"load","--seconds","40","--rate",str(self.args.rate))
             try:
@@ -143,6 +150,10 @@ class Run:
         for index in range(3):
             for enabled in ["false","true"] if index%2==0 else ["true","false"]:
                 directory=self.root/f"ab-{index}-{enabled}";shutil.copytree(baseline,directory);directory.chmod(0o770)
+                # copytree creates host-owned files; the cap-free app writes as GID 1000.
+                for path in directory.rglob("*"):
+                    assert not path.is_symlink(),"unexpected symlink in synthetic A/B state"
+                    path.chmod(0o770 if path.is_dir() else 0o660)
                 app=self.definition["services"]["app"]
                 app["environment"]["OBSERVABILITY_ENABLED"]=enabled
                 app["volumes"][0]=str(directory)+":/srv/app/data"

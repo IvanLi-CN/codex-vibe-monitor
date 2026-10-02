@@ -10,7 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 SCRIPTS = Path(__file__).resolve().parent
 
@@ -198,6 +198,42 @@ class RetirementTests(unittest.TestCase):
         self.assertEqual(list(other.iterdir()), [])
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_container_deadline_signals_and_removes_only_the_owned_sampler(self):
+        process = Mock()
+        process.wait.side_effect = [subprocess.TimeoutExpired("docker", 30), 0]
+        process.poll.return_value = 0
+        with patch.object(cpu.subprocess, "Popen", return_value=process), patch.object(cpu, "command") as command, patch.object(cpu.os, "killpg") as killpg:
+            cpu.record_bounded(["docker", "run"], 30, {}, lambda: None, "cvm-cpu-owned")
+            self.assertEqual(command.call_args_list, [call(["docker", "kill", "--signal", "INT", "cvm-cpu-owned"]), call(["docker", "rm", "-f", "cvm-cpu-owned"])])
+            killpg.assert_not_called()
+
+    def test_runtime_snapshot_rejects_unrelated_paths_before_copying(self):
+        for path in ["/srv/app/data/private.db", "/tmp/jit.so", "/usr/lib/x86_64-linux-gnu/libc.so.6 (deleted)"]:
+            maps = "1-2 r-xp 00000000 00:01 123 " + path
+            with patch.object(Path, "read_text", return_value=maps), patch.object(cpu, "command") as command:
+                with self.assertRaisesRegex(ValueError, "unsupported runtime"):
+                    cpu.snapshot_libraries("bound-app", 123, Path("/unused"))
+                command.assert_not_called()
+        with patch.object(Path, "read_text", return_value="1-2 rw-s 00000000 00:01 123 /srv/app/data/business.db-shm"), patch.object(cpu, "command") as command:
+            self.assertEqual(cpu.snapshot_libraries("bound-app", 123, Path("/unused")), [])
+            command.assert_not_called()
+
+    def test_container_sampler_has_only_bound_mounts_and_no_control_socket(self):
+        root = Path("/srv/cvm/profiles")
+        binary = Path("/srv/cvm/symbols/build-id/codex-vibe-monitor")
+        image = "sha256:" + "a" * 64
+        libraries = [(root / "capture-runtime-123/0", "/usr/lib/x86_64-linux-gnu/libc.so.6")]
+        args = cpu.profiler_arguments({"profilerImage": image}, root, binary, libraries, 1000, 123, "cvm-cpu-test", root / "capture.pending.json.gz", 1024**2, 30)
+        self.assertIn("type=bind,src=/srv/cvm/symbols/build-id/codex-vibe-monitor,dst=/usr/local/bin/codex-vibe-monitor,readonly", args)
+        self.assertIn("type=bind,src=/srv/cvm/profiles/capture-runtime-123/0,dst=/usr/lib/x86_64-linux-gnu/libc.so.6,readonly", args)
+        self.assertIn("--network=none", args)
+        self.assertIn("--pull=never", args)
+        self.assertEqual(args[args.index("--user") + 1], "0:1000")
+        self.assertNotIn("/var/run/docker.sock", " ".join(args))
+        self.assertNotIn("--privileged", args)
+        self.assertFalse(any(argument.startswith("--cpus=") for argument in args))
+        self.assertEqual(args[-2:], ["--output", str(root / "capture.pending.json.gz")])
+
     def test_cpu_deadline_signals_only_the_profiler_and_saves_output(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "saved.txt"

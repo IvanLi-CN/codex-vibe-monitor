@@ -73,15 +73,26 @@ revision/platform 的产物，核对 `image-identity.json` 与运行镜像 diges
 `/usr/local/bin/codex-vibe-monitor`，再执行 `scripts/export-observability-symbols.py`。
 运行二进制与符号 hash/build ID 必须相同；不要使用单独重新编译的 profiling binary。
 
-由运维安装固定版本 samply（初始锁定 `0.13.1`）、readelf、Python 3.11+ 和
-`scripts/cvm-hotpath-cpu`。安装 root-owned、非 group/world writable 的固定配置
+由运维从上游 release 下载本机平台的 samply `0.13.1` 并校验发布的 SHA256，
+将二进制命名为 `samply`，与 `ops/observability/cpu/Dockerfile` 放在独立构建目录。
+执行 `docker build -t cvm-cpu-profiler:0.13.1 <构建目录>`，用
+`docker image inspect --format '{{.Id}}' cvm-cpu-profiler:0.13.1` 取得不可变本地 image ID。
+这是按需启动并删除的采样容器，不增加常驻服务；镜像不挂 Docker socket、不联网，
+只接收固定原实例 PID、已核验二进制、该实例只读运行库与项目 profile 目录。
+运行库从原实例实际 maps 的固定系统库目录复制，最多 32 个/32 MiB，逐文件核验
+校验和后只读挂载，完成即删除；中断遗留目录会阻止后续采样，交由运维检查。
+samply live converter 需要读取进程内映射路径，`--symbol-dir` 不会补齐这个路径；
+包装命令将精确二进制只读挂载到原 `/usr/local/bin/codex-vibe-monitor`，不改宿主文件。
+主机安装 Docker、readelf、Python 3.11+ 和 `scripts/cvm-hotpath-cpu`，受限命令由
+具备这些操作权限的专用运维身份执行。安装 root-owned、非 group/world writable 的固定配置
 `/etc/cvm-observability/cpu.json`，内容如下（路径由运维选择，Agent 无 CLI 覆盖入口）：
 
 ```json
 {
   "container": "codex-vibe-monitor",
   "profileRoot": "/home/ivan/srv/monitoring/profiles/codex-vibe-monitor",
-  "symbolRoot": "/home/ivan/srv/monitoring/symbols/codex-vibe-monitor"
+  "symbolRoot": "/home/ivan/srv/monitoring/symbols/codex-vibe-monitor",
+  "profilerImage": "sha256:<docker image inspect 返回的 64 位十六进制 image ID>"
 }
 ```
 
@@ -89,9 +100,17 @@ revision/platform 的产物，核对 `image-identity.json` 与运行镜像 diges
 SSH key 配 `restrict,command="/usr/local/bin/cvm-hotpath-cpu"`；命令仅接
 `capture [1..60]`，默认 30 秒/100 Hz，从绑定容器解析 PID，禁止任意 PID/shell/output。
 主机 perf 权限必须实际验证，脚本不修改 sysctl 或授予通用 root shell。
+还需验证专用采样身份的 memlock 预算能覆盖运行实例各线程的 perf ring-buffer；
+权限探针能 attach 单线程进程不证明真实应用可用。测试机 profiler 使用有界
+256 MiB memlock limit 和隔离的 `PERFMON`、`IPC_LOCK` 能力，生产按原实例 attach
+结果核定，不修改全局 perf 配置；应用容器不添加这些能力。
+不对采样容器设置 CPU quota：固定版本以可用核数枚举 perf CPU，配额可能使它只
+监听 CPU 0 而漏掉原实例线程。使用低 CPU shares、512 MiB 内存与 64 个 PID 上限，
+并核验 profile 有实际样本及正确应用 build ID；空 profile 不记为成功。
 固定的 samply 0.13.1 在 Linux attach 路径中不执行 duration 截止，包装命令在截止时间
-向自己创建的 profiler 进程组发送 SIGINT；停止采集后最多等待 120 秒保存/符号化，
-失败则终止该 profiler，应用进程不接收信号。
+向自己创建的唯一 profiler 容器发送 SIGINT；停止采集后最多等待 120 秒保存/符号化，
+包装命令的截止/失败信号仅发给该 profiler。samply attach 自身会在初始化 perf
+事件时短暂停止并恢复目标线程；上线前需核验原实例 attach 对业务延迟的影响。
 同实例用 flock 单并发。采样保留 7 天、总量 512 MiB，先清理已验证到期产物，
 不足时拒绝采样；中断 pending 文件计入容量，由运维检查后处理。
 manifest 含 UTC、容器/PID、revision/build ID、频率及 profile/符号侧文件校验和。

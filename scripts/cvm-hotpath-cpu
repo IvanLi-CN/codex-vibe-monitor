@@ -2,6 +2,7 @@
 """Restricted, single-instance samply attach; install with a fixed operator binding."""
 import datetime as dt
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -11,6 +12,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 CONFIG = Path("/etc/cvm-observability/cpu.json")
@@ -27,7 +29,7 @@ def checksum(path):
             result.update(data)
     return result.hexdigest()
 
-def record_bounded(arguments, seconds, environment, limit_output):
+def record_bounded(arguments, seconds, environment, limit_output, profiler=None):
     # samply 0.13.1's Linux attach loop ignores --duration. Signal only our profiler
     # process group, then allow bounded symbolization/save time after collection ends.
     process = subprocess.Popen(arguments, env=environment, preexec_fn=limit_output, start_new_session=True)
@@ -35,11 +37,17 @@ def record_bounded(arguments, seconds, environment, limit_output):
         try:
             status = process.wait(timeout=seconds)
         except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGINT)
+            if profiler:
+                command(["docker", "kill", "--signal", "INT", profiler])
+            else:
+                os.killpg(process.pid, signal.SIGINT)
             status = process.wait(timeout=120)
         if status:
             raise subprocess.CalledProcessError(status, arguments)
     finally:
+        if profiler:
+            # This uniquely named, short-lived container is the only cleanup target.
+            command(["docker", "rm", "-f", profiler])
         if process.poll() is None:
             os.killpg(process.pid, signal.SIGKILL)
             process.wait(timeout=5)
@@ -49,8 +57,10 @@ def binding():
     if CONFIG.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise ValueError("CPU binding must be a root-owned, non-writable regular file")
     value = json.loads(CONFIG.read_text())
-    if set(value) != {"container", "profileRoot", "symbolRoot"}:
+    if set(value) != {"container", "profileRoot", "symbolRoot", "profilerImage"}:
         raise ValueError("invalid CPU binding")
+    if not re.fullmatch(r"sha256:[a-f0-9]{64}", value["profilerImage"]):
+        raise ValueError("profiler must be a fixed local image ID")
     if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", value["container"]):
         raise ValueError("invalid bound container")
     root = Path(value["profileRoot"])
@@ -59,6 +69,54 @@ def binding():
         if not path.is_absolute() or path.is_symlink() or not path.is_dir() or path.resolve() != path:
             raise ValueError("bound directories must exist without symlink components")
     return value, root, symbols
+
+def snapshot_libraries(container, pid, directory):
+    paths = set()
+    for line in Path(f"/proc/{pid}/maps").read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) < 6 or "x" not in fields[1] or not fields[5].startswith("/") or fields[5] == "/usr/local/bin/codex-vibe-monitor":
+            continue
+        path = fields[5]
+        if not re.fullmatch(r"/usr/lib/(?:x86_64-linux-gnu|aarch64-linux-gnu)/[a-zA-Z0-9_.+-]{1,120}", path):
+            raise ValueError("unsupported runtime library mapping")
+        paths.add(path)
+    if len(paths) > 32:
+        raise ValueError("runtime library count exceeds limit")
+    size = 0
+    result = []
+    for index, path in enumerate(sorted(paths)):
+        original = Path(f"/proc/{pid}/root{path}")
+        info = original.stat()
+        size += info.st_size
+        if not stat.S_ISREG(info.st_mode) or size > 32 * 1024 * 1024:
+            raise ValueError("runtime library size exceeds limit")
+        copied = directory / str(index)
+        expected = checksum(original)
+        command(["docker", "cp", container + ":" + path, str(copied)])
+        if copied.is_symlink() or not copied.is_file() or checksum(copied) != expected or checksum(original) != expected:
+            raise ValueError("runtime library changed during snapshot")
+        copied.chmod(0o555 if info.st_mode & 0o111 else 0o444)
+        result.append((copied, path))
+    return result
+
+def profiler_arguments(config, root, symbol_binary, libraries, gid, pid, name, temporary, allowance, seconds):
+    # samply's live converter opens mapped paths before symbol-dir is consulted.
+    # Mirror only the verified binary and this instance's runtime libraries, in a
+    # private container filesystem; do not place binaries in the host's /usr/local.
+    arguments = ["docker", "run", "--name", name, "--pull=never", "--network=none",
+            "--user", f"0:{gid}",
+            "--read-only", "--cap-drop=ALL", "--cap-add=PERFMON", "--cap-add=IPC_LOCK",
+            # A quota changes num_cpus::get(), making samply watch only CPU 0.
+            "--pid=host", "--memory=512m", "--cpu-shares=256", "--pids-limit=64",
+            "--ulimit", "memlock=268435456:268435456", "--ulimit", f"fsize={allowance//2}:{allowance//2}",
+            "--tmpfs", "/tmp:rw,nosuid,nodev,size=128m", "--env", "XDG_CACHE_HOME=/tmp/cvm-cache",
+            "--mount", f"type=bind,src={root},dst={root}",
+            "--mount", f"type=bind,src={symbol_binary},dst=/usr/local/bin/codex-vibe-monitor,readonly"]
+    for copied, mapped_path in libraries:
+        arguments += ["--mount", f"type=bind,src={copied},dst={mapped_path},readonly"]
+    return arguments + [config["profilerImage"], "record", "--pid", str(pid), "--rate", "100",
+            "--duration", str(seconds), "--save-only", "--unstable-presymbolicate",
+            "--output", str(temporary)]
 
 def prune(root, now):
     # Only remove complete, identified captures belonging to this tool.
@@ -94,7 +152,7 @@ def capture(seconds):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         used = prune(root, time.time())
         # Reserve a bounded output allowance; never silently exceed retention capacity.
-        allowance = MAX_BYTES - used - 8192
+        allowance = MAX_BYTES - used - 32 * 1024 * 1024 - 8192
         if allowance < 64 * 1024 * 1024:
             raise ValueError("profile capacity exhausted; preserve active captures")
         inspect = json.loads(command(["docker", "inspect", config["container"]]))[0]
@@ -124,22 +182,40 @@ def capture(seconds):
         temporary = root / (name + ".pending.json.gz")
         temporary_symbols = temporary.with_suffix(".syms.json")
         output_symbols = output.with_suffix(".syms.json")
-        environment = {**os.environ, "XDG_CACHE_HOME": str(symbols / ".cache")}
+        environment = os.environ.copy()
         # Limit the profiler's output at the process boundary as well as after collection.
         def limit_output():
             import resource
             resource.setrlimit(resource.RLIMIT_FSIZE, (allowance, allowance))
             os.umask(0o077)
-        record_bounded(["samply", "record", "--pid", str(pid), "--rate", "100", "--duration", str(seconds), "--save-only", "--unstable-presymbolicate", "--symbol-dir", str(symbol_manifest.parent), "--output", str(temporary)], seconds, environment, limit_output)
+        profiler = "cvm-cpu-" + name
+        image = json.loads(command(["docker", "image", "inspect", config["profilerImage"]]))[0]
+        agent = (image["Config"].get("Labels") or {}).get("codex.testbox.agent")
+        if agent:
+            if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", agent):
+                raise ValueError("invalid testbox image ownership")
+            profiler = "testbox-" + agent + "-cpu-" + name
+        with tempfile.TemporaryDirectory(prefix="capture-runtime-", dir=root) as runtime:
+            libraries = snapshot_libraries(config["container"], pid, Path(runtime))
+            arguments = profiler_arguments(config, root, symbol_binary, libraries, root.stat().st_gid, pid, profiler, temporary, allowance, seconds)
+            record_bounded(arguments, seconds, environment, limit_output, profiler)
         if (executable.stat().st_dev, executable.stat().st_ino) != identity or checksum(executable) != manifest["sha256"]:
             raise ValueError("running instance changed during capture; preserve pending artifact")
         artifacts = (temporary, temporary_symbols)
         if any(not path.is_file() or path.is_symlink() for path in artifacts) or sum(path.stat().st_size for path in artifacts) > allowance:
             raise ValueError("profile output is invalid or exceeds capacity")
+        with gzip.open(temporary, "rb") as stream:
+            data = stream.read(64 * 1024 * 1024 + 1)
+        if len(data) > 64 * 1024 * 1024:
+            raise ValueError("profile exceeds bounded validation size")
+        profile = json.loads(data)
+        sample_count = sum(thread["samples"]["length"] for thread in profile["threads"])
+        if sample_count <= 0 or not any(lib.get("name") == "codex-vibe-monitor" and lib.get("codeId") == build_id for lib in profile["libs"]):
+            raise ValueError("profile has no samples from the matching application binary")
         os.replace(temporary, output)
         os.replace(temporary_symbols, output_symbols)
         finished = dt.datetime.now(dt.timezone.utc)
-        result = {"kind": "cvm-cpu-profile-v1", "profile": output.name, "symbols": output_symbols.name, "symbolsSha256": checksum(output_symbols), "container": config["container"], "containerId": inspect["Id"], "pid": pid, "revision": manifest["revision"], "buildId": build_id, "rateHz": 100, "durationSeconds": seconds, "startedAt": started.isoformat(), "finishedAt": finished.isoformat(), "finishedEpoch": finished.timestamp(), "sha256": checksum(output)}
+        result = {"kind": "cvm-cpu-profile-v1", "profile": output.name, "symbols": output_symbols.name, "symbolsSha256": checksum(output_symbols), "container": config["container"], "containerId": inspect["Id"], "pid": pid, "revision": manifest["revision"], "buildId": build_id, "rateHz": 100, "durationSeconds": seconds, "sampleCount": sample_count, "startedAt": started.isoformat(), "finishedAt": finished.isoformat(), "finishedEpoch": finished.timestamp(), "sha256": checksum(output)}
         path = root / (name + ".manifest.json")
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as stream:

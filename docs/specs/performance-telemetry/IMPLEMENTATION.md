@@ -10,6 +10,9 @@
 layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
 layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与浏览器上报端点；
 浏览器上报不计入应用请求或 hotpath server 指标。
+内部报告请求使用 hotpath 的原始 Authorization token，外部只读 API 仍使用独立
+Bearer Token；函数报告的平铺分位数规范化为 API 的固定嵌套对象，回归直接使用
+hotpath 依赖的序列化模型，避免手写 fixture 与真实 schema 不一致。
 
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
@@ -17,8 +20,10 @@ ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任�
 
 `ops/observability/` 提供五个固定 UID dashboard、recording rules、Grafana 告警、
 私网 Compose 与凭据读取组合同，并关闭插件预安装与自动更新。项目 Skill 和 CLI 使用公网 Grafana Viewer Token；
-受限 SSH 命令只 attach 绑定容器，按截止时间向 profiler 发送 SIGINT，并要求精确
-build ID/hash 符号。镜像符号由 CI 从实际镜像提取，不重新编译采样二进制。
+受限 SSH 命令只 attach 绑定容器，按截止时间向一次性 profiler 容器发送 SIGINT，
+并要求精确 build ID/hash 符号。采样镜像绑定不可变本地 image ID，将已核验二进制
+和该实例运行库只读挂载到进程内原路径，以满足 samply live converter 的读取要求；
+无网络、无 Docker socket、无宿主文件替换。镜像符号由 CI 从实际镜像提取，不重新编译采样二进制。
 
 退役工具识别 schema-v1 的列类型、主键、索引与约束，核验精确文件族和路径身份；
 CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 WAL，再校验移出；
@@ -32,9 +37,9 @@ CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 
 
 ## Validation
 
-已通过的迭代验证：Rust all-targets/all-features check/clippy、三分桶共 2920 项后端
-回归（模块拆分之前）；对齐主线后的 Web 全量单测 1745 项（6 项跳过）；
-Web 类型/lint/build；15 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
+已通过的迭代验证：Rust all-targets/all-features check/clippy、对齐主线后的三分桶
+共 2936 项后端回归；Web 全量单测 1745 项（6 项跳过）；
+Web 类型/lint/build；18 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
 已对齐包含任务执行模块拆分的新主线。四张 mock UI 证据已展示、确认并落盘；
 对齐主线后两个 Storybook 文件的 61 项用例通过，相关 E2E 在构建后的 mock demo 上 10 项全部通过。
 77 项映射、9 项退役与 1 项合并的注册表一致性已加入自动回归。
@@ -53,6 +58,11 @@ WebSocket 终态补全回归启用独立 recorder，验证更丰富、更少及�
 速率探针中 20 req/s 出现积压，40 秒窗口约 66 秒才完成；5 req/s 的 200/200 请求
 在约 40 秒完成、平均约 0.24 核。因此完整 A/B 使用 5 req/s 的非饱和流量，
 同时检查完成窗口不积压，CPU/请求与 p95 的 5% 上限不变。
+容器采样的 perf ring-buffer 需要足够 memlock 预算和 IPC_LOCK，采样容器限定为 256 MiB；
+A/B 的每份合成数据副本给予应用固定 GID 写权限，避免无 capability 的应用将
+宿主复制出的文件误作只读库。监控停机场景已有 50/50 请求正常完成的运行证据，
+CPU 诊断探针已从原实例取得 1145 个样本并解析应用热点函数，build ID 匹配；
+报告、CPU 与完整 A/B 仍须在最终候选重新验收。
 正式 review 与 PR Ready 必须使用当前候选 SHA、合同与场景摘要绑定的 passed
 经验性证据卡；历史或中断运行不能替代当前候选证据。完整运行日志与卡片保存在
 测试机独立 run locator，生产上线条件仍由独立运维任务验证。
