@@ -348,7 +348,7 @@ def log_snapshot(phase, round_index, started_at):
 def candidate_input(round_index, duration_seconds, request_rate):
     start = time.monotonic()
     deadline = start + duration_seconds
-    pause_at = start + min(30, max(5, duration_seconds // 4))
+    pause_at = start + min(60, max(5, duration_seconds // 2))
     resume_at = pause_at + 5
     duplicate_at = resume_at + 1
     next_request_at = start
@@ -364,6 +364,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
     sampled_seconds = set()
     unexpected_disabled_after_resume = False
     first_state = log_snapshot('input-start', round_index, start)
+    coordinator_priority_observed = first_state.get('latest_defer_reason') == 'coordinator_priority'
     baseline_cursor = (
         first_state.get('phase'),
         first_state.get('outer_cursor'),
@@ -411,6 +412,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
             if second not in sampled_seconds:
                 sampled_seconds.add(second)
                 state = log_snapshot('input', round_index, start)
+                coordinator_priority_observed |= state.get('latest_defer_reason') == 'coordinator_priority'
                 cursor = (
                     state.get('phase'),
                     state.get('outer_cursor'),
@@ -469,6 +471,8 @@ def candidate_input(round_index, duration_seconds, request_rate):
         gate_failures.append('terminal_confirm_p99')
     if not paused or not resumed or not duplicate_sent:
         gate_failures.append('control_pause_resume')
+    if not coordinator_priority_observed:
+        gate_failures.append('coordinator_priority_yield')
     if unexpected_disabled_after_resume:
         gate_failures.append('unexpected_operator_disabled')
     summary = {
@@ -494,6 +498,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
         'pause_route': 'dedicated',
         'resume_route': 'managed-task',
         'same_value_control_repeated': duplicate_sent,
+        'coordinator_priority_observed': coordinator_priority_observed,
         'run_count_at_resume': run_count_at_resume,
         'unexpected_operator_disabled_after_resume': unexpected_disabled_after_resume,
     }
@@ -708,11 +713,15 @@ def candidate_observe(round_index, duration_seconds):
         'no_work_run_count_changed': no_work_run_count_changed,
         'input_summary': input_summary,
         'defer_reasons': sorted({state.get('latest_defer_reason') for state in states if state.get('latest_defer_reason')}),
-        'coordinator_priority_observed': any(state.get('latest_defer_reason') == 'coordinator_priority' for state in states),
+        'coordinator_priority_observed': (
+            input_summary.get('coordinator_priority_observed') is True
+            or any(state.get('latest_defer_reason') == 'coordinator_priority' for state in states)
+        ),
     }
     print(json.dumps(summary, ensure_ascii=False), flush=True)
     if (
         not summary['online_workload_passed']
+        or not summary['coordinator_priority_observed']
         or not summary['complete_within_budget']
         or input_summary['first_durable_progress_seconds'] is None
         or input_summary['first_durable_progress_seconds'] > 30
