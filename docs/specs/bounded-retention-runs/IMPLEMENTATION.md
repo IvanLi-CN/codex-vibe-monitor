@@ -60,7 +60,7 @@
 | Q1 最长滞留   | 展示最长归档逾期时长；例如已存在 12 天而保留 5 天，产品口径为超期时长，实际计算遵循现有自然日资格边界 | REQ-BRR-020               |
 | Q2 待处理范围 | 主图只计待归档 invocation 行；上游尝试、Prompt 会话、孤儿和文件分别按自身单位展示                     | REQ-BRR-021               |
 | Q3 消化目标   | 普通在线负载下，24 小时内完成起点固定存量，持续处理能力超过新增过期速率，保留在线优先和安全边界       | REQ-BRR-017               |
-| Q4 自动接续   | 有积压自动追赶，轮间让行和压力退避；自定义 interval/cron 控制巡检，禁用阻止后续追赶，清空后回巡检     | REQ-BRR-016/018，ADR 0026 |
+| Q4 自动接续   | 有积压自动追赶，轮间让行和压力退避；自定义 interval/cron 控制巡检，禁用阻止后续追赶，清空后回巡检     | REQ-BRR-016/018，ADR 0027 |
 | Q5 小时点     | 每个 UTC 小时最后一次成功的准确快照；两项指标同次观测，保留实际时间，独立采样，失败及升级前缺测留空   | REQ-BRR-019/020/021       |
 
 1,257,040 行固定存量在 24 小时内归零，至少需要全天平均 14.55 行/秒的有效提交能力，新增过期量另算。这是目标的量级，不是已经测得的容量。如果每天只执行 24 个 60 秒工作轮次，活跃时间内需要约 873 行/秒，仅观察 4 行成功不能支持这个承诺。
@@ -198,4 +198,4 @@ Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分�
 - [长期需求](SPEC.md)
 - [主题历史](HISTORY.md)
 - [ADR 0025](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
-- [ADR 0026](../../adr/0026-retention-catchup-independent-of-inspection-schedule.md)
+- [ADR 0027](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)

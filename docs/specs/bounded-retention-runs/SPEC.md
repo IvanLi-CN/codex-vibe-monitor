@@ -191,7 +191,7 @@
 - [Prompt-cache adaptive materialization](../../adr/0022-prompt-cache-adaptive-materialization.md)
 - [Task operations state outside the main database](../../adr/0023-task-operations-state-outside-main-database.md)
 - [Retention core and conversation derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
-- [Retention catch-up independent of inspection schedules](../../adr/0026-retention-catchup-independent-of-inspection-schedule.md)
+- [Retention catch-up independent of inspection schedules](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
 
 ## References
 
