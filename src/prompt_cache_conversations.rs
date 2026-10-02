@@ -1574,8 +1574,8 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
     } else {
         progress.source_max_invocation_id
     };
-    if source_max_invocation_id != progress.source_max_invocation_id {
-        if let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
+    if source_max_invocation_id != progress.source_max_invocation_id
+        && let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
             context.pool,
             PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
             source_max_invocation_id,
@@ -1584,12 +1584,11 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
             context.control_generation,
         )
         .await?
-        {
-            return Ok(prompt_cache_materialization_control_deferred(
-                PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
-                stop,
-            ));
-        }
+    {
+        return Ok(prompt_cache_materialization_control_deferred(
+            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
+            stop,
+        ));
     }
     ensure_prompt_cache_conversation_total_keys(context.pool, source_max_invocation_id).await?;
 

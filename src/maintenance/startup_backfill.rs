@@ -3233,8 +3233,7 @@ async fn run_startup_backfill_task_with_pressure(
                 };
             if !outcome.control_generation_changed
                 && (!outcome.deferred || outcome.scanned > 0 || outcome.updated > 0)
-            {
-                if let Err(error) = record_prompt_cache_conversation_materialization_run(
+                && let Err(error) = record_prompt_cache_conversation_materialization_run(
                     &state.pool,
                     &run_started_at,
                     run_started.elapsed().as_millis() as u64,
@@ -3247,9 +3246,8 @@ async fn run_startup_backfill_task_with_pressure(
                     None,
                 )
                 .await
-                {
-                    warn!(error = %error, "failed to record prompt-cache materialization run");
-                }
+            {
+                warn!(error = %error, "failed to record prompt-cache materialization run");
             }
             let detail = format!(
                 "phase={} scanned={} updated={} complete={} batches={} last_batch_size={} max_batch_size={} batch_elapsed_ms={} deferred={} defer_reason={}",

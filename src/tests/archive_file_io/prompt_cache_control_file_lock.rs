@@ -77,13 +77,12 @@ async fn maintenance_file_write_lock_does_not_block_business_database_or_publish
     .await
     .expect("control update should fail within its configured SQLite busy timeout");
     assert!(failed_control_update.is_err());
-    assert_eq!(
+    assert!(
         store
             .prompt_cache_materialization_control
             .snapshot()
             .expect("failed transaction must retain trusted control")
             .enabled,
-        true
     );
     let committed_enabled: bool =
         sqlx::query_scalar("SELECT enabled FROM managed_tasks WHERE task_key=?")
