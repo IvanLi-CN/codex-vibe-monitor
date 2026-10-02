@@ -462,6 +462,54 @@ describe("SystemModelsPage", () => {
     expect(providerPicker?.textContent).toContain("1 / 2");
   });
 
+  it("keeps a saved selection when an older preview response arrives later", async () => {
+    const savingMemory = deferred<ModelsDevSyncMemoryState>();
+    const stalePreview = deferred<ModelsDevSyncPreview>();
+    apiMocks.updateModelsDevSyncMemory.mockReturnValueOnce(savingMemory.promise);
+    apiMocks.previewModelsDevPriceSync
+      .mockResolvedValueOnce(makePreview())
+      .mockReturnValueOnce(stalePreview.promise);
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 new-model 的价格"]',
+    );
+    act(() => checkbox?.click());
+    await flushEffects();
+    expect(apiMocks.updateModelsDevSyncMemory).toHaveBeenCalledTimes(1);
+
+    clickButton("取消");
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+    expect(apiMocks.previewModelsDevPriceSync).toHaveBeenCalledTimes(2);
+
+    const savedMemory = makeSyncMemory();
+    savedMemory.modelSelections = [
+      { model: "new-model", providerId: "provider-a", selected: true },
+    ];
+    await act(async () => {
+      savingMemory.resolve(savedMemory);
+      await savingMemory.promise;
+    });
+    await flushEffects();
+
+    await act(async () => {
+      stalePreview.resolve(makePreview(makeSyncMemory()));
+      await stalePreview.promise;
+    });
+    await flushEffects();
+
+    expect(
+      document.body.querySelector<HTMLInputElement>('input[aria-label="同步 new-model 的价格"]')
+        ?.checked,
+    ).toBe(true);
+  });
+
   it("keeps the review open until an in-flight price apply finishes", async () => {
     const applying = deferred<SettingsPayload["pricing"]>();
     apiMocks.applyModelsDevPriceSync.mockReturnValueOnce(applying.promise);
@@ -479,6 +527,13 @@ describe("SystemModelsPage", () => {
     expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledTimes(1);
 
     const user = userEvent.setup();
+    const cancelButton = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>("button"),
+    ).find((button) => button.textContent?.includes("取消"));
+    expect(cancelButton?.disabled).toBe(true);
+    await user.click(cancelButton!);
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy();
+
     await user.keyboard("{Escape}");
     const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]');
     expect(dialog).toBeTruthy();

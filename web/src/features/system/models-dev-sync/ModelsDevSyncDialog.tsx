@@ -404,6 +404,7 @@ export function ModelsDevSyncDialog({
     error: memoryError,
     isSaving: memorySaving,
     queueMemoryPatch,
+    capturePersistedRevision,
     restoreFromServer,
     retry: retryMemorySave,
   } = useModelsDevSyncMemory();
@@ -442,6 +443,7 @@ export function ModelsDevSyncDialog({
     previewAbortControllerRef.current?.abort();
     const abortController = new AbortController();
     const requestId = ++previewRequestIdRef.current;
+    const persistedRevisionAtRequestStart = capturePersistedRevision();
     previewAbortControllerRef.current = abortController;
     setDialogState("loading");
     setSyncError(null);
@@ -459,13 +461,16 @@ export function ModelsDevSyncDialog({
       ) {
         return;
       }
-      restoreFromServer(result.syncState);
+      const restoredSyncState = restoreFromServer(
+        result.syncState,
+        persistedRevisionAtRequestStart,
+      );
       setSyncPreview(result);
-      setCurrentReviewNewModels(new Set(result.syncState.unviewedModelIds));
+      setCurrentReviewNewModels(new Set(restoredSyncState.unviewedModelIds));
       setSelectedProviders(
         new Set(
-          result.syncState.providerSelectionInitialized
-            ? result.syncState.providerSelections
+          restoredSyncState.providerSelectionInitialized
+            ? restoredSyncState.providerSelections
                 .filter((selection) => selection.selected)
                 .map((selection) => selection.providerId)
             : result.providers.map((provider) => provider.id),
@@ -487,7 +492,7 @@ export function ModelsDevSyncDialog({
         previewAbortControllerRef.current = null;
       }
     }
-  }, [restoreFromServer]);
+  }, [capturePersistedRevision, restoreFromServer]);
 
   useEffect(() => {
     if (!open) {
@@ -881,7 +886,12 @@ export function ModelsDevSyncDialog({
                   {t("system.models.sourceLabel")}
                 </span>
                 <div className="flex gap-2">
-                  <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={dialogState === "applying"}
+                    onClick={() => handleOpenChange(false)}
+                  >
                     {t("system.models.cancel")}
                   </Button>
                   <Button
@@ -904,7 +914,7 @@ export function ModelsDevSyncDialog({
             <div className="space-y-4 py-6">
               <Alert role="status">{t("system.models.syncSuccess", { count: resultCount })}</Alert>
               <div className="flex justify-end">
-                <Button type="button" onClick={() => onOpenChange(false)}>
+                <Button type="button" onClick={() => handleOpenChange(false)}>
                   {t("system.models.done")}
                 </Button>
               </div>

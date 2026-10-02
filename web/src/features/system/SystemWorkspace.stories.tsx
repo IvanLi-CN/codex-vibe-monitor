@@ -964,7 +964,8 @@ function buildSystemWorkspaceRequestHandler(
   failModelSelectionSave = false,
   modelsDevPreviewOverride?: ModelsDevSyncPreview,
   delayViewedAcknowledgment = false,
-  delaySelectionMemorySave = false,
+  delaySelectionMemorySaveMs = 0,
+  delayModelSyncApplyMs = 0,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
@@ -1201,10 +1202,10 @@ function buildSystemWorkspaceRequestHandler(
         await new Promise((resolve) => setTimeout(resolve, 250));
       }
       if (
-        delaySelectionMemorySave &&
+        delaySelectionMemorySaveMs > 0 &&
         ((body.modelSelections?.length ?? 0) > 0 || (body.providerSelections?.length ?? 0) > 0)
       ) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        await new Promise((resolve) => setTimeout(resolve, delaySelectionMemorySaveMs));
       }
       if ((body.modelSelections?.length ?? 0) > 0 && modelSelectionFailuresRemaining > 0) {
         modelSelectionFailuresRemaining -= 1;
@@ -1248,6 +1249,9 @@ function buildSystemWorkspaceRequestHandler(
 
     if (url.pathname === "/api/settings/models/sync/apply" && method === "POST") {
       const body = parseBody<{ entries?: PricingEntry[] }>({});
+      if (delayModelSyncApplyMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayModelSyncApplyMs));
+      }
       const selectedEntries = (body.entries ?? []).map((entry) => ({
         ...entry,
         source: "models.dev",
@@ -1361,7 +1365,12 @@ const meta = {
               context.parameters.failModelSelectionSave === true,
               context.parameters.modelsDevPreviewOverride as ModelsDevSyncPreview | undefined,
               context.parameters.delayViewedAcknowledgment === true,
-              context.parameters.delaySelectionMemorySave === true,
+              typeof context.parameters.delaySelectionMemorySaveMs === "number"
+                ? context.parameters.delaySelectionMemorySaveMs
+                : 0,
+              typeof context.parameters.delayModelSyncApplyMs === "number"
+                ? context.parameters.delayModelSyncApplyMs
+                : 0,
             )}
           >
             <FullPageStorySurface>
@@ -2292,6 +2301,15 @@ async function assertCanvasViewport(
   await expect(viewport?.innerHeight).toBe(height);
 }
 
+async function waitForMemorySave(canvasElement: HTMLElement): Promise<void> {
+  const page = within(canvasElement.ownerDocument.body);
+  const status = "正在保存选择记忆…";
+  await expect(page.findByText(status, {}, { timeout: 5000 })).resolves.toBeVisible();
+  await waitFor(() => expect(page.queryByText(status)).not.toBeInTheDocument(), {
+    timeout: 5000,
+  });
+}
+
 async function playModelsSyncReview(canvasElement: HTMLElement): Promise<void> {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "全部同步" }));
@@ -2386,7 +2404,8 @@ export const ModelsSyncControls: Story = {
   tags: ["test"],
   parameters: {
     ...ModelsSyncReview.parameters,
-    delaySelectionMemorySave: true,
+    delaySelectionMemorySaveMs: 250,
+    delayModelSyncApplyMs: 1000,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -2420,8 +2439,7 @@ export const ModelsSyncControls: Story = {
     await expect(deepSeek).toBeChecked();
     await userEvent.keyboard("{Escape}");
     await expect(providerPicker).toHaveFocus();
-    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
-    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await waitForMemorySave(canvasElement);
 
     await userEvent.click(page.getByRole("button", { name: "取消" }));
     await waitFor(() => expect(page.queryByRole("dialog")).not.toBeInTheDocument());
@@ -2454,15 +2472,13 @@ export const ModelsSyncControls: Story = {
     await expect(modelCheckbox).not.toBeChecked();
     await userEvent.keyboard(" ");
     await expect(modelCheckbox).toBeChecked();
-    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
-    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await waitForMemorySave(canvasElement);
 
     const dialog = page.getByRole("dialog");
     const selectAll = page.getByRole("button", { name: "全选" });
     selectAll.focus();
     await userEvent.keyboard("{Enter}");
-    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
-    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await waitForMemorySave(canvasElement);
     await expect(page.getByRole("checkbox", { name: "同步 deepseek-v3.2 的价格" })).toBeChecked();
     const invert = page.getByRole("button", { name: "反选" });
     invert.focus();
@@ -2479,7 +2495,14 @@ export const ModelsSyncControls: Story = {
     await expect(dialog.contains(canvasElement.ownerDocument.activeElement)).toBe(true);
     apply.focus();
     await userEvent.keyboard("{Enter}");
-    await expect(page.findByText(/已更新 \d+ 个模型价格/)).resolves.toBeVisible();
+    const cancelDuringApply = page.getByRole("button", { name: "取消" });
+    await expect(
+      page.findByRole("button", { name: /同步中/ }, { timeout: 5000 }),
+    ).resolves.toBeDisabled();
+    await expect(cancelDuringApply).toBeDisabled();
+    await expect(
+      page.findByText(/已更新 \d+ 个模型价格/, {}, { timeout: 5000 }),
+    ).resolves.toBeVisible();
     const done = page.getByRole("button", { name: "完成" });
     done.focus();
     await userEvent.keyboard("{Enter}");
@@ -2514,7 +2537,7 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
     modelsDevPreviewOverride: STORYBOOK_MODELS_DEV_VIEWPORT_PREVIEW,
     syncMemoryOverride: STORYBOOK_VIEWPORT_MODEL_MEMORY,
     delayViewedAcknowledgment: true,
-    delaySelectionMemorySave: true,
+    delaySelectionMemorySaveMs: 1000,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -2552,8 +2575,7 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
     lastProvider.focus();
     await userEvent.keyboard(" ");
     await expect(lastProvider).toBeChecked();
-    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
-    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await waitForMemorySave(canvasElement);
     await userEvent.keyboard("{Escape}");
     await expect(providerPicker).toHaveFocus();
 
@@ -2567,8 +2589,7 @@ export const ModelsSyncNewModelViewportAcknowledgment: Story = {
     await expect(page.findByText("zz-model-view-lifecycle")).resolves.toBeVisible();
     const newModelBadge = page.getByRole("img", { name: "新发现的模型" });
     await expect(newModelBadge).toBeVisible();
-    await expect(page.findByText("正在保存选择记忆…")).resolves.toBeVisible();
-    await waitFor(() => expect(page.queryByText("正在保存选择记忆…")).not.toBeInTheDocument());
+    await waitForMemorySave(canvasElement);
     await expect(newModelBadge).toBeVisible();
 
     await userEvent.click(page.getByRole("button", { name: "取消" }));

@@ -15,6 +15,78 @@ const EMPTY_MEMORY: ModelsDevSyncMemoryState = {
   unviewedModelIds: [],
 };
 
+interface VersionedValue<T> {
+  revision: number;
+  value: T;
+}
+
+interface MemoryPatchJournal {
+  providerSelections: Map<
+    string,
+    VersionedValue<NonNullable<ModelsDevSyncMemoryPatch["providerSelections"]>[number]>
+  >;
+  modelSelections: Map<
+    string,
+    VersionedValue<NonNullable<ModelsDevSyncMemoryPatch["modelSelections"]>[number]>
+  >;
+  quoteProviderChoices: Map<
+    string,
+    VersionedValue<NonNullable<ModelsDevSyncMemoryPatch["quoteProviderChoices"]>[number]>
+  >;
+  viewedModelIds: Map<string, number>;
+}
+
+function createMemoryPatchJournal(): MemoryPatchJournal {
+  return {
+    providerSelections: new Map(),
+    modelSelections: new Map(),
+    quoteProviderChoices: new Map(),
+    viewedModelIds: new Map(),
+  };
+}
+
+function recordMemoryPatch(
+  journal: MemoryPatchJournal,
+  revision: number,
+  patch: ModelsDevSyncMemoryPatch,
+): void {
+  patch.providerSelections?.forEach((value) => {
+    journal.providerSelections.set(value.providerId, { revision, value });
+  });
+  patch.modelSelections?.forEach((value) => {
+    journal.modelSelections.set(modelProviderKey(value.model, value.providerId), {
+      revision,
+      value,
+    });
+  });
+  patch.quoteProviderChoices?.forEach((value) => {
+    journal.quoteProviderChoices.set(value.model, { revision, value });
+  });
+  patch.viewedModelIds?.forEach((model) => {
+    journal.viewedModelIds.set(model, revision);
+  });
+}
+
+function memoryPatchAfterRevision(
+  journal: MemoryPatchJournal,
+  revision: number,
+): ModelsDevSyncMemoryPatch {
+  return {
+    providerSelections: Array.from(journal.providerSelections.values())
+      .filter((item) => item.revision > revision)
+      .map((item) => item.value),
+    modelSelections: Array.from(journal.modelSelections.values())
+      .filter((item) => item.revision > revision)
+      .map((item) => item.value),
+    quoteProviderChoices: Array.from(journal.quoteProviderChoices.values())
+      .filter((item) => item.revision > revision)
+      .map((item) => item.value),
+    viewedModelIds: Array.from(journal.viewedModelIds.entries())
+      .filter(([, itemRevision]) => itemRevision > revision)
+      .map(([model]) => model),
+  };
+}
+
 function emptyPatch(): ModelsDevSyncMemoryPatch {
   return {
     providerSelections: [],
@@ -118,6 +190,11 @@ export function useModelsDevSyncMemory() {
   const memoryRef = useRef(memory);
   const pendingPatchRef = useRef<ModelsDevSyncMemoryPatch>(emptyPatch());
   const inflightPatchRef = useRef<ModelsDevSyncMemoryPatch>(emptyPatch());
+  const pendingRevisionRef = useRef(0);
+  const inflightRevisionRef = useRef(0);
+  const persistedRevisionRef = useRef(0);
+  const localRevisionRef = useRef(0);
+  const patchJournalRef = useRef(createMemoryPatchJournal());
   const flushPromiseRef = useRef<Promise<void> | null>(null);
   const saveFailedRef = useRef(false);
 
@@ -135,17 +212,30 @@ export function useModelsDevSyncMemory() {
       const run = async () => {
         while (!isEmptyPatch(pendingPatchRef.current)) {
           const batch = pendingPatchRef.current;
+          const batchRevision = pendingRevisionRef.current;
           pendingPatchRef.current = emptyPatch();
+          pendingRevisionRef.current = 0;
           inflightPatchRef.current = batch;
+          inflightRevisionRef.current = batchRevision;
           setIsSaving(true);
           try {
             const serverState = await updateModelsDevSyncMemory(batch);
             inflightPatchRef.current = emptyPatch();
+            persistedRevisionRef.current = Math.max(
+              persistedRevisionRef.current,
+              inflightRevisionRef.current,
+            );
+            inflightRevisionRef.current = 0;
             publishMemory(overlayUnsavedMemory(serverState, emptyPatch(), pendingPatchRef.current));
             setError(null);
           } catch (saveError) {
             pendingPatchRef.current = mergePatches(batch, pendingPatchRef.current);
+            pendingRevisionRef.current = Math.max(
+              pendingRevisionRef.current,
+              inflightRevisionRef.current,
+            );
             inflightPatchRef.current = emptyPatch();
+            inflightRevisionRef.current = 0;
             saveFailedRef.current = true;
             setError(saveError instanceof Error ? saveError.message : String(saveError));
             break;
@@ -169,21 +259,44 @@ export function useModelsDevSyncMemory() {
 
   const queueMemoryPatch = useCallback(
     (patch: ModelsDevSyncMemoryPatch) => {
+      const revision = ++localRevisionRef.current;
+      recordMemoryPatch(patchJournalRef.current, revision, patch);
       publishMemory(patchMemory(memoryRef.current, patch));
       pendingPatchRef.current = mergePatches(pendingPatchRef.current, patch);
+      pendingRevisionRef.current = revision;
       void flushMemoryQueue();
     },
     [flushMemoryQueue, publishMemory],
   );
 
   const restoreFromServer = useCallback(
-    (state: ModelsDevSyncMemoryState) => {
-      publishMemory(overlayUnsavedMemory(state, inflightPatchRef.current, pendingPatchRef.current));
+    (state: ModelsDevSyncMemoryState, persistedRevisionAtRequestStart: number) => {
+      const localChanges = memoryPatchAfterRevision(
+        patchJournalRef.current,
+        persistedRevisionAtRequestStart,
+      );
+      const unsavedChanges = mergePatches(
+        mergePatches(localChanges, inflightPatchRef.current),
+        pendingPatchRef.current,
+      );
+      const restored = patchMemory(state, unsavedChanges);
+      publishMemory(restored);
+      return restored;
     },
     [publishMemory],
   );
 
+  const capturePersistedRevision = useCallback(() => persistedRevisionRef.current, []);
+
   const retry = useCallback(() => flushMemoryQueue(true), [flushMemoryQueue]);
 
-  return { memory, error, isSaving, queueMemoryPatch, restoreFromServer, retry };
+  return {
+    memory,
+    error,
+    isSaving,
+    queueMemoryPatch,
+    capturePersistedRevision,
+    restoreFromServer,
+    retry,
+  };
 }
