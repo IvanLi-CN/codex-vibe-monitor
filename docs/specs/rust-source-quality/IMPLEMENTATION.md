@@ -8,8 +8,8 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 40 current explicit file
-  budgets (22 production and 18 test/helper), and 117 standalone suppression
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 39 current explicit file
+  budgets (21 production and 18 test/helper), and 119 standalone suppression
   declarations. The immutable preparation production/test-helper counts remain
   32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -297,15 +297,39 @@ After rustfmt, `src/app_state.rs` is 1,661 physical lines,
 `src/app_state/invocation_store.rs` is 577 lines. All three are below the
 2,500-line production target, so `src/app_state.rs` is removed from the policy
 inventory. The current inventory is 22 production and 18 test/helper
-candidates (40 entries total); the immutable preparation baseline remains 32
-and 23 and the suppression baseline remains 117.
+candidates (40 entries total) at that earlier extraction point; the immutable
+preparation baseline remains 32 and 23 and the suppression baseline remains
+117.
+
+The prompt-cache conversation binding extraction moves operation-event snapshot
+encoding and filtered operation-event reads into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/operation_log.rs`,
+and encrypted-session owner/routing-policy logic into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/routing_policy.rs`.
+The parent retains binding request models and validation, binding persistence,
+sticky-route transaction and broadcast coordination, HTTP handlers, and
+cache/subscription coordination. Explicit crate-visible re-exports preserve
+existing callers; database rows and operation-log serialization details remain
+private to the operation module.
+
+The operation-event writers now share one private typed payload and one INSERT
+implementation while preserving the existing nullable JSON and executor
+semantics. After rustfmt, the parent is 2,277 physical lines, the
+operation-log module is 1,115 lines, and the routing-policy module is 654
+lines. All three are below
+the 2,500-line production target, so the parent is removed from the policy
+inventory. The current inventory is 21 production and 18 test/helper
+candidates (39 entries total); the immutable preparation baseline remains 32
+and 23 and the suppression baseline remains 119. Binding behavior, transaction
+ordering, sticky-route mutation semantics, owner routing, API payloads, and
+test resource classification remain unchanged.
 
 ## Inventory Contract
 
-The policy has 22 `production` entries above the 2,500-line destination target
+The policy has 21 `production` entries above the 2,500-line destination target
 and 18 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 40 paths; a long path absent from the inventory is
+The checker only reads those 39 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
