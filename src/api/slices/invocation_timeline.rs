@@ -41,7 +41,7 @@ pub(crate) fn register_invocation_timeline_routes(
             axum::routing::get(fetch_timeline),
         )
         .route(
-            "/api/stats/invocation-timeline/:as_of",
+            "/api/stats/invocation-timeline/{as_of}",
             axum::routing::delete(release_timeline_snapshot),
         )
 }

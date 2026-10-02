@@ -3442,27 +3442,27 @@ pub(crate) fn build_invocation_routes(router: Router<Arc<AppState>>) -> Router<A
         .route("/api/invocations", get(list_invocations))
         .route("/api/invocations/locate", get(locate_invocation))
         .route(
-            "/api/invocations/:invoke_id/pool-attempts",
+            "/api/invocations/{invoke_id}/pool-attempts",
             get(fetch_invocation_pool_attempts),
         )
         .route(
-            "/api/invocations/:id/detail",
+            "/api/invocations/{id}/detail",
             get(fetch_invocation_record_detail),
         )
         .route(
-            "/api/invocations/:id/workflow-detail",
+            "/api/invocations/{id}/workflow-detail",
             get(fetch_invocation_workflow_detail),
         )
         .route(
-            "/api/invocations/:id/response-body",
+            "/api/invocations/{id}/response-body",
             get(fetch_invocation_response_body),
         )
         .route(
-            "/api/invocations/:id/attempts/:attempt_public_id/response-body",
+            "/api/invocations/{id}/attempts/{attempt_public_id}/response-body",
             get(fetch_invocation_attempt_response_body),
         )
         .route(
-            "/api/invocations/:id/request-body",
+            "/api/invocations/{id}/request-body",
             get(fetch_invocation_request_body),
         )
         .route("/api/invocations/summary", get(fetch_invocation_summary))
@@ -3531,15 +3531,15 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
             post(post_bulk_prompt_cache_conversation_bindings),
         )
         .route(
-            "/api/stats/prompt-cache-conversation-binding-events/*encodedPromptCacheKey",
+            "/api/stats/prompt-cache-conversation-binding-events/{*encodedPromptCacheKey}",
             get(list_prompt_cache_conversation_operation_events),
         )
         .route(
-            "/api/stats/prompt-cache-conversation-bindings/reset-affinity/*encodedPromptCacheKey",
+            "/api/stats/prompt-cache-conversation-bindings/reset-affinity/{*encodedPromptCacheKey}",
             post(post_prompt_cache_conversation_affinity_reset),
         )
         .route(
-            "/api/stats/prompt-cache-conversation-bindings/*encodedPromptCacheKey",
+            "/api/stats/prompt-cache-conversation-bindings/{*encodedPromptCacheKey}",
             get(get_prompt_cache_conversation_binding)
                 .patch(patch_prompt_cache_conversation_binding),
         )
@@ -3557,11 +3557,11 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
             get(get_managed_task_runtime),
         )
         .route(
-            "/api/system/managed-tasks/:task_key",
+            "/api/system/managed-tasks/{task_key}",
             get(get_managed_task).patch(update_managed_task),
         )
         .route(
-            "/api/system/managed-tasks/:task_key/run",
+            "/api/system/managed-tasks/{task_key}/run",
             post(run_managed_task_now),
         )
         .route(
@@ -3602,11 +3602,11 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
         )
         .route("/api/pool/model-routing-live", get(get_model_routing_live))
         .route(
-            "/api/pool/upstream-accounts/:account_id/call-attempts/locate",
+            "/api/pool/upstream-accounts/{account_id}/call-attempts/locate",
             get(locate_upstream_account_attempt),
         )
         .route(
-            "/api/pool/upstream-accounts/:account_id/call-attempts",
+            "/api/pool/upstream-accounts/{account_id}/call-attempts",
             get(list_upstream_account_attempts),
         )
         .route(
@@ -3618,53 +3618,53 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(create_bulk_upstream_account_sync_job),
         )
         .route(
-            "/api/pool/upstream-accounts/bulk-sync-jobs/:jobId/events",
+            "/api/pool/upstream-accounts/bulk-sync-jobs/{jobId}/events",
             get(stream_bulk_upstream_account_sync_job_events),
         )
         .route(
-            "/api/pool/upstream-accounts/bulk-sync-jobs/:jobId",
+            "/api/pool/upstream-accounts/bulk-sync-jobs/{jobId}",
             get(get_bulk_upstream_account_sync_job).delete(cancel_bulk_upstream_account_sync_job),
         )
         .route(
-            "/api/pool/upstream-account-groups/*groupName",
+            "/api/pool/upstream-account-groups/{*groupName}",
             put(update_upstream_account_group).delete(delete_upstream_account_group),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/sticky-keys",
+            "/api/pool/upstream-accounts/{id}/sticky-keys",
             get(get_upstream_account_sticky_keys),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/model-routing",
+            "/api/pool/upstream-accounts/{id}/model-routing",
             get(get_upstream_account_model_routing),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/model-routing-events",
+            "/api/pool/upstream-accounts/{id}/model-routing-events",
             get(list_upstream_account_model_routing_events),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/model-routing/reset",
+            "/api/pool/upstream-accounts/{id}/model-routing/reset",
             post(reset_upstream_account_model_routing),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/model-mappings",
+            "/api/pool/upstream-accounts/{id}/model-mappings",
             put(update_upstream_account_model_mappings),
         )
         .route(
-            "/api/pool/upstream-accounts/:id",
+            "/api/pool/upstream-accounts/{id}",
             get(get_upstream_account)
                 .patch(update_upstream_account)
                 .delete(delete_upstream_account),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/sync",
+            "/api/pool/upstream-accounts/{id}/sync",
             post(sync_upstream_account),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/models/refresh",
+            "/api/pool/upstream-accounts/{id}/models/refresh",
             post(refresh_upstream_account_models),
         )
         .route(
-            "/api/pool/upstream-accounts/:id/oauth/relogin",
+            "/api/pool/upstream-accounts/{id}/oauth/relogin",
             post(relogin_upstream_account),
         )
         .route(
@@ -3694,11 +3694,11 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
                 .layer(DefaultBodyLimit::max(IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES)),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/:jobId/events",
+            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/{jobId}/events",
             get(stream_imported_oauth_validation_job_events),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/:jobId",
+            "/api/pool/upstream-accounts/oauth/imports/validation-jobs/{jobId}",
             delete(cancel_imported_oauth_validation_job),
         )
         .route(
@@ -3715,19 +3715,19 @@ pub(crate) fn build_pool_routes(router: Router<Arc<AppState>>) -> Router<Arc<App
             post(get_oauth_mailbox_session_status),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/mailbox-sessions/:sessionId",
+            "/api/pool/upstream-accounts/oauth/mailbox-sessions/{sessionId}",
             delete(delete_oauth_mailbox_session),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId",
+            "/api/pool/upstream-accounts/oauth/login-sessions/{loginId}",
             get(get_oauth_login_session).patch(update_oauth_login_session),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId/complete",
+            "/api/pool/upstream-accounts/oauth/login-sessions/{loginId}/complete",
             post(complete_oauth_login_session),
         )
         .route(
-            "/api/pool/upstream-accounts/oauth/login-sessions/:loginId/confirm-identity-overwrite",
+            "/api/pool/upstream-accounts/oauth/login-sessions/{loginId}/confirm-identity-overwrite",
             post(confirm_oauth_login_session_identity_overwrite),
         )
         .route(
@@ -3743,18 +3743,18 @@ pub(crate) fn build_event_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 pub(crate) fn build_external_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route(
-            "/api/external/v1/upstream-accounts/oauth/:sourceAccountId",
+            "/api/external/v1/upstream-accounts/oauth/{sourceAccountId}",
             put(external_upsert_oauth_upstream_account_route)
                 .patch(external_patch_oauth_upstream_account_route),
         )
         .route(
-            "/api/external/v1/upstream-accounts/oauth/:sourceAccountId/relogin",
+            "/api/external/v1/upstream-accounts/oauth/{sourceAccountId}/relogin",
             post(external_relogin_oauth_upstream_account_route),
         )
 }
 
 pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
-    router.route("/v1/*path", any(proxy_openai_v1_with_connect_info))
+    router.route("/v1/{*path}", any(proxy_openai_v1_with_connect_info))
 }
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {

@@ -202,7 +202,7 @@ async fn proxy_openai_v1_e2e_http_roundtrip() {
             .await;
 
     let app = Router::new()
-        .route("/v1/*path", any(proxy_openai_v1))
+        .route("/v1/{*path}", any(proxy_openai_v1))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -1281,7 +1281,7 @@ async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Respon
 
 pub(crate) async fn spawn_oauth_codex_capture_upstream() -> (String, JoinHandle<()>) {
     let app = Router::new().route(
-        "/backend-api/codex/*path",
+        "/backend-api/codex/{*path}",
         any(oauth_codex_capture_upstream),
     );
     let listener = TcpListener::bind("127.0.0.1:0")

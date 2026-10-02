@@ -3297,7 +3297,7 @@ async fn rewrite_ws_downstream_message_model(
     rewrite_websocket_json_payload_model(&mut payload, &mapping.target_model)?;
     let rewritten = serde_json::to_string(&payload)
         .context("failed to serialize mapped websocket JSON frame")?;
-    Ok((AxumWsMessage::Text(rewritten), Some(mapping)))
+    Ok((AxumWsMessage::Text(rewritten.into()), Some(mapping)))
 }
 
 fn websocket_mapping_unsafe_frame_error(
@@ -4161,10 +4161,10 @@ pub(crate) fn should_forward_websocket_header(
 
 pub(crate) fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<TungsteniteMessage> {
     match message {
-        AxumWsMessage::Text(value) => Some(TungsteniteMessage::Text(value.into())),
-        AxumWsMessage::Binary(value) => Some(TungsteniteMessage::Binary(value.into())),
-        AxumWsMessage::Ping(value) => Some(TungsteniteMessage::Ping(value.into())),
-        AxumWsMessage::Pong(value) => Some(TungsteniteMessage::Pong(value.into())),
+        AxumWsMessage::Text(value) => Some(TungsteniteMessage::Text(value.to_string().into())),
+        AxumWsMessage::Binary(value) => Some(TungsteniteMessage::Binary(value)),
+        AxumWsMessage::Ping(value) => Some(TungsteniteMessage::Ping(value)),
+        AxumWsMessage::Pong(value) => Some(TungsteniteMessage::Pong(value)),
         AxumWsMessage::Close(frame) => Some(TungsteniteMessage::Close(frame.map(|frame| {
             tungstenite::protocol::CloseFrame {
                 code: tungstenite::protocol::frame::coding::CloseCode::from(frame.code),
@@ -4176,10 +4176,10 @@ pub(crate) fn axum_to_tungstenite_message(message: AxumWsMessage) -> Option<Tung
 
 pub(crate) fn tungstenite_to_axum_message(message: TungsteniteMessage) -> Option<AxumWsMessage> {
     match message {
-        TungsteniteMessage::Text(value) => Some(AxumWsMessage::Text(value.to_string())),
-        TungsteniteMessage::Binary(value) => Some(AxumWsMessage::Binary(value.to_vec())),
-        TungsteniteMessage::Ping(value) => Some(AxumWsMessage::Ping(value.to_vec())),
-        TungsteniteMessage::Pong(value) => Some(AxumWsMessage::Pong(value.to_vec())),
+        TungsteniteMessage::Text(value) => Some(AxumWsMessage::Text(value.to_string().into())),
+        TungsteniteMessage::Binary(value) => Some(AxumWsMessage::Binary(value)),
+        TungsteniteMessage::Ping(value) => Some(AxumWsMessage::Ping(value)),
+        TungsteniteMessage::Pong(value) => Some(AxumWsMessage::Pong(value)),
         TungsteniteMessage::Close(frame) => Some(AxumWsMessage::Close(frame.map(|frame| {
             axum::extract::ws::CloseFrame {
                 code: u16::from(frame.code),
@@ -4485,7 +4485,7 @@ mod websocket_tests {
         let active_mapping = true;
         assert!(
             websocket_mapping_unsafe_frame_error(
-                &AxumWsMessage::Binary(vec![1, 2, 3]),
+                &AxumWsMessage::Binary(vec![1, 2, 3].into()),
                 active_mapping,
             )
             .is_some()
@@ -4501,8 +4501,11 @@ mod websocket_tests {
     #[test]
     fn websocket_without_model_mapping_preserves_unsafe_payloads() {
         assert!(
-            websocket_mapping_unsafe_frame_error(&AxumWsMessage::Binary(vec![1, 2, 3]), false,)
-                .is_none()
+            websocket_mapping_unsafe_frame_error(
+                &AxumWsMessage::Binary(vec![1, 2, 3].into()),
+                false,
+            )
+            .is_none()
         );
         assert!(
             parse_websocket_mapping_payload("not-json", false)
@@ -4916,7 +4919,8 @@ mod websocket_tests {
                 "prompt_cache_key": "pck-ws-turn",
                 "previous_response_id": "resp_prev"
             })
-            .to_string(),
+            .to_string()
+            .into(),
         );
 
         let inspection =
@@ -4938,7 +4942,8 @@ mod websocket_tests {
                 "type": "conversation.item.create",
                 "prompt_cache_key": "pck-ws-turn"
             })
-            .to_string(),
+            .to_string()
+            .into(),
         );
         assert_eq!(
             inspect_ws_initial_response_create_message(&rejected).unwrap_err(),
@@ -5470,7 +5475,7 @@ mod websocket_tests {
     #[test]
     fn websocket_message_conversion_preserves_payload_frames() {
         assert_eq!(
-            axum_to_tungstenite_message(AxumWsMessage::Text("hello".to_string()))
+            axum_to_tungstenite_message(AxumWsMessage::Text("hello".into()))
                 .expect("text")
                 .into_text()
                 .expect("text payload")
@@ -5478,8 +5483,32 @@ mod websocket_tests {
             "hello"
         );
         assert_eq!(
+            tungstenite_to_axum_message(TungsteniteMessage::Text("hello".into())),
+            Some(AxumWsMessage::Text("hello".into()))
+        );
+        assert_eq!(
+            axum_to_tungstenite_message(AxumWsMessage::Binary(vec![1, 2, 3].into())),
+            Some(TungsteniteMessage::Binary(vec![1, 2, 3].into()))
+        );
+        assert_eq!(
             tungstenite_to_axum_message(TungsteniteMessage::Binary(vec![1, 2, 3].into())),
-            Some(AxumWsMessage::Binary(vec![1, 2, 3]))
+            Some(AxumWsMessage::Binary(vec![1, 2, 3].into()))
+        );
+        assert_eq!(
+            axum_to_tungstenite_message(AxumWsMessage::Ping(vec![4, 5].into())),
+            Some(TungsteniteMessage::Ping(vec![4, 5].into()))
+        );
+        assert_eq!(
+            tungstenite_to_axum_message(TungsteniteMessage::Ping(vec![4, 5].into())),
+            Some(AxumWsMessage::Ping(vec![4, 5].into()))
+        );
+        assert_eq!(
+            axum_to_tungstenite_message(AxumWsMessage::Pong(vec![6, 7].into())),
+            Some(TungsteniteMessage::Pong(vec![6, 7].into()))
+        );
+        assert_eq!(
+            tungstenite_to_axum_message(TungsteniteMessage::Pong(vec![6, 7].into())),
+            Some(AxumWsMessage::Pong(vec![6, 7].into()))
         );
     }
 
