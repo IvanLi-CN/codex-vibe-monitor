@@ -198,6 +198,7 @@ export function useModelsDevSyncMemory() {
   const patchJournalRef = useRef(createMemoryPatchJournal());
   const flushPromiseRef = useRef<Promise<void> | null>(null);
   const saveFailedRef = useRef(false);
+  const failedViewedModelIdsRef = useRef(new Set<string>());
 
   const publishMemory = useCallback((next: ModelsDevSyncMemoryState) => {
     memoryRef.current = next;
@@ -223,6 +224,9 @@ export function useModelsDevSyncMemory() {
           try {
             const serverState = await updateModelsDevSyncMemory(batch);
             inflightPatchRef.current = emptyPatch();
+            batch.viewedModelIds?.forEach((model) => {
+              failedViewedModelIdsRef.current.delete(model);
+            });
             persistedRevisionRef.current = Math.max(
               persistedRevisionRef.current,
               inflightRevisionRef.current,
@@ -235,6 +239,9 @@ export function useModelsDevSyncMemory() {
             publishMemory(overlayUnsavedMemory(latestState, emptyPatch(), pendingPatchRef.current));
             setError(null);
           } catch (saveError) {
+            batch.viewedModelIds?.forEach((model) => {
+              failedViewedModelIdsRef.current.add(model);
+            });
             pendingPatchRef.current = mergePatches(batch, pendingPatchRef.current);
             pendingRevisionRef.current = Math.max(
               pendingRevisionRef.current,
@@ -287,6 +294,11 @@ export function useModelsDevSyncMemory() {
         pendingPatchRef.current,
       );
       const restored = patchMemory(state, unsavedChanges);
+      state.unviewedModelIds.forEach((model) => {
+        if (failedViewedModelIdsRef.current.has(model)) {
+          restored.unviewedModelIds.push(model);
+        }
+      });
       publishMemory(restored);
       return restored;
     },

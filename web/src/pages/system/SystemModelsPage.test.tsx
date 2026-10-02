@@ -367,6 +367,7 @@ describe("SystemModelsPage", () => {
     root = null;
     window.localStorage.removeItem("codex-vibe-monitor.locale");
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     Object.values(apiMocks).forEach((mock) => mock.mockReset());
   });
 
@@ -978,5 +979,64 @@ describe("SystemModelsPage", () => {
       providerId: "provider-a",
       selected: true,
     });
+  });
+
+  it("keeps a failed viewed acknowledgment new in the next review", async () => {
+    class ImmediateIntersectionObserver implements IntersectionObserver {
+      readonly root: Element | Document | null;
+      readonly rootMargin: string;
+      readonly thresholds: ReadonlyArray<number>;
+
+      constructor(
+        private readonly callback: IntersectionObserverCallback,
+        options?: IntersectionObserverInit,
+      ) {
+        this.root = options?.root ?? null;
+        this.rootMargin = options?.rootMargin ?? "";
+        this.thresholds = Array.isArray(options?.threshold)
+          ? options.threshold
+          : [options?.threshold ?? 0];
+      }
+
+      observe(target: Element): void {
+        this.callback(
+          [{ target, isIntersecting: true, intersectionRatio: 1 } as IntersectionObserverEntry],
+          this,
+        );
+      }
+
+      disconnect(): void {}
+
+      unobserve(): void {}
+
+      takeRecords(): IntersectionObserverEntry[] {
+        return [];
+      }
+    }
+
+    storedSyncMemory.unviewedModelIds = ["new-model"];
+    apiMocks.updateModelsDevSyncMemory.mockRejectedValueOnce(new Error("memory write failed"));
+    vi.stubGlobal("IntersectionObserver", ImmediateIntersectionObserver);
+
+    renderPage();
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    expect(apiMocks.updateModelsDevSyncMemory).toHaveBeenCalledWith({
+      providerSelections: [],
+      modelSelections: [],
+      quoteProviderChoices: [],
+      viewedModelIds: ["new-model"],
+    });
+    expect(document.body.textContent).toContain("选择记忆未保存");
+
+    clickButton("取消");
+    await flushEffects();
+    clickButton("全部同步");
+    await flushEffects();
+
+    expect(apiMocks.previewModelsDevPriceSync).toHaveBeenCalledTimes(2);
+    expect(document.body.querySelector('[aria-label="新发现的模型"]')).toBeTruthy();
   });
 });
