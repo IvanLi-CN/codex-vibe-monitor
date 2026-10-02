@@ -142,9 +142,9 @@
 - viewport_strategy: `ui-demo-source + devtools-emulate`
 - desktop_viewport: `1440x900`
 - mobile_viewport: `393x852`
-- state: 12-hour task timeline with mobile row labels hidden, desktop dark disconnected state, and desktop light connecting state
+- state: 12-hour task timeline with one shared pressure row and a localized overflow gap; mobile row labels are hidden; desktop dark disconnected, mobile light disconnected, and desktop light connecting states
 - comparison_base: `7037e63e6eb69d9ac1daf3e131c3d98b6ece3184`
-- rendered_candidate: `1ae7f784164f59878d4afae6c3d4bfc923634498`
+- rendered_candidate: `ac3ba9acefc8f85afb431e9f1f602c7ce3aea2d1`
 - owner_confirmation: confirmed in chat for the displayed baseline, desktop/mobile candidates, heatmaps, and connecting state on 2026-10-02
 - assets:
   - `./assets/task-operations-runtime-desktop.png`
