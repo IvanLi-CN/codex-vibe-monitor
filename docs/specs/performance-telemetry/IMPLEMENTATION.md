@@ -42,4 +42,6 @@ Web 类型/lint/build；15 项退役/CPU/CLI 工具回归；7 项 recording rule
 新候选仍须完成当前 SHA 绑定的受控 Linux Compose、HTTPS 鉴权、原实例 CPU attach
 与默认观测 A/B。采样权限探针能保存 profile，不等于真实应用符号验收通过。
 首轮验收因测试初始化误判 Grafana 创建接口的 201 返回值而 unavailable，
-已修正就绪/创建顺序并重跑新候选；尚无 passed 经验性证据卡，也未进入正式 review 或 PR Ready。
+已修正就绪/创建顺序。第二轮初始化发现验收脚本未按真实 SSE 字符串参数、范围与条数
+合同订阅；脚本已对齐前端请求，验证完整数据帧并持续检查 unavailable/断流。
+尚无 passed 经验性证据卡，也未进入正式 review 或 PR Ready。

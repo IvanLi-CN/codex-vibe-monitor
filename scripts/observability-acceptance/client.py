@@ -101,23 +101,34 @@ def load(seconds,rate):
         return status,time.perf_counter()-started
     # Keep exactly one real dashboard subscription in both A/B states. Read the first
     # frame before starting the window, then drain updates until the window ends.
-    topics=json.dumps([{"topic":"dashboard.activity.current","params":{"range":"1h","timeZone":"UTC","includeAccounts":True,"includeRecent":True,"recentLimit":20}}],separators=(",",":"))
+    topics=json.dumps([{"topic":"dashboard.activity.current","params":{"range":"today","timeZone":"UTC","includeAccounts":"true","includeRecent":"true","recentLimit":"16"}}],separators=(",",":"))
     encoded=base64.urlsafe_b64encode(topics.encode()).decode().rstrip("=")
     url="http://app:8080/events?"+urllib.parse.urlencode({"topics":encoded})
     connection=http.client.HTTPConnection("app",8080,timeout=30)
     connection.request("GET",url.removeprefix("http://app:8080"))
     subscription=connection.getresponse()
-    assert subscription.status==200 and "text/event-stream" in subscription.getheader("Content-Type","")
-    first=subscription.readline()
-    assert first and b'"unavailable"' not in first,"dashboard subscription unavailable before load"
+    assert subscription.status==200 and "text/event-stream" in subscription.getheader("Content-Type",""),("dashboard subscription",subscription.status,subscription.getheader("Content-Type",""))
+    def frame():
+        data=[];size=0
+        while True:
+            line=subscription.readline(1024*1024+1)
+            if not line: raise RuntimeError("dashboard subscription closed during load")
+            size+=len(line)
+            if size>1024*1024: raise RuntimeError("dashboard subscription frame exceeds 1 MiB")
+            if line in (b"\n",b"\r\n"):
+                if not data: return None
+                event=json.loads(b"\n".join(data))
+                assert event["type"] in ("snapshot","live","replay"),"dashboard subscription unavailable"
+                assert event["topic"]["topic"]=="dashboard.activity.current" and isinstance(event["payload"],dict),"invalid dashboard subscription data"
+                return event
+            if line.startswith(b"data:"): data.append(line[5:].lstrip().rstrip(b"\r\n"))
+    while frame() is None: pass
     stop=threading.Event(); failures=[]
     def drain():
         try:
             while not stop.is_set():
-                if not subscription.readline():
-                    if not stop.is_set(): failures.append("dashboard subscription closed during load")
-                    return
-        except OSError:
+                frame()
+        except (OSError,RuntimeError,AssertionError,ValueError,KeyError):
             if not stop.is_set(): failures.append("dashboard subscription failed during load")
     reader=threading.Thread(target=drain,daemon=True);reader.start()
     started=time.perf_counter(); work=[]
