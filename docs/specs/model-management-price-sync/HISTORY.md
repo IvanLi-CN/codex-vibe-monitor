@@ -23,7 +23,8 @@
 
 ## Related Changes
 
-- None. Record PR, commit, review, and compatibility references here; do not add task history to `SPEC.md`.
+- Direct delivery: [PR #1064](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1064), based on `b68295595d875aead33ef31514eaf602279ece94`. Implementation and review-layout commits include `653e1cd8`, `ab6c8ca8`, and `3df25495`; current CI and formal review evidence are tracked on the PR.
+- Compatibility classification: additive API and service-owned SQLite state, verified as `minor` in `assets/sync-memory-version-impact-record.json`; release labels are `type:minor` and `channel:stable`.
 
 ## References
 

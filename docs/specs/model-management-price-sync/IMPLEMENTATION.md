@@ -7,7 +7,7 @@
 - Implementation: 原模型管理能力与价格审核改进均已实现；定向后端、Web、Storybook、类型检查、lint 和构建验证通过。
 - Lifecycle: active
 - Catalog note: models.dev is fetched only on explicit preview; local estimates remain user-reviewed.
-- Delivery: 主人已确认与锁定基线比较后的视觉候选；桌面、手机、短屏及零结果证据已更新为正式 Spec 资产。正式审查、CI 收敛和 PR 状态尚未开始。
+- Delivery: 主人已确认与锁定基线比较后的视觉候选；桌面、手机、短屏及零结果证据已更新为正式 Spec 资产。PR #1064 已创建，当前 PR head 的 CI 收敛与 Tier 3 正式审查待完成。
 
 ## Implementation Coverage
 
@@ -41,11 +41,11 @@
 
 ## Remaining Delivery Gates
 
-- Final Spec drift and contract checks, signed-off commit, single PR publication, fresh required CI, and formal Tier 3 review.
+- Final Spec drift and contract checks, fresh current-head required CI, formal Tier 3 review, and merge.
 
 ## Related Changes
 
-- PR pending.
+- [PR #1064](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1064) is open for convergence.
 
 ## References
 
