@@ -1568,6 +1568,27 @@ impl ManagedTaskExecution {
     }
 }
 
+async fn persist_retention_catchup_schedule(summary: &crate::maintenance::RetentionRunSummary) {
+    let Some(store) = crate::maintenance_store::global() else {
+        return;
+    };
+    let completion = summary.completion();
+    if let Err(error) = store
+        .update_retention_catchup_from_summary(
+            Some(completion),
+            summary.backlog_total,
+            summary.invocation_rows_archived,
+            summary.wait_reason.as_deref(),
+            &format_utc_iso_millis(Utc::now()),
+        )
+        .await
+    {
+        warn!(error = %error, "failed to persist the retention catch-up schedule");
+    } else if let Err(error) = store.sync_retention_progress_schedule().await {
+        warn!(error = %error, "failed to publish the retention catch-up progress schedule");
+    }
+}
+
 async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
@@ -1583,6 +1604,7 @@ async fn run_managed_task_once_with_observation(
             Some(&state.prompt_cache_conversation_cache),
         )
         .await?;
+        persist_retention_catchup_schedule(&summary).await;
         let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
         let prompt_cache_pending = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
@@ -1676,6 +1698,7 @@ async fn run_managed_task_once(
                 Some(&state.prompt_cache_conversation_cache),
             )
             .await?;
+            persist_retention_catchup_schedule(&summary).await;
             let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
             Ok(brief)
         }
