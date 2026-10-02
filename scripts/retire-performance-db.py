@@ -13,10 +13,22 @@ import sqlite3
 import subprocess
 
 TABLES = {
-    "performance_meta": ["key", "value"],
-    "performance_epochs": ["epoch", "started_at", "ended_at"],
-    "performance_buckets": ["bucket_start", "resolution_seconds", "metric_id", "dimension_code", "sample_count", "expected_count", "sum_value", "min_value", "max_value", "last_value", "weighted_sum", "weighted_seconds", "histogram_json", "epoch"],
-    "performance_collector_health": ["id", "state", "last_successful_flush", "dropped_samples", "flush_failure_count", "last_error"],
+    "performance_meta": [("key", "TEXT", 0, 1), ("value", "TEXT", 1, 0)],
+    "performance_epochs": [("epoch", "TEXT", 0, 1), ("started_at", "TEXT", 1, 0), ("ended_at", "TEXT", 0, 0)],
+    "performance_buckets": [
+        ("bucket_start", "INTEGER", 1, 1), ("resolution_seconds", "INTEGER", 1, 2),
+        ("metric_id", "TEXT", 1, 3), ("dimension_code", "TEXT", 1, 4),
+        ("sample_count", "INTEGER", 1, 0), ("expected_count", "INTEGER", 1, 0),
+        ("sum_value", "REAL", 1, 0), ("min_value", "REAL", 0, 0),
+        ("max_value", "REAL", 0, 0), ("last_value", "REAL", 0, 0),
+        ("weighted_sum", "REAL", 1, 0), ("weighted_seconds", "REAL", 1, 0),
+        ("histogram_json", "TEXT", 1, 0), ("epoch", "TEXT", 1, 0),
+    ],
+    "performance_collector_health": [
+        ("id", "INTEGER", 0, 1), ("state", "TEXT", 1, 0),
+        ("last_successful_flush", "TEXT", 0, 0), ("dropped_samples", "INTEGER", 1, 0),
+        ("flush_failure_count", "INTEGER", 1, 0), ("last_error", "TEXT", 0, 0),
+    ],
 }
 ALLOWED = set(TABLES) | {"idx_performance_buckets_range"}
 
@@ -61,6 +73,19 @@ def compatible_image(image, container=None):
             raise ValueError("stopped writer container does not match the pinned old image")
     return version
 
+def outside_application_mounts(archive_root, container):
+    archive_root = Path(archive_root).resolve(strict=False)
+    mounts = json.loads(subprocess.check_output(["docker", "inspect", "--format", "{{json .Mounts}}", container], text=True, timeout=10))
+    for mount in mounts:
+        if mount.get("Type") not in ("bind", "volume"):
+            continue
+        source = Path(mount.get("Source", ""))
+        if not source.is_absolute():
+            raise ValueError("application mount identity is unavailable")
+        source = source.resolve(strict=True)
+        if archive_root == source or archive_root.is_relative_to(source):
+            raise ValueError("archive must be outside every application mount")
+
 def schema(connection):
     if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
         raise ValueError("unknown performance schema marker")
@@ -68,8 +93,15 @@ def schema(connection):
     if names != ALLOWED:
         raise ValueError("unknown or partial schema; source is untouched")
     for table, columns in TABLES.items():
-        if [row[1] for row in connection.execute(f'PRAGMA table_info("{table}")')] != columns:
+        actual = [(row[1], row[2].upper(), row[3], row[5]) for row in connection.execute(f'PRAGMA table_info("{table}")')]
+        if actual != columns:
             raise ValueError("unexpected performance table contract")
+    index = [(row[0], row[2]) for row in connection.execute('PRAGMA index_info("idx_performance_buckets_range")')]
+    if index != [(0, "resolution_seconds"), (1, "bucket_start")]:
+        raise ValueError("unexpected performance range index")
+    health_sql = connection.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='performance_collector_health'").fetchone()[0]
+    if "CHECK(ID=1)" not in re.sub(r"\s", "", health_sql).upper():
+        raise ValueError("unexpected performance health constraint")
     if connection.execute("SELECT value FROM performance_meta WHERE key='schema_version'").fetchone() != ("1",):
         raise ValueError("missing final performance schema marker")
 
@@ -202,6 +234,7 @@ def main():
     compatible_image(args.previous_image, args.container if args.action == "archive" else None)
     if args.action == "archive":
         if not all([args.source, args.business_db, args.data_root, args.archive_root, args.operation_id]): parser.error("archive requires exact source, business-db, data-root, archive-root and operation-id")
+        outside_application_mounts(args.archive_root, args.container)
         result = archive(args.source, args.business_db, args.data_root, args.archive_root, args.operation_id, args.previous_image, args.previous_config)
     else:
         if not args.manifest: parser.error("restore requires manifest")

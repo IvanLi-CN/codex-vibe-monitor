@@ -15,11 +15,12 @@ layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与
 ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任务深链接。
 
 `ops/observability/` 提供五个固定 UID dashboard、recording rules、Grafana 告警、
-私网 Compose 与凭据读取组合同。项目 Skill 和 CLI 使用公网 Grafana Viewer Token；
+私网 Compose 与凭据读取组合同，并关闭插件预安装与自动更新。项目 Skill 和 CLI 使用公网 Grafana Viewer Token；
 受限 SSH 命令只 attach 绑定容器，按截止时间向 profiler 发送 SIGINT，并要求精确
 build ID/hash 符号。镜像符号由 CI 从实际镜像提取，不重新编译采样二进制。
 
-退役工具识别 schema-v1、精确文件族和路径身份，备份包含 WAL，再校验移出；
+退役工具识别 schema-v1 的列类型、主键、索引与约束，核验精确文件族和路径身份；
+CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 WAL，再校验移出；
 归档/恢复可重入，未知状态不移动源。CLI 还核验紧邻 v2 镜像与停止的 writer。
 
 ## Deployment boundary
@@ -31,11 +32,13 @@ build ID/hash 符号。镜像符号由 CI 从实际镜像提取，不重新编�
 ## Validation
 
 已通过的迭代验证：Rust all-targets/all-features check/clippy、三分桶共 2920 项后端
-回归（模块拆分之前）；Web 全量单测 1702 项与新增浏览器时序 4 项回归；
-Web 类型/lint/build；13 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
+回归（模块拆分之前）；对齐主线后的 Web 全量单测 1745 项（6 项跳过）；
+Web 类型/lint/build；15 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
 已对齐包含任务执行模块拆分的新主线，当前源码验证仍在进行。四张 mock UI 证据已展示、确认并落盘；
-两个 Storybook 文件的 36 项用例通过，相关 E2E 正在补齐测试容器字体后重跑。
+对齐主线后两个 Storybook 文件的 61 项用例通过，相关 E2E 在构建后的 mock demo 上 10 项全部通过。
+77 项映射、9 项退役与 1 项合并的注册表一致性已加入自动回归，当前 Rust 验证仍在进行。
 
 新候选仍须完成当前 SHA 绑定的受控 Linux Compose、HTTPS 鉴权、原实例 CPU attach
 与默认观测 A/B。采样权限探针能保存 profile，不等于真实应用符号验收通过。
-尚无 passed 经验性证据卡，也未进入正式 review 或 PR Ready。
+首轮验收因测试初始化误判 Grafana 创建接口的 201 返回值而 unavailable，
+已修正就绪/创建顺序并重跑新候选；尚无 passed 经验性证据卡，也未进入正式 review 或 PR Ready。

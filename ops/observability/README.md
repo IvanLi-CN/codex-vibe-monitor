@@ -29,6 +29,7 @@ Token 与密码文件放在运维身份拥有的私密目录（0700），文件�
 保留各自默认 UID/GID；应用容器也须追加同组以读取其挂载的两个 Token。
 只挂载各服务必要的单个文件，不挂载整个 secret 目录。不要用 0600 的运维用户
 文件直接挂给非 root 容器，也不要把文件改成全员可读。
+Compose 关闭插件预安装和自动更新，避免后台下载安装不需要的插件；所需功能来自固定镜像与 provisioning。
 Grafana 仅绑定 host loopback，由现有入口反向代理到公网 HTTPS；Prometheus 没有 host port。
 上线固定已验证镜像 digest（Compose 的版本 tag 是待验证的初始版本）。
 
@@ -107,7 +108,7 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 1. 固定旧镜像 digest 与旧配置文件，备份业务/任务数据；停止旧应用并确认 writer 已排空。
 2. 明确 `--source`（含自定义路径/alias）、`--business-db`、`--data-root` 与挂载外
    `--archive-root`，执行 `scripts/retire-performance-db.py archive --container <stopped-app> --previous-image <image@sha256:digest> --previous-config <old-config> --source <exact-db> --business-db <business-db> --data-root <mount> --archive-root <outside-mount> --operation-id <id>`。
-3. 工具先核验旧镜像 OCI version 属于紧邻的 v2 major；归档时停止的 writer 容器 image ID
+3. 工具先核验归档不在停止容器的任何持久化挂载下，再核验旧镜像 OCI version 属于紧邻的 v2 major；归档时停止的 writer 容器 image ID
    必须匹配指定 digest。未知版本和直接跨 major 均拒绝，不移动源文件。
    再核验 schema v1/marker/文件身份，SQLite backup 含已提交 WAL，验证 integrity/hash
    后移出精确旧文件族；manifest 阶段为 identified → verified → archived。未知/损坏/失败保持源。

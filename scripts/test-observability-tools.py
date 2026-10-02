@@ -31,9 +31,23 @@ def fixture(path):
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA wal_autocheckpoint=0")
     connection.execute("PRAGMA user_version=1")
-    for table, columns in migration.TABLES.items():
-        connection.execute(f"CREATE TABLE {table} ({', '.join(column + ' TEXT' for column in columns)})")
-    connection.execute("CREATE INDEX idx_performance_buckets_range ON performance_buckets(resolution_seconds,bucket_start)")
+    # The actual retired v1 DDL is independent of the migration validator's tuples.
+    connection.executescript('''
+        CREATE TABLE performance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE performance_epochs (epoch TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT);
+        CREATE TABLE performance_buckets (
+            bucket_start INTEGER NOT NULL, resolution_seconds INTEGER NOT NULL,
+            metric_id TEXT NOT NULL, dimension_code TEXT NOT NULL,
+            sample_count INTEGER NOT NULL, expected_count INTEGER NOT NULL, sum_value REAL NOT NULL,
+            min_value REAL, max_value REAL, last_value REAL,
+            weighted_sum REAL NOT NULL DEFAULT 0, weighted_seconds REAL NOT NULL DEFAULT 0,
+            histogram_json TEXT NOT NULL, epoch TEXT NOT NULL,
+            PRIMARY KEY(bucket_start, resolution_seconds, metric_id, dimension_code));
+        CREATE INDEX idx_performance_buckets_range ON performance_buckets(resolution_seconds,bucket_start);
+        CREATE TABLE performance_collector_health (
+            id INTEGER PRIMARY KEY CHECK(id = 1), state TEXT NOT NULL, last_successful_flush TEXT,
+            dropped_samples INTEGER NOT NULL, flush_failure_count INTEGER NOT NULL, last_error TEXT);
+    ''')
     connection.execute("INSERT INTO performance_meta VALUES ('schema_version','1')")
     connection.execute("INSERT INTO performance_epochs VALUES ('wal-only','now',NULL)")
     connection.commit()
@@ -134,6 +148,32 @@ class RetirementTests(unittest.TestCase):
     def test_running_old_writer_is_rejected(self):
         with patch.object(migration.subprocess, "check_output", return_value=b'{"Running":true,"Pid":123}'):
             with self.assertRaisesRegex(ValueError, "stopped"): migration.stopped("cvm")
+
+    def test_archive_is_isolated_from_all_actual_application_mounts(self):
+        custom_mount = self.root / "custom-mount"; custom_mount.mkdir()
+        alias = self.root / "custom-alias"; alias.symlink_to(custom_mount, target_is_directory=True)
+        mounts = [{"Type": "bind", "Source": str(self.data)}, {"Type": "volume", "Source": str(custom_mount)}]
+        with patch.object(subprocess, "check_output", return_value=json.dumps(mounts)):
+            migration.outside_application_mounts(self.archive, "old-app")
+            for destination in [self.data / "archive", alias / "archive"]:
+                with self.assertRaisesRegex(ValueError, "every application mount"):
+                    migration.outside_application_mounts(destination, "old-app")
+
+    def test_same_names_with_unknown_types_index_or_constraints_are_preserved(self):
+        mutations = [
+            "DROP INDEX idx_performance_buckets_range; CREATE INDEX idx_performance_buckets_range ON performance_buckets(bucket_start,resolution_seconds);",
+            "DROP TABLE performance_epochs; CREATE TABLE performance_epochs(epoch TEXT PRIMARY KEY, started_at REAL NOT NULL, ended_at TEXT);",
+            "DROP TABLE performance_collector_health; CREATE TABLE performance_collector_health(id INTEGER PRIMARY KEY, state TEXT NOT NULL, last_successful_flush TEXT, dropped_samples INTEGER NOT NULL, flush_failure_count INTEGER NOT NULL, last_error TEXT);",
+        ]
+        for index, mutation in enumerate(mutations):
+            source = self.data / f"unknown-{index}.sqlite"
+            original = fixture(source)
+            original.executescript(mutation); original.close()
+            before = migration.digest(source)
+            with self.assertRaisesRegex(ValueError, "unexpected performance"):
+                migration.archive(source, self.business, self.data, self.archive, f"unknown-{index}", OLD_IMAGE, self.config)
+            self.assertEqual(migration.digest(source), before)
+            self.assertFalse((self.archive / f"unknown-{index}" / "manifest.json").exists())
 
     def test_parent_symlink_restores_without_creating_a_leaf_alias(self):
         alias = self.root / "data-alias"
