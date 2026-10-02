@@ -388,9 +388,6 @@ def observe_progress(probe, state, elapsed_seconds):
         probe['eligible_since'] = None
     elif probe['eligible_since'] is None:
         probe['eligible_since'] = elapsed_seconds
-    if not state.get('snapshot_error'):
-        probe['durable_seen'] |= progress_cursor(state) != tuple(probe['baseline_cursor'])
-        probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
     if probe['eligible_since'] is not None:
         wait = elapsed_seconds - probe['eligible_since']
         for name in ('durable', 'staging'):
@@ -400,6 +397,9 @@ def observe_progress(probe, state, elapsed_seconds):
                 )
                 if wait > 30 and name not in probe['deadline_failures']:
                     probe['deadline_failures'].append(name)
+    if not state.get('snapshot_error'):
+        probe['durable_seen'] |= progress_cursor(state) != tuple(probe['baseline_cursor'])
+        probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
 
 
 def candidate_input(round_index, duration_seconds, request_rate):
