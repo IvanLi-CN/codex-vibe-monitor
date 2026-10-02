@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 45 large-file entries explicit.
+  its 39 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -327,3 +327,26 @@ After rustfmt, `src/app_state.rs` is 1,661 physical lines,
 inventory. The current inventory is 22 production and 18 test/helper
 candidates (40 entries total); the immutable preparation baseline remains 32
 and 23 and the suppression baseline remains 117.
+
+The prompt-cache conversation binding extraction moves operation-event snapshot
+encoding and filtered operation-event reads into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/operation_log.rs`,
+and encrypted-session owner/routing-policy logic into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/routing_policy.rs`.
+The parent retains binding request models and validation, binding persistence,
+sticky-route transaction and broadcast coordination, HTTP handlers, and
+cache/subscription coordination. Explicit crate-visible re-exports preserve
+existing callers; database rows and operation-log serialization details remain
+private to the operation module.
+
+The operation-event writers now share one private typed payload and one INSERT
+implementation while preserving the existing nullable JSON and executor
+semantics. After rustfmt, the parent is 2,277 physical lines, the
+operation-log module is 1,115 lines, and the routing-policy module is 654
+lines. All three are below
+the 2,500-line production target, so the parent is removed from the policy
+inventory. The current inventory is 21 production and 18 test/helper
+candidates (39 entries total); the immutable preparation baseline remains 32
+and 23 and the suppression baseline remains 119. Binding behavior, transaction
+ordering, sticky-route mutation semantics, owner routing, API payloads, and
+test resource classification remain unchanged.

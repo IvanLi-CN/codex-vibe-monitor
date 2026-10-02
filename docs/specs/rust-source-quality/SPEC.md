@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 40 explicit file entries: 22
+The policy MUST keep the current inventory as 39 explicit file entries: 21
 production candidates above 2,500 lines and 18 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
@@ -94,7 +94,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 40 entries have
+The current inventory retains no cohesive-module exceptions: all 39 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
@@ -174,6 +174,29 @@ The immutable preparation baseline remains 32 and 23, and the suppression
 baseline remains 117. The summary API slice remains unchanged and frozen for
 this extraction.
 
+The prompt-cache conversation binding extraction moves operation-event snapshot
+encoding and filtered operation-event reads into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/operation_log.rs`,
+and encrypted-session owner/routing-policy logic into
+`src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/bindings/routing_policy.rs`.
+The parent retains binding request models and validation, binding persistence,
+sticky-route transaction and broadcast coordination, HTTP handlers, and
+cache/subscription coordination. Explicit crate-visible re-exports preserve
+the existing callers, while database rows and operation-log serialization
+details stay inside the operation module.
+
+The operation-event writers now share one private typed payload and one INSERT
+implementation while preserving the existing nullable JSON and executor
+semantics. After rustfmt, the parent is 2,277 physical lines, the
+operation-log module is 1,115 lines, and the routing-policy module is 654
+lines. All three are below
+the 2,500-line production target, so the parent is removed from the policy
+inventory. The current inventory is 21 production and 18 test/helper entries
+(39 total); the immutable preparation baseline remains 32 and 23 and the
+suppression baseline remains 119. Binding behavior, transaction ordering,
+sticky-route mutation semantics, owner routing, API payloads, and test resource
+classification remain unchanged.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such
@@ -211,7 +234,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 22 production and 18 test/helper entries, with
+Pass condition: the policy has 21 production and 18 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
