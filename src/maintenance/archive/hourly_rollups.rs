@@ -1090,45 +1090,36 @@ pub(crate) async fn load_live_invocation_bucket_targets_tx(
     if bucket_targets.is_empty() {
         return Ok(HashSet::new());
     }
-
-    let min_bucket_epoch = bucket_targets
-        .iter()
-        .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
-        .min()
-        .ok_or_else(|| anyhow!("missing minimum invocation bucket epoch"))?;
-    let max_bucket_epoch = bucket_targets
-        .iter()
-        .map(|(bucket_start_epoch, _)| *bucket_start_epoch)
-        .max()
-        .ok_or_else(|| anyhow!("missing maximum invocation bucket epoch"))?;
-    let min_bucket_start = Utc
-        .timestamp_opt(min_bucket_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid minimum invocation bucket epoch"))?;
-    let max_bucket_end = Utc
-        .timestamp_opt(max_bucket_epoch + 3_600, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid maximum invocation bucket epoch"))?;
-
-    let rows = sqlx::query_as::<_, InvocationBucketPresenceRow>(
-        r#"
-        SELECT occurred_at, source
-        FROM codex_invocations
-        WHERE occurred_at >= ?1
-          AND occurred_at < ?2
-        ORDER BY id ASC
-        "#,
-    )
-    .bind(db_occurred_at_lower_bound(min_bucket_start))
-    .bind(db_occurred_at_lower_bound(max_bucket_end))
-    .fetch_all(&mut *tx)
-    .await?;
-
     let mut live_targets = HashSet::new();
-    for row in rows {
-        let key = (invocation_bucket_start_epoch(&row.occurred_at)?, row.source);
-        if bucket_targets.contains(&key) {
-            live_targets.insert(key);
+    // The previous range query read every remaining invocation in the union of the target
+    // buckets. A single hot hour could therefore turn every 64-row archive transaction into a
+    // million-row scan. The caller already supplies the exact bucket/source keys; probe each
+    // one with LIMIT 1 so the existing (occurred_at, id) index can stop at the first live row.
+    for (bucket_start_epoch, source) in bucket_targets {
+        let bucket_start = Utc
+            .timestamp_opt(*bucket_start_epoch, 0)
+            .single()
+            .ok_or_else(|| anyhow!("invalid invocation bucket epoch"))?;
+        let bucket_end = bucket_start
+            .checked_add_signed(ChronoDuration::hours(1))
+            .ok_or_else(|| anyhow!("invocation bucket end overflow"))?;
+        let exists = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM codex_invocations
+                 WHERE occurred_at >= ?1
+                   AND occurred_at < ?2
+                   AND source = ?3
+                 LIMIT 1
+             )",
+        )
+        .bind(db_occurred_at_lower_bound(bucket_start))
+        .bind(db_occurred_at_lower_bound(bucket_end))
+        .bind(source)
+        .fetch_one(&mut *tx)
+        .await?;
+        if exists != 0 {
+            live_targets.insert((*bucket_start_epoch, source.clone()));
         }
     }
     Ok(live_targets)

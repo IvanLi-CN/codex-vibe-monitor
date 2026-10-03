@@ -973,6 +973,63 @@ async fn ensure_schema_rebuilds_prompt_cache_working_set_live_from_existing_invo
 }
 
 #[tokio::test]
+async fn old_terminal_invocation_delete_skips_live_working_set_rebuild() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    for (invoke_id, seconds_ago) in [
+        ("working-window-old", 720_i64),
+        ("working-window-recent", 30_i64),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, 'success', 1, 0.01, ?4, '{}')
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            (now - ChronoDuration::seconds(seconds_ago))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(json!({ "promptCacheKey": "working-window-key" }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("insert working-set trigger source row");
+    }
+
+    let before: (i64, i64) = sqlx::query_as(
+        "SELECT request_count, total_tokens FROM prompt_cache_working_set_live WHERE prompt_cache_key = ?1",
+    )
+    .bind("working-window-key")
+    .fetch_one(&state.pool)
+    .await
+    .expect("recent source row should populate working-set live row");
+    assert_eq!(before, (1, 1));
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("working-window-old")
+        .execute(&state.pool)
+        .await
+        .expect("delete old source row");
+
+    let after: (i64, i64) = sqlx::query_as(
+        "SELECT request_count, total_tokens FROM prompt_cache_working_set_live WHERE prompt_cache_key = ?1",
+    )
+    .bind("working-window-key")
+    .fetch_one(&state.pool)
+    .await
+    .expect("working-set live row should remain after old delete");
+    assert_eq!(after, before);
+}
+
+#[tokio::test]
 async fn proxy_only_working_conversation_live_aggregate_keeps_mixed_source_proxy_slice() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

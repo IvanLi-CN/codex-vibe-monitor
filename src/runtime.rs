@@ -1066,6 +1066,8 @@ where
     }
 
     let managed_task_dispatcher_handle = spawn_managed_task_dispatcher(state.clone());
+    let _retention_backlog_observer_handle =
+        crate::maintenance::spawn_retention_backlog_observer(state.clone(), cancel.clone());
 
     let startup_hourly_rollup_bootstrap_handle = spawn_background_hourly_rollup_bootstrap
         .then(|| spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), cancel.clone()));
@@ -1133,7 +1135,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 );
                 pending_finishes.push_back(finish);
             }
-            if let Err(error) = store.enqueue_due_runs().await {
+            if let Err(error) = store
+                .enqueue_due_runs_with_retention_enabled(state.config.retention_enabled)
+                .await
+            {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
             }
             if let Err(error) = store.cleanup_expired_history_if_due().await {
@@ -1566,6 +1571,27 @@ impl ManagedTaskExecution {
     }
 }
 
+async fn persist_retention_catchup_schedule(summary: &crate::maintenance::RetentionRunSummary) {
+    let Some(store) = crate::maintenance_store::global() else {
+        return;
+    };
+    let completion = summary.completion();
+    if let Err(error) = store
+        .update_retention_catchup_from_summary(
+            Some(completion),
+            summary.backlog_total,
+            summary.invocation_rows_archived,
+            summary.wait_reason.as_deref(),
+            &format_utc_iso_millis(Utc::now()),
+        )
+        .await
+    {
+        warn!(error = %error, "failed to persist the retention catch-up schedule");
+    } else if let Err(error) = store.sync_retention_progress_schedule().await {
+        warn!(error = %error, "failed to publish the retention catch-up progress schedule");
+    }
+}
+
 async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
@@ -1581,6 +1607,7 @@ async fn run_managed_task_once_with_observation(
             Some(&state.prompt_cache_conversation_cache),
         )
         .await?;
+        persist_retention_catchup_schedule(&summary).await;
         let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
         let prompt_cache_pending = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
@@ -1620,6 +1647,9 @@ async fn run_managed_task_once_with_observation(
             "processedCount": summary.processed_row_count(),
             "total": summary.backlog_total,
             "completed": summary.invocation_rows_archived,
+            "backlogRemaining": summary.backlog_total.map(|total| {
+                total.saturating_sub(summary.invocation_rows_archived as i64)
+            }),
             "observedAt": summary.backlog_observed_at,
             "sourceMaxInvocationId": summary.source_max_invocation_id,
             "invocationRowsArchived": summary.invocation_rows_archived,
@@ -1671,6 +1701,7 @@ async fn run_managed_task_once(
                 Some(&state.prompt_cache_conversation_cache),
             )
             .await?;
+            persist_retention_catchup_schedule(&summary).await;
             let (brief, _detail) = crate::api::summarize_retention_run_for_system_task(&summary);
             Ok(brief)
         }

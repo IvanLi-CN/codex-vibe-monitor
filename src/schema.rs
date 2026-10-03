@@ -526,14 +526,26 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
 }
 
 async fn rebuild_prompt_cache_working_set_live_triggers(pool: &Pool<Sqlite>) -> Result<()> {
+    // Retention deletes rows well outside the short live working-set window. Recomputing a
+    // whole prompt key for each such row is redundant and quadratic for a large key. Keep the
+    // projection synchronous for recent or in-flight source rows only.
+    let live_window_condition = |subject: &str| {
+        format!(
+            "(LOWER(TRIM(COALESCE({subject}.status, ''))) IN ('running', 'pending') OR {subject}.occurred_at >= datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds'))"
+        )
+    };
+    let old_live_window_condition = live_window_condition("OLD");
+    let new_live_window_condition = live_window_condition("NEW");
     let prompt_cache_insert_trigger_sql = format!(
         r#"
         CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_insert
         AFTER INSERT ON codex_invocations
+        WHEN {new_live_window_condition}
         BEGIN
             {refresh_sql};
         END
         "#,
+        new_live_window_condition = new_live_window_condition,
         refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
         ),
@@ -542,11 +554,14 @@ async fn rebuild_prompt_cache_working_set_live_triggers(pool: &Pool<Sqlite>) -> 
         r#"
         CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
         AFTER UPDATE ON codex_invocations
+        WHEN {old_live_window_condition} OR {new_live_window_condition}
         BEGIN
             {refresh_old_sql};
             {refresh_new_sql};
         END
         "#,
+        old_live_window_condition = old_live_window_condition,
+        new_live_window_condition = new_live_window_condition,
         refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
         ),
@@ -558,10 +573,12 @@ async fn rebuild_prompt_cache_working_set_live_triggers(pool: &Pool<Sqlite>) -> 
         r#"
         CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
         AFTER DELETE ON codex_invocations
+        WHEN {old_live_window_condition}
         BEGIN
             {refresh_sql};
         END
         "#,
+        old_live_window_condition = old_live_window_condition,
         refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
         ),
@@ -1919,6 +1936,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_codex_invocations_occurred_at")?;
+
+    // Retention walks the same eligibility window in occurred_at/id order. The composite key
+    // keeps each bounded page on the index instead of sorting the remaining history repeatedly.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_occurred_at_id
+        ON codex_invocations (occurred_at, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_occurred_at_id")?;
 
     // Benefit queries that filter by time and status (e.g., error distribution)
     sqlx::query(

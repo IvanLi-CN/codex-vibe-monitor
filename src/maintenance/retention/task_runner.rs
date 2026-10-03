@@ -74,6 +74,31 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     + summary.pool_upstream_request_attempt_rows_archived
                     + summary.quota_snapshot_rows_archived) as u64,
             );
+            if let Some(store) = crate::maintenance_store::global() {
+                let completion = summary.completion();
+                if let Err(error) = store
+                    .update_retention_catchup_from_summary(
+                        Some(completion),
+                        summary.backlog_total,
+                        summary.invocation_rows_archived,
+                        summary.wait_reason.as_deref(),
+                        &format_utc_iso_millis(Utc::now()),
+                    )
+                    .await
+                {
+                    warn!(
+                        trigger,
+                        error = %error,
+                        "failed to persist the retention catch-up schedule"
+                    );
+                } else if let Err(error) = store.sync_retention_progress_schedule().await {
+                    warn!(
+                        trigger,
+                        error = %error,
+                        "failed to publish the retention catch-up progress schedule"
+                    );
+                }
+            }
             if summary.deferred {
                 debug!(
                     trigger,

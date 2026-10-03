@@ -113,6 +113,11 @@ test.describe("Web Demo runtime", () => {
     await expect(page.getByText("invocations", { exact: true })).toBeVisible();
     await expect(page.getByText(/完成度：部分完成/)).toBeVisible();
     await expect(page.getByText(/Prompt 缓存统计：暂不可用（积压 3）/)).toBeVisible();
+    await expect(page.getByRole("heading", { name: "最近 7 天归档积压" })).toBeVisible();
+    await expect(page.getByText("待归档 invocation 条数", { exact: true })).toBeVisible();
+    await expect(page.getByText("最长逾期时间（小时）", { exact: true })).toBeVisible();
+    await expect(page.getByText("缺测留空，不补零", { exact: true })).toBeVisible();
+    await expect(page.getByText("空积压显示 0 条、逾期未知", { exact: true })).toBeVisible();
     await expect(page.getByText("92.0%", { exact: true })).toBeVisible();
   });
 

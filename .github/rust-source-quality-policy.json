@@ -57,7 +57,7 @@
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11789,
+      "line_budget": 11867,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6537,
+      "line_budget": 6566,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -189,7 +189,7 @@
     {
       "path": "src/tests/stateful_sqlite/startup_rebuild_and_retention_basics.rs",
       "role": "test_helper",
-      "line_budget": 6399,
+      "line_budget": 6456,
       "next_module_workstream": "Split startup rebuild/retention fixtures by recovery, archive, hydration, and lifecycle."
     },
     {

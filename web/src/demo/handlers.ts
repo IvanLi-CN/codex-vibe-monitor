@@ -2968,6 +2968,8 @@ export function managedTasks() {
     intervalSecs: number | null;
     cronExpr: string | null;
     nextTriggerAt: string | null;
+    nextCatchupAt?: string | null;
+    catchupReason?: string | null;
     isManual: boolean;
     displayColorLight?: string;
     displayColorDark?: string;
@@ -3168,6 +3170,12 @@ export function managedTasks() {
             override?.nextTriggerAt !== undefined
               ? override.nextTriggerAt
               : demoNextTriggerAt(enabled, intervalSecs, cronExpr),
+          nextCatchupAt:
+            taskKey === "retention_archive" && enabled
+              ? new Date(Date.parse(demoNow()) + 60_000).toISOString()
+              : null,
+          catchupReason:
+            taskKey === "retention_archive" && enabled ? "retention_work_budget" : null,
           effectiveSchedule:
             !isManual &&
             (intervalSecs != null || cronExpr != null || taskKey === "retention_archive")
@@ -3466,6 +3474,24 @@ function managedTaskDetail(taskKey: string) {
   const task = managedTasks().find((item) => item.taskKey === taskKey);
   if (!task) return null;
   const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
+  const retentionBacklogTrend =
+    taskKey === "retention_archive"
+      ? Array.from({ length: 7 * 24 }, (_, index) => {
+          const bucket = new Date(Date.parse(demoNow()) - (7 * 24 - index) * 60 * 60 * 1000);
+          bucket.setUTCMinutes(0, 0, 0);
+          const missing = index % 17 === 0;
+          return {
+            bucketStart: bucket.toISOString(),
+            state: missing ? "missing" : "observed",
+            observedAt: missing ? null : new Date(bucket.getTime() + 55 * 60 * 1000).toISOString(),
+            invocationCount: missing ? null : Math.max(0, 12_900 - index * 42),
+            maxOverdueSeconds: missing ? null : Math.max(0, 9 * 24 * 3600 - index * 900),
+            retentionDays: 7,
+            cutoff: new Date(bucket.getTime() - 7 * 24 * 3600 * 1000).toISOString(),
+            sourceMaxInvocationId: missing ? null : 2_579_364 + index * 128,
+          };
+        })
+      : undefined;
   const defaultRun: DemoManagedTaskRun = {
     id: 1,
     startedAt: at,
@@ -3506,6 +3532,9 @@ function managedTaskDetail(taskKey: string) {
           unit: "invocations",
           sourceScope: "expired_invocations",
           waitReason: null,
+          nextInspectionAt: task.nextTriggerAt,
+          nextCatchupAt: task.nextCatchupAt ?? null,
+          catchupState: task.enabled ? "scheduled" : "disabled",
           stages: [],
         }
       : {
@@ -3520,6 +3549,9 @@ function managedTaskDetail(taskKey: string) {
           sourceScope: "expired_invocations",
           lastProgressAt: at,
           waitReason: null,
+          nextInspectionAt: task.nextTriggerAt,
+          nextCatchupAt: task.nextCatchupAt ?? null,
+          catchupState: task.enabled ? "scheduled" : "disabled",
           stages: [
             { name: "archive", status: "running", completed: 1842, total: 2547 },
             { name: "statistics", status: "pending" },
@@ -3535,6 +3567,7 @@ function managedTaskDetail(taskKey: string) {
       observedAt: at,
       coverage: 0.92,
     },
+    retentionBacklogTrend,
   };
 }
 

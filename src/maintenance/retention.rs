@@ -12,10 +12,10 @@ pub(crate) use archive_identity::{
     invocation_archive_source_identity_sha256_legacy_for_test,
 };
 
+use chrono::{TimeZone, Timelike};
+use chrono_tz::Asia::Shanghai;
 #[path = "retention/task_runner.rs"]
 mod task_runner;
-pub(crate) use task_runner::run_data_retention_maintenance_best_effort;
-
 use sqlx::FromRow;
 use std::{
     cell::RefCell,
@@ -25,6 +25,7 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+pub(crate) use task_runner::run_data_retention_maintenance_best_effort;
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -38,6 +39,9 @@ const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
 const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(60);
+const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
+const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
+const RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS: i32 = 1_000;
 const SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT: i64 = 200;
 const SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS: usize = 500;
 const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
@@ -932,7 +936,9 @@ pub(crate) fn retention_write_health_snapshot() -> RetentionWriteHealthSnapshot 
 }
 
 pub(super) fn retention_candidate_limit(config: &AppConfig, operation: &'static str) -> usize {
-    if cfg!(test) {
+    // Keep ordinary unit fixtures deterministic while allowing the capacity benchmark to
+    // exercise the same adaptive limiter that the release build uses.
+    if cfg!(test) && std::env::var_os("CVM_RETENTION_TEST_ADAPTIVE").is_none() {
         return config.retention_batch_rows;
     }
     retention_adaptive_candidate_limit(config.retention_batch_rows, operation)
@@ -3359,6 +3365,52 @@ async fn reconcile_retention_prepared_archives(
                 }
                 // The manifest still describes the previous artifact. Leave the prepared row in
                 // preparing state so the normal archive writer retries from the restored file.
+                continue;
+            }
+        }
+        // A budget/pressure stop can happen after the durable preparing journal is written but
+        // before the archive artifact is linked into place. There is no ownership proof to
+        // quarantine in that state: when the path is inside our archive root, has no manifest,
+        // and is still missing, remove only this orphaned journal row so the source rows can be
+        // prepared again on the next bounded pass.
+        if state == RETENTION_RECOVERY_STATE_PREPARING && !path.exists() {
+            let _archive_lock = match retention_archive_file_lock(path) {
+                Ok(lock) => lock,
+                Err(error) => prepared_item_failure!(error),
+            };
+            let manifest_exists = match sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE file_path = ?1)",
+            )
+            .bind(&file_path)
+            .fetch_one(pool)
+            .await
+            {
+                Ok(value) => value != 0,
+                Err(error) => prepared_item_failure!(error),
+            };
+            if !manifest_exists {
+                let Some(admission) =
+                    acquire_retention_write_admission("retention_recovery_missing_prepared").await
+                else {
+                    retention_recovery_persist_pressure_defer(
+                        pool,
+                        RETENTION_RECOVERY_PREPARED_SCOPE,
+                        "prepared_reconcile",
+                    )
+                    .await?;
+                    retention_recovery_clear_current_prepared_key();
+                    return Ok(());
+                };
+                let deleted = sqlx::query(
+                    "DELETE FROM retention_prepared_archives
+                     WHERE prepared_key = ?1 AND state = 'preparing' AND file_path = ?2",
+                )
+                .bind(&prepared_key)
+                .bind(&file_path)
+                .execute(pool)
+                .await?;
+                drop(admission);
+                progressed |= deleted.rows_affected() == 1;
                 continue;
             }
         }
@@ -7514,12 +7566,6 @@ pub(crate) struct ArchiveBatchFileRow {
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct InvocationBucketPresenceRow {
-    pub(crate) occurred_at: String,
-    pub(crate) source: String,
-}
-
-#[derive(Debug, FromRow)]
 pub(crate) struct ArchiveManifestBatchRow {
     pub(crate) id: i64,
     pub(crate) file_path: String,
@@ -8091,6 +8137,176 @@ pub(crate) fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
     }
 }
 
+#[derive(Debug, FromRow)]
+struct RetentionBacklogObservationSnapshot {
+    invocation_count: i64,
+    oldest_occurred_at: Option<String>,
+    source_max_invocation_id: Option<i64>,
+}
+
+fn retention_backlog_observer_bucket_start(value: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    value
+        - ChronoDuration::seconds(i64::from(value.minute() * 60 + value.second()))
+        - ChronoDuration::nanoseconds(i64::from(value.nanosecond()))
+}
+
+fn retention_backlog_max_overdue_seconds(
+    occurred_at: Option<&str>,
+    retention_days: u64,
+    observed_at: chrono::DateTime<Utc>,
+) -> Option<i64> {
+    let occurred_at = crate::stats::parse_to_utc_datetime(occurred_at?)?;
+    let local_date = occurred_at.with_timezone(&Shanghai).date_naive();
+    let eligible_date =
+        local_date.checked_add_signed(ChronoDuration::days(retention_days as i64))?;
+    let eligible_local = eligible_date.and_hms_opt(0, 0, 0)?;
+    let eligible_at = Shanghai
+        .from_local_datetime(&eligible_local)
+        .single()?
+        .with_timezone(&Utc);
+    Some((observed_at - eligible_at).num_seconds().max(0))
+}
+
+async fn clear_retention_backlog_observer_progress_handler(
+    connection: &mut sqlx::pool::PoolConnection<Sqlite>,
+    deadline: Instant,
+) -> Result<()> {
+    let mut handle = tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        connection.lock_handle(),
+    )
+    .await
+    .map_err(|_| anyhow!("retention backlog observer progress-handler cleanup exceeded 2s"))??;
+    handle.remove_progress_handler();
+    Ok(())
+}
+
+async fn observe_retention_backlog_once(state: &AppState) -> Result<()> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Ok(());
+    };
+    let _background_permit = crate::db_pressure::global_db_pressure_gate()
+        .try_begin_background("retention_backlog_observer")
+        .map_err(|reason| anyhow!("retention backlog observer deferred: {reason}"))?;
+    let observed_at = Utc::now();
+    let cutoff = shanghai_local_cutoff_string(state.config.invocation_max_days);
+    let deadline = Instant::now() + RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(anyhow!(
+            "retention backlog observer budget expired before connection acquisition"
+        ));
+    }
+    let mut connection = tokio::time::timeout(remaining, state.pool.acquire())
+        .await
+        .map_err(|_| anyhow!("retention backlog observer connection acquisition exceeded 2s"))??;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let mut handle = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            connection.lock_handle(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow!("retention backlog observer SQLite handle acquisition exceeded 2s")
+        })??;
+        handle.set_progress_handler(RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS, move || {
+            let within_budget = Instant::now() < deadline;
+            if !within_budget {
+                interrupted.store(true, Ordering::Release);
+            }
+            within_budget
+        });
+    }
+    let query = sqlx::query_as::<_, RetentionBacklogObservationSnapshot>(
+        "WITH source AS (
+             SELECT MAX(id) AS source_max_invocation_id
+             FROM codex_invocations
+         ), eligible AS (
+             SELECT invocations.occurred_at
+             FROM codex_invocations AS invocations
+             CROSS JOIN source
+             WHERE invocations.occurred_at < ?1
+               AND invocations.id <= source.source_max_invocation_id
+         )
+         SELECT
+             COUNT(*) AS invocation_count,
+             MIN(eligible.occurred_at) AS oldest_occurred_at,
+             source.source_max_invocation_id AS source_max_invocation_id
+         FROM eligible
+         CROSS JOIN source",
+    )
+    .bind(&cutoff)
+    .fetch_one(&mut *connection);
+    let result =
+        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), query).await;
+    if let Err(error) =
+        clear_retention_backlog_observer_progress_handler(&mut connection, deadline).await
+    {
+        connection.close_on_drop();
+        return Err(error);
+    }
+    let snapshot = match result {
+        Ok(Ok(snapshot)) => snapshot,
+        Ok(Err(error)) if interrupted.load(Ordering::Acquire) => {
+            connection.close_on_drop();
+            return Err(anyhow!(
+                "retention backlog observer SQLite query was cancelled: {error}"
+            ));
+        }
+        Ok(Err(error)) => {
+            connection.close_on_drop();
+            return Err(error.into());
+        }
+        Err(_) => {
+            connection.close_on_drop();
+            return Err(anyhow!("retention backlog observer query exceeded 2s"));
+        }
+    };
+    drop(connection);
+    store
+        .record_retention_backlog_observation(
+            crate::maintenance_store::RetentionBacklogObservation {
+                bucket_start: format_utc_iso_millis(retention_backlog_observer_bucket_start(
+                    observed_at,
+                )),
+                observed_at: format_utc_iso_millis(observed_at),
+                invocation_count: snapshot.invocation_count,
+                max_overdue_seconds: retention_backlog_max_overdue_seconds(
+                    snapshot.oldest_occurred_at.as_deref(),
+                    state.config.invocation_max_days,
+                    observed_at,
+                ),
+                retention_days: state.config.invocation_max_days as i64,
+                cutoff,
+                source_max_invocation_id: snapshot.source_max_invocation_id,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
+pub(crate) fn spawn_retention_backlog_observer(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(RETENTION_BACKLOG_OBSERVER_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = ticker.tick() => {
+                    if let Err(error) = observe_retention_backlog_once(&state).await {
+                        debug!(error = %error, "retention backlog observation was unavailable");
+                    }
+                }
+            }
+        }
+    })
+}
+
 pub(crate) fn spawn_data_retention_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
@@ -8317,6 +8533,9 @@ async fn run_data_retention_maintenance_inner(
             if summary.backlog_total.is_some() {
                 summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
             }
+        } else {
+            summary.backlog_total = Some(0);
+            summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
         }
     }
     let raw_path_fallback_root = config.database_path.parent();
@@ -8470,13 +8689,26 @@ async fn run_data_retention_maintenance_inner(
     retention_test_record_invocation_stage("invocation_archive");
     retention_recovery_clear_current_prepared_key();
     let invocation_archive = if invocation_payload_retention_ready {
-        match archive_old_invocations(pool, config, raw_path_fallback_root, dry_run).await {
+        match archive_old_invocations_with_source_max(
+            pool,
+            config,
+            raw_path_fallback_root,
+            dry_run,
+            summary.source_max_invocation_id,
+        )
+        .await
+        {
             Ok(archive) => archive,
             Err(error) => {
                 if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("finalizing");
                     summary.deferred = true;
                     summary.wait_reason = Some("retention_write_admission".to_string());
+                } else if crate::is_sqlite_lock_error(&error) {
+                    retention_recovery_record_deferred("sqlite_busy");
+                    summary.deferred = true;
+                    summary.wait_reason =
+                        Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string());
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("finalizing", &error);
                     summary.deferred = true;
@@ -8529,6 +8761,11 @@ async fn run_data_retention_maintenance_inner(
                     retention_recovery_record_deferred("detail_prune");
                     summary.deferred = true;
                     summary.wait_reason = Some("retention_write_admission".to_string());
+                } else if crate::is_sqlite_lock_error(&error) {
+                    retention_recovery_record_deferred("sqlite_busy");
+                    summary.deferred = true;
+                    summary.wait_reason =
+                        Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE.to_string());
                 } else if is_retention_recovery_failure_persisted(&error) {
                     retention_recovery_record_failure("detail_prune", &error);
                     summary.deferred = true;
@@ -10118,9 +10355,19 @@ pub(crate) async fn archive_old_invocations(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
+    archive_old_invocations_with_source_max(pool, config, raw_path_fallback_root, dry_run, None)
+        .await
+}
+
+async fn archive_old_invocations_with_source_max(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+    source_max_invocation_id: Option<i64>,
+) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
-    let candidate_limit = retention_candidate_limit(config, "invocation_archive");
 
     if dry_run {
         let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
@@ -10143,10 +10390,12 @@ pub(crate) async fn archive_old_invocations(
                 response_raw_path
             FROM codex_invocations
             WHERE occurred_at < ?1
+              AND (?2 IS NULL OR id <= ?2)
             ORDER BY occurred_at ASC, id ASC
             "#,
         )
         .bind(&cutoff)
+        .bind(source_max_invocation_id)
         .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
@@ -10197,6 +10446,7 @@ pub(crate) async fn archive_old_invocations(
         if retention_run_budget_expired() {
             break;
         }
+        let candidate_limit = retention_candidate_limit(config, "invocation_archive");
         let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
             r#"
             SELECT
@@ -10217,11 +10467,13 @@ pub(crate) async fn archive_old_invocations(
                 response_raw_path
             FROM codex_invocations
             WHERE occurred_at < ?1
+              AND (?2 IS NULL OR id <= ?2)
             ORDER BY occurred_at ASC, id ASC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
         .bind(&cutoff)
+        .bind(source_max_invocation_id)
         .bind(candidate_limit as i64)
         .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
@@ -11567,7 +11819,9 @@ pub(crate) struct ArchiveExpiryBackfillCandidate {
 
 #[cfg(test)]
 mod retention_summary_tests {
-    use super::RetentionRunSummary;
+    use chrono::{TimeZone, Utc};
+
+    use super::{RetentionRunSummary, retention_backlog_max_overdue_seconds};
 
     #[test]
     fn recoverable_failure_is_partial_without_progress() {
@@ -11589,5 +11843,25 @@ mod retention_summary_tests {
         };
         assert_eq!(summary.completion(), "failed");
         assert_eq!(summary.core_completion(), "failed");
+    }
+
+    #[test]
+    fn backlog_overdue_uses_shanghai_natural_day_eligibility() {
+        let observed_at = Utc
+            .with_ymd_and_hms(2026, 10, 2, 0, 0, 0)
+            .single()
+            .expect("valid observation timestamp");
+        assert_eq!(
+            retention_backlog_max_overdue_seconds(Some("2026-09-24T16:00:00.000Z"), 7, observed_at,),
+            Some(28_800)
+        );
+        assert_eq!(
+            retention_backlog_max_overdue_seconds(Some("2026-09-24T15:59:59.000Z"), 7, observed_at,),
+            Some(115_200)
+        );
+        assert_eq!(
+            retention_backlog_max_overdue_seconds(Some("2026-09-25T16:00:00.000Z"), 7, observed_at,),
+            Some(0)
+        );
     }
 }
