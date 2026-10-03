@@ -181,7 +181,8 @@
         "Aggregate reads return the existing unavailable contract while identity, statistics, or queue completeness is not satisfied.",
         "A cache miss recovers the next sequence from retained invocation IDs.",
         "Retention releases orphan masters without a permanent ID blacklist.",
-        "The production terminal timing write does not recompute the live working set. Relevant mutations match a source rebuild; a failed completion-marker insertion rolls back legacy trigger replacement, and successful/repeated startup preserves live rows. Older service readers accept the unchanged tables and additive marker."
+        "The production terminal timing write does not recompute the live working set. Relevant mutations match a source rebuild; a failed completion-marker insertion rolls back legacy trigger replacement, and successful/repeated startup preserves live rows. Older service readers accept the unchanged tables and additive marker.",
+        "The candidate Linux dual-database prompt-cache checkpoint replay at /srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/runs/20261004_063250_performance_dd3886231cd4_9809 passed three 600-second service-process rounds with cold, 2.85.1 partial-staging, and queue-drain recovery."
       ]
     }
   }

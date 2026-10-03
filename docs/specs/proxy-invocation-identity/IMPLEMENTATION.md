@@ -50,6 +50,7 @@
 ## Coverage / rollout summary
 
 - `prompt-cache-checkpoint` acceptance seeds 400 conversations and 71,750 synthetic invocations with six large keys, instruments committed staging/publication events in the test database, and checks prefix cursor progression, exact aggregates, 2.85.1 partial staging, queue-drain pause/restart, stable completion, and online p99. One 600-second baseline round reproduces a completed-prefix restart; three 600-second candidate rounds cover cold start, partial staging, and queue-drain recovery. Runtime logs and scenario source are bound to the candidate SHA and scenario digest.
+- Candidate evidence: service SHA `3b868357ffa5abf6b593155de38cb3be7a77759c`, harness SHA `dd3886231cd425fcf43ddddcbaf140db92718bd6`, scenario digest `9dc142de6e4330532e127551555ed329d2e1e8a2b8b8aa7e05d4c9f2f729c636`, run directory `/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/runs/20261004_063250_performance_dd3886231cd4_9809`. Rounds 1/2/3 passed with completion after input 139.65s/106.39s/106.25s, allocation p99 16.81ms/31.48ms/11.68ms, terminal-confirm p99 163.57ms/118.32ms/91.94ms, and 480/480 completed requests each. Exact aggregates matched 71,750 source rows, no repeated publications occurred, queue deletion matched the durable starting set (400/399/400), and the older-reader compatibility and stable completion checks passed. The queue-drain round intentionally has no stats-rebuild cursor events.
 
 - `ensure_schema()` creates the conversation master, indexes, mutation triggers, durable refresh queue, and `prompt_cache_conversation_migration_progress`; it does not scan historical invocations, so HTTP readiness is not held by historical data volume.
 - The `prompt_cache_conversations_materialization_v1` startup task runs in ordered `identity_backfill`, `identity_reconciliation`, `stats_rebuild`, and `queue_drain` phases. Identity backfill snapshots the maximum invocation row ID, paginates prompt-cache keys, and finishes with an uncursored missing-identity reconciliation. Identity phases commit identities, `cursor_key`, and the identity-key counter together, without scanning aggregate statistics. Statistics phases own the bounded source-page traversal; reruns are idempotent. Completed logical pages and empty phase transitions continue only within the original scan and elapsed-time budgets.
@@ -70,7 +71,7 @@
 ## Remaining Gaps
 
 - Three-round Linux, non-test service-process `prompt-cache-control` acceptance is a required delivery gate. Delivery evidence carries the exact candidate SHA, scenario digest, persistent checkpoint samples, and completion results; the older adaptive benchmark does not replace this gate.
-- Three-round Linux, non-test service-process `prompt-cache-checkpoint` acceptance is a required delivery gate and has not yet been run for this candidate.
+- Three-round Linux, non-test service-process `prompt-cache-checkpoint` acceptance passed for this candidate; raw logs and metadata are recorded in the candidate evidence path above.
 - The representative runtime fixture is intentionally ignored by default and must be rerun in a controlled environment when SQLite size or lock-contention characteristics change.
 
 ## Related Changes
