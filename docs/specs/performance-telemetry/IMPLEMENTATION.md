@@ -50,9 +50,11 @@ CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 
 
 ## Validation
 
-已通过的迭代验证：Rust all-targets/all-features check/clippy、对齐主线后的三分桶
-共 2951 项后端回归；Web 全量单测 1745 项（6 项跳过）；
+已通过的迭代验证：Rust 1.94 宿主兼容性 all-targets/all-features check/clippy、对齐主线后的三分桶
+共 2952 项后端回归；Web 全量单测 1745 项（6 项跳过）；
 Web 类型/lint/build；18 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
+生产镜像使用仓库固定的 Rust 1.96 构建；交付还须在该版本完成静态和后端回归门禁。
+backend-test 镜像保留 Prometheus 配置，供标签长度回归编译时读取实际抓取合同。
 已对齐包含任务执行模块拆分的新主线。四张 mock UI 证据已展示、确认并落盘；
 对齐主线后两个 Storybook 文件的 61 项用例通过，相关 E2E 在构建后的 mock demo 上 10 项全部通过。
 77 项映射、9 项退役与 1 项合并的注册表一致性已加入自动回归。

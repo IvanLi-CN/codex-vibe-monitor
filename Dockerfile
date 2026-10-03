@@ -176,6 +176,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY vendor/hotpath ./vendor/hotpath
 COPY src ./src
 COPY docs/design/performance-observability-metrics.md ./docs/design/performance-observability-metrics.md
+COPY ops/observability/prometheus.yml ./ops/observability/prometheus.yml
 COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
 RUN mkdir -p target \
