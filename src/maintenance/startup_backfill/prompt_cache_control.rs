@@ -22,9 +22,6 @@ pub(super) async fn persist_prompt_cache_materialization_defer(
     let retry_at =
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
     let retry_after = format_utc_iso(retry_at);
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-        .await;
     save_startup_backfill_progress(
         &state.pool,
         task_name,
@@ -78,11 +75,12 @@ pub(crate) async fn set_prompt_cache_materialization_enabled_with_store(
         .await?
         .ok_or_else(|| anyhow!("managed startup backfill task not found: {task_key}"))?;
     if update.changed {
-        if enabled {
-            STARTUP_BACKFILL_SCHEDULER.wake(task);
-        } else {
-            STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
-        }
+        apply_prompt_cache_control_schedule(
+            &store.prompt_cache_materialization_control,
+            update.snapshot,
+            &STARTUP_BACKFILL_SCHEDULER,
+            task,
+        );
     }
     load_startup_backfill_progress_from_pool(&store.pool, task_name).await
 }
@@ -118,6 +116,13 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
         return Ok(0);
     }
 
+    let Some(_wake_guard) = store
+        .prompt_cache_materialization_control
+        .lock_current_generation(snapshot.generation)
+        .await
+    else {
+        return Ok(0);
+    };
     let task_name = task.name();
     let mut transaction = store.pool.begin().await?;
     let progress = sqlx::query_as::<_, (bool, Option<String>)>(
@@ -204,4 +209,36 @@ pub(super) fn prompt_cache_tasks_when_startup_backfill_root_is_skipped(
         .copied()
         .filter(|task| *task == StartupBackfillTask::PromptCacheConversationsMaterialization)
         .collect()
+}
+
+pub(super) fn prompt_cache_stale_result_outcome() -> StartupBackfillTaskRunOutcome {
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: false,
+        completed: false,
+        next_due: Utc::now()
+            + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+    }
+}
+
+pub(super) fn apply_prompt_cache_control_schedule(
+    control: &crate::maintenance_store::PromptCacheMaterializationControl,
+    snapshot: crate::maintenance_store::PromptCacheMaterializationControlSnapshot,
+    scheduler: &StartupBackfillScheduler,
+    task: StartupBackfillTask,
+) {
+    control.with_current_generation(snapshot.generation, || {
+        if snapshot.enabled {
+            scheduler.wake(task);
+        } else {
+            scheduler.clear_pending(task);
+        }
+    });
+}
+
+pub(super) fn coordinator_for_prompt_cache_run()
+-> Option<crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit> {
+    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
 }

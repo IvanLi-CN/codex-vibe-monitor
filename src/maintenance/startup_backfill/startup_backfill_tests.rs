@@ -825,3 +825,20 @@ fn managed_prompt_cache_observation_keeps_root_task_identity() {
         "startup_backfill"
     );
 }
+
+#[test]
+fn stale_prompt_cache_disable_schedule_cannot_erase_a_resume_wake() {
+    let control = crate::maintenance_store::PromptCacheMaterializationControl::default();
+    control.initialize(true);
+    let disabled = control.publish_committed(false);
+    let resumed = control.publish_committed(true);
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    apply_prompt_cache_control_schedule(&control, resumed, &scheduler, task);
+    let resumed_deadline = scheduler.next_due_for(task);
+    apply_prompt_cache_control_schedule(&control, disabled, &scheduler, task);
+    assert_eq!(scheduler.next_due_for(task), resumed_deadline);
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+    assert_eq!(scheduler.drain_due_tasks(Utc::now()), vec![task]);
+    assert_eq!(scheduler.wake_count.load(Ordering::Relaxed), 1);
+}

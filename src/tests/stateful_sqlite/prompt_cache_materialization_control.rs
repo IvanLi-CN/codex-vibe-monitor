@@ -819,3 +819,117 @@ async fn prompt_cache_materialization_failure_history_reports_per_run_work() {
     assert_eq!(updated, 0);
     assert!(error.is_some());
 }
+
+#[tokio::test]
+async fn prompt_cache_stale_checkpoint_cannot_overwrite_pause_or_resume() {
+    use crate::maintenance::{
+        StartupBackfillProgressUpdate, save_startup_backfill_progress_to_pool,
+    };
+    let store = prompt_cache_materialization_maintenance_store(true).await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    let old_generation = store
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized control")
+        .generation;
+    for enabled in [false, true] {
+        store
+            .update_prompt_cache_materialization_control(task_key, task.name(), enabled)
+            .await
+            .expect("commit pause or resume");
+        for status in ["ok", "idle", "failed", "running"] {
+            if let Some(_guard) = store
+                .prompt_cache_materialization_control
+                .lock_current_generation(old_generation)
+                .await
+            {
+                save_startup_backfill_progress_to_pool(
+                    &store.pool,
+                    task.name(),
+                    StartupBackfillProgressUpdate {
+                        cursor_id: 99,
+                        scanned: 1,
+                        updated: 1,
+                        zero_update_streak: 0,
+                        next_run_after: "2099-01-01T00:00:00Z",
+                        status,
+                        suspension_reason: Some("stale-result"),
+                    },
+                )
+                .await
+                .expect("persist admitted checkpoint");
+                panic!("an obsolete result must not be admitted");
+            }
+        }
+        let progress = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+            .await
+            .expect("read committed control checkpoint");
+        assert_eq!(progress.enabled, enabled);
+        assert_eq!(progress.cursor_id, 0);
+        assert_eq!(
+            progress.suspension_reason.as_deref(),
+            (!enabled).then_some("operator_disabled")
+        );
+        assert_eq!(progress.next_run_after.is_none(), enabled);
+    }
+}
+
+#[tokio::test]
+async fn prompt_cache_control_commit_waits_for_admitted_checkpoint_finalization() {
+    use crate::maintenance::{
+        StartupBackfillProgressUpdate, save_startup_backfill_progress_to_pool,
+    };
+    let store = prompt_cache_materialization_maintenance_store(true).await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let generation = store
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized control")
+        .generation;
+    let guard = store
+        .prompt_cache_materialization_control
+        .lock_current_generation(generation)
+        .await
+        .expect("register current checkpoint finalization");
+    let mut pause = Box::pin(store.update_prompt_cache_materialization_control(
+        "startup_backfill.prompt_cache_conversations_materialization",
+        task.name(),
+        false,
+    ));
+    std::future::poll_fn(|context| {
+        assert!(std::future::Future::poll(pause.as_mut(), context).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    save_startup_backfill_progress_to_pool(
+        &store.pool,
+        task.name(),
+        StartupBackfillProgressUpdate {
+            cursor_id: 17,
+            scanned: 3,
+            updated: 2,
+            zero_update_streak: 0,
+            next_run_after: "2099-01-01T00:00:00Z",
+            status: "idle",
+            suspension_reason: Some("stats_page_pending"),
+        },
+    )
+    .await
+    .expect("commit the already admitted result before pause");
+    drop(guard);
+    pause.await.expect("commit pause after finalization");
+    let progress = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("read final paused checkpoint");
+    assert_eq!(progress.cursor_id, 17, "committed work is preserved");
+    assert!(!progress.enabled);
+    assert_eq!(
+        progress.suspension_reason.as_deref(),
+        Some("operator_disabled")
+    );
+    assert_ne!(
+        progress.next_run_after.as_deref(),
+        Some("2099-01-01T00:00:00Z")
+    );
+}

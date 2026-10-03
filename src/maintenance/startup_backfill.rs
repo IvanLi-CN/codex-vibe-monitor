@@ -10,8 +10,9 @@ pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_contr
 #[cfg(test)]
 use prompt_cache_control::wake_prompt_cache_materialization_with_scheduler;
 use prompt_cache_control::{
+    apply_prompt_cache_control_schedule, coordinator_for_prompt_cache_run,
     persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
-    prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    prompt_cache_stale_result_outcome, prompt_cache_tasks_when_startup_backfill_root_is_skipped,
 };
 pub(crate) use prompt_cache_control::{
     set_prompt_cache_materialization_enabled_with_store,
@@ -1203,6 +1204,14 @@ pub(crate) async fn save_startup_backfill_progress(
     let Some(pool) = startup_backfill_progress_pool(pool) else {
         return Ok(());
     };
+    save_startup_backfill_progress_to_pool(pool, task_name, update).await
+}
+
+pub(crate) async fn save_startup_backfill_progress_to_pool(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    update: StartupBackfillProgressUpdate<'_>,
+) -> Result<()> {
     let finished_at = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -2273,7 +2282,11 @@ async fn run_startup_backfill_task_if_due_outcome(
                 ));
             };
             if !snapshot.enabled {
-                STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
+                store
+                    .prompt_cache_materialization_control
+                    .with_current_generation(snapshot.generation, || {
+                        STARTUP_BACKFILL_SCHEDULER.clear_pending(task)
+                    });
                 return Ok((
                     StartupBackfillTaskRunOutcome {
                         actionable: false,
@@ -2337,22 +2350,27 @@ async fn run_startup_backfill_task_if_due_outcome(
             ));
         }
     };
-    let write_permit = match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
-    {
-        Some(permit) => permit,
-        None => {
-            return Ok((
-                startup_backfill_pressure_defer_outcome(
-                    task,
-                    gate,
-                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
-                ),
-                None,
-            ));
-        }
-    };
+    let mut write_permit = Some(
+        match crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .try_acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+        {
+            Some(permit) => permit,
+            None => {
+                return Ok((
+                    startup_backfill_pressure_defer_outcome(
+                        task,
+                        gate,
+                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                    ),
+                    None,
+                ));
+            }
+        },
+    );
 
+    if prompt_cache_materialization_control.is_some() {
+        drop(write_permit.take());
+    }
     let task_name = startup_backfill_task_progress_key(state.as_ref(), task).await;
     let progress = load_startup_backfill_progress(&state.pool, &task_name)
         .await
@@ -2384,11 +2402,36 @@ async fn run_startup_backfill_task_if_due_outcome(
         ));
     }
 
-    mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id)
-        .await
-        .inspect_err(|err| {
-            record_startup_backfill_pressure_error(gate, err);
-        })?;
+    {
+        let _start_guard = match prompt_cache_materialization_control.as_ref() {
+            Some((control, generation)) => {
+                let Some(guard) = control.lock_current_generation(*generation).await else {
+                    return Ok((prompt_cache_stale_result_outcome(), None));
+                };
+                Some(guard)
+            }
+            None => None,
+        };
+        mark_startup_backfill_running(&state.pool, &task_name, progress.cursor_id)
+            .await
+            .inspect_err(|err| {
+                record_startup_backfill_pressure_error(gate, err);
+            })?;
+    }
+
+    if prompt_cache_materialization_control.is_some() {
+        let Some(permit) = coordinator_for_prompt_cache_run() else {
+            return Ok((
+                startup_backfill_pressure_defer_outcome(
+                    task,
+                    gate,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                ),
+                None,
+            ));
+        };
+        write_permit = Some(permit);
+    }
 
     let observation_task_key = startup_backfill_observation_task_key(observation_parent_task_key);
     let observation = managed_run_id
@@ -2438,7 +2481,7 @@ async fn run_startup_backfill_task_if_due_outcome(
         tokio::select! {
             biased;
             _ = coordinator.wait_for_p2_preemption() => {
-                drop(write_permit);
+                drop(write_permit.take());
                 return persist_startup_backfill_pressure_defer(
                     state,
                     task,
@@ -2463,40 +2506,22 @@ async fn run_startup_backfill_task_if_due_outcome(
             ) => result,
         }
     };
-    if let Some((control, expected_generation)) = prompt_cache_materialization_control.as_ref() {
-        let current = control.snapshot();
-        if current.is_none_or(|snapshot| snapshot.generation != *expected_generation) {
-            drop(write_permit);
-            if current.is_some_and(|snapshot| !snapshot.enabled) {
-                STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
-                return Ok((
-                    StartupBackfillTaskRunOutcome {
-                        actionable: false,
-                        failed: false,
-                        deferred: false,
-                        completed: true,
-                        next_due: Utc::now() + ChronoDuration::days(3650),
-                    },
-                    None,
-                ));
-            }
-            return Ok((
-                StartupBackfillTaskRunOutcome {
-                    actionable: false,
-                    failed: false,
-                    deferred: true,
-                    completed: false,
-                    next_due: Utc::now()
-                        + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-                },
-                None,
-            ));
+    // Network/business work has finished. Do not hold online write admission
+    // while waiting for a control update or maintenance-database checkpoint.
+    let _result_guard = match prompt_cache_materialization_control.as_ref() {
+        Some((control, generation)) => {
+            drop(write_permit.take());
+            let Some(guard) = control.lock_current_generation(*generation).await else {
+                return Ok((prompt_cache_stale_result_outcome(), None));
+            };
+            Some(guard)
         }
-    }
+        None => None,
+    };
     let outcome = match task_result {
         Ok((run, detail)) => {
             if run.deferred {
-                drop(write_permit);
+                drop(write_permit.take());
                 if run.defer_reason == Some("operator_disabled") {
                     let current_progress =
                         load_startup_backfill_progress(&state.pool, &task_name).await?;
@@ -2644,7 +2669,7 @@ async fn run_startup_backfill_task_if_due_outcome(
             if startup_backfill_failure_kind(&err)
                 == StartupBackfillFailureKind::ArchiveLockBusy =>
         {
-            drop(write_permit);
+            drop(write_permit.take());
             let outcome = persist_startup_backfill_archive_lock_defer(
                 state, task, &task_name, &progress, started_at,
             )

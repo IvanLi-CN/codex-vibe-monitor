@@ -25,6 +25,12 @@ budget still uses the existing 15-second follow-up. Priority and database pressu
 eligibility/deadline path; actual disablement waits for a new enable generation. No table, column,
 HTTP field, or read-completeness condition changes.
 
+Maintenance checkpoint start/finalization and wake writes use a separate asynchronous fence
+shared with control commits. Each writer rechecks its generation after acquiring the fence.
+The fence does not span business SQL, and online write admission is released before waiting
+for maintenance state. Scheduler changes check the same published generation so a late disable
+result cannot erase a later resume wake.
+
 ## References
 
 - [Historical materialization](0021-prompt-cache-background-materialization.md)

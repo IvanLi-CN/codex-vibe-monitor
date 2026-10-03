@@ -90,7 +90,6 @@ pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecution
 pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) prompt_cache_materialization_control: Arc<PromptCacheMaterializationControl>,
-    prompt_cache_control_update_lock: Arc<AsyncMutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +107,7 @@ struct PromptCacheMaterializationControlState {
 #[derive(Debug, Default)]
 pub(crate) struct PromptCacheMaterializationControl {
     state: Mutex<PromptCacheMaterializationControlState>,
+    update_lock: AsyncMutex<()>,
 }
 
 pub(crate) struct PromptCacheMaterializationStep {
@@ -123,6 +123,18 @@ pub(crate) enum PromptCacheMaterializationStepAdmission {
 }
 
 impl PromptCacheMaterializationControl {
+    // Control commits and maintenance checkpoint finalization share this lock.
+    // The short state mutex never covers SQL or waits for this async lock.
+    pub(crate) async fn lock_current_generation(
+        &self,
+        expected_generation: u64,
+    ) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.update_lock.lock().await;
+        self.snapshot()
+            .is_some_and(|snapshot| snapshot.enabled && snapshot.generation == expected_generation)
+            .then_some(guard)
+    }
+
     pub(crate) fn initialize(&self, enabled: bool) -> PromptCacheMaterializationControlSnapshot {
         let mut state = self
             .state
@@ -1578,6 +1590,183 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 }
 
 impl MaintenanceStore {
+    pub(crate) fn from_pool(pool: Pool<Sqlite>) -> Self {
+        Self {
+            pool,
+            prompt_cache_materialization_control: Arc::new(
+                PromptCacheMaterializationControl::default(),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn initialize_schema_for_test(&self) -> Result<()> {
+        ensure_schema(&self.pool).await?;
+        seed_tasks(&self.pool).await
+    }
+
+    pub(crate) async fn initialize_prompt_cache_materialization_control(
+        &self,
+        task_key: &str,
+        task_name: &str,
+    ) -> Result<PromptCacheMaterializationControlSnapshot> {
+        if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
+            return Ok(snapshot);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let enabled =
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or_else(|| anyhow!("managed prompt-cache materialization task not found"))?;
+        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+        sqlx::query(
+            "INSERT OR IGNORE INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+        )
+        .bind(task_name)
+        .bind((!enabled).then_some(disabled_until.as_str()))
+        .bind((!enabled).then_some("operator_disabled"))
+        .bind(enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET enabled=?,
+                 next_run_after=CASE
+                     WHEN ?=0 THEN ?
+                     WHEN suspension_reason='operator_disabled' THEN NULL
+                     ELSE next_run_after
+                 END,
+                 suspension_reason=CASE
+                     WHEN ?=0 THEN 'operator_disabled'
+                     WHEN suspension_reason='operator_disabled' THEN NULL
+                     ELSE suspension_reason
+                 END,
+                 next_probe_at=CASE
+                     WHEN ?=0 OR suspension_reason='operator_disabled' THEN NULL
+                     ELSE next_probe_at
+                 END,
+                 wake_generation=CASE
+                     WHEN enabled != ? THEN wake_generation + 1
+                     ELSE wake_generation
+                 END
+             WHERE task_name=? AND enabled != ?",
+        )
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(&disabled_until)
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(task_name)
+        .bind(enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(self
+            .prompt_cache_materialization_control
+            .initialize(enabled))
+    }
+
+    pub(crate) async fn update_prompt_cache_materialization_control(
+        &self,
+        task_key: &str,
+        task_name: &str,
+        enabled: bool,
+    ) -> Result<Option<PromptCacheMaterializationControlUpdate>> {
+        let _update_guard = self
+            .prompt_cache_materialization_control
+            .update_lock
+            .lock()
+            .await;
+        let mut transaction = self.pool.begin().await?;
+        let Some((current_enabled, interval_secs, cron_expr, is_manual)) = sqlx::query_as::<
+            _,
+            (bool, Option<i64>, Option<String>, bool),
+        >(
+            "SELECT enabled,interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if is_manual {
+            return Err(anyhow!(
+                "prompt-cache materialization cannot be a manual task"
+            ));
+        }
+        let changed = current_enabled != enabled;
+        let next_trigger_at = if enabled {
+            next_trigger_at(interval_secs, cron_expr.as_deref())
+        } else {
+            None
+        };
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+        )
+        .bind(enabled as i64)
+        .bind(next_trigger_at)
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(task_key)
+        .execute(&mut *transaction)
+        .await?;
+
+        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+        sqlx::query(
+            "INSERT OR IGNORE INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+        )
+        .bind(task_name)
+        .bind((!current_enabled).then_some(disabled_until.as_str()))
+        .bind((!current_enabled).then_some("operator_disabled"))
+        .bind(current_enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        if changed {
+            sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET enabled=?,
+                     next_run_after=?,
+                     suspension_reason=?,
+                     next_probe_at=NULL,
+                     wake_generation=wake_generation + 1
+                 WHERE task_name=?",
+            )
+            .bind(enabled as i64)
+            .bind((!enabled).then_some(disabled_until.as_str()))
+            .bind((!enabled).then_some("operator_disabled"))
+            .bind(task_name)
+            .execute(&mut *transaction)
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE startup_backfill_progress SET enabled=? WHERE task_name=? AND enabled != ?",
+            )
+            .bind(enabled as i64)
+            .bind(task_name)
+            .bind(enabled as i64)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        let snapshot = self
+            .prompt_cache_materialization_control
+            .publish_committed(enabled);
+        Ok(Some(PromptCacheMaterializationControlUpdate {
+            changed,
+            snapshot,
+        }))
+    }
+
     pub(crate) async fn start_timeline_session(
         &self,
         session_id: &str,
@@ -1881,180 +2070,6 @@ impl MaintenanceStore {
                 }
             })
             .collect())
-    }
-
-    pub(crate) fn from_pool(pool: Pool<Sqlite>) -> Self {
-        Self {
-            pool,
-            prompt_cache_materialization_control: Arc::new(
-                PromptCacheMaterializationControl::default(),
-            ),
-            prompt_cache_control_update_lock: Arc::new(AsyncMutex::new(())),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn initialize_schema_for_test(&self) -> Result<()> {
-        ensure_schema(&self.pool).await?;
-        seed_tasks(&self.pool).await
-    }
-
-    pub(crate) async fn initialize_prompt_cache_materialization_control(
-        &self,
-        task_key: &str,
-        task_name: &str,
-    ) -> Result<PromptCacheMaterializationControlSnapshot> {
-        if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
-            return Ok(snapshot);
-        }
-        let mut transaction = self.pool.begin().await?;
-        let enabled =
-            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
-                .bind(task_key)
-                .fetch_optional(&mut *transaction)
-                .await?
-                .ok_or_else(|| anyhow!("managed prompt-cache materialization task not found"))?;
-        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
-        sqlx::query(
-            "INSERT OR IGNORE INTO startup_backfill_progress (
-                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
-                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
-             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
-        )
-        .bind(task_name)
-        .bind((!enabled).then_some(disabled_until.as_str()))
-        .bind((!enabled).then_some("operator_disabled"))
-        .bind(enabled as i64)
-        .execute(&mut *transaction)
-        .await?;
-        sqlx::query(
-            "UPDATE startup_backfill_progress
-             SET enabled=?,
-                 next_run_after=CASE
-                     WHEN ?=0 THEN ?
-                     WHEN suspension_reason='operator_disabled' THEN NULL
-                     ELSE next_run_after
-                 END,
-                 suspension_reason=CASE
-                     WHEN ?=0 THEN 'operator_disabled'
-                     WHEN suspension_reason='operator_disabled' THEN NULL
-                     ELSE suspension_reason
-                 END,
-                 next_probe_at=CASE
-                     WHEN ?=0 OR suspension_reason='operator_disabled' THEN NULL
-                     ELSE next_probe_at
-                 END,
-                 wake_generation=CASE
-                     WHEN enabled != ? THEN wake_generation + 1
-                     ELSE wake_generation
-                 END
-             WHERE task_name=? AND enabled != ?",
-        )
-        .bind(enabled as i64)
-        .bind(enabled as i64)
-        .bind(&disabled_until)
-        .bind(enabled as i64)
-        .bind(enabled as i64)
-        .bind(enabled as i64)
-        .bind(task_name)
-        .bind(enabled as i64)
-        .execute(&mut *transaction)
-        .await?;
-        transaction.commit().await?;
-        Ok(self
-            .prompt_cache_materialization_control
-            .initialize(enabled))
-    }
-
-    pub(crate) async fn update_prompt_cache_materialization_control(
-        &self,
-        task_key: &str,
-        task_name: &str,
-        enabled: bool,
-    ) -> Result<Option<PromptCacheMaterializationControlUpdate>> {
-        let _update_guard = self.prompt_cache_control_update_lock.lock().await;
-        let mut transaction = self.pool.begin().await?;
-        let Some((current_enabled, interval_secs, cron_expr, is_manual)) = sqlx::query_as::<
-            _,
-            (bool, Option<i64>, Option<String>, bool),
-        >(
-            "SELECT enabled,interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?",
-        )
-        .bind(task_key)
-        .fetch_optional(&mut *transaction)
-        .await?
-        else {
-            transaction.commit().await?;
-            return Ok(None);
-        };
-        if is_manual {
-            return Err(anyhow!(
-                "prompt-cache materialization cannot be a manual task"
-            ));
-        }
-        let changed = current_enabled != enabled;
-        let next_trigger_at = if enabled {
-            next_trigger_at(interval_secs, cron_expr.as_deref())
-        } else {
-            None
-        };
-        sqlx::query(
-            "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
-        )
-        .bind(enabled as i64)
-        .bind(next_trigger_at)
-        .bind(format_utc_iso_millis(Utc::now()))
-        .bind(task_key)
-        .execute(&mut *transaction)
-        .await?;
-
-        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
-        sqlx::query(
-            "INSERT OR IGNORE INTO startup_backfill_progress (
-                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
-                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
-             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
-        )
-        .bind(task_name)
-        .bind((!current_enabled).then_some(disabled_until.as_str()))
-        .bind((!current_enabled).then_some("operator_disabled"))
-        .bind(current_enabled as i64)
-        .execute(&mut *transaction)
-        .await?;
-        if changed {
-            sqlx::query(
-                "UPDATE startup_backfill_progress
-                 SET enabled=?,
-                     next_run_after=?,
-                     suspension_reason=?,
-                     next_probe_at=NULL,
-                     wake_generation=wake_generation + 1
-                 WHERE task_name=?",
-            )
-            .bind(enabled as i64)
-            .bind((!enabled).then_some(disabled_until.as_str()))
-            .bind((!enabled).then_some("operator_disabled"))
-            .bind(task_name)
-            .execute(&mut *transaction)
-            .await?;
-        } else {
-            sqlx::query(
-                "UPDATE startup_backfill_progress SET enabled=? WHERE task_name=? AND enabled != ?",
-            )
-            .bind(enabled as i64)
-            .bind(task_name)
-            .bind(enabled as i64)
-            .execute(&mut *transaction)
-            .await?;
-        }
-        transaction.commit().await?;
-        let snapshot = self
-            .prompt_cache_materialization_control
-            .publish_committed(enabled);
-        Ok(Some(PromptCacheMaterializationControlUpdate {
-            changed,
-            snapshot,
-        }))
     }
 
     pub(crate) async fn claim_requested_run(
