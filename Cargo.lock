@@ -505,6 +505,7 @@ dependencies = [
  "pin-project-lite",
  "rand 0.8.8",
  "regex",
+ "regex-lite",
  "reqwest",
  "rustls",
  "rustls-pki-types",
@@ -1132,8 +1133,6 @@ dependencies = [
 [[package]]
 name = "hotpath"
 version = "0.28.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8345e171844f80e5ae4cbed8bc8276e094f6ff2293a6f8e547c200183976674"
 dependencies = [
  "arc-swap",
  "axum",

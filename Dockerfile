@@ -22,6 +22,7 @@ RUN apt-get update \
 
 # Cache dependencies (avoid invalidating the dependency layer when only app sources change).
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/hotpath ./vendor/hotpath
 RUN mkdir -p src \
     && printf '%s\n' 'fn main() {}' > src/main.rs \
     && cargo build --release --locked
@@ -171,6 +172,7 @@ RUN apt-get update \
 
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/hotpath ./vendor/hotpath
 COPY src ./src
 COPY docs/design/performance-observability-metrics.md ./docs/design/performance-observability-metrics.md
 COPY scripts/search-raw ./scripts/search-raw

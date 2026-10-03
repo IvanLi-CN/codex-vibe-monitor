@@ -61,6 +61,10 @@ pin-project-lite = "0.2"
 default = ["hotpath"]
 hotpath = ["hotpath/hotpath", "hotpath/hotpath-prometheus"]
 
+[patch.crates-io]
+# Keep complete SQL observation without repeatedly normalizing identical statements.
+hotpath = { path = "vendor/hotpath" }
+
 [profile.release]
 debug = "line-tables-only"
 strip = false
@@ -68,6 +72,7 @@ strip = false
 [dev-dependencies]
 filetime = "0.2"
 libsqlite3-sys = "=0.30.1"
+regex-lite = "=0.1.9"
 
 [profile.test]
 debug = 0

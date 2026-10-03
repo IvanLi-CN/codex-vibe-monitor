@@ -13,6 +13,10 @@ pub(super) static PROFILER_ENABLED: AtomicBool = AtomicBool::new(false);
 mod registry;
 mod reports;
 mod sampler;
+// Exercise the exact vendored normalization/cache source with this project's runner.
+#[cfg(test)]
+#[path = "../../vendor/hotpath/src/lib_on/sql/normalize.rs"]
+mod hotpath_sql_normalization;
 pub(crate) use browser::{BROWSER_MAX_BYTES, ingest_browser_observations};
 pub(crate) use config::{ObservabilityConfig, prepare_hotpath};
 pub(crate) use http::observability_http_middleware;

@@ -73,7 +73,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target-clippy
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
@@ -81,7 +81,7 @@ jobs:
         if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
         run: |
           # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
-          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
@@ -100,7 +100,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: target-clippy
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -562,7 +562,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
@@ -570,7 +570,7 @@ jobs:
         if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
         run: |
           # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
-          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
@@ -608,7 +608,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive
@@ -843,7 +843,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
@@ -851,7 +851,7 @@ jobs:
         if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
         run: |
           # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
-          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi

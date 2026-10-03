@@ -13,6 +13,12 @@ layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与
 内部报告请求使用 hotpath 的原始 Authorization token，外部只读 API 仍使用独立
 Bearer Token；函数报告的平铺分位数规范化为 API 的固定嵌套对象，回归直接使用
 hotpath 依赖的序列化模型，避免手写 fixture 与真实 schema 不一致。
+hotpath 固定版本的 SQL worker 使用本地有界归一化缓存；相同语句复用完全相同的
+归一化结果，所有执行仍完整累计。缓存最多 256 条、原文与结果合计 2 MiB，
+单条超过 64 KiB 时不缓存，元数据由条数约束；FIFO 淘汰不改变聚合指标。
+第三方来源摘要与两处补丁说明在 `vendor/`，缓存测试读取实际生产补丁文件。
+SQL 报告接纳最长 16 KiB 的归一化 query，以覆盖实际启动触发器 SQL；报告整体
+仍受 1 MiB、100 行与 2 秒限制，其他字段保留更小的类型/长度边界。
 
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
@@ -63,6 +69,9 @@ A/B 的每份合成数据副本给予应用固定 GID 写权限，避免无 capa
 宿主复制出的文件误作只读库。监控停机场景已有 50/50 请求正常完成的运行证据，
 CPU 诊断探针已从原实例取得 1145 个样本并解析应用热点函数，build ID 匹配；
 报告、CPU 与完整 A/B 仍须在最终候选重新验收。
+报告与归一化缓存的 17 项定向回归通过；长 SQL 用例直接使用应用启动触发器的
+生成语句，并经过依赖的实际归一化/序列化模型。CPU 采样识别出 SQL worker 的重复
+归一化成本，因此有界缓存补丁仍须通过相同负载的完整开销复验。
 正式 review 与 PR Ready 必须使用当前候选 SHA、合同与场景摘要绑定的 passed
 经验性证据卡；历史或中断运行不能替代当前候选证据。完整运行日志与卡片保存在
 测试机独立 run locator，生产上线条件仍由独立运维任务验证。

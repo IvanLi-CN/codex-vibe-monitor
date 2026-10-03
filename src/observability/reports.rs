@@ -221,10 +221,12 @@ fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_js
                     safe.insert(field.into(), serde_json::Value::Null);
                 }
                 _ => {
-                    let limit = if matches!(field, "avg" | "total") {
-                        64
-                    } else {
-                        4096
+                    let limit = match field {
+                        "avg" | "total" => 64,
+                        // Startup trigger statements exceed 4 KiB after normalization.
+                        // The raw and serialized whole reports retain the 1 MiB cap.
+                        "query" => 16 * 1024,
+                        _ => 4096,
                     };
                     let text = v
                         .as_str()
@@ -284,9 +286,16 @@ mod tests {
 
     #[test]
     fn sql_report_contract_uses_hotpath_serializer_shape() {
+        let query = crate::observability::hotpath_sql_normalization::normalize(
+            &prompt_cache_working_set_live_refresh_sql_for_key("NEW.prompt_cache_key"),
+        );
+        assert!(
+            query.len() > 4096,
+            "exercise the actual long startup statement"
+        );
         let row = serde_json::to_value(hotpath::json::JsonSqlEntry {
             id: 1,
-            query: "SELECT 1".into(),
+            query: query.clone(),
             source: None,
             route: None,
             count: 3,
@@ -298,7 +307,7 @@ mod tests {
         })
         .unwrap();
         let rows = sanitize_report("sql", &json!({"data": [row]})).unwrap();
-        assert_eq!(rows[0]["query"], "SELECT 1");
+        assert_eq!(rows[0]["query"], query);
         assert_eq!(rows[0]["count"], 3);
         assert_eq!(rows[0]["percentiles"]["p95"], "1ms");
     }
@@ -310,7 +319,7 @@ mod tests {
         for (field, value) in [
             ("count", json!("1")),
             ("avg", json!(2)),
-            ("query", json!("x".repeat(4097))),
+            ("query", json!("x".repeat(16 * 1024 + 1))),
             ("percentiles", json!({"p95":{"secret":1}})),
         ] {
             let mut invalid = row.clone();

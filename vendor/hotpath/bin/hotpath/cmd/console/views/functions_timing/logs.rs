@@ -1,0 +1,139 @@
+use crate::cmd::console::views::common_styles;
+use crate::cmd::console::widgets::formatters::truncate_right;
+use hotpath::json::JsonFunctionTimingLogsList;
+use ratatui::{
+    layout::{Constraint, Rect},
+    style::{Color, Modifier, Style},
+    symbols::border,
+    text::{Line, Span},
+    widgets::{Block, Cell, HighlightSpacing, List, ListItem, Row, Table, TableState},
+    Frame,
+};
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_function_logs_panel(
+    current_function_logs: Option<&JsonFunctionTimingLogsList>,
+    selected_function_name: Option<&str>,
+    area: Rect,
+    frame: &mut Frame,
+    table_state: &mut TableState,
+    is_focused: bool,
+) {
+    let title_style = Style::default()
+        .fg(Color::Magenta)
+        .add_modifier(Modifier::BOLD);
+
+    let title = if let Some(function_logs) = current_function_logs {
+        let has_missing_log = function_logs.logs.iter().any(|e| e.result.is_none());
+        if has_missing_log {
+            Line::from(vec![
+                Span::styled(format!(" {} ", function_logs.function_name), title_style),
+                Span::styled(
+                    "(missing \"log = true\") ",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])
+        } else {
+            Line::from(Span::styled(
+                format!(" {} ", function_logs.function_name),
+                title_style,
+            ))
+        }
+    } else if selected_function_name.is_some() {
+        Line::from(Span::styled(" Loading... ", title_style))
+    } else {
+        Line::from(Span::styled(" Recent Logs ", title_style))
+    };
+
+    let border_set = if is_focused {
+        border::THICK
+    } else {
+        border::PLAIN
+    };
+
+    let block = Block::bordered()
+        .border_set(border_set)
+        .border_style(if is_focused {
+            Style::default()
+        } else {
+            common_styles::UNFOCUSED_BORDER_STYLE
+        })
+        .title(title);
+
+    // Fixed columns: Index(7) + Timing(12) + Ago(12) + TID(10) + spacing(8) + borders(2) + highlight(3) = 54
+    let inner_width = area.width.saturating_sub(2);
+    let fixed_width: u16 = 7 + 12 + 12 + 10 + 8 + 3;
+    let result_width = (inner_width.saturating_sub(fixed_width) as usize).max(20);
+
+    if let Some(function_logs_data) = current_function_logs {
+        let header_style = common_styles::TITLE_STYLE_YELLOW;
+        let headers = Row::new(vec![
+            Cell::from("Index").style(header_style),
+            Cell::from("Timing").style(header_style),
+            Cell::from("Ago").style(header_style),
+            Cell::from("TID").style(header_style),
+            Cell::from("Return").style(header_style),
+        ]);
+
+        let rows: Vec<Row> = function_logs_data
+            .logs
+            .iter()
+            .map(|entry| {
+                let result_str = entry.result.as_deref().unwrap_or("N/A");
+                let result_truncated = truncate_right(result_str, result_width);
+
+                Row::new(vec![
+                    Cell::from(entry.invocation.to_string()),
+                    Cell::from(entry.duration.clone()),
+                    Cell::from(entry.ago.clone()),
+                    Cell::from(entry.thread_id.map_or("N/A".to_string(), |t| t.to_string())),
+                    Cell::from(result_truncated),
+                ])
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Length(7),
+            Constraint::Length(12),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Min(20),
+        ]
+        .as_slice();
+
+        let table = Table::new(rows, widths)
+            .header(headers)
+            .block(block)
+            .column_spacing(2)
+            .row_highlight_style(common_styles::SELECTED_ROW_STYLE)
+            .highlight_symbol(">> ")
+            .highlight_spacing(HighlightSpacing::Always);
+
+        frame.render_stateful_widget(table, area, table_state);
+    } else if selected_function_name.is_some() {
+        let items = vec![
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(Span::styled(
+                "  Loading logs...",
+                Style::default().fg(Color::Gray),
+            ))),
+        ];
+        let list = List::new(items).block(block);
+        frame.render_widget(list, area);
+    } else {
+        let items = vec![
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(Span::styled(
+                "  No function selected",
+                Style::default().fg(Color::Gray),
+            ))),
+            ListItem::new(Line::from("")),
+            ListItem::new(Line::from(Span::styled(
+                "  Navigate the function list to see logs.",
+                Style::default().fg(Color::DarkGray),
+            ))),
+        ];
+        let list = List::new(items).block(block);
+        frame.render_widget(list, area);
+    }
+}

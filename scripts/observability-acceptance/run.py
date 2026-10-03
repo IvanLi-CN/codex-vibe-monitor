@@ -50,6 +50,9 @@ class Run:
         except Exception as error:
             self.results[name]={"status":"unavailable" if isinstance(error,(OSError,subprocess.TimeoutExpired)) else "failed","error":str(error)}
         (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
+        # A/B recreates the application; preserve each scenario's diagnostics first.
+        with (self.root/(name+"-compose.log")).open("w") as log:
+            subprocess.run(["docker","compose","-p",self.project,"-f",str(self.compose_file),"logs","--no-color"],stdout=log,stderr=subprocess.STDOUT,timeout=30)
         print(name+": "+self.results[name]["status"],flush=True)
     def build(self):
         if not self.args.image:
