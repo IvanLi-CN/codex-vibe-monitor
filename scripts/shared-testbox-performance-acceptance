@@ -1377,6 +1377,7 @@ if [ "$SCENARIO" = "prompt-cache-control" ]; then
     if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py baseline-probe "$round_index" "$DURATION_SECONDS" </dev/null >> "$LOAD_LOG"
     else
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py priority-yield-probe "$round_index" </dev/null >> "$LOAD_LOG"
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-input "$round_index" "$((DURATION_SECONDS * 2 / 5))" "$REQUEST_RATE" </dev/null >> "$LOAD_LOG"
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
       printf '== restart app after draining proxy requests ==\n'

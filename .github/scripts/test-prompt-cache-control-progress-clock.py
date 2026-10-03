@@ -60,6 +60,23 @@ class ProgressClockTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             loadgen.progress_eligibility(self.state, self.now, self.log)
 
+    def test_zero_work_priority_yield_is_observed_from_fresh_process_evidence(self):
+        self.log.write_text(
+            '2026-10-03T00:00:05Z INFO task="prompt-cache conversation materialization" '
+            'defer_reason="coordinator_priority" '
+            'startup backfill task yielded at a prompt-cache micro-batch boundary\n')
+        self.assertEqual(loadgen.fresh_priority_yields(self.now.timestamp(), self.log),
+                         ['2026-10-03T00:00:05Z'])
+        self.assertEqual(loadgen.fresh_priority_yields(
+            self.now.timestamp() + 6, self.log), [])
+
+    def test_unrelated_task_pressure_cannot_supply_priority_coverage(self):
+        self.log.write_text(
+            '2026-10-03T00:00:05Z INFO task="other task" '
+            'defer_reason="coordinator_priority" '
+            'startup backfill task yielded at a prompt-cache micro-batch boundary\n')
+        self.assertEqual(loadgen.fresh_priority_yields(self.now.timestamp(), self.log), [])
+
 
 if __name__ == '__main__':
     unittest.main()

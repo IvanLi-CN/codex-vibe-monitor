@@ -363,7 +363,7 @@ def progress_cursor(state):
     )
 
 
-def fresh_pressure_deadline(now, pressure_log_path=None):
+def pressure_log_lines(pressure_log_path=None):
     path = pressure_log_path or os.environ.get('PROMPT_CACHE_PRESSURE_LOG')
     if not path:
         raise RuntimeError('fresh prompt-cache pressure log is required')
@@ -376,8 +376,27 @@ def fresh_pressure_deadline(now, pressure_log_path=None):
         if offset:
             log.readline()
         lines = log.read().decode(errors='replace').splitlines()
-    for raw in reversed(lines):
-        line = re.sub(r'\x1b\[[0-9;]*m', '', raw)
+    return [re.sub(r'\x1b\[[0-9;]*m', '', raw) for raw in lines]
+
+
+def fresh_priority_yields(started_at_epoch, pressure_log_path=None):
+    timestamps = set()
+    for line in pressure_log_lines(pressure_log_path):
+        if ('startup backfill task yielded at a prompt-cache micro-batch boundary' not in line
+                or 'task="prompt-cache conversation materialization"' not in line
+                or 'defer_reason="coordinator_priority"' not in line):
+            continue
+        began = re.search(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)', line)
+        if not began:
+            raise RuntimeError('priority yield has no parseable process timestamp')
+        timestamp = datetime.datetime.fromisoformat(began.group(1).replace('Z', '+00:00')).timestamp()
+        if started_at_epoch <= timestamp <= time.time():
+            timestamps.add(began.group(1))
+    return sorted(timestamps)
+
+
+def fresh_pressure_deadline(now, pressure_log_path=None):
+    for line in reversed(pressure_log_lines(pressure_log_path)):
         if ('deferred before SQLite access' not in line
                 or 'task="prompt-cache conversation materialization"' not in line):
             continue
@@ -438,6 +457,76 @@ def observe_progress(probe, state, elapsed_seconds):
         probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
 
 
+def priority_yield_probe(round_index):
+    """Queue an interactive writer behind an admitted, unfinished SQL step."""
+    started = time.monotonic()
+    started_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    deadline = started + 60
+    calls = []
+    attempts = 0
+    while time.monotonic() < deadline and len(calls) < 3:
+        attempts += 1
+        control(False)
+        connection = open_db(BUSINESS_DB, timeout=0.5)
+        try:
+            connection.execute('BEGIN IMMEDIATE')
+        except sqlite3.OperationalError:
+            connection.close()
+            time.sleep(0.1)
+            continue
+        ready = False
+        try:
+            control(True, 'managed')
+            admit_deadline = min(deadline, time.monotonic() + 1.5)
+            while time.monotonic() < admit_deadline:
+                # Pause reset this checkpoint to idle. A fresh running checkpoint
+                # follows initial P2 admission; the external writer holds its SQL
+                # micro-batch open until an interactive request is queued.
+                if snapshot().get('scheduler_status') == 'running':
+                    ready = True
+                    break
+                time.sleep(0.01)
+            if not ready:
+                continue
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(
+                    proxy_once,
+                    f'priority-probe-r{round_index}-{len(calls)}',
+                    f'priority-probe-r{round_index}',
+                )
+                time.sleep(0.1)
+                connection.rollback()
+                result = future.result(timeout=5)
+                calls.append(result)
+                print(json.dumps({
+                    'phase': 'priority-probe-call', 'round': round_index,
+                    'sample_index': len(calls), **result,
+                }), flush=True)
+                if result['status'] != 200 or result['terminal'] is None:
+                    raise SystemExit(f'priority probe request failed in round {round_index}')
+        finally:
+            connection.rollback()
+            connection.close()
+        observe_deadline = min(deadline, time.monotonic() + 3)
+        while time.monotonic() < observe_deadline:
+            yields = fresh_priority_yields(started_utc)
+            if yields:
+                summary = {
+                    'phase': 'priority-yield-probe', 'round': round_index,
+                    'attempts': attempts, 'calls': len(calls),
+                    'started_at_epoch': started_utc,
+                    'fresh_priority_yield_timestamps': yields,
+                    'elapsed_seconds': round(time.monotonic() - started, 3),
+                    'passed': True,
+                }
+                print(json.dumps(summary), flush=True)
+                with open(os.path.join(DATA_DIR, f'priority-probe-r{round_index}.json'), 'w', encoding='utf-8') as output:
+                    json.dump({'summary': summary, 'samples': calls}, output)
+                return
+            time.sleep(0.05)
+    raise SystemExit(f'controlled coordinator priority scenario unavailable in round {round_index}')
+
+
 def candidate_input(round_index, duration_seconds, request_rate):
     start = time.monotonic()
     deadline = start + duration_seconds
@@ -457,7 +546,9 @@ def candidate_input(round_index, duration_seconds, request_rate):
     sampled_seconds = set()
     unexpected_disabled_after_resume = False
     first_state = log_snapshot('input-start', round_index, start)
-    coordinator_priority_observed = first_state.get('priority_yield_run_count', 0) > 0
+    with open(os.path.join(DATA_DIR, f'priority-probe-r{round_index}.json'), encoding='utf-8') as source:
+        priority_probe = json.load(source)
+    coordinator_priority_observed = priority_probe['summary']['passed'] is True
     baseline_cursor = progress_cursor(first_state)
     baseline_staging_cursor = first_state.get('staging_max_cursor', 0)
     progress_probe = {
@@ -553,21 +644,24 @@ def candidate_input(round_index, duration_seconds, request_rate):
         for future in concurrent.futures.as_completed(pending, timeout=20):
             record_result(future.result())
 
-    bad = [item for item in results if item['status'] != 200 or item['terminal'] is None]
+    with open(os.path.join(DATA_DIR, f'priority-probe-r{round_index}.json'), encoding='utf-8') as source:
+        priority_probe = json.load(source)
+    measured_results = results + priority_probe['samples']
+    bad = [item for item in measured_results if item['status'] != 200 or item['terminal'] is None]
     parse_values = [
-        item['terminal']['request_parse_ms'] for item in results
+        item['terminal']['request_parse_ms'] for item in measured_results
         if item['terminal'] and isinstance(item['terminal']['request_parse_ms'], (int, float))
     ]
     persist_values = [
-        item['terminal']['persist_ms'] for item in results
+        item['terminal']['persist_ms'] for item in measured_results
         if item['terminal'] and isinstance(item['terminal']['persist_ms'], (int, float))
     ]
     confirm_values = [
-        item['terminal_ms'] for item in results
+        item['terminal_ms'] for item in measured_results
         if isinstance(item['terminal_ms'], (int, float))
     ]
     response_values = [
-        item['response_ms'] for item in results
+        item['response_ms'] for item in measured_results
         if isinstance(item['response_ms'], (int, float))
     ]
     gate_failures = []
@@ -595,6 +689,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
         'submitted': sequence,
         'achieved_request_rate_per_second': round(sequence / duration_seconds, 3),
         'completed': len(results),
+        'priority_probe_calls': len(priority_probe['samples']),
         'bad_count': len(bad),
         'bad_examples': bad[:3],
         'online_workload_passed': not gate_failures,
@@ -890,6 +985,7 @@ COMMANDS = {
     'seed-history': lambda: seed_history(int(sys.argv[2]), sys.argv[3] == '1'),
     'baseline-probe': lambda: baseline_probe(int(sys.argv[2]), int(sys.argv[3])),
     'maintenance-lock-probe': lambda: maintenance_lock_probe(int(sys.argv[2])),
+    'priority-yield-probe': lambda: priority_yield_probe(int(sys.argv[2])),
     'candidate-input': lambda: candidate_input(int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])),
     'candidate-observe': lambda: candidate_observe(int(sys.argv[2]), int(sys.argv[3])),
     'wait-health': wait_health,
