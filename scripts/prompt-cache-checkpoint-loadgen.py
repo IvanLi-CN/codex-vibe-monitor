@@ -276,6 +276,9 @@ def run_input(round_index, duration_seconds, request_rate, mode):
             result = future.result()
             results.append(result)
             emit('checkpoint-proxy-sample', round_index, elapsed_seconds=round(time.monotonic() - started, 3), **result)
+    boundary_state = snapshot(round_index)
+    if first_staging is None and boundary_state.get('pages_committed', 0) > baseline['pages_committed']:
+        first_staging = duration_seconds
     measured = results + priority['samples']
     parse = [r['terminal']['request_parse_ms'] for r in measured if r['terminal'] and r['terminal']['request_parse_ms'] is not None]
     terminal = [r['terminal_ms'] for r in measured if r['terminal_ms'] is not None]
