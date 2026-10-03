@@ -5,6 +5,7 @@
 ## Related ADRs
 
 - [ADR 0016: Autonomous raw capture circuit breaker](../../adr/0016-autonomous-raw-capture-circuit-breaker.md)
+- [ADR 0025: External performance observability](../../adr/0025-external-performance-observability.md)
 
 ## Context and Scope
 
@@ -89,7 +90,7 @@
   - 顶部全宽 `项目存储总览`
   - 下方 `数据库记录概况`
   - 下方 `归档与逻辑体量`
-- **REQ-STORAGE-SCOPE**：`项目存储总览` MUST 以项目存储总体积作为主读数。测量范围为数据目录、解析后的 `PROXY_RAW_DIR`、解析后的 `ARCHIVE_DIR` 以及项目其他单独配置的持久化运行存储的并集。数据目录使用 `DATABASE_PATH` 的绝对父目录；主库、性能库、维护库及各自存在的 WAL/SHM/journal 侧文件、Xray runtime 都必须覆盖。目录内的全部内容均计入，包括所有数据集归档、临时文件及未关联 raw 残留；目录外单独配置的数据库只纳入数据库及侧文件，不扩展到其父目录的无关内容。路径以运行时实际解析结果为准，不能把所有相对路径统一锚定到工作目录。
+- **REQ-STORAGE-SCOPE**：`项目存储总览` MUST 以项目存储总体积作为主读数。测量范围为数据目录、解析后的 `PROXY_RAW_DIR`、解析后的 `ARCHIVE_DIR` 以及项目其他单独配置的持久化运行存储的并集。数据目录使用 `DATABASE_PATH` 的绝对父目录；主库、维护库及各自存在的 WAL/SHM/journal 侧文件、Xray runtime 都必须覆盖。目录内的全部内容均计入，包括所有数据集归档、临时文件及未关联 raw 残留；目录外单独配置的数据库只纳入数据库及侧文件，不扩展到其父目录的无关内容。已退役性能库不再是可配置扫描根，其外置归档不纳入项目运行存储；数据目录内尚未移出的残留文件仍属于物理目录内容。路径以运行时实际解析结果为准，不能把所有相对路径统一锚定到工作目录。
 - **REQ-STORAGE-DEDUP**：测量 MUST 对全部存储范围统一去重。相同目录、父子目录、路径别名、指向同一目标的配置根符号链接和跨范围硬链接不能重复增加总量；Linux 上同一设备与 inode 标识的文件或目录只计一次。配置根符号链接解析到实际目标；遍历内部符号链接只计链接本身，不跟随到未纳入范围的目标，不产生循环。相同内容的不同独立文件仍各自计入，不能按内容摘要去重。
 - **REQ-STORAGE-MEASURE**：Unix 平台总体积 MUST 使用 `st_blocks × 512` 分配字节，包含目录自身占用；以 `(device, inode)` 作为稳定身份。它表达所选存储范围的测量结果，不代表服务器整个文件系统的已用空间。文件表观长度、业务逻辑字节与内存中的 raw reservation 不得混入或代替这一总量。扫描在服务持续写入时不承诺文件系统原子快照，必须展示最近成功采样时间。无法提供分配字节或稳定文件身份的平台 MUST 返回 `unknown/unsupported_platform`，不能用文件表观长度替代。
 - **REQ-STORAGE-AVAILABILITY**：总体积 MUST 由独立后台测量提供，HTTP 只读取内存快照；扫描必须单实例、可取消、可让出并保持有界资源消耗，不得放入状态请求路径或绑到业务统计的 4 秒刷新期限。HTTP readiness 后立即尝试首次测量，之后每 60 秒尝试；已有扫描时跳过新一轮，不重启扫描。遍历 MUST 在单个 `spawn_blocking` 中流式使用目录迭代器，深度上限 128，身份与遍历状态估算预算 64 MiB；每处理 256 项或经过 25 ms 检查取消并让出 5 ms，触及上限返回延后状态且不得发布部分值。`rawMetricsHealth`、raw bytes、业务 SQL 锁、业务状态快照失效或 `503` 都不得使已有成功测量的存储主读数消失。刷新中保留最近成功值；只有完整成功扫描更新值和时间；成功样本超过 60 秒标为 stale；失败、权限/I/O/溢出/路径解析错误及资源延后均保留旧值。首次失败保持空值。确认不存在的可选目录和遍历中消失的条目按不存在处理，不能将不可读误判为不存在。
@@ -157,7 +158,7 @@
 - Given 任务记录通过 page 或 cursor 连续翻页，When 记录开始时间相同，Then 以 `id` 打破顺序并且不重复、不漏项。
 - Given 用户进入 `系统/设置`，When 调整原有常规设置，Then 保存行为与旧设置页一致。
 - Given 用户进入 `系统/代理`，When 操作 forward proxy，Then 现有校验、测速、刷新订阅能力保持可用。
-- **VER-STORAGE-SCOPE** — covers: REQ-STORAGE-SCOPE。Given 数据目录含主库及侧文件、性能库、维护库、全部归档、临时文件和未关联 raw，且 raw/archive 配置到目录外，When 测量成功，Then 主读数覆盖全部范围；外部数据库旁的无关文件不会被纳入。默认 raw/archive 位于数据目录内时也不遗漏任何内容。
+- **VER-STORAGE-SCOPE** — covers: REQ-STORAGE-SCOPE。Given 数据目录含主库及侧文件、维护库、全部归档、临时文件和未关联 raw，且 raw/archive 配置到目录外，When 测量成功，Then 主读数覆盖全部范围；外部数据库旁的无关文件不会被纳入。默认 raw/archive 位于数据目录内时也不遗漏任何内容。
 - **VER-STORAGE-DEDUP** — covers: REQ-STORAGE-DEDUP。Given raw/archive 分别与数据目录相同、互为父子、使用不同拼写路径、配置根为符号链接，或目录之间存在硬链接，When 测量成功，Then 同一对象只计一次且遍历不循环；内部符号链接不会引入无关目标，相同内容的独立副本各自计入。原有文件增加一个硬链接路径不会增加总量中的文件分配字节，目录元数据自身新增占用仍按实测计入。
 - **VER-STORAGE-MEASURE** — covers: REQ-STORAGE-MEASURE。Given 已知分配块的普通文件、稀疏文件、小文件及目录，When 测量成功，Then 主读数等于范围内唯一对象的分配字节总和并以二进制单位展示，不使用表观长度或 raw reservation 替代；页面显示成功采样时间。
 - **VER-STORAGE-AVAILABILITY** — covers: REQ-STORAGE-AVAILABILITY。Given 已有成功的总体积测量，When raw 为 `preparing/deferred/error/unknown`、业务 SQL 被锁或业务状态快照过期不可用，Then 主读数保留；When 新一轮扫描延后、失败或未完成，Then 保留最近成功值并标注其时间和采集状态；没有成功值时显示未知。不可读范围不得发布较小的局部总量，确认不存在的可选文件不视为扫描失败。并发刷新不会创建多个扫描，HTTP 请求不会访问数据库、文件元数据或目录。

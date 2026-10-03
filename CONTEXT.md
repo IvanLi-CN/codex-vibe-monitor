@@ -1130,13 +1130,13 @@ The newly introduced task configuration, progress, run history, and bounded diag
 _Avoid_: 业务事实, 原始请求载荷, 性能时间桶
 
 **维护库（Maintenance Database）**:
-The separate local SQLite database for Operational Task Data, distinct from both the Business Main Facts store and the Performance Telemetry Database. Task controls, progress snapshots, run history, and bounded error summaries are written here asynchronously on a best-effort basis; unavailability never falls back to the main database.
+The separate local SQLite database for Operational Task Data, distinct from the Business Main Facts store and externally stored Metric History. Task controls, progress snapshots, run history, and bounded error summaries are written here asynchronously on a best-effort basis; unavailability never falls back to the main database.
 _Avoid_: 主库旁路表, 性能时间桶, 任务执行前置依赖
 
 The configurable path is `MAINTENANCE_DATABASE_PATH`. When omitted, the service derives a sibling file by appending `.maintenance.sqlite` to the main database stem: `codex.sqlite` becomes `codex.maintenance.sqlite`; this is a suffix, not a hidden filename beginning with `.`.
 
 **性能指标库（Performance Telemetry Database）**:
-The existing separate SQLite database for bounded, low-cardinality aggregate performance metrics. It records task overhead, throughput, database waits, pressure, latency distributions, failures, and deferrals, but does not become the source for task configuration, progress, or run history.
+The retired separate SQLite store for aggregate Performance Observations. This term remains for offline archive and rollback contracts; the running application does not configure, open, or write it. Prometheus stores current Metric History, while the Maintenance Database retains task configuration, progress, and run history.
 _Avoid_: 任务状态库, 运行明细库, 账号级指标
 
 **运维观测降级（Operational Observability Degradation）**:

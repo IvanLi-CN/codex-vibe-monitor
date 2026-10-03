@@ -8,8 +8,8 @@ import {
   type SystemStatusResponse,
   type SystemStorageResponse,
 } from "../../lib/api";
-import ProjectStorageSummary from "./ProjectStorageSummary";
 import { usePageObservation } from "../../lib/browserObservability";
+import ProjectStorageSummary from "./ProjectStorageSummary";
 
 const REFRESH_INTERVAL_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
