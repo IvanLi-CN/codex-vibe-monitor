@@ -113,6 +113,7 @@ mod pricing_catalog_and_models_passthrough;
 )]
 mod prompt_cache_conversation_queries;
 mod prompt_cache_materialization_control;
+mod prompt_cache_working_set_trigger;
 #[expect(
     clippy::too_many_arguments,
     reason = "Test insertion helpers mirror persisted rollup fields."

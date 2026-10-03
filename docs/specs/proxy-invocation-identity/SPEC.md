@@ -56,6 +56,12 @@
 - Continuation caused by a pending page, generation change, or bounded work budget MUST use the existing 15-second follow-up. Same-generation wakes and stale run results MUST preserve the durable delay. Actual disablement clears pending scheduler entries; only a new enablement generation may wake that task. Maintenance control failure MUST preserve the last committed in-memory state and report unavailable when no trusted state exists.
 - Existing status and control response fields remain compatible. The existing `deferReason` string distinguishes `stats_page_pending`, `stats_generation_changed`, `stats_budget_exhausted`, `coordinator_priority`, `operator_disabled`, and `maintenance_database_unavailable`.
 
+### REQ-PII-007
+
+- The synchronous live Prompt working-set update trigger MUST run only for source columns that can affect its key, scope, displayed status, activity timestamps, counts, tokens, or cost. A terminal write that updates only persistence timing MUST NOT recompute this projection.
+- Inserts, deletes, and relevant source updates MUST retain the existing live-window and old/new-key reconciliation semantics, including updates assigning an unchanged value.
+- Existing databases MUST receive the corrected trigger definitions through a transaction that also records a durable completion marker. Interrupted installation MUST roll back and remain retryable; repeated startup MUST preserve projection rows, historical data, control state, and materialization checkpoints without rebuilding rows solely to update trigger dependencies.
+
 ## Verification
 
 ### VER-PII-001
@@ -87,6 +93,12 @@
 - Method: Independent business/maintenance SQLite regression tests, scheduler-generation tests, upgrade compatibility checks, and a non-test Linux service-process replay.
 - covers: `REQ-PII-006`
 - Pass condition: Both contradictory legacy business enablement values follow only the maintenance control; pause/resume transactions publish atomically; incomplete pages retain their staging cursor and retry after a bounded delay; repeated same-generation wakes do not advance an unexpired pressure deadline or start duplicate work; priority yield resumes after the foreground writer completes; actual disablement waits for a new control generation; all existing HTTP fields remain unchanged; and repeated prompt-cache pages converge to complete statistics with an empty queue and no pure-wait run record.
+
+### VER-PII-006
+
+- Method: Production terminal-write regression, incremental-versus-rebuild projection comparison, interrupted legacy-trigger upgrade/reentry regression, older-reader compatibility, and the same three-round Linux service replay used by `VER-PII-005`.
+- covers: `REQ-PII-007`
+- Pass condition: The actual terminal timing follow-up performs no projection update; relevant mutations, key moves and removal match a source rebuild; failed marker installation rolls back the trigger DDL; successful and repeated startup preserve business rows; existing readers accept the upgraded database; and all probe and steady calls remain included in the unchanged online latency and completion gates.
 
 ## Related ADRs
 
