@@ -90,6 +90,7 @@ def functional():
     observations={}
     for signal,expression in {
         "cpuRate":"sum(rate(cvm_process_cpu_seconds_total[1m]))",
+        "threadCount":"sum(cvm_process_threads)",
         "proxyCompletions":"sum(cvm_proxy_invocations_total{outcome=\"success\"})",
         "upstreamAttempts":"sum(cvm_proxy_upstream_attempts_total)",
         "bodyP95":"histogram_quantile(0.95,sum by (le)(rate(cvm_http_body_duration_seconds_bucket{route=\"/v1/responses\"}[1m])))",

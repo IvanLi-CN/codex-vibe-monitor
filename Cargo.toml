@@ -53,7 +53,8 @@ webpki-roots = "1"
 
 metrics = "=0.24.6"
 metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
-hotpath = { version = "=0.28.0", features = ["axum-0-8", "sqlx", "tokio"] }
+# Process resources come from our bounded sampler; avoid the SDK's 250ms CPU/thread scan.
+hotpath = { version = "=0.28.0", default-features = false, features = ["axum-0-8", "sqlx", "tokio"] }
 http-body = "1"
 pin-project-lite = "0.2"
 

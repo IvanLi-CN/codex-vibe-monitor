@@ -8,6 +8,8 @@
 自有 Hyper/WS 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
 任务和投影使用实际事件。hotpath 在启动线程之前配置，最终 router 只安装一次
 layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
+hotpath 关闭默认 `threads` feature，避免 SDK 每 250 ms 的 CPU/线程扫描；
+进程 CPU、内存和线程数仍由应用资源采样器按锁定节拍提供，按需 CPU 调用栈使用 samply。
 layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与浏览器上报端点；
 浏览器上报不计入应用请求或 hotpath server 指标。
 内部报告请求使用 hotpath 的原始 Authorization token，外部只读 API 仍使用独立
