@@ -217,6 +217,7 @@ def run_input(round_index, duration_seconds, request_rate, mode):
     last_signature = None
     progress_deadline_failures = []
     eta_failures = []
+    pressure_deferred = False
     observed_second = -1
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         while time.monotonic() < deadline:
@@ -253,6 +254,7 @@ def run_input(round_index, duration_seconds, request_rate, mode):
             if second != observed_second:
                 observed_second = second
                 state = sample(round_index, 'checkpoint-input', started)
+                pressure_deferred = pressure_deferred or state.get('eligibility') == 'pressure_deadline'
                 if state.get('phase') in ('stats_rebuild', 'queue_drain') and state.get('api_eta') is not None:
                     eta_failures.append(second)
                 signature = (state.get('outer_cursor'), state.get('queue_count'), state.get('pages_committed'))
@@ -277,6 +279,7 @@ def run_input(round_index, duration_seconds, request_rate, mode):
             results.append(result)
             emit('checkpoint-proxy-sample', round_index, elapsed_seconds=round(time.monotonic() - started, 3), **result)
     boundary_state = snapshot(round_index)
+    pressure_deferred = pressure_deferred or boundary_state.get('eligibility') == 'pressure_deadline'
     if first_staging is None and boundary_state.get('pages_committed', 0) > baseline['pages_committed']:
         first_staging = duration_seconds
     measured = results + priority['samples']
@@ -295,7 +298,7 @@ def run_input(round_index, duration_seconds, request_rate, mode):
         failures.append('priority_yield_probe_missing')
     if mode == 'candidate' and eta_failures:
         failures.append('incomplete_eta_contract')
-    if first_staging is None:
+    if first_staging is None and not pressure_deferred:
         failures.append('no_committed_stats_page')
     if round_index == 3 and (pause_state or {}).get('phase') != 'queue_drain':
         failures.append('pause_outside_queue_drain')
@@ -304,7 +307,8 @@ def run_input(round_index, duration_seconds, request_rate, mode):
     summary = {'mode': mode, 'submitted': sequence, 'completed': len(results), 'failures': failures,
                'allocation_p99_ms': base.percentile(parse, .99), 'terminal_confirm_p99_ms': base.percentile(terminal, .99),
                'first_progress_seconds': first_progress, 'first_staging_seconds': first_staging,
-               'progress_deadline_failures': progress_deadline_failures, 'input_finished_epoch': time.time(),
+               'progress_deadline_failures': progress_deadline_failures, 'pressure_deferred': pressure_deferred,
+               'input_finished_epoch': time.time(),
                'round_started_epoch': started_epoch, 'priority_probe_calls': len(priority['samples']), 'eta_failures': eta_failures, 'paused': paused, 'resumed': resumed, 'pause_phase': (pause_state or {}).get('phase')}
     emit('checkpoint-input-summary', round_index, **summary)
     Path(base.DATA_DIR, f'checkpoint-input-r{round_index}.json').write_text(json.dumps(summary))
