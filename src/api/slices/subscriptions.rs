@@ -3570,6 +3570,9 @@ enum SubscriptionTopic {
     QuotaCurrent,
     ManagedTaskRuntime,
     ManagedTaskTimeline,
+    ManagedTaskDetail {
+        task_key: String,
+    },
     DashboardActivityCurrent {
         range: String,
         time_zone: String,
@@ -11622,7 +11625,9 @@ pub(crate) async fn topic_sse_stream(
         .filter(|topic| {
             matches!(
                 topic,
-                SubscriptionTopic::ManagedTaskRuntime | SubscriptionTopic::ManagedTaskTimeline
+                SubscriptionTopic::ManagedTaskRuntime
+                    | SubscriptionTopic::ManagedTaskTimeline
+                    | SubscriptionTopic::ManagedTaskDetail { .. }
             )
         })
         .cloned()
@@ -11716,7 +11721,7 @@ pub(crate) async fn topic_sse_stream(
                 changed = next_task_observation_change(&mut task_changes) => match changed {
                     Ok(change) => {
                         for topic in selected_task_topics.iter().filter(|topic| {
-                            managed_task_change_matches_topic(change, topic)
+                            managed_task_change_matches_topic(&change, topic)
                         }) {
                             if let Err(error) = dashboard_topology_hub
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
@@ -11815,6 +11820,7 @@ impl SubscriptionTopic {
             | Self::QuotaCurrent
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
+            | Self::ManagedTaskDetail { .. }
             | Self::InvocationWindow { .. }
             | Self::InvocationHistoryWindow { .. }
             | Self::InvocationHistoryOverview { .. }
@@ -11909,6 +11915,7 @@ impl SubscriptionTopic {
             | Self::QuotaCurrent
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline => Vec::new(),
+            Self::ManagedTaskDetail { .. } => Vec::new(),
             Self::PromptCacheWindow { .. } => vec![
                 RuntimeTopicDependency::PromptCacheProjection,
                 RuntimeTopicDependency::PromptCacheWindow,
@@ -11959,6 +11966,9 @@ impl SubscriptionTopic {
             "quota.current" => Ok(Self::QuotaCurrent),
             "system.managed-tasks.runtime" => Ok(Self::ManagedTaskRuntime),
             "system.managed-tasks.timeline" => Ok(Self::ManagedTaskTimeline),
+            "system.managed-tasks.detail" => Ok(Self::ManagedTaskDetail {
+                task_key: parse_required_text_param(params, "taskKey")?,
+            }),
             "dashboard.activity.current" => Ok(Self::DashboardActivityCurrent {
                 range: param_or_default(params, "range", "today"),
                 time_zone: param_or_default(params, "timeZone", SUBSCRIPTION_DEFAULT_TIME_ZONE),
@@ -12134,6 +12144,10 @@ impl SubscriptionTopic {
             Self::ManagedTaskRuntime | Self::ManagedTaskTimeline => SubscriptionTopicDescriptor {
                 topic: self.name().to_string(),
                 params: BTreeMap::new(),
+            },
+            Self::ManagedTaskDetail { task_key } => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: btree_map_from_pairs([("taskKey", task_key.clone())]),
             },
             Self::DashboardActivityCurrent {
                 range,
@@ -12399,6 +12413,7 @@ impl SubscriptionTopic {
             Self::QuotaCurrent => "quota.current",
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime",
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline",
+            Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
             Self::DashboardNetworkTimeseriesWindow { .. } => "dashboard.network-timeseries.window",
             Self::DashboardNetworkRecentCurrent => "dashboard.network-recent.current",
@@ -12432,6 +12447,7 @@ impl SubscriptionTopic {
             Self::QuotaCurrent => "quota.current/v1".to_string(),
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
+            Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
             Self::DashboardNetworkTimeseriesWindow { .. } => {
                 "dashboard.network-timeseries.window/v1".to_string()
@@ -12501,6 +12517,7 @@ impl SubscriptionTopic {
                     | Self::QuotaCurrent
                     | Self::ManagedTaskRuntime
                     | Self::ManagedTaskTimeline
+                    | Self::ManagedTaskDetail { .. }
                     | Self::PromptCacheConversationBindingCurrent { .. }
                     | Self::PromptCacheConversationOperationsWindow { .. }
                     | Self::PromptCacheWindow { .. }
@@ -12786,19 +12803,23 @@ async fn next_task_observation_change(
 }
 
 fn managed_task_change_matches_topic(
-    change: crate::task_timeline::TaskObservationChange,
+    change: &crate::task_timeline::TaskObservationChange,
     topic: &SubscriptionTopic,
 ) -> bool {
-    matches!(
-        (change, topic),
-        (
-            crate::task_timeline::TaskObservationChange::Runtime,
-            SubscriptionTopic::ManagedTaskRuntime
-        ) | (
-            crate::task_timeline::TaskObservationChange::Timeline,
-            SubscriptionTopic::ManagedTaskTimeline
-        )
-    )
+    match change {
+        crate::task_timeline::TaskObservationChange::Runtime => {
+            matches!(topic, SubscriptionTopic::ManagedTaskRuntime)
+        }
+        crate::task_timeline::TaskObservationChange::Timeline => {
+            matches!(topic, SubscriptionTopic::ManagedTaskTimeline)
+        }
+        crate::task_timeline::TaskObservationChange::Workload(task_key) => matches!(
+            topic,
+            SubscriptionTopic::ManagedTaskDetail {
+                task_key: subscribed_task_key
+            } if subscribed_task_key == task_key
+        ),
+    }
 }
 
 fn decode_query_json<T: DeserializeOwned>(raw: &str, field: &str) -> Result<T, ApiError> {
@@ -20603,18 +20624,47 @@ mod tests {
             assert_eq!(topic.schema_epoch(), epoch);
             assert!(topic.runtime_topic_dependencies().is_empty());
         }
+
+        let detail_descriptor = SubscriptionTopicDescriptor {
+            topic: "system.managed-tasks.detail".to_string(),
+            params: btree_map_from_pairs([("taskKey", "retention_archive".to_string())]),
+        };
+        let detail = SubscriptionTopic::from_descriptor(&detail_descriptor)
+            .expect("managed task detail topic should parse");
+        assert_eq!(detail.descriptor(), detail_descriptor);
+        assert_eq!(detail.schema_epoch(), "system.managed-tasks.detail/v1");
+        assert_eq!(detail.class(), SubscriptionTopicClass::BoundedColdHydrate);
+        assert!(detail.runtime_topic_dependencies().is_empty());
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "system.managed-tasks.detail".to_string(),
+                params: BTreeMap::new(),
+            })
+            .is_err()
+        );
     }
 
     #[test]
     fn managed_task_observation_changes_refresh_only_the_matching_sse_topic() {
         let runtime = SubscriptionTopic::ManagedTaskRuntime;
         let timeline = SubscriptionTopic::ManagedTaskTimeline;
+        let detail = SubscriptionTopic::ManagedTaskDetail {
+            task_key: "retention_archive".to_string(),
+        };
         use crate::task_timeline::TaskObservationChange::{Runtime, Timeline};
 
-        assert!(managed_task_change_matches_topic(Runtime, &runtime));
-        assert!(!managed_task_change_matches_topic(Runtime, &timeline));
-        assert!(!managed_task_change_matches_topic(Timeline, &runtime));
-        assert!(managed_task_change_matches_topic(Timeline, &timeline));
+        assert!(managed_task_change_matches_topic(&Runtime, &runtime));
+        assert!(!managed_task_change_matches_topic(&Runtime, &timeline));
+        assert!(!managed_task_change_matches_topic(&Timeline, &runtime));
+        assert!(managed_task_change_matches_topic(&Timeline, &timeline));
+        assert!(managed_task_change_matches_topic(
+            &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
+            &detail,
+        ));
+        assert!(!managed_task_change_matches_topic(
+            &crate::task_timeline::TaskObservationChange::Workload("another_task".to_string()),
+            &detail,
+        ));
     }
 
     #[test]

@@ -1256,6 +1256,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     &state,
                     &task_key,
                     run_id,
+                    &observation,
                 ) => result,
             };
             let (status, summary, detail, completion, core_completion, details) = match result {
@@ -1283,11 +1284,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     None,
                 ),
             };
-            observation.finish_with_status(if state.shutdown.is_cancelled() {
-                "interrupted"
-            } else {
-                status.as_str()
-            });
+            let workload_reason = details
+                .as_ref()
+                .and_then(|details| details.get("waitReason"))
+                .and_then(Value::as_str)
+                .or(detail.as_deref());
+            observation.finish_with_status_and_reason(
+                if state.shutdown.is_cancelled() {
+                    "interrupted"
+                } else {
+                    status.as_str()
+                },
+                workload_reason,
+            );
             let duration_ms = managed_task_elapsed_ms(&requested_at, execution_started_at);
             let task_dimension = managed_task_metric_dimension(&task_key);
             state.performance_telemetry.record_duration_ms(
@@ -1614,6 +1623,20 @@ async fn run_managed_task_once_with_observation(
     state: &Arc<AppState>,
     task_key: &str,
     run_id: i64,
+    observation: &crate::TaskExecutionObservation,
+) -> Result<ManagedTaskExecution> {
+    crate::with_managed_task_observation(
+        observation.clone(),
+        run_managed_task_once_with_scoped_observation(state, task_key, run_id, observation),
+    )
+    .await
+}
+
+async fn run_managed_task_once_with_scoped_observation(
+    state: &Arc<AppState>,
+    task_key: &str,
+    run_id: i64,
+    observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
     if task_key == "retention_archive" {
         let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
@@ -1623,6 +1646,7 @@ async fn run_managed_task_once_with_observation(
             Some(&state.shutdown),
             state.raw_capture_circuit.clone(),
             Some(&state.prompt_cache_conversation_cache),
+            Some(observation.clone()),
         )
         .await?;
         persist_retention_catchup_schedule(&summary).await;
@@ -1697,6 +1721,78 @@ async fn run_managed_task_once_with_observation(
             details: Some(details),
         });
     }
+    match task_key {
+        "pool_orphan_recovery" => {
+            let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;
+            observation
+                .set_processed_work(i64::try_from(outcome.recovered_attempts).unwrap_or(i64::MAX));
+            return Ok(ManagedTaskExecution::simple(format!(
+                "恢复连接池尝试 {} 条，调用 {} 条",
+                outcome.recovered_attempts, outcome.recovered_invocations
+            )));
+        }
+        "raw_compression" => {
+            let summary = compress_cold_proxy_raw_payloads(
+                &state.pool,
+                &state.config,
+                state.config.database_path.parent(),
+                false,
+            )
+            .await?;
+            observation
+                .set_processed_work(i64::try_from(summary.files_compressed).unwrap_or(i64::MAX));
+            return Ok(ManagedTaskExecution::simple(format!(
+                "原始载荷压缩完成：{summary:?}"
+            )));
+        }
+        "archive_upstream_activity_manifest" => {
+            let summary =
+                refresh_archive_upstream_activity_manifest(&state.pool, &state.config, false)
+                    .await?;
+            observation
+                .set_processed_work(i64::try_from(summary.refreshed_batches).unwrap_or(i64::MAX));
+            return Ok(ManagedTaskExecution::simple(format!(
+                "上游活动归档清单完成：{summary:?}"
+            )));
+        }
+        "materialize_historical_rollups" => {
+            let summary = materialize_historical_rollups(&state.pool, &state.config, false).await?;
+            observation.set_processed_work(
+                i64::try_from(summary.materialized_archive_batches).unwrap_or(i64::MAX),
+            );
+            return Ok(ManagedTaskExecution::simple(format!(
+                "历史汇总物化完成：{summary:?}"
+            )));
+        }
+        "verify_archive_storage" => {
+            let summary = verify_archive_storage(&state.pool, &state.config).await?;
+            observation
+                .set_processed_work(i64::try_from(summary.manifest_rows).unwrap_or(i64::MAX));
+            return Ok(ManagedTaskExecution::simple(format!(
+                "归档存储校验完成：{summary:?}"
+            )));
+        }
+        "prune_archive_batches" => {
+            let summary = prune_archive_batches(&state.pool, &state.config, false).await?;
+            let deleted = summary
+                .expired_archive_batches_deleted
+                .saturating_add(summary.legacy_archive_batches_deleted);
+            observation.set_processed_work(i64::try_from(deleted).unwrap_or(i64::MAX));
+            return Ok(ManagedTaskExecution::simple(format!(
+                "归档批次清理完成：{summary:?}"
+            )));
+        }
+        "prune_legacy_archive_batches" => {
+            let summary = prune_legacy_archive_batches(&state.pool, &state.config, false).await?;
+            observation.set_processed_work(
+                i64::try_from(summary.deleted_archive_batches).unwrap_or(i64::MAX),
+            );
+            return Ok(ManagedTaskExecution::simple(format!(
+                "旧归档批次清理完成：{summary:?}"
+            )));
+        }
+        _ => {}
+    }
     run_managed_task_once(state, task_key, run_id)
         .await
         .map(ManagedTaskExecution::simple)
@@ -1716,6 +1812,7 @@ async fn run_managed_task_once(
                 Some(&state.shutdown),
                 state.raw_capture_circuit.clone(),
                 Some(&state.prompt_cache_conversation_cache),
+                None,
             )
             .await?;
             persist_retention_catchup_schedule(&summary).await;
@@ -2760,6 +2857,11 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                         info!("pool orphan recovery cancelled during execution");
                         break;
                     };
+                    if let Ok(outcome) = result.as_ref() {
+                        observation.set_processed_work(
+                            i64::try_from(outcome.recovered_attempts).unwrap_or(i64::MAX),
+                        );
+                    }
                     observation.finish_with_status(if result.is_ok() {
                         "success"
                     } else {

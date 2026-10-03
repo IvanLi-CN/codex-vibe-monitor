@@ -80,6 +80,7 @@ pub(crate) async fn refresh_archive_upstream_activity_manifest(
         };
         summary.refreshed_batches += 1;
         summary.account_rows_written += account_rows_written;
+        crate::record_managed_task_processed_work(&["archive_upstream_activity_manifest"], 1);
     }
 
     Ok(summary)

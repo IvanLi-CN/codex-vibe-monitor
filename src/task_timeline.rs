@@ -26,10 +26,11 @@ const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
 const SHUTDOWN_FLUSH_ATTEMPTS: usize = 3;
 const SHUTDOWN_FLUSH_RETRY_DELAY: Duration = Duration::from_millis(250);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TaskObservationChange {
     Runtime,
     Timeline,
+    Workload(String),
 }
 
 fn change_sender() -> &'static broadcast::Sender<TaskObservationChange> {
@@ -91,6 +92,9 @@ pub(crate) enum TimelineEvent {
     DeferralFinished {
         id: String,
         finished_at: String,
+    },
+    WorkloadSampleChanged {
+        sample: Box<crate::maintenance_store::TaskWorkloadSample>,
     },
 }
 
@@ -161,6 +165,10 @@ fn recorder_cancel() -> &'static Mutex<Option<CancellationToken>> {
 fn send_event(event: TimelineEvent) {
     let sender = event_sender().lock().ok().and_then(|sender| sender.clone());
     let Some(sender) = sender else { return };
+    enqueue_event(&sender, event);
+}
+
+fn enqueue_event(sender: &EventSender, event: TimelineEvent) {
     if sender.tx.try_send(event).is_err() {
         record_dropped_event(&sender.dropped, &sender.dropped_interval);
     }
@@ -212,6 +220,23 @@ pub(crate) fn execution_unknown(id: String, last_observed_at: String) {
         last_observed_at,
     });
     notify_runtime_changed();
+}
+
+pub(crate) fn workload_sample_changed(sample: crate::maintenance_store::TaskWorkloadSample) {
+    let task_key = sample.task_key.clone();
+    send_event(TimelineEvent::WorkloadSampleChanged {
+        sample: Box::new(sample),
+    });
+    notify_runtime_changed();
+    let _ = change_sender().send(TaskObservationChange::Workload(task_key));
+}
+
+fn notify_persisted_workload_changes(events: &[TimelineEvent]) {
+    for event in events {
+        if let TimelineEvent::WorkloadSampleChanged { sample } = event {
+            let _ = change_sender().send(TaskObservationChange::Workload(sample.task_key.clone()));
+        }
+    }
 }
 
 pub(crate) fn note_background_denial(
@@ -448,6 +473,7 @@ async fn run_recorder(
                     ).await {
                         Ok(()) => {
                             notify_timeline_changed();
+                            notify_persisted_workload_changes(&events);
                             if events.iter().any(|event| matches!(
                                 event,
                                 TimelineEvent::DeferralStarted { .. }
@@ -512,6 +538,7 @@ async fn run_recorder(
         {
             Ok(()) => {
                 persisted = true;
+                notify_persisted_workload_changes(&events);
                 break;
             }
             Err(error) if attempt + 1 < SHUTDOWN_FLUSH_ATTEMPTS => {
@@ -740,5 +767,55 @@ mod tests {
             .clone()
             .unwrap();
         assert_ne!(next.id, extended.id);
+    }
+
+    #[test]
+    fn full_recorder_queue_drops_workload_events_and_marks_a_gap() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(TimelineEvent::ExecutionUnknown {
+            id: "queued-event".to_string(),
+            last_observed_at: "2026-10-03T00:00:00.000Z".to_string(),
+        })
+        .expect("fill recorder queue");
+        let dropped = Arc::new(AtomicU64::new(0));
+        let dropped_interval = Arc::new(Mutex::new(None));
+        let sender = EventSender {
+            session_id: "saturated-recorder".to_string(),
+            tx,
+            dropped: dropped.clone(),
+            dropped_interval: dropped_interval.clone(),
+        };
+        let sample = crate::maintenance_store::TaskWorkloadSample {
+            sample_id: "workload-sample".to_string(),
+            execution_uid: "execution".to_string(),
+            managed_run_id: None,
+            task_key: "retention_archive".to_string(),
+            trigger_kind: "manual".to_string(),
+            attempted_at: "2026-10-03T00:00:00.000Z".to_string(),
+            actual_started_at: Some("2026-10-03T00:00:00.001Z".to_string()),
+            finished_at: None,
+            status: "running".to_string(),
+            reason: None,
+            sequence: 1,
+            pending: None,
+            discovered: None,
+            processed: None,
+            subset_relation: "unknown".to_string(),
+        };
+
+        enqueue_event(
+            &sender,
+            TimelineEvent::WorkloadSampleChanged {
+                sample: Box::new(sample),
+            },
+        );
+
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        assert!(
+            dropped_interval
+                .lock()
+                .expect("read recorder coverage gap")
+                .is_some()
+        );
     }
 }

@@ -14,6 +14,12 @@ export interface ChartStatusTokens {
   failure: string;
 }
 
+export interface TaskWorkloadTokens {
+  pending: string;
+  discovered: string;
+  processed: string;
+}
+
 export interface TokenBreakdownTokens {
   cacheRead: string;
   cacheWrite: string;
@@ -76,6 +82,19 @@ const CHART_STATUS_TOKENS: Record<ThemeMode, ChartStatusTokens> = {
   dark: {
     success: "#22c55e",
     failure: "#f87171",
+  },
+};
+
+const TASK_WORKLOAD_TOKENS: Record<ThemeMode, TaskWorkloadTokens> = {
+  light: {
+    pending: "#2563eb",
+    discovered: "#7c3aed",
+    processed: "#0f766e",
+  },
+  dark: {
+    pending: "#60a5fa",
+    discovered: "#a78bfa",
+    processed: "#2dd4bf",
   },
 };
 
@@ -146,6 +165,10 @@ export function chartBaseTokens(themeMode: ThemeMode): ChartBaseTokens {
 
 export function chartStatusTokens(themeMode: ThemeMode): ChartStatusTokens {
   return CHART_STATUS_TOKENS[themeMode];
+}
+
+export function taskWorkloadTokens(themeMode: ThemeMode): TaskWorkloadTokens {
+  return TASK_WORKLOAD_TOKENS[themeMode];
 }
 
 export function tokenBreakdownTokens(themeMode: ThemeMode): TokenBreakdownTokens {

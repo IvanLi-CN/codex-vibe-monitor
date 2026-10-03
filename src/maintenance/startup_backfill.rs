@@ -1608,16 +1608,37 @@ fn startup_backfill_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
 async fn run_startup_backfill_coverage_repair_if_due(
     state: &Arc<AppState>,
     gate: &crate::db_pressure::DbPressureGate,
+    observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
 ) -> Result<StartupBackfillTaskRunOutcome> {
-    run_startup_backfill_coverage_repair_if_due_with_repair(state, gate, || {
-        repair_active_account_activity_v2_coverage(&state.pool)
-    })
+    run_startup_backfill_coverage_repair_if_due_with_observation(
+        state,
+        gate,
+        observation_parent_task_key,
+        managed_run_id,
+        || repair_active_account_activity_v2_coverage(&state.pool),
+    )
     .await
 }
 
 pub(crate) async fn run_startup_backfill_coverage_repair_if_due_with_repair<Repair, RepairFuture>(
     state: &Arc<AppState>,
     gate: &crate::db_pressure::DbPressureGate,
+    repair: Repair,
+) -> Result<StartupBackfillTaskRunOutcome>
+where
+    Repair: FnOnce() -> RepairFuture,
+    RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
+{
+    run_startup_backfill_coverage_repair_if_due_with_observation(state, gate, None, None, repair)
+        .await
+}
+
+async fn run_startup_backfill_coverage_repair_if_due_with_observation<Repair, RepairFuture>(
+    state: &Arc<AppState>,
+    gate: &crate::db_pressure::DbPressureGate,
+    observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
     repair: Repair,
 ) -> Result<StartupBackfillTaskRunOutcome>
 where
@@ -1694,11 +1715,34 @@ where
         });
     }
 
+    let observation = managed_run_id
+        .and_then(crate::TaskExecutionObservation::for_managed_run)
+        .unwrap_or_else(|| {
+            let parent_task_key = observation_parent_task_key.unwrap_or("startup_backfill");
+            crate::TaskExecutionObservation::begin(
+                parent_task_key,
+                &crate::maintenance_store::task_title_for_observation(parent_task_key),
+                "event_or_due",
+                crate::maintenance_store::task_execution_class(parent_task_key),
+                "resource_wait",
+            )
+        });
+    let child_key = "startup_backfill.account_activity_v2_coverage";
+    let child_title = crate::maintenance_store::task_title_for_observation(child_key);
+    observation.set_child(child_key, &child_title);
+    let _child_observation_guard = TaskObservationChildGuard(observation.clone());
+    let mut workload_observation = observation.begin_subtask_workload(child_key);
+
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let repair_outcome = tokio::select! {
         biased;
         _ = coordinator.wait_for_p2_preemption() => {
             drop(write_permit);
+            workload_observation
+                .finish_with_status_and_reason("skipped", Some("background_busy"));
+            if managed_run_id.is_none() {
+                observation.finish_with_status_and_reason("skipped", Some("background_busy"));
+            }
             return Ok(startup_backfill_pressure_defer_outcome(
                 task,
                 gate,
@@ -1708,7 +1752,12 @@ where
         outcome = repair() => outcome,
     };
     let repair_outcome = match repair_outcome {
-        Ok(outcome) => outcome,
+        Ok(outcome) => {
+            workload_observation.set_processed_work(
+                i64::try_from(outcome.repaired_bucket_count).unwrap_or(i64::MAX),
+            );
+            outcome
+        }
         Err(err) => {
             warn!(
                 task = task.log_label(),
@@ -1740,8 +1789,10 @@ where
             if let Some(outcome) =
                 startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
             {
+                workload_observation.finish_with_status("failed");
                 return Ok(outcome);
             }
+            workload_observation.finish_with_status("failed");
             return Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,
@@ -1770,6 +1821,10 @@ where
                         return Err(err);
                     }
                 };
+            workload_observation.finish_with_status("success");
+            if managed_run_id.is_none() {
+                observation.finish_with_status("success");
+            }
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: true,
                 failed: false,
@@ -1790,6 +1845,12 @@ where
                     return Err(err);
                 }
             };
+            workload_observation
+                .finish_with_status_and_reason("skipped", Some("priority_bucket_available"));
+            if managed_run_id.is_none() {
+                observation
+                    .finish_with_status_and_reason("skipped", Some("priority_bucket_available"));
+            }
             Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: false,
@@ -1838,6 +1899,10 @@ where
             }
             let next_due = parse_to_utc_datetime(&next_retry_after).unwrap_or_else(Utc::now);
             STARTUP_BACKFILL_SCHEDULER.record_next_due(task, next_due);
+            workload_observation.finish_with_status("success");
+            if managed_run_id.is_none() {
+                observation.finish_with_status("success");
+            }
             debug!(
                 task = task.log_label(),
                 next_retry_after = %next_retry_after,
@@ -2309,9 +2374,14 @@ async fn run_startup_backfill_task_if_due_outcome(
         };
 
     if task == StartupBackfillTask::AccountActivityV2Coverage {
-        return run_startup_backfill_coverage_repair_if_due(state, gate)
-            .await
-            .map(|outcome| (outcome, None));
+        return run_startup_backfill_coverage_repair_if_due(
+            state,
+            gate,
+            observation_parent_task_key,
+            managed_run_id,
+        )
+        .await
+        .map(|outcome| (outcome, None));
     }
 
     // Legacy-mirror identity reads can decompress large archives. Keep that raw work out of
@@ -2451,6 +2521,7 @@ async fn run_startup_backfill_task_if_due_outcome(
         .map(|suffix| format!("startup_backfill.{suffix}"))
         .unwrap_or_else(|| format!("startup_backfill.{}", task.log_label()));
     let child_title = crate::maintenance_store::task_title_for_observation(&child_key);
+    let mut workload_observation = observation.begin_subtask_workload(&child_key);
     observation.set_child(&child_key, &child_title);
     let _child_observation_guard = TaskObservationChildGuard(observation.clone());
 
@@ -2484,6 +2555,8 @@ async fn run_startup_backfill_task_if_due_outcome(
             biased;
             _ = coordinator.wait_for_p2_preemption() => {
                 drop(write_permit.take());
+                workload_observation
+                    .finish_with_status_and_reason("skipped", Some("background_busy"));
                 return persist_startup_backfill_pressure_defer(
                     state,
                     task,
@@ -2522,6 +2595,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     };
     let outcome = match task_result {
         Ok((run, detail)) => {
+            workload_observation.set_processed_work(i64::try_from(run.updated).unwrap_or(i64::MAX));
             if run.deferred {
                 drop(write_permit.take());
                 if run.defer_reason == Some("operator_disabled") {
@@ -2536,8 +2610,11 @@ async fn run_startup_backfill_task_if_due_outcome(
                         "startup backfill task stopped at a committed micro-batch boundary after operator disable"
                     );
                     if managed_run_id.is_none() {
-                        observation.finish_with_status("skipped");
+                        observation
+                            .finish_with_status_and_reason("skipped", Some("operator_disabled"));
                     }
+                    workload_observation
+                        .finish_with_status_and_reason("skipped", Some("operator_disabled"));
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,
@@ -2584,8 +2661,15 @@ async fn run_startup_backfill_task_if_due_outcome(
                     "startup backfill task yielded at a prompt-cache micro-batch boundary"
                 );
                 if managed_run_id.is_none() {
-                    observation.finish_with_status("skipped");
+                    observation.finish_with_status_and_reason(
+                        "skipped",
+                        run.defer_reason.or(Some("deferred")),
+                    );
                 }
+                workload_observation.finish_with_status_and_reason(
+                    "skipped",
+                    run.defer_reason.or(Some("deferred")),
+                );
                 return persist_startup_backfill_pressure_defer(
                     state,
                     task,
@@ -2717,6 +2801,13 @@ async fn run_startup_backfill_task_if_due_outcome(
         };
         observation.finish_with_status(status);
     }
+    workload_observation.finish_with_status(if outcome.0.failed {
+        "failed"
+    } else if outcome.0.deferred {
+        "skipped"
+    } else {
+        "success"
+    });
     Ok(outcome)
 }
 

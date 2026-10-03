@@ -278,6 +278,7 @@ pub(crate) async fn verify_archive_storage(
                 "archive manifest points to a missing file"
             );
         }
+        crate::record_managed_task_processed_work(&["verify_archive_storage"], 1);
     }
 
     let archive_root = resolved_archive_dir(config);
@@ -976,6 +977,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
             .await?
             {
                 deleted += 1;
+                crate::record_managed_task_processed_work(&["prune_archive_batches"], 1);
             }
             continue;
         }
@@ -1005,6 +1007,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 .await?
             {
                 deleted += 1;
+                crate::record_managed_task_processed_work(&["prune_archive_batches"], 1);
             }
             continue;
         }
@@ -1043,6 +1046,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
                 .await?
             {
                 deleted += 1;
+                crate::record_managed_task_processed_work(&["prune_archive_batches"], 1);
             }
             continue;
         }
@@ -1092,6 +1096,7 @@ pub(crate) async fn cleanup_expired_archive_batches(
             .await?
         {
             deleted += 1;
+            crate::record_managed_task_processed_work(&["prune_archive_batches"], 1);
         }
     }
 
@@ -3670,6 +3675,14 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     tx.commit().await?;
     drop(admission);
 
+    crate::record_managed_task_processed_work(
+        &["materialize_historical_rollups"],
+        i64::try_from(
+            invocation_summary.materialized_batches + forward_proxy_summary.materialized_batches,
+        )
+        .unwrap_or(i64::MAX),
+    );
+
     Ok(HistoricalRollupMaterializationSummary {
         scanned_archive_batches: (invocation_summary.scanned_batches
             + forward_proxy_summary.scanned_batches) as usize,
@@ -3791,6 +3804,10 @@ pub(crate) async fn prune_legacy_archive_batches(
             };
             if deleted {
                 summary.deleted_archive_batches += 1;
+                crate::record_managed_task_processed_work(
+                    &["prune_archive_batches", "prune_legacy_archive_batches"],
+                    1,
+                );
             } else {
                 summary.skipped_unmaterialized_batches += 1;
             }
@@ -3883,6 +3900,10 @@ pub(crate) async fn prune_legacy_archive_batches(
                 .await?
             {
                 summary.deleted_archive_batches += 1;
+                crate::record_managed_task_processed_work(
+                    &["prune_archive_batches", "prune_legacy_archive_batches"],
+                    1,
+                );
             }
             continue;
         }
@@ -3934,6 +3955,10 @@ pub(crate) async fn prune_legacy_archive_batches(
             .await?
         {
             summary.deleted_archive_batches += 1;
+            crate::record_managed_task_processed_work(
+                &["prune_archive_batches", "prune_legacy_archive_batches"],
+                1,
+            );
         }
     }
 

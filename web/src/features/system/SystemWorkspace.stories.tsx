@@ -36,6 +36,7 @@ import {
   type StorybookRequestHandler,
 } from "../../storybook/storybookPageHelpers";
 import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
+import { buildRetentionWorkloadFixture } from "./taskWorkloadFixtures";
 
 function hotTopic(
   state = "healthy",
@@ -379,39 +380,64 @@ function filterStorybookSystemTasks(url: URL): SystemTaskRunsResponse {
 
 const STORYBOOK_MANAGED_TASKS: ManagedTask[] = demoManagedTasks();
 const STORYBOOK_TASK_NOW = Date.now();
-
-const STORYBOOK_RETENTION_BACKLOG_TREND = Array.from({ length: 7 * 24 }, (_, index) => {
-  const bucket = new Date(Date.parse("2026-10-01T00:00:00Z") - (7 * 24 - index) * 3600_000);
-  const missing = index % 19 === 0;
-  return {
-    bucketStart: bucket.toISOString(),
-    state: missing ? "missing" : "observed",
-    observedAt: missing ? null : new Date(bucket.getTime() + 55 * 60_000).toISOString(),
-    invocationCount: missing ? null : Math.max(0, 128_000 - index * 320),
-    maxOverdueSeconds: missing ? null : Math.max(0, 8 * 24 * 3600 - index * 1800),
-    retentionDays: 7,
-    cutoff: new Date(bucket.getTime() - 7 * 24 * 3600_000).toISOString(),
-    sourceMaxInvocationId: missing ? null : 1_000_000 + index * 2_048,
-  };
+const STORYBOOK_RETENTION_FIXTURE = buildRetentionWorkloadFixture({
+  nowMs: STORYBOOK_TASK_NOW,
+  sampleCount: 100,
+  intervalMs: 60 * 60_000,
+  finalPending: 32_000,
+  skippedIndices: [10, 22],
+  zeroCommitFailureIndices: [9, 21],
 });
+const STORYBOOK_RETENTION_BACKLOG_TREND = STORYBOOK_RETENTION_FIXTURE.backlog;
+const STORYBOOK_WORKLOAD_SAMPLES = STORYBOOK_RETENTION_FIXTURE.samples;
+const STORYBOOK_LATEST_WORKLOAD_RUN = STORYBOOK_WORKLOAD_SAMPLES.at(-1);
+const STORYBOOK_LATEST_RUN_START =
+  STORYBOOK_LATEST_WORKLOAD_RUN?.actualStartedAt ?? new Date(STORYBOOK_TASK_NOW).toISOString();
+const STORYBOOK_LATEST_RUN_END =
+  STORYBOOK_LATEST_WORKLOAD_RUN?.finishedAt ?? new Date(STORYBOOK_TASK_NOW).toISOString();
+const STORYBOOK_LATEST_RUN_DURATION = Math.max(
+  0,
+  Date.parse(STORYBOOK_LATEST_RUN_END) - Date.parse(STORYBOOK_LATEST_RUN_START),
+);
+const STORYBOOK_NEXT_RETRY_AT = new Date(STORYBOOK_TASK_NOW + 30_000).toISOString();
+const STORYBOOK_NEXT_INSPECTION_AT = new Date(STORYBOOK_TASK_NOW + 60 * 60_000).toISOString();
 
 const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
-  task: STORYBOOK_MANAGED_TASKS[0],
+  task: {
+    ...STORYBOOK_MANAGED_TASKS[0],
+    measurementCapabilities: {
+      pending: {
+        supported: true,
+        unit: "invocation rows",
+        scope: "expired_invocations:retention_policy",
+      },
+      discovered: {
+        supported: true,
+        unit: "invocation rows",
+        scope: "expired_invocations:retention_policy",
+      },
+      processed: {
+        supported: true,
+        unit: "invocation rows",
+        scope: "expired_invocations:retention_policy",
+      },
+    },
+  },
   progress: {
     total: 128_000,
     completed: 96_000,
     phase: "archive",
     checkpoint: "invocation_id=983040",
     etaSeconds: null,
-    updatedAt: "2026-10-01T00:12:30Z",
+    updatedAt: STORYBOOK_LATEST_RUN_END,
     freshness: "fresh",
     unit: "invocations",
     sourceScope: "id <= 1000000",
-    lastProgressAt: "2026-10-01T00:12:30Z",
+    lastProgressAt: STORYBOOK_LATEST_RUN_END,
     waitReason: "prompt_cache_materialization_pending",
-    nextRetryAt: "2026-10-01T00:13:00Z",
-    nextInspectionAt: "2026-10-01T01:00:00Z",
-    nextCatchupAt: "2026-10-01T00:13:00Z",
+    nextRetryAt: STORYBOOK_NEXT_RETRY_AT,
+    nextInspectionAt: STORYBOOK_NEXT_INSPECTION_AT,
+    nextCatchupAt: STORYBOOK_NEXT_RETRY_AT,
     catchupState: "scheduled",
     stages: [
       { name: "archive", status: "running", completed: 96_000, total: 128_000 },
@@ -427,24 +453,24 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   },
   recentRuns: [
     {
-      id: 104,
-      triggerKind: "manual",
-      startedAt: "2026-10-01T00:10:00Z",
-      finishedAt: "2026-10-01T00:11:04Z",
-      durationMs: 64_000,
+      id: STORYBOOK_LATEST_WORKLOAD_RUN?.managedRunId ?? 100,
+      triggerKind: STORYBOOK_LATEST_WORKLOAD_RUN?.triggerKind ?? "interval",
+      startedAt: STORYBOOK_LATEST_RUN_START,
+      finishedAt: STORYBOOK_LATEST_RUN_END,
+      durationMs: STORYBOOK_LATEST_RUN_DURATION,
       status: "success",
       summary: "归档阶段完成，统计刷新仍在后台继续。",
-      processedCount: 96_000,
-      updatedCount: 96_000,
+      processedCount: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
+      updatedCount: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
       completion: "partial",
       coreCompletion: "completed",
       details: {
         completion: "partial",
         coreCompletion: "completed",
         budgetMs: 60_000,
-        elapsedMs: 64_000,
+        elapsedMs: STORYBOOK_LATEST_RUN_DURATION,
         settlementMs: 4_000,
-        budgetExhausted: true,
+        budgetExhausted: STORYBOOK_LATEST_RUN_DURATION >= 60_000,
         waitReason: "prompt_cache_materialization_pending",
         promptCacheStats: {
           state: "unavailable",
@@ -458,12 +484,13 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
     runCount: 24,
     successCount: 22,
     failureCount: 1,
-    averageDurationMs: 48_500,
-    latestDurationMs: 64_000,
-    observedAt: "2026-10-01T00:12:30Z",
+    averageDurationMs: STORYBOOK_LATEST_RUN_DURATION,
+    latestDurationMs: STORYBOOK_LATEST_RUN_DURATION,
+    observedAt: STORYBOOK_LATEST_RUN_END,
     coverage: 0.92,
   },
   retentionBacklogTrend: STORYBOOK_RETENTION_BACKLOG_TREND,
+  workloadTrend: STORYBOOK_RETENTION_FIXTURE.trend,
 };
 
 function retentionTaskDetailForState(
@@ -2530,16 +2557,19 @@ export const TaskDetail: Story = {
 
 export const RetentionTaskDetail: Story = {
   render: () => renderWorkspace("/system/tasks/retention_archive"),
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByRole("heading", { name: "数据保留与归档" })).toBeVisible();
-    await expect(canvas.getByText("默认计划 · 3600s")).toBeVisible();
-    await expect(canvas.getByText("invocations")).toBeVisible();
-    await expect(canvas.getByText("partial")).toBeVisible();
-    await expect(canvas.getByText("暂不可用（积压 3）")).toBeVisible();
-    await expect(canvas.getByRole("heading", { name: "最近 7 天归档积压" })).toBeVisible();
-    await expect(canvas.getByText("待归档 invocation 条数")).toBeVisible();
-    await expect(canvas.getByText("最长逾期时间（小时）")).toBeVisible();
+    await expect(canvas.findByRole("heading", { name: "数据保留与归档" })).resolves.toBeVisible();
+    await expect(canvas.findByText("默认计划 · 3600s")).resolves.toBeVisible();
+    await expect(
+      canvas.findByRole("figure", { name: "工作量：invocation rows" }),
+    ).resolves.toBeVisible();
+    await expect(canvas.findByRole("heading", { name: "运行趋势" })).resolves.toBeVisible();
+    await expect(canvas.findByRole("tab", { name: "最近 100 次运行" })).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await expect(canvas.getByText("待归档数量")).toBeVisible();
+    await expect(canvas.getByText("最长逾期", { exact: true })).toBeVisible();
     await expect(canvas.getByText("prompt_cache")).toBeVisible();
     await expect(canvas.getByText("92.0%")).toBeVisible();
   },

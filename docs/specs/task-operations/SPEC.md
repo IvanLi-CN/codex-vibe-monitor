@@ -4,8 +4,8 @@
 
 ## Context and Scope
 
-- Context: 任务运维页面需要同时表达真实当前执行、等待执行、最近 12 小时执行区间、任务让行状态、worker 的实际调度策略和可安全修改的运行配置。
-- In scope: 维护任务目录、运行与等待观测、执行时间线、任务标识色、任务让行时间线、集中任务能力目录、计划覆盖控制、详情页和响应式筛选交互。
+- Context: 任务运维页面需要同时表达真实当前执行、等待执行、最近 12 小时执行区间、任务让行状态、worker 的实际调度策略、最近 100 次运行的工作量趋势和可安全修改的运行配置。
+- In scope: 维护任务目录、运行与等待观测、执行时间线、任务标识色、任务让行时间线、集中任务能力目录、计划覆盖控制、详情工作量趋势及条件性进度估计、详情页和响应式筛选交互。
 - Out of scope: 跨任务优先级队列、多实例聚合、任务业务数据归属和生产周期调整。
 
 ## Terms and Interfaces
@@ -13,6 +13,7 @@
 - `运行快照`: 进程内有界登记器提供的当前执行实例；维护库只保存历史记录。
 - `生效计划`: worker 默认规则与维护库自定义覆盖合并后的可展示策略，包含来源、触发机制和编辑能力。
 - 待执行请求、准入延后任务、任务执行区间、任务标识色和任务让行状态采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
+- 任务待处理量、本次发现量、本次处理量、任务计量范围和固定清理存量采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。页面图例统一使用“待处理量 / 本次发现 / 本次处理”。
 - Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark pages of at most 500 segments and `afterRevision` incremental updates; an expired cursor returns `resetRequired` so the client can resynchronize. Existing task list/detail interfaces and control `PATCH` retain their prior fields and behavior.
 
 ## Requirements
@@ -80,6 +81,50 @@
 - 旧历史记录中含入队含义的 `started_at` 和可能包含排队的 `duration_ms` MUST 保留原有兼容含义；不得重命名为实际执行起点，也不得通过旧耗时反推起点。新的字段或区间记录须通过前向、幂等且有界的维护库迁移安装，已有配置与任务颜色不被覆盖。
 - 时间线读取 MUST 使用有界、可续取的窗口查询与增量刷新；高频刷新不得每次加载完整历史、扫描业务表或以静默数量截断冒充完整请求窗口的覆盖。压力区间保留须满足请求窗口覆盖，并合并相同状态及原因的相邻区间，不能为了前端一秒动画每秒写入相同状态。
 
+### REQ-TASK-OPS-010 — 有证据的任务计量
+
+- 每项纳管任务 MUST 声明待处理量、发现量和处理量各自的支持能力、单位与范围。每个运行样本 MUST 分别保留指标值、实际观测时间和覆盖性质：完整准确值、有限窗口值、下界或未知。能力支持不表示当前运行一定有值。
+- 运行图中的“待处理量” MUST 使用本轮开始时对完整适用范围的准确观测；未完成全量发现的任务 MUST 保持此值未知。分页条数、LIMIT 截断结果、扫描预算或存在更多候选的布尔提示不得作为全量待处理量；下界可在说明中标为“至少”，不得画成准确总量。
+- “本次发现” MUST 计本轮实际确认符合处理条件的不同候选，允许多页或边扫描边处理累计。扫描过但不符合条件的项目不得计入；重复扫描和重试不得重复累计。读取既有队列并确认本轮候选也属于本轮发现，不能把它误称为跨轮新增。
+- “本次处理” MUST 计到达任务专属成功完成边界的不同工作项；对事务任务以成功提交为准。运行失败、中断或部分完成 MUST 保留已有确认成果；未执行、失败尝试和未提交批次不得计入。
+- Retention 主计量范围 MUST 使用待归档 invocation 行；裁剪详情、上游尝试、会话、文件、字节和归档批次分别计量。不得把混合处理总数放到 invocation 积压轴上。归档回填中的扫描批次数与更新行数或账号数不得合成为同单位的子集关系。
+- 采集 MUST 在既有工作边界记录事实并异步进入维护库，独立于页面打开。页面读取不得补做全量 COUNT、文件遍历或业务重建以填充图表；任务预算、业务正确性、启停与调度规则保持原有边界。
+
+### REQ-TASK-OPS-011 — 最近 100 次运行样本
+
+- 每个任务详情 MUST 展示最近最多 100 次具有权威运行身份的尝试，包括成功、部分完成、失败、确认跳过和正在运行的尝试，按运行顺序从旧到新呈现。当前运行的已有计数标为进行中，不伪装为终态；待执行请求和没有实际运行尝试的常规计划检查不占样本位置。
+- 手动、启动、定时、事件和追赶等实际执行入口 MUST 进入同一工作量观测契约；共享一个执行实例的父子身份不得在同一任务序列重复计数。确认跳过的尝试须保留时间、身份和原因，但不伪造实际执行起点或用时。
+- 维护库 MUST 保留每项任务最近至少 100 个已记录样本，日龄清理不得提前删除这些样本。升级前缺少的指标、采集失败或历史不足 100 次 MUST 保持未知并展示实际覆盖；不得从当前业务数据重建旧发现量或处理量。
+- 查询与刷新 MUST 有界并支持稳定的运行身份去重，沿用已有 SSE 运行边界和修订信号及时刷新工作量；图表不得仅随初次打开或控制操作更新。旧接口中缺少新计量字段时也须正常渲染。
+- 横轴 MUST 表达运行顺序并在 Tooltip 中显示实际时间与触发来源，不把间隔不同的 100 次运行宣称为固定时长窗口。相邻跳过、失败或缺测记录不得因没有数值而从横轴消失。
+
+### REQ-TASK-OPS-012 — 重叠面积与包含关系
+
+- 最近运行工作量 MUST 使用三条共用零基线的重叠面积序列，分别表示待处理量、本次发现和本次处理。三者使用不同且在深浅主题下可辨认的稳定颜色、边界线和透明填充；颜色只表示指标。不得将三个原始数值相加后堆叠，或把面积顶边标为它们的合计。
+- 对同一单位、相容范围且已证实“处理候选 ⊆ 发现候选 ⊆ 本轮起点待处理存量”的样本，边界分别落在原始 P、D、C。若以差值色带实现，底层为 C，中层为 D−C，顶层为 P−D；总高度仍为 P。Tooltip 和图例 MUST 使用原始三项数值；差值只描述已证实的集合分区。
+- 例如 P=1,000、D=100、C=60，边界为 1,000、100、60，可见分区为未发现 900、已发现未处理 40、已处理 60，总高度不得变为 1,160。发现量只是本轮候选，不得解释为新增积压。
+- 三项图例 MUST 始终存在。某项整段缺失或不支持时，不绘制该项面积，图例注明“暂无观测”或“不适用”；某个点缺失时只留该项缺口。缺失项不得补零、由另两项推测、或通过差值运算造成已有序列一起消失。准确观测的零值须落在基线。
+- 单位不同的序列 MUST 在同一 Tab 内分成共用运行横轴、独立纵轴且单位明确的图面，三项图例仍保留。不得将批次、行、账号、文件或字节通过任意缩放叠在一根数量轴上。
+- 同单位但范围不相容、仅有窗口值、运行中有范围外新增或无法证明包含关系时，MUST 只按原始值重叠展示并标明范围限制，不派生差值分区或百分比。违反 C≤D≤P 时不得裁剪数值强造子集关系；须保留事实并显示范围不相容或计量异常。
+- 图形 MUST 使用不会在已满足包含关系的相邻样本间制造交叉或负分区的连接方式；单个有效样本也须以可见点表达。不得用平滑曲线制造数据未支持的峰值或阶段反转。
+
+### REQ-TASK-OPS-013 — Tabs 与完整空图表
+
+- 所有任务详情 MUST 保留“运行趋势”图表区域，默认 Tab 为“最近 100 次运行”。Retention 详情在同一区域增加“最近 7 天归档积压”Tab；该 Tab 的待归档数量与最长逾期图继续使用独立单位、共用时间轴，并遵循 Retention 主题的小时观测契约。
+- 加载中、全空、指标不支持、接口字段缺失和读取失败时，选中 Tab MUST 仍渲染固定高度的图面、坐标轴、网格、单位或未知单位标记、图例及图内状态提示。可以使用明确的参考刻度，不能把参考刻度或占位数据当作实测零；不得只剩“暂无观测数据”等文本或隐藏整张图。
+- Tab 切换 MUST 保持图表区域高度稳定，容器按两个 Tab 中图面数量较多的响应式布局预留高度；未选中的 Tab 不挂载图表画布，预留区域不显示数据。图面窄屏至少 380px 高、宽屏至少 300px 高；摘要在窄屏采用双列布局。最多 100 个样本均可查看，窄屏默认聚焦最近 20 次，宽屏默认显示 100 次，并可切换 20、50、100 次。Tab 支持键盘选择，图面在窄屏适配可用宽度。Tooltip 须支持指针、键盘与触屏查看运行身份、时间、状态、三项原始值、单位、观测性质和跳过或失败原因。
+- 运行图中跨越确认跳过且没有该项数值的样本，MUST 使用不带面积填充的虚线连接两侧有效边界，并保留跳过位置；首尾跳过无两侧端点时只保留状态标记。虚线不形成实测样本，也不用于估计。不得在图表内展示设计规则或实现说明。
+- 普通采集缺口、失败但无计量证据、单位或范围切换 MUST 中断面积与实线，不泛化为跳过虚线；失败运行有已确认计量时继续绘制真实值并独立标明失败。7 天小时积压缺测继续留空，不因运行图的跳过规则而插值连接。
+
+### REQ-TASK-OPS-014 — 条件性摘要、进度与清零预估
+
+- 详情页 MUST 移除所有任务强制展示的“总量 / 已完成 / 当前进度 / 预计剩余 / 计量单位”五张通用 Stat。单位属于图轴和 Tooltip；摘要按任务能力与有效证据展示最近准确待处理快照、本次处理、处理速率和可成立的清零预估，附观测时间。数据不足的解释放在图内，不建立一排无意义占位卡。
+- 百分比仅在已捕获固定清理存量、且能确认该存量中不同工作项的累计成功完成量时展示。滚动待处理量不是固定分母，“本次处理 / 本次发现”只是本轮候选处理比例；不得标为总体进度，也不得将最近 100 轮计数简单累加后除以最新积压。未确认目标范围全部完成时不显示总体 100%。
+- 未取得完整待处理量的有限扫描任务 MUST 展示已知发现量、处理量及其范围，并保持总体进度与清零预估未知；扫描到页尾或本页完成不等于全量清空。
+- 清零预估 MUST 使用近期、同口径且有足够覆盖的样本，并公开估计窗口和样本覆盖。不得在图表或摘要中展示需求、设计规则或实现说明。耗时使用真实墙钟时间，包含轮间等待、计划间隔和压力让行；只用成功轮的活跃处理秒数不得推算实际清空时刻。
+- 固定清理存量可以使用已确认的存量剩余量和持续处理速度估算。持续补充的积压还须有准确且可比较的积压观测或新增速率，以确认净消化速度；“本次发现”不能作为跨轮新增速率。净消化不为正时显示“积压未下降，暂无法估算清零”，不输出有限 ETA。
+- 过期、缺测覆盖不足、单位或资格策略变化、估计条件不成立时 MUST 说明暂无法估算。准确观测为零时显示“已清空”；估计中的零与待办未知不得伪装为已清空。任务停用时不得沿用此前速率预测任务继续处理。
+
 ## Verification
 
 ### VER-TASK-OPS-001
@@ -129,6 +174,24 @@
 - Method: restart, page-closed collection, migration, delayed/dropped history writes, queue-wait, parent/child, retention-boundary and dense-window fixtures; API pagination and frontend clock checks.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, `REQ-TASK-OPS-009`
 - Pass condition: history survives restart without live-run resurrection or duplicate bars; short runs appear while no page is open; actual execution time excludes request waiting; legacy unknowns and downtime remain visible; intersecting boundary intervals survive retention; dense groups retain inspectable run identities; reads remain bounded and observations never add synchronous main-database writes.
+
+### VER-TASK-OPS-009
+
+- Method: per-task metric fixtures covering complete backlog, bounded candidate selection, ineligible inspected items, retries, queue consumption, partial commit followed by failure, incompatible units, truncated lower bounds and every actual trigger path.
+- covers: `REQ-TASK-OPS-010`, `REQ-TASK-OPS-011`
+- Pass condition: metrics preserve their meaning, unit, scope and coverage; partial scans do not become full totals; committed items are counted once; failures preserve commits; at most 100 ordered identities are returned while retention preserves the latest 100 per task; queued-only requests are excluded and skipped attempts remain visible; collection does not depend on an open page or add synchronous main-database writes.
+
+### VER-TASK-OPS-010
+
+- Method: frontend fixtures plus controlled desktop/mobile Demo or Storybook rendering for P=1,000/D=100/C=60, missing each series, one valid sample, real zeros, all-empty/loading/error states, skipped segments at the beginning/middle/end, failure with commits, incompatible scope and mixed-unit tasks.
+- covers: `REQ-TASK-OPS-012`, `REQ-TASK-OPS-013`
+- Pass condition: original boundaries are 1,000/100/60 with no additive total of 1,160; all three legends remain; absent series do not erase present series; incompatible units use separate axes; skipped bridges are dashed and unfilled, missing observations remain gaps; both Tabs render real chart frames in empty states; keyboard and touch access work without horizontal scrolling. Retention hourly gaps retain the separate no-connection rule.
+
+### VER-TASK-OPS-011
+
+- Method: fixed-cohort, replenished-backlog and partial-scan fixtures with changing eligibility policies, duplicate retry counts, stopped tasks, zero or negative net drain, missing samples and long intervals between successful runs.
+- covers: `REQ-TASK-OPS-014`
+- Pass condition: no blanket empty Stat row; bounded discovery never establishes overall completion; cohort completion excludes later arrivals and duplicates; ETA uses wall-clock drain and includes waits; stale/unsupported/no-drain/stopped cases do not report finite clearance time; only an accurate zero confirms cleared backlog.
 
 ## Related ADRs
 

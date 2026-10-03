@@ -4,9 +4,10 @@
 
 ## Current Status
 
-- Implementation: current execution observation, effective schedules, separate dispatcher/admission waits, stable task colors, durable execution timelines, and task-deferral intervals are implemented; visual evidence is confirmed and persisted, while delivery remains subject to current-candidate backend profiles, empirical service acceptance, Tier 3 review, and CI.
+- Implementation: requirements `REQ-TASK-OPS-001..014` are implemented, including durable run workload samples, bounded detail refresh, recent-run charts, Retention backlog Tabs, and conditional estimates. Current-candidate visual evidence is awaiting owner confirmation; formal review and PR CI remain delivery gates.
 - Lifecycle: active
 - Catalog note: Runtime snapshots remain process-local, while execution identity and historical intervals are persisted in the maintenance SQLite database and merged by execution UID when both sources overlap.
+- Requirements coverage: `REQ-TASK-OPS-010..014` are implemented. Shared backend profiles and current-candidate unit, type, lint, build, Storybook, and Spec checks passed; earlier timeline evidence does not validate the task-detail charts.
 
 ## Implementation Coverage
 
@@ -20,6 +21,25 @@
 - `REQ-TASK-OPS-008`: scheduler boundaries record resource-busy and pressure-cooldown deferrals, which share the execution time axis in one pressure row; overlapping causes remain individually inspectable, retention pressure source aliases map to the managed retention task, and explicit coverage and maintenance-write gaps remain unknown rather than healthy.
 - `REQ-TASK-OPS-009`: a bounded nonblocking event channel persists executions, deferrals, coverage sessions, and revisions to maintenance storage; channel overflow is localized as an explicit interval, shutdown flushes retry a bounded number of times and leave coverage open after persistent failure, startup closes unconfirmed coverage at the last confirmed boundary, retention preserves a 48-hour buffer, and the window endpoint uses fixed-watermark pages plus revision deltas.
 - Startup-backfill control updates compensate a two-store failure by restoring the maintenance control row when the progress store rejects an enablement change. Opening an older row that contains both interval and cron values keeps cron authoritative and recomputes its persisted next trigger.
+
+## Task Detail Metrics
+
+- `src/maintenance_store.rs` defines per-task measurement capabilities and the additive `workloadTrend` detail response. It merges persisted samples with confirmed legacy managed attempts, deduplicates by execution UID and task key, returns at most 100 attempts in run order, and leaves pre-upgrade metric values unknown.
+- `managed_task_work_runs` stores one monotonic sample per `(execution_uid, task_key)` in the maintenance database. Recorder notifications reuse the bounded asynchronous timeline queue; terminal samples force a final snapshot. Startup marks unconfirmed running samples unknown, sequence checks reject stale updates, recorder loss is represented as a coverage gap, and cleanup preserves the latest 100 samples per task plus every running sample.
+- Retention records an exact eligible invocation-row snapshot at run start, distinct eligible candidates, and rows only after their archive transaction commits. Other roots and the 16 startup-backfill children expose only task-specific units with proven semantics; truncated scan counts and mixed `processedCount` values remain unsupported.
+- Committed-work notifications are scoped to the managed task identity. Compression records completed files, manifest refresh records completed archive batches, rollup materialization records batches after transaction commit, and archive pruning records each finalized deletion. Later failures therefore retain successful work without mixing units between nested maintenance operations.
+- `system.managed-tasks.detail?taskKey=...` publishes the same detail shape using persisted workload revision changes. Detail pages consume this topic and the existing runtime topic; the two-second runtime HTTP poll is removed while local elapsed-time animation remains.
+- `web/src/features/system/TaskWorkloadTrend.tsx` renders raw P/D/C as overlapping zero-baseline areas without explanatory implementation prose, keeps all three legend entries, and preserves empty/loading/error/legacy chart frames. Point details show proven partition values. Retention uses the second Tab for independent seven-day count and overdue-hour charts; the panel reserves the largest responsive layout while mounting chart canvases only for the selected Tab.
+- Summary fields expose only exact pending snapshots, completed sample counts, complete-attempt processing rates, and fresh same-range backlog estimates with the documented coverage thresholds. Overall percentage remains hidden unless a fixed cohort and unique cumulative completion are provable.
+
+## Current Candidate Verification
+
+- Shared testbox backend profiles passed: `lightweight` 1,291, `stateful-sqlite` 1,385, and `archive-file-io` 300 tests. Local `cargo fmt --all -- --check`, locked all-target/all-feature `cargo check`, and locked all-target/all-feature Clippy with warnings denied passed.
+- The subset-relation regression for incompatible units passed, followed by current-code `cargo check --locked --all-targets --all-features` and Clippy with warnings denied. `cargo fmt --all -- --check` passed.
+- Web unit tests passed (1,744 passed, 6 skipped); focused `TaskWorkloadTrend` and `SystemWorkspace` Storybook stories passed 66 tests. Web typecheck, lint, and production build passed. Lint reported 96 existing warnings; build reported stale Browserslist data and large-chunk warnings.
+- `SPEC.md` contract validation and Spec drift checks against the locked baseline passed. The five final Demo candidates were compared against their exact intended asset paths; all are `current-only`, so owner confirmation is required before adding canonical images.
+- Recorder and maintenance-store tests cover persistence without detail subscribers, restart recovery, monotonic sample ordering, legacy unknowns, and queue-overflow gaps. A controlled live run streamed a task-scoped detail event and retained the same two workload identities and values after restart. With the maintenance database held under a 40-second write lock, 23 samples (8 success, 15 confirmed skip) were generated and persisted with their original attempt times after the lock released; `/health` stayed `200` in 21 ms, and the business database had no workload table. A new manual run request correctly returned `409` because its scheduler control record could not be persisted, so no unaccepted run was dispatched. This closes A3's controlled persistence/congestion evidence without representing a production workload or promising ETA accuracy.
+- Remaining delivery gates: owner acceptance of the displayed current-candidate images, four Tier 3 read-only review lanes, live PR checks, and the Fast Flow merge-ready handoff. No merge or release has been performed.
 
 ## Verification Commands
 
@@ -37,6 +57,14 @@
 - `bunx biome check web`
 - `cargo test maintenance_store::tests::repairs_legacy_dual_schedule_trigger_on_schema_open -- --nocapture`
 - `cargo test startup_backfill_tests -- --nocapture`
+- `cargo test scoped_committed_work_is_limited_to_its_managed_task -- --nocapture`
+- `cargo test estimates_only_from_fresh_complete_same_range_backlog_samples -- --nocapture`
+- `cargo test task_runtime_observation::tests::subset_relation_requires_compatible_units_and_nested_counts -- --nocapture`
+- `cargo test confirmed_skips_count_as_zero_without_fabricating_a_sample_metric -- --nocapture`
+- `cargo test workload_migration_is_repeatable_and_protects_recent_and_running_samples -- --nocapture`
+- `cargo test workload_store_ignores_out_of_order_sample_sequences -- --nocapture`
+- `cargo test legacy_run_metrics_remain_unknown_and_associated_samples_deduplicate -- --nocapture`
+- `cd web && bun run test-storybook -- TaskWorkloadTrend.stories.tsx SystemWorkspace.stories.tsx`
 
 ## Rollout Facts
 
@@ -44,6 +72,7 @@
 - Computed policy fields are response metadata; reads do not rewrite `interval_secs`, `cron_expr`, or `next_trigger_at`.
 - Unsupported existing overrides remain visible and can be cleared explicitly. Startup-only actions are not replayed by reset; their default behavior applies on the next process start.
 - Observation writes use a bounded asynchronous channel and never write to the business database. Saturation or maintenance-store failures surface as coverage gaps.
+- Workload samples are stored in a separate additive maintenance table; old task history is read only as attempt identity and never receives inferred P/D/C values. The task detail endpoint does not issue a business-table count or file walk to build a chart.
 
 ## Historical Verification
 

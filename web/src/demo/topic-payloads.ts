@@ -1,8 +1,8 @@
-import type { TaskRuntimeSnapshot, TaskTimelinePage } from "../lib/api";
+import type { ManagedTaskDetail, TaskRuntimeSnapshot, TaskTimelinePage } from "../lib/api";
 import type { SubscriptionTopicDescriptor } from "../lib/sse";
 import { handleDemoRequest } from "./handlers";
 
-export const DEMO_SCHEMA_EPOCH = "demo-2026-07";
+export const DEMO_SCHEMA_EPOCH = "demo-2026-10";
 
 function decodeBase64Url(value: string) {
   const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
@@ -69,6 +69,16 @@ export async function resolveDemoTopicPayload(
         requestUrl,
         "/api/system/managed-tasks/runtime",
       ) as Promise<TaskRuntimeSnapshot>;
+    case "system.managed-tasks.detail": {
+      const taskKey = descriptor.params?.taskKey;
+      if (typeof taskKey !== "string" || taskKey.trim().length === 0) {
+        throw new Error("managed task detail topic is missing taskKey");
+      }
+      return requestTopicPayload(
+        requestUrl,
+        `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
+      ) as Promise<ManagedTaskDetail>;
+    }
     case "system.managed-tasks.timeline":
       return requestTopicPayload(
         requestUrl,

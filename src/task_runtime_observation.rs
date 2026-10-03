@@ -1,8 +1,8 @@
 use crate::{Result, Utc, anyhow, format_utc_iso_millis};
 use serde::Serialize;
 use std::{
-    collections::BTreeMap,
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
+    future::Future,
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     sync::{Arc, Mutex, OnceLock, Weak},
     time::Instant,
@@ -67,9 +67,148 @@ fn managed_observations() -> &'static Mutex<HashMap<i64, Weak<ObservationLease>>
     OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+fn workload_observations()
+-> &'static Mutex<HashMap<String, crate::maintenance_store::TaskWorkloadSample>> {
+    static OBSERVATIONS: OnceLock<
+        Mutex<HashMap<String, crate::maintenance_store::TaskWorkloadSample>>,
+    > = OnceLock::new();
+    OBSERVATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn last_workload_notifications() -> &'static Mutex<HashMap<String, Instant>> {
+    static NOTIFICATIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    NOTIFICATIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+tokio::task_local! {
+    static ACTIVE_MANAGED_TASK_OBSERVATION: TaskExecutionObservation;
+}
+
+pub(crate) fn workload_sample(
+    task_key: &str,
+) -> Option<crate::maintenance_store::TaskWorkloadSample> {
+    workload_observations().lock().ok().and_then(|samples| {
+        samples
+            .values()
+            .filter(|sample| sample.task_key == task_key)
+            .max_by(|left, right| left.attempted_at.cmp(&right.attempted_at))
+            .cloned()
+    })
+}
+
+fn update_workload_sample(
+    execution_uid: &str,
+    task_key: &str,
+    force_notify: bool,
+    update: impl FnOnce(&mut crate::maintenance_store::TaskWorkloadSample),
+) {
+    let sample = {
+        let Ok(mut samples) = workload_observations().lock() else {
+            return;
+        };
+        let Some(sample) = samples.get_mut(&format!("{execution_uid}:{task_key}")) else {
+            return;
+        };
+        update(sample);
+        sample.sequence = sample.sequence.saturating_add(1);
+        sample.clone()
+    };
+    let notification_key = format!("{execution_uid}:{task_key}");
+    let should_notify = if force_notify {
+        true
+    } else if let Ok(mut notifications) = last_workload_notifications().lock() {
+        let now = Instant::now();
+        let notify = notifications
+            .get(&notification_key)
+            .is_none_or(|last| last.elapsed() >= std::time::Duration::from_secs(1));
+        if notify {
+            notifications.insert(notification_key, now);
+        }
+        notify
+    } else {
+        false
+    };
+    if should_notify {
+        crate::task_timeline::workload_sample_changed(sample);
+    }
+}
+
+fn sample_metric<'a>(
+    sample: &'a mut crate::maintenance_store::TaskWorkloadSample,
+    key: &str,
+) -> Option<&'a mut crate::maintenance_store::TaskWorkloadMetric> {
+    match key {
+        "pending" => sample.pending.as_mut(),
+        "discovered" => sample.discovered.as_mut(),
+        "processed" => sample.processed.as_mut(),
+        _ => None,
+    }
+}
+
+fn new_workload_sample(
+    execution_uid: &str,
+    task_key: &str,
+    trigger_kind: &str,
+    managed_run_id: Option<i64>,
+    started_at: String,
+) -> crate::maintenance_store::TaskWorkloadSample {
+    let capabilities = crate::maintenance_store::task_measurement_capabilities(task_key);
+    let mut sample = crate::maintenance_store::TaskWorkloadSample {
+        sample_id: format!("{execution_uid}:{task_key}"),
+        execution_uid: execution_uid.to_string(),
+        managed_run_id,
+        task_key: task_key.to_string(),
+        trigger_kind: trigger_kind.to_string(),
+        attempted_at: started_at.clone(),
+        actual_started_at: Some(started_at.clone()),
+        finished_at: None,
+        status: "running".to_string(),
+        reason: None,
+        sequence: 0,
+        pending: None,
+        discovered: None,
+        processed: None,
+        subset_relation: "unknown".to_string(),
+    };
+    for (capability, slot) in [
+        (capabilities.pending, &mut sample.pending),
+        (capabilities.discovered, &mut sample.discovered),
+        (capabilities.processed, &mut sample.processed),
+    ] {
+        if capability.supported {
+            *slot = Some(crate::maintenance_store::TaskWorkloadMetric {
+                value: None,
+                unit: capability.unit.unwrap_or_default(),
+                scope: capability.scope.unwrap_or_default(),
+                range: "not-observed".to_string(),
+                observed_at: None,
+                coverage: "unknown".to_string(),
+            });
+        }
+    }
+    sample
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TaskExecutionObservation {
     inner: Arc<ObservationLease>,
+}
+
+pub(crate) async fn with_managed_task_observation<F: Future>(
+    observation: TaskExecutionObservation,
+    future: F,
+) -> F::Output {
+    ACTIVE_MANAGED_TASK_OBSERVATION
+        .scope(observation, future)
+        .await
+}
+
+pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64) {
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if task_keys.contains(&observation.inner.task_key.as_str()) {
+            observation.add_processed_work(count);
+        }
+    });
 }
 
 #[derive(Debug)]
@@ -77,6 +216,8 @@ struct ObservationLease {
     execution_id: u64,
     execution_uid: String,
     managed_run_id: Option<i64>,
+    task_key: String,
+    trigger_kind: String,
     started_clock: Instant,
     ended: AtomicBool,
 }
@@ -91,6 +232,12 @@ impl Drop for ObservationLease {
                 self.execution_uid.clone(),
                 format_utc_iso_millis(Utc::now()),
             );
+            update_workload_sample(&self.execution_uid, &self.task_key, true, |sample| {
+                sample.status = "unknown".to_string();
+                sample.reason =
+                    Some("execution ended without a confirmed terminal state".to_string());
+                sample.finished_at = None;
+            });
         }
         if let Some(managed_run_id) = self.managed_run_id
             && let Ok(mut observations) = managed_observations().lock()
@@ -148,14 +295,33 @@ impl TaskExecutionObservation {
             title.to_string(),
             trigger_kind.to_string(),
             execution_class.map(str::to_string),
-            started_at,
+            started_at.clone(),
             managed_run_id,
         );
+        let sample = new_workload_sample(
+            &execution_uid,
+            task_key,
+            trigger_kind,
+            managed_run_id,
+            started_at.clone(),
+        );
+        if let Ok(mut samples) = workload_observations().lock() {
+            samples.retain(|_, existing| {
+                existing.task_key != task_key || existing.status == "running"
+            });
+            samples.insert(sample.sample_id.clone(), sample.clone());
+        }
+        crate::task_timeline::workload_sample_changed(sample);
+        if let Ok(mut notifications) = last_workload_notifications().lock() {
+            notifications.insert(format!("{execution_uid}:{task_key}"), Instant::now());
+        }
         let observation = Self {
             inner: Arc::new(ObservationLease {
                 execution_id,
                 execution_uid,
                 managed_run_id,
+                task_key: task_key.to_string(),
+                trigger_kind: trigger_kind.to_string(),
                 started_clock,
                 ended: AtomicBool::new(false),
             }),
@@ -175,6 +341,34 @@ impl TaskExecutionObservation {
                 .and_then(Weak::upgrade)
                 .map(|inner| Self { inner })
         })
+    }
+
+    pub(crate) fn begin_subtask_workload(&self, task_key: &str) -> TaskWorkloadObservation {
+        if self.inner.task_key != task_key {
+            let sample = new_workload_sample(
+                &self.inner.execution_uid,
+                task_key,
+                &self.inner.trigger_kind,
+                self.inner.managed_run_id,
+                format_utc_iso_millis(Utc::now()),
+            );
+            if let Ok(mut samples) = workload_observations().lock() {
+                samples.insert(sample.sample_id.clone(), sample.clone());
+            }
+            crate::task_timeline::workload_sample_changed(sample);
+            if let Ok(mut notifications) = last_workload_notifications().lock() {
+                notifications.insert(
+                    format!("{}:{task_key}", self.inner.execution_uid),
+                    Instant::now(),
+                );
+            }
+        }
+        TaskWorkloadObservation {
+            execution_uid: self.inner.execution_uid.clone(),
+            task_key: task_key.to_string(),
+            processed_count: None,
+            finalized: false,
+        }
     }
 
     pub(crate) fn set_phase(&self, phase: &str) {
@@ -210,11 +404,108 @@ impl TaskExecutionObservation {
         crate::task_timeline::execution_child_changed(self.inner.execution_uid.clone(), None, None);
     }
 
+    pub(crate) fn set_pending_population(
+        &self,
+        value: Option<i64>,
+        observed_at: String,
+        scope: String,
+        range: String,
+        coverage: &str,
+    ) {
+        let execution_uid = &self.inner.execution_uid;
+        let task_key = &self.inner.task_key;
+        update_workload_sample(execution_uid, task_key, false, |sample| {
+            if let Some(metric) = sample_metric(sample, "pending") {
+                metric.value = value;
+                metric.observed_at = Some(observed_at);
+                metric.scope = scope;
+                metric.range = range;
+                metric.coverage = coverage.to_string();
+            }
+            let pending_scope = sample
+                .pending
+                .as_ref()
+                .map(|metric| metric.scope.clone())
+                .unwrap_or_default();
+            let pending_range = sample
+                .pending
+                .as_ref()
+                .map(|metric| metric.range.clone())
+                .unwrap_or_default();
+            for key in ["discovered", "processed"] {
+                if let Some(metric) = sample_metric(sample, key) {
+                    metric.scope = pending_scope.clone();
+                    metric.range = pending_range.clone();
+                }
+            }
+            refresh_subset_relation(sample);
+        });
+    }
+
+    pub(crate) fn set_discovered_work(&self, value: i64, observed_at: String, range: String) {
+        let execution_uid = &self.inner.execution_uid;
+        let task_key = &self.inner.task_key;
+        update_workload_sample(execution_uid, task_key, false, |sample| {
+            for key in ["discovered", "processed"] {
+                if let Some(metric) = sample_metric(sample, key) {
+                    metric.range = range.clone();
+                }
+            }
+            if let Some(metric) = sample_metric(sample, "discovered") {
+                metric.value = Some(value.max(0));
+                metric.observed_at = Some(observed_at);
+                metric.coverage = "window".to_string();
+            }
+            refresh_subset_relation(sample);
+        });
+    }
+
+    pub(crate) fn set_processed_work(&self, count: i64) {
+        let processed_count = count.max(0);
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            false,
+            |sample| {
+                if let Some(metric) = sample_metric(sample, "processed") {
+                    metric.value = Some(processed_count);
+                    metric.range = "run-window".to_string();
+                    metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                    metric.coverage = "window".to_string();
+                }
+            },
+        );
+    }
+
+    pub(crate) fn add_processed_work(&self, count: i64) {
+        self.add_work("processed", count);
+    }
+
+    fn add_work(&self, key: &str, count: i64) {
+        if count <= 0 {
+            return;
+        }
+        let execution_uid = &self.inner.execution_uid;
+        let task_key = &self.inner.task_key;
+        update_workload_sample(execution_uid, task_key, false, |sample| {
+            if let Some(metric) = sample_metric(sample, key) {
+                metric.value = Some(metric.value.unwrap_or(0).saturating_add(count));
+                metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                metric.coverage = "window".to_string();
+            }
+            refresh_subset_relation(sample);
+        });
+    }
+
     pub(crate) fn finish(&self) {
         self.finish_with_status("unknown");
     }
 
     pub(crate) fn finish_with_status(&self, status: &str) {
+        self.finish_with_status_and_reason(status, None);
+    }
+
+    pub(crate) fn finish_with_status_and_reason(&self, status: &str, reason: Option<&str>) {
         if self.inner.ended.swap(true, Ordering::AcqRel) {
             return;
         }
@@ -238,7 +529,126 @@ impl TaskExecutionObservation {
                 .min(u64::MAX as u128) as u64,
             status,
         );
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            true,
+            |sample| {
+                sample.finished_at = Some(format_utc_iso_millis(Utc::now()));
+                sample.status = status.to_string();
+                let has_metric_observation =
+                    [&sample.pending, &sample.discovered, &sample.processed]
+                        .into_iter()
+                        .flatten()
+                        .any(|metric| metric.value.is_some());
+                if status == "skipped" && !has_metric_observation {
+                    sample.actual_started_at = None;
+                }
+                if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
+                    sample.reason = Some(reason.to_string());
+                } else if status == "unknown" {
+                    sample.reason = Some("execution end is unknown".to_string());
+                } else if status == "skipped" {
+                    sample.reason = Some("confirmed skip before measured work".to_string());
+                }
+                refresh_subset_relation(sample);
+            },
+        );
     }
+}
+
+pub(crate) struct TaskWorkloadObservation {
+    execution_uid: String,
+    task_key: String,
+    processed_count: Option<i64>,
+    finalized: bool,
+}
+
+impl TaskWorkloadObservation {
+    pub(crate) fn set_processed_work(&mut self, count: i64) {
+        self.processed_count = Some(count.max(0));
+        let processed_count = self.processed_count;
+        update_workload_sample(&self.execution_uid, &self.task_key, false, |sample| {
+            if let Some(metric) = sample_metric(sample, "processed") {
+                metric.value = processed_count;
+                metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                metric.coverage = "window".to_string();
+            }
+        });
+    }
+
+    pub(crate) fn finish_with_status(&mut self, status: &str) {
+        self.finish_with_status_and_reason(status, None);
+    }
+
+    pub(crate) fn finish_with_status_and_reason(&mut self, status: &str, reason: Option<&str>) {
+        if self.finalized {
+            return;
+        }
+        self.finalized = true;
+        let processed_count = self.processed_count;
+        update_workload_sample(&self.execution_uid, &self.task_key, true, |sample| {
+            sample.finished_at = Some(format_utc_iso_millis(Utc::now()));
+            sample.status = status.to_string();
+            if let Some(metric) = sample_metric(sample, "processed") {
+                metric.value = processed_count;
+                metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                metric.coverage = if processed_count.is_some() {
+                    "window".to_string()
+                } else {
+                    "unknown".to_string()
+                };
+            }
+            let has_metric_observation = [&sample.pending, &sample.discovered, &sample.processed]
+                .into_iter()
+                .flatten()
+                .any(|metric| metric.value.is_some());
+            if status == "skipped" && !has_metric_observation {
+                sample.actual_started_at = None;
+            }
+            if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
+                sample.reason = Some(reason.to_string());
+            } else if status == "skipped" {
+                sample.reason = Some("confirmed skip before measured work".to_string());
+            } else if processed_count.is_none() {
+                sample.reason = Some("committed work count is incomplete".to_string());
+            }
+        });
+    }
+}
+
+impl Drop for TaskWorkloadObservation {
+    fn drop(&mut self) {
+        self.finish_with_status("unknown");
+    }
+}
+
+fn refresh_subset_relation(sample: &mut crate::maintenance_store::TaskWorkloadSample) {
+    let metrics = (&sample.pending, &sample.discovered, &sample.processed);
+    let (Some(pending), Some(discovered), Some(processed)) = metrics else {
+        sample.subset_relation = "unknown".to_string();
+        return;
+    };
+    let (Some(p), Some(d), Some(c)) = (pending.value, discovered.value, processed.value) else {
+        sample.subset_relation = "unknown".to_string();
+        return;
+    };
+    sample.subset_relation = if pending.scope == discovered.scope
+        && discovered.scope == processed.scope
+        && pending.range == discovered.range
+        && discovered.range == processed.range
+        && pending.unit == discovered.unit
+        && discovered.unit == processed.unit
+        && pending.coverage == "exact"
+        && discovered.coverage == "window"
+        && processed.coverage == "window"
+        && c <= d
+        && d <= p
+    {
+        "confirmed".to_string()
+    } else {
+        "incompatible".to_string()
+    };
 }
 
 pub(crate) fn task_runtime_snapshot() -> Result<TaskRuntimeSnapshot> {
@@ -284,12 +694,23 @@ pub(crate) fn clear_task_runtime_observation_for_tests() {
     if let Ok(mut registry) = registry().lock() {
         registry.active.clear();
     }
+    if let Ok(mut observations) = managed_observations().lock() {
+        observations.clear();
+    }
+    if let Ok(mut samples) = workload_observations().lock() {
+        samples.clear();
+    }
+    if let Ok(mut notifications) = last_workload_notifications().lock() {
+        notifications.clear();
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        TaskExecutionObservation, clear_task_runtime_observation_for_tests, task_runtime_snapshot,
+        TaskExecutionObservation, clear_task_runtime_observation_for_tests,
+        record_managed_task_processed_work, refresh_subset_relation, task_runtime_snapshot,
+        with_managed_task_observation,
     };
     use std::{
         sync::{Mutex, OnceLock},
@@ -398,5 +819,119 @@ mod tests {
                 .active_runs
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn direct_managed_backfill_does_not_duplicate_its_workload_sample_as_a_child() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let task_key = "startup_backfill.proxy_usage";
+        let observation = TaskExecutionObservation::begin_for_managed_run(
+            task_key,
+            "代理用量回填",
+            "manual",
+            Some("p2_derived"),
+            "processing",
+            Some(44),
+        );
+        let sample_before = super::workload_sample(task_key).expect("root sample exists");
+        let mut child = observation.begin_subtask_workload(task_key);
+        let sample_after = super::workload_sample(task_key).expect("shared sample exists");
+        assert_eq!(sample_before.sample_id, sample_after.sample_id);
+        assert_eq!(sample_before.execution_uid, sample_after.execution_uid);
+
+        child.set_processed_work(12);
+        child.finish_with_status("success");
+        let sample = super::workload_sample(task_key).expect("completed sample exists");
+        assert_eq!(
+            sample.processed.as_ref().and_then(|metric| metric.value),
+            Some(12)
+        );
+        assert_eq!(sample.status, "success");
+        observation.finish_with_status("success");
+    }
+
+    #[test]
+    fn confirmed_skip_without_metrics_has_no_actual_start_and_keeps_its_reason() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin(
+            "startup_backfill.account_activity_v2_coverage",
+            "账号活动覆盖修复",
+            "interval",
+            Some("p2_derived"),
+            "processing",
+        );
+        observation.finish_with_status_and_reason("skipped", Some("background_busy"));
+
+        let sample = super::workload_sample("startup_backfill.account_activity_v2_coverage")
+            .expect("skip sample exists");
+        assert_eq!(sample.status, "skipped");
+        assert!(sample.actual_started_at.is_none());
+        assert_eq!(sample.reason.as_deref(), Some("background_busy"));
+        assert!(sample.finished_at.is_some());
+    }
+
+    #[test]
+    fn subset_relation_requires_compatible_units_and_nested_counts() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin(
+            "retention_archive",
+            "数据保留与归档",
+            "manual",
+            Some("p2_derived"),
+            "processing",
+        );
+        let mut sample = super::workload_sample("retention_archive").expect("sample exists");
+        let metric = |value: i64, coverage: &str| crate::maintenance_store::TaskWorkloadMetric {
+            value: Some(value),
+            unit: "invocation rows".to_string(),
+            scope: "retention policy".to_string(),
+            range: "id <= 1000".to_string(),
+            observed_at: Some("2026-10-03T00:00:00.000Z".to_string()),
+            coverage: coverage.to_string(),
+        };
+        sample.pending = Some(metric(1_000, "exact"));
+        sample.discovered = Some(metric(100, "window"));
+        sample.processed = Some(metric(60, "window"));
+        refresh_subset_relation(&mut sample);
+        assert_eq!(sample.subset_relation, "confirmed");
+
+        sample.discovered.as_mut().unwrap().unit = "files".to_string();
+        refresh_subset_relation(&mut sample);
+        assert_eq!(sample.subset_relation, "incompatible");
+
+        sample.discovered.as_mut().unwrap().unit = "invocation rows".to_string();
+        sample.processed.as_mut().unwrap().value = Some(101);
+        refresh_subset_relation(&mut sample);
+        assert_eq!(sample.subset_relation, "incompatible");
+        observation.finish_with_status("success");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn scoped_committed_work_is_limited_to_its_managed_task() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin(
+            "raw_compression",
+            "原始载荷压缩",
+            "manual",
+            Some("p2_derived"),
+            "processing",
+        );
+        with_managed_task_observation(observation.clone(), async {
+            record_managed_task_processed_work(&["raw_compression"], 2);
+            record_managed_task_processed_work(&["archive_upstream_activity_manifest"], 7);
+        })
+        .await;
+
+        let sample = super::workload_sample("raw_compression").expect("root sample exists");
+        assert_eq!(
+            sample.processed.as_ref().and_then(|metric| metric.value),
+            Some(2)
+        );
+        observation.finish_with_status("failed");
     }
 }

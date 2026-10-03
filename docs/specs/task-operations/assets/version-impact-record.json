@@ -2,48 +2,48 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add separately reported live wait states, persisted task identity colors, and durable execution and task-deferral timelines.",
-    "release_unit_description": "Task operations API, maintenance-store timeline migration, and responsive task workspace.",
+    "description": "Add per-task workload capabilities and durable run samples, revisioned detail updates, and evidence-based workload charts with Retention backlog history.",
+    "release_unit_description": "Task operations API and additive maintenance-store workload migration, including recent-100 run trends and responsive Retention backlog Tabs.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
     "allowed_impacts": ["patch", "minor", "major"],
     "planned": {
       "impact": "minor",
-      "reasoning": "The runtime fields and timeline endpoint are additive, while stable colors and durable observation add a forward-compatible maintenance-store migration. Legacy request-time and duration meanings remain unchanged.",
-      "assessed_at": "2026-10-02T00:00:00Z",
+      "reasoning": "Measurement capabilities, workload trend fields, and the task-key detail SSE topic are additive. The maintenance-store sample table is forward-only and idempotent; legacy request-time, duration, task controls, and colors retain their existing meanings and values.",
+      "assessed_at": "2026-10-03T00:00:00Z",
       "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md", "docs/specs/task-operations/persistent-state-migration.json"]
     },
     "current": {
       "impact": "minor",
-      "scope_drift": {"detected": false, "description": "The implementation matches the accepted durable-timeline scope and adds only forward-compatible maintenance-store schema and response fields."},
-      "reasoning": "A migration persists task colors, actual execution boundaries, deferral intervals, coverage sessions, and timeline revisions. Existing control columns and legacy history semantics are preserved.",
-      "reassessed_at": "2026-10-02T00:00:00Z",
+      "scope_drift": {"detected": false, "description": "The workload requirements extend the same task-operations topic with additive response fields, a task-key SSE detail topic, and an idempotent maintenance-store sample table; no scheduling or task-admission behavior changes."},
+      "reasoning": "The migration adds workload sample identity, sequence, state, and serialized metric coverage without reconstructing historical values. Existing controls, colors, request timestamps, duration semantics, and legacy history are preserved.",
+      "reassessed_at": "2026-10-03T00:00:00Z",
       "evidence": ["docs/specs/task-operations/SPEC.md", "docs/specs/task-operations/persistent-state-migration.json", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md"]
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "The maintenance-store schema change is additive and idempotent; public response changes remain additive and legacy task-control semantics are preserved.",
-      "verified_at": "2026-10-02T00:00:00Z",
+      "reasoning": "The additive detail contract and idempotent sample-table migration preserve old task controls, colors, request-time fields, and unknown legacy metrics.",
+      "verified_at": "2026-10-03T00:00:00Z",
       "evidence": ["docs/specs/task-operations/persistent-state-migration.json", "cargo fmt --all -- --check", "cargo check --locked --all-targets --all-features", "backend lightweight/stateful-sqlite/archive-file-io profiles"]
     }
   },
   "compatibility_evidence": {
     "public_api": {
       "change": "compatible",
-      "supported_consumer_range": "Existing clients may continue reading legacy task fields and sending enabled-only PATCH requests; task colors, queue/admission availability, and the timeline endpoint are additive.",
+      "supported_consumer_range": "Same-major consumers remain compatible with legacy task fields and enabled-only PATCH requests; measurementCapabilities, workloadTrend, and the taskKey-scoped detail SSE topic are additive, and absent historical metrics remain unknown. Public API impact is minor because the release adds new response fields and a topic.",
       "evidence": ["docs/specs/task-operations/SPEC.md"]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Existing maintenance controls and task-run history plus stable colors, actual execution boundaries, task-deferral intervals, observation sessions, and coverage revisions.",
-      "source_program_compatibility_range": "Existing same-major releases with the maintenance task tables; direct major skips remain unsupported.",
+      "state_description": "Existing maintenance controls and task-run history plus stable colors, actual execution boundaries, task-deferral intervals, observation sessions, coverage revisions, and bounded per-task workload samples.",
+      "source_program_compatibility_range": "The candidate reads supported earlier-minor maintenance databases with the task tables; older minors need not read the new workload table, and direct major skips remain unsupported. Persistent-state impact is minor.",
       "evidence": ["docs/specs/task-operations/persistent-state-migration.json"]
     }
   },
   "release_unit": {
     "member_change_records": ["docs/specs/task-operations/persistent-state-migration.json"],
     "maximum_verified_impact": "minor",
-    "calculation_evidence": ["verified public_api=patch", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=minor"]
+    "calculation_evidence": ["verified public_api=minor", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=minor"]
   }
 }
