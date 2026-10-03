@@ -55,6 +55,18 @@ class ProgressClockTests(unittest.TestCase):
         self.assertEqual(loadgen.progress_eligibility(
             state, self.now + datetime.timedelta(seconds=16), self.log), 'eligible')
 
+    def test_fractional_pressure_deadline_preserves_exact_expiry(self):
+        self.log.write_text(
+            '2026-10-03T00:00:20.001Z INFO task="prompt-cache conversation materialization" '
+            'next_eligibility=2026-10-03 00:00:20.077 UTC '
+            'startup backfill task deferred before SQLite access\n')
+        before_expiry = self.now + datetime.timedelta(seconds=20, milliseconds=50)
+        expiry = self.now + datetime.timedelta(seconds=20, milliseconds=77)
+        self.assertEqual(loadgen.progress_eligibility(
+            self.state, before_expiry, self.log), 'pressure_deadline')
+        self.assertEqual(loadgen.fresh_pressure_deadline(before_expiry, self.log), expiry)
+        self.assertEqual(loadgen.progress_eligibility(self.state, expiry, self.log), 'eligible')
+
     def test_missing_pressure_evidence_fails_instead_of_exempting_a_stall(self):
         self.log.unlink()
         with self.assertRaises(FileNotFoundError):

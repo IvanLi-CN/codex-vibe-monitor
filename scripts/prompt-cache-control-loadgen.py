@@ -401,7 +401,7 @@ def fresh_pressure_deadline(now, pressure_log_path=None):
                 or 'task="prompt-cache conversation materialization"' not in line):
             continue
         began = re.search(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)', line)
-        due = re.search(r'next_eligibility=(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)(?:\.\d+)? UTC', line)
+        due = re.search(r'next_eligibility=(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d(?:\.\d+)?) UTC', line)
         if not began or not due:
             raise RuntimeError('pressure denial has no parseable eligibility window')
         start = datetime.datetime.fromisoformat(began.group(1).replace('Z', '+00:00'))
