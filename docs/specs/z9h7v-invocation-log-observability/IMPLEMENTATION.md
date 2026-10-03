@@ -3,9 +3,11 @@
 ## Current State
 
 - Canonical spec: `docs/specs/z9h7v-invocation-log-observability/SPEC.md`
+- Generation/family identity: shared identity recognizes GPT-5.6, GPT-6, and GPT-6.1; Sol/Luna glyphs and family colors stay consistent across generations, while Astra keeps its glyph and purple color. All family icons are bare glyphs with no frame or background. Detailed performance and usage capsules show generation, identity, and recorded reasoning effort inside the existing outer capsule border; the effort text has no preceding dot marker. Unit tests, targeted Storybook browser coverage, production build, and the owner-approved 390x844 mobile screenshot pass.
 - `web/src/features/invocations/InvocationTable.tsx` exposes the compatibility `InvocationTable` name while rendering the shared `InvocationCardList`. It keeps the existing virtualizer and detail-panel ownership, with a single responsive card markup and a one-second timer gated by in-flight rows.
-- Implementation summary: 已完成，且已扩展 request/response body logging 双开关
-- Shared invocation and model-performance identities now use the GPT-6 presentation mode that matches each existing model segment, preserving the outer badge border and row height.
+- Implementation summary: 既有观测功能及 request/response body logging 双开关已完成；模型代次/家族展示实现、自动化验证与视觉确认均已完成，canonical evidence 已同步。
+- Shared invocation and model-performance identities use the same undecorated family glyph across generations; model-performance capsules preserve only their existing outer border and row height.
+
 - Codex standalone search (`POST /v1/alpha/search`) 复用普通非流式 capture、OAuth passthrough、父 invocation 与 source-level hourly rollup；不新增 endpoint rollup 或搜索专属 usage 解析。
 - API Key 号池的 standalone search attempt 额外驱动独立账号能力学习与 failover 筛选；OAuth passthrough、父 invocation 和 source-level rollup 合同保持不变。
 - 号池尝试详情会将真实上游请求尝试与 `budget_exhausted_final` / `sameAccountRetryIndex <= 0` 合成终态记录分开展示；终态记录只展示未发起新请求的终态说明与上一失败账号上下文。
@@ -56,6 +58,13 @@
 - 运行态号池快照在请求算法确定后同步携带当前 attempt 的 `requestCompressionAlgorithm`，因此 SSE、Live 与 Dashboard 不必等待终态写入才显示该值；OAuth 透传请求从实际 `Content-Encoding` 记录为 `passthrough`，号池终态失败也沿用最后一次真实尝试的算法。`budget_exhausted_final` 是合成终态，不参与 live 或 archive 的最终请求压缩选择，真实最终 attempt 的空值仍保持空值而不回退到更早重试。
 - Prompt Cache 会话表的回归测试与调用列表列名一致，固定断言“响应耗时 / HTTP 请求压缩”，防止请求与响应压缩口径再次混淆。
 - 归档读取按数据集选择对应 SQLite 表：调用归档使用 `codex_invocations`，pool attempt 归档使用 `pool_upstream_request_attempts`。长期统计因此继续记录 attempt archive 的回放标记，允许在物化后安全清理过期源文件。
+
+## Model Generation Design Coverage
+
+- `REQ-MODEL-GENERATION-IDENTITY` / `REQ-MODEL-FAMILY-ICON`: `web/src/features/shared/ModelIdentity.tsx` owns strict recognition and bare family glyph rendering. It preserves the numeric major (`5 | 6`) and exposes full `5.6` / `6` / `6.1` labels; dated aliases are calendar-validated for every listed family. GPT-6.1 Astra/Sol/Luna are recognized without backend catalog or pricing entries. Sol/Luna glyphs and colors are stable across generations, Astra uses its purple glyph, and icon wrappers have no frame or surface decoration.
+- `REQ-DASHBOARD-MODEL-CONTEXT-FORMAT` / `REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK`: `ModelPerformanceModelIdentity.tsx` is shared by detailed `ModelPerformanceDetails.tsx` and `UsageBreakdownTooltip.tsx`. It is the boundary for the added generation segment and reasoning text tone; the outlined capsule has no effort marker dot. Both simple-mode consumers already show the full model name and omit effort.
+- `REQ-MODEL-IDENTITY-SCOPE`: other shared consumers include invocation chips, grouped Dashboard conversation metadata, routing health and long-term statistics. Their existing layouts remain outside the generation-segment change; shared recognition/glyph changes still require focused regressions. In particular, compact conversation metadata omits missing effort while breakdown details show `—`.
+- Verification coverage is specified by `VER-MODEL-GENERATION-IDENTITY`, `VER-DASHBOARD-MODEL-CONTEXT` and `VER-MODEL-IDENTITY-SCOPE`. Focused unit tests passed (283 tests across eight files before the no-marker correction, plus the focused 18-test correction suite), targeted Storybook browser tests passed (36 tests across five stories files), web typecheck and production build passed. The owner-approved mobile Storybook screenshot is canonical at `assets/model-generation-usage-mobile390-no-effort-dot-storybook.png`.
 
 ## Migrated Implementation Notes
 

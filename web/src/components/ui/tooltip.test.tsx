@@ -136,4 +136,27 @@ describe("Tooltip", () => {
     });
     expect(document.body.querySelector('[data-side][data-state="instant-open"]')).toBeNull();
   });
+
+  it("keeps a click-pinned tooltip open when focus moves into its portaled content", () => {
+    vi.useFakeTimers();
+    render(
+      <Tooltip clickToOpen content={<button type="button">Inside action</button>}>
+        <button type="button">Details</button>
+      </Tooltip>,
+    );
+
+    const trigger = host?.querySelector("button");
+    act(() => {
+      trigger?.click();
+      trigger?.focus();
+    });
+    const content = document.body.querySelector('[data-side][data-state="instant-open"]');
+    const contentButton = content?.querySelector("button");
+    expect(contentButton).toBeInstanceOf(HTMLButtonElement);
+
+    act(() => contentButton?.focus());
+
+    expect(document.activeElement).toBe(contentButton);
+    expect(document.body.querySelector('[data-side][data-state="instant-open"]')).toBe(content);
+  });
 });

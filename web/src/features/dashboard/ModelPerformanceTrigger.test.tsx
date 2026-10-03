@@ -161,6 +161,9 @@ describe("ModelPerformanceTrigger", () => {
     expect(modelContexts).toHaveLength(2);
     expect(modelContexts?.[0]?.getAttribute("data-model-context-display")).toBe("model-badge");
     expect(modelContexts?.[0]?.getAttribute("title")).toContain("gpt-5.6-sol");
+    expect(modelContexts?.[0]?.querySelector('[data-testid$="-generation"]')?.textContent).toBe(
+      "5.6",
+    );
     expect(modelContexts?.[0]?.querySelector('[data-testid$="-name"]')).toBeNull();
     expect(modelContexts?.[0]?.querySelector('[data-reasoning-effort-tone="max"]')).not.toBeNull();
     expect(modelContexts?.[0]?.textContent).toContain("max");

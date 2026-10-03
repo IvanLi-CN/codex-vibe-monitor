@@ -157,6 +157,13 @@ export function Tooltip({
     onBlur: (event: React.FocusEvent<HTMLElement>) => {
       triggerProps?.onBlur?.(event);
       if (open !== undefined) return;
+      if (
+        event.relatedTarget instanceof Node &&
+        (event.currentTarget.contains(event.relatedTarget) ||
+          hostElement?.contains(event.relatedTarget))
+      ) {
+        return;
+      }
       setHoverOpen(false);
       setClickOpen(false);
     },

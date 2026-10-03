@@ -499,7 +499,6 @@ function LongTermChartLegend({
               {showIcon ? (
                 <ModelIdentity
                   model={item.displayName}
-                  presentation={generation === 6 ? "compact" : undefined}
                   className="h-4 w-4"
                   iconClassName="h-4 w-4"
                 />
