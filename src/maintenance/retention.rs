@@ -8185,6 +8185,9 @@ async fn observe_retention_backlog_once(state: &AppState) -> Result<()> {
     let Some(store) = crate::maintenance_store::global() else {
         return Ok(());
     };
+    let _background_permit = crate::db_pressure::global_db_pressure_gate()
+        .try_begin_background("retention_backlog_observer")
+        .map_err(|reason| anyhow!("retention backlog observer deferred: {reason}"))?;
     let observed_at = Utc::now();
     let cutoff = shanghai_local_cutoff_string(state.config.invocation_max_days);
     let deadline = Instant::now() + RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET;
@@ -8530,6 +8533,9 @@ async fn run_data_retention_maintenance_inner(
             if summary.backlog_total.is_some() {
                 summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
             }
+        } else {
+            summary.backlog_total = Some(0);
+            summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
         }
     }
     let raw_path_fallback_root = config.database_path.parent();

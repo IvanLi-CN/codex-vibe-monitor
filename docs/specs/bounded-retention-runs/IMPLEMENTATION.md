@@ -4,7 +4,7 @@
 
 - Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 已形成当前候选实现，容量实测已取得三次候选 source cohort 归零和三次基线 partial 对照；主人已授权本 PR 先发布积极改善，完整常态负载/严格延迟验收留给独立后续 PR。删除安全、迁移、兼容和当前候选审查继续作为硬门禁。
 - Lifecycle: active。
-- 当前候选基于 `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`，位于 `th/retention-catchup-observability`；容量测量的生产源码为 `1b15332d`，后续仅更改 benchmark partial 输出、文档、截图资产和源码质量预算。
+- 当前候选基于 `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`，位于 `th/retention-catchup-observability`；前三次容量测量的生产源码为 `1b15332d`。最终审查修复另覆盖未知积压追赶、恢复默认巡检和 observer 后台压力准入；交付候选补跑实测并绑定最终 PR head。
 - 原交付的 shared-testbox 三个资源 profile、旧状态前向修复与 Demo 视觉确认已完成。旧百万行试验验证 Prompt 统计分页收敛，不是 retention 端到端吞吐或 24 小时追赶达标证据。
 
 ## 调查证据与限制
@@ -177,11 +177,13 @@ REQ-BRR-016..021 已有代码候选和定向单元覆盖，但尚无 shared-test
 
 主人明确选择先发布已证明有积极效果的实现，后续另开 PR 优化。因此本次交付以自动追赶、准确小时观测、可读双图及合成 fixture 下显著改善为范围；长期 REQ-BRR-017 / VER-BRR-009 不删除、不标记完成。生产常态负载校准、全时段在线 p95/p99 不劣、持续峰值和独立锁释放/逐文件证明测量作为后续实测工作。这个范围调整不放宽归档证明、raw 所有权、活跃会话、单实例、迁移或查询预算约束。
 
-Rust fmt/check/Clippy、维护库调度和恢复定向回归、Web unit/typecheck/lint/build 均通过。shared-testbox lightweight 1,275/1,275、archive-file-io 300/300 通过；stateful-sqlite 主跑唯一已有路由超时在隔离重跑通过。PR #1068 的后续完整 CI 在候选 `1170aed8` 已全部通过，包括 lightweight、两个 stateful-sqlite shard、archive-file-io、representative scale、Web、Storybook accessibility 和任务页 Demo E2E。最终文档/资产候选由 live PR current-head checks 和 Tier 4 五 lane 结果绑定；不把此前 SHA 的证据假写为当前 SHA。
+Rust fmt/check/Clippy、维护库调度和恢复定向回归、Web unit/typecheck/lint/build 均通过。shared-testbox lightweight 1,275/1,275、archive-file-io 300/300 通过；stateful-sqlite 主跑唯一已有路由超时在隔离重跑通过。PR #1068 的后续完整 CI 在候选 `1170aed8` 已全部通过，包括 lightweight、两个 stateful-sqlite shard、archive-file-io、representative scale、Web、Storybook accessibility 和任务页 Demo E2E。最终候选由 live PR current-head checks 和 Tier 4 五 lane 结果绑定；不把此前 SHA 的证据假写为当前 SHA。
 
 本任务 leased port `50800` 的 Demo/runtime E2E 8/8、Storybook 172/172 已通过；默认 `60080` 属于其他 worktree，排除其验证结果。小时观测、自然日口径和旧 schema 的前向修复测试保留在匹配的后端资源 profile 中。迁移与 SemVer 记录见 assets；独立当前候选审查结果由交付流程保存。
 
 三次 release-build 候选的 130 万行固定 source cohort 全部归零，耗时中位数 786.364 秒；三次基线受控窗口各归档 192 行。在线读探针 p95/p99 中位数为候选 67/90us、基线 53/87us。该短读探针、有限 writer 与直接 retention 调用不等于真实流量重放、调度器容量或完整 SQL 锁释放证明；完整限制和日志见 [capacity card](assets/shared-testbox-retention-capacity-card.md)。本次阶段交付已具有积极实证，原 A7 保持未完全验证。
+
+第二批审查修复：恢复默认操作重新持久化 3600 秒巡检及 default 来源；本轮积压观测未知时按已有原因退避重新取得追赶资格，不把未知当零，空数据库的准确源上界查询可证明积压为零；独立 observer 获取后台压力许可后才读取主库。该批修复有实际入队/运行完成/重新安排/准确清空的定向回归，不改变归档批次、archive/raw 证明或 Demo 渲染输入。
 
 ## Visual Evidence
 

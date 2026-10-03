@@ -3,7 +3,7 @@
 ## Candidate
 
 - Base: `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`
-- Measured production source: `1b15332d` (`test(retention): honor recovery retry deadlines`); the only later source change is the benchmark-only partial-run output described below.
+- Measured production source: `1b15332d` (`test(retention): honor recovery retry deadlines`); these three runs precede the final scheduler/observer review repair; their production-source identity is not relabeled as the final delivery head.
 - Host: `codex-testbox` (`192.168.31.15`)
 - Seed: fixed deterministic fixture, 1,300,000 expired invocation rows
 - Skew: 500,000 rows share one Prompt key; 64 sparse orphan raw files; 64 invocation-linked request/response raw rows
@@ -58,4 +58,4 @@ The owner explicitly authorized shipping a demonstrated positive improvement in 
 - The writer is finite and the reader ends after 512 samples. Actual production request rates/read-write proportions, sustained peak competition, full-runtime p95/p99, verified per-file publication and independent lock-release measurement remain follow-up work.
 - Source-row drainage cannot by itself prove the complete ordinary-load 24-hour capacity contract. No production capacity guarantee or production repair is claimed.
 
-The inspected delta from measured source `1b15332d` to the delivery candidate contains only benchmark partial-window reporting, documentation, visual evidence and Rust source-quality budgets; production retention, schema, runtime, API and Web source are unchanged.
+The final review repair additionally preserves catch-up when backlog measurement is unknown, restores the default inspection after clearing an override, and puts the independent observer behind background admission. Those changes do not modify archive publication/raw ownership or the benchmark fixture; delivery evidence includes a refreshed run instead of relabeling the earlier measurements.

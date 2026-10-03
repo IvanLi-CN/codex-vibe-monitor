@@ -160,7 +160,7 @@
       "Existing v2.71.45/v2.80.2 schema forward-repair fixtures, repeated DDL and staging/generation preservation regressions pass; maintenance-store legacy repair and observation installation use additive guarded schema changes.",
       "Targeted retention scheduling tests cover partial catch-up, completed with remaining backlog, due catch-up single-instance behavior, preserved inspection schedule and disabled configuration; hourly fixtures cover observed/missing buckets and last-success preservation.",
       "Rust fmt/check/Clippy and Web unit/typecheck/lint/build passed. Bound Demo E2E 8/8 and Storybook 172/172 passed.",
-      "GitHub CI 37097078616 at 1170aed8 passed all backend profiles, both stateful-sqlite shards, representative scale, Web, Storybook accessibility and Demo E2E. Final metadata/assets-only head is revalidated by live current-head CI.",
+      "GitHub CI 37097078616 at 1170aed8 passed all backend profiles, both stateful-sqlite shards, representative scale, Web, Storybook accessibility and Demo E2E. Final review-repair head is revalidated by live current-head CI.",
       "Three candidate release-build runs drained the 1,300,000-row source cohort; three bounded baseline windows removed 192 rows each. Synthetic workload limitations and unclosed full A7 are explicit in the capacity card.",
       "Independent current-head Tier 4 review is recorded by the delivery flow; this compatibility record does not substitute for review, merge preflight or release publication evidence."
     ]

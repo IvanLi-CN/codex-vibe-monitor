@@ -38,3 +38,5 @@
 - [具体方案](IMPLEMENTATION.md)
 
 - PR #1068 使用 `type:minor` / `channel:stable`，主人授权推进至合并和实际发布；不包含生产部署或本地清理。当前双图 Demo 资产与 v2.82.0 的旧任务页资产分开记录。
+
+- 最终 Tier 4 第一轮发现默认计划恢复、未知积压丢失追赶资格及 observer 准入三个 in-scope 边界；归为同一 Repair Batch，累计使用 2 批。修复后按调度/并发影响刷新所有五 lane，并刷新当前候选的实测与 CI。

@@ -2396,9 +2396,7 @@ impl MaintenanceStore {
         else {
             return Ok(());
         };
-        let Some(backlog_total) = details.get("total").and_then(serde_json::Value::as_i64) else {
-            return Ok(());
-        };
+        let backlog_total = details.get("total").and_then(serde_json::Value::as_i64);
         let completed = details
             .get("invocationRowsArchived")
             .and_then(serde_json::Value::as_i64)
@@ -2410,7 +2408,7 @@ impl MaintenanceStore {
             .filter(|value| !value.is_empty());
         self.update_retention_catchup_from_summary(
             completion,
-            Some(backlog_total),
+            backlog_total,
             completed as usize,
             wait_reason,
             now,
@@ -2426,12 +2424,13 @@ impl MaintenanceStore {
         wait_reason: Option<&str>,
         now: &str,
     ) -> Result<()> {
-        let Some(backlog_total) = backlog_total else {
-            return Ok(());
-        };
         let completed = completed.min(i64::MAX as usize) as i64;
-        let pending = backlog_total.saturating_sub(completed);
-        if pending <= 0 {
+        // Missing observation is not an empty backlog. Requalify after the consumed claim
+        // with the same reason-specific backoff, retaining uncertainty in the displayed total.
+        let wait_reason =
+            wait_reason.or_else(|| backlog_total.is_none().then_some("backlog_unknown"));
+        let pending = backlog_total.map(|total| total.saturating_sub(completed));
+        if pending.is_some_and(|value| value <= 0) {
             sqlx::query(
                 "UPDATE managed_tasks
                  SET next_catchup_at=NULL, catchup_reason=NULL, updated_at=?
@@ -2757,8 +2756,17 @@ impl MaintenanceStore {
             }
             Self::validate_schedule(next_interval, next_cron.as_deref()).await?;
         }
-        let next_trigger_at = if next_enabled && !is_manual {
-            next_trigger_at(next_interval, next_cron.as_deref())
+        let restore_retention_default = task_key == "retention_archive"
+            && update_schedule
+            && interval_secs == Some(None)
+            && cron_expr == Some(None);
+        let persisted_interval = if restore_retention_default {
+            Some(DEFAULT_RETENTION_INTERVAL_SECS)
+        } else {
+            next_interval
+        };
+        let persisted_next_trigger_at = if next_enabled && !is_manual {
+            next_trigger_at(persisted_interval, next_cron.as_deref())
         } else {
             None
         };
@@ -2767,15 +2775,18 @@ impl MaintenanceStore {
              SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,
                  next_catchup_at=CASE WHEN ? THEN next_catchup_at ELSE NULL END,
                  catchup_reason=CASE WHEN ? THEN catchup_reason ELSE NULL END,
-                 schedule_source=CASE WHEN ? THEN 'override' ELSE schedule_source END,
+                 schedule_source=CASE WHEN ? THEN 'default'
+                                      WHEN ? THEN 'override'
+                                      ELSE schedule_source END,
                  updated_at=? WHERE task_key=?",
         )
         .bind(next_enabled as i64)
-        .bind(next_interval)
+        .bind(persisted_interval)
         .bind(next_cron)
-        .bind(next_trigger_at)
+        .bind(persisted_next_trigger_at)
         .bind(next_enabled)
         .bind(next_enabled)
+        .bind(restore_retention_default)
         .bind(update_schedule)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
@@ -4151,6 +4162,99 @@ mod tests {
         .expect("read retained catch-up schedule");
         assert!(scheduled.0.is_some());
         assert_eq!(scheduled.1.as_deref(), Some("backlog_remaining"));
+    }
+
+    #[tokio::test]
+    async fn retention_unknown_backlog_keeps_catchup_after_claim() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention unknown backlog fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        sqlx::query("UPDATE managed_tasks SET next_catchup_at='2000-01-01T00:00:00.000Z' WHERE task_key='retention_archive'")
+            .execute(&store.pool)
+            .await
+            .expect("seed due catch-up");
+        assert_eq!(store.enqueue_due_runs().await.unwrap(), 1);
+        let run_id: i64 = sqlx::query_scalar(
+            "SELECT id FROM managed_task_runs WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        store
+            .finish_run_with_observation(
+                run_id, "success", "2026-10-01T00:00:01.000Z", 1_000,
+                None, None, Some("partial"), Some("partial"),
+                Some(&serde_json::json!({"total": null, "invocationRowsArchived": 2, "waitReason": null})),
+            )
+            .await
+            .expect("finish catch-up with unknown backlog");
+        let scheduled = sqlx::query_as::<_, (Option<String>, Option<String>)>(
+            "SELECT next_catchup_at,catchup_reason FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read unknown backlog catch-up");
+        assert!(scheduled.0.is_some());
+        assert_eq!(scheduled.1.as_deref(), Some("backlog_unknown"));
+        store
+            .update_retention_catchup_from_summary(
+                Some("completed"),
+                Some(0),
+                0,
+                None,
+                "2026-10-01T00:00:02.000Z",
+            )
+            .await
+            .expect("clear catch-up only after exact empty observation");
+        let cleared: Option<String> = sqlx::query_scalar(
+            "SELECT next_catchup_at FROM managed_tasks WHERE task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(cleared.is_none());
+    }
+
+    #[tokio::test]
+    async fn clearing_retention_override_restores_default_schedule() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect retention default restore fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore { pool };
+        store
+            .apply_initial_task_defaults()
+            .await
+            .expect("apply default retention schedule");
+        store
+            .update_control("retention_archive", None, Some(Some(1_800)), None)
+            .await
+            .expect("set retention override");
+        store
+            .update_control("retention_archive", None, Some(None), Some(None))
+            .await
+            .expect("restore default retention schedule");
+
+        let task = store
+            .detail("retention_archive")
+            .await
+            .expect("load restored retention task")
+            .expect("retention task exists");
+        let schedule = task
+            .task
+            .effective_schedule
+            .expect("default schedule remains observable");
+        assert_eq!(schedule.source, "default");
+        assert_eq!(schedule.interval_secs, Some(3_600));
+        assert!(schedule.next_trigger_at.is_some());
     }
 
     #[tokio::test]
