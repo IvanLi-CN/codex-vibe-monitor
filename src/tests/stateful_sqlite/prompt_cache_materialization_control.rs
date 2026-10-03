@@ -149,6 +149,32 @@ async fn prompt_cache_statistics_checkpoint_rolls_back_publication_when_cursor_c
 }
 
 #[tokio::test]
+async fn prompt_cache_statistics_budget_before_connection_does_not_count_a_scanned_key() {
+    let business = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("independent single-connection business pool");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("trusted control").generation;
+    let held_connection = business.acquire().await.expect("hold business connection");
+    let (scanned, updated, reason) = run_prompt_cache_statistics_key_with_budget_for_test(
+        &business,
+        "unvisited-key".to_owned(),
+        Duration::from_millis(50),
+        control,
+        generation,
+    )
+    .await
+    .expect("connection wait consumes only the statistics budget");
+    assert_eq!(reason, Some("stats_budget_exhausted"));
+    assert_eq!((scanned, updated), (0, 0));
+    drop(held_connection);
+    assert!(business.acquire().await.is_ok(), "no connection is leaked");
+}
+
+#[tokio::test]
 async fn prompt_cache_statistics_checkpoint_budget_preserves_prefix_and_real_work_counts() {
     let pool = prompt_cache_statistics_checkpoint_fixture(&[1, 10_000, 1]).await;
     let maintenance = prompt_cache_materialization_maintenance_store(true).await;

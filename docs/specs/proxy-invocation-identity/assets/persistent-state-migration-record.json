@@ -10,7 +10,7 @@
   },
   "durable_state": {
     "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization; pool_upstream_request_attempts also has an additive partial success lookup index.",
-    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, maintenance-database managed_tasks and startup_backfill_progress control/checkpoint rows, the additive maintenance_metadata prompt_cache_materialization_control_origin_v1 marker, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, idx_pool_attempts_account_model_success, and the additive ordered expression index idx_codex_invocations_prompt_cache_key_occurred_at_id. No table or column is added by the control-consistency repair. The trigger-dependency repair replaces existing working-set trigger definitions and adds only the prompt_cache_working_set_relevant_updates_v1 completion row in schema_refresh_migrations.",
+    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, maintenance-database managed_tasks and startup_backfill_progress control/checkpoint rows, the additive maintenance_metadata prompt_cache_materialization_control_origin_v1 marker, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, idx_pool_attempts_account_model_success. No table or column is added by the control-consistency repair. The trigger-dependency repair replaces existing working-set trigger definitions and adds only the prompt_cache_working_set_relevant_updates_v1 completion row in schema_refresh_migrations.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -69,19 +69,9 @@
         "pauseable": true
       },
       {
-        "id": "ddl-prompt-cache-statistics-page-order-index",
-        "description": "Create idx_codex_invocations_prompt_cache_key_occurred_at_id on the prompt-cache expression, occurred_at, and invocation id for the bounded statistics page seek order. Startup creation is idempotent and re-enters after an interrupted refresh without converting business rows.",
-        "order": 6,
-        "depends_on": [
-          "ddl-prompt-cache-conversation-master"
-        ],
-        "observable": true,
-        "pauseable": true
-      },
-      {
         "id": "ddl-prompt-working-set-trigger-dependencies",
         "description": "Replace existing Prompt live working-set triggers with an UPDATE OF dependency guard; commit DDL and the prompt_cache_working_set_relevant_updates_v1 completion marker atomically. Existing initialized projections receive no row rebuild, and an interrupted marker write rolls back all trigger changes for safe startup retry.",
-        "order": 7,
+        "order": 6,
         "observable": true,
         "pauseable": false
       }
@@ -90,14 +80,14 @@
       {
         "id": "dml-prompt-cache-control-origin",
         "description": "Before task-registry seeding, record whether the prompt-cache managed task row already exists. Existing maintenance control remains authoritative; the legacy business enabled bit can seed the managed control once only when that row was absent.",
-        "order": 8,
+        "order": 7,
         "observable": true,
         "pauseable": true
       },
       {
         "id": "dml-prompt-cache-conversation-identity-backfill",
         "description": "In the background identity_backfill phase, snapshot the maximum invocation ID and materialize distinct historical prompt-cache keys by keyset pages; after the snapshot scan, run uncursored missing-identity reconciliation and record the identity marker only after coverage is complete.",
-        "order": 9,
+        "order": 8,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
           "ddl-prompt-cache-conversation-migration-progress",
@@ -109,7 +99,7 @@
       {
         "id": "dml-prompt-cache-conversation-statistics",
         "description": "After identity coverage is complete, stats_rebuild traverses conversation keys and stages bounded 256-invocation pages. A generation-consistent final page publishes the aggregate, clears its queue generation and staging, and advances the continuous outer key cursor in the same transaction; partial pages update staging only. Queue drain uses generation-matched queue deletion as its checkpoint.",
-        "order": 10,
+        "order": 9,
         "depends_on": [
           "dml-prompt-cache-conversation-identity-backfill"
         ],
@@ -119,7 +109,7 @@
       {
         "id": "dml-prompt-cache-conversation-queue-drain",
         "description": "In the background queue_drain phase, refresh and clear durable mutation-queue keys only after successful aggregate refresh, then record the statistics freshness marker and complete phase when the queue is empty.",
-        "order": 11,
+        "order": 10,
         "depends_on": [
           "dml-prompt-cache-conversation-statistics",
           "ddl-prompt-cache-conversation-stats-refresh-queue"
@@ -137,7 +127,6 @@
       "ddl-prompt-cache-conversation-migration-progress",
       "ddl-prompt-cache-conversation-materialization-runs",
       "ddl-pool-attempt-success-route-index",
-      "ddl-prompt-cache-statistics-page-order-index",
       "ddl-prompt-working-set-trigger-dependencies",
       "dml-prompt-cache-control-origin",
       "dml-prompt-cache-conversation-identity-backfill",
@@ -152,7 +141,6 @@
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
       "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild.",
       "The latest-success route lookup index is additive, partial on status='success', timed during startup creation, and recreated idempotently after interruption; older readers continue to use the unchanged attempt rows.",
-      "The statistics page-order expression index is additive, timed by the existing schema startup path, and created idempotently so page seek/order scans remain bounded; older readers continue to use the unchanged invocation rows.",
       "Startup logs the committed working-set trigger refresh marker and elapsed time. Repeated startup skips this completed trigger-only upgrade; existing projection rows and unrelated migration markers remain unchanged."
     ],
     "pause_points": [

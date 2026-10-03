@@ -29,12 +29,10 @@ when it spans many pages. Each query uses the smaller of its existing two-second
 and the remaining run budget. Generation changes and budget exhaustion retain the
 fifteen-second follow-up; pressure keeps its existing eligibility/deadline behavior.
 
-The source-page seek order is backed by the additive expression index
-`idx_codex_invocations_prompt_cache_key_occurred_at_id` on prompt-cache key,
-`occurred_at`, and invocation `id`. Startup creates it idempotently, and an
-interrupted index refresh is safe to re-enter through the existing schema refresh
-marker. Older readers continue to use the existing invocation rows and may ignore
-the additional index.
+The source-page seek order uses the existing prompt-cache expression index on
+prompt-cache key and `occurred_at`; SQLite's rowid tie-breaker preserves the
+`(occurred_at, id)` order without adding a redundant index. Older readers and
+existing databases therefore need no extra schema object for this change.
 
 Run counts describe visited keys and complete publications. Identity counters retain
 their existing meaning; the nullable ETA is unavailable during incomplete statistics
@@ -44,7 +42,6 @@ phases because identity-key estimates do not measure remaining statistics work.
 
 Completed prefixes survive cancellation and restart without restarting statistics scans.
 Publication and cursor movement cannot disagree after transaction failure. No table,
-column, response field, control authority, or source record encoding changes; the
-page-order index is additive and idempotent. Existing
+column, response field, control authority, or source record encoding changes. Existing
 partial staging rows can resume directly. Validation must include multiple large keys
 in one batch, transaction failure at publication, and a real dual-database service replay.

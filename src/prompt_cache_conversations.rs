@@ -247,7 +247,6 @@ impl From<PromptCacheStatsPageOutcome> for PromptCacheStatsPageWork {
                 PromptCacheStatsPageOutcome::Complete
                     | PromptCacheStatsPageOutcome::Pending
                     | PromptCacheStatsPageOutcome::GenerationChanged
-                    | PromptCacheStatsPageOutcome::BudgetExhausted
             ),
         }
     }
@@ -2338,6 +2337,38 @@ pub(crate) async fn run_prompt_cache_conversations_materialization_with_test_bat
         None,
     )
     .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_prompt_cache_statistics_key_with_budget_for_test(
+    pool: &Pool<Sqlite>,
+    prompt_cache_key: String,
+    budget: Duration,
+    control: &Arc<crate::maintenance_store::PromptCacheMaterializationControl>,
+    generation: u64,
+) -> Result<(usize, usize, Option<&'static str>)> {
+    let mut controller = PromptCacheConversationBatchController::default();
+    let context = PromptCacheConversationMaterializationContext {
+        pool,
+        page_limit: 400,
+        started_at: Instant::now(),
+        max_elapsed: Some(budget),
+        policy: PromptCacheConversationBatchPolicy::Adaptive,
+        controller: &mut controller,
+        should_yield: &prompt_cache_conversation_never_yields,
+        control: Some(control),
+        control_generation: Some(generation),
+    };
+    match prompt_cache_conversation_materialize_stats_keys(&context, None, 0, &[prompt_cache_key])
+        .await?
+    {
+        PromptCacheMaterializationBatchOutcome::Complete(work) => {
+            Ok((work.scanned, work.refreshed, None))
+        }
+        PromptCacheMaterializationBatchOutcome::Deferred { work, reason, .. } => {
+            Ok((work.scanned, work.refreshed, reason))
+        }
+    }
 }
 
 #[cfg(test)]
