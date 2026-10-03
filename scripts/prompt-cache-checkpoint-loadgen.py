@@ -113,10 +113,13 @@ BEGIN INSERT INTO checkpoint_cursor_events (phase,cursor_key) VALUES (NEW.phase,
             # Cold start has no durable queue until identity discovery creates
             # it. Record the historical key set up front so deletion auditing
             # cannot pass against an empty expected set.
-            db.executemany(
-                'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) VALUES (?,?)',
-                [(key(round_index, index), -1) for index in range(400)],
-            )
+            for index in range(400):
+                db.execute(
+                    'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) '
+                    'VALUES (?,COALESCE((SELECT generation FROM '
+                    'prompt_cache_conversation_stats_generation_clock WHERE prompt_cache_key=?),-1))',
+                    (key(round_index, index), key(round_index, index)),
+                )
         else:
             db.execute(
                 'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) '
