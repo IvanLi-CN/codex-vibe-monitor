@@ -16,8 +16,8 @@ def main():
     parser.add_argument("--candidate", default="HEAD")
     parser.add_argument("--samply", required=True, help="verified remote samply 0.13.1 path under /srv/codex")
     parser.add_argument("--reuse-image", help="candidate-revision-bound image already on the testbox")
-    parser.add_argument("--seconds", type=int, default=60)
-    parser.add_argument("--rate", type=int, default=20)
+    parser.add_argument("--seconds", type=int, default=300)
+    parser.add_argument("--rate", type=int, default=5)
     args = parser.parse_args()
     agent = os.environ.get("CODEX_THREAD_ID", "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", agent):

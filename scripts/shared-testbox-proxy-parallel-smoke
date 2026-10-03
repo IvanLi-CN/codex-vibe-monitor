@@ -14,7 +14,7 @@ Options:
   --testbox HOST       SSH host alias (default: codex-testbox)
   --reuse-image TAG    Skip docker build and reuse an existing remote image tag
   --cleanup            Remove this run directory and image after success
-  PERFORMANCE_TELEMETRY_ENABLED=true|false  Toggle telemetry for the run
+  OBSERVABILITY_ENABLED=true|false  Toggle observability for the run
   CODEX_THREAD_ID      Required Agent Directory identifier for the testbox run
   -h, --help           Show this help message
 USAGE
@@ -23,7 +23,7 @@ USAGE
 TESTBOX="codex-testbox"
 REUSE_IMAGE_TAG=""
 CLEANUP=0
-PERFORMANCE_TELEMETRY_ENABLED="${PERFORMANCE_TELEMETRY_ENABLED:-true}"
+OBSERVABILITY_ENABLED="${OBSERVABILITY_ENABLED:-true}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -154,7 +154,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   REMOTE_RUN="$REMOTE_RUN" \
   IMAGE_TAG="$IMAGE_TAG" \
   REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
-  PERFORMANCE_TELEMETRY_ENABLED="$PERFORMANCE_TELEMETRY_ENABLED" \
+  OBSERVABILITY_ENABLED="$OBSERVABILITY_ENABLED" \
   CLEANUP="$CLEANUP" \
   COMPOSE_PROJECT="$COMPOSE_PROJECT" \
   GIT_SHA="$GIT_SHA" \
@@ -434,7 +434,7 @@ services:
       RUST_LOG: info
       PROXY_RAW_MAX_BYTES: "65536"
       UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: "$ENCRYPTION_SECRET"
-      PERFORMANCE_TELEMETRY_ENABLED: "$PERFORMANCE_TELEMETRY_ENABLED"
+      OBSERVABILITY_ENABLED: "$OBSERVABILITY_ENABLED"
     volumes:
       - "$DATA_DIR:/srv/app/data"
   mock-upstream:

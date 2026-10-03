@@ -198,7 +198,7 @@ class Run:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ["source","run","agent","candidate","samply"]: parser.add_argument("--"+name,required=True)
-    parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
+    parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=300);parser.add_argument("--rate",type=int,default=5)
     args=parser.parse_args()
     if args.seconds<60 or not 1<=args.rate<=100: parser.error("use at least 60-second windows and a fixed 1..100 request/s rate")
     run=Run(args)

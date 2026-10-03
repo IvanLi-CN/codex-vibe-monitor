@@ -37,6 +37,9 @@ SQL 归一化文本由整份报告的 1 MiB 上限约束，覆盖组合多个生
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
 ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任务深链接。
+主线任务控制与长等待验收从混合旧遥测运行器提取到
+`scripts/shared-testbox-proxy-runtime-acceptance`，保留业务场景及其时间/终态断言；
+旧性能 API/SQLite 容量检查完全退役。代理并发 smoke 使用新观测开关名。
 旧 API 的 OPTIONS 在 CORS 外层返回同一静态 tombstone，并保留现有 CORS 策略头；
 正常 API 的 preflight 行为不变。真实 HTTP server 回归覆盖三个路径的七种方法。
 

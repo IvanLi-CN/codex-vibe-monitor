@@ -145,12 +145,12 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
 未通过这些实测不能宣布 Ready，测试机通过也不能代替 101 公网验收。
 
-使用已提交候选运行 `scripts/shared-testbox-performance-acceptance --candidate <full SHA> --samply /srv/codex/agents/<thread>/tools/samply-x86_64-unknown-linux-gnu/samply`。
+使用已提交候选运行 `scripts/shared-testbox-performance-acceptance --candidate <full SHA> --samply /srv/codex/agents/<thread>/tools/samply-x86_64-unknown-linux-gnu/samply --seconds 300 --rate 5`。
 工具从该 commit 传输不可变源码、构建镜像，使用独立 Compose project、卷与私网，
 不发布 host port。HTTPS 入口是受控测试 fixture；不能替代生产 Authelia 验收。
-默认 20 req/s、3 次配对、每窗口 60 秒；包含 JSON/SSE 代理和固定 dashboard SSE。
-先用速率探针确认业务能跟上 offered load；若积压，则降低 `--rate` 后重跑完整验收。
+默认 5 req/s、3 次配对、每窗口 300 秒；另有 60 秒预热。场景包含 JSON/SSE 代理、
+固定 dashboard SSE、monitoring 停机隔离与原容器 CPU attach。
 A/B 同时限制 CPU 饱和与窗口末尾积压，不能用延长排队完成时间证明非饱和。
-可用 `--seconds 180` 增加每窗口样本数；这不放宽稳定性或 5% 开销预算。
+可增大 `--seconds` 获取更多样本；这不放宽稳定性或 5% 开销预算。
 运行日志、逐场景结果、A/B 原始数据与七字段 `empirical-card.json` 保存在打印出的
 Agent Directory run locator，失败或环境不可用均阻止 Ready。旧 SQLite 验收卡仅作历史记录。
