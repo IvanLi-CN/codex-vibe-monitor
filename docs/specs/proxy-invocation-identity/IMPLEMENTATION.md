@@ -35,6 +35,9 @@
 - `cargo test existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state -- --nocapture`
 - `cargo test legacy_only_prompt_cache_control_is_imported_once_into_maintenance -- --nocapture`
 - `cargo test prompt_cache_control -- --nocapture`
+- `cargo test prompt_cache_stale_checkpoint_cannot_overwrite_pause_or_resume -- --nocapture`
+- `cargo test prompt_cache_control_commit_waits_for_admitted_checkpoint_finalization -- --nocapture`
+- `cargo test stale_prompt_cache_disable_schedule_cannot_erase_a_resume_wake -- --nocapture`
 - `cargo test prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale -- --ignored --nocapture --test-threads=1`
 - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
 - Focused stateful SQLite tests in `src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs` and `src/tests/stateful_sqlite/prompt_cache_materialization_control.rs`.
