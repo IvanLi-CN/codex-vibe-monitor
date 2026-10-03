@@ -1780,42 +1780,23 @@ fn app_config_from_sources_reads_database_path_env() {
 }
 
 #[test]
-fn app_config_from_sources_reads_performance_telemetry_envs() {
+fn app_config_from_sources_reads_observability_envs() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
-    let previous_database = env::var_os(ENV_DATABASE_PATH);
-    let previous_performance_database = env::var_os(ENV_PERFORMANCE_DATABASE_PATH);
-    let previous_enabled = env::var_os(ENV_PERFORMANCE_TELEMETRY_ENABLED);
-
+    let previous = env::var_os("OBSERVABILITY_ENABLED");
     unsafe {
-        env::set_var(ENV_DATABASE_PATH, "/tmp/codex-env.sqlite");
-        env::set_var(
-            ENV_PERFORMANCE_DATABASE_PATH,
-            "/tmp/codex-performance.sqlite",
-        );
-        env::set_var(ENV_PERFORMANCE_TELEMETRY_ENABLED, "false");
+        env::set_var("OBSERVABILITY_ENABLED", "false");
     }
-
     let result = AppConfig::from_sources(&CliArgs::default());
-
-    match previous_database {
-        Some(value) => unsafe { env::set_var(ENV_DATABASE_PATH, value) },
-        None => unsafe { env::remove_var(ENV_DATABASE_PATH) },
+    match previous {
+        Some(value) => unsafe { env::set_var("OBSERVABILITY_ENABLED", value) },
+        None => unsafe { env::remove_var("OBSERVABILITY_ENABLED") },
     }
-    match previous_performance_database {
-        Some(value) => unsafe { env::set_var(ENV_PERFORMANCE_DATABASE_PATH, value) },
-        None => unsafe { env::remove_var(ENV_PERFORMANCE_DATABASE_PATH) },
-    }
-    match previous_enabled {
-        Some(value) => unsafe { env::set_var(ENV_PERFORMANCE_TELEMETRY_ENABLED, value) },
-        None => unsafe { env::remove_var(ENV_PERFORMANCE_TELEMETRY_ENABLED) },
-    }
-
-    let config = result.expect("performance telemetry envs should parse");
-    assert_eq!(
-        config.performance_database_path,
-        PathBuf::from("/tmp/codex-performance.sqlite")
+    assert!(
+        !result
+            .expect("observability configuration")
+            .observability
+            .enabled
     );
-    assert!(!config.performance_telemetry_enabled);
 }
 
 #[test]
@@ -2413,8 +2394,7 @@ pub(crate) fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
         database_path: PathBuf::from(":memory:"),
-        performance_database_path: PathBuf::from(":memory:").join("performance.sqlite"),
-        performance_telemetry_enabled: false,
+        observability: ObservabilityConfig::default(),
         poll_interval: Duration::from_secs(10),
         request_timeout: Duration::from_secs(30),
         pool_upstream_responses_attempt_timeout: Duration::from_secs(

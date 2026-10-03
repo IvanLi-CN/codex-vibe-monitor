@@ -267,6 +267,7 @@ pub(crate) async fn enqueue_websocket_terminal_usage_refresh(
     let enqueue = state
         .sqlite_batch_writer
         .enqueue_terminal(BatchedTerminalInvocationWrite {
+            enqueued_at: None,
             record,
             capture_started: None,
             raw_capture: false,

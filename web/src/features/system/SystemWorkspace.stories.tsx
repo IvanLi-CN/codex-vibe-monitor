@@ -454,15 +454,6 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
       },
     },
   ],
-  performance: {
-    runCount: 24,
-    successCount: 22,
-    failureCount: 1,
-    averageDurationMs: 48_500,
-    latestDurationMs: 64_000,
-    observedAt: "2026-10-01T00:12:30Z",
-    coverage: 0.92,
-  },
   retentionBacklogTrend: STORYBOOK_RETENTION_BACKLOG_TREND,
 };
 
@@ -619,15 +610,6 @@ function retentionTaskDetailForState(
       stages: null,
     };
     detail.recentRuns = [];
-    detail.performance = {
-      runCount: 0,
-      successCount: 0,
-      failureCount: 0,
-      averageDurationMs: null,
-      latestDurationMs: null,
-      observedAt: null,
-      coverage: null,
-    };
   } else {
     detail.progress = {
       total: null,
@@ -651,15 +633,6 @@ function retentionTaskDetailForState(
       coreCompletion: null,
       details: null,
     });
-    detail.performance = {
-      runCount: detail.performance?.runCount ?? 0,
-      successCount: detail.performance?.successCount ?? 0,
-      failureCount: detail.performance?.failureCount ?? 0,
-      averageDurationMs: null,
-      latestDurationMs: null,
-      observedAt: null,
-      coverage: null,
-    };
   }
   return detail;
 }
@@ -865,14 +838,6 @@ function storybookManagedTaskDetail(
     task: { ...task, ...override },
     progress: null,
     recentRuns: [],
-    performance: {
-      runCount: 4,
-      successCount: 4,
-      failureCount: 0,
-      averageDurationMs: 1_840,
-      latestDurationMs: 1_760,
-      observedAt: STORYBOOK_MANAGED_TASK_RUNTIME.observedAt,
-    },
   };
 }
 

@@ -20,22 +20,18 @@ describe("demo MSW handlers", () => {
     await expect(response.json()).resolves.toEqual({ backend: "0.2.0", frontend: "0.2.0" });
   });
 
-  it("keeps performance Demo series inside the fixed backend registry", async () => {
-    const response = await fetch("http://demo.invalid/api/system/performance?range=24h");
-    const payload = (await response.json()) as {
-      series: Array<{ metricId: string; dimension: string }>;
-    };
-    expect(response.ok).toBe(true);
-    expect(payload.series).toHaveLength(126);
-    expect(new Set(payload.series.map((item) => item.metricId)).size).toBe(77);
-    expect(payload.series.some((item) => item.dimension === "all")).toBe(false);
-    expect(payload.series.some((item) => item.metricId === "http.in_flight")).toBe(true);
-
-    const longTermResponse = await fetch("http://demo.invalid/api/system/performance?range=13mo");
-    const longTermPayload = (await longTermResponse.json()) as {
-      series: Array<{ metricId: string; dimension: string }>;
-    };
-    expect(longTermPayload.series).toHaveLength(22);
+  it("exposes synthetic observability destinations without a performance database", async () => {
+    const response = await fetch("http://demo.invalid/api/system/observability");
+    const payload = await response.json();
+    expect(payload.dashboards).toEqual([
+      "cvm-overview",
+      "cvm-proxy",
+      "cvm-sqlite",
+      "cvm-runtime",
+      "cvm-web",
+    ]);
+    expect(payload.grafanaConnectivity).toBe("unknown");
+    expect(payload).not.toHaveProperty("path");
   });
 
   it("accepts completed timeline snapshot release requests", async () => {

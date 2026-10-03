@@ -101,6 +101,7 @@ mod gpt6_usage_integrity;
 mod invocation_query_filters_and_schema_migrations;
 mod models_dev_sync_memory;
 mod oauth_route_body_rewrite_and_timeout;
+mod observability_retirement;
 #[expect(
     clippy::type_complexity,
     reason = "Test fixture tuples mirror statistics row shapes."

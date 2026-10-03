@@ -1913,297 +1913,6 @@ function forwardProxyLive() {
   };
 }
 
-type DemoMetricKind = "gauge" | "duration" | "counter";
-
-const DEMO_METRIC_GROUPS: ReadonlyArray<{
-  kind: DemoMetricKind;
-  metricIds: readonly string[];
-}> = [
-  {
-    kind: "gauge",
-    metricIds: [
-      "http.in_flight",
-      "p1.queue_depth",
-      "p1.queue_bytes",
-      "p2.queue_depth",
-      "p2.next_attempt_delay_ms",
-      "p2.deferred_age_ms",
-      "sqlite.wal_bytes",
-      "sqlite.coordinator_waiters",
-      "projection.last_good_age_ms",
-      "projection.snapshot_bytes",
-      "sse.active_subscribers",
-      "maintenance.backlog_age_ms",
-      "maintenance.raw_bytes_before",
-      "maintenance.raw_bytes_after",
-      "process.rss_bytes",
-      "process.cpu_percent",
-      "process.rss_anon_bytes",
-      "process.swap_bytes",
-      "process.managed_bytes",
-      "process.unattributed_anon_bytes",
-      "storage.main_db_bytes",
-      "storage.telemetry_db_bytes",
-      "process.thread_count",
-      "process.disk_free_bytes",
-      "storage.telemetry_wal_bytes",
-      "telemetry.queue_depth",
-    ],
-  },
-  {
-    kind: "duration",
-    metricIds: [
-      "p1.ack_duration_ms",
-      "sqlite.write_duration_ms",
-      "sqlite.coordinator_wait_duration_ms",
-      "projection.publish_duration_ms",
-      "projection.reconcile_duration_ms",
-      "sse.publish_duration_ms",
-      "maintenance.run_duration_ms",
-      "telemetry.flush_duration_ms",
-      "browser.data_ready_ms",
-      "browser.update_to_paint_ms",
-      "browser.long_task_ms",
-      "browser.api_request_duration_ms",
-      "browser.sse_duration_ms",
-    ],
-  },
-  {
-    kind: "counter",
-    metricIds: [
-      "p1.retry_count",
-      "p2.retry_count",
-      "p1.transfer_bytes",
-      "p2.flush_attempt_count",
-      "p2.pressure_defer_count",
-      "p2.lock_retry_count",
-      "sqlite.busy_count",
-      "sqlite.locked_count",
-      "sqlite.pool_timeout_count",
-      "sqlite.background_skip_count",
-      "sqlite.write_rows",
-      "sqlite.write_bytes",
-      "sqlite.coordinator_bypass_count",
-      "sqlite.maintenance_fairness_count",
-      "projection.build_count",
-      "projection.live_db_read_count",
-      "projection.cadence_miss_count",
-      "projection.revision_count",
-      "projection.publish_count",
-      "projection.reconcile_count",
-      "projection.reconcile_defer_count",
-      "projection.reconcile_failure_count",
-      "sse.publish_error_count",
-      "sse.frame_bytes",
-      "maintenance.processed_rows",
-      "maintenance.compressed_file_count",
-      "maintenance.removed_file_count",
-      "maintenance.archived_rows",
-      "telemetry.dropped_samples",
-      "telemetry.flush_failure_count",
-      "telemetry.flush_batch_events",
-      "telemetry.flush_batch_buckets",
-      "telemetry.backoff_count",
-      "browser.long_task_count",
-      "browser.api_request_count",
-      "browser.sse_disconnect_count",
-      "browser.unsupported_count",
-      "browser.visibility_hidden_count",
-    ],
-  },
-];
-
-function demoMetricSection(metricId: string) {
-  if (metricId === "http.in_flight") return "overview";
-  if (metricId.startsWith("p1.") || metricId.startsWith("p2.") || metricId.startsWith("sqlite."))
-    return "storage";
-  if (metricId.startsWith("projection.") || metricId.startsWith("sse.")) return "projection";
-  if (metricId.startsWith("maintenance.")) return "maintenance";
-  if (metricId.startsWith("browser.")) return "browser";
-  return "process";
-}
-
-function demoMetricDimensions(metricId: string): readonly string[] {
-  if (metricId === "http.in_flight") return ["other"];
-  if (metricId.startsWith("p1.")) return ["p1"];
-  if (metricId.startsWith("p2.")) return ["p2"];
-  if (["sqlite.coordinator_waiters", "sqlite.coordinator_wait_duration_ms"].includes(metricId)) {
-    return ["p1_terminal", "interactive_proxy", "p2_derived", "maintenance_retention"];
-  }
-  if (["sqlite.coordinator_bypass_count", "sqlite.maintenance_fairness_count"].includes(metricId)) {
-    return ["coordinator"];
-  }
-  if (metricId.startsWith("sqlite.")) return ["main"];
-  if (
-    [
-      "projection.last_good_age_ms",
-      "projection.build_count",
-      "projection.live_db_read_count",
-    ].includes(metricId)
-  ) {
-    return ["dashboard"];
-  }
-  if (metricId === "projection.reconcile_defer_count")
-    return ["writer_pressure", "background_busy"];
-  if (metricId.startsWith("projection.reconcile")) return ["dashboard"];
-  if (metricId.startsWith("projection.")) return ["current", "network", "terminal"];
-  if (metricId === "sse.active_subscribers") return ["dashboard"];
-  if (metricId.startsWith("sse.")) return ["current", "network", "terminal"];
-  if (metricId.startsWith("maintenance.")) return ["maintenance"];
-  if (metricId.startsWith("process.")) return ["process"];
-  if (metricId === "storage.main_db_bytes") return ["main_db"];
-  if (metricId === "storage.telemetry_db_bytes") return ["telemetry_db"];
-  if (metricId === "storage.telemetry_wal_bytes") return ["telemetry_wal"];
-  if (metricId.startsWith("telemetry.")) return ["collector"];
-  if (metricId === "browser.data_ready_ms" || metricId === "browser.update_to_paint_ms") {
-    return [
-      "dashboard:mobile",
-      "dashboard:desktop",
-      "records:mobile",
-      "records:desktop",
-      "system:mobile",
-      "system:desktop",
-    ];
-  }
-  if (metricId.startsWith("browser.")) return ["dashboard", "records", "system"];
-  return [];
-}
-
-function demoMetricIsLongTerm(metricId: string) {
-  return new Set([
-    "p1.ack_duration_ms",
-    "p1.queue_depth",
-    "p1.queue_bytes",
-    "p2.pressure_defer_count",
-    "p2.lock_retry_count",
-    "sqlite.busy_count",
-    "sqlite.locked_count",
-    "sqlite.pool_timeout_count",
-    "projection.last_good_age_ms",
-    "projection.build_count",
-    "sse.active_subscribers",
-    "maintenance.backlog_age_ms",
-    "maintenance.run_duration_ms",
-    "process.rss_bytes",
-    "process.cpu_percent",
-    "process.rss_anon_bytes",
-    "process.swap_bytes",
-    "process.managed_bytes",
-    "storage.main_db_bytes",
-    "storage.telemetry_db_bytes",
-    "telemetry.dropped_samples",
-    "telemetry.flush_failure_count",
-  ]).has(metricId);
-}
-
-function demoMetricUnit(metricId: string, kind: DemoMetricKind) {
-  if (kind === "duration" || metricId.endsWith("_ms")) return "milliseconds";
-  if (metricId.includes("_bytes")) return "bytes";
-  if (metricId.endsWith("_percent")) return "percent";
-  return "count";
-}
-
-function demoMetricBase(metricId: string, kind: DemoMetricKind) {
-  if (
-    metricId.includes("dropped") ||
-    metricId.includes("unsupported") ||
-    metricId.includes("visibility")
-  )
-    return 0;
-  if (metricId === "process.cpu_percent") return 21;
-  if (metricId === "process.rss_bytes") return 312_000_000;
-  if (metricId.includes("_bytes"))
-    return metricId.includes("disk_free") ? 4_800_000_000 : 4_800_000;
-  if (metricId === "browser.data_ready_ms") return 640;
-  if (metricId === "browser.update_to_paint_ms") return 92;
-  if (metricId === "maintenance.backlog_age_ms") return 1_200;
-  if (metricId === "maintenance.run_duration_ms") return 180;
-  if (kind === "duration") return 42;
-  return kind === "counter" ? 5 : 4;
-}
-
-const DEMO_PERFORMANCE_SERIES = DEMO_METRIC_GROUPS.flatMap(({ kind, metricIds }) =>
-  metricIds.flatMap((metricId) =>
-    demoMetricDimensions(metricId).map((dimension) => ({
-      metricId,
-      section: demoMetricSection(metricId),
-      dimension,
-      kind,
-      unit: demoMetricUnit(metricId, kind),
-      base: demoMetricBase(metricId, kind),
-      longTerm: demoMetricIsLongTerm(metricId),
-    })),
-  ),
-);
-
-function demoPerformanceMetrics(url: URL) {
-  const range = url.searchParams.get("range") ?? "24h";
-  const section = url.searchParams.get("section");
-  const rangeConfig: Record<string, { seconds: number; points: number }> = {
-    "6h": { seconds: 60, points: 48 },
-    "24h": { seconds: 120, points: 48 },
-    "7d": { seconds: 900, points: 56 },
-    "30d": { seconds: 3_600, points: 48 },
-    "13mo": { seconds: 86_400, points: 48 },
-  };
-  const config = rangeConfig[range] ?? rangeConfig["24h"];
-  const endSeconds = Math.floor(Date.parse(demoNow()) / 1_000);
-  const series = DEMO_PERFORMANCE_SERIES.filter(
-    (item) => (!section || item.section === section) && (range !== "13mo" || item.longTerm),
-  ).map((item, seriesIndex) => ({
-    metricId: item.metricId,
-    section: item.section,
-    dimension: item.dimension,
-    kind: item.kind,
-    unit: item.unit,
-    points: Array.from({ length: config.points }, (_, index) => {
-      const wave = Math.sin((index + seriesIndex) / 4) * (item.base * 0.08);
-      const value = Math.max(0, item.base + wave);
-      const sampleCount = item.kind === "duration" ? 18 + (index % 5) : 1;
-      const histogram =
-        item.kind === "duration"
-          ? [1, 2, 3, 4, 4, 2, 1, 0].map((count, bucket) =>
-              bucket === 3 ? count + (index % 3) : count,
-            )
-          : undefined;
-      return {
-        bucketStart: endSeconds - (config.points - index) * config.seconds,
-        sampleCount,
-        expectedCount: 1,
-        sum: item.kind === "counter" ? Math.round(value) : Math.round(value * sampleCount),
-        min: Math.round(value * 0.82),
-        max: Math.round(value * 1.18),
-        last: Math.round(value),
-        weightedAverage: Math.round(value),
-        histogram,
-      };
-    }),
-  }));
-  return {
-    from: new Date((endSeconds - config.points * config.seconds) * 1_000).toISOString(),
-    to: new Date(endSeconds * 1_000).toISOString(),
-    stepSeconds: config.seconds,
-    coverage: 0.98,
-    epochs: ["demo-epoch-2026-09-28"],
-    series,
-  };
-}
-
-function demoPerformanceHealth() {
-  return {
-    state: "healthy",
-    enabled: true,
-    path: "/var/lib/codex-vibe-monitor/performance.sqlite3",
-    epoch: "demo-epoch-2026-09-28",
-    queueDepth: 2,
-    queueCapacity: 512,
-    droppedSamples: 0,
-    flushFailureCount: 0,
-    lastSuccessfulFlush: demoNow(),
-    lastError: null,
-  };
-}
-
 function accountList(kind?: string | null) {
   const allItems = demoModel.snapshot.scene === "empty" ? [] : demoAccounts();
   const items = kind ? allItems.filter((item) => item.kind === kind) : allItems;
@@ -3601,15 +3310,6 @@ function managedTaskDetail(taskKey: string) {
           ],
         },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
-    performance: {
-      runCount: 12,
-      successCount: 11,
-      failureCount: 1,
-      averageDurationMs: 31_000,
-      latestDurationMs: 31_000,
-      observedAt: at,
-      coverage: 0.92,
-    },
     retentionBacklogTrend,
   };
 }
@@ -4920,12 +4620,22 @@ export async function handleDemoRequest(request: Request) {
         : { key: { ...key, updatedAt: demoNow() }, secret: "cvm-synthetic-rotated-key-not-valid" },
     );
   }
-  if (pathname === "/api/system/performance" && request.method === "GET")
-    return json(demoPerformanceMetrics(url));
-  if (pathname === "/api/system/performance/health" && request.method === "GET")
-    return json(demoPerformanceHealth());
-  if (pathname === "/api/system/performance/browser" && request.method === "POST")
-    return json({ accepted: true });
+  if (pathname === "/api/system/observability")
+    return json({
+      enabled: true,
+      state: "enabled",
+      grafanaPublicUrl:
+        demoSearchParamsFromLocation().get("demoGrafana") === "missing"
+          ? null
+          : "https://grafana.example.invalid",
+      grafanaConnectivity: "unknown",
+      hotpath: true,
+      dashboards: ["cvm-overview", "cvm-proxy", "cvm-sqlite", "cvm-runtime", "cvm-web"],
+      datasourceUid: "cvm-prometheus",
+      variables: ["service", "environment", "instance", "task_key"],
+    });
+  if (pathname === "/api/system/observability/browser" && request.method === "POST")
+    return new Response(null, { status: 204 });
   if (pathname === "/api/system/status") {
     if (demoModel.snapshot.scene === "system-storage-status-unavailable") {
       return json({ message: "Demo system status unavailable" }, { status: 503 });

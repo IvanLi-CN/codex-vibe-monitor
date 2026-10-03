@@ -1,5 +1,9 @@
 # 系统工作区重构 - Implementation
 
+项目存储测量保留主线的独立后台任务、API、缺测状态与文件身份去重。旧性能库退役后，
+运行配置不再提供其外置路径；GNU du 集成 oracle 保留外置旧性能文件及侧文件作为
+排除哨兵，维护库及其他已配置运行存储继续计入。退役离线归档位于应用挂载之外。
+
 ## Current State
 
 - Canonical spec: `docs/specs/s7m3q-system-workspace/SPEC.md`

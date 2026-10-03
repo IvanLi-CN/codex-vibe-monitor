@@ -1,7 +1,6 @@
 export type {
   ApiKeyGroupMigrationPreflight,
   ApiKeyGroupMigrationResult,
-  BrowserPerformanceEvent,
   DashboardActivityLiveAccount,
   DashboardActivityLiveSnapshot,
   DashboardActivityRateWindow,
@@ -35,11 +34,6 @@ export type {
   ModelRoutingLiveWindow,
   ModelRoutingState,
   ModelRoutingTimelineRecord,
-  PerformanceMetricsResponse,
-  PerformanceRange,
-  PerformanceSection,
-  PerformanceSeries,
-  PerformanceTelemetryHealth,
   UpstreamAccountActionEvent,
   UpstreamAccountActionEventListResponse,
   UpstreamAccountActivityAccount,
@@ -105,8 +99,6 @@ export {
   fetchOauthMailboxStatuses,
   fetchParallelWorkStats,
   fetchParallelWorkStatsConditional,
-  fetchPerformanceHealth,
-  fetchPerformanceMetrics,
   fetchPerfStats,
   fetchPoolRoutingSettings,
   fetchPromptCacheConversationBinding,
@@ -135,7 +127,6 @@ export {
   importValidatedOauthAccounts,
   locateUpstreamAccountAttempt,
   normalizeForwardProxyLatencyTestStreamEvent,
-  postBrowserPerformanceTelemetry,
   preflightApiKeyGroupMigration,
   previewModelsDevPriceSync,
   refreshForwardProxySubscriptions,
@@ -165,3 +156,5 @@ export {
   validateForwardProxyCandidate,
   validateImportedOauthAccounts,
 } from "./core";
+export type { BrowserObservation, ObservabilityCapabilities } from "./core-foundation";
+export { fetchObservabilityCapabilities, postBrowserObservations } from "./core-foundation";

@@ -1,0 +1,661 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "cvm-performance",
+      "folder": "CVM Performance",
+      "interval": "1m",
+      "rules": [
+        {
+          "uid": "cvm-scrape-down",
+          "title": "CVM exporter unavailable",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM exporter unavailable",
+            "description": "Inspect availability, freshness and sample counts before attribution; thresholds are initial operational defaults."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "min(up{service=\"codex-vibe-monitor\"})",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        0.5
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-cpu-high",
+          "title": "CVM CPU usage high",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM CPU usage high",
+            "description": "Inspect availability, freshness and sample counts before attribution; thresholds are initial operational defaults."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "sum(rate(cvm_process_cpu_seconds_total[5m]))",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1.5
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-sqlite-wait",
+          "title": "CVM SQLite coordinator latency",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM SQLite coordinator latency",
+            "description": "Inspect availability, freshness and sample counts before attribution; thresholds are initial operational defaults."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95,sum by(le)(rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket[5m])))",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.1
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-response-slow",
+          "title": "CVM response headers slow",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM response headers slow",
+            "description": "Inspect availability, freshness and sample counts before attribution; thresholds are initial operational defaults."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "histogram_quantile(0.95,sum by(le)(rate(cvm_http_header_duration_seconds_bucket[5m])))",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        2.0
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-sampler-stale",
+          "title": "CVM resource sampler stale",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM resource sampler stale",
+            "description": "Inspect availability, freshness and sample counts before attribution; thresholds are initial operational defaults."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max(time()-cvm_observability_sampler_last_success_timestamp_seconds)",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        120
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-sqlite-backlog",
+          "title": "CVM SQLite queue backlog",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM SQLite queue backlog",
+            "description": "More than 1000 pending logical writes for 5 minutes. Inspect P1/P2, coordinator and pool waits."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (service, environment, instance) (cvm_sqlite_pending_items{queue=\"all\"})",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        1000
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-errors-high",
+          "title": "CVM HTTP error rate high",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM HTTP error rate high",
+            "description": "HTTP 5xx ratio exceeds 5% with at least 100 requests in the 5-minute window. This is an initial threshold, not an SLO."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "(sum by (service, environment, instance) (increase(cvm_http_requests_total{status_class=\"5xx\"}[5m])) / sum by (service, environment, instance) (increase(cvm_http_requests_total[5m]))) and on (service, environment, instance) (sum by (service, environment, instance) (increase(cvm_http_requests_total[5m])) >= 100)",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0.05
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-task-backlog",
+          "title": "CVM maintenance backlog old",
+          "condition": "C",
+          "for": "15m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM maintenance backlog old",
+            "description": "Known retention backlog age exceeds one hour for 15 minutes. Missing inventory remains unknown."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "max by (service, environment, instance) (cvm_maintenance_backlog_age_seconds)",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        3600
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "cvm-disk-low",
+          "title": "CVM data volume space low",
+          "condition": "C",
+          "for": "5m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "service": "codex-vibe-monitor",
+            "severity": "warning"
+          },
+          "annotations": {
+            "summary": "CVM data volume space low",
+            "description": "Less than 1 GiB available on the application data volume. This is an initial operational threshold."
+          },
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "datasourceUid": "cvm-prometheus",
+              "model": {
+                "refId": "A",
+                "expr": "min by (service, environment, instance) (cvm_storage_available_bytes{filesystem=\"data\"})",
+                "instant": true,
+                "intervalMs": 15000,
+                "maxDataPoints": 43200,
+                "datasource": {
+                  "type": "prometheus",
+                  "uid": "cvm-prometheus"
+                }
+              }
+            },
+            {
+              "refId": "C",
+              "relativeTimeRange": {
+                "from": 0,
+                "to": 0
+              },
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "type": "query",
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        1073741824
+                      ]
+                    },
+                    "operator": {
+                      "type": "and"
+                    },
+                    "reducer": {
+                      "type": "last"
+                    },
+                    "query": {
+                      "params": [
+                        "C"
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
