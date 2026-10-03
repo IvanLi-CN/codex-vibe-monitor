@@ -12,6 +12,9 @@ drain through the project lockfile. Only these upstream source files are patched
 
 The registry archive SHA-256 is
 `d8345e171844f80e5ae4cbed8bc8276e094f6ff2293a6f8e547c200183976674`.
+The crate's VCS commit is `d88396629afc791d043f3a2dfe466d01c8f2835d`;
+`hotpath/LICENSE.txt` copies the repository's root MIT license from that same
+commit, because the published crate omitted it.
 The project's tests compile the exact patched normalization module; the root
 dev-dependency on regex-lite is used only by that regression seam.
 
