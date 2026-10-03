@@ -3,6 +3,7 @@ import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
   fetchSystemStatus,
+  fetchSystemStorage,
   normalizePoolRoutingSelectionAudit,
   releaseInvocationTimelineSnapshot,
 } from "./core-foundation";
@@ -338,6 +339,51 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     expect(
       (await fetchStatus(4.5)).runtimePressureHealth?.retentionWriteHealth?.rawReferenceCheckMs,
     ).toBe(4.5);
+  });
+});
+
+describe("fetchSystemStorage", () => {
+  it("normalizes independent storage state and permits a real zero-byte result", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              totalBytes: 0,
+              sampledAt: "2026-06-22T08:00:00Z",
+              state: "ready",
+              scanInProgress: false,
+              stale: false,
+              reason: null,
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    await expect(fetchSystemStorage()).resolves.toEqual({
+      totalBytes: 0,
+      sampledAt: "2026-06-22T08:00:00Z",
+      state: "ready",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
+  });
+
+  it("rejects a missing or malformed endpoint response instead of inventing a total", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("{}", { status: 200 })),
+    );
+    await expect(fetchSystemStorage()).rejects.toThrow("invalid system storage response");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("not found", { status: 404 })),
+    );
+    await expect(fetchSystemStorage()).rejects.toThrow("Request failed: 404");
   });
 });
 

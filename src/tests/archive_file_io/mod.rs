@@ -13,3 +13,4 @@ mod raw_compression_budget;
 )]
 mod raw_payload_retention_and_compression;
 mod retention_capacity_benchmark;
+mod system_storage_measurement;

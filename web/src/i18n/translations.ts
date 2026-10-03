@@ -1714,7 +1714,7 @@ const baseTranslations = {
       "Configure the current pool /v1/models override, forward proxy routing, and the pricing catalog used for cost estimation.",
     "system.status.title": "System status",
     "system.status.description":
-      "Live system-level metrics derived from recorded invocations, archive storage, and local runtime files.",
+      "Live system metrics, including allocated storage for the data directory and configured external project storage.",
     "system.status.loading": "Loading system status…",
     "system.status.loadError": "Failed to load system status: {{error}}",
     "system.status.refreshing": "Refreshing…",
@@ -1722,20 +1722,48 @@ const baseTranslations = {
     "system.status.lastRefreshed": "Last refreshed: {{at}}",
     "system.status.lastRefreshedEmpty": "Waiting for first refresh",
     "system.status.definition":
-      "Non-success count includes every recorded invocation whose status is not `success`, including failed and unfinished terminal outcomes. Tracked project storage combines the currently tracked archive, raw payload, database, and other runtime files; incomplete raw inventory keeps the total unknown.",
+      "Non-success count includes every recorded invocation whose status is not `success`, including failed and unfinished terminal outcomes. Project storage is measured from the data directory and configured external project storage, with filesystem objects counted once.",
     "system.status.rawPayloadDefinition":
       "Tracked raw payload bytes come from the persisted inventory of linked request + response files. Request and response values explain the split; they do not add back up to the union, and untracked physical raw files are outside this view.",
-    "system.status.summary.projectDiskLabel": "Tracked project storage",
+    "system.status.summary.projectDiskLabel": "Project storage total",
     "system.status.summary.projectDiskHint":
-      "Tracked project storage = tracked raw inventory + archive + database + other runtime files; it remains unknown when tracked raw or archive bytes are unavailable and does not represent the full physical filesystem.",
+      "Allocated bytes across the data directory and configured external raw, archive, database, and Xray runtime paths. Overlapping paths and hard links are counted once.",
     "system.status.storage.unknown": "Unknown",
     "system.status.storage.limited": "Limited",
     "system.status.storage.verified": "Verified",
+    "system.status.storage.states.preparing": "Preparing",
+    "system.status.storage.states.ready": "Measured",
+    "system.status.storage.states.deferred": "Deferred",
+    "system.status.storage.states.error": "Measurement error",
+    "system.status.storage.states.unknown": "Unknown",
+    "system.status.storage.scanning": "Scanning",
+    "system.status.storage.stale": "Last successful sample is stale",
+    "system.status.storage.sampledAt": "Sampled {{at}}",
+    "system.status.storage.waiting": "Waiting for the first sample",
+    "system.status.storage.notSampled": "No sample yet",
+    "system.status.storage.refreshing": "Refreshing storage sample",
+    "system.status.storage.loadError": "Could not load storage total: {{error}}",
+    "system.status.storage.reasons.unsupportedPlatform":
+      "This platform cannot report allocated bytes and stable file identities.",
+    "system.status.storage.reasons.resourceLimit":
+      "The scan reached its resource limit; the last complete sample is retained.",
+    "system.status.storage.reasons.permissionDenied":
+      "Permission was denied while reading a configured storage path.",
+    "system.status.storage.reasons.ioError":
+      "A filesystem read failed; the last complete sample is retained.",
+    "system.status.storage.reasons.pathResolution":
+      "A configured storage path could not be resolved.",
+    "system.status.storage.reasons.overflow":
+      "The measured byte total exceeded the supported range.",
+    "system.status.storage.reasons.workerFailed": "The storage scan worker stopped unexpectedly.",
+    "system.status.storage.reasons.notFound": "A required storage path could not be found.",
+    "system.status.storage.reasons.cancelled": "The storage scan was cancelled.",
+    "system.status.storage.reasons.generic": "The storage scan did not complete.",
     "system.status.metric.bytesLabel": "Bytes",
     "system.status.metric.countLabel": "Count",
     "system.status.metric.unionBadge": "Union total",
     "system.status.metric.splitBadge": "Side split",
-    "system.status.sections.diskOverviewTitle": "Tracked project storage overview",
+    "system.status.sections.diskOverviewTitle": "Storage indicators",
     "system.status.sections.rawPayloadFocusTitle": "Raw payload focus",
     "system.status.sections.rawPayloadFocusDescription":
       "Keep tracked raw inventory beside its coverage state; runtime pressure retains live physical capture telemetry.",
@@ -1777,15 +1805,15 @@ const baseTranslations = {
     "system.status.cards.rawBodiesBytesHint":
       "Persisted bytes for the linked request + response raw-file union. This is not a full physical raw-store total.",
     "system.status.rawMetrics.preparing":
-      "Raw payload inventory is still being prepared. Raw bytes and the project total remain unknown until coverage is ready.",
+      "Raw payload inventory is still being prepared. Raw payload bytes remain unknown until coverage is ready.",
     "system.status.rawMetrics.ready":
       "Raw payload inventory is ready for the linked-file set; unlinked physical raw files remain outside this total.",
     "system.status.rawMetrics.deferred":
-      "Raw payload inventory is deferred under database pressure. Raw bytes and the project total remain unknown.",
+      "Raw payload inventory is deferred under database pressure. Raw payload bytes remain unknown.",
     "system.status.rawMetrics.error":
-      "Raw payload inventory needs recovery. Raw bytes and the project total remain unknown until coverage is restored.",
+      "Raw payload inventory needs recovery. Raw payload bytes remain unknown until coverage is restored.",
     "system.status.rawMetrics.unknown":
-      "Raw payload inventory coverage is unknown. Raw bytes and the project total remain unknown.",
+      "Raw payload inventory coverage is unknown. Raw payload bytes remain unknown.",
     "system.status.cards.requestRawBodiesCount": "Tracked request raw payloads",
     "system.status.cards.requestRawBodiesCountHint":
       "Unique linked request-side raw payload files.",
@@ -5219,20 +5247,42 @@ const baseTranslations = {
     "system.status.lastRefreshed": "上次刷新：{{at}}",
     "system.status.lastRefreshedEmpty": "等待首次刷新",
     "system.status.definition":
-      "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。已追踪项目存储按当前可追踪的 archive、raw payload、数据库和其他运行文件合并统计；raw 盘点不完整时，项目总量保持未知。",
+      "非成功数按所有 `status != success` 的调用记录统计，包含失败和未完成的终态记录。项目存储总量实测数据目录与单独配置的外置项目存储，重叠路径和硬链接只计一次。",
     "system.status.rawPayloadDefinition":
       "raw payload 只按已持久化盘点的 request + response 关联文件统计；request / response 只解释侧向分布，不能直接相加回并集，未关联的物理 raw 残留不在此视图内。",
-    "system.status.summary.projectDiskLabel": "已追踪项目存储",
+    "system.status.summary.projectDiskLabel": "项目存储总体积",
     "system.status.summary.projectDiskHint":
-      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积不可用时保持未知，也不代表完整物理文件系统占用。",
+      "按数据目录及单独配置的外置 raw、archive、数据库和 Xray runtime 路径统计文件系统已分配字节；重叠路径与硬链接只计一次。",
     "system.status.storage.unknown": "未知",
     "system.status.storage.limited": "受限",
     "system.status.storage.verified": "已验证",
+    "system.status.storage.states.preparing": "准备中",
+    "system.status.storage.states.ready": "已测量",
+    "system.status.storage.states.deferred": "已延后",
+    "system.status.storage.states.error": "测量失败",
+    "system.status.storage.states.unknown": "未知",
+    "system.status.storage.scanning": "扫描中",
+    "system.status.storage.stale": "最近成功读数已过期",
+    "system.status.storage.sampledAt": "采样时间：{{at}}",
+    "system.status.storage.waiting": "等待首次采样",
+    "system.status.storage.notSampled": "尚无采样结果",
+    "system.status.storage.refreshing": "正在刷新存储读数",
+    "system.status.storage.loadError": "无法读取存储总量：{{error}}",
+    "system.status.storage.reasons.unsupportedPlatform": "当前平台无法提供分配字节和稳定文件身份。",
+    "system.status.storage.reasons.resourceLimit": "扫描达到资源上限；保留最近一次完整读数。",
+    "system.status.storage.reasons.permissionDenied": "读取已配置存储路径时权限不足。",
+    "system.status.storage.reasons.ioError": "文件系统读取失败；保留最近一次完整读数。",
+    "system.status.storage.reasons.pathResolution": "无法解析已配置的存储路径。",
+    "system.status.storage.reasons.overflow": "测量字节总量超出支持范围。",
+    "system.status.storage.reasons.workerFailed": "存储扫描任务意外退出。",
+    "system.status.storage.reasons.notFound": "找不到必需的存储路径。",
+    "system.status.storage.reasons.cancelled": "存储扫描已取消。",
+    "system.status.storage.reasons.generic": "存储扫描未能完成。",
     "system.status.metric.bytesLabel": "体积",
     "system.status.metric.countLabel": "数量",
     "system.status.metric.unionBadge": "并集总量",
     "system.status.metric.splitBadge": "侧向拆分",
-    "system.status.sections.diskOverviewTitle": "已追踪项目存储总览",
+    "system.status.sections.diskOverviewTitle": "业务存储指标",
     "system.status.sections.rawPayloadFocusTitle": "raw payload 聚焦",
     "system.status.sections.rawPayloadFocusDescription":
       "把已追踪 raw 盘点与覆盖状态放在一起；运行压力区域保留实时物理捕获遥测。",
@@ -5272,15 +5322,13 @@ const baseTranslations = {
     "system.status.cards.rawBodiesBytesHint":
       "已关联 request + response raw 文件并集的持久盘点字节数，不是完整物理 raw 存储总量。",
     "system.status.rawMetrics.preparing":
-      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数保持未知。",
     "system.status.rawMetrics.ready":
       "Raw payload 已完成关联文件盘点；未关联的物理 raw 残留仍不在此总量内。",
     "system.status.rawMetrics.deferred":
-      "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
-    "system.status.rawMetrics.error":
-      "Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数和项目总量保持未知。",
-    "system.status.rawMetrics.unknown":
-      "Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。",
+      "数据库压力较高，Raw payload 盘点已延后；raw 字节数保持未知。",
+    "system.status.rawMetrics.error": "Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数保持未知。",
+    "system.status.rawMetrics.unknown": "Raw payload 盘点覆盖范围未知；raw 字节数保持未知。",
     "system.status.cards.requestRawBodiesCount": "已追踪 request raw payload 数量",
     "system.status.cards.requestRawBodiesCountHint": "已关联的 request 侧 raw payload 文件数。",
     "system.status.cards.requestRawBodiesBytes": "已追踪 request 侧 raw payload",

@@ -7,7 +7,12 @@ export type DemoScene =
   | "runtime-pressure-healthy"
   | "runtime-pressure-deferred"
   | "runtime-pressure-degraded"
-  | "runtime-pressure-accounting-error";
+  | "runtime-pressure-accounting-error"
+  | "system-raw-inventory-preparing"
+  | "system-storage-preparing"
+  | "system-storage-status-unavailable"
+  | "system-storage-error"
+  | "system-storage-unknown";
 export type DemoTheme = "light" | "dark";
 export type DemoViewport = "default" | "mobile390" | "mobile393";
 
@@ -22,6 +27,11 @@ const SCENE_VALUES = new Set<DemoScene>([
   "runtime-pressure-deferred",
   "runtime-pressure-degraded",
   "runtime-pressure-accounting-error",
+  "system-raw-inventory-preparing",
+  "system-storage-preparing",
+  "system-storage-status-unavailable",
+  "system-storage-error",
+  "system-storage-unknown",
 ]);
 const THEME_VALUES = new Set<DemoTheme>(["light", "dark"]);
 const VIEWPORT_VALUES = new Set<DemoViewport>(["default", "mobile390", "mobile393"]);

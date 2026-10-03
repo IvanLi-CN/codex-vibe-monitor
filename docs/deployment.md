@@ -121,8 +121,11 @@ labels:
 
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
 - `PERFORMANCE_DATABASE_PATH`：独立性能指标 SQLite 路径；未配置时使用 `DATABASE_PATH` 同目录的 `<主库名>.performance.sqlite`。该文件只保存固定低基数的聚合指标，可按备份策略排除。
+- `MAINTENANCE_DATABASE_PATH`：独立维护状态 SQLite 路径；未配置时使用 `DATABASE_PATH` 同目录的 `<主库名>.maintenance.sqlite`。外置时总体积只计数据库及其 WAL/SHM/journal 文件。
 - `PERFORMANCE_TELEMETRY_ENABLED`：性能指标采集开关，默认 `true`；设为 `false` 或指标库不可用时，主库、代理、P1 terminal ACK 与 `/health` 继续工作。
-- `PROXY_RAW_DIR`：原始请求/响应落盘目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，避免跟随容器工作目录漂移。
+- `PROXY_RAW_DIR`：代理 request/response payload 原始文件落盘目录，默认 `proxy_raw_payloads`；相对路径会锚定到 `DATABASE_PATH` 父目录，绝对路径可指向独立持久化卷。总体积计入该目录全部文件，包括未关联 raw 残留。
+- `ARCHIVE_DIR`：离线归档根目录，默认 `archives`；相对路径会锚定到 `DATABASE_PATH` 父目录，绝对路径可指向独立归档卷。总体积计入该目录全部数据集归档、临时文件与残留。
+- `XRAY_RUNTIME_DIR`：Xray runtime 状态与配置目录，默认相对进程工作目录的 `.codex/xray-forward`；总体积会计入实际解析目录。
 - `PUBLIC_ORIGIN`：用于生成 `og:image` / `twitter:image` 等对外绝对 URL 的公开入口基址；推荐显式配置为最终对外域名。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
 - `PROXY_RAW_COMPRESSION`：raw 冷压缩 codec；默认 `gzip`，可设为 `none` 关闭冷压缩。
@@ -144,7 +147,6 @@ labels:
 - `RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
 - `RETENTION_BATCH_ROWS`：单批处理上限；用于降低 SQLite 长事务与锁表风险。
-- `ARCHIVE_DIR`：离线 archive 根目录；相对路径会锚定到 `DATABASE_PATH` 同级目录，建议挂载到持久化卷并纳入备份。
 - `INVOCATION_SUCCESS_FULL_DAYS` / `INVOCATION_MAX_DAYS`：调用明细冷热分层窗口；raw file 删除跟随这两档 retention，不再有独立的 raw retention env。
 - `FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS`：代理尝试的在线保留窗口。
 - `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`：长期用量统计小时汇总保留天数，默认 `400`；配置低于 `366` 时自动提升到 `366`。每日汇总永久保留，且 archive 只有在长期统计回填标记完成后才允许清理。

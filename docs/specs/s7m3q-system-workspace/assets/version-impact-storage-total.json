@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Adds an independent measured project storage total over the data directory and configured external project stores.",
+    "release_unit_description": "System storage collector, additive read-only API, and independent web summary for the system status page.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The storage endpoint is additive; the existing system status shape and 503 behavior remain unchanged. No durable state is added.",
+      "assessed_at": "2026-10-03T13:45:00Z",
+      "evidence": [
+        "docs/specs/s7m3q-system-workspace/SPEC.md: REQ-STORAGE-API",
+        "docs/specs/s7m3q-system-workspace/SPEC.md: interface inventory marks GET /api/system/storage additive"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "No new public breaking surface or persistent state was added beyond the approved storage collector and read-only endpoint."
+      },
+      "reasoning": "The new route has an independent response type and reads only the in-memory last-good snapshot. Existing API and SQLite contracts are unchanged.",
+      "reassessed_at": "2026-10-03T13:45:00Z",
+      "evidence": [
+        "src/api/slices/system_routes_and_tasks.rs: additive GET /api/system/storage route",
+        "src/system_storage.rs: process-local measurement snapshot; no database writes or schema changes",
+        "docs/specs/s7m3q-system-workspace/IMPLEMENTATION.md: verification status"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Linux regression verifies the new endpoint and storage runtime while existing status-route behavior remains covered. No persisted schema or migration changed, so the release unit's highest verified impact is patch.",
+      "verified_at": "2026-10-03T13:45:00Z",
+      "evidence": [
+        "test:storage-runtime-and-http; stateful SQLite route regression after closing the pool",
+        "bash .github/scripts/run-backend-tests.sh: all resource profiles passed on shared Linux testbox",
+        "cargo check --locked --all-targets --all-features and Rust source-quality checks passed"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing supported clients may ignore the additive GET /api/system/storage endpoint; GET /api/system/status response shape and 503 behavior remain unchanged.",
+      "evidence": [
+        "docs/specs/s7m3q-system-workspace/SPEC.md: interface inventory and VER-STORAGE-API",
+        "test:storage-runtime-and-http",
+        "web/src/lib/api/core-foundation.test.ts: strict storage response normalization and invalid-response handling"
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "No database schema, durable storage snapshot, or migration is introduced; measurements remain process-local.",
+      "source_program_compatibility_range": "Not applicable because this release unit adds no durable state.",
+      "evidence": [
+        "src/system_storage.rs: in-memory last-good snapshot",
+        "git diff contains no SQLite migration or persisted storage-snapshot table",
+        "stateful-sqlite profile passed"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "s7m3q-system-workspace-storage-total"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "public_api=patch; persistent_state=not_applicable; highest applicable verified impact=patch"
+    ]
+  }
+}

@@ -296,6 +296,35 @@ async fn system_status_aggregates_counts_and_file_sizes() {
 }
 
 #[tokio::test]
+async fn system_storage_endpoint_reads_only_the_memory_snapshot_when_sqlite_is_closed() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:1/").expect("valid test upstream URL"),
+    )
+    .await;
+    state.pool.close().await;
+
+    let response = build_app_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/api/system/storage")
+                .body(Body::empty())
+                .expect("build storage request"),
+        )
+        .await
+        .expect("serve storage route without SQLite");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read storage response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode storage response");
+    assert!(payload["totalBytes"].is_null());
+    assert!(payload["sampledAt"].is_null());
+    assert_eq!(payload["state"], "unknown");
+    assert_eq!(payload["scanInProgress"], false);
+    assert_eq!(payload["stale"], false);
+}
+
+#[tokio::test]
 async fn system_raw_metrics_inventory_tracks_raw_attached_after_invocation_cursor_advanced() {
     use std::time::Duration as StdDuration;
 
@@ -1794,6 +1823,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
 
     Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer,
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -2042,6 +2072,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        system_storage: state.system_storage.clone(),
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
@@ -2107,6 +2138,7 @@ fn clone_state_with_retry_delay_overrides(
     fallback_delay: Option<Duration>,
 ) -> Arc<AppState> {
     Arc::new(AppState {
+        system_storage: state.system_storage.clone(),
         config: state.config.clone(),
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
@@ -2202,6 +2234,7 @@ pub(crate) async fn test_state_from_existing_pool(
         .expect("pricing catalog should initialize");
 
     Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),

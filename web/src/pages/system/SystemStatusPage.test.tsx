@@ -7,6 +7,7 @@ import SystemStatusPage from "./SystemStatusPage";
 
 const apiMocks = vi.hoisted(() => ({
   fetchSystemStatus: vi.fn(),
+  fetchSystemStorage: vi.fn(),
 }));
 
 vi.mock("../../lib/api", async () => {
@@ -14,6 +15,7 @@ vi.mock("../../lib/api", async () => {
   return {
     ...actual,
     fetchSystemStatus: apiMocks.fetchSystemStatus,
+    fetchSystemStorage: apiMocks.fetchSystemStorage,
   };
 });
 
@@ -57,6 +59,12 @@ function renderPage() {
         <SystemStatusPage />
       </I18nProvider>,
     );
+  });
+}
+
+function pendingUntilAbort(signal: AbortSignal) {
+  return new Promise<never>((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
   });
 }
 
@@ -115,6 +123,14 @@ describe("SystemStatusPage", () => {
       },
       refreshedAt: "2026-06-22T08:00:00Z",
     });
+    apiMocks.fetchSystemStorage.mockResolvedValue({
+      totalBytes: 16 * 1024 ** 3,
+      sampledAt: "2026-06-22T08:00:00Z",
+      state: "ready",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
   });
 
   afterEach(() => {
@@ -125,6 +141,7 @@ describe("SystemStatusPage", () => {
     host = null;
     root = null;
     apiMocks.fetchSystemStatus.mockReset();
+    apiMocks.fetchSystemStorage.mockReset();
     window.localStorage.removeItem("codex-vibe-monitor.locale");
     if (originalLocalStorageDescriptor) {
       Object.defineProperty(window, "localStorage", originalLocalStorageDescriptor);
@@ -140,6 +157,7 @@ describe("SystemStatusPage", () => {
     });
 
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchSystemStorage).toHaveBeenCalledTimes(1);
     expect(host?.querySelector('[data-testid="system-status-layout"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-overview"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-projection-health"]')).not.toBeNull();
@@ -155,19 +173,21 @@ describe("SystemStatusPage", () => {
     expect(host?.textContent ?? "").toContain("修复中");
     expect(host?.querySelector('[data-testid="system-status-records-section"]')).not.toBeNull();
     expect(host?.querySelector('[data-testid="system-status-archive-section"]')).not.toBeNull();
-    expect(host?.textContent ?? "").toContain("已追踪项目存储总览");
+    expect(host?.textContent ?? "").toContain("项目存储总体积");
+    expect(host?.textContent ?? "").toContain("16 GiB");
+    expect(host?.textContent ?? "").toContain("采样时间：");
+    expect(host?.textContent ?? "").toContain("业务存储指标");
     expect(host?.textContent ?? "").toContain("数据库记录概况");
     expect(host?.textContent ?? "").toContain("归档与逻辑体量");
-    expect(host?.textContent ?? "").toContain("已追踪项目存储");
     expect(host?.textContent ?? "").toContain(
-      "已追踪项目存储 = 已追踪 raw 盘点 + archive + 数据库 + 其他运行文件；raw 盘点或 archive 体积不可用时保持未知，也不代表完整物理文件系统占用。",
+      "数据目录及单独配置的外置 raw、archive、数据库和 Xray runtime 路径",
     );
     expect(host?.textContent ?? "").not.toContain(
       "先展示服务能够验证的项目存储，再标明 raw 盘点是否覆盖物理存储。",
     );
     expect(
       host?.querySelectorAll('[data-testid="system-status-project-disk-formula"]'),
-    ).toHaveLength(1);
+    ).toHaveLength(0);
     expect(host?.textContent ?? "").toContain("并集总量");
     expect(host?.textContent ?? "").toContain("侧向拆分");
     expect(host?.textContent ?? "").toContain("live invocations");
@@ -212,9 +232,10 @@ describe("SystemStatusPage", () => {
     });
 
     expect(apiMocks.fetchSystemStatus).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchSystemStorage).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps raw and project storage unknown while inventory is preparing", async () => {
+  it("keeps the measured project total visible while raw inventory is preparing", async () => {
     apiMocks.fetchSystemStatus.mockResolvedValueOnce({
       liveInvocationsCount: 6,
       successCount: 3,
@@ -256,13 +277,172 @@ describe("SystemStatusPage", () => {
 
     const overviewText =
       host?.querySelector('[data-testid="system-status-overview"]')?.textContent ?? "";
-    expect(overviewText).toContain("已追踪项目存储");
     expect(overviewText).toContain("未知");
     expect(overviewText).not.toContain("0 B");
     expect(overviewText).not.toContain("实际磁盘");
     expect(overviewText).toContain(
-      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+      "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数保持未知。",
     );
+    const storageSummary = host?.querySelector('[data-testid="system-storage-summary"]');
+    expect(storageSummary?.textContent).toContain("16 GiB");
+    expect(storageSummary?.textContent).not.toContain("未知");
+  });
+
+  it("renders the storage snapshot when the business status request returns 503", async () => {
+    apiMocks.fetchSystemStatus.mockRejectedValueOnce(new Error("503 Service Unavailable"));
+
+    renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(host?.querySelector('[data-testid="system-storage-summary"]')?.textContent).toContain(
+      "16 GiB",
+    );
+    expect(host?.textContent).toContain("503 Service Unavailable");
+    expect(host?.querySelector('[data-testid="system-status-layout"]')).toBeNull();
+  });
+
+  it("retains the previous storage value and sample time after a refresh failure", async () => {
+    apiMocks.fetchSystemStorage.mockResolvedValueOnce({
+      totalBytes: 8 * 1024 ** 3,
+      sampledAt: "2026-06-22T08:00:00Z",
+      state: "ready",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
+    apiMocks.fetchSystemStorage.mockRejectedValueOnce(new Error("network unavailable"));
+    renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const summary = host?.querySelector('[data-testid="system-storage-summary"]');
+    expect(summary?.textContent).toContain("8 GiB");
+    expect(summary?.textContent).toContain("采样时间：");
+    expect(summary?.textContent).toContain("network unavailable");
+  });
+
+  it.each([
+    ["status", "fetchSystemStatus", "fetchSystemStorage"],
+    ["storage", "fetchSystemStorage", "fetchSystemStatus"],
+  ] as const)("times out the %s request independently", async (_name, pendingKey, resolvedKey) => {
+    const pendingRequest = apiMocks[pendingKey];
+    const resolvedRequest = apiMocks[resolvedKey];
+    pendingRequest.mockImplementation(pendingUntilAbort);
+
+    renderPage();
+
+    const pendingSignal = pendingRequest.mock.calls[0]?.[0] as AbortSignal;
+    const resolvedSignal = resolvedRequest.mock.calls[0]?.[0] as AbortSignal;
+    expect(pendingSignal.aborted).toBe(false);
+    expect(resolvedSignal.aborted).toBe(false);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(10_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(pendingSignal.aborted).toBe(true);
+    expect(resolvedSignal.aborted).toBe(false);
+    expect(host?.textContent).toContain("Request timed out after 10 seconds");
+  });
+
+  it("aborts both requests when the page unmounts", async () => {
+    apiMocks.fetchSystemStatus.mockImplementation(pendingUntilAbort);
+    apiMocks.fetchSystemStorage.mockImplementation(pendingUntilAbort);
+
+    renderPage();
+
+    const statusSignal = apiMocks.fetchSystemStatus.mock.calls[0]?.[0] as AbortSignal;
+    const storageSignal = apiMocks.fetchSystemStorage.mock.calls[0]?.[0] as AbortSignal;
+    await act(async () => {
+      root?.unmount();
+      await Promise.resolve();
+    });
+
+    expect(statusSignal.aborted).toBe(true);
+    expect(storageSignal.aborted).toBe(true);
+  });
+
+  it.each([
+    "HTTP 404",
+    "Invalid system storage response",
+  ])("keeps the last measured total after a %s storage response", async (message) => {
+    apiMocks.fetchSystemStorage.mockResolvedValueOnce({
+      totalBytes: 8 * 1024 ** 3,
+      sampledAt: "2026-06-22T08:00:00Z",
+      state: "ready",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
+    apiMocks.fetchSystemStorage.mockRejectedValueOnce(new Error(message));
+    renderPage();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const summary = host?.querySelector('[data-testid="system-storage-summary"]');
+    expect(summary?.textContent).toContain("8 GiB");
+    expect(summary?.textContent).toContain(message);
+    expect(summary?.textContent).not.toContain("20 KiB");
+  });
+
+  it("shows zero and an explicit unknown state without inventing a zero value", async () => {
+    apiMocks.fetchSystemStorage.mockResolvedValueOnce({
+      totalBytes: 0,
+      sampledAt: "2026-06-22T08:00:00Z",
+      state: "ready",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
+    renderPage();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(host?.querySelector('[data-testid="system-storage-summary"]')?.textContent).toContain(
+      "0 B",
+    );
+
+    apiMocks.fetchSystemStorage.mockResolvedValueOnce({
+      totalBytes: null,
+      sampledAt: null,
+      state: "unknown",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    });
+    act(() => root?.unmount());
+    host?.remove();
+    host = null;
+    root = null;
+    renderPage();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const summary = host?.querySelector('[data-testid="system-storage-summary"]')?.textContent;
+    expect(summary).toContain("未知");
+    expect(summary).not.toContain("0 B");
   });
 
   it("keeps missing event bus and backfill diagnostics visibly unknown", async () => {

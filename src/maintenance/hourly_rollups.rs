@@ -3550,6 +3550,7 @@ pub(crate) fn build_stats_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {
     router
         .route("/api/system/status", get(fetch_system_status))
+        .route("/api/system/storage", get(fetch_system_storage))
         .route("/api/system/tasks", get(list_system_task_runs))
         .route("/api/system/managed-tasks", get(list_managed_tasks))
         .route(

@@ -87,6 +87,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),

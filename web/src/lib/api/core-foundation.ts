@@ -2627,6 +2627,17 @@ export interface SystemStatusResponse {
   refreshedAt: string;
 }
 
+export type SystemStorageState = "preparing" | "ready" | "deferred" | "error" | "unknown";
+
+export interface SystemStorageResponse {
+  totalBytes: number | null;
+  sampledAt: string | null;
+  state: SystemStorageState;
+  scanInProgress: boolean;
+  stale: boolean;
+  reason: string | null;
+}
+
 export interface SystemTaskRun {
   id: number;
   taskKind: string;
@@ -5442,6 +5453,47 @@ function normalizeSystemStatusResponse(raw: unknown): SystemStatusResponse {
   };
 }
 
+function normalizeSystemStorageResponse(raw: unknown): SystemStorageResponse {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("invalid system storage response");
+  }
+  const payload = raw as Record<string, unknown>;
+  const states = new Set<SystemStorageState>([
+    "preparing",
+    "ready",
+    "deferred",
+    "error",
+    "unknown",
+  ]);
+  const totalBytes = payload.totalBytes;
+  const sampledAt = payload.sampledAt;
+  if (
+    !(
+      totalBytes === null ||
+      (typeof totalBytes === "number" && Number.isSafeInteger(totalBytes) && totalBytes >= 0)
+    ) ||
+    !(
+      sampledAt === null ||
+      (typeof sampledAt === "string" && Number.isFinite(Date.parse(sampledAt)))
+    ) ||
+    typeof payload.state !== "string" ||
+    !states.has(payload.state as SystemStorageState) ||
+    typeof payload.scanInProgress !== "boolean" ||
+    typeof payload.stale !== "boolean" ||
+    !(payload.reason === null || typeof payload.reason === "string")
+  ) {
+    throw new Error("invalid system storage response");
+  }
+  return {
+    totalBytes,
+    sampledAt,
+    state: payload.state as SystemStorageState,
+    scanInProgress: payload.scanInProgress,
+    stale: payload.stale,
+    reason: payload.reason,
+  };
+}
+
 function normalizeSystemTaskRun(raw: unknown): SystemTaskRun | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const id = normalizeFiniteNumber(payload.id);
@@ -5795,9 +5847,14 @@ export async function fetchSettings(): Promise<SettingsPayload> {
   return normalizeSettingsPayload(response);
 }
 
-export async function fetchSystemStatus(): Promise<SystemStatusResponse> {
-  const response = await fetchJson<unknown>("/api/system/status");
+export async function fetchSystemStatus(signal?: AbortSignal): Promise<SystemStatusResponse> {
+  const response = await fetchJson<unknown>("/api/system/status", { signal });
   return normalizeSystemStatusResponse(response);
+}
+
+export async function fetchSystemStorage(signal?: AbortSignal): Promise<SystemStorageResponse> {
+  const response = await fetchJson<unknown>("/api/system/storage", { signal });
+  return normalizeSystemStorageResponse(response);
 }
 
 export async function fetchPromptCacheMaterializationStatus(

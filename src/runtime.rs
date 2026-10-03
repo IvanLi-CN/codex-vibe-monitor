@@ -380,6 +380,7 @@ pub(crate) async fn run() -> Result<()> {
     terminal_projection_hub.set_runtime_mutation_bus(subscription_hub.runtime_mutation_bus());
 
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         pool,
         process_started_at_utc,
@@ -1031,6 +1032,7 @@ where
     ));
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_system_status_snapshot_maintenance(state.clone());
+    spawn_system_storage_maintenance(state.clone());
     spawn_invocation_timeline_snapshot_maintenance(state.clone());
 
     let startup_backfill_stage =

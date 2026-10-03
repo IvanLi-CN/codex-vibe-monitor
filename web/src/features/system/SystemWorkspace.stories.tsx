@@ -14,6 +14,7 @@ import type {
   PricingEntry,
   SettingsPayload,
   SystemStatusResponse,
+  SystemStorageResponse,
   SystemTaskRunsResponse,
   TaskRuntimeSnapshot,
   TaskTimelineCoverage,
@@ -265,6 +266,15 @@ const STORYBOOK_SYSTEM_STATUS: SystemStatusResponse = {
     },
   },
   refreshedAt: "2026-06-22T09:28:00Z",
+};
+
+const STORYBOOK_SYSTEM_STORAGE: SystemStorageResponse = {
+  totalBytes: 105 * 1024 ** 3,
+  sampledAt: "2026-10-03T07:20:00Z",
+  state: "ready",
+  scanInProgress: false,
+  stale: false,
+  reason: null,
 };
 
 const STORYBOOK_SYSTEM_TASK_ITEMS: SystemTaskRunsResponse["items"] = [
@@ -1175,6 +1185,8 @@ function buildSystemWorkspaceRequestHandler(
   delaySelectionMemorySaveMs = 0,
   delayModelSyncApplyMs = 0,
   failFirstModelsApply = false,
+  storageOverride?: SystemStorageResponse,
+  statusUnavailable = false,
 ): StorybookRequestHandler {
   const settings = clone(settingsOverride ?? STORYBOOK_SETTINGS);
   const retentionTaskDetail = clone(retentionTaskDetailOverride ?? STORYBOOK_RETENTION_TASK_DETAIL);
@@ -1206,7 +1218,12 @@ function buildSystemWorkspaceRequestHandler(
     };
 
     if (url.pathname === "/api/system/status" && method === "GET") {
+      if (statusUnavailable) return jsonResponse({ message: "status unavailable" }, 503);
       return jsonResponse(clone(statusOverride ?? STORYBOOK_SYSTEM_STATUS));
+    }
+
+    if (url.pathname === "/api/system/storage" && method === "GET") {
+      return jsonResponse(clone(storageOverride ?? STORYBOOK_SYSTEM_STORAGE));
     }
 
     if (url.pathname === "/api/system/managed-tasks" && method === "GET") {
@@ -1591,6 +1608,8 @@ const meta = {
                 ? context.parameters.delayModelSyncApplyMs
                 : 0,
               context.parameters.failFirstModelsApply === true,
+              context.parameters.systemStorageOverride as SystemStorageResponse | undefined,
+              context.parameters.systemStatusUnavailable === true,
             )}
           >
             <FullPageStorySurface>
@@ -2302,10 +2321,11 @@ function rawInventoryUnavailablePlay(message: string) {
     const canvas = within(canvasElement);
     const overview = await canvas.findByTestId("system-status-overview");
     await expect(overview).toBeVisible();
-    await expect(overview).toHaveTextContent("已追踪项目存储总览");
+    await expect(overview).toHaveTextContent("业务存储指标");
     await expect(overview).toHaveTextContent("未知");
     await expect(overview).not.toHaveTextContent("0 B");
     await expect(overview).toHaveTextContent(message);
+    await expect(canvas.getByTestId("system-storage-summary")).toHaveTextContent("105 GiB");
   };
 }
 
@@ -2316,7 +2336,7 @@ export const StatusRawInventoryPreparing: Story = {
     systemStatusOverride: rawInventoryUnavailableStatus("preparing"),
   },
   play: rawInventoryUnavailablePlay(
-    "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数和项目总量保持未知。",
+    "Raw payload 盘点仍在后台建立；在覆盖可用前，raw 字节数保持未知。",
   ),
 };
 
@@ -2326,18 +2346,14 @@ export const StatusRawInventoryDeferred: Story = {
   parameters: {
     systemStatusOverride: rawInventoryUnavailableStatus("deferred"),
   },
-  play: rawInventoryUnavailablePlay(
-    "数据库压力较高，Raw payload 盘点已延后；raw 字节数和项目总量保持未知。",
-  ),
+  play: rawInventoryUnavailablePlay("数据库压力较高，Raw payload 盘点已延后；raw 字节数保持未知。"),
 };
 
 export const StatusRawInventoryError: Story = {
   render: () => renderWorkspace("/system/status"),
   tags: ["test"],
   parameters: { systemStatusOverride: rawInventoryUnavailableStatus("error") },
-  play: rawInventoryUnavailablePlay(
-    "Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数和项目总量保持未知。",
-  ),
+  play: rawInventoryUnavailablePlay("Raw payload 盘点需要恢复；恢复覆盖前，raw 字节数保持未知。"),
 };
 
 export const StatusRawInventoryUnknown: Story = {
@@ -2346,7 +2362,59 @@ export const StatusRawInventoryUnknown: Story = {
   parameters: {
     systemStatusOverride: rawInventoryUnavailableStatus("unknown"),
   },
-  play: rawInventoryUnavailablePlay("Raw payload 盘点覆盖范围未知；raw 字节数和项目总量保持未知。"),
+  play: rawInventoryUnavailablePlay("Raw payload 盘点覆盖范围未知；raw 字节数保持未知。"),
+};
+
+export const StatusStorageBusinessUnavailable: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: { systemStatusUnavailable: true },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() =>
+      expect(canvas.getByTestId("system-storage-summary")).toHaveTextContent("105 GiB"),
+    );
+    await expect(canvas.getByText(/503/)).toBeVisible();
+  },
+};
+
+export const StatusStorageFirstSampleUnknown: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStorageOverride: {
+      totalBytes: null,
+      sampledAt: null,
+      state: "unknown",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    } satisfies SystemStorageResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const summary = within(canvasElement).getByTestId("system-storage-summary");
+    await expect(summary).toHaveTextContent("未知");
+    await expect(summary).not.toHaveTextContent("0 B");
+  },
+};
+
+export const StatusStorageErrorRetainsLastGood: Story = {
+  render: () => renderWorkspace("/system/status"),
+  tags: ["test"],
+  parameters: {
+    systemStorageOverride: {
+      ...STORYBOOK_SYSTEM_STORAGE,
+      state: "error",
+      stale: true,
+      reason: "permission_denied",
+    } satisfies SystemStorageResponse,
+  },
+  play: async ({ canvasElement }) => {
+    const summary = within(canvasElement).getByTestId("system-storage-summary");
+    await waitFor(() => expect(summary).toHaveTextContent("105 GiB"));
+    await expect(summary).toHaveTextContent("最近成功读数已过期");
+    await expect(summary).toHaveTextContent("权限不足");
+  },
 };
 
 export const Tasks: Story = {

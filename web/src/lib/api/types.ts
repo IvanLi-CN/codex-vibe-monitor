@@ -226,6 +226,8 @@ export type {
   SystemProjectionHealth,
   SystemStatusMetric,
   SystemStatusResponse,
+  SystemStorageResponse,
+  SystemStorageState,
   SystemTaskRun,
   SystemTaskRunsResponse,
   TagDetail,

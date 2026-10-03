@@ -208,8 +208,7 @@ re-reading historical archive pages.
 _Avoid_: archive coverage fence, request-time cursor, raw-source replay
 
 **Summary Source Identity**:
-The durable identity of one live terminal contribution: `(row_id, invoke_id,
-occurred_at)`. ACKs and restart replays with the same identity are idempotent
+The durable identity of one live terminal contribution: `(row_id, invoke_id, occurred_at)`. ACKs and restart replays with the same identity are idempotent
 after an immutable Projection swap. A source change without a durable row ID
 cannot retire a gap proof and remains broad fail-closed until bounded
 reconciliation proves its scope.
@@ -827,6 +826,7 @@ _Avoid_: 可选测试, 新的 required check, 不完整 profile
 **PR 发布评论**:
 附在源 PR 上的版本交付追溯记录；它独立于 GitHub Release 页面。
 _Avoid_: Release 正文, 发布说明
+
 ## Routing Affinity
 
 **优先级迁移（Priority Handoff）**:
@@ -966,6 +966,24 @@ _Avoid_: fixture workspace, shared test database, custom content-addressed cache
 **Production-copy Runtime Workspace**:
 The disposable directory created by the production-copy validator for the service process, response captures, logs, and default Cargo directories. It is separate from the staged production copy and from any externally provided Cargo cache.
 _Avoid_: runner scratch path, staged production data, durable cache, source snapshot
+
+## Storage Observation
+
+**数据目录（Data Directory）**:
+本项目集中存放持久化业务数据和运行数据的目录树。目录内的文件是否已经关联到调用记录，不改变其归属。
+_Avoid_: 数据库文件, 已关联 raw 文件集合, 服务器文件系统
+
+**数据目录体积（Data Directory Footprint）**:
+数据目录内全部内容去重后的实测存储量，包含尚未被业务盘点识别的文件；它是项目存储总体积的一部分。
+_Avoid_: 已追踪项目存储, raw payload 逻辑体量, 已完成调用归档体积
+
+**项目存储总体积（Project Storage Footprint）**:
+数据目录与项目单独配置的存储位置共同覆盖的实际存储量，同一存储对象只计一次。它包含目录外的 raw、archive 和项目其他持久化运行文件，业务关联是否完整不改变其归属。
+_Avoid_: 业务指标相加, 服务器磁盘总使用量, 仅数据目录体积
+
+**已追踪 Raw 盘点（Tracked Raw Inventory）**:
+已关联 request 与 response raw 文件集合的持久化盘点；并集总量与两侧拆分表达不同的去重范围。盘点未就绪表示该业务视图暂不可用，不表示数据目录无法测量或其中没有 raw 文件。
+_Avoid_: 数据目录体积, 完整 raw 目录占用, request 与 response 直接相加
 
 ## Autonomous Retention Recovery
 

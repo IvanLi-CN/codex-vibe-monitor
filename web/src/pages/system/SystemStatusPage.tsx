@@ -2,9 +2,16 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Chip } from "../../components/ui/chip";
 import { useTranslation } from "../../i18n";
-import { fetchSystemStatus, type SystemStatusResponse } from "../../lib/api";
+import {
+  fetchSystemStatus,
+  fetchSystemStorage,
+  type SystemStatusResponse,
+  type SystemStorageResponse,
+} from "../../lib/api";
+import ProjectStorageSummary from "./ProjectStorageSummary";
 
 const REFRESH_INTERVAL_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 10_000;
 const RETENTION_RECOVERY_STAGES = new Set([
   "preparing",
   "publishing",
@@ -219,39 +226,11 @@ function OverviewPanel({ status, t }: OverviewPanelProps) {
         : "limited";
   const rawCoverageLabel = t(`system.status.storage.${rawCoverage}`);
   const unknownBytesLabel = t("system.status.storage.unknown");
-  const projectDiskBytes =
-    rawBodiesBytes == null || status.archivedBodies.bytes == null
-      ? null
-      : status.archivedBodies.bytes +
-        rawBodiesBytes +
-        status.databaseBytes +
-        status.otherFilesBytes;
-
   return (
     <section className="surface-panel overflow-hidden" data-testid="system-status-overview">
       <div className="surface-panel-body gap-5">
         <div className="section-heading">
           <h3 className="section-title">{t("system.status.sections.diskOverviewTitle")}</h3>
-        </div>
-
-        <div className="rounded-xl border border-primary/20 bg-primary/8 px-5 py-5">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="text-sm font-semibold text-primary">
-              {t("system.status.summary.projectDiskLabel")}
-            </div>
-            <Chip size="compact" tone="secondary" className="px-2 text-[11px] font-semibold">
-              {rawCoverageLabel}
-            </Chip>
-          </div>
-          <div className="mt-2 text-4xl font-semibold tracking-tight tabular-nums text-base-content sm:text-5xl">
-            {formatBytes(projectDiskBytes, unknownBytesLabel)}
-          </div>
-          <p
-            className="mt-3 max-w-full text-sm leading-relaxed text-base-content/72"
-            data-testid="system-status-project-disk-formula"
-          >
-            {t("system.status.summary.projectDiskHint")}
-          </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -1094,49 +1073,117 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
 export default function SystemStatusPage() {
   const { t } = useTranslation();
   const [status, setStatus] = useState<SystemStatusResponse | null>(null);
+  const [storage, setStorage] = useState<SystemStorageResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [storageError, setStorageError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isStorageLoading, setIsStorageLoading] = useState(true);
+  const [isStorageRefreshing, setIsStorageRefreshing] = useState(false);
 
   useEffect(() => {
     let active = true;
+    let statusRequestInFlight = false;
+    let storageRequestInFlight = false;
+    let statusController: AbortController | null = null;
+    let storageController: AbortController | null = null;
 
-    const load = async (background: boolean) => {
+    const loadStatus = async (background: boolean) => {
+      if (statusRequestInFlight) return;
+      statusRequestInFlight = true;
+      const controller = new AbortController();
+      statusController = controller;
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, REQUEST_TIMEOUT_MS);
       if (!background) {
         setIsLoading(true);
       } else {
         setIsRefreshing(true);
       }
-      const complete = () => {
-        setIsLoading(false);
-        setIsRefreshing(false);
-      };
       try {
-        const next = await fetchSystemStatus();
-        if (!active) {
-          complete();
-          return;
+        const next = await fetchSystemStatus(controller.signal);
+        if (active) {
+          setStatus(next);
+          setError(null);
         }
-        setStatus(next);
-        setError(null);
       } catch (err) {
-        if (!active) {
-          complete();
-          return;
+        if (active) {
+          setError(
+            timedOut
+              ? "Request timed out after 10 seconds"
+              : err instanceof Error
+                ? err.message
+                : String(err),
+          );
         }
-        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        window.clearTimeout(timeout);
+        statusRequestInFlight = false;
+        if (statusController === controller) statusController = null;
+        if (active) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
       }
-      complete();
     };
 
-    void load(false);
+    const loadStorage = async (background: boolean) => {
+      if (storageRequestInFlight) return;
+      storageRequestInFlight = true;
+      const controller = new AbortController();
+      storageController = controller;
+      let timedOut = false;
+      const timeout = window.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, REQUEST_TIMEOUT_MS);
+      if (!background) {
+        setIsStorageLoading(true);
+      } else {
+        setIsStorageRefreshing(true);
+      }
+      try {
+        const next = await fetchSystemStorage(controller.signal);
+        if (active) {
+          setStorage(next);
+          setStorageError(null);
+        }
+      } catch (err) {
+        if (active) {
+          setStorageError(
+            timedOut
+              ? "Request timed out after 10 seconds"
+              : err instanceof Error
+                ? err.message
+                : String(err),
+          );
+        }
+      } finally {
+        window.clearTimeout(timeout);
+        storageRequestInFlight = false;
+        if (storageController === controller) storageController = null;
+        if (active) {
+          setIsStorageLoading(false);
+          setIsStorageRefreshing(false);
+        }
+      }
+    };
+
+    void loadStatus(false);
+    void loadStorage(false);
     const timer = window.setInterval(() => {
-      void load(true);
+      void loadStatus(true);
+      void loadStorage(true);
     }, REFRESH_INTERVAL_MS);
 
     return () => {
       active = false;
       window.clearInterval(timer);
+      statusController?.abort();
+      storageController?.abort();
     };
   }, []);
 
@@ -1206,6 +1253,13 @@ export default function SystemStatusPage() {
               </span>
             </div>
           </div>
+
+          <ProjectStorageSummary
+            storage={storage}
+            isLoading={isStorageLoading}
+            isRefreshing={isStorageRefreshing}
+            error={storageError}
+          />
 
           {error && <Alert variant="error">{t("system.status.loadError", { error })}</Alert>}
           {isLoading && !status ? <Alert variant="info">{t("system.status.loading")}</Alert> : null}

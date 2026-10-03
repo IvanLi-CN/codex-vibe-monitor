@@ -2329,6 +2329,7 @@ function accountList(kind?: string | null) {
 }
 
 function systemStatus() {
+  const rawInventoryPreparing = demoModel.snapshot.scene === "system-raw-inventory-preparing";
   const pressureState = demoModel.snapshot.scene.replace("runtime-pressure-", "");
   const runtimeState = pressureState === demoModel.snapshot.scene ? "healthy" : pressureState;
   const accountingError = runtimeState === "accounting-error";
@@ -2346,9 +2347,9 @@ function systemStatus() {
     databaseBytes: 618_659_840,
     otherFilesBytes: 142_344_192,
     rawMetricsHealth: {
-      state: "ready",
+      state: rawInventoryPreparing ? "preparing" : "ready",
       inventoryCursor: 128_076,
-      physicalCoverage: "partial",
+      physicalCoverage: rawInventoryPreparing ? "unknown" : "partial",
     },
     projectionHealth: {
       terminal: {
@@ -2556,6 +2557,48 @@ function systemStatus() {
       },
     },
     refreshedAt: demoNow(),
+  };
+}
+
+function systemStorage() {
+  const scene = demoModel.snapshot.scene;
+  if (scene === "system-storage-unknown") {
+    return {
+      totalBytes: null,
+      sampledAt: null,
+      state: "unknown",
+      scanInProgress: false,
+      stale: false,
+      reason: null,
+    };
+  }
+  if (scene === "system-storage-preparing") {
+    return {
+      totalBytes: null,
+      sampledAt: null,
+      state: "preparing",
+      scanInProgress: true,
+      stale: false,
+      reason: null,
+    };
+  }
+  if (scene === "system-storage-error") {
+    return {
+      totalBytes: 105 * 1024 ** 3,
+      sampledAt: "2026-10-03T06:00:00Z",
+      state: "error",
+      scanInProgress: false,
+      stale: true,
+      reason: "permission_denied",
+    };
+  }
+  return {
+    totalBytes: 105 * 1024 ** 3,
+    sampledAt: "2026-10-03T07:20:00Z",
+    state: "ready",
+    scanInProgress: false,
+    stale: false,
+    reason: null,
   };
 }
 
@@ -4883,7 +4926,13 @@ export async function handleDemoRequest(request: Request) {
     return json(demoPerformanceHealth());
   if (pathname === "/api/system/performance/browser" && request.method === "POST")
     return json({ accepted: true });
-  if (pathname === "/api/system/status") return json(systemStatus());
+  if (pathname === "/api/system/status") {
+    if (demoModel.snapshot.scene === "system-storage-status-unavailable") {
+      return json({ message: "Demo system status unavailable" }, { status: 503 });
+    }
+    return json(systemStatus());
+  }
+  if (pathname === "/api/system/storage") return json(systemStorage());
   if (pathname === "/api/system/tasks") {
     let items = systemTasks();
     const taskKind = url.searchParams.get("taskKind");
