@@ -609,7 +609,9 @@ describe("demo MSW handlers", () => {
     };
     expect(detail.recentRuns[0]).toMatchObject({
       completion: "partial",
-      coreCompletion: "completed",
+      processedCount: 2000,
+      updatedCount: 2000,
+      coreCompletion: "partial",
       details: {
         timeoutCount: 0,
         archiveBatches: expect.arrayContaining([

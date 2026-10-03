@@ -2,7 +2,7 @@
 
 ## Current Status
 
-本轮实现 REQ-BRR-022..023 / VER-BRR-012，开发基线为 `162253adecf9dba913202201041846f9062e713c`，分支为 `th/retention-task-local-monthly-batches`。交付停在唯一直接 PR 的 Step 5C Ready；不包含合并、发布或生产修复。
+本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；分支已同步核实的 `origin/main@ea387d4285f94c381f6ed884461c7458cd45a66e`，分支为 `th/retention-task-local-monthly-batches`。交付停在唯一直接 PR 的 Step 5C Ready；不包含合并、发布或生产修复。
 
 代码已实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。当前正在完成后端回归和发布构建容量试验，尚未签收 50 倍新增速率、固定存量 24 小时归零或在线延迟不劣验收。旧 PR 的阶段交付授权和容量卡不作为本轮通过证据。
 
