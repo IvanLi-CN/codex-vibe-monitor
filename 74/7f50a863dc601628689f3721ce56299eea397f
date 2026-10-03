@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.85.1",
+  "base_stable_version": "2.85.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-03T10:39:29Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.85.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "fe521237bf9da65133ea0f0836bf020131fb2e18",
+  "pr_number": 1069,
+  "pr_title": "fix(prompt-cache): unify backfill control and bounded retries",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.85.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.85.1",
+  "target_sha": "747f50a863dc601628689f3721ce56299eea397f",
+  "type_label": "type:patch"
+}
