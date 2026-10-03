@@ -229,6 +229,36 @@ enum PromptCacheStatsPageOutcome {
     Unavailable,
 }
 
+struct PromptCacheStatsPageWork {
+    outcome: PromptCacheStatsPageOutcome,
+    rows_read: usize,
+    committed: bool,
+    visited: bool,
+}
+
+impl From<PromptCacheStatsPageOutcome> for PromptCacheStatsPageWork {
+    fn from(outcome: PromptCacheStatsPageOutcome) -> Self {
+        Self {
+            outcome,
+            rows_read: 0,
+            committed: false,
+            visited: matches!(
+                outcome,
+                PromptCacheStatsPageOutcome::Complete
+                    | PromptCacheStatsPageOutcome::Pending
+                    | PromptCacheStatsPageOutcome::GenerationChanged
+                    | PromptCacheStatsPageOutcome::BudgetExhausted
+            ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct PromptCacheStatsPageOptions {
+    checkpoint_source_max_invocation_id: Option<i64>,
+    run_deadline: Option<Instant>,
+}
+
 struct PromptCacheMaterializationBatchWork {
     identities_created: usize,
     refreshed: usize,
@@ -1006,6 +1036,15 @@ pub(crate) async fn load_prompt_cache_conversation_materialization_status(
         if remaining == 0 && materialization_complete {
             return Some(0);
         }
+        if matches!(
+            progress.phase.as_str(),
+            PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD
+                | PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN
+        ) || progress.phase == PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE
+            && !materialization_complete
+        {
+            return None;
+        }
         if sampled_keys == 0 || remaining == 0 {
             return None;
         }
@@ -1288,14 +1327,15 @@ async fn prompt_cache_conversation_identity_repair_needed(pool: &Pool<Sqlite>) -
 }
 
 async fn prompt_cache_conversation_materialize_key_batch(
-    pool: &Pool<Sqlite>,
+    context: &PromptCacheConversationMaterializationContext<'_>,
     phase: &str,
     source_max_invocation_id: i64,
     advance_cursor: bool,
-    control: Option<&std::sync::Arc<crate::maintenance_store::PromptCacheMaterializationControl>>,
-    expected_generation: Option<u64>,
     prompt_cache_keys: &[String],
 ) -> Result<PromptCacheMaterializationBatchOutcome> {
+    let pool = context.pool;
+    let control = context.control;
+    let expected_generation = context.control_generation;
     let started_at = Instant::now();
     let identity_only = matches!(
         phase,
@@ -1368,94 +1408,115 @@ async fn prompt_cache_conversation_materialize_key_batch(
         ));
     }
 
-    let mut refreshed = 0;
+    prompt_cache_conversation_materialize_stats_keys(
+        context,
+        advance_cursor.then_some(source_max_invocation_id),
+        identities_created,
+        prompt_cache_keys,
+    )
+    .await
+}
+
+async fn prompt_cache_conversation_materialize_stats_keys(
+    context: &PromptCacheConversationMaterializationContext<'_>,
+    checkpoint_source_max_invocation_id: Option<i64>,
+    identities_created: usize,
+    prompt_cache_keys: &[String],
+) -> Result<PromptCacheMaterializationBatchOutcome> {
+    let started_at = Instant::now();
+    let mut work = PromptCacheMaterializationBatchWork {
+        identities_created,
+        refreshed: 0,
+        scanned: 0,
+        elapsed: Duration::ZERO,
+    };
+    let deferred = |mut work: PromptCacheMaterializationBatchWork, reason, changed| {
+        work.elapsed = started_at.elapsed();
+        PromptCacheMaterializationBatchOutcome::Deferred {
+            work,
+            reason,
+            control_generation_changed: changed,
+        }
+    };
+    let run_deadline = context
+        .max_elapsed
+        .map(|budget| context.started_at + budget);
     for prompt_cache_key in prompt_cache_keys {
-        let stats_outcome = match refresh_prompt_cache_conversation_stats_bounded_page(
-            pool,
-            prompt_cache_key,
-            control,
-            expected_generation,
-        )
-        .await
-        {
-            Ok(outcome) => outcome,
-            Err(error) if prompt_cache_statistics_budget_error(&error) => {
-                PromptCacheStatsPageOutcome::BudgetExhausted
+        let mut visited = false;
+        loop {
+            if prompt_cache_conversation_materialization_budget_exhausted(
+                context.started_at,
+                context.max_elapsed,
+            ) {
+                return Ok(deferred(work, Some("stats_budget_exhausted"), false));
             }
-            Err(error) => return Err(error),
-        };
-        let (reason, control_generation_changed) = match stats_outcome {
-            PromptCacheStatsPageOutcome::Complete => {
-                refreshed += 1;
+            if (context.should_yield)() {
+                return Ok(deferred(work, Some("coordinator_priority"), false));
+            }
+            let page = match refresh_prompt_cache_conversation_stats_bounded_page(
+                context.pool,
+                prompt_cache_key,
+                context.control,
+                context.control_generation,
+                PromptCacheStatsPageOptions {
+                    checkpoint_source_max_invocation_id,
+                    run_deadline,
+                },
+            )
+            .await
+            {
+                Ok(page) => page,
+                Err(error) if prompt_cache_statistics_budget_error(&error) => {
+                    PromptCacheStatsPageOutcome::BudgetExhausted.into()
+                }
+                Err(error) => return Err(error),
+            };
+            if page.visited && !visited {
+                work.scanned += 1;
+                visited = true;
+            }
+            debug!(
+                rows_read = page.rows_read,
+                committed = page.committed,
+                outcome = ?page.outcome,
+                "prompt-cache statistics source page finished"
+            );
+            if page.outcome == PromptCacheStatsPageOutcome::Complete {
+                work.refreshed += usize::from(page.committed);
+                break;
+            }
+            if page.outcome == PromptCacheStatsPageOutcome::Pending {
+                tokio::time::sleep(PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE).await;
                 continue;
             }
-            PromptCacheStatsPageOutcome::Pending => (Some("stats_page_pending"), false),
-            PromptCacheStatsPageOutcome::GenerationChanged => {
-                (Some("stats_generation_changed"), false)
-            }
-            PromptCacheStatsPageOutcome::BudgetExhausted => (Some("stats_budget_exhausted"), false),
-            PromptCacheStatsPageOutcome::Disabled => (Some("operator_disabled"), false),
-            PromptCacheStatsPageOutcome::ControlGenerationChanged => (None, true),
-            PromptCacheStatsPageOutcome::Unavailable => {
-                (Some("maintenance_database_unavailable"), false)
-            }
-        };
-        return Ok(PromptCacheMaterializationBatchOutcome::Deferred {
-            work: PromptCacheMaterializationBatchWork {
-                identities_created,
-                refreshed,
-                scanned: prompt_cache_keys.len(),
-                elapsed: started_at.elapsed(),
-            },
-            reason,
-            control_generation_changed,
-        });
-    }
-
-    let cursor_step =
-        match prompt_cache_conversation_begin_control_step(control, expected_generation) {
-            Ok(step) => step,
-            Err(stop) => {
-                return Ok(PromptCacheMaterializationBatchOutcome::Deferred {
-                    work: PromptCacheMaterializationBatchWork {
-                        identities_created,
-                        refreshed,
-                        scanned: prompt_cache_keys.len(),
-                        elapsed: started_at.elapsed(),
-                    },
-                    reason: prompt_cache_materialization_defer_reason(stop),
-                    control_generation_changed: stop
-                        == PromptCacheMaterializationControlStop::GenerationChanged,
-                });
-            }
-        };
-    let mut tx = pool.begin().await?;
-    if advance_cursor {
-        update_prompt_cache_conversation_migration_progress_on_connection(
-            tx.as_mut(),
-            phase,
-            source_max_invocation_id,
-            prompt_cache_keys.last().map(String::as_str),
-        )
-        .await?;
-        if phase != PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD {
-            increment_prompt_cache_conversation_completed_keys_on_connection(
-                tx.as_mut(),
-                prompt_cache_keys.len(),
-            )
-            .await?;
+            let reason = match page.outcome {
+                PromptCacheStatsPageOutcome::GenerationChanged => Some("stats_generation_changed"),
+                PromptCacheStatsPageOutcome::BudgetExhausted => Some("stats_budget_exhausted"),
+                PromptCacheStatsPageOutcome::Disabled => Some("operator_disabled"),
+                PromptCacheStatsPageOutcome::Unavailable => {
+                    Some("maintenance_database_unavailable")
+                }
+                PromptCacheStatsPageOutcome::ControlGenerationChanged => None,
+                PromptCacheStatsPageOutcome::Complete | PromptCacheStatsPageOutcome::Pending => {
+                    unreachable!()
+                }
+            };
+            return Ok(deferred(
+                work,
+                reason,
+                page.outcome == PromptCacheStatsPageOutcome::ControlGenerationChanged,
+            ));
+        }
+        if prompt_cache_key
+            != prompt_cache_keys
+                .last()
+                .expect("non-empty statistics batch")
+        {
+            tokio::time::sleep(PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE).await;
         }
     }
-    tx.commit().await?;
-    drop(cursor_step);
-    Ok(PromptCacheMaterializationBatchOutcome::Complete(
-        PromptCacheMaterializationBatchWork {
-            identities_created,
-            refreshed,
-            scanned: prompt_cache_keys.len(),
-            elapsed: started_at.elapsed(),
-        },
-    ))
+    work.elapsed = started_at.elapsed();
+    Ok(PromptCacheMaterializationBatchOutcome::Complete(work))
 }
 
 async fn load_prompt_cache_conversation_keys_on_connection(
@@ -1517,12 +1578,10 @@ async fn run_prompt_cache_conversation_adaptive_key_batches(
         let batch_end = (offset + batch_size).min(prompt_cache_keys.len());
         let batch = &prompt_cache_keys[offset..batch_end];
         let batch_outcome = match prompt_cache_conversation_materialize_key_batch(
-            context.pool,
+            context,
             phase,
             source_max_invocation_id,
             advance_cursor,
-            context.control,
-            context.control_generation,
             batch,
         )
         .await
@@ -1710,10 +1769,11 @@ async fn run_prompt_cache_conversation_adaptive_identity_backfill_page(
     )
     .await?
     {
-        return Ok(prompt_cache_materialization_control_deferred(
-            PROMPT_CACHE_CONVERSATIONS_PHASE_IDENTITY_BACKFILL,
-            stop,
-        ));
+        result.deferred = true;
+        result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+        result.control_generation_changed =
+            stop == PromptCacheMaterializationControlStop::GenerationChanged;
+        return Ok(result);
     }
     result.phase = next_phase.to_string();
     Ok(result)
@@ -1872,10 +1932,11 @@ async fn run_prompt_cache_conversation_adaptive_stats_rebuild_page(
     )
     .await?
     {
-        return Ok(prompt_cache_materialization_control_deferred(
-            PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD,
-            stop,
-        ));
+        result.deferred = true;
+        result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+        result.control_generation_changed =
+            stop == PromptCacheMaterializationControlStop::GenerationChanged;
+        return Ok(result);
     }
     result.phase = next_phase.to_string();
     Ok(result)
@@ -2149,7 +2210,7 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         };
         remaining_scan_limit = remaining_scan_limit
             .saturating_sub(usize::try_from(chunk.scanned).unwrap_or(usize::MAX));
-        let no_work = chunk.scanned == 0 && chunk.updated == 0;
+        let no_work = chunk.scanned == 0 && chunk.updated == 0 && chunk.phase == progress.phase;
         result = PromptCacheConversationMaterializationRun {
             phase: chunk.phase,
             scanned: result.scanned.saturating_add(chunk.scanned),
@@ -2179,8 +2240,8 @@ async fn run_prompt_cache_conversations_materialization_with_policy(
         {
             return Ok(result);
         }
-        // Completed pages and empty phase transitions consume the same bounded run
-        // budget. Only unfinished statistics pages need the 15-second follow-up.
+        // Empty phase transitions consume time, but are not published identities or
+        // statistics. Continue them within the same bounded run.
         progress = load_prompt_cache_conversation_migration_progress(pool).await?;
     }
 }
@@ -3254,32 +3315,38 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     prompt_cache_key: &str,
     control: Option<&std::sync::Arc<crate::maintenance_store::PromptCacheMaterializationControl>>,
     expected_generation: Option<u64>,
-) -> Result<PromptCacheStatsPageOutcome> {
+    options: PromptCacheStatsPageOptions,
+) -> Result<PromptCacheStatsPageWork> {
     let _step = match prompt_cache_conversation_begin_control_step(control, expected_generation) {
         Ok(step) => step,
         Err(PromptCacheMaterializationControlStop::Disabled) => {
-            return Ok(PromptCacheStatsPageOutcome::Disabled);
+            return Ok(PromptCacheStatsPageOutcome::Disabled.into());
         }
         Err(PromptCacheMaterializationControlStop::GenerationChanged) => {
-            return Ok(PromptCacheStatsPageOutcome::ControlGenerationChanged);
+            return Ok(PromptCacheStatsPageOutcome::ControlGenerationChanged.into());
         }
         Err(PromptCacheMaterializationControlStop::Unavailable) => {
-            return Ok(PromptCacheStatsPageOutcome::Unavailable);
+            return Ok(PromptCacheStatsPageOutcome::Unavailable.into());
         }
     };
-    let deadline = Instant::now() + PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET;
-    let connection =
-        match tokio::time::timeout(PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET, pool.acquire())
-            .await
-        {
-            Ok(connection) => connection?,
-            Err(_) => {
-                return Err(anyhow!(
-                    "prompt-cache statistics page exceeded {}ms connection acquisition budget",
-                    PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
-                ));
-            }
-        };
+    let page_deadline = Instant::now() + PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET;
+    let deadline = options
+        .run_deadline
+        .map_or(page_deadline, |run| run.min(page_deadline));
+    let connection = match tokio::time::timeout(
+        deadline.saturating_duration_since(Instant::now()),
+        pool.acquire(),
+    )
+    .await
+    {
+        Ok(connection) => connection?,
+        Err(_) => {
+            return Err(anyhow!(
+                "prompt-cache statistics page exceeded {}ms connection acquisition budget",
+                PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET.as_millis()
+            ));
+        }
+    };
     let mut connection = PromptCacheConversationStatsProgressConnection {
         connection,
         progress_handler_installed: false,
@@ -3380,7 +3447,7 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             Ok(Ok(mut handle)) => {
                 handle.remove_progress_handler();
                 connection.progress_handler_installed = false;
-                return Ok(PromptCacheStatsPageOutcome::Complete);
+                return Ok(PromptCacheStatsPageOutcome::Complete.into());
             }
             Ok(Err(error)) => {
                 return Err(error.into());
@@ -3442,13 +3509,18 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     };
     if source_generation_changed {
         connection.close_on_drop();
-        return Ok(PromptCacheStatsPageOutcome::GenerationChanged);
+        return Ok(PromptCacheStatsPageWork {
+            outcome: PromptCacheStatsPageOutcome::GenerationChanged,
+            rows_read: 0,
+            committed: true,
+            visited: true,
+        });
     }
     let mut accumulator: PromptCacheConversationStatsRow =
         serde_json::from_str(&staging.accumulator_json).with_context(|| {
             format!(
                 "invalid prompt-cache statistics staging accumulator for {}",
-                staging.prompt_cache_key
+                prompt_cache_key_fingerprint(&staging.prompt_cache_key)
             )
         })?;
     let page_size = staging
@@ -3556,7 +3628,12 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(PromptCacheStatsPageOutcome::GenerationChanged);
+        return Ok(PromptCacheStatsPageWork {
+            outcome: PromptCacheStatsPageOutcome::GenerationChanged,
+            rows_read: page.len(),
+            committed: true,
+            visited: true,
+        });
     }
     if page.len() as i64 >= page_size {
         let last = page.last().expect("non-empty full prompt-cache page");
@@ -3573,7 +3650,22 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
-        return Ok(PromptCacheStatsPageOutcome::Pending);
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            source_generation = expected_generation,
+            source_max_invocation_id = staging.source_max_invocation_id,
+            cursor_id = last.id,
+            rows_read = page.len(),
+            staged_request_count = accumulator.request_count,
+            complete = false,
+            "prompt-cache statistics page committed"
+        );
+        return Ok(PromptCacheStatsPageWork {
+            outcome: PromptCacheStatsPageOutcome::Pending,
+            rows_read: page.len(),
+            committed: true,
+            visited: true,
+        });
     }
     let max_sequence = accumulator.max_invoke_id.as_deref().and_then(|invoke_id| {
         let suffix = invoke_id_suffix(invoke_id, &accumulator.conversation_id)?;
@@ -3619,8 +3711,32 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     .bind(expected_generation)
     .execute(&mut *tx)
     .await?;
+    if let Some(source_max_invocation_id) = options.checkpoint_source_max_invocation_id {
+        update_prompt_cache_conversation_migration_progress_on_connection(
+            tx.as_mut(),
+            PROMPT_CACHE_CONVERSATIONS_PHASE_STATS_REBUILD,
+            source_max_invocation_id,
+            Some(prompt_cache_key),
+        )
+        .await?;
+    }
     tx.commit().await?;
-    Ok(PromptCacheStatsPageOutcome::Complete)
+    info!(
+        prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+        source_generation = expected_generation,
+        source_max_invocation_id = staging.source_max_invocation_id,
+        cursor_id = page.last().map(|row| row.id).unwrap_or(staging.cursor_id),
+        rows_read = page.len(),
+        staged_request_count = accumulator.request_count,
+        complete = true,
+        "prompt-cache statistics page committed"
+    );
+    Ok(PromptCacheStatsPageWork {
+        outcome: PromptCacheStatsPageOutcome::Complete,
+        rows_read: page.len(),
+        committed: true,
+        visited: true,
+    })
 }
 
 fn prompt_cache_statistics_budget_error(error: &anyhow::Error) -> bool {
@@ -3689,8 +3805,10 @@ async fn refresh_prompt_cache_conversation_stats_once(
             prompt_cache_keys,
             None,
             None,
+            PromptCacheStatsPageOptions::default(),
         )
         .await?
+        .outcome
         {
             PromptCacheStatsPageOutcome::Complete => refreshed += 1,
             PromptCacheStatsPageOutcome::Pending

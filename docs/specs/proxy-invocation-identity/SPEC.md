@@ -41,7 +41,8 @@
 - Schema creation and legacy prompt-cache-key backfill MUST be idempotent and separately observable from aggregate statistics refresh.
 - Terminal and derived batch writes MUST persist the invocation, enqueue affected prompt-cache keys, and invalidate aggregate freshness without synchronously scanning retained history. The ordered background materialization task MUST refresh identities and aggregate statistics from the durable queue and advance its cursor only after each committed transaction.
 - A 400-key logical materialization page MAY be split into adaptive 32..400-key micro-batches. Prompt-cache pressure MUST yield only between committed micro-batches; a started micro-batch runs to commit or explicit failure.
-- Identity discovery MUST commit its identity rows, key cursor, and identity-key count together without scanning statistics. Statistics rebuild and queue drain MUST own resumable statistics pages. Completed pages and empty phase transitions MAY continue within the existing run budgets; incomplete statistics retain the bounded follow-up.
+- Identity discovery MUST commit its identity rows, key cursor, and identity-key count together without scanning statistics. Statistics rebuild and queue drain MUST own resumable statistics pages. A statistics rebuild MUST commit each completed conversation's aggregate, generation-bound queue/staging cleanup, and continuous outer key cursor in the same transaction. An unfinished conversation MUST NOT advance that cursor. Queue drain MUST use generation-bound queue removal as its completion checkpoint.
+- Statistics pages with unchanged sources MUST continue within the existing run and query budgets, checking control and interactive pressure between committed pages. Repeated pages of one conversation MUST consume only one visited-key allowance per run. A completed continuous prefix MUST NOT restart when a later conversation yields; source changes after publication MUST enqueue only the affected conversation.
 - Aggregate reads MUST use the existing unavailable contract until identity coverage, aggregate freshness, complete migration phase, and an empty durable refresh queue are all satisfied. Retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
 
 ### REQ-PII-005
@@ -53,8 +54,9 @@
 - The prompt-cache materialization task MUST use its `managed_tasks` row in the maintenance database as the sole enablement authority. Its scheduler checkpoint MUST be updated in the same maintenance-database transaction. The legacy business-database `startup_backfill_progress.enabled` value MUST NOT control execution after migration or be mirrored by the task; it may seed a managed control once only when no corresponding maintenance task row existed before registry seeding.
 - The dedicated materialization PATCH and managed-task PATCH MUST publish the same committed control state. A changed enablement value advances an in-process control generation; a repeated value does not. A step registered before a control change may finish, and later steps from the stale generation MUST stop before opening their SQLite transaction.
 - Statistics pages MUST distinguish pending continuation, source-generation change, budget exhaustion, actual disablement, priority yield, and unavailable maintenance control. Only a complete page may advance its outer key cursor or publish complete statistics. Incomplete pages MUST preserve committed staging progress and MUST NOT be reported as `operator_disabled` or returned as a complete aggregate.
-- Continuation caused by a pending page, generation change, or bounded work budget MUST use the existing 15-second follow-up. Same-generation wakes and stale run results MUST preserve the durable delay. Actual disablement clears pending scheduler entries; only a new enablement generation may wake that task. Maintenance control failure MUST preserve the last committed in-memory state and report unavailable when no trusted state exists.
+- A committed pending page MAY continue within the same run's remaining budget. Continuation deferred by a generation change or exhausted bounded work budget MUST use the existing 15-second follow-up. Priority and database pressure MUST retain their qualification/deadline path. Same-generation wakes and stale run results MUST preserve the durable delay. Actual disablement clears pending scheduler entries; only a new enablement generation may wake that task. Maintenance control failure MUST preserve the last committed in-memory state and report unavailable when no trusted state exists.
 - Existing status and control response fields remain compatible. The existing `deferReason` string distinguishes `stats_page_pending`, `stats_generation_changed`, `stats_budget_exhausted`, `coordinator_priority`, `operator_disabled`, and `maintenance_database_unavailable`.
+- Run `scanned` MUST count actually visited conversation keys, and `updated` MUST count committed identity creation or complete aggregate publication. Identity progress counters MUST retain their existing meaning. ETA MUST be unavailable while statistics rebuild or queue drain is incomplete and zero only after materialization is complete.
 
 ### REQ-PII-007
 
@@ -92,13 +94,19 @@
 
 - Method: Independent business/maintenance SQLite regression tests, scheduler-generation tests, upgrade compatibility checks, and a non-test Linux service-process replay.
 - covers: `REQ-PII-006`
-- Pass condition: Both contradictory legacy business enablement values follow only the maintenance control; pause/resume transactions publish atomically; incomplete pages retain their staging cursor and retry after a bounded delay; repeated same-generation wakes do not advance an unexpired pressure deadline or start duplicate work; priority yield resumes after the foreground writer completes; actual disablement waits for a new control generation; all existing HTTP fields remain unchanged; and repeated prompt-cache pages converge to complete statistics with an empty queue and no pure-wait run record.
+- Pass condition: Both contradictory legacy business enablement values follow only the maintenance control; pause/resume transactions publish atomically; multiple large conversations in one batch continue within the run budget and retain per-conversation checkpoints across yield/restart; completed prefixes are not rescanned; a final-page failure rolls back aggregate, queue/staging cleanup and outer cursor together; repeated same-generation wakes do not advance an unexpired pressure deadline or start duplicate work; priority yield resumes after the foreground writer completes; actual disablement waits for a new control generation; existing HTTP fields remain compatible; incomplete statistics ETA is null; and prompt-cache pages converge to exact complete statistics with an empty queue and no pure-wait run record.
 
 ### VER-PII-006
 
 - Method: Production terminal-write regression, incremental-versus-rebuild projection comparison, interrupted legacy-trigger upgrade/reentry regression, older-reader compatibility, and the same three-round Linux service replay used by `VER-PII-005`.
 - covers: `REQ-PII-007`
 - Pass condition: The actual terminal timing follow-up performs no projection update; relevant mutations, key moves and removal match a source rebuild; failed marker installation rolls back the trigger DDL; successful and repeated startup preserve business rows; existing readers accept the upgraded database; and all probe and steady calls remain included in the unchanged online latency and completion gates.
+
+### VER-PII-007
+
+- Method: Stateful SQLite multi-key checkpoint, budget, failure, pause/restart, source-generation, queue-drain, and nullable-ETA regressions, plus a SHA-bound three-round Linux service replay with synthetic history and per-page event evidence.
+- covers: `REQ-PII-004`, `REQ-PII-006`
+- Pass condition: The candidate publishes each completed rebuild key exactly once, resumes the first unfinished key from committed staging, advances only a continuous prefix in the final-page transaction, services a changed key behind the prefix through queue drain without rescanning other completed keys, preserves queue-drain cursor independence, reports actual visited/published work and null/zero ETA at the correct phases, reaches an exact empty-queue/empty-staging complete state, and stays within the existing online p99 bounds.
 
 ## Related ADRs
 
@@ -107,6 +115,7 @@
 - [`../../adr/0022-prompt-cache-adaptive-materialization.md`](../../adr/0022-prompt-cache-adaptive-materialization.md)
 - [`../../adr/0023-task-operations-state-outside-main-database.md`](../../adr/0023-task-operations-state-outside-main-database.md)
 - [`../../adr/0027-prompt-cache-materialization-step-boundaries.md`](../../adr/0027-prompt-cache-materialization-step-boundaries.md)
+- [`../../adr/0028-prompt-cache-continuous-statistics-checkpoints.md`](../../adr/0028-prompt-cache-continuous-statistics-checkpoints.md)
 
 ## Visual Evidence
 
