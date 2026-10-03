@@ -144,6 +144,10 @@ def audit(round_index):
             elif kind == 'stage_created' and publications.get(identity, 0):
                 failures.append({'kind': 'completed_key_restarted', 'event_id': event_id, 'key': prompt_cache_key, 'generation': generation})
             elif kind == 'page_committed':
+                if identity not in page_counts:
+                    page_counts[identity] = count
+                    page_cursors[identity] = cursor_id
+                    continue
                 previous = page_counts.get(identity, 0)
                 previous_cursor = page_cursors.get(identity)
                 if count < previous or (count == previous and cursor_id != previous_cursor):
