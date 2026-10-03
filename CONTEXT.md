@@ -1140,6 +1140,18 @@ _Avoid_: 同名字段即可相加, 行与批次混用, 截断值即完整值
 A population of eligible work items captured at one observation point and tracked through their completion. Later arrivals belong outside that cohort; its completion fraction is distinct from the current replenished backlog or a single scan's processing ratio.
 _Avoid_: 滚动积压即固定总量, 本次处理除以本次发现即总体进度
 
+**月度归档目标文件（Monthly Archive Target File）**:
+The canonical compressed SQLite archive selected by a dataset and calendar month. The month identifies the archive destination and grouping key; it does not define a Task Run's scope or require one run to drain the month. Batches from later runs that remain eligible for the same month target the same file.
+_Avoid_: 月度任务, 月度闭环, 每月一次运行
+
+**任务批次闭环（Task-Local Batch Closure）**:
+A bounded set of source rows selected by one Task Run and completed within that run by archive publication, identity verification, and the corresponding source-row transition. Temporary work used by the batch is task-local and is not a normal continuation input for a later run; a later run selects remaining live rows again.
+_Avoid_: 跨任务 staging, 续作游标, 月度全量完成
+
+**归档服务速率（Retention Service Rate）**:
+The rate of successfully committed source rows by dataset, measured separately from arrival rate and from file or byte throughput. Under the normal-load profile, the service-rate target is expressed as a multiple of the corresponding arrival rate so retention can catch up while other background tasks receive fair capacity.
+_Avoid_: 单批行数, 混合单位吞吐, 运行次数
+
 **任务执行／让行级别（Task Execution/Deferral Class）**:
 A read-only description of the execution or resource-deferral rules that actually apply to a Managed Task. It remains undefined when no corresponding rule exists and does not grant operators a configurable cross-task execution rank.
 _Avoid_: 可编辑任务优先级, 人工重要性标签, 跨任务排队顺序
