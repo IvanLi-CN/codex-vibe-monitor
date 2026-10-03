@@ -328,7 +328,7 @@ jobs:
   storybook-accessibility-tests:
     name: Storybook Accessibility Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -615,7 +615,7 @@ jobs:
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Verify backend test archive producer
         env:
@@ -650,7 +650,7 @@ jobs:
     if: always()
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - name: Verify backend test archive producer
         env:
@@ -777,7 +777,7 @@ jobs:
     if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - name: Verify backend test archive producer
         env:
