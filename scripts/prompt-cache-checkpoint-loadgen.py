@@ -396,7 +396,6 @@ def compatibility_read(round_index):
     with base.open_db(base.BUSINESS_DB) as db:
         invocation_count_after = db.execute('SELECT COUNT(*) FROM codex_invocations').fetchone()[0]
     result = {
-        'phase': 'older-reader-compatibility',
         'round': round_index,
         'health_status': health,
         'health_body': health_body,
