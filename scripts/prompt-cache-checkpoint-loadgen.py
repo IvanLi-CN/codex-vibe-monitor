@@ -102,11 +102,15 @@ CREATE TRIGGER checkpoint_aggregate_published AFTER UPDATE OF request_count ON p
 CREATE TABLE checkpoint_queue_deletions (id INTEGER PRIMARY KEY, prompt_cache_key TEXT, generation INTEGER);
 CREATE TRIGGER checkpoint_queue_deleted AFTER DELETE ON prompt_cache_conversation_stats_refresh_queue BEGIN
   INSERT INTO checkpoint_queue_deletions (prompt_cache_key,generation) VALUES (OLD.prompt_cache_key,OLD.generation); END;
+CREATE TABLE checkpoint_expected_queue (prompt_cache_key TEXT PRIMARY KEY, generation INTEGER NOT NULL);
 CREATE TABLE checkpoint_cursor_events (id INTEGER PRIMARY KEY, phase TEXT, cursor_key TEXT);
 CREATE TRIGGER checkpoint_cursor_advanced AFTER UPDATE OF cursor_key ON prompt_cache_conversation_migration_progress
 WHEN OLD.cursor_key IS NOT NEW.cursor_key AND NEW.phase='stats_rebuild'
 BEGIN INSERT INTO checkpoint_cursor_events (phase,cursor_key) VALUES (NEW.phase,NEW.cursor_key); END;
 ''')
+        db.execute(
+            'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) '
+            'SELECT prompt_cache_key,generation FROM prompt_cache_conversation_stats_refresh_queue')
         db.commit()
     emit('checkpoint-fixture', round_index, historical_keys=400, historical_invocations=sequence,
          first_six_counts=COUNTS[:6], remaining_key_count=394, remaining_count_each=7,
@@ -165,21 +169,30 @@ def audit(round_index):
         queue_deletions = [(row[0], row[1]) for row in db.execute(
             'SELECT prompt_cache_key,generation FROM checkpoint_queue_deletions ORDER BY id')
             if row[0].startswith(f'acceptance-r{round_index}-key-')]
+        expected_queue = [(row[0], row[1]) for row in db.execute(
+            'SELECT prompt_cache_key,generation FROM checkpoint_expected_queue ORDER BY prompt_cache_key')
+            if row[0].startswith(f'acceptance-r{round_index}-key-')]
         raw_evidence = {
             'page_and_publication_events': [dict(id=row[0], key=row[1], generation=row[2], cursor_id=row[3], request_count=row[4], kind=row[5]) for row in rows if row[1].startswith(historical_prefix)],
             'cursor_events': [{'phase': 'stats_rebuild', 'cursor_key': cursor} for cursor in prefix_cursors],
             'queue_deletions': [{'key': item[0], 'generation': item[1]} for item in queue_deletions],
+            'expected_queue': [{'key': item[0], 'generation': item[1]} for item in expected_queue],
         }
     evidence_path = Path(base.DATA_DIR, f'checkpoint-events-r{round_index}.json')
     evidence_path.write_text(json.dumps(raw_evidence, separators=(',', ':')))
     evidence_digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
     expected_cursors = [key(round_index, index) for index in range(400)]
+    deletion_keys = set(queue_deletions)
+    expected_deletion_keys = set(expected_queue)
     return {'events': len(rows), 'repeat_publications': repeated, 'restart_failures': failures,
             'continuous_prefix_passed': prefix_cursors == expected_cursors,
             'prefix_cursor_count': len(prefix_cursors), 'prefix_cursor_first': prefix_cursors[0] if prefix_cursors else None,
             'prefix_cursor_last': prefix_cursors[-1] if prefix_cursors else None,
-            'queue_deletions_exactly_once': len(queue_deletions) == 400 and len({item[0] for item in queue_deletions}) == 400,
-            'queue_deletion_count': len(queue_deletions), 'checkpoint_evidence_file': evidence_path.name,
+            'queue_deletions_exactly_once': len(queue_deletions) == len(expected_queue)
+            and len(deletion_keys) == len(expected_deletion_keys)
+            and deletion_keys == expected_deletion_keys,
+            'queue_deletion_count': len(queue_deletions), 'expected_queue_count': len(expected_queue),
+            'checkpoint_evidence_file': evidence_path.name,
             'checkpoint_evidence_sha256': evidence_digest,
             'exact_history_counts': len(actual) == 400 and [row[1] for row in actual] == COUNTS}
 
