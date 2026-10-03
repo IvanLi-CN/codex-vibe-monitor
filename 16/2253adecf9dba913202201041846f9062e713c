@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.85.2",
+  "base_stable_version": "2.85.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-03T15:35:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.85.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d216d0876a7c761925ac86aec896afa6689e12ef",
+  "pr_number": 1070,
+  "pr_title": "feat(system): measure complete project storage total",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.85.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.85.2",
+  "target_sha": "162253adecf9dba913202201041846f9062e713c",
+  "type_label": "type:patch"
+}
