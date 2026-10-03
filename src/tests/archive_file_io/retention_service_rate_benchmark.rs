@@ -163,6 +163,56 @@ fn percentile(samples: &[u64], percent: usize) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "diagnose one task against an owned synthetic capacity fixture"]
+async fn retention_task_local_capacity_fixture_diagnostic() {
+    let directory = PathBuf::from(
+        std::env::var("CVM_RETENTION_DIAGNOSTIC_FIXTURE").expect("owned fixture directory"),
+    );
+    assert!(directory.starts_with("/work") || directory.starts_with("/tmp"));
+    let mut config = test_config();
+    config.database_path = directory.join("codex-vibe-monitor.db");
+    config.proxy_raw_dir = directory.join("proxy_raw_payloads");
+    config.archive_dir = directory.join("archives");
+    config.invocation_archive_ttl_days = 365;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(8)
+        .connect_with(
+            build_sqlite_connect_options(
+                &test_sqlite_url_for_path(&config.database_path),
+                Duration::from_secs(5),
+            )
+            .expect("WAL options"),
+        )
+        .await
+        .expect("fixture pool");
+    ensure_schema(&pool)
+        .await
+        .expect("current fixture definitions");
+    let started = Instant::now();
+    let summary = RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            test_proxy_sqlite_write_coordinator(),
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                Arc::new(crate::db_pressure::DbPressureGate::new(
+                    1,
+                    Duration::from_secs(30),
+                )),
+                run_data_retention_maintenance(&pool, &config, Some(false), None),
+            ),
+        )
+        .await
+        .expect("diagnostic task");
+    eprintln!(
+        "capacity-diagnostic elapsed={:?} summary={summary:?}",
+        started.elapsed()
+    );
+    pool.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "release-build shared-testbox service-rate/online-latency acceptance"]
 async fn retention_task_local_service_rate_release_benchmark() {
     let rows = setting("CVM_RETENTION_SERVICE_ROWS", 1_270_000);
@@ -191,36 +241,57 @@ async fn retention_task_local_service_rate_release_benchmark() {
         Duration::from_secs(30),
     ));
     let stopped = Arc::new(AtomicBool::new(false));
+    let load_started = Instant::now();
+    let load_finished = move |stopped: &AtomicBool| {
+        stopped.load(Ordering::Acquire)
+            || window.is_some_and(|seconds| load_started.elapsed().as_secs() >= seconds)
+    };
     let reader_stopped = stopped.clone();
     let reader_pool = pool.clone();
     let reader = tokio::spawn(async move {
         let mut samples = Vec::new();
+        let mut requests = tokio::task::JoinSet::new();
+        let mut sequence = 0usize;
         let mut ticker = tokio::time::interval(Duration::from_millis(960 / load_multiplier as u64));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        while !reader_stopped.load(Ordering::Acquire) {
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
+        while !load_finished(&reader_stopped) {
             let scheduled = ticker.tick().await;
+            if load_finished(&reader_stopped) {
+                break;
+            }
+            while let Some(result) = requests.try_join_next() {
+                samples.push(result.expect("online read sample"));
+            }
+            let request_pool = reader_pool.clone();
+            let request_sequence = sequence;
+            sequence += 1;
+            requests.spawn(async move {
             // Rotate dashboard aggregate, live list and record lookup. The sequence is
             // deterministic and runs for the whole archive trial, not only its beginning.
-            match samples.len() % 3 {
+            match request_sequence % 3 {
                 0 => {
                     sqlx::query_scalar::<_, i64>(
                         "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at >= ?1",
                     )
                     .bind(shanghai_local_days_ago(0, 0, 0, 0))
-                    .fetch_one(&reader_pool)
+                    .fetch_one(&request_pool)
                     .await
                     .expect("online dashboard");
                 }
                 1 => {
                     sqlx::query("SELECT id,status,total_tokens,cost FROM codex_invocations ORDER BY occurred_at DESC,id DESC LIMIT 80")
-                    .fetch_all(&reader_pool).await.expect("online live list");
+                    .fetch_all(&request_pool).await.expect("online live list");
                 }
                 _ => {
                     sqlx::query("SELECT id,status,total_tokens,cost,payload FROM codex_invocations WHERE invoke_id=?1")
-                    .bind(format!("service-recent-{}", samples.len()%30_000+1)).fetch_optional(&reader_pool).await.expect("online detail");
+                    .bind(format!("service-recent-{}", request_sequence%30_000+1)).fetch_optional(&request_pool).await.expect("online detail");
                 }
             }
-            samples.push(scheduled.elapsed().as_micros() as u64);
+            scheduled.elapsed().as_micros() as u64
+            });
+        }
+        while let Some(result) = requests.join_next().await {
+            samples.push(result.expect("settled online read sample"));
         }
         samples
     });
@@ -229,30 +300,47 @@ async fn retention_task_local_service_rate_release_benchmark() {
     let writer_coordinator = coordinator.clone();
     let writer = tokio::spawn(async move {
         let mut samples = Vec::new();
+        let mut requests = tokio::task::JoinSet::new();
+        let mut sequence = 0usize;
         let mut ticker =
             tokio::time::interval(Duration::from_millis(2_880 / load_multiplier as u64));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        while !writer_stopped.load(Ordering::Acquire) {
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
+        while !load_finished(&writer_stopped) {
             let scheduled = ticker.tick().await;
-            let permit = writer_coordinator
+            if load_finished(&writer_stopped) {
+                break;
+            }
+            while let Some(result) = requests.try_join_next() {
+                samples.push(result.expect("online write sample"));
+            }
+            let request_pool = writer_pool.clone();
+            let request_coordinator = writer_coordinator.clone();
+            let request_sequence = sequence;
+            sequence += 1;
+            requests.spawn(async move {
+            let timestamp = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let permit = request_coordinator
                 .acquire(ProxySqliteWriteClass::P1Terminal)
                 .await;
-            let mut tx = writer_pool
+            let mut tx = request_pool
                 .begin()
                 .await
                 .expect("online terminal transaction");
-            let invocation = format!("service-online-{}", samples.len());
-            let timestamp = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+            let invocation = format!("service-online-{request_sequence}");
             sqlx::query("INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response) VALUES(?1,?2,'proxy','success',7,0.07,?3,'{}')")
-                .bind(&invocation).bind(&timestamp).bind(payload(samples.len())).execute(&mut *tx).await.expect("online invocation write");
-            for attempt in 0..if samples.len() % 5 == 0 { 2 } else { 1 } {
+                .bind(&invocation).bind(&timestamp).bind(payload(request_sequence)).execute(&mut *tx).await.expect("online invocation write");
+            for attempt in 0..if request_sequence.is_multiple_of(5) { 2 } else { 1 } {
                 sqlx::query("INSERT INTO pool_upstream_request_attempts(attempt_public_id,invoke_id,occurred_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status) VALUES(?1,?2,?3,'/v1/responses','pool',?4,0,0,'success')")
                     .bind(format!("{invocation}-attempt-{attempt}")).bind(&invocation).bind(&timestamp).bind(attempt as i64)
                     .execute(&mut *tx).await.expect("online attempt write");
             }
             tx.commit().await.expect("online terminal commit");
             drop(permit);
-            samples.push(scheduled.elapsed().as_micros() as u64);
+            scheduled.elapsed().as_micros() as u64
+            });
+        }
+        while let Some(result) = requests.join_next().await {
+            samples.push(result.expect("settled online write sample"));
         }
         samples
     });
@@ -279,6 +367,7 @@ async fn retention_task_local_service_rate_release_benchmark() {
             )
             .await
             .expect("retention trial");
+        eprintln!("retention-service-rate-stages {summary:?}");
         invoked += summary.invocation_rows_archived;
         attempted += summary.pool_upstream_request_attempt_rows_archived;
         timeouts += usize::from(summary.budget_exhausted);
@@ -289,12 +378,12 @@ async fn retention_task_local_service_rate_release_benchmark() {
             summary.fatal_error
         );
         remaining = (
-            sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE id<=?1")
+            sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations INDEXED BY idx_codex_invocations_occurred_at WHERE id<=?1")
                 .bind(invocation_max)
                 .fetch_one(&pool)
                 .await
                 .expect("fixed invocation remainder"),
-            sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE id<=?1")
+            sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts INDEXED BY idx_pool_upstream_request_attempts_occurred_at WHERE id<=?1")
                 .bind(attempt_max)
                 .fetch_one(&pool)
                 .await

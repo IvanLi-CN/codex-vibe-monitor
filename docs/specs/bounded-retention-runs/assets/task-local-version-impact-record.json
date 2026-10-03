@@ -17,7 +17,7 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "Optional JSON metrics preserve public consumers; existing gzip SQLite, manifest and V2 Snapshot format retained, no main schema or new state values. Supported same-Minor state readability still requires verification.",
+      "reasoning": "Optional JSON metrics preserve public consumers; existing gzip SQLite, manifest and V2 Snapshot format retained, no main table/column or new state values. Supported same-Minor state readability still requires verification.",
       "assessed_at": "2026-10-03T19:15:00Z",
       "evidence": [
         "src/tests/archive_file_io/retention_task_local_batches.rs",
@@ -27,25 +27,27 @@
     "current": {
       "impact": "patch",
       "scope_drift": {
-        "detected": false,
-        "description": "Approved ADR 0028 scope"
+        "detected": true,
+        "description": "Capacity diagnosis identified a synchronous historical-key scan in online P1 writes and unbounded retention admission; equivalent indexed working-set queries and deadline cancellation repair the accepted online-impact and timeout contract."
       },
-      "reasoning": "Optional task JSON fields are nonbreaking. Existing manifest and V2 encoder/decoder/proof reader sources are identical across v2.85.0-v2.85.3; the candidate same-month 1000+200 roundtrip uses those readers and verifies no main schema changes. Full historical binaries were not executed.",
-      "reassessed_at": "2026-10-03T20:15:48Z",
+      "reasoning": "No main table, column, enum or migration identity additions. The three existing trigger definitions retain exact short working-set source semantics and deployed completion facts. Archive readers and optional task JSON remain compatible; current candidate full validation is pending.",
+      "reassessed_at": "2026-10-03T21:31:00Z",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
-        "web/src/lib/api/core-foundation.test.ts"
+        "web/src/lib/api/core-foundation.test.ts",
+        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Optional task JSON fields are nonbreaking. Existing manifest and V2 encoder/decoder/proof reader sources are identical across v2.85.0-v2.85.3; the candidate same-month 1000+200 roundtrip uses those readers and verifies no main schema changes. Full historical binaries were not executed.",
-      "verified_at": "2026-10-03T20:15:48Z",
+      "reasoning": "Existing archive/V2/manifest readers are unchanged across the supported same-Minor range and current roundtrip. There are no new main tables, columns, state values or migration identities. Equivalent short working-set trigger definitions preserve source semantics and original completion facts; isolated source-reference and idempotent upgrade regressions passed. Full candidate delivery and capacity gates remain separate.",
+      "verified_at": "2026-10-03T21:46:00Z",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
-        "web/src/lib/api/core-foundation.test.ts"
+        "web/src/lib/api/core-foundation.test.ts",
+        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs"
       ]
     }
   },

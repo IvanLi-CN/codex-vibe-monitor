@@ -18,6 +18,8 @@ Normal-load acceptance is expressed as service rate rather than a minimum batch 
 
 Prompt-cache materialization and task observation remain separate derived maintenance. Their asynchronous state does not block a completed retention batch and does not change the immutable Task Run result.
 
+Online writes must also avoid historical-key scans in the synchronous short working-set projection. Recent source rows use the existing key/time index; older in-flight candidates use the existing live invocation IDs plus the current mutation ID. Source key, time and display status are rechecked in the same SQLite snapshot, including when the working-set trigger runs before the live-ID trigger. This preserves working-set semantics without moving conversation-history statistics into retention transactions. Existing trigger definitions are repaired atomically by inspecting schema metadata, preserving deployed migration completion facts and adding no main database table, column or state value.
+
 ## Consequences
 
 - A single run should process many rows and may update several monthly targets, but it is not required to finish an entire calendar month.

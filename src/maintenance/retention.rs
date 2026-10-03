@@ -689,6 +689,16 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         .flatten()
 }
 
+#[cfg(test)]
+pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_RUN_DEADLINE
+        .scope(RefCell::new(Some(Instant::now() + budget)), work)
+        .await
+}
+
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
     let fingerprint = retention_error_fingerprint(error);
     let mut health = RETENTION_RECOVERY_HEALTH
@@ -1318,23 +1328,47 @@ async fn acquire_retention_write_coordinator(
     crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
 )> {
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        return None;
+    }
     let coordinator = retention_write_coordinator_handle();
-    let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
-        Ok(shutdown) => {
-            coordinator
-                .acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown)
-                .await
+    let acquire = async {
+        match RETENTION_SHUTDOWN.try_with(Clone::clone) {
+            Ok(shutdown) => {
+                coordinator
+                    .acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown)
+                    .await
+            }
+            Err(_) => Some(
+                coordinator
+                    .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
+                    .await,
+            ),
         }
-        Err(_) => Some(
-            coordinator
-                .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-                .await,
-        ),
+    };
+    // A queued maintenance waiter owns no SQLite work. Dropping it unregisters the waiter;
+    // the deadline must also cover admission behind an active foreground writer.
+    let write_permit = if let Some(remaining) = retention_run_remaining_budget() {
+        match tokio::time::timeout(remaining, acquire).await {
+            Ok(permit) => permit,
+            Err(_) => {
+                retention_record_defer(operation, "retention_work_budget");
+                return None;
+            }
+        }
+    } else {
+        acquire.await
     };
     let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");
         return None;
     };
+    if retention_run_budget_expired() {
+        drop(write_permit);
+        retention_record_defer(operation, "retention_work_budget");
+        return None;
+    }
     Some((write_permit, coordinator.snapshot().await))
 }
 
@@ -3025,17 +3059,9 @@ async fn retention_recovery_persist_scheduler_cursor_without_pressure_for_scope(
     reset_failure_count: bool,
     failure_fingerprint: Option<&str>,
 ) -> Result<()> {
-    #[cfg(test)]
-    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
-        .try_with(std::sync::Arc::clone)
-        .unwrap_or_else(|_| {
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        });
-    #[cfg(not(test))]
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let write_permit = coordinator
-        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-        .await;
+    let (write_permit, _) = acquire_retention_write_coordinator("retention_recovery_scheduler")
+        .await
+        .ok_or_else(|| retention_write_deferred("retention_recovery_scheduler"))?;
     let next_retry_at = if retry_secs > 0 {
         Some(format!("+{retry_secs} seconds"))
     } else {
@@ -3072,17 +3098,9 @@ async fn retention_recovery_persist_scheduler_cursor_without_pressure_for_scope(
 }
 
 async fn retention_recovery_mark_prepared_progress(pool: &Pool<Sqlite>) -> Result<()> {
-    #[cfg(test)]
-    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
-        .try_with(std::sync::Arc::clone)
-        .unwrap_or_else(|_| {
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        });
-    #[cfg(not(test))]
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let write_permit = coordinator
-        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-        .await;
+    let (write_permit, _) = acquire_retention_write_coordinator("retention_recovery_progress")
+        .await
+        .ok_or_else(|| retention_write_deferred("retention_recovery_progress"))?;
     sqlx::query(
         "UPDATE retention_recovery_cursors
          SET last_progress_at = datetime('now'), updated_at = datetime('now')
@@ -3173,6 +3191,15 @@ async fn reconcile_retention_prepared_archives(
     if retention_run_remaining_budget().is_some() {
         // Compatibility isolation only. A current task never continues source mutations
         // from the previous program's prepared artifact or source_ids cursor.
+        let pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM retention_prepared_archives
+             WHERE state IN ('preparing','published'))",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !pending {
+            return retire_task_local_quarantines(pool, config).await;
+        }
         let Some(_admission) = acquire_retention_write_admission("legacy_prepared_isolation").await
         else {
             return Ok(());

@@ -637,8 +637,28 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
     Ok(())
 }
 
-pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) -> String {
+pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(
+    key_expr: &str,
+    current_id_expr: &str,
+) -> String {
     let display_status_sql = crate::api::invocation_display_status_sql();
+    // Split the recent range from older in-flight rows. The old OR predicate evaluated
+    // display status (including JSON) for every historical row of a large prompt key.
+    // Existing live IDs cover older in-flight rows; the current source ID also covers
+    // the mutation regardless of trigger order. Recheck source identity/time/display
+    // semantics below so stale OLD live IDs cannot enter the refreshed result.
+    let source_candidates_sql = format!(
+        "SELECT * FROM codex_invocations INDEXED BY idx_codex_invocations_prompt_cache_key_occurred_at
+         WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = {key_expr}
+             AND occurred_at >= datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds')
+         UNION ALL
+         SELECT * FROM codex_invocations NOT INDEXED WHERE id IN (
+             SELECT invocation_id FROM invocation_in_progress_live
+                 WHERE prompt_cache_key = {key_expr}
+             UNION SELECT {current_id_expr}
+         ) AND occurred_at < datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds')
+             AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = {key_expr}"
+    );
     format!(
         r#"
         INSERT INTO prompt_cache_working_set_live (
@@ -727,7 +747,7 @@ pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) 
                         WHEN LOWER(TRIM({display_status_sql})) IN ('running', 'pending') THEN 1
                         ELSE 0
                     END AS is_in_flight
-                FROM codex_invocations
+                FROM ({source_candidates_sql})
                 WHERE {prompt_cache_key_sql} = {key_expr}
                   AND {prompt_cache_key_sql} IS NOT NULL
                   AND {prompt_cache_key_sql} <> ''
@@ -765,7 +785,7 @@ pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) 
           AND prompt_cache_key <> ''
           AND NOT EXISTS (
               SELECT 1
-              FROM codex_invocations
+              FROM ({source_candidates_sql})
               WHERE {prompt_cache_key_sql} = {key_expr}
                 AND {prompt_cache_key_sql} IS NOT NULL
                 AND {prompt_cache_key_sql} <> ''
@@ -780,6 +800,7 @@ pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(key_expr: &str) 
         key_expr = key_expr,
         source_proxy = SOURCE_PROXY,
         window_seconds = PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS,
+        source_candidates_sql = source_candidates_sql,
     )
 }
 
@@ -2361,11 +2382,22 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     }
     // Existing live tables and their original completion marker do not need a row rebuild.
     // Upgrade just the trigger definitions, preserving projection rows and business cursors.
-    if !schema_refresh_completed(
-        pool,
-        PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+    let indexed_working_set_triggers: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'
+         AND name IN ('trg_codex_invocations_prompt_cache_working_set_insert',
+             'trg_codex_invocations_prompt_cache_working_set_update',
+             'trg_codex_invocations_prompt_cache_working_set_delete')
+         AND instr(sql, 'SELECT invocation_id FROM invocation_in_progress_live') > 0
+         AND instr(sql, 'INDEXED BY idx_codex_invocations_prompt_cache_key_occurred_at') > 0",
     )
-    .await?
+    .fetch_one(pool)
+    .await?;
+    if indexed_working_set_triggers != 3
+        || !schema_refresh_completed(
+            pool,
+            PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+        )
+        .await?
     {
         rebuild_prompt_cache_working_set_live_triggers(pool)
             .await

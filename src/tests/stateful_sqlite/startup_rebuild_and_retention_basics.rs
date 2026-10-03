@@ -573,6 +573,11 @@ async fn ensure_schema_rebuilds_invocation_in_progress_live_from_existing_invoca
         "trg_codex_invocations_live_insert",
         "trg_codex_invocations_live_update",
         "trg_codex_invocations_live_delete",
+        // A pre-live source fixture must also omit dependent working-set triggers.
+        // Current definitions read live IDs and cannot run after this table is dropped.
+        "trg_codex_invocations_prompt_cache_working_set_insert",
+        "trg_codex_invocations_prompt_cache_working_set_update",
+        "trg_codex_invocations_prompt_cache_working_set_delete",
     ] {
         sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
             .execute(&state.pool)

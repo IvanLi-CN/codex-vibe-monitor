@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Task-local monthly archive batches; no main database schema changes",
+    "description": "Task-local monthly archive batches; no new main database tables, columns or state values; atomic updates to three existing working-set trigger definitions",
     "release_unit_description": "Retention batch closure and optional task throughput metrics",
     "version_impact": "patch"
   },
@@ -17,28 +17,40 @@
   },
   "database_migration": {
     "applicable": true,
-    "ddl_structural_changes": [],
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "Atomically replace the three existing short working-set trigger definitions with equivalent indexed recent/live source queries. Inspect sqlite_master to recognize completion; preserve existing deployed migration marker and completed_at. No new table, column, state value, migration identity, historical scan or projection-row rebuild.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
     "dml_changes": [
       {
         "id": "dml-001",
         "description": "Isolate old preparing/published prepared facts using existing quarantined state without resuming source IDs; retain manifests and raw ownership. Retire only grace-expired unowned artifacts.",
-        "order": 1,
-        "depends_on": [],
+        "order": 2,
+        "depends_on": [
+          "ddl-001"
+        ],
         "observable": true,
         "pauseable": true
       },
       {
         "id": "dml-002",
         "description": "Publish one task-local batch to the canonical monthly target and transform verified source rows in short transactions; failed live rows are reselected rather than resumed.",
-        "order": 2,
-        "depends_on": [],
+        "order": 3,
+        "depends_on": [
+          "ddl-001"
+        ],
         "observable": true,
         "pauseable": true
       },
       {
         "id": "dml-003",
         "description": "Append optional throughput fields to immutable maintenance run details; missing historical fields stay unknown.",
-        "order": 3,
+        "order": 4,
         "depends_on": [
           "dml-002"
         ],
@@ -51,6 +63,7 @@
   "rollout_observability": {
     "operations_must_remain_separate": true,
     "operation_sequence": [
+      "ddl-001",
       "dml-001",
       "dml-002",
       "dml-003"
@@ -58,7 +71,8 @@
     "progress_signals": [
       "Source rows committed by dataset/month",
       "Batch rows, full-task service rate, arrival rate, multiple, timeout count, file preparation and lock wait",
-      "Existing manifests/proof/raw ownership and isolation state"
+      "Existing manifests/proof/raw ownership and isolation state",
+      "Indexed working-set trigger definitions present; original migration completion fact unchanged"
     ],
     "pause_points": [
       "Before a new selected file batch",
@@ -100,8 +114,9 @@
     "completed_evidence": [
       "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
       "src/tests/archive_file_io/retention_task_local_batches.rs",
-      "web/src/lib/api/core-foundation.test.ts"
+      "web/src/lib/api/core-foundation.test.ts",
+      "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs"
     ],
-    "status": "same-minor-reader-compatibility-verified; full-candidate-delivery-gates-separate"
+    "status": "same-minor-archive-reader-compatibility-verified; current-candidate-trigger-and-delivery-validation-pending"
   }
 }
