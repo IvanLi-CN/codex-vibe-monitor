@@ -1,0 +1,65 @@
+#!/usr/bin/env python3
+"""Check that current pressure evidence preserves the strict progress clock."""
+import datetime
+import importlib.util
+import os
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+
+SOURCE = Path(__file__).resolve().parents[2] / 'scripts/prompt-cache-control-loadgen.py'
+spec = importlib.util.spec_from_file_location('prompt_cache_control', SOURCE)
+loadgen = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(loadgen)
+
+
+class ProgressClockTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.log = Path(self.directory.name) / 'pressure.log'
+        self.log.write_text('')
+        self.state = dict(maintenance_enabled=True, scheduler_status='running',
+                          scheduler_next_run_after=None,
+                          latest_defer_reason='coordinator_priority',
+                          scheduler_defer_reason='coordinator_priority')
+        self.now = datetime.datetime(2026, 10, 3, tzinfo=datetime.timezone.utc)
+
+    def test_stale_priority_reason_does_not_hide_45_second_stall(self):
+        probe = dict(eligible_since=None, durable_seen=False, staging_seen=False,
+                     baseline_cursor=list(loadgen.progress_cursor(self.state)),
+                     baseline_staging_cursor=0, max_durable_eligible_wait_seconds=0,
+                     max_staging_eligible_wait_seconds=0, deadline_failures=[])
+        with patch.dict(os.environ, PROMPT_CACHE_PRESSURE_LOG=str(self.log)):
+            loadgen.observe_progress(probe, dict(self.state), 0)
+            loadgen.observe_progress(probe, dict(self.state), 45)
+        self.assertEqual(probe['deadline_failures'], ['durable', 'staging'])
+
+    def test_fresh_denial_excludes_only_its_unexpired_window(self):
+        self.log.write_text(
+            '2026-10-03T00:00:00Z INFO task="prompt-cache conversation materialization" '
+            'next_eligibility=2026-10-03 00:00:20 UTC '
+            'startup backfill task deferred before SQLite access\n')
+        state = {**self.state, 'latest_defer_reason': None, 'scheduler_defer_reason': None}
+        self.assertEqual(loadgen.progress_eligibility(
+            state, self.now + datetime.timedelta(seconds=5), self.log), 'pressure_deadline')
+        self.assertEqual(loadgen.progress_eligibility(
+            state, self.now + datetime.timedelta(seconds=21), self.log), 'eligible')
+
+    def test_future_statistics_retry_is_not_eligible_work(self):
+        state = {**self.state, 'scheduler_status': 'idle',
+                 'scheduler_defer_reason': 'stats_page_pending',
+                 'scheduler_next_run_after': '2026-10-03T00:00:15Z'}
+        self.assertEqual(loadgen.progress_eligibility(state, self.now, self.log), 'pressure_deadline')
+        self.assertEqual(loadgen.progress_eligibility(
+            state, self.now + datetime.timedelta(seconds=16), self.log), 'eligible')
+
+    def test_missing_pressure_evidence_fails_instead_of_exempting_a_stall(self):
+        self.log.unlink()
+        with self.assertRaises(FileNotFoundError):
+            loadgen.progress_eligibility(self.state, self.now, self.log)
+
+
+if __name__ == '__main__':
+    unittest.main()

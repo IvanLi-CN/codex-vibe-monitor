@@ -6,6 +6,7 @@ import datetime
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 import time
@@ -362,17 +363,43 @@ def progress_cursor(state):
     )
 
 
-def progress_eligibility(state, now_utc=None):
+def fresh_pressure_deadline(now, pressure_log_path=None):
+    path = pressure_log_path or os.environ.get('PROMPT_CACHE_PRESSURE_LOG')
+    if not path:
+        raise RuntimeError('fresh prompt-cache pressure log is required')
+    # Only fresh process denials define pressure waiting. An old run-history
+    # reason cannot exempt an otherwise eligible stalled task.
+    with open(path, 'rb') as log:
+        log.seek(0, os.SEEK_END)
+        offset = max(0, log.tell() - 256 * 1024)
+        log.seek(offset)
+        if offset:
+            log.readline()
+        lines = log.read().decode(errors='replace').splitlines()
+    for raw in reversed(lines):
+        line = re.sub(r'\x1b\[[0-9;]*m', '', raw)
+        if ('deferred before SQLite access' not in line
+                or 'task="prompt-cache conversation materialization"' not in line):
+            continue
+        began = re.search(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z)', line)
+        due = re.search(r'next_eligibility=(\d{4}-\d\d-\d\d) (\d\d:\d\d:\d\d)(?:\.\d+)? UTC', line)
+        if not began or not due:
+            raise RuntimeError('pressure denial has no parseable eligibility window')
+        start = datetime.datetime.fromisoformat(began.group(1).replace('Z', '+00:00'))
+        end = datetime.datetime.fromisoformat(due.group(1) + 'T' + due.group(2) + '+00:00')
+        if start <= now < end:
+            return end
+    return None
+
+
+def progress_eligibility(state, now_utc=None, pressure_log_path=None):
     if state.get('snapshot_error'):
         return 'snapshot_unavailable'
     if not state.get('maintenance_enabled'):
         return 'operator_disabled'
-    if 'coordinator_priority' in {
-        state.get('latest_defer_reason'), state.get('scheduler_defer_reason'),
-    }:
-        # Priority waits are notification-driven; an expired fallback deadline
-        # alone does not show that the coordinator has made P2 work eligible.
-        return 'pressure_priority'
+    now = now_utc or datetime.datetime.now(datetime.timezone.utc)
+    if fresh_pressure_deadline(now, pressure_log_path):
+        return 'pressure_deadline'
     due = state.get('scheduler_next_run_after')
     if due:
         deadline = datetime.datetime.fromisoformat(due.replace('Z', '+00:00'))
@@ -868,6 +895,7 @@ COMMANDS = {
     'wait-health': wait_health,
 }
 
-if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
-    raise SystemExit(f'usage: {sys.argv[0]} <{",".join(sorted(COMMANDS))}> [args]')
-COMMANDS[sys.argv[1]]()
+if __name__ == '__main__':
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        raise SystemExit(f'usage: {sys.argv[0]} <{",".join(sorted(COMMANDS))}> [args]')
+    COMMANDS[sys.argv[1]]()

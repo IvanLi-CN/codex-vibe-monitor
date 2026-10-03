@@ -287,6 +287,8 @@ ACCOUNT_KEY="upstream-primary-key"
 DIRECT_PROXY_KEY="__direct__"
 ENCRYPTION_SECRET="shared-testbox-encryption-secret"
 stats_pid=""
+app_logs_pid=""
+LIVE_APP_LOG="$LOG_DIR/prompt-cache-pressure-live.log"
 APP_RUST_LOG=warn
 if [ "$SCENARIO" = "prompt-cache-control" ]; then
   APP_RUST_LOG=info
@@ -315,8 +317,23 @@ with open(sys.argv[1], 'w', encoding='utf-8') as destination:
     destination.write('\n')
 PY
 
+stop_prompt_cache_log_reader() {
+  if [ -n "$app_logs_pid" ]; then
+    kill "$app_logs_pid" >/dev/null 2>&1 || true
+    wait "$app_logs_pid" >/dev/null 2>&1 || true
+    app_logs_pid=""
+  fi
+}
+
+start_prompt_cache_log_reader() {
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" \
+    logs --follow --no-color app >> "$LIVE_APP_LOG" 2>&1 &
+  app_logs_pid=$!
+}
+
 cleanup_remote() {
   set +e
+  stop_prompt_cache_log_reader
   if [ -n "$stats_pid" ]; then
     kill "$stats_pid" >/dev/null 2>&1 || true
     wait "$stats_pid" >/dev/null 2>&1 || true
@@ -1278,7 +1295,9 @@ services:
     command: ["sh", "-lc", "sleep infinity"]
     environment:
       CAPTURE_P1_ACK: "$CAPTURE_P1_ACK"
+      PROMPT_CACHE_PRESSURE_LOG: /work/logs/prompt-cache-pressure-live.log
     volumes:
+      - "$LOG_DIR:/work/logs:ro"
       - "$LOADGEN_SCRIPT:/work/loadgen.py:ro"
       - "$CONTROL_LOADGEN_SCRIPT:/work/prompt-cache-control-loadgen.py:ro"
       - "$DATA_DIR:/work/data"
@@ -1343,6 +1362,8 @@ if [ "$SCENARIO" = "prompt-cache-control" ]; then
     cp "$BASE_COMPOSE_FILE" "$COMPOSE_FILE"
     sed -i "s|$DATA_DIR|$round_data|g" "$COMPOSE_FILE"
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
+    : > "$LIVE_APP_LOG"
+    start_prompt_cache_log_reader
     (
       while docker inspect "${COMPOSE_PROJECT}-app-1" >/dev/null 2>&1; do
         docker stats --no-stream --format '{{json .}}' "${COMPOSE_PROJECT}-app-1" >> "$STATS_LOG" 2>/dev/null || true
@@ -1359,11 +1380,15 @@ if [ "$SCENARIO" = "prompt-cache-control" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-input "$round_index" "$((DURATION_SECONDS * 2 / 5))" "$REQUEST_RATE" </dev/null >> "$LOAD_LOG"
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
       printf '== restart app after draining proxy requests ==\n'
+      stop_prompt_cache_log_reader
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" restart app
+      start_prompt_cache_log_reader
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
     fi
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-prompt-cache-control-round-$round_index.log" || true
+    stop_prompt_cache_log_reader
+    cp "$LIVE_APP_LOG" "$LOG_DIR/pressure-live-round-$round_index.log"
     kill "$stats_pid" >/dev/null 2>&1 || true
     wait "$stats_pid" >/dev/null 2>&1 || true
     stats_pid=""
