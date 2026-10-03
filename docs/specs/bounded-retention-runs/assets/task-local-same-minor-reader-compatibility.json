@@ -1,0 +1,74 @@
+{
+  "method": "Exact source hashes for the supported same-Minor format readers, plus candidate monthly roundtrip and unchanged main-schema regression; this is not a claim that historical full binaries were executed.",
+  "supportedSameMinorVersions": [
+    "v2.85.0",
+    "v2.85.1",
+    "v2.85.2",
+    "v2.85.3"
+  ],
+  "sourceFacts": {
+    "src/maintenance/archive/manifest.rs": {
+      "currentSha256": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+      "readerSha256": {
+        "v2.85.0": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+        "v2.85.1": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+        "v2.85.2": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+        "v2.85.3": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9"
+      }
+    },
+    "decode_summary_archive_snapshot_v2_payload": {
+      "path": "src/summary_source_change.rs",
+      "currentSha256": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+      "readerSha256": {
+        "v2.85.0": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+        "v2.85.1": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+        "v2.85.2": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+        "v2.85.3": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a"
+      }
+    },
+    "summary_archive_snapshot_has_proof_tx": {
+      "path": "src/summary_source_change.rs",
+      "currentSha256": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+      "readerSha256": {
+        "v2.85.0": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+        "v2.85.1": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+        "v2.85.2": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+        "v2.85.3": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89"
+      }
+    },
+    "summary_archive_snapshot_has_final_proof_read_only": {
+      "path": "src/summary_source_change.rs",
+      "currentSha256": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+      "readerSha256": {
+        "v2.85.0": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+        "v2.85.1": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+        "v2.85.2": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+        "v2.85.3": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c"
+      }
+    },
+    "encode_summary_archive_snapshot_v2_payload": {
+      "path": "src/maintenance/retention.rs",
+      "currentSha256": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+      "readerSha256": {
+        "v2.85.0": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+        "v2.85.1": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+        "v2.85.2": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+        "v2.85.3": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b"
+      }
+    },
+    "build_invocation_archive_rows_chunk_query": {
+      "path": "src/maintenance/hourly_rollups.rs",
+      "currentSha256": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+      "readerSha256": {
+        "v2.85.0": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+        "v2.85.1": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+        "v2.85.2": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+        "v2.85.3": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4"
+      }
+    }
+  },
+  "candidateEvidence": [
+    "monthly-archive-disk-rw.log: same-month 1000+200 roundtrip, existing manifest, no main schema change, disk and shared-memory sources passed",
+    "monthly-web-final3.log: old task JSON compatibility and optional throughput normalization passed"
+  ]
+}

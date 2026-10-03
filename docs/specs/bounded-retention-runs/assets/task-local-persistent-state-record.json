@@ -10,7 +10,7 @@
     "description": "Existing canonical monthly gzip SQLite, manifests, V2 Summary proof, raw links and immutable maintenance run JSON",
     "storage_implementation": "Existing SQLite tables and canonical gzip SQLite files",
     "source_compatibility_range": {
-      "from_program_versions": "Declared retention fixtures v2.71.45/v2.80.2 plus development baseline 162253ad; same-Minor compatibility verification pending",
+      "from_program_versions": "Supported same-Minor v2.85.0-v2.85.3 reader sources plus declared retention fixture upgrades v2.71.45/v2.80.2 and development baseline 162253ad",
       "to_program_version": "Current PR candidate, version assigned after merge",
       "direct_major_skips_supported": false
     }
@@ -97,7 +97,11 @@
         "a forward-repair version handles state left by a stopped faulty release"
       ]
     },
-    "completed_evidence": [],
-    "status": "pending-current-candidate"
+    "completed_evidence": [
+      "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
+      "src/tests/archive_file_io/retention_task_local_batches.rs",
+      "web/src/lib/api/core-foundation.test.ts"
+    ],
+    "status": "same-minor-reader-compatibility-verified; full-candidate-delivery-gates-separate"
   }
 }

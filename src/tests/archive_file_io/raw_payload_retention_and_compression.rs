@@ -703,8 +703,8 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
     .fetch_one(&pool)
     .await
     .expect("load durable invalid-kind failure cursor");
-    assert_eq!(failure_count, 1);
-    assert_eq!(defer_reason.as_deref(), Some("retry_backoff"));
+    assert_eq!(failure_count, 0);
+    assert_eq!(defer_reason, None);
     assert!(
         archive_path.exists(),
         "quarantine retains the artifact for evidence"

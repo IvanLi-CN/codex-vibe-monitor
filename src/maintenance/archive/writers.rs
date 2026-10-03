@@ -153,6 +153,17 @@ pub(crate) fn ensure_attachable_archive_sqlite_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn archive_disk_attach_uri(path: &Path) -> Result<String> {
+    // ATTACH inherits SQLITE_OPEN_MEMORY from a memory-backed source connection unless
+    // its URI explicitly selects disk mode. Plain paths silently create a second memory DB.
+    let absolute_path = fs::canonicalize(path).context("resolve task archive SQLite path")?;
+    let mut uri = url::Url::from_file_path(absolute_path)
+        .map_err(|()| anyhow::anyhow!("invalid task archive SQLite path"))?;
+    // The work file already exists; request only read/write access.
+    uri.query_pairs_mut().append_pair("mode", "rw");
+    Ok(uri.to_string())
+}
+
 pub(crate) async fn finalize_archive_sqlite_file(path: &Path) -> Result<()> {
     let mut connection = open_archive_sqlite_connection(path).await?;
     sqlx::query("PRAGMA optimize")
@@ -782,7 +793,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
         // so the pooled handles (including an in-memory keeper) remain available; own it so every error/cancel closes it instead of returning an attached handle.
         let mut conn = SqliteConnection::connect_with(pool.connect_options().as_ref()).await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
-            .bind(work_path.to_string_lossy().to_string())
+            .bind(archive_disk_attach_uri(&work_path)?)
             .execute(&mut conn)
             .await
             .with_context(|| {
@@ -828,7 +839,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
                     query
                         .build_query_as::<ArchivedAccountLastActivityRow>()
                         .fetch_all(&mut conn)
-                        .await?,
+                        .await.context("read task-local source account activity")?,
                 );
             }
             dedupe_archive_upstream_last_activity(
@@ -1405,7 +1416,7 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
     let row_count = async {
         let mut conn = pool.acquire().await?;
         sqlx::query("ATTACH DATABASE ?1 AS archive_db")
-            .bind(work_path.to_string_lossy().to_string())
+            .bind(archive_disk_attach_uri(&work_path)?)
             .execute(&mut *conn)
             .await
             .with_context(|| {

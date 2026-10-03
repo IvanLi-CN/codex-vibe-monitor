@@ -393,3 +393,76 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
+
+#[tokio::test]
+async fn retention_task_local_month_writer_reads_the_shared_memory_source() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("task-local-memory-source").await;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let mut source = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("open independent source reader");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+            .fetch_one(&mut source)
+            .await
+            .expect("independent reader shares the source schema"),
+        1
+    );
+    source.close().await.expect("close source reader");
+    let result = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("archive from the live shared memory database");
+    assert_eq!(result.0, 1);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+#[ignore = "shared-testbox 32 MiB filesystem acceptance"]
+async fn retention_task_local_low_disk_space_keeps_live_sources() {
+    let (pool, mut config, temp_dir) = retention_test_pool_and_config("task-local-low-disk").await;
+    config.archive_dir = PathBuf::from(
+        std::env::var_os("CVM_RETENTION_LIMITED_ARCHIVE_DIR")
+            .expect("explicit limited test filesystem"),
+    );
+    assert!(crate::filesystem_available_bytes(&config.archive_dir).unwrap() < 64 * 1024 * 1024);
+    config.retention_batch_rows = 1_000;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1_000).await;
+    let result = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("low disk admission is a safe defer");
+    assert_eq!(result.0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("all unproved sources remain live"),
+        1_000
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archive_batches")
+            .fetch_one(&pool)
+            .await
+            .expect("no archive publication"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_month_writer_reads_the_disk_source() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-disk-source").await;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let result = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("archive from the live disk database");
+    assert_eq!(result.0, 1);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}

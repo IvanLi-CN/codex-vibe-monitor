@@ -146,7 +146,9 @@ pub(crate) async fn prune_old_invocation_details(
                     Err(_) => break,
                 }
             } else {
-                source_identity_query.await?
+                source_identity_query
+                    .await
+                    .context("read task-local invocation source identity")?
             };
             let mut chunk_identities = Vec::new();
             for chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
@@ -156,7 +158,8 @@ pub(crate) async fn prune_old_invocation_details(
                         InvocationArchiveIdentityDatabase::Main,
                         chunk,
                     )
-                    .await?,
+                    .await
+                    .context("read task-local invocation source chunk identity")?,
                 );
             }
             drop(source_connection);
@@ -550,7 +553,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     Err(_) => break,
                 }
             } else {
-                source_identity_query.await?
+                source_identity_query
+                    .await
+                    .context("read task-local source identity")?
             };
             let mut chunk_identities = Vec::new();
             for ids_chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
@@ -560,7 +565,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         InvocationArchiveIdentityDatabase::Main,
                         ids_chunk,
                     )
-                    .await?,
+                    .await
+                    .context("read task-local invocation source chunk identity")?,
                 );
             }
             drop(source_connection);
@@ -598,7 +604,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prompt_cache_keys,
                     ));
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.context("prepare task-local invocation month file")),
             }) else {
                 return Ok((
                     rows_archived,
@@ -642,7 +648,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 bail!("retention task-local archive artifact changed before publication");
             }
             let Some(proof) =
-                batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages).await?
+                batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
+                    .await
+                    .context("prepare task-local monthly Summary proof")?
             else {
                 return Ok((
                     rows_archived,
@@ -714,14 +722,22 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         .map(|row| row.id)
                         .max()
                         .expect("unprojected rows are non-empty");
-                    let prefix_row_count = sqlx::query_scalar::<_, i64>(
-                        "SELECT COUNT(*) FROM codex_invocations WHERE id > ?1 AND id <= ?2",
+                    let unprojected_ids = unprojected_rows
+                        .iter()
+                        .map(|row| row.id)
+                        .collect::<Vec<_>>();
+                    // Stop at the first uncovered ID instead of counting a million-row prefix
+                    // while holding the writer permit when old timestamps have newer IDs.
+                    let has_uncovered_prefix: bool = sqlx::query_scalar(
+                        "SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE id > ?1 AND id <= ?2
+                         AND id NOT IN (SELECT value FROM json_each(?3)))",
                     )
                     .bind(live_rollup_cursor)
                     .bind(prefix_end)
+                    .bind(serde_json::to_string(&unprojected_ids)?)
                     .fetch_one(tx.as_mut())
                     .await?;
-                    if prefix_row_count == unprojected_rows.len() as i64 {
+                    if !has_uncovered_prefix {
                         save_hourly_rollup_live_progress_tx(
                             tx.as_mut(),
                             HOURLY_ROLLUP_DATASET_INVOCATIONS,

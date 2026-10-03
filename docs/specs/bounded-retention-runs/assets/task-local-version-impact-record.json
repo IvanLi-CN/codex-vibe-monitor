@@ -30,18 +30,23 @@
         "detected": false,
         "description": "Approved ADR 0028 scope"
       },
-      "reasoning": "Optional JSON metrics preserve public consumers; existing gzip SQLite, manifest and V2 Snapshot format retained, no main schema or new state values. Supported same-Minor state readability still requires verification.",
-      "reassessed_at": "2026-10-03T19:15:00Z",
+      "reasoning": "Optional task JSON fields are nonbreaking. Existing manifest and V2 encoder/decoder/proof reader sources are identical across v2.85.0-v2.85.3; the candidate same-month 1000+200 roundtrip uses those readers and verifies no main schema changes. Full historical binaries were not executed.",
+      "reassessed_at": "2026-10-03T20:15:48Z",
       "evidence": [
+        "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
         "web/src/lib/api/core-foundation.test.ts"
       ]
     },
     "verified": {
-      "impact": null,
-      "reasoning": "Current candidate compatibility gates pending",
-      "verified_at": null,
-      "evidence": []
+      "impact": "patch",
+      "reasoning": "Optional task JSON fields are nonbreaking. Existing manifest and V2 encoder/decoder/proof reader sources are identical across v2.85.0-v2.85.3; the candidate same-month 1000+200 roundtrip uses those readers and verifies no main schema changes. Full historical binaries were not executed.",
+      "verified_at": "2026-10-03T20:15:48Z",
+      "evidence": [
+        "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
+        "src/tests/archive_file_io/retention_task_local_batches.rs",
+        "web/src/lib/api/core-foundation.test.ts"
+      ]
     }
   },
   "compatibility_evidence": {
@@ -55,10 +60,14 @@
     },
     "persistent_state": {
       "applicable": true,
-      "impact": "patch (planned)",
+      "impact": "patch",
       "state_description": "Existing monthly gzip SQLite and existing V2 Snapshot/manifests/raw ownership; optional maintenance JSON fields",
-      "source_program_compatibility_range": "Development baseline and declared legacy fixtures; same-Minor execution evidence pending",
-      "evidence": []
+      "source_program_compatibility_range": "Supported same-Minor v2.85.0-v2.85.3 readers verified by exact source equivalence and current roundtrip; candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
+      "evidence": [
+        "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
+        "src/tests/archive_file_io/retention_task_local_batches.rs",
+        "web/src/lib/api/core-foundation.test.ts"
+      ]
     }
   },
   "release_unit": {
@@ -66,7 +75,9 @@
       "public-api",
       "persistent-state"
     ],
-    "maximum_verified_impact": null,
-    "calculation_evidence": []
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "public-api=patch, persistent-state=patch; max=patch"
+    ]
   }
 }

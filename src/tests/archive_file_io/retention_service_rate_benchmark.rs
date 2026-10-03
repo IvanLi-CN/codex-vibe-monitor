@@ -166,6 +166,7 @@ fn percentile(samples: &[u64], percent: usize) -> u64 {
 #[ignore = "release-build shared-testbox service-rate/online-latency acceptance"]
 async fn retention_task_local_service_rate_release_benchmark() {
     let rows = setting("CVM_RETENTION_SERVICE_ROWS", 1_270_000);
+    let load_multiplier = setting("CVM_RETENTION_SERVICE_LOAD_MULTIPLIER", 1).min(20);
     let window = std::env::var("CVM_RETENTION_SERVICE_WINDOW_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok());
@@ -194,7 +195,7 @@ async fn retention_task_local_service_rate_release_benchmark() {
     let reader_pool = pool.clone();
     let reader = tokio::spawn(async move {
         let mut samples = Vec::new();
-        let mut ticker = tokio::time::interval(Duration::from_millis(960));
+        let mut ticker = tokio::time::interval(Duration::from_millis(960 / load_multiplier as u64));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !reader_stopped.load(Ordering::Acquire) {
             let scheduled = ticker.tick().await;
@@ -228,7 +229,8 @@ async fn retention_task_local_service_rate_release_benchmark() {
     let writer_coordinator = coordinator.clone();
     let writer = tokio::spawn(async move {
         let mut samples = Vec::new();
-        let mut ticker = tokio::time::interval(Duration::from_millis(2_880));
+        let mut ticker =
+            tokio::time::interval(Duration::from_millis(2_880 / load_multiplier as u64));
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !writer_stopped.load(Ordering::Acquire) {
             let scheduled = ticker.tick().await;
@@ -364,6 +366,7 @@ async fn retention_task_local_service_rate_release_benchmark() {
             "readSamples":reads.len(),"writeSamples":writes.len(),"readP95Us":percentile(&reads,95),"readP99Us":percentile(&reads,99),"writeP95Us":percentile(&writes,95),"writeP99Us":percentile(&writes,99),
             "invocationArrivalRate":30_000.0/86_400.0,"attemptArrivalRate":36_000.0/86_400.0,"readWriteRatio":3,
             "readWriteRatioSource":"explicit conservative replay assumption; production HTTP method ratio unavailable",
+            "loadMultiplier":load_multiplier,
         })
     );
     if window.is_none() {

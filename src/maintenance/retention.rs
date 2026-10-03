@@ -8789,7 +8789,10 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
-                    summary.fatal_error = Some(format!("invocation archive failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation archive failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
@@ -8837,8 +8840,10 @@ async fn run_data_retention_maintenance_inner(
                     "retention_write_admission".to_string()
                 });
             } else {
-                summary.fatal_error =
-                    Some(format!("pool upstream attempt archive failed: {error:#}"));
+                summary.fatal_error = Some(format!(
+                    "pool upstream attempt archive failed; failure_fingerprint:{}",
+                    retention_error_fingerprint(&error)
+                ));
             }
             // Preserve already committed invocation batches in the immutable run result.
             return Ok(summary);
@@ -8889,8 +8894,10 @@ async fn run_data_retention_maintenance_inner(
                     summary.wait_reason = Some("retention_work_budget".to_string());
                 } else if dry_run {
                     retention_recovery_record_failure("detail_prune", &error);
-                    summary.fatal_error =
-                        Some(format!("invocation detail pruning failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation detail pruning failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 } else if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("detail_prune");
                     summary.deferred = true;
@@ -8912,8 +8919,10 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
-                    summary.fatal_error =
-                        Some(format!("invocation detail pruning failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation detail pruning failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
