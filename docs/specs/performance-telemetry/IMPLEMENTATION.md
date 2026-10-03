@@ -37,6 +37,8 @@ SQL 归一化文本由整份报告的 1 MiB 上限约束，覆盖组合多个生
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
 ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任务深链接。
+旧 API 的 OPTIONS 在 CORS 外层返回同一静态 tombstone，并保留现有 CORS 策略头；
+正常 API 的 preflight 行为不变。真实 HTTP server 回归覆盖三个路径的七种方法。
 
 `ops/observability/` 提供五个固定 UID dashboard、recording rules、Grafana 告警、
 私网 Compose 与凭据读取组合同，并关闭插件预安装与自动更新。项目 Skill 和 CLI 使用公网 Grafana Viewer Token；
@@ -120,3 +122,10 @@ SQLite committed 指标已在 P1/P2 事务边界直接发出，不增加重复�
 字段的零是既有 missing sentinel，optional TTFT 的真实零保留为一个样本。
 加强后的经验性场景使用实际浏览器批次验证 web 面板、缺测 Unknown 与 unsupported
 不伪造 long-task；修复后候选必须刷新验证、经验性卡与正式审查，不能沿用旧 SHA。
+
+候选 `5e55254d` 的 Rust 静态门禁、三分桶 2,965 项和 20 项工具回归通过。
+SQLite 分桶首次出现一项既有超时夹具的 502/503 差异；三次单项和完整分桶复测通过，
+没有修改断言或超时。加强的运行矩阵发现 CORS 截获 OPTIONS；精确旧/新镜像均返回
+200，旧通过场景仅检查 GET/POST。监控故障隔离和原实例 CPU 符号解析通过，但 A/B
+受共享 CPU 压力和磁盘耗尽中断，写入证据文件也失败；该运行为 unavailable，
+不作为通过或产品开销结论。OPTIONS 修正后需刷新当前候选验证与完整运行证据。

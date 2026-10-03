@@ -4,6 +4,32 @@ use metrics::Recorder;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+pub(crate) async fn retired_performance_preflight(
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let retired = request.method() == Method::OPTIONS
+        && matches!(
+            request.uri().path(),
+            "/api/system/performance"
+                | "/api/system/performance/health"
+                | "/api/system/performance/browser"
+        );
+    let response = next.run(request).await;
+    if !retired {
+        return response;
+    }
+    // CORS answers OPTIONS without entering the route. Preserve its policy headers
+    // while returning the same static tombstone as the other retired API methods.
+    let mut tombstone = super::performance_retired().await;
+    for (name, value) in response.headers() {
+        if name.as_str().starts_with("access-control-") || name.as_str() == "vary" {
+            tombstone.headers_mut().append(name.clone(), value.clone());
+        }
+    }
+    tombstone
+}
+
 pub(super) fn route_family(path: &str) -> &'static str {
     match path {
         "/v1/responses" => "/v1/responses",

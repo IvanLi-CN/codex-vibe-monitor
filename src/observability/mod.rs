@@ -19,7 +19,7 @@ mod sampler;
 mod hotpath_sql_normalization;
 pub(crate) use browser::{BROWSER_MAX_BYTES, ingest_browser_observations};
 pub(crate) use config::{ObservabilityConfig, prepare_hotpath};
-pub(crate) use http::observability_http_middleware;
+pub(crate) use http::{observability_http_middleware, retired_performance_preflight};
 pub(crate) use reports::{hotpath_report, observability_capabilities};
 pub(crate) use sampler::spawn_observability_sampler;
 

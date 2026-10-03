@@ -3944,7 +3944,10 @@ pub(crate) async fn spawn_http_server(
             observability_http_middleware,
         ))
         .layer(TraceLayer::new_for_http())
-        .layer(cors_layer);
+        .layer(cors_layer)
+        .layer(axum::middleware::from_fn(
+            observability::retired_performance_preflight,
+        ));
 
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
