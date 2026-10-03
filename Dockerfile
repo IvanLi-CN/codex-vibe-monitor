@@ -82,6 +82,7 @@ WORKDIR /srv/app
 
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
+COPY vendor/hotpath/LICENSE.txt /usr/local/share/licenses/hotpath/LICENSE.txt
 COPY scripts/search-raw /usr/local/bin/search-raw
 
 # Stage 5: production runtime image

@@ -18,6 +18,7 @@ hotpath 固定版本的 SQL worker 使用本地有界归一化缓存；相同语
 单条超过 64 KiB 时不缓存，元数据由条数约束；FIFO 淘汰不改变聚合指标。
 第三方来源摘要与两处补丁说明在 `vendor/`，缓存测试读取实际生产补丁文件。
 源快照保留原 crate 摘要，并从同一 VCS commit 补齐公开包遗漏的 MIT 许可证。
+应用 runtime 镜像在 `/usr/local/share/licenses/hotpath/` 保留该许可证。
 SQL 报告接纳最长 16 KiB 的归一化 query，以覆盖实际启动触发器 SQL；报告整体
 仍受 1 MiB、100 行与 2 秒限制，其他字段保留更小的类型/长度边界。
 
