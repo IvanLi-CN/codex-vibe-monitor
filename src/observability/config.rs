@@ -135,10 +135,13 @@ pub(crate) fn prepare_hotpath(config: &ObservabilityConfig) {
     }
 }
 
-fn hotpath_settings(config: &ObservabilityConfig) -> [(&'static str, String); 13] {
+fn hotpath_settings(config: &ObservabilityConfig) -> [(&'static str, String); 14] {
     [
         ("HOTPATH_ENTRIES_LIMIT", "100".to_string()),
         ("HOTPATH_LOGS_LIMIT", "1".to_string()),
+        // Batch delivery to the SDK workers; event timestamps and sampling are
+        // unchanged. Avoid sweeping mostly empty queues 20 times per second.
+        ("HOTPATH_DRAIN_INTERVAL", "250".to_string()),
         // The SDK adds 19 ASCII bytes to truncated labels. 120 Unicode scalars
         // plus that suffix fit the Prometheus 512-byte label limit even at 4 B/char.
         ("HOTPATH_MAX_LOG_LEN", "120".to_string()),
