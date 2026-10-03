@@ -2538,7 +2538,6 @@ async fn run_startup_backfill_task_if_due_outcome(
                     if managed_run_id.is_none() {
                         observation.finish_with_status("skipped");
                     }
-                    STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,

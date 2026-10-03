@@ -33,3 +33,5 @@
 
 - `./SPEC.md`
 - `./IMPLEMENTATION.md`
+
+- Mainline integration preserves the generation-fenced disabled-result path and constructs maintenance test stores through the shared injected-control constructor.

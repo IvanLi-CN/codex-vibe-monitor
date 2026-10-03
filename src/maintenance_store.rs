@@ -3337,7 +3337,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query("INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,duration_ms,status) VALUES('retention_archive','manual','2026-10-02T00:00:00.000Z',777,'running')")
             .execute(&store.pool)
             .await
@@ -3547,7 +3547,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .start_timeline_session("drop-session", "2026-10-02T00:00:00.000Z")
             .await
@@ -3613,7 +3613,7 @@ mod tests {
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed managed task registry");
         ensure_task_colors(&pool).await.expect("seed task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let observed_at = format_utc_iso_millis(now);
         store
@@ -3666,7 +3666,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let started = (0..3)
             .map(
@@ -4582,7 +4582,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let run_id = store
             .begin_run(
                 "retention_archive",
@@ -4641,7 +4641,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let run_id = store
             .begin_run(
                 "retention_archive",
@@ -4688,7 +4688,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query("UPDATE managed_tasks SET next_catchup_at='2000-01-01T00:00:00.000Z' WHERE task_key='retention_archive'")
             .execute(&store.pool)
             .await
@@ -4744,7 +4744,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .apply_initial_task_defaults()
             .await
@@ -4781,7 +4781,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let inspection = format_utc_iso_millis(now + ChronoDuration::hours(1));
         let catchup = format_utc_iso_millis(now - ChronoDuration::seconds(1));
@@ -4833,7 +4833,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query(
             "UPDATE managed_tasks
              SET next_trigger_at='2000-01-01T00:00:00.000Z',
@@ -4869,7 +4869,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let bucket = floor_utc_hour(now);
         store
