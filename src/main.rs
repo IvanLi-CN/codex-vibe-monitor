@@ -626,6 +626,8 @@ static NEXT_PROXY_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 fn main() -> Result<()> {
     dotenv().ok();
+    // Resolve local overrides before hotpath or Tokio starts any worker threads.
+    dotenvy::from_filename(".env.local").ok();
     let config = ObservabilityConfig::from_env()?;
     prepare_hotpath(&config);
     let _profiler = config.enabled.then(|| {

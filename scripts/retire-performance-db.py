@@ -32,6 +32,27 @@ TABLES = {
 }
 ALLOWED = set(TABLES) | {"idx_performance_buckets_range"}
 
+def utc_now():
+    return dt.datetime.now(dt.timezone.utc)
+
+def family_identity(target):
+    family = []
+    for suffix in ["", "-wal", "-shm"]:
+        member = Path(str(target) + suffix)
+        if member.is_symlink(): raise ValueError("sidecar symlink is not owned by this migration")
+        if member.exists():
+            family.append({"suffix": suffix, "identity": identity(member), "sha256": digest(member)})
+    return family
+
+def failed_manifest(path, manifest, target, failure_class):
+    manifest.update(state="failed", failedAt=utc_now().isoformat(), failureClass=failure_class,
+                    integrityCheck={"status": "failed"})
+    try:
+        manifest["family"] = family_identity(target)
+    except (OSError, ValueError) as error:
+        manifest.update(family=[], familyInspectionFailure=type(error).__name__)
+    write_json(path, manifest)
+
 def digest(path):
     hasher = hashlib.sha256()
     with path.open("rb") as stream:
@@ -113,7 +134,7 @@ def valid_backup(path, expected):
         if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
             raise ValueError("archive integrity check failed")
 
-def archive(source, business_db, data_root, archive_root, operation, previous_image, previous_config):
+def archive(source, business_db, data_root, archive_root, operation, previous_image, previous_config, previous_version):
     source = Path(source).absolute()
     target = source.resolve(strict=False)
     business = Path(business_db).resolve(strict=False)
@@ -121,6 +142,8 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
     archive_root = Path(archive_root).resolve(strict=False)
     if not re.fullmatch(r"[^\s]+@sha256:[a-f0-9]{64}", previous_image):
         raise ValueError("previous image must be pinned by digest")
+    if not re.fullmatch(r"v?2\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", previous_version):
+        raise ValueError("previous program version must be the verified v2 version")
     if target == business or (target.exists() and business.exists() and os.path.samefile(target, business)):
         raise ValueError("refusing business database identity")
     if archive_root == data_root or archive_root.is_relative_to(data_root):
@@ -135,9 +158,13 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
         manifest = json.loads(manifest_path.read_text())
         if manifest["source"] != str(source) or manifest["businessDb"] != str(business):
             raise ValueError("operation belongs to different file identities")
+        if manifest["state"] != "absent" and (manifest["previousImage"] != previous_image or manifest["previousProgramVersion"] != previous_version or manifest["previousConfigSha256"] != digest(Path(previous_config))):
+            raise ValueError("operation belongs to different previous program/configuration")
         recorded_target = Path(manifest["resolvedSource"])
         if source.exists() and target != recorded_target: raise ValueError("source alias changed")
         target = recorded_target
+        if manifest["state"] == "failed":
+            raise ValueError("recorded retirement failure: " + manifest["failureClass"])
         if manifest["state"] == "absent":
             if target.exists(): raise ValueError("previously absent source now exists")
             return manifest
@@ -147,9 +174,16 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
             manifest = {"version": 1, "state": "absent", "source": str(source), "resolvedSource": str(target), "businessDb": str(business), "operation": operation}
             write_json(manifest_path, manifest); return manifest
         if not target.is_file(): raise ValueError("source is not a regular file")
-        manifest = {"version": 1, "state": "identified", "source": str(source), "resolvedSource": str(target), "sourceParent": str(source.parent.resolve(strict=True)), "sourceIsSymlink": source.is_symlink(), "businessDb": str(business), "identity": identity(target), "operation": operation, "previousImage": previous_image, "previousConfigSha256": digest(Path(previous_config)), "createdAt": dt.datetime.now(dt.timezone.utc).isoformat(), "retainDays": 90}
+        manifest = {"version": 1, "state": "identified", "source": str(source), "resolvedSource": str(target), "sourceParent": str(source.parent.resolve(strict=True)), "sourceIsSymlink": source.is_symlink(), "businessDb": str(business), "identity": identity(target), "operation": operation, "previousImage": previous_image, "previousProgramVersion": previous_version, "previousConfigSha256": digest(Path(previous_config)), "createdAt": utc_now().isoformat(), "retainDays": 90, "sourceOwnership": "unverified"}
         # Identity is proven before any source is moved. A corrupt/unknown DB is preserved in place.
-        with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as connection: schema(connection)
+        try:
+            with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as connection:
+                schema(connection)
+                manifest["schema"] = {"userVersion": 1, "metaVersion": "1", "objects": [list(row) for row in connection.execute("SELECT name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY name")]}
+        except (sqlite3.DatabaseError, ValueError) as error:
+            failed_manifest(manifest_path, manifest, target, "sqlite_integrity" if isinstance(error, sqlite3.DatabaseError) else "unrecognized_schema")
+            raise
+        manifest["sourceOwnership"] = "performance_schema_v1"
         write_json(manifest_path, manifest)
     backup = run / "performance.sqlite"
     if manifest["state"] == "identified":
@@ -159,9 +193,14 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
         with closing(sqlite3.connect(target.as_uri() + "?mode=ro", uri=True)) as original, closing(sqlite3.connect(temporary)) as destination:
             schema(original); original.backup(destination)
             destination.execute("PRAGMA journal_mode=DELETE")
-        checksum = digest(temporary); valid_backup(temporary, checksum)
+        checksum = digest(temporary)
+        try:
+            valid_backup(temporary, checksum)
+        except (sqlite3.DatabaseError, ValueError):
+            failed_manifest(manifest_path, manifest, target, "backup_integrity")
+            raise
         os.replace(temporary, backup)
-        manifest.update(state="verified", backupSha256=checksum)
+        manifest.update(state="verified", backupSha256=checksum, verifiedAt=utc_now().isoformat(), integrityCheck={"status": "passed", "result": "ok"})
         # Preserve exact WAL/SHM bytes for incident recovery, separately from the consistent backup.
         family = []
         for suffix in ["", "-wal", "-shm"]:
@@ -188,7 +227,9 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
         if source.is_symlink():
             if source.resolve(strict=False) != target: raise ValueError("source alias changed")
             source.unlink()
-        manifest["state"] = "archived"; write_json(manifest_path, manifest)
+        archived_at = utc_now()
+        manifest.update(state="archived", archivedAt=archived_at.isoformat(), cutoverAt=archived_at.isoformat(), cutoverScope="performance_file_family", retainUntil=(archived_at + dt.timedelta(days=90)).isoformat())
+        write_json(manifest_path, manifest)
     return manifest
 
 def restore(manifest_path, previous_image, previous_config):
@@ -231,11 +272,11 @@ def main():
     parser.add_argument("--source"); parser.add_argument("--business-db"); parser.add_argument("--data-root")
     parser.add_argument("--archive-root"); parser.add_argument("--operation-id"); parser.add_argument("--manifest")
     args = parser.parse_args(); stopped(args.container)
-    compatible_image(args.previous_image, args.container if args.action == "archive" else None)
+    previous_version = compatible_image(args.previous_image, args.container if args.action == "archive" else None)
     if args.action == "archive":
         if not all([args.source, args.business_db, args.data_root, args.archive_root, args.operation_id]): parser.error("archive requires exact source, business-db, data-root, archive-root and operation-id")
         outside_application_mounts(args.archive_root, args.container)
-        result = archive(args.source, args.business_db, args.data_root, args.archive_root, args.operation_id, args.previous_image, args.previous_config)
+        result = archive(args.source, args.business_db, args.data_root, args.archive_root, args.operation_id, args.previous_image, args.previous_config, previous_version)
     else:
         if not args.manifest: parser.error("restore requires manifest")
         result = restore(args.manifest, args.previous_image, args.previous_config)

@@ -82,6 +82,30 @@ struct CoordinatorState {
     write_admission: ProxySqliteWriteAdmissionSnapshot,
 }
 
+/// The process-wide arbiter must not retain a recorder after its runtime ends.
+#[derive(Debug, Default)]
+struct CoordinatorObservability(std::sync::RwLock<std::sync::Weak<crate::ObservabilityRuntime>>);
+
+impl CoordinatorObservability {
+    fn bind(&self, metrics: &Arc<crate::ObservabilityRuntime>) -> anyhow::Result<()> {
+        let mut binding = self.0.write().expect("coordinator observability binding");
+        if let Some(current) = binding.upgrade()
+            && !Arc::ptr_eq(&current, metrics)
+        {
+            anyhow::bail!("SQLite coordinator is already observed by another active runtime");
+        }
+        *binding = Arc::downgrade(metrics);
+        Ok(())
+    }
+
+    fn get(&self) -> Option<Arc<crate::ObservabilityRuntime>> {
+        self.0
+            .read()
+            .expect("coordinator observability binding")
+            .upgrade()
+    }
+}
+
 impl CoordinatorState {
     fn increment(&mut self, class: ProxySqliteWriteClass) {
         match class {
@@ -155,12 +179,15 @@ pub(crate) struct ProxySqliteWriteCoordinator {
     coordinated: bool,
     state: crate::observability::DiagnosticMutex<CoordinatorState>,
     notify: Notify,
-    observability: crate::observability::MetricsSink,
+    observability: CoordinatorObservability,
 }
 
 impl ProxySqliteWriteCoordinator {
-    pub(crate) fn bind_observability(&self, metrics: Arc<crate::ObservabilityRuntime>) {
-        self.observability.bind(metrics);
+    pub(crate) fn bind_observability(
+        &self,
+        metrics: Arc<crate::ObservabilityRuntime>,
+    ) -> anyhow::Result<()> {
+        self.observability.bind(&metrics)
     }
     fn observe_admission(
         &self,
@@ -203,6 +230,7 @@ impl ProxySqliteWriteCoordinator {
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
             return ProxySqliteWritePermit {
                 coordinator: self.clone(),
+                observability: self.observability.get(),
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
@@ -241,6 +269,7 @@ impl ProxySqliteWriteCoordinator {
                     state.record_admission(class, lock_wait);
                     return ProxySqliteWritePermit {
                         coordinator: self.clone(),
+                        observability: self.observability.get(),
                         class,
                         coordinated: true,
                         lock_wait,
@@ -264,6 +293,7 @@ impl ProxySqliteWriteCoordinator {
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
             return Some(ProxySqliteWritePermit {
                 coordinator: self.clone(),
+                observability: self.observability.get(),
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
@@ -281,6 +311,7 @@ impl ProxySqliteWriteCoordinator {
         state.record_admission(class, lock_wait);
         Some(ProxySqliteWritePermit {
             coordinator: self.clone(),
+            observability: self.observability.get(),
             class,
             coordinated: true,
             lock_wait,
@@ -301,6 +332,7 @@ impl ProxySqliteWriteCoordinator {
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
             return ProxySqliteWritePermit {
                 coordinator: self.clone(),
+                observability: self.observability.get(),
                 class,
                 coordinated: false,
                 lock_wait: requested_at.elapsed(),
@@ -342,6 +374,7 @@ impl ProxySqliteWriteCoordinator {
                     }
                     return ProxySqliteWritePermit {
                         coordinator: self.clone(),
+                        observability: self.observability.get(),
                         class,
                         coordinated: true,
                         lock_wait,
@@ -418,6 +451,7 @@ impl ProxySqliteWriteCoordinator {
 #[derive(Debug)]
 pub(crate) struct ProxySqliteWritePermit {
     coordinator: Arc<ProxySqliteWriteCoordinator>,
+    observability: Option<Arc<crate::ObservabilityRuntime>>,
     class: ProxySqliteWriteClass,
     coordinated: bool,
     lock_wait: Duration,
@@ -486,7 +520,7 @@ impl Drop for ProxySqliteWriteWaiter {
 
 impl Drop for ProxySqliteWritePermit {
     fn drop(&mut self) {
-        if let Some(metrics) = self.coordinator.observability.get() {
+        if let Some(metrics) = &self.observability {
             metrics.duration(
                 "cvm_sqlite_coordinator_hold_duration_seconds",
                 &[("class", self.class.as_str())],

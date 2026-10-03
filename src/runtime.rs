@@ -190,8 +190,6 @@ async fn hydrate_system_status_at_startup(state: Arc<AppState>) {
 }
 
 pub(crate) async fn run() -> Result<()> {
-    dotenv().ok();
-    dotenvy::from_filename(".env.local").ok();
     RuntimeProjectionMode::reject_removed_legacy_env()?;
     init_tracing();
     let startup_started_at = Instant::now();
@@ -364,6 +362,8 @@ pub(crate) async fn run() -> Result<()> {
     let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
     let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
     let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
+    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .bind_observability(observability.clone())?;
     let sqlite_batch_writer = SqliteBatchWriter::spawn(
         pool.clone(),
         shutdown.clone(),
@@ -372,8 +372,6 @@ pub(crate) async fn run() -> Result<()> {
         &config.database_path,
     );
     sqlite_batch_writer.bind_observability(observability.clone());
-    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .bind_observability(observability.clone());
     sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
     sqlite_batch_writer
         .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());

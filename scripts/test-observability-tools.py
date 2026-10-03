@@ -83,7 +83,7 @@ class RetirementTests(unittest.TestCase):
         self.temp.cleanup()
 
     def run_archive(self, source=None):
-        return migration.archive(source or self.source, self.business, self.data, self.archive, "cutover", OLD_IMAGE, self.config)
+        return migration.archive(source or self.source, self.business, self.data, self.archive, "cutover", OLD_IMAGE, self.config, "2.60.0")
 
     def test_wal_backup_idempotency_and_restore(self):
         original = fixture(self.source)
@@ -91,6 +91,12 @@ class RetirementTests(unittest.TestCase):
         manifest = self.run_archive()
         original.close()
         self.assertEqual(manifest["state"], "archived")
+        self.assertEqual(manifest["schema"]["userVersion"], 1)
+        self.assertEqual(manifest["previousProgramVersion"], "2.60.0")
+        self.assertEqual(manifest["integrityCheck"], {"status": "passed", "result": "ok"})
+        self.assertLessEqual(manifest["verifiedAt"], manifest["archivedAt"])
+        self.assertEqual(manifest["cutoverScope"], "performance_file_family")
+        self.assertEqual((migration.dt.datetime.fromisoformat(manifest["retainUntil"]) - migration.dt.datetime.fromisoformat(manifest["archivedAt"])).days, 90)
         self.assertFalse(self.source.exists())
         backup = self.archive / "cutover" / "performance.sqlite"
         with closing(sqlite3.connect(backup)) as connection:
@@ -131,18 +137,50 @@ class RetirementTests(unittest.TestCase):
         other = self.root / "unknown.sqlite"
         with closing(sqlite3.connect(other)) as connection: connection.execute("CREATE TABLE application_state (value TEXT)")
         with self.assertRaises(ValueError):
-            migration.archive(other, self.business, self.data, self.archive, "unknown", OLD_IMAGE, self.config)
+            migration.archive(other, self.business, self.data, self.archive, "unknown", OLD_IMAGE, self.config, "2.60.0")
         self.assertTrue(other.exists())
+
+    def test_corruption_records_immutable_failure_without_moving_family(self):
+        self.source.write_bytes(b"truncated SQLite database")
+        wal = Path(str(self.source) + "-wal"); wal.write_bytes(b"preserved WAL bytes")
+        before = {path: path.read_bytes() for path in [self.source, wal]}
+        with self.assertRaises(sqlite3.DatabaseError): self.run_archive()
+        path = self.archive / "cutover" / "manifest.json"
+        manifest = json.loads(path.read_text())
+        self.assertEqual(manifest["state"], "failed")
+        self.assertEqual(manifest["failureClass"], "sqlite_integrity")
+        self.assertEqual(manifest["sourceOwnership"], "unverified")
+        self.assertTrue(manifest["failedAt"])
+        self.assertTrue({"", "-wal"}.issubset({row["suffix"] for row in manifest["family"]}))
+        with self.assertRaisesRegex(ValueError, "recorded retirement failure"): self.run_archive()
+        self.assertEqual(json.loads(path.read_text()), manifest)
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_archive_reentry_preserves_recorded_previous_configuration(self):
+        original = fixture(self.source)
+        manifest = self.run_archive(); original.close()
+        self.config.write_text("a different previous configuration")
+        with self.assertRaisesRegex(ValueError, "different previous program/configuration"):
+            self.run_archive()
+        self.assertEqual(json.loads((self.archive / "cutover" / "manifest.json").read_text()), manifest)
+        self.assertFalse(self.source.exists())
 
     def test_source_change_backup_failure_and_restore_conflict_preserve_source(self):
         original = fixture(self.source)
         with patch.object(migration, "valid_backup", side_effect=ValueError("backup validation failed")):
             with self.assertRaisesRegex(ValueError, "validation failed"): self.run_archive()
         self.assertTrue(self.source.exists())
-        self.run_archive(); original.close()
+        failed = json.loads((self.archive / "cutover" / "manifest.json").read_text())
+        self.assertEqual(failed["state"], "failed")
+        self.assertEqual(failed["failureClass"], "backup_integrity")
+        with self.assertRaisesRegex(ValueError, "recorded retirement failure"):
+            self.run_archive()
+        self.assertEqual(json.loads((self.archive / "cutover" / "manifest.json").read_text()), failed)
+        migration.archive(self.source, self.business, self.data, self.archive, "retry", OLD_IMAGE, self.config, "2.60.0")
+        original.close()
         self.source.write_bytes(b"occupied")
         with self.assertRaises(ValueError):
-            migration.restore(self.archive / "cutover" / "manifest.json", OLD_IMAGE, self.config)
+            migration.restore(self.archive / "retry" / "manifest.json", OLD_IMAGE, self.config)
         self.assertEqual(self.source.read_bytes(), b"occupied")
 
     def test_running_old_writer_is_rejected(self):
@@ -171,9 +209,12 @@ class RetirementTests(unittest.TestCase):
             original.executescript(mutation); original.close()
             before = migration.digest(source)
             with self.assertRaisesRegex(ValueError, "unexpected performance"):
-                migration.archive(source, self.business, self.data, self.archive, f"unknown-{index}", OLD_IMAGE, self.config)
+                migration.archive(source, self.business, self.data, self.archive, f"unknown-{index}", OLD_IMAGE, self.config, "2.60.0")
             self.assertEqual(migration.digest(source), before)
-            self.assertFalse((self.archive / f"unknown-{index}" / "manifest.json").exists())
+            rejected = json.loads((self.archive / f"unknown-{index}" / "manifest.json").read_text())
+            self.assertEqual(rejected["state"], "failed")
+            self.assertEqual(rejected["failureClass"], "unrecognized_schema")
+            self.assertEqual(rejected["sourceOwnership"], "unverified")
 
     def test_parent_symlink_restores_without_creating_a_leaf_alias(self):
         alias = self.root / "data-alias"

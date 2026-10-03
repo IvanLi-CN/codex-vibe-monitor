@@ -132,6 +132,11 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
    再核验 schema v1/marker/文件身份，SQLite backup 含已提交 WAL，验证 integrity/hash
    后移出精确旧文件族；manifest 阶段为 identified → verified → archived。未知/损坏/失败保持源。
    中断复用同 operation id 前向续作，归档保留 90 天，不导入 Prometheus、不双写。
+   清单保存验证后的 schema DDL、旧程序版本、完整性结果与 verified/archived 时间，
+   `retainUntil` 从归档完成起计算 90 天；`cutoverAt` 的 scope 是性能文件族移出，
+   应用及正式流量切换仍须完成下一步验收。未知 schema 或损坏记录为 `failed`，
+   保存可读文件族的身份/hash并原地保留；同 operation id 重入返回同一失败。
+   确认并修复失败原因后使用新的 operation id，不能覆盖原失败清单。
 4. 启动新应用，核对新抓取、报告、任务/ACK、410 和无旧库文件访问，再切换正式流量。
 5. 回滚是独立恢复操作：停止新应用，核验旧镜像/配置与业务/任务 schema 兼容，执行
    `restore --manifest <archive-manifest> --container <stopped-app> --previous-image <recorded-digest> --previous-config <recorded-config>`，再启动兼容旧镜像。工具拒绝覆盖非匹配目标。

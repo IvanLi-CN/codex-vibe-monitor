@@ -3581,15 +3581,15 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
         )
         .route(
             "/api/system/performance",
-            get(observability::performance_retired),
+            axum::routing::any(observability::performance_retired),
         )
         .route(
             "/api/system/performance/health",
-            get(observability::performance_retired),
+            axum::routing::any(observability::performance_retired),
         )
         .route(
             "/api/system/performance/browser",
-            post(observability::performance_retired)
+            axum::routing::any(observability::performance_retired)
                 .layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES)),
         )
 }

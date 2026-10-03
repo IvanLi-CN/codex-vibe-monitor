@@ -51,7 +51,10 @@
       "resolved source identity and schema",
       "backup checksum/integrity",
       "source-family retirement and cutover manifest",
-      "new app has no old-file access"
+      "new app has no old-file access",
+      "verified schema DDL and previous program version in manifest",
+      "integrity result, verifiedAt, archivedAt, file-family cutoverAt/scope and 90-day retainUntil",
+      "immutable failed manifest with ownership status and readable family identities/hashes; source preserved"
     ],
     "pause_points": [
       "after identification",

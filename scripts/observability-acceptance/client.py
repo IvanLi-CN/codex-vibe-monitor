@@ -17,8 +17,9 @@ import urllib.request
 
 ROOT=Path("/private")
 POOL_TOKEN="pool-integration-fixture-token"
-def request(base,path,method="GET",payload=None,token=None,basic=None):
+def request(base,path,method="GET",payload=None,token=None,basic=None,extra_headers=None):
     headers={"Accept":"application/json"}
+    headers.update(extra_headers or {})
     if token: headers["Authorization"]="Bearer "+token
     if basic: headers["Authorization"]="Basic "+base64.b64encode(basic.encode()).decode()
     data=None if payload is None else json.dumps(payload).encode()
@@ -51,6 +52,23 @@ def ready():
     assert ok("http://grafana:3000", "/api/health")["database"] == "ok"
     return {"grafana":"ready"}
 
+def browser_batch():
+    events=[{"page":"records" if kind=="unsupported" else "dashboard","device":"desktop","kind":kind,"valueSeconds":0.02} for kind in ["data_ready","update_to_paint","api_request","long_task","sse","unsupported","hidden","dropped"]]
+    events[4]["outcome"]="normal"
+    payload={"events":events}
+    assert len(json.dumps(payload).encode())<=2048
+    assert request("http://app:8080","/api/system/observability/browser",method="POST",payload=payload,extra_headers={"Origin":"http://app:8080","Sec-Fetch-Site":"same-origin"})[0]==204
+
+def browser_seed():
+    token=(ROOT/"grafana-viewer-token").read_text().strip()
+    dashboard=ok("https://entry:8443","/api/dashboards/uid/cvm-web",token=token)["dashboard"]
+    assert all(panel["fieldConfig"]["defaults"]["noValue"]=="Unknown" for panel in dashboard["panels"])
+    missing=ok("http://prometheus:9090","/api/v1/query?"+urllib.parse.urlencode({"query":"cvm_browser_data_ready_seconds_count"}))["data"]["result"]
+    assert missing==[],"missing browser collection was represented as a measured zero"
+    browser_batch()
+    (ROOT/"browser-seeded-at").write_text(str(time.time()))
+    return {"browserMissing":"unknown","browserSeed":"accepted"}
+
 def functional():
     scrape=(ROOT/"metrics-token").read_text().strip()
     read=(ROOT/"read-token").read_text().strip()
@@ -58,11 +76,21 @@ def functional():
     for port in [9091,6772]:
         for token,status in [(None,401),("bad",401),(read,401),(scrape,200)]:
             assert request(f"http://app:{port}","/metrics",token=token)[0]==status,("scrape",port,status)
-    for path,method in [("/api/system/performance","GET"),("/api/system/performance/health","GET"),("/api/system/performance/browser","POST")]:
-        assert request("http://app:8080",path,method=method,payload={} if method=="POST" else None)[0]==410
+    for path in ["/api/system/performance","/api/system/performance/health","/api/system/performance/browser"]:
+        for method in ["GET","POST","PUT","PATCH","DELETE","OPTIONS","HEAD"]:
+            assert request("http://app:8080",path,method=method,payload={} if method in ["POST","PUT","PATCH"] else None)[0]==410,(path,method)
     capabilities=ok("http://app:8080","/api/system/observability")
     assert not any("token" in key.lower() for key in capabilities)
     assert capabilities["grafanaConnectivity"]=="unknown"
+    # A second bounded batch after one minute creates real counter/histogram deltas.
+    time.sleep(max(0,60-(time.time()-float((ROOT/"browser-seeded-at").read_text()))))
+    browser_batch()
+    deadline=time.monotonic()+45
+    while True:
+        collected=ok("http://prometheus:9090","/api/v1/query?"+urllib.parse.urlencode({"query":"sum(cvm_browser_data_ready_seconds_count)"}))["data"]["result"]
+        if collected and float(collected[0]["value"][1])>=2: break
+        assert time.monotonic()<deadline,"browser observations were not scraped"
+        time.sleep(2)
     for uid in ["overview","proxy","sqlite","runtime","web"]:
         path="/api/dashboards/uid/cvm-"+uid
         for token in [None,"bad"]: assert request("https://entry:8443",path,token=token)[0] in (401,403)
@@ -74,6 +102,9 @@ def functional():
                 for name,value in [("$__rate_interval","1m"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$task_key",".*")]: expression=expression.replace(name,value)
                 result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)
                 assert result["status"]=="success",expression
+                if uid=="web":
+                    samples=result["data"]["result"]
+                    assert samples and all(math.isfinite(float(row["value"][1])) for row in samples),(panel["title"],expression,samples)
     for base in ["https://entry:8443","http://grafana:3000"]:
         assert request(base,"/api/dashboards/db",method="POST",payload={"dashboard":{"title":"forbidden"}},token=viewer_token)[0] in (403,405)
     assert request("https://entry:8443","/")[0]==401
@@ -85,8 +116,10 @@ def functional():
         result=json.loads(body); assert len(result["rows"])<=100 and len(body)<=1024*1024
         assert result["functionSamplingRate"]==0.1
         assert result["rows"],("empty profiler report after representative traffic",report)
-    # Empty vectors are legitimate for unsupported browser signals, but the
-    # exercised proxy, CPU and SQL panels must contain actual finite observations.
+    # Unsupported collection must not synthesize a long-task sample for that page.
+    unsupported=ok("http://prometheus:9090","/api/v1/query?"+urllib.parse.urlencode({"query":'cvm_browser_long_task_duration_seconds_count{page="records"}'}))["data"]["result"]
+    assert unsupported==[],"unsupported browser observer fabricated samples"
+    # Exercised proxy, CPU and SQL panels must also contain finite observations.
     observations={}
     for signal,expression in {
         "cpuRate":"sum(rate(cvm_process_cpu_seconds_total[1m]))",
@@ -169,7 +202,7 @@ def load(seconds,rate):
     assert all(item[0]==200 for item in results),{"statuses":{str(status):sum(item[0]==status for item in results) for status,_ in results}}
     return {"offered":seconds*rate,"completed":len(results),"dashboardSubscriptions":1,"durationSeconds":time.perf_counter()-started,"p95Seconds":durations[math.ceil(len(durations)*0.95)-1]}
 
-parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","functional","load"])
+parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","browser_seed","functional","load"])
 parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
 args=parser.parse_args()
 result=load(args.seconds,args.rate) if args.mode=="load" else globals()[args.mode]()

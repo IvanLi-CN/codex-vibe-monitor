@@ -173,7 +173,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                 original_uri.path(),
             );
             prompt_cache_lease_guard.disarm();
-            if requires_response_create_first_frame {
+            let outcome = if requires_response_create_first_frame {
                 proxy_websocket_tunnel_deferred_prepare(
                     state,
                     downstream,
@@ -188,7 +188,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                     trace,
                     proxy_request_permit,
                 )
-                .await;
+                .await
             } else {
                 proxy_websocket_tunnel_immediate_prepare(
                     state,
@@ -205,9 +205,9 @@ pub(crate) async fn proxy_openai_v1_ws_common(
                     proxy_request_permit,
                     None,
                 )
-                .await;
-            }
-            websocket_lifetime.finish("unknown");
+                .await
+            };
+            websocket_lifetime.finish(outcome);
         }
     })
 }
@@ -1253,13 +1253,26 @@ impl TimestampedWsDownstreamMessage {
     }
 }
 
+pub(crate) fn websocket_terminal_outcome(
+    failure: Option<&str>,
+    failure_kind: Option<&str>,
+) -> &'static str {
+    if failure_kind == Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED) {
+        "cancelled"
+    } else if failure.is_some() {
+        "error"
+    } else {
+        "success"
+    }
+}
+
 pub(crate) async fn proxy_websocket_tunnel(
     state: Arc<AppState>,
     downstream: WebSocket,
     prepared: PreparedUpstreamWebSocket,
     _proxy_request_permit: ProxyRequestConcurrencyPermit,
     initial_downstream_messages: Vec<TimestampedWsDownstreamMessage>,
-) {
+) -> &'static str {
     let PreparedUpstreamWebSocket {
         upstream,
         transport_flush_task: _transport_flush_task,
@@ -1856,6 +1869,7 @@ pub(crate) async fn proxy_websocket_tunnel(
     usage_tracker
         .release_unterminal_prompt_cache_keys(state.as_ref())
         .await;
+    websocket_terminal_outcome(failure.as_deref(), failure_kind_override)
 }
 
 pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
@@ -1871,7 +1885,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
     required_subprotocol: Option<String>,
     mut trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
-) {
+) -> &'static str {
     let first_downstream_message =
         match timeout(runtime_timeouts.request_read_timeout, downstream.next()).await {
             Ok(Some(Ok(message))) => TimestampedWsDownstreamMessage::now(message),
@@ -1892,7 +1906,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     message.as_str(),
                 )
                 .await;
-                return;
+                return "error";
             }
             Ok(None) => {
                 debug!(
@@ -1906,7 +1920,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     )
                     .await;
                 }
-                return;
+                return "cancelled";
             }
             Err(_) => {
                 let message = "websocket first response.create timed out";
@@ -1930,7 +1944,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                         reason: message.into(),
                     })))
                     .await;
-                return;
+                return "error";
             }
         };
     if matches!(first_downstream_message.message, AxumWsMessage::Close(_)) {
@@ -1941,7 +1955,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
             )
             .await;
         }
-        return;
+        return "cancelled";
     }
 
     let inspected_payload = inspect_ws_request_payload(
@@ -1967,7 +1981,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 reason: reason.into(),
             })))
             .await;
-        return;
+        return "error";
     }
     let invalid_prompt_cache_key = inspected_payload
         .as_ref()
@@ -1980,7 +1994,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
             // Realtime clients commonly begin with session.update or conversation.item.create
             // before the first response.create. Prepare a model-agnostic upstream immediately so
             // setup acknowledgements are not blocked while preserving the first frame.
-            proxy_websocket_tunnel_immediate_prepare(
+            return proxy_websocket_tunnel_immediate_prepare(
                 state,
                 downstream,
                 proxy_request_id,
@@ -1996,7 +2010,6 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                 Some(first_downstream_message),
             )
             .await;
-            return;
         }
         Some(_) | None => {
             let reason = "websocket first frame must be response.create";
@@ -2058,7 +2071,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                     reason: reason.into(),
                 })))
                 .await;
-            return;
+            return "error";
         }
     };
 
@@ -2115,7 +2128,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                         reason: reason.into(),
                     })))
                     .await;
-                return;
+                return "error";
             }
         };
     }
@@ -2153,7 +2166,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
                         reason: message.into(),
                     })))
                     .await;
-                return;
+                return "error";
             }
         };
     let prepared = match prepare_upstream_websocket(
@@ -2199,7 +2212,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
             let _ = downstream
                 .send(AxumWsMessage::Close(Some(close_frame)))
                 .await;
-            return;
+            return "error";
         }
     };
     proxy_websocket_tunnel(
@@ -2209,7 +2222,7 @@ pub(crate) async fn proxy_websocket_tunnel_deferred_prepare(
         proxy_request_permit,
         vec![first_downstream_message],
     )
-    .await;
+    .await
 }
 
 pub(crate) async fn record_ws_pre_upstream_failure(
@@ -2255,7 +2268,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
     mut trace: PoolUpstreamAttemptTraceContext,
     proxy_request_permit: ProxyRequestConcurrencyPermit,
     initial_downstream_message: Option<TimestampedWsDownstreamMessage>,
-) {
+) -> &'static str {
     let initial_inspection = initial_downstream_message
         .as_ref()
         .and_then(|message| ws_message_payload_bytes(&message.message))
@@ -2312,7 +2325,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
                         reason: reason.into(),
                     })))
                     .await;
-                return;
+                return "error";
             }
         };
     }
@@ -2352,7 +2365,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
                         reason: message.into(),
                     })))
                     .await;
-                return;
+                return "error";
             }
         };
     let prepared = match prepare_upstream_websocket(
@@ -2398,7 +2411,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
             let _ = downstream
                 .send(AxumWsMessage::Close(Some(close_frame)))
                 .await;
-            return;
+            return "error";
         }
     };
     proxy_websocket_tunnel(
@@ -2408,7 +2421,7 @@ pub(crate) async fn proxy_websocket_tunnel_immediate_prepare(
         proxy_request_permit,
         initial_downstream_message.into_iter().collect(),
     )
-    .await;
+    .await
 }
 
 pub(crate) struct WsUsageTracker {

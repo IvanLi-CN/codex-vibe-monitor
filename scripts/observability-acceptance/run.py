@@ -78,6 +78,12 @@ class Run:
             "entry":{**common,"command":["python","/work/fixture.py","https"]},
             "client":{**common,"command":["sleep","infinity"]},
         })
+        # Exercise the documented .env.local surface before hotpath/Tokio startup.
+        app=compose["services"]["app"]
+        local_names=["METRICS_BIND","METRICS_TOKEN_FILE","OBSERVABILITY_READ_TOKEN_FILE","GRAFANA_PUBLIC_URL","OBSERVABILITY_ENABLED"]
+        local_env=self.private/"app.env.local"
+        local_env.write_text("".join(name+"="+app["environment"].pop(name)+"\n" for name in local_names));local_env.chmod(0o640)
+        app["volumes"].append(str(local_env)+":/srv/app/.env.local:ro")
         self.definition=compose;self.compose_file.write_text(json.dumps(compose,indent=2))
     def wait_app(self):
         deadline=time.monotonic()+120
@@ -97,6 +103,7 @@ class Run:
                 if time.monotonic()>deadline: raise
                 time.sleep(2)
         self.client("viewer")
+        self.client("browser_seed")
         self.client("load","--seconds","40","--rate",str(self.args.rate))
     def isolation(self):
         self.compose("stop","prometheus","grafana")

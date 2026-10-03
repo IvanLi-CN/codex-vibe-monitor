@@ -8,6 +8,10 @@
 自有 Hyper/WS 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
 任务和投影使用实际事件。hotpath 在启动线程之前配置，最终 router 只安装一次
 layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
+`.env` 和 `.env.local` 在同步入口统一读取，先于 hotpath/Tokio 线程启动；
+全局 SQLite 仲裁器弱引用当前 recorder，拒绝绑定另一个尚活跃的 runtime，
+permit 持有所属 recorder 至释放，结束的 runtime 不会被全局对象永久保留。
+WebSocket 准备和转发返回实际 success/error/cancelled 终态，不统一记为 unknown。
 hotpath 关闭默认 `threads` feature，避免 SDK 每 250 ms 的 CPU/线程扫描；
 进程 CPU、内存和线程数仍由应用资源采样器按锁定节拍提供，按需 CPU 调用栈使用 samply。
 SDK 内部事件队列每 250 ms 排空，减少空队列的周期唤醒；事件在来源处计时，
@@ -44,6 +48,8 @@ ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任�
 退役工具识别 schema-v1 的列类型、主键、索引与约束，核验精确文件族和路径身份；
 CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 WAL，再校验移出；
 归档/恢复可重入，未知状态不移动源。CLI 还核验紧邻 v2 镜像与停止的 writer。
+归档清单记录实际 schema、旧程序版本、完整性、验证/完成时间及保留期限；
+不可识别或损坏状态保留失败清单和原文件，可重入的失败清单不伪装归档成功。
 
 ## Deployment boundary
 
@@ -105,3 +111,12 @@ CPU 诊断探针已从原实例取得 1145 个样本并解析应用热点函数�
 四张当前 mock 证据已重新展示并获确认；任务页保留积压业务趋势和 Grafana 深链接。
 Rust 全目标全特性 check、源码质量政策、18 项工具回归和两个主题 Spec 检查通过；
 Clippy、三分桶与经验性证据以最终候选运行记录为准。
+
+候选 `bcb88296` 的完整 Linux 验收通过：HTTPS 查询、监控停机隔离、原实例
+CPU build ID/符号匹配，以及 3 对 300 秒稳定 A/B 窗口。9,000/9,000 请求完成，
+CPU/请求增加 1.72%、p95 增加 2.96%。六条正式审查已完成；修复批次补齐
+启动环境顺序、WS 终态、协调器绑定生命周期、所有方法的 410 和退役清单。
+SQLite committed 指标已在 P1/P2 事务边界直接发出，不增加重复采集；旧 phase
+字段的零是既有 missing sentinel，optional TTFT 的真实零保留为一个样本。
+加强后的经验性场景使用实际浏览器批次验证 web 面板、缺测 Unknown 与 unsupported
+不伪造 long-task；修复后候选必须刷新验证、经验性卡与正式审查，不能沿用旧 SHA。
