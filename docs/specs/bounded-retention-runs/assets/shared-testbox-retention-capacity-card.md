@@ -8,9 +8,9 @@
 - Seed: fixed deterministic fixture, 1,300,000 expired invocation rows
 - Skew: 500,000 rows share one Prompt key; 64 sparse orphan raw files; 64 invocation-linked request/response raw rows
 - Cohort: `source_max_invocation_id=1,300,000`; batch cap 64 rows; raw compression disabled
-- Workload: concurrent online reader and writer inserting 1,024 expired rows outside the fixed cohort, 512 read samples
+- Workload: a writer attempts at most 1,024 expired rows outside the fixed cohort, one per 500 ms; a reader collects 512 indexed reads near run start. This is a synthetic fixture, not a calibrated replay of production traffic.
 
-Three release-build candidate runs cleared the fixed cohort. `observed_archived` and the final SQL count are the authoritative cohort measurements; `summary_archived` is lower because prepared archive recovery can remove source rows without counting them as a new invocation batch in that run summary.
+Three release-build candidate runs cleared the fixed cohort. `observed_archived` is the difference in source-row counts and the final SQL count checks zero remaining source rows; `summary_archived` is lower because prepared archive recovery can remove source rows without counting them as a new invocation batch in that run summary.
 
 ```text
 candidate #1: runs=55 elapsed_ms=786679 summary_archived=375750 observed_archived=1300000 budget_exhausted_runs=4 lock_retries=50 read_p95_us=118 read_p99_us=631 raw_links_remaining=0 remaining=0
@@ -18,7 +18,7 @@ candidate #2: runs=53 elapsed_ms=766679 summary_archived=350022 observed_archive
 candidate #3: runs=51 elapsed_ms=786364 summary_archived=344518 observed_archived=1300000 budget_exhausted_runs=4 lock_retries=46 read_p95_us=60 read_p99_us=90 raw_links_remaining=0 remaining=0
 ```
 
-Candidate medians are `elapsed_ms=786679`, `runs=53`, `read_p95_us=67`, and `read_p99_us=90`. Every run ended with `remaining=0`, `raw_links_remaining=0`, and no recoverable or fatal failure. The productive runs stopped at the 60,000 ms work budget and resumed in later runs; pressure-only runs reported `sqlite_pressure`.
+Candidate medians are `elapsed_ms=786364`, `runs=53`, `read_p95_us=67`, and `read_p99_us=90`. Every run ended with `remaining=0`, `raw_links_remaining=0`, and no recoverable or fatal failure. The productive runs stopped at the 60,000 ms work budget and resumed in later runs; pressure-only runs reported `sqlite_pressure`.
 
 Logs:
 
@@ -28,7 +28,7 @@ Logs:
 
 ## Development Baseline
 
-The baseline used the same fixture, seed, online reader/writer, and fixed cohort from `origin/main`. The old path was unable to keep up with the online expired-row writer: each controlled run submitted only 192 rows across three 60-second budget passes and left 1,299,808 cohort rows. The benchmark's optional `CVM_RETENTION_TEST_MAX_RUNS=3` mode stops after those three passes and still emits the 512 online read samples, so the baseline result is measurable without waiting for a cohort that cannot clear in the 24-hour window.
+The baseline was compiled independently from the development base and used the same seed, reader/writer fixture and fixed cohort. Each controlled run reported 192 archived rows across three budget passes and left 1,299,808 cohort rows. The optional `CVM_RETENTION_TEST_MAX_RUNS=3` mode bounds the baseline observation window. This short observation demonstrates slow measured progress; it does not prove what a full 24-hour baseline run would achieve.
 
 ```text
 baseline #1: elapsed_ms=204462 summary_archived=192 observed_archived=192 budget_exhausted_runs=3 read_p95_us=58 read_p99_us=87 raw_links_remaining=0 remaining=1299808 complete=false
@@ -42,12 +42,20 @@ Baseline medians are `read_p95_us=53` and `read_p99_us=87`. Logs:
 - `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-final-run2-partial.log`
 - `/srv/codex/agents/01a0f586-886a-77a0-90a2-ff67ef15b774/baseline-final-run3-partial.log`
 
-## Acceptance Interpretation
+## Staged Delivery Interpretation
 
-- Fixed cohort completion: candidate passed in all three runs, within minutes rather than the 24-hour budget; baseline did not clear and was still at 1,299,808 rows after the controlled window.
-- Bounded execution: passed; candidate productive runs stop at approximately 60 seconds and report `retention_work_budget` before the next run.
-- Lock/pressure behavior: passed for the candidate fixture; pressure retries were recoverable, raw links reached zero, and no run reported a fatal or recoverable failure.
-- Online latency: measured, but not a clean non-regression claim. Candidate medians (`67/90us`) are slightly above the baseline medians (`53/87us`) on this shared host while doing substantially more archive work. The absolute tails remain sub-millisecond, but A7's strict "not worse" latency clause is not marked verified from these samples.
-- Three-run capacity evidence: throughput and completion are demonstrated; the latency comparison remains the remaining empirical qualification for a full A7 sign-off.
+The owner explicitly authorized shipping a demonstrated positive improvement in this PR, with further optimization in a separate PR. The staged delivery criterion is observed improvement in source-cohort drainage under the same synthetic fixture, plus ordinary correctness, migration, API/UI and CI checks. The long-term `VER-BRR-009` / original A7 target is retained and is not marked passed.
 
-The benchmark source also retains the invocation-linked raw-file and cohort-external writer fixture. Those linked rows are included in the three candidate runs above, and `raw_links_remaining=0` confirms the verified archive ownership boundary for the fixed cohort. This card does not claim production capacity beyond the tested seed, online mix, or shared-testbox limits.
+- Observed cohort drainage: all three candidate runs reached zero source rows in 766–787 seconds (median 786.364 seconds); the three bounded baseline windows each removed 192 rows.
+- Execution boundaries: logs include productive runs stopping at the 60,000 ms work budget and pressure retries. These logs alone do not measure SQLite cancellation completion or prove absence of leaked locks.
+- Read latency: candidate median p95/p99 is 67/90 us, baseline 53/87 us. This is a small indexed read probe near startup, not a full-run request distribution or a strict non-regression pass.
+- Raw links: candidate runs ended at zero fixed-cohort invocation raw links. This is an ownership outcome check; it is not independent verification of every archive manifest, file checksum or crash boundary. The archive-file-io regression profile provides separate safety evidence.
+
+## Limits and Follow-up
+
+- Retention is invoked directly in the harness loop; managed catch-up scheduling is covered separately by scheduler regressions, not this capacity experiment.
+- The 500,000-row hot key is present in invocation payloads without a materialized conversation identity; this experiment does not exercise the full hot-conversation refresh/orphan path.
+- The writer is finite and the reader ends after 512 samples. Actual production request rates/read-write proportions, sustained peak competition, full-runtime p95/p99, verified per-file publication and independent lock-release measurement remain follow-up work.
+- Source-row drainage cannot by itself prove the complete ordinary-load 24-hour capacity contract. No production capacity guarantee or production repair is claimed.
+
+The inspected delta from measured source `1b15332d` to the delivery candidate contains only benchmark partial-window reporting, documentation, visual evidence and Rust source-quality budgets; production retention, schema, runtime, API and Web source are unchanged.

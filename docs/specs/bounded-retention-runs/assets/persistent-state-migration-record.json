@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "candidate-implemented-empirical-capacity-pending-migration-gate",
+  "status": "compatibility-verified-staged-delivery",
   "migration": {
     "description": "Add bounded conversation scan continuation, generation-safe staged statistics, automatic retention catch-up and exact hourly backlog observations.",
     "release_unit_description": "Bounded retention execution, automatic catch-up and its task observation contract.",
@@ -12,7 +12,7 @@
     "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
     "source_compatibility_range": {
       "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
-      "to_program_version": "Candidate branch th/retention-catchup-observability from origin/main 9b7967f2; measured source 9f6ab720; delivery commit is recorded at release readiness.",
+      "to_program_version": "Candidate branch th/retention-catchup-observability from origin/main 6228352d; measured production source 1b15332d; final identity bound by PR #1068 and merge receipt.",
       "direct_major_skips_supported": false
     }
   },
@@ -35,7 +35,7 @@
       },
       {
         "id": "ddl-003",
-        "description": "Idempotently add the main-database (occurred_at, id) index used by fixed-cohort retention eligibility and hourly backlog observation. Installation is structural only and does not scan or backfill historical observations.",
+        "description": "Idempotently add the main-database (occurred_at, id) index. SQLite builds the index from existing rows; no business historical aggregate or observation-history backfill is performed.",
         "order": 3,
         "observable": true,
         "pauseable": true
@@ -46,7 +46,11 @@
         "id": "dml-001",
         "description": "Atomically invalidate/enqueue on source mutations, advance the persistent generation clock, checkpoint bounded source pages and conditionally publish precise aggregate results/clear only the consumed generation. Commit orphan deletion with its safe cursor boundary.",
         "order": 4,
-        "depends_on": ["ddl-001", "ddl-002", "ddl-003"],
+        "depends_on": [
+          "ddl-001",
+          "ddl-002",
+          "ddl-003"
+        ],
         "observable": true,
         "pauseable": true
       },
@@ -54,15 +58,21 @@
         "id": "dml-002",
         "description": "Asynchronously publish coalesced operational progress, effective schedule and immutable run results/details to the maintenance database; never add a main-database operational fallback.",
         "order": 5,
-        "depends_on": ["ddl-001", "ddl-002"],
+        "depends_on": [
+          "ddl-001",
+          "ddl-002"
+        ],
         "observable": true,
         "pauseable": true
       },
       {
         "id": "dml-003",
-        "description": "After each retention run, schedule one bounded catch-up eligibility at a reason-specific backoff while preserving the inspection schedule; clear it on completion or disablement and enqueue through the existing single managed-task owner.",
+        "description": "After each retention run, schedule bounded catch-up eligibility while pending work remains, even for a completed core result; preserve inspection timing and reason-specific backoff. Clear on no pending work or disablement; enqueue through the existing single owner.",
         "order": 6,
-        "depends_on": ["ddl-002", "dml-002"],
+        "depends_on": [
+          "ddl-002",
+          "dml-002"
+        ],
         "observable": true,
         "pauseable": true
       },
@@ -70,7 +80,10 @@
         "id": "dml-004",
         "description": "Run an independent bounded observer against one main-database read snapshot, cancel over-budget SQLite work, and idempotently publish the latest successful UTC-hour count/max-overdue pair to the maintenance database while retaining explicit gaps.",
         "order": 7,
-        "depends_on": ["ddl-002", "ddl-003"],
+        "depends_on": [
+          "ddl-002",
+          "ddl-003"
+        ],
         "observable": true,
         "pauseable": true
       }
@@ -80,7 +93,13 @@
         "id": "backfill-001",
         "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown. Duplicate active maintenance rows are terminalized with an auditable failure result rather than deleted.",
         "order": 8,
-        "depends_on": ["ddl-001", "ddl-002", "ddl-003", "dml-001", "dml-004"],
+        "depends_on": [
+          "ddl-001",
+          "ddl-002",
+          "ddl-003",
+          "dml-001",
+          "dml-004"
+        ],
         "observable": true,
         "pauseable": true
       }
@@ -88,9 +107,28 @@
   },
   "rollout_observability": {
     "operations_must_remain_separate": true,
-    "operation_sequence": ["ddl-001", "ddl-002", "ddl-003", "dml-001", "dml-002", "dml-003", "dml-004", "backfill-001"],
-    "progress_signals": ["Core/stage outcomes and pending work", "Business cursor/generation and last committed progress", "Query budget/cancellation/settlement evidence", "Operational observation freshness, effective inspection schedule and next catch-up eligibility", "Hourly backlog observation state, observedAt and source cutoff"],
-    "pause_points": ["Between idempotent structure installation and background recovery", "At each committed business page/batch; operator disable prevents the next batch", "Before the next catch-up eligibility; observer failure leaves the bucket missing"]
+    "operation_sequence": [
+      "ddl-001",
+      "ddl-002",
+      "ddl-003",
+      "dml-001",
+      "dml-002",
+      "dml-003",
+      "dml-004",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "Core/stage outcomes and pending work",
+      "Business cursor/generation and last committed progress",
+      "Query budget/cancellation/settlement evidence",
+      "Operational observation freshness, effective inspection schedule and next catch-up eligibility",
+      "Hourly backlog observation state, observedAt and source cutoff"
+    ],
+    "pause_points": [
+      "Between idempotent structure installation and background recovery",
+      "At each committed business page/batch; operator disable prevents the next batch",
+      "Before the next catch-up eligibility; observer failure leaves the bucket missing"
+    ]
   },
   "recovery": {
     "deployed_migrations_immutable": true,
@@ -99,29 +137,32 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "patch": {"required_test_evidence": []},
+    "patch": {
+      "required_test_evidence": []
+    },
     "minor": {
       "required_test_evidence": [
         "Candidate reads the v2.71.45 and v2.80.2 declared retention schema fixtures; original API fields/status remain compatible.",
-        "Repeated DDL and re-entry after interruption are idempotent; no historical scan occurs in readiness.",
+        "Repeated DDL and re-entry are idempotent; no business historical aggregation or observation-history backfill occurs in readiness. Index construction is structural work.",
         "A forward-repair candidate resumes stopped-release staging and cursors without stale publication or lost queue generations.",
         "Legacy missing operational evidence stays unknown and maintenance-store failure does not block business work.",
         "Real SQLite query interruption, rollback and lock release meet the page budget contract.",
         "Catch-up scheduling regression preserves the inspection schedule, applies reason-specific backoff, and clears future work when disabled.",
         "Hourly observer fixtures prove same-snapshot count/max-overdue pairs, idempotent last-success wins, explicit missing buckets and no historical backfill.",
         "Task API and Web chart regressions prove optional-field compatibility, shared hourly axes, readable observedAt/retention policy, and missing versus exact-zero semantics.",
-        "The current-head fixed-cohort harness card records one observed zero-remaining run and bounded online-probe latency; it is not a merge-base three-run or raw-file Verified Archive test. The old baseline failed with SQLite extended error 517 before producing a comparable p95/p99, so A7 and the numeric three-run comparison remain open before delivery readiness."
+        "The synthetic fixed-cohort card supports owner-approved staged delivery only. Full ordinary/peak traffic calibration, complete runtime latency, cancellation/lock-release measurement and per-file capacity proof remain follow-up; original A7 is not marked passed."
       ]
     },
-    "major": {"required_test_evidence": []},
+    "major": {
+      "required_test_evidence": []
+    },
     "completed_evidence": [
-      "cargo check and clippy pass on the Candidate; targeted maintenance-store, prompt-cache generation/paging, orphan-retention and retention regressions pass locally.",
-      "Web unit tests, typecheck, lint and production build pass locally; Demo task page shows completed/partial, default schedule, stage progress, stale/unknown-compatible fields and unavailable Prompt statistics.",
-      "Repeated trigger installation is transactional and idempotent; the generation-clock regression proves queue drain followed by re-enqueue uses a higher generation.",
-      "Current-head shared-testbox lightweight (1,275/1,275) and archive-file-io (300/300) profiles pass. Stateful-sqlite completed 1,384/1,385 in the main run; its one pre-existing routing timeout assertion returned 502 instead of 503 under concurrent testbox load and passed in an isolated 1/1 rerun. Retention and migration cases passed.",
-      "The earlier same-seed 1,300,000-row result is retained only as Prompt-statistics evidence; it does not exercise retention archive submission and is excluded from the A7 capacity gate.",
-      "The current candidate single-run capacity harness observation is recorded in assets/shared-testbox-retention-capacity-card.md; A7 baseline/three-run/raw-file evidence, current-head migration, visual confirmation, and Tier 4 review remain pending. Storybook and the bound demo/runtime E2E subset passed, while the full delivery evidence bundle still requires revalidation together.",
-      "Local targeted checks are refreshed incrementally; the final profile, migration, Storybook/E2E, empirical, and review results must be recorded against the delivery commit."
+      "Existing v2.71.45/v2.80.2 schema forward-repair fixtures, repeated DDL and staging/generation preservation regressions pass; maintenance-store legacy repair and observation installation use additive guarded schema changes.",
+      "Targeted retention scheduling tests cover partial catch-up, completed with remaining backlog, due catch-up single-instance behavior, preserved inspection schedule and disabled configuration; hourly fixtures cover observed/missing buckets and last-success preservation.",
+      "Rust fmt/check/Clippy and Web unit/typecheck/lint/build passed. Bound Demo E2E 8/8 and Storybook 172/172 passed.",
+      "GitHub CI 37097078616 at 1170aed8 passed all backend profiles, both stateful-sqlite shards, representative scale, Web, Storybook accessibility and Demo E2E. Final metadata/assets-only head is revalidated by live current-head CI.",
+      "Three candidate release-build runs drained the 1,300,000-row source cohort; three bounded baseline windows removed 192 rows each. Synthetic workload limitations and unclosed full A7 are explicit in the capacity card.",
+      "Independent current-head Tier 4 review is recorded by the delivery flow; this compatibility record does not substitute for review, merge preflight or release publication evidence."
     ]
   }
 }

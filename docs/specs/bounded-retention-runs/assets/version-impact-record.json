@@ -1,32 +1,57 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
-  "status": "candidate-implemented-capacity-observed-release-unverified",
+  "status": "compatibility-verified-staged-delivery",
   "change": {
     "description": "Bound retention runs, automatic catch-up, independent hourly backlog observations, and compatible task evidence.",
     "release_unit_description": "Bounded retention execution, catch-up scheduling, and its task observation contract.",
-    "affected_contracts": ["public-api", "persistent-state"]
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
   },
   "classification": {
-    "allowed_impacts": ["patch", "minor", "major"],
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
     "planned": {
       "impact": "minor",
       "reasoning": "Public API retains existing fields and status values; new durable continuation semantics require forward repair and are not promised to older Minor binaries.",
       "assessed_at": "2026-10-01T12:00:00Z",
-      "evidence": ["SPEC.md", "IMPLEMENTATION.md", "../../adr/0025-retention-core-and-conversation-derived-maintenance.md"]
+      "evidence": [
+        "SPEC.md",
+        "IMPLEMENTATION.md",
+        "../../adr/0025-retention-core-and-conversation-derived-maintenance.md"
+      ]
     },
     "current": {
       "impact": "minor",
-      "scope_drift": {"detected": false, "description": "Candidate matches the approved bounded-retention scope: additive API/maintenance fields and forward-only durable continuation state."},
+      "scope_drift": {
+        "detected": false,
+        "description": "Owner approved staged delivery of catch-up and observability; full ordinary-load capacity/non-regression acceptance is deferred without changing safety or compatibility."
+      },
       "reasoning": "The Candidate retains existing API fields and status values while adding optional observation fields; main-database generation, staging and orphan cursors are new durable state, so the release unit remains minor.",
-      "reassessed_at": "2026-10-01T12:00:00Z",
-      "evidence": ["IMPLEMENTATION.md", "assets/persistent-state-migration-record.json", "src/maintenance_store.rs", "src/prompt_cache_conversations.rs"]
+      "reassessed_at": "2026-10-03T04:40:00Z",
+      "evidence": [
+        "IMPLEMENTATION.md",
+        "assets/persistent-state-migration-record.json",
+        "src/maintenance_store.rs",
+        "src/prompt_cache_conversations.rs"
+      ]
     },
     "verified": {
-      "impact": null,
-      "reasoning": "The candidate adds a durable catch-up schedule, an idempotent main-database index, and maintenance-database hourly observations. The current retention capacity card observes a fixed cohort reaching zero, while the old baseline fails before producing a comparable latency distribution; verified release impact remains unset until current-head migration, visual, and review gates pass.",
-      "verified_at": null,
-      "evidence": ["IMPLEMENTATION.md", "assets/persistent-state-migration-record.json", "assets/shared-testbox-retention-capacity-card.md"]
+      "impact": "minor",
+      "reasoning": "Existing API/status fields remain compatible with optional additions (patch); durable catch-up and hourly observations are additive forward-readable state (minor). Declared historical schema fixtures and idempotent installation regressions pass in backend CI. Performance qualification remains a separate follow-up and is not a compatibility pass.",
+      "verified_at": "2026-10-03T04:40:00Z",
+      "evidence": [
+        "src/maintenance_store.rs",
+        "src/schema.rs",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+        "assets/persistent-state-migration-record.json",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/37097078616"
+      ]
     }
   },
   "compatibility_evidence": {
@@ -34,19 +59,33 @@
       "planned_impact": "patch",
       "change": "compatible",
       "supported_consumer_range": "Existing current-Major consumers of managed task detail and performance fields, including original TaskRun.status values.",
-      "evidence": ["src/maintenance_store.rs", "src/runtime.rs", "src/api/slices/system_routes_and_tasks.rs", "web/src/lib/api/core-foundation.ts"]
+      "evidence": [
+        "src/maintenance_store.rs",
+        "src/runtime.rs",
+        "src/api/slices/system_routes_and_tasks.rs",
+        "web/src/lib/api/core-foundation.ts"
+      ]
     },
     "persistent_state": {
       "planned_impact": "minor",
       "applicable": true,
       "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries, retention catch-up schedule, the main-database eligibility index, and nullable operational outcomes/hourly snapshots in the maintenance database.",
-      "source_program_compatibility_range": "Existing retention support boundary v2.71.x through the observed v2.80.2 schema, including intervening migration structures; fixtures required before release.",
-      "evidence": ["src/prompt_cache_conversations.rs", "src/maintenance_store.rs", "src/schema.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "Candidate targeted migration/queue regressions; current-head shared profile, old-version and interruption evidence remain pending."]
+      "source_program_compatibility_range": "Declared v2.71.45 and v2.80.2 retention fixtures plus the current development-base structures; unobserved intermediate snapshots are not claimed.",
+      "evidence": [
+        "src/maintenance_store.rs",
+        "src/schema.rs",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+        "Backend CI 37097078616: all resource profiles and scale passed at 1170aed8."
+      ]
     }
   },
   "release_unit": {
-    "member_change_records": ["bounded-retention-runs"],
-    "maximum_verified_impact": null,
-    "calculation_evidence": ["Candidate classification remains public_api=patch and persistent_state=minor; capacity observation does not close the migration, visual, review, or baseline-comparison gates, so the verified maximum remains intentionally unset."]
+    "member_change_records": [
+      "bounded-retention-runs"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "Compatible additive public_api=patch; forward-readable durable persistent_state=minor; maximum verified compatibility impact=minor. Actual tag and publication are bound to the merge SHA by release tracking."
+    ]
   }
 }

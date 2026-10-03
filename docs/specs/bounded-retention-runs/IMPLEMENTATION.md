@@ -2,9 +2,9 @@
 
 ## Current Status
 
-- Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 已形成当前候选实现，容量实测已取得三次候选归零结果和三次基线 partial 对照，仍需当前 head 的迁移/审查、在线延迟不劣证据和最终视觉证据收敛。
+- Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 已形成当前候选实现，容量实测已取得三次候选 source cohort 归零和三次基线 partial 对照；主人已授权本 PR 先发布积极改善，完整常态负载/严格延迟验收留给独立后续 PR。删除安全、迁移、兼容和当前候选审查继续作为硬门禁。
 - Lifecycle: active。
-- 当前候选基于 `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`，位于 `th/retention-catchup-observability`；当前实现与证据提交为 `9a3f915c`。
+- 当前候选基于 `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`，位于 `th/retention-catchup-observability`；容量测量的生产源码为 `1b15332d`，后续仅更改 benchmark partial 输出、文档、截图资产和源码质量预算。
 - 原交付的 shared-testbox 三个资源 profile、旧状态前向修复与 Demo 视觉确认已完成。旧百万行试验验证 Prompt 统计分页收敛，不是 retention 端到端吞吐或 24 小时追赶达标证据。
 
 ## 调查证据与限制
@@ -160,38 +160,38 @@ REQ-BRR-016..021 已有代码候选和定向单元覆盖，但尚无 shared-test
 | REQ-BRR-012                     | `src/performance_telemetry.rs`                                                                                                                          | 已修正半开相交桶、覆盖率和最新有样本桶选择；非整点窗口回归已通过                                                                                                                                                                                                           |
 | REQ-BRR-008/009/010/011/013/015 | `web/src/lib/api/core-foundation.ts`, `web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/pages/system/taskLabels.ts`, `web/src/demo/handlers.ts` | 已发布可选字段兼容、成果/阶段/单位/计划、未知/过期/统计待刷新显示；原交付的 Storybook、Web 单测、typecheck、lint、build、任务页 E2E 及视觉确认已完成                                                                                                                       |
 | REQ-BRR-014                     | `src/maintenance_store.rs`, `src/prompt_cache_conversations.rs`, `src/tests/stateful_sqlite/*`                                                          | 已实现幂等 DDL、主库续作结构、维护库 nullable 字段和代次回归；v2.71.45/v2.80.2 前向修复、重复 DDL、中断 staging/generation 保留及 ready 不回填回归已通过                                                                                                                   |
-| REQ-BRR-016/018                 | `src/runtime.rs`, `src/maintenance/retention.rs`, `src/db_pressure.rs`, `src/proxy_sqlite_write_coordinator.rs`, `src/maintenance_store.rs`             | 已实现单一 owner 的 catch-up 资格、原因退避、禁用清除及逐批自适应限制；容量实测记录了压力轮、锁重试和 60 秒边界，当前 head 的公平/恢复证据仍在收敛                                                                                                                         |
+| REQ-BRR-016/018                 | `src/runtime.rs`, `src/maintenance/retention.rs`, `src/db_pressure.rs`, `src/proxy_sqlite_write_coordinator.rs`, `src/maintenance_store.rs`             | 已实现单一 owner 的 catch-up 资格、原因退避、禁用清除及逐批自适应限制；容量实测记录了压力轮、锁重试和 60 秒边界，单实例、配置禁用、completed 但仍有 backlog 的接续回归已通过；线上竞争公平性的容量校准留给后续实测                                                         |
 | REQ-BRR-017                     | retention 真实发布链路与 shared-testbox 端到端实验                                                                                                      | 已增强 harness 以覆盖 invocation 关联 raw 文件和持续新增过期行；三次候选固定 cohort 均归零，三次基线 partial 均只提交 192 行，吞吐目标有证据但在线 p95/p99 中位数略高，A7/VER-BRR-009 仍未完全验证，详见 [capacity card](assets/shared-testbox-retention-capacity-card.md) |
-| REQ-BRR-019/020                 | `src/maintenance_store.rs`, `src/maintenance/retention.rs`, runtime observer                                                                            | 已实现 2 秒 SQLite 进度取消、同快照 COUNT/最早资格候选、UTC 小时幂等历史和缺测填充；仍需自然日/故障/迁移及锁释放实证                                                                                                                                                       |
-| REQ-BRR-021                     | 任务 API、`web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/lib/api/core-foundation.ts`, Demo/Storybook                                         | 已实现可选 trend API、7 天双图、观测时间/策略 tooltip、缺测断线和追赶字段；仍需桌面/移动视觉证据与交互回归                                                                                                                                                                 |
+| REQ-BRR-019/020                 | `src/maintenance_store.rs`, `src/maintenance/retention.rs`, runtime observer                                                                            | 已实现 2 秒 SQLite 进度取消、同快照 COUNT/最早资格候选、UTC 小时幂等历史和缺测填充；小时零积压/缺测、同小时末次成功、逾期自然日边界和预算取消回归已通过；生产负载下独立锁释放测量不由容量卡证明                                                                            |
+| REQ-BRR-021                     | 任务 API、`web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/lib/api/core-foundation.ts`, Demo/Storybook                                         | 已实现可选 trend API、7 天双图、观测时间/策略 tooltip、缺测断线和追赶字段；任务页 E2E 8/8、Storybook 172/172 已通过，桌面/移动端双图资产见 Visual Evidence                                                                                                                 |
 
 ## Compatibility and Migration
 
-当前候选仍按 minor 评估：public API 保留原字段及 status 并只增加可选字段；维护库新增小时观测表和任务追赶状态采用幂等前向迁移，旧 Minor 程序不承诺维护新状态。记录见 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)；候选容量结果已记录，最终 release 分类仍待迁移、视觉和审查门禁。
+当前候选仍按 minor 评估：public API 保留原字段及 status 并只增加可选字段；维护库新增小时观测表和任务追赶状态采用幂等前向迁移，旧 Minor 程序不承诺维护新状态。记录见 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)；候选容量结果已记录，API 兼容与迁移测试支持 minor 分类；PR 的当前候选审查和 CI 另行绑定。
 
-主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等且不历史扫描；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
+主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等；新索引安装需要 SQLite 构建索引，但不执行业务历史聚合或观测历史回填；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
 
 支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界；当前仓库没有额外可复现的中间 retention schema 快照，因此不把未验证的中间结构写成已覆盖事实。候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。`ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill` 固定了两个声明边界的旧 invocation/队列形状，重复运行 DDL，并验证历史行、未完成队列和 staging generation 不丢失；新增结构仍由幂等 DDL 和缺列修复覆盖。
 
-## Verification and Remaining Gaps
+## Verification and Staged Delivery
 
-当前候选已完成 Rust fmt/check、维护库定向回归、Web typecheck/unit/lint/build，并在 shared-testbox 完成三次候选归零和三次基线 partial 对照。当前 head 的 lightweight 1,275/1,275、archive-file-io 300/300 通过；stateful-sqlite 主跑 1,384/1,385，唯一已有路由超时断言在隔离重跑 1/1 通过。Clippy、Storybook 172/172 和绑定当前候选服务的任务页 demo/runtime E2E 8/8 已通过；迁移夹具、当前 head Tier 4 审查和最终视觉确认仍需收敛。默认 `60080` E2E 连接的是另一 worktree，不能作为本候选证据。候选吞吐及固定 cohort 24 小时目标已有支持，但 p95/p99 中位数为 67/90us、基线为 53/87us，A7/VER-BRR-009 的严格在线延迟不劣条件仍未验证；profile 耗时不作为吞吐结论，Prompt-only 百万行对照也不能覆盖真实 retention 结果。
+主人明确选择先发布已证明有积极效果的实现，后续另开 PR 优化。因此本次交付以自动追赶、准确小时观测、可读双图及合成 fixture 下显著改善为范围；长期 REQ-BRR-017 / VER-BRR-009 不删除、不标记完成。生产常态负载校准、全时段在线 p95/p99 不劣、持续峰值和独立锁释放/逐文件证明测量作为后续实测工作。这个范围调整不放宽归档证明、raw 所有权、活跃会话、单实例、迁移或查询预算约束。
 
-当前 retention 容量卡覆盖固定 source 上界、在线探针、持续新增过期行和 invocation 关联 raw 文件 fixture 的三次候选/三次基线对照。候选每次均观察归零，基线每次三轮预算只提交 192 行并剩余 1,299,808 行；候选在线读中位 p95/p99 为 67/90us，基线为 53/87us。吞吐和 raw 所有权边界已有实测支持，但在线延迟中位数略高，不能把该卡写成 A7 完成证据；限制与日志路径见 [capacity card](assets/shared-testbox-retention-capacity-card.md)。
+Rust fmt/check/Clippy、维护库调度和恢复定向回归、Web unit/typecheck/lint/build 均通过。shared-testbox lightweight 1,275/1,275、archive-file-io 300/300 通过；stateful-sqlite 主跑唯一已有路由超时在隔离重跑通过。PR #1068 的后续完整 CI 在候选 `1170aed8` 已全部通过，包括 lightweight、两个 stateful-sqlite shard、archive-file-io、representative scale、Web、Storybook accessibility 和任务页 Demo E2E。最终文档/资产候选由 live PR current-head checks 和 Tier 4 五 lane 结果绑定；不把此前 SHA 的证据假写为当前 SHA。
 
-旧 Demo 视觉已获确认。当前候选 harness 观察到固定 cohort 归零、预算边界、在线读写下的锁释放和 raw link 清理；严格在线延迟不劣仍未达到。自动追赶、公平性/真实停止原因、独立小时采样与新图表仍需当前 head 的迁移、交互、视觉和 Tier 4 审查证据。A7/VER-BRR-009 保持未完全验证，不降低门槛。
+本任务 leased port `50800` 的 Demo/runtime E2E 8/8、Storybook 172/172 已通过；默认 `60080` 属于其他 worktree，排除其验证结果。小时观测、自然日口径和旧 schema 的前向修复测试保留在匹配的后端资源 profile 中。迁移与 SemVer 记录见 assets；独立当前候选审查结果由交付流程保存。
 
-实施验收对应 SPEC 的 VER-BRR-001..007。代表性大表至少包含超过百万 invocation、稀疏孤儿和单 key 倾斜；同时施加在线读写，验证有界查询、主库锁释放、公平推进及静默后统计收敛。性能门槛不能用 4,000-key/40,000-invocation 小 fixture 代替，也不能从生产的历史时间倒推保证。
-
-Rust 回归按 `lightweight`、`stateful-sqlite`、`archive-file-io` 合同分桶；真实 archive/file/锁行为留在 archive-file-io。重型及集成验证直接在 shared-testbox 运行。Web 覆盖接口可选字段、结果状态、默认调度、未知/过期和暂不可用。渲染改动已在本地 Demo 生成桌面/移动端状态证据；当前候选截图等待主人确认，确认前不作为 owner-facing 视觉证据。
+三次 release-build 候选的 130 万行固定 source cohort 全部归零，耗时中位数 786.364 秒；三次基线受控窗口各归档 192 行。在线读探针 p95/p99 中位数为候选 67/90us、基线 53/87us。该短读探针、有限 writer 与直接 retention 调用不等于真实流量重放、调度器容量或完整 SQL 锁释放证明；完整限制和日志见 [capacity card](assets/shared-testbox-retention-capacity-card.md)。本次阶段交付已具有积极实证，原 A7 保持未完全验证。
 
 ## Visual Evidence
 
-原交付 Demo 桌面状态已显示五项同口径指标、默认 `3600s` 有效计划、阶段检查点、运行完成度、Prompt 统计“暂不可用（积压 3）”和性能覆盖率；移动端状态已显示按钮、核心指标和可滚动任务内容。当前候选新增了追赶字段和 7 天双图，Storybook 与任务页 E2E 已覆盖 completed、partial、deferred、failed、未知/过期和统计待刷新；新的桌面/移动截图已生成，待主人确认后再作为 owner-facing 证据写入规范资产。
+当前 Task Evidence Set 来自本任务纯前端 Web Demo 的桌面和移动 viewport，模拟数据展示共享时间轴的 invocation 条数与最长逾期两图，缺测断线、Prompt 统计暂不可用。截图已通过 owner-facing 快照展示；当前同路径基线不存在，因此为 current-only evidence。主人随后明确要求先走 PR 发版，本流程按该交付指令继续，不将该指令伪记为单独截图准确性确认。生产页面或无关程序没有在本次证据中截图。
 
-- [桌面任务详情](assets/retention-task-desktop.png)
-- [移动端完成状态](assets/retention-task-mobile.png)
-- [移动端部分完成状态](assets/retention-task-partial-mobile.png)
+![Desktop retention backlog and overdue trend](assets/retention-catchup-trend-desktop.png)
+
+![Mobile retention backlog and overdue trend](assets/retention-catchup-trend-mobile.png)
+
+旧 `retention-task-*.png` 属于 v2.82.0 基础交付，保留供历史参考，不纳入本次 PR Task Evidence Set。当前截图之后的 delta 不改变 Web 渲染源码或 Demo 输入；无需重复抓取。
 
 ## References
 
