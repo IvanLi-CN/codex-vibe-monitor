@@ -8,11 +8,13 @@ pub(crate) use progress::load_startup_backfill_progress_from_pool;
 #[cfg(test)]
 pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_control_for_test;
 #[cfg(test)]
-use prompt_cache_control::wake_prompt_cache_materialization_with_scheduler;
 use prompt_cache_control::{
-    apply_prompt_cache_control_schedule, coordinator_for_prompt_cache_run,
-    persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
-    prompt_cache_stale_result_outcome, prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    apply_prompt_cache_control_schedule, wake_prompt_cache_materialization_with_scheduler,
+};
+use prompt_cache_control::{
+    coordinator_for_prompt_cache_run, persist_prompt_cache_materialization_defer,
+    prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
+    prompt_cache_tasks_when_startup_backfill_root_is_skipped,
 };
 pub(crate) use prompt_cache_control::{
     set_prompt_cache_materialization_enabled_with_store,
