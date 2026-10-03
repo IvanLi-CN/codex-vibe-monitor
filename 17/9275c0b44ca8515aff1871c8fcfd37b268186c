@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.85.0",
+  "base_stable_version": "2.84.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-03T06:10:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.85.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ac49ee16d62d4deb6ce4bbaadc0138ec524256c9",
+  "pr_number": 1068,
+  "pr_title": "feat(retention): add automatic catch-up and backlog observability",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.85.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.85.0",
+  "target_sha": "179275c0b44ca8515aff1871c8fcfd37b268186c",
+  "type_label": "type:minor"
+}
