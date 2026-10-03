@@ -178,7 +178,10 @@ def sample(round_index, phase, started):
         state['eligibility'] = base.progress_eligibility(state)
     except (sqlite3.Error, OSError) as error:
         state = {'snapshot_error': str(error)}
-    emit(phase, round_index, elapsed_seconds=round(time.monotonic() - started, 3), **state)
+    event_values = dict(state)
+    event_values['snapshot_phase'] = event_values.get('phase')
+    event_values.pop('phase', None)
+    emit(phase, round_index, elapsed_seconds=round(time.monotonic() - started, 3), **event_values)
     return state
 
 
