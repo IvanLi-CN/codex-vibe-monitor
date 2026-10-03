@@ -3729,8 +3729,8 @@ export const GPT6ModelContextCluster: Story = {
 
     await expect(cluster).toHaveAttribute("data-model-context-grouped", "true");
     await expect(cluster).toHaveAttribute("aria-label", expect.stringContaining("gpt-6-astra"));
-    const identity = cluster.querySelector('[data-model-presentation="embedded"]');
-    if (!(identity instanceof HTMLElement)) throw new Error("missing embedded GPT-6 identity");
+    const identity = cluster.querySelector('[data-model-icon="creation"]');
+    if (!(identity instanceof HTMLElement)) throw new Error("missing GPT-6 identity");
     await expect(identity).toHaveAttribute("aria-label", "gpt-6-astra");
     await expect(identity).toHaveAttribute("data-model-icon", "creation");
     await expect(identity).toHaveClass("h-5", "w-5");

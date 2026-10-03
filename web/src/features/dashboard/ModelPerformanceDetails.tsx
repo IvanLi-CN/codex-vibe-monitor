@@ -331,6 +331,7 @@ function ModelPerformanceRowIdentity({
         className={className}
         modelClassName={modelClassName}
         testId={testId}
+        showGeneration
       />
     );
   }

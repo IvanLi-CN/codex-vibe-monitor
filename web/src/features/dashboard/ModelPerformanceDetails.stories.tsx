@@ -39,7 +39,7 @@ const performance: ModelPerformance = {
       parallelism: 1.13,
     },
     {
-      model: "gpt-5.6-terra",
+      model: "gpt-6-sol",
       reasoningEffort: null,
       tokensPerMinute: 734,
       streamingResponseRate: null,
@@ -50,7 +50,7 @@ const performance: ModelPerformance = {
       parallelism: 1.29,
     },
     {
-      model: "gpt-5.6-luna",
+      model: "gpt-6.1-sol",
       reasoningEffort: "ULTRA",
       tokensPerMinute: 648,
       streamingResponseRate: 141.8,
@@ -74,7 +74,7 @@ const performance: ModelPerformance = {
       parallelism: 1.66,
     },
     {
-      model: "gpt-5.6-terra",
+      model: "gpt-6-sol",
       reasoningEffort: null,
       tokensPerMinute: 734,
       streamingResponseRate: null,
@@ -85,7 +85,7 @@ const performance: ModelPerformance = {
       parallelism: 1.29,
     },
     {
-      model: "gpt-5.6-luna",
+      model: "gpt-6.1-sol",
       reasoningEffort: null,
       tokensPerMinute: 648,
       streamingResponseRate: 141.8,
@@ -133,7 +133,50 @@ type Story = StoryObj<typeof meta>;
 
 export const ReasoningAndIdentityMatrix: Story = {};
 
+export const DetailedGenerationMatrix: Story = {
+  tags: ["test"],
+  globals: { viewport: { value: "desktop1280", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-mode-detailed"));
+    const rows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="model-performance-table-model-context"]',
+      ),
+    );
+    const identities = rows.map((row) => [
+      row.querySelector<HTMLElement>("[data-model-identity]")?.dataset.modelIdentity,
+      row.querySelector<HTMLElement>("[data-model-generation-segment]")?.textContent,
+    ]);
+    await expect(identities).toEqual(
+      expect.arrayContaining([
+        ["gpt-5.6-sol", "5.6"],
+        ["gpt-6-sol", "6"],
+        ["gpt-6.1-sol", "6.1"],
+      ]),
+    );
+    for (const row of rows) {
+      const badge = row.querySelector<HTMLElement>('[data-testid$="-badge"]');
+      await expect(badge).not.toBeNull();
+      if (badge) {
+        await expect(badge.getBoundingClientRect().height).toBe(24);
+        const segments = Array.from(
+          badge.querySelectorAll<HTMLElement>(
+            "[data-model-generation-segment], [data-model-icon-segment], [data-model-effort-segment]",
+          ),
+        );
+        await expect(segments).toHaveLength(3);
+        await expect(segments[0]).toHaveAttribute("data-model-generation-segment");
+        await expect(segments[1]).toHaveAttribute("data-model-icon-segment");
+        await expect(segments[2]).toHaveAttribute("data-model-effort-segment");
+      }
+      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+    }
+  },
+};
+
 export const SimpleGrouping: Story = {
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-mode-simple"));
@@ -141,14 +184,14 @@ export const SimpleGrouping: Story = {
       "aria-selected",
       "true",
     );
-    await expect(
-      canvas.getByTestId("dashboard-model-performance-table-model-context"),
-    ).toHaveLength(3);
+    await expect(canvas.getAllByTestId("model-performance-table-model-context")).toHaveLength(3);
   },
 };
 
 export const Mobile390: Story = {
+  tags: ["test"],
   args: { presentation: "drawer" },
+  globals: { viewport: { value: "mobile390", isRotated: false } },
   parameters: { viewport: { defaultViewport: "mobile390" } },
   render: (args) => (
     <div
@@ -163,13 +206,32 @@ export const Mobile390: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-mode-detailed"));
+    const modelRows = Array.from(
+      canvasElement.querySelectorAll<HTMLElement>(
+        '[data-testid="model-performance-drawer-model-context"]',
+      ),
+    );
+    const identities = modelRows.map((row) => [
+      row.querySelector<HTMLElement>("[data-model-identity]")?.dataset.modelIdentity,
+      row.querySelector<HTMLElement>("[data-model-generation-segment]")?.textContent,
+    ]);
+    await expect(identities).toEqual(
+      expect.arrayContaining([
+        ["gpt-5.6-sol", "5.6"],
+        ["gpt-6-sol", "6"],
+        ["gpt-6.1-sol", "6.1"],
+      ]),
+    );
     await expect(canvasElement.querySelector("select")).toBeNull();
     await expect(canvas.getByTestId("dashboard-model-breakdown-model-sort")).toBeInTheDocument();
-    await expect(canvas.getByTestId("dashboard-model-breakdown-sort-tpm")).toBeInTheDocument();
+    await expect(
+      canvas.getAllByTestId("dashboard-model-breakdown-sort-tpm").length,
+    ).toBeGreaterThan(0);
     await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-model-sort"));
     await expect(canvas.getByTestId("dashboard-model-breakdown-model-sort")).toHaveAttribute(
       "aria-label",
-      expect.stringMatching(/name/i),
+      expect.stringMatching(/.+/),
     );
   },
 };

@@ -34,11 +34,13 @@ import {
 import { buildTopicDescriptor, subscribeToTopic } from "../../lib/sse";
 import { cn } from "../../lib/utils";
 import { AppIcon } from "../shared/AppIcon";
-import { ModelIdentity, type ModelIdentityPresentationMode } from "../shared/ModelIdentity";
+import { ModelIdentity } from "../shared/ModelIdentity";
 import { formatReasoningEffort } from "../shared/reasoningEffort";
 import { getReasoningEffortTone } from "./invocation-table-reasoning";
 import { PoolAttemptRecordCard } from "./PoolAttemptRecordCard";
 import { StructuredPayloadViewer } from "./StructuredPayloadViewer";
+
+type InvocationModelChipPresentation = "standalone" | "embedded";
 
 export const FALLBACK_CELL = "—";
 export const INVOCATION_ACCOUNT_ROUTING_IN_PROGRESS_CLASS_NAME =
@@ -351,7 +353,7 @@ export function renderInvocationModelChip(
     className?: string;
     textClassName?: string;
     iconClassName?: string;
-    presentation?: ModelIdentityPresentationMode;
+    presentation?: InvocationModelChipPresentation;
     title?: string;
     testId?: string;
   },
@@ -387,7 +389,6 @@ export function renderInvocationModelChip(
           className="min-w-0 max-w-full"
           textClassName={cn("truncate", textClassName)}
           iconClassName={iconClassName}
-          presentation={presentation}
           title={requestModel}
           testId={testId ? `${testId}-request-identity` : undefined}
         />
@@ -414,7 +415,6 @@ export function renderInvocationModelChip(
         className="min-w-0 max-w-full"
         textClassName={cn("truncate", textClassName)}
         iconClassName={iconClassName}
-        presentation={presentation}
         title={resolvedTitle}
         testId={testId ? `${testId}-identity` : undefined}
       />

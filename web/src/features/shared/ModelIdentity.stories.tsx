@@ -10,6 +10,9 @@ const modelSamples = [
   ["GPT-6 Astra", "gpt-6-astra"],
   ["GPT-6 Sol", "gpt-6-sol"],
   ["GPT-6 Luna", "gpt-6-luna"],
+  ["GPT-6.1 Astra", "gpt-6.1-astra"],
+  ["GPT-6.1 Sol", "gpt-6.1-sol"],
+  ["GPT-6.1 Luna", "gpt-6.1-luna"],
 ] as const;
 
 function IdentityGallery() {
@@ -31,7 +34,7 @@ const meta = {
   tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
-    viewport: { defaultViewport: "desktop1660" },
+    viewport: { defaultViewport: "desktop1280" },
   },
   decorators: [
     (Story) => (
@@ -54,53 +57,81 @@ type Story = StoryObj<typeof meta>;
 async function comparisonPlay({ canvasElement }: { canvasElement: HTMLElement }) {
   const canvas = within(canvasElement);
   for (const [label, model] of modelSamples) {
-    await expect(canvas.getByTestId(`model-${model}`)).toHaveAttribute("aria-label", model);
+    const identity = canvas.getByTestId(`model-${model}`);
+    await expect(identity).toHaveAttribute("aria-label", model);
     await expect(canvas.getByText(label)).toBeVisible();
+    const style = getComputedStyle(identity);
+    expect(style.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(style.borderTopWidth).toBe("0px");
+    expect(style.borderRightWidth).toBe("0px");
+    expect(style.borderBottomWidth).toBe("0px");
+    expect(style.borderLeftWidth).toBe("0px");
+    expect(style.outlineStyle).toBe("none");
+    expect(style.boxShadow).toBe("none");
+    expect(style.borderTopLeftRadius).toBe("0px");
   }
 
   const gpt6Models = [
-    ["gpt-6-astra", "creation"],
-    ["gpt-6-sol", "weather-sunny"],
-    ["gpt-6-luna", "moon-waning-crescent"],
+    ["gpt-6-astra", "creation", "astra"],
+    ["gpt-6-sol", "white-balance-sunny", "sol"],
+    ["gpt-6-luna", "weather-night", "luna"],
+    ["gpt-6.1-astra", "creation", "astra"],
+    ["gpt-6.1-sol", "white-balance-sunny", "sol"],
+    ["gpt-6.1-luna", "weather-night", "luna"],
   ] as const;
   const colorMode = canvasElement.ownerDocument.documentElement.getAttribute("data-color-mode");
-  const expectedColors =
-    colorMode === "dark"
-      ? ["rgb(187, 166, 246)", "rgb(255, 177, 106)", "rgb(100, 209, 199)"]
-      : ["rgb(103, 73, 186)", "rgb(169, 80, 24)", "rgb(4, 118, 111)"];
-  for (const [model, iconName] of gpt6Models) {
+  const expectedColors = {
+    astra: colorMode === "dark" ? "rgb(187, 166, 246)" : "rgb(103, 73, 186)",
+    sol: getComputedStyle(canvas.getByTestId("model-gpt-5.6-sol")).color,
+    luna: getComputedStyle(canvas.getByTestId("model-gpt-5.6-luna")).color,
+  };
+  for (const [model, iconName, family] of gpt6Models) {
     const identity = canvas.getByTestId(`model-${model}`);
     await expect(identity).toHaveAttribute("data-model-icon", iconName);
-    await expect(identity.querySelector("svg")).not.toBeNull();
     await expect(identity).toHaveClass("h-5", "w-5");
-    expect(getComputedStyle(identity).color).toBe(
-      expectedColors[gpt6Models.findIndex(([id]) => id === model)],
+    expect(getComputedStyle(identity).color).toBe(expectedColors[family]);
+    await expect(identity).toHaveAttribute(
+      "data-model-generation-label",
+      model.startsWith("gpt-6.1") ? "6.1" : "6",
     );
   }
 }
 
 export const GenerationComparisonLight: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "light",
-    viewport: { value: "desktop1660", isRotated: false },
+    viewport: { value: "desktop1280", isRotated: false },
   },
   render: () => <IdentityGallery />,
   play: comparisonPlay,
 };
 
 export const GenerationComparisonDark: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "dark",
-    viewport: { value: "desktop1660", isRotated: false },
+    viewport: { value: "desktop1280", isRotated: false },
   },
   render: () => <IdentityGallery />,
   play: comparisonPlay,
 };
 
 export const GenerationComparisonMobile393: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "light",
     viewport: { value: "mobile393", isRotated: false },
+  },
+  render: () => <IdentityGallery />,
+  play: comparisonPlay,
+};
+
+export const GenerationComparisonTablet: Story = {
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "tablet768", isRotated: false },
   },
   render: () => <IdentityGallery />,
   play: comparisonPlay,
@@ -111,22 +142,22 @@ function PresentationModesGallery() {
     <div className="grid max-w-2xl gap-5 text-sm sm:grid-cols-3">
       <div className="flex items-center gap-3">
         <ModelIdentity model="gpt-6-astra" testId="gpt6-standalone" />
-        <span>Standalone</span>
+        <span>Standalone glyph</span>
       </div>
       <div className="flex items-center gap-3">
         <ModelPerformanceModelIdentity
-          model="gpt-6-sol"
+          model="gpt-6.1-sol"
           effortValue="high"
+          showGeneration
           testId="gpt6-model-badge"
         />
-        <span>Outlined badge</span>
+        <span>Detailed capsule</span>
       </div>
       <div className="flex items-center gap-3">
         <span className="inline-flex min-h-4 items-center gap-1.5" data-testid="gpt6-chart-legend">
           <span className="h-[3px] w-7 flex-none rounded-full bg-primary" aria-hidden="true" />
           <ModelIdentity
             model="gpt-6-luna"
-            presentation="compact"
             className="h-4 w-4"
             iconClassName="h-4 w-4"
             testId="gpt6-legend-identity"
@@ -141,40 +172,37 @@ function PresentationModesGallery() {
 
 async function presentationModesPlay({ canvasElement }: { canvasElement: HTMLElement }) {
   const canvas = within(canvasElement);
-  const colorMode = canvasElement.ownerDocument.documentElement.getAttribute("data-color-mode");
-  const expectedTile = colorMode === "dark" ? "rgb(40, 52, 63)" : "rgb(241, 244, 247)";
-  const expectedBorder = colorMode === "dark" ? "rgb(86, 104, 121)" : "rgb(205, 215, 225)";
-  const standaloneStyle = getComputedStyle(canvas.getByTestId("gpt6-standalone"));
-  expect(standaloneStyle.backgroundColor).toBe(expectedTile);
-  expect(standaloneStyle.borderTopWidth).toBe("1px");
-  expect(standaloneStyle.borderTopColor).toBe(expectedBorder);
-  await expect(canvas.getByTestId("gpt6-standalone")).toHaveAttribute(
-    "data-model-presentation",
-    "standalone",
-  );
+  const standalone = canvas.getByTestId("gpt6-standalone");
   const embeddedIdentity = canvas
     .getByTestId("gpt6-model-badge")
-    .querySelector<HTMLElement>('[data-model-presentation="embedded"]');
+    .querySelector<HTMLElement>('[data-model-icon="white-balance-sunny"]');
   await expect(embeddedIdentity).not.toBeNull();
   await expect(canvas.getByTestId("gpt6-legend-label")).toHaveTextContent("medium");
-  await expect(canvas.getByTestId("gpt6-legend-identity")).toHaveAttribute(
-    "data-model-presentation",
-    "compact",
-  );
   await expect(canvas.getByTestId("gpt6-legend-identity")).toHaveAttribute(
     "data-model-variant",
     "luna",
   );
-  await expect(embeddedIdentity).toHaveClass("h-6", "w-6");
-  expect(getComputedStyle(embeddedIdentity!).borderTopWidth).toBe("0px");
-  expect(getComputedStyle(embeddedIdentity!).backgroundColor).toBe(expectedTile);
-
-  const compactStyle = getComputedStyle(canvas.getByTestId("gpt6-legend-identity"));
-  expect(compactStyle.borderTopWidth).toBe("0px");
-  expect(compactStyle.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+  await expect(standalone).toHaveClass("model-identity-astra");
+  await expect(embeddedIdentity).toHaveClass("h-5", "w-5");
+  await expect(canvas.getByTestId("gpt6-model-badge-generation")).toHaveTextContent("6.1");
+  const badge = canvas.getByTestId("gpt6-model-badge-badge");
+  await expect(badge).toHaveClass("h-6", "border");
+  for (const identity of [
+    standalone,
+    embeddedIdentity!,
+    canvas.getByTestId("gpt6-legend-identity"),
+  ]) {
+    const style = getComputedStyle(identity);
+    expect(style.backgroundColor).toBe("rgba(0, 0, 0, 0)");
+    expect(style.borderTopWidth).toBe("0px");
+    expect(style.outlineStyle).toBe("none");
+    expect(style.boxShadow).toBe("none");
+    expect(style.borderTopLeftRadius).toBe("0px");
+  }
 }
 
 export const PresentationModes: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "light",
     viewport: { value: "desktop1660", isRotated: false },
@@ -184,6 +212,7 @@ export const PresentationModes: Story = {
 };
 
 export const PresentationModesDark: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "dark",
     viewport: { value: "desktop1660", isRotated: false },
@@ -193,6 +222,7 @@ export const PresentationModesDark: Story = {
 };
 
 export const PresentationModesMobile393: Story = {
+  tags: ["test"],
   globals: {
     themeMode: "light",
     viewport: { value: "mobile393", isRotated: false },
@@ -201,7 +231,18 @@ export const PresentationModesMobile393: Story = {
   play: presentationModesPlay,
 };
 
+export const PresentationModesTablet: Story = {
+  tags: ["test"],
+  globals: {
+    themeMode: "light",
+    viewport: { value: "tablet768", isRotated: false },
+  },
+  render: () => <PresentationModesGallery />,
+  play: presentationModesPlay,
+};
+
 export const SolTerraLuna: Story = {
+  tags: ["test"],
   render: () => (
     <>
       <ModelIdentity model="gpt-5.6-sol" testId="model-sol" />
@@ -214,11 +255,15 @@ export const SolTerraLuna: Story = {
     await expect(canvas.getByTestId("model-sol")).toHaveAttribute("aria-label", "gpt-5.6-sol");
     await expect(canvas.getByTestId("model-terra")).toHaveAttribute("data-model-icon", "earth");
     await expect(canvas.getByTestId("model-luna")).toHaveAttribute("title", "gpt-5.6-luna");
-    await expect(canvas.getByTestId("model-sol").querySelector("svg")).toHaveClass("text-warning");
-    await expect(canvas.getByTestId("model-terra").querySelector("svg")).toHaveClass(
-      "text-success",
+    await expect(canvas.getByTestId("model-sol")).toHaveAttribute(
+      "data-model-icon",
+      "white-balance-sunny",
     );
-    await expect(canvas.getByTestId("model-luna").querySelector("svg")).toHaveClass("text-info");
+    await expect(canvas.getByTestId("model-terra")).toHaveAttribute("data-model-icon", "earth");
+    await expect(canvas.getByTestId("model-luna")).toHaveAttribute(
+      "data-model-icon",
+      "weather-night",
+    );
   },
 };
 
@@ -229,6 +274,9 @@ export const GPT6AstraSolLuna: Story = {
       <ModelIdentity model="gpt-6-astra" testId="model-astra" />
       <ModelIdentity model="gpt-6-sol" testId="model-gpt6-sol" />
       <ModelIdentity model="gpt-6-luna" testId="model-gpt6-luna" />
+      <ModelIdentity model="gpt-6.1-astra" testId="model-gpt61-astra" />
+      <ModelIdentity model="gpt-6.1-sol" testId="model-gpt61-sol" />
+      <ModelIdentity model="gpt-6.1-luna" testId="model-gpt61-luna" />
     </>
   ),
   play: async ({ canvasElement }) => {
@@ -236,16 +284,29 @@ export const GPT6AstraSolLuna: Story = {
     await expect(canvas.getByTestId("model-astra")).toHaveAttribute("data-model-icon", "creation");
     await expect(canvas.getByTestId("model-gpt6-sol")).toHaveAttribute(
       "data-model-icon",
-      "weather-sunny",
+      "white-balance-sunny",
     );
     await expect(canvas.getByTestId("model-gpt6-luna")).toHaveAttribute(
       "data-model-icon",
-      "moon-waning-crescent",
+      "weather-night",
+    );
+    await expect(canvas.getByTestId("model-gpt61-astra")).toHaveAttribute(
+      "data-model-generation-label",
+      "6.1",
+    );
+    await expect(canvas.getByTestId("model-gpt61-sol")).toHaveAttribute(
+      "data-model-icon",
+      "white-balance-sunny",
+    );
+    await expect(canvas.getByTestId("model-gpt61-luna")).toHaveAttribute(
+      "data-model-icon",
+      "weather-night",
     );
   },
 };
 
 export const DatedVariantAndFallback: Story = {
+  tags: ["test"],
   render: () => (
     <>
       <ModelIdentity model="gpt-5.6" testId="model-alias" />

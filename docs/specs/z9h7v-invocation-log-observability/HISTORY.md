@@ -1,5 +1,9 @@
 # 请求日志可观测性增强（IP / Cache Tokens / 分阶段耗时 / Prompt Cache Key / Body Logging Toggles） - History
 
+- 2026-10-04: Owner clarified that model family icons are bare glyphs with no background, border/outline, rounding, shadow, or generation-specific frame. Sol/Luna keep their GPT-5.6 glyphs and family colors across generations; Astra keeps its glyph and purple color. Generation text distinguishes versions, and only the existing outer component boundary remains.
+- 2026-10-04: Completed shared GPT-5.6/GPT-6/GPT-6.1 identity recognition and Dashboard detailed capsules. The bordered capsule shows generation, an undecorated family glyph, and reasoning text in that order; no dot precedes effort. Owner approved the 390x844 mobile usage-breakdown Storybook evidence, now stored as `assets/model-generation-usage-mobile390-no-effort-dot-storybook.png`.
+- 2026-10-02: Owner confirmed generation/family separation for model identity: detailed Dashboard performance/usage capsules show full generation, stable family glyph and recorded reasoning effort; simple mode retains full model names. Sol/Luna reuse the GPT-5.6 glyphs, Astra reuses the GPT-6 glyph, and strict frontend identity recognition includes GPT-6.1 Astra/Sol/Luna. Missing effort remains `—` in detailed breakdowns; other surfaces preserve their layouts. This records requirements only, with frontend implementation and visual acceptance outstanding and no backend catalog/pricing/API change.
+
 - 2026-09-26: Dashboard 模型性能与用量明细浮窗新增跨窗口简单/详细分组记忆、按浮窗类型隔离的排序记忆，以及精确的模型级性能分组接口；排序入口改为表头直接操作，用量缓存写入/读取与输出列保持纯展示，长期统计表面保持原有范围；一般手机视口的用量明细改为无横向滚动的纵向指标布局。
 
 - 2026-08-04: Implemented Codex standalone search recording as an exact `POST /v1/alpha/search` non-streaming capture target. It reuses pool and OAuth passthrough accounting, records one parent invocation per downstream request, and enters the existing source-level hourly rollup without inventing search usage or adding an endpoint rollup dimension.

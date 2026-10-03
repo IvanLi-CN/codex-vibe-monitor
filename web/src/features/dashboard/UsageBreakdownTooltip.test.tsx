@@ -221,6 +221,53 @@ describe("UsageBreakdownTooltip", () => {
     act(() => root.unmount());
   });
 
+  it("shows full generations before the shared family icon and reasoning effort", () => {
+    const breakdown = exactBreakdown();
+    breakdown.models = ["gpt-5.6-sol", "gpt-6-sol", "gpt-6.1-sol"].map((model) => ({
+      model,
+      reasoningEffort: "high",
+      cacheWriteTokens: 10,
+      cacheReadTokens: 5,
+      outputTokens: 8,
+    }));
+    const { host, root } = renderTooltip(breakdown);
+    const table = host.querySelector('[data-testid="usage-breakdown-table-scroll-region"]');
+    expect(table).not.toBeNull();
+    const modelRows = Array.from(table?.querySelectorAll("tbody tr") ?? []).slice(1);
+    const identities = modelRows.map((row) => [
+      row.querySelector<HTMLElement>("[data-model-identity]")?.dataset.modelIdentity,
+      row.querySelector<HTMLElement>("[data-model-generation-segment]")?.textContent,
+    ]);
+
+    expect(identities).toEqual(
+      expect.arrayContaining([
+        ["gpt-5.6-sol", "5.6"],
+        ["gpt-6-sol", "6"],
+        ["gpt-6.1-sol", "6.1"],
+      ]),
+    );
+    for (const row of modelRows) {
+      const badge = row.querySelector("[data-model-identity-badge]");
+      const segments = Array.from(
+        badge?.querySelectorAll(
+          "[data-model-generation-segment], [data-model-icon-segment], [data-model-effort-segment]",
+        ) ?? [],
+      );
+      expect(
+        segments.map((segment) =>
+          segment.hasAttribute("data-model-generation-segment")
+            ? "generation"
+            : segment.hasAttribute("data-model-icon-segment")
+              ? "icon"
+              : "effort",
+        ),
+      ).toEqual(["generation", "icon", "effort"]);
+      expect(row.textContent).toContain("high");
+    }
+
+    act(() => root.unmount());
+  });
+
   it("merges effort rows in simple mode and removes the effort label", () => {
     const breakdown = exactBreakdown();
     breakdown.models = [

@@ -44,7 +44,7 @@ const exactBreakdown: UsageBreakdown = {
       },
     },
     {
-      model: "gpt-5.6",
+      model: "gpt-6-sol",
       reasoningEffort: "medium",
       cacheWriteTokens: 60_000,
       cacheReadTokens: 28_000,
@@ -70,6 +70,21 @@ const exactBreakdown: UsageBreakdown = {
         cacheRead: 0.15,
         output: 1.99,
         reasoning: 0.22,
+        unknown: 0,
+      },
+    },
+    {
+      model: "gpt-6.1-sol",
+      reasoningEffort: "none",
+      cacheWriteTokens: 32_000,
+      cacheReadTokens: 12_000,
+      outputTokens: 18_000,
+      costs: {
+        input: 0.31,
+        cacheWrite: 0.52,
+        cacheRead: 0.08,
+        output: 0.93,
+        reasoning: 0.11,
         unknown: 0,
       },
     },
@@ -143,7 +158,7 @@ const meta = {
   render: (args) => (
     <div
       data-visual-evidence-surface="dashboard-usage-breakdown-tooltip"
-      className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6"
+      className="min-h-screen bg-base-200 px-[18px] py-6 text-base-content sm:px-6"
     >
       <div
         data-visual-evidence-target="dashboard-usage-breakdown-table"
@@ -160,10 +175,48 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const ExactCosts: Story = {
+  tags: ["test"],
   args: { breakdown: exactBreakdown },
+  play: async ({ canvasElement }) => {
+    const desktopTable = canvasElement.querySelector(
+      '[data-testid="usage-breakdown-table-scroll-region"]',
+    );
+    if (!(desktopTable instanceof HTMLElement)) throw new Error("missing usage table");
+    const identities = Array.from(desktopTable.querySelectorAll<HTMLElement>("tbody tr"))
+      .map((row) => [
+        row.querySelector<HTMLElement>("[data-model-identity]")?.dataset.modelIdentity,
+        row.querySelector<HTMLElement>("[data-model-generation-segment]")?.textContent,
+      ])
+      .filter(([model]) => model !== undefined);
+    await expect(identities).toEqual(
+      expect.arrayContaining([
+        ["gpt-5.6", "5.6"],
+        ["gpt-5.6-luna-2026-07-27", "5.6"],
+        ["gpt-6-sol", "6"],
+        ["gpt-6.1-sol", "6.1"],
+      ]),
+    );
+    for (const row of desktopTable.querySelectorAll<HTMLElement>("tbody tr")) {
+      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      const badge = row.querySelector<HTMLElement>("[data-model-identity-badge]");
+      if (badge) {
+        await expect(badge.getBoundingClientRect().height).toBe(24);
+        const segments = Array.from(
+          badge.querySelectorAll(
+            "[data-model-generation-segment], [data-model-icon-segment], [data-model-effort-segment]",
+          ),
+        );
+        await expect(segments).toHaveLength(3);
+        await expect(segments[0]).toHaveAttribute("data-model-generation-segment");
+        await expect(segments[1]).toHaveAttribute("data-model-icon-segment");
+        await expect(segments[2]).toHaveAttribute("data-model-effort-segment");
+      }
+    }
+  },
 };
 
 export const SimpleGrouping: Story = {
+  tags: ["test"],
   args: { breakdown: exactBreakdown },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -172,7 +225,7 @@ export const SimpleGrouping: Story = {
       "aria-selected",
       "true",
     );
-    await expect(canvas.getAllByRole("row")).toHaveLength(4);
+    await expect(canvas.getAllByRole("row")).toHaveLength(6);
     await expect(canvasElement.querySelector("select")).toBeNull();
     await expect(
       canvasElement.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-write"]'),
@@ -183,7 +236,9 @@ export const SimpleGrouping: Story = {
     await expect(
       canvasElement.querySelector('[data-testid="dashboard-model-breakdown-sort-output"]'),
     ).toBeNull();
-    await expect(canvas.getByTestId("dashboard-model-breakdown-sort-total")).toBeInTheDocument();
+    await expect(
+      canvas.getAllByTestId("dashboard-model-breakdown-sort-total").length,
+    ).toBeGreaterThan(0);
   },
 };
 
@@ -196,15 +251,49 @@ export const MissingCostDetails: Story = {
 };
 
 export const Mobile390: Story = {
+  tags: ["test"],
   ...ExactCosts,
+  args: {
+    breakdown: {
+      ...exactBreakdown,
+      models: exactBreakdown.models
+        .filter((model) => model.model !== "gpt-5.6-luna-2026-07-27")
+        .map((model) => (model.model === "gpt-6-sol" ? { ...model, model: "gpt-6-luna" } : model)),
+    },
+  },
   globals: {
     viewport: { value: "mobile390", isRotated: false },
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByTestId("dashboard-model-breakdown-mode-detailed"));
     const mobileList = canvas.getByTestId("usage-breakdown-mobile-list");
     const mobileCanvas = within(mobileList);
     await expect(mobileList).toBeInTheDocument();
+    const mobileIdentities = Array.from(
+      mobileList.querySelectorAll<HTMLElement>("[data-model-identity]"),
+    );
+    const identityPairs = mobileIdentities.map((identity) => [
+      identity.dataset.modelIdentity,
+      identity
+        .closest<HTMLElement>("[data-model-identity-badge]")
+        ?.querySelector<HTMLElement>("[data-model-generation-segment]")?.textContent,
+    ]);
+    await expect(identityPairs).toEqual(
+      expect.arrayContaining([
+        ["gpt-5.6", "5.6"],
+        ["gpt-6-luna", "6"],
+        ["gpt-6.1-sol", "6.1"],
+      ]),
+    );
+    await expect(mobileList.querySelector('[data-model-identity="gpt-6-luna"]')).toHaveAttribute(
+      "data-model-icon",
+      "weather-night",
+    );
+    await expect(mobileList.querySelector('[data-model-identity="gpt-6.1-sol"]')).toHaveAttribute(
+      "data-model-icon",
+      "white-balance-sunny",
+    );
     await expect(mobileCanvas.getByTestId("usage-breakdown-mobile-controls")).toBeInTheDocument();
     await expect(
       mobileCanvas.getByTestId("dashboard-model-breakdown-sort-total"),
@@ -227,6 +316,7 @@ export const Mobile390: Story = {
     await expect(
       Math.abs(modelSort.getBoundingClientRect().top - totalSort.getBoundingClientRect().top),
     ).toBeLessThanOrEqual(1);
+    await expect(mobileList.scrollWidth).toBeLessThanOrEqual(mobileList.clientWidth);
     await expect(canvas.getByTestId("usage-breakdown-table-scroll-region")).toHaveClass("hidden");
   },
 };

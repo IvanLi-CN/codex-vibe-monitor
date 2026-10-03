@@ -84,6 +84,7 @@ function groupLabel(
         effortValue={model.reasoningEffort}
         className="max-w-full"
         modelClassName="text-[12px] leading-4"
+        showGeneration
       />
     );
   }

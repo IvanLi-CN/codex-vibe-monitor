@@ -256,11 +256,12 @@ describe("LongTermStatsSection charts", () => {
     expect(html).toContain('data-testid="long-term-chart-model-usage"');
     expect(html).toContain('data-testid="long-term-chart-upstream-usage"');
     expect(html).toContain('data-long-term-legend-display="icon-and-effort"');
+    expect(html).not.toMatch(/data-testid="[^"]+-generation"/);
     expect(html).toContain('title="gpt-5.6-sol · high"');
     expect(html).toContain('data-model-icon="white-balance-sunny"');
     expect(html).toContain('data-long-term-legend-label="effort">medium</span>');
     expect(html).toContain('data-model-identity="gpt-6-astra"');
-    expect(html).toContain('data-model-presentation="compact"');
+    expect(html).not.toContain("data-model-presentation");
     expect(html).toContain('title="gpt-6-astra · medium"');
     expect(html).toContain('data-long-term-legend-label="effort">high</span>');
     expect(html).not.toContain('data-long-term-legend-label="effort">gpt-5.6-sol');

@@ -2928,7 +2928,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const modelPart = host?.querySelector('[data-model-context-part="model"]');
-    const identity = modelPart?.querySelector('[data-model-presentation="embedded"]');
+    const identity = modelPart?.querySelector('[data-model-icon="creation"]');
 
     expect(modelPart?.className).toContain("w-5");
     expect(identity).not.toBeNull();
