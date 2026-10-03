@@ -59,7 +59,7 @@
 
 ## Visual Evidence
 
-Mock-only `ui_demo` evidence uses the current implementation. The owner confirmed these four images; the desktop viewport is 1280×900 and the source-managed mobile viewport is 393×852. New evidence paths are current-only against the implementation baseline. Page whitespace normalization kept all images unchanged.
+Mock-only `ui_demo` evidence uses the current implementation, including the retained retention backlog trend and Grafana task link. The owner confirmed these four refreshed images after mainline synchronization. The desktop viewport is 1280×900; the mobile viewport is 393×852, matching the demo source dimensions through viewport emulation. Evidence paths are current-only against the implementation baseline. Page whitespace normalization required no trimming.
 
 ![Grafana entry](assets/observability-entry-desktop.png)
 ![Mobile Grafana entry](assets/observability-entry-mobile.png)
