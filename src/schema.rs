@@ -1420,6 +1420,7 @@ async fn prompt_cache_expression_indexes_exist(pool: &Pool<Sqlite>) -> Result<bo
     for index_name in [
         "idx_codex_invocations_prompt_cache_key_occurred_at",
         "idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+        "idx_codex_invocations_prompt_cache_key_occurred_at_id",
     ] {
         if !sqlite_schema_object_exists(pool, "index", index_name).await? {
             return Ok(false);
@@ -1446,6 +1447,14 @@ async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<(
             occurred_at
         )
         "#;
+    let create_key_order_index_sql = r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_prompt_cache_key_occurred_at_id
+        ON codex_invocations (
+            (CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END),
+            occurred_at,
+            id
+        )
+        "#;
 
     if schema_refresh_completed(pool, PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME).await? {
         sqlx::query(create_key_index_sql)
@@ -1457,6 +1466,12 @@ async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<(
             .await
             .context(
                 "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+            )?;
+        sqlx::query(create_key_order_index_sql)
+            .execute(pool)
+            .await
+            .context(
+                "failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at_id",
             )?;
         return Ok(());
     }
@@ -1492,12 +1507,19 @@ async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<(
             .context(
                 "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
             )?;
+        sqlx::query(create_key_order_index_sql)
+            .execute(pool)
+            .await
+            .context(
+                "failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at_id",
+            )?;
         return Ok(());
     }
 
     for index_name in [
         "idx_codex_invocations_prompt_cache_key_occurred_at",
         "idx_codex_invocations_prompt_cache_key_filter_occurred_at",
+        "idx_codex_invocations_prompt_cache_key_occurred_at_id",
     ] {
         sqlx::query(&format!("DROP INDEX IF EXISTS {index_name}"))
             .execute(tx.as_mut())
@@ -1514,6 +1536,10 @@ async fn ensure_prompt_cache_expression_indexes(pool: &Pool<Sqlite>) -> Result<(
         .context(
             "failed to ensure index idx_codex_invocations_prompt_cache_key_filter_occurred_at",
         )?;
+    sqlx::query(create_key_order_index_sql)
+        .execute(tx.as_mut())
+        .await
+        .context("failed to ensure index idx_codex_invocations_prompt_cache_key_occurred_at_id")?;
     record_schema_refresh_completion_in_transaction(
         &mut tx,
         PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME,

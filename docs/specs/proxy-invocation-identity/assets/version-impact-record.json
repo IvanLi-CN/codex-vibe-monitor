@@ -17,7 +17,7 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The candidate changes only internal progress/checkpoint and pagination behavior. Existing routes, status fields, legacy state, and durable SQLite structure remain unchanged.",
+      "reasoning": "The candidate changes only internal progress/checkpoint and pagination behavior. Existing routes, status fields, legacy state, tables, columns, and durable encodings remain unchanged; one additive expression index supports the bounded source-page order.",
       "assessed_at": "2026-10-03T23:59:00+08:00",
       "evidence": [
         "docs/adr/0022-prompt-cache-adaptive-materialization.md",
@@ -34,9 +34,9 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "The candidate remains within prompt-cache statistics checkpoint and bounded page-continuation behavior. No public request/response fields, SQLite tables/columns, or durable encodings are added or changed."
+        "description": "The candidate remains within prompt-cache statistics checkpoint and bounded page-continuation behavior. No public request/response fields, SQLite tables/columns, or durable encodings are added or changed; one additive expression index is created idempotently for page ordering."
       },
-      "reasoning": "The rebuild cursor now advances atomically with each completed conversation's final statistics page and generation-matched queue/staging cleanup, using only existing columns. Partial-page staging and source-generation fences retain their prior encoding and meaning; queue drain remains keyed by its durable deletion checkpoint. No business row format or HTTP field changes. Existing PATCH/GET contracts remain stable; incomplete statistics ETA uses the existing nullable field. Independent SQLite tests and the required Linux service replay validate progress and recovery.",
+      "reasoning": "The rebuild cursor now advances atomically with each completed conversation's final statistics page and generation-matched queue/staging cleanup, using only existing columns. Partial-page staging and source-generation fences retain their prior encoding and meaning; queue drain remains keyed by its durable deletion checkpoint. No business row format or HTTP field changes. Existing PATCH/GET contracts remain stable; incomplete statistics ETA uses the existing nullable field. The additive page-order expression index is restart-safe and does not alter rows or older-reader behavior. Independent SQLite tests and the required Linux service replay validate progress and recovery.",
       "reassessed_at": "2026-10-03T23:59:00+08:00",
       "evidence": [
         "src/prompt_cache_conversations.rs",
@@ -46,7 +46,7 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Both control PATCH routes and status GET retain their existing fields. The final statistics page publishes the aggregate, clears matching staging/queue state, and advances the existing cursor in one business-database transaction; partial pages retain the existing staging encoding. Independent-database regressions, the full backend resource profiles, old-state recovery tests, and the candidate Linux replay provide the direct evidence. No table, column, durable encoding, or public response field is added.",
+      "reasoning": "Both control PATCH routes and status GET retain their existing fields. The final statistics page publishes the aggregate, clears matching staging/queue state, and advances the existing cursor in one business-database transaction; partial pages retain the existing staging encoding. The additive page-order expression index is idempotent and does not change durable row formats. Independent-database regressions, the full backend resource profiles, old-state recovery tests, and the candidate Linux replay provide the direct evidence. No table, column, durable encoding, or public response field is added.",
       "verified_at": "2026-10-03T17:44:47Z",
       "evidence": [
         "src/prompt_cache_conversations.rs: final-page publication/cursor transaction and bounded continuation",
@@ -70,7 +70,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Existing maintenance-database managed task and scheduler checkpoint rows plus one additive maintenance_metadata control-origin marker, and business-database prompt-cache identity, statistics staging, queue, and progress rows. No new table or column is added. Statistics final-page publication and cursor advancement reuse existing rows and encodings; no source data is transformed.",
+      "state_description": "Existing maintenance-database managed task and scheduler checkpoint rows plus one additive maintenance_metadata control-origin marker, and business-database prompt-cache identity, statistics staging, queue, and progress rows. No new table or column is added; one additive expression index supports statistics page ordering. Statistics final-page publication and cursor advancement reuse existing rows and encodings; no source data is transformed.",
       "source_program_compatibility_range": "Earlier application versions that understand the existing prompt-cache and maintenance tables can read the unchanged schema and ignore the additive metadata key. On rollback, older prompt-cache task code may again use its legacy business-database enable bit; this candidate neither rewrites nor removes that value.",
       "evidence": [
         "Existing prompt_cache_conversations, stats_refresh_queue, stats_refresh_staging, and migration_progress rows are reused; the final-page transaction and partial-page staging preserve their existing columns and encodings.",

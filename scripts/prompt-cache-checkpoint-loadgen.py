@@ -131,10 +131,12 @@ def audit(round_index):
     failures = []
     publications = {}
     page_counts = {}
+    page_cursors = {}
+    historical_prefix = f'acceptance-r{round_index}-key-'
     with base.open_db(base.BUSINESS_DB, timeout=10) as db:
         rows = db.execute('SELECT id,prompt_cache_key,generation,cursor_id,request_count,kind FROM checkpoint_events ORDER BY id').fetchall()
         for event_id, prompt_cache_key, generation, cursor_id, count, kind in rows:
-            if not prompt_cache_key.startswith(f'acceptance-r{round_index}-key-'):
+            if not prompt_cache_key.startswith(historical_prefix):
                 continue
             identity = (prompt_cache_key, generation)
             if kind == 'published':
@@ -143,18 +145,24 @@ def audit(round_index):
                 failures.append({'kind': 'completed_key_restarted', 'event_id': event_id, 'key': prompt_cache_key, 'generation': generation})
             elif kind == 'page_committed':
                 previous = page_counts.get(identity, 0)
-                if count <= previous:
+                previous_cursor = page_cursors.get(identity)
+                if count < previous or (count == previous and cursor_id != previous_cursor):
                     failures.append({'kind': 'same_generation_cursor_reset', 'event_id': event_id, 'key': prompt_cache_key, 'generation': generation})
-                page_counts[identity] = count
+                if count > previous:
+                    page_counts[identity] = count
+                    page_cursors[identity] = cursor_id
         repeated = [{'key': identity[0], 'generation': identity[1], 'publications': count} for identity, count in publications.items() if count > 1]
         actual = db.execute('SELECT prompt_cache_key,request_count FROM prompt_cache_conversations WHERE prompt_cache_key LIKE ? ORDER BY prompt_cache_key', (f'acceptance-r{round_index}-key-%',)).fetchall()
         prefix_cursors = [row[0] for row in db.execute(
-            "SELECT cursor_key FROM checkpoint_cursor_events WHERE phase='stats_rebuild' ORDER BY id")]
+            "SELECT cursor_key FROM checkpoint_cursor_events WHERE phase='stats_rebuild' ORDER BY id")
+            if row[0].startswith(historical_prefix)]
+        prefix_cursors = [cursor for index, cursor in enumerate(prefix_cursors)
+                          if index == 0 or cursor != prefix_cursors[index - 1]]
         queue_deletions = [(row[0], row[1]) for row in db.execute(
             'SELECT prompt_cache_key,generation FROM checkpoint_queue_deletions ORDER BY id')
             if row[0].startswith(f'acceptance-r{round_index}-key-')]
         raw_evidence = {
-            'page_and_publication_events': [dict(id=row[0], key=row[1], generation=row[2], cursor_id=row[3], request_count=row[4], kind=row[5]) for row in rows if row[1].startswith(f'acceptance-r{round_index}-key-')],
+            'page_and_publication_events': [dict(id=row[0], key=row[1], generation=row[2], cursor_id=row[3], request_count=row[4], kind=row[5]) for row in rows if row[1].startswith(historical_prefix)],
             'cursor_events': [{'phase': 'stats_rebuild', 'cursor_key': cursor} for cursor in prefix_cursors],
             'queue_deletions': [{'key': item[0], 'generation': item[1]} for item in queue_deletions],
         }
