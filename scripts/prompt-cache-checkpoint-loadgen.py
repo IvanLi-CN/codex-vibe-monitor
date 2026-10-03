@@ -108,9 +108,18 @@ CREATE TRIGGER checkpoint_cursor_advanced AFTER UPDATE OF cursor_key ON prompt_c
 WHEN OLD.cursor_key IS NOT NEW.cursor_key AND NEW.phase='stats_rebuild'
 BEGIN INSERT INTO checkpoint_cursor_events (phase,cursor_key) VALUES (NEW.phase,NEW.cursor_key); END;
 ''')
-        db.execute(
-            'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) '
-            'SELECT prompt_cache_key,generation FROM prompt_cache_conversation_stats_refresh_queue')
+        if round_index == 1:
+            # Cold start has no durable queue until identity discovery creates
+            # it. Record the historical key set up front so deletion auditing
+            # cannot pass against an empty expected set.
+            db.executemany(
+                'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) VALUES (?,?)',
+                [(key(round_index, index), -1) for index in range(400)],
+            )
+        else:
+            db.execute(
+                'INSERT INTO checkpoint_expected_queue(prompt_cache_key,generation) '
+                'SELECT prompt_cache_key,generation FROM prompt_cache_conversation_stats_refresh_queue')
         db.commit()
     emit('checkpoint-fixture', round_index, historical_keys=400, historical_invocations=sequence,
          first_six_counts=COUNTS[:6], remaining_key_count=394, remaining_count_each=7,
@@ -156,6 +165,8 @@ def audit(round_index):
                 previous_cursor = page_cursors.get(identity)
                 if count < previous or (count == previous and cursor_id != previous_cursor):
                     failures.append({'kind': 'same_generation_cursor_reset', 'event_id': event_id, 'key': prompt_cache_key, 'generation': generation})
+                if count > previous and previous_cursor is not None and cursor_id <= previous_cursor:
+                    failures.append({'kind': 'same_generation_cursor_regressed', 'event_id': event_id, 'key': prompt_cache_key, 'generation': generation})
                 if count > previous:
                     page_counts[identity] = count
                     page_cursors[identity] = cursor_id
@@ -184,13 +195,23 @@ def audit(round_index):
     expected_cursors = [key(round_index, index) for index in range(400)]
     deletion_keys = set(queue_deletions)
     expected_deletion_keys = set(expected_queue)
+    if any(generation < 0 for _, generation in expected_queue):
+        queue_deletions_exactly_once = (
+            len(queue_deletions) == len(expected_queue)
+            and len({item[0] for item in queue_deletions}) == len(expected_queue)
+            and {item[0] for item in queue_deletions} == {item[0] for item in expected_queue}
+        )
+    else:
+        queue_deletions_exactly_once = (
+            len(queue_deletions) == len(expected_queue)
+            and len(deletion_keys) == len(expected_deletion_keys)
+            and deletion_keys == expected_deletion_keys
+        )
     return {'events': len(rows), 'repeat_publications': repeated, 'restart_failures': failures,
             'continuous_prefix_passed': prefix_cursors == expected_cursors,
             'prefix_cursor_count': len(prefix_cursors), 'prefix_cursor_first': prefix_cursors[0] if prefix_cursors else None,
             'prefix_cursor_last': prefix_cursors[-1] if prefix_cursors else None,
-            'queue_deletions_exactly_once': len(queue_deletions) == len(expected_queue)
-            and len(deletion_keys) == len(expected_deletion_keys)
-            and deletion_keys == expected_deletion_keys,
+            'queue_deletions_exactly_once': queue_deletions_exactly_once,
             'queue_deletion_count': len(queue_deletions), 'expected_queue_count': len(expected_queue),
             'checkpoint_evidence_file': evidence_path.name,
             'checkpoint_evidence_sha256': evidence_digest,
