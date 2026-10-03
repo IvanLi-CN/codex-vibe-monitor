@@ -3,7 +3,7 @@
 ## Current State
 
 - Canonical spec: `docs/specs/s7m3q-system-workspace/SPEC.md`
-- Status: 功能实现与已完成的验收验证记录均已就绪；主人已确认并更新规范截图。rebase 后的 Tier 3 复核正在当前 head 执行，PR 收敛待完成。当前 testbox 缺少 Chromium 运行库，本轮 Storybook 重跑受环境阻塞；前一候选曾通过且 rebase 未改变 web 源码。
+- Status: 功能实现与已完成的验收验证记录均已就绪；主人已确认并更新规范截图，当前 head 的 Tier 3 四条只读复核通过。PR 收敛待完成。当前 testbox 缺少 Chromium 运行库，本轮 Storybook 重跑受环境阻塞；前一候选曾通过且 rebase 未改变 web 源码。
 - 项目存储总体积现由独立后台测量、只读快照 API 和独立页面读数提供；raw 业务盘点不再控制总体积是否可见。
 
 ## Implementation Summary
