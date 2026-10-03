@@ -4,7 +4,7 @@
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；分支已同步核实的 `origin/main@ea387d4285f94c381f6ed884461c7458cd45a66e`，分支为 `th/retention-task-local-monthly-batches`。交付停在唯一直接 PR 的 Step 5C Ready；不包含合并、发布或生产修复。
 
-代码已实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。当前正在完成后端回归和发布构建容量试验，尚未签收 50 倍新增速率、固定存量 24 小时归零或在线延迟不劣验收。旧 PR 的阶段交付授权和容量卡不作为本轮通过证据。
+代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣必须由当前候选的发布构建证据卡证明；旧 PR 的阶段交付授权和容量卡不作为本轮通过证据。
 
 ## 任务内批次与月度目标
 
@@ -50,8 +50,9 @@
 - 普通新增负载采用 30,000 invocation/day 与 36,000 attempt/day；基线与候选使用相同 fixture 和请求序列，各重复三次。要求真实固定 cohort 归零，不能仅按短时速率外推 24 小时。
 - 在线探针覆盖聚合、列表、详情和 P1 terminal 写；生产 HTTP 方法比例暂无准确观测，当前 3:1 读写重放是显式保守假设，不能写成生产实测比例。持续峰值、锁释放与磁盘边界另行验证。
 - 容量通过要求 invocation >=17.4 rows/s、attempt >=20.8 rows/s、普通负载不频繁超时，以及在线 p95/p99 中位数不劣于基线。
-- 当前 full lightweight profile 1292/1292 已通过；stateful 主跑有两项旧 retention 契约断言和一项路由等待失败，更新契约断言后定向重跑。archive-file-io 全量、当前候选容量和最终全部质量检查仍在进行。
-- Web 全量测试后已定向复核夹具修复及交互失败；typecheck/lint/build、六个吞吐 Storybook 状态、SystemWorkspace Storybook、桌面/移动任务页 E2E 已有通过结果。最终候选渲染输入须再次核对。
+- `retention_task_local_batches` 覆盖同月重复更新、主库结构不变、取消后的 ATTACH 连接/临时文件清理、坏文件保留源行、旧 prepared 隔离和跨数据集失败计数。第二个源数据事务失败夹具验证已提交 64 行准确报告、未提交源行保留、Summary 精确总量及下一轮重新选取；不创建续作 journal。
+- 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
+- Web 验证包括旧 API 字段兼容、Demo 真实零/未知值、全量 unit/typecheck/lint/build、六个吞吐状态及 SystemWorkspace Storybook、任务页桌面/移动交互 E2E。视觉确认不代替功能或容量验收。
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选全部验证、实测和视觉门禁完成后启动。
 
 ## Visual Evidence

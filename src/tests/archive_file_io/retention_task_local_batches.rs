@@ -325,3 +325,71 @@ pub(super) async fn archive_two_attempt_tasks(
         expected
     );
 }
+
+#[tokio::test]
+async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_reselects() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-partial-source").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1_000).await;
+    let before = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
+        .await
+        .expect("exact totals before source conversion");
+    sqlx::query("CREATE TRIGGER task_local_stop_second_chunk BEFORE DELETE ON codex_invocations WHEN OLD.id=65 BEGIN SELECT RAISE(ABORT,'injected source conversion failure'); END")
+        .execute(&pool).await.expect("stop after a committed source chunk");
+    let failed = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("structured source failure");
+    assert!(failed.fatal_error.is_some());
+    assert_eq!(failed.invocation_rows_archived, 64);
+    assert_eq!(
+        failed
+            .batches
+            .iter()
+            .filter(|b| b.dataset == "codex_invocations")
+            .map(|b| b.committed_rows)
+            .sum::<usize>(),
+        64
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted sources"),
+        936
+    );
+    let after = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
+        .await
+        .expect("exact totals after partial source conversion");
+    assert_eq!(before.total_count, after.total_count);
+    assert_eq!(before.total_tokens, after.total_tokens);
+    assert_f64_close(before.total_cost, after.total_cost);
+    assert_no_task_work_files(&config.archive_dir);
+    sqlx::query("DROP TRIGGER task_local_stop_second_chunk")
+        .execute(&pool)
+        .await
+        .expect("remove source failure");
+    let next = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("fresh task selects remaining live sources");
+    assert_eq!(next.invocation_rows_archived, 936);
+    let settled = query_combined_totals(&pool, StatsFilter::All, InvocationSourceScope::All)
+        .await
+        .expect("settled exact totals");
+    assert_eq!(before.total_count, settled.total_count);
+    assert_eq!(before.total_tokens, settled.total_tokens);
+    assert_f64_close(before.total_cost, settled.total_cost);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM retention_prepared_archives")
+            .fetch_one(&pool)
+            .await
+            .expect("no continuation"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
