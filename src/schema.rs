@@ -1,5 +1,8 @@
 use super::*;
 
+mod prompt_cache_working_set_triggers;
+use prompt_cache_working_set_triggers::rebuild_prompt_cache_working_set_live_triggers;
+
 pub(crate) static ENSURE_SCHEMA_LOCKS: once_cell::sync::Lazy<
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
 > = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -20,6 +23,8 @@ const INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
 const TIMESERIES_MINUTE_PROJECTION_STARTUP_RECOVERY_BASELINE_MIGRATION_NAME: &str =
     "timeseries_minute_projection_startup_recovery_baseline_v1";
 const INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME: &str = "invocation_live_projection_v1";
+const PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME: &str =
+    "prompt_cache_working_set_relevant_updates_v1";
 const TIMESERIES_MINUTE_PROJECTION_V2_RECOVERY_TABLE_SQL: &str = r#"
     CREATE TABLE IF NOT EXISTS timeseries_minute_projection_v2_recovery (
         consumer TEXT PRIMARY KEY,
@@ -521,103 +526,6 @@ pub(crate) async fn rebuild_invocation_in_progress_live_triggers(
     tx.commit()
         .await
         .context("failed to commit invocation_in_progress_live trigger rebuild")?;
-
-    Ok(())
-}
-
-async fn rebuild_prompt_cache_working_set_live_triggers(pool: &Pool<Sqlite>) -> Result<()> {
-    // Retention deletes rows well outside the short live working-set window. Recomputing a
-    // whole prompt key for each such row is redundant and quadratic for a large key. Keep the
-    // projection synchronous for recent or in-flight source rows only.
-    let live_window_condition = |subject: &str| {
-        format!(
-            "(LOWER(TRIM(COALESCE({subject}.status, ''))) IN ('running', 'pending') OR {subject}.occurred_at >= datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds'))"
-        )
-    };
-    let old_live_window_condition = live_window_condition("OLD");
-    let new_live_window_condition = live_window_condition("NEW");
-    let prompt_cache_insert_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_insert
-        AFTER INSERT ON codex_invocations
-        WHEN {new_live_window_condition}
-        BEGIN
-            {refresh_sql};
-        END
-        "#,
-        new_live_window_condition = new_live_window_condition,
-        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
-        ),
-    );
-    let prompt_cache_update_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_update
-        AFTER UPDATE ON codex_invocations
-        WHEN {old_live_window_condition} OR {new_live_window_condition}
-        BEGIN
-            {refresh_old_sql};
-            {refresh_new_sql};
-        END
-        "#,
-        old_live_window_condition = old_live_window_condition,
-        new_live_window_condition = new_live_window_condition,
-        refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
-        ),
-        refresh_new_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
-        ),
-    );
-    let prompt_cache_delete_trigger_sql = format!(
-        r#"
-        CREATE TRIGGER IF NOT EXISTS trg_codex_invocations_prompt_cache_working_set_delete
-        AFTER DELETE ON codex_invocations
-        WHEN {old_live_window_condition}
-        BEGIN
-            {refresh_sql};
-        END
-        "#,
-        old_live_window_condition = old_live_window_condition,
-        refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
-            &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
-        ),
-    );
-    let mut tx = pool
-        .begin_with("BEGIN IMMEDIATE")
-        .await
-        .context("failed to begin prompt cache working set trigger refresh")?;
-    for trigger_name in [
-        "trg_codex_invocations_prompt_cache_working_set_insert",
-        "trg_codex_invocations_prompt_cache_working_set_update",
-        "trg_codex_invocations_prompt_cache_working_set_delete",
-    ] {
-        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(tx.as_mut())
-            .await
-            .with_context(|| format!("failed to drop stale trigger {trigger_name}"))?;
-    }
-    sqlx::query(&prompt_cache_insert_trigger_sql)
-        .execute(tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_insert",
-        )?;
-    sqlx::query(&prompt_cache_update_trigger_sql)
-        .execute(tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_update",
-        )?;
-    sqlx::query(&prompt_cache_delete_trigger_sql)
-        .execute(tx.as_mut())
-        .await
-        .context(
-            "failed to ensure trigger trg_codex_invocations_prompt_cache_working_set_delete",
-        )?;
-    tx.commit()
-        .await
-        .context("failed to commit prompt cache working set trigger refresh")?;
 
     Ok(())
 }
@@ -2343,6 +2251,18 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .context("failed to rebuild prompt_cache_working_set_live table")?;
         record_schema_refresh_completion(pool, INVOCATION_LIVE_PROJECTION_REFRESH_MIGRATION_NAME)
             .await?;
+    }
+    // Existing live tables and their original completion marker do not need a row rebuild.
+    // Upgrade just the trigger definitions, preserving projection rows and business cursors.
+    if !schema_refresh_completed(
+        pool,
+        PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+    )
+    .await?
+    {
+        rebuild_prompt_cache_working_set_live_triggers(pool)
+            .await
+            .context("failed to upgrade prompt cache working set trigger dependencies")?;
     }
 
     sqlx::query(

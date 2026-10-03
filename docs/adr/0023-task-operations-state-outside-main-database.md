@@ -36,6 +36,30 @@ Management pages read asynchronous summaries of the retained main-database state
 - A task has at most one active run. A manual invocation while the task is active returns a conflict instead of queueing another run. A disabled or already-active schedule occurrence is skipped rather than accumulated for a later burst.
 - Disabling uses the safe-boundary pause contract. The current batch or checkpoint may finish; new work does not start. Re-enabling waits for the next normal eligibility unless the operator explicitly invokes a one-off run.
 
+### Prompt-Cache Materialization Control
+
+The `startup_backfill.prompt_cache_conversations_materialization` row in maintenance-database
+`managed_tasks` is the sole enablement authority for historical prompt-cache identity and statistics
+materialization. Its `startup_backfill_progress` row is a scheduler checkpoint, not a second control
+source; the two maintenance rows are updated in one transaction. A one-time maintenance metadata
+marker records whether the managed row existed before task seeding. An existing maintenance choice
+wins over stale business state; the legacy business-database `startup_backfill_progress.enabled`
+value may seed control once only when that maintenance task row did not exist. After initialization,
+the legacy value remains untouched and never decides whether this task runs. Both the dedicated
+materialization PATCH and managed-task PATCH publish the same committed state to the in-process
+control generation before responding.
+
+Before each prompt-cache identity batch, statistics page, cursor update, or phase transition, the
+worker briefly registers its current generation. A registered SQL step may finish; after a control
+change, subsequent steps from the previous generation stop. The in-memory gate is released before
+SQLite work and the business transaction never reads or waits on the maintenance database. Page
+continuations, source-generation changes, and bounded work budgets keep their committed staging
+cursor and retry after 15 seconds; they are not classified as operator disablement. Actual disable
+clears due, pressure-deferred, and queued wakes. A new enable generation creates one wake, while
+same-generation business events and stale worker results cannot erase an unexpired retry deadline.
+The existing HTTP status/control fields and database structure remain unchanged; `deferReason` uses
+its existing string field for the distinct defer classes.
+
 ## Database Path
 
 The path is configurable through `MAINTENANCE_DATABASE_PATH`. By default, the service derives a sibling file from `DATABASE_PATH` using the same basename stem and the `.maintenance.sqlite` suffix. For example:

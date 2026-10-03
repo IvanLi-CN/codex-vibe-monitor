@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Isolate long-wait proxy allocation from unrelated calls with per-key locks, cancellation-safe active references, and an additive latest-success route lookup index while preserving existing contracts.",
-    "release_unit_description": "Proxy long-wait allocation isolation and online SQLite route lookup convergence.",
+    "description": "Make prompt-cache materialization control and paged continuation consistent across the business and maintenance databases. Avoid redundant live Prompt projection scans for timing-only terminal writes and upgrade existing trigger dependencies atomically.",
+    "release_unit_description": "Prompt-cache materialization control consistency and bounded paged continuation.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -17,59 +17,66 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The candidate changes only internal allocation locks, cancellation cleanup, short SQLite admission boundaries, and an additive partial index. Public HTTP/WebSocket contracts, account status, timeout/retry policy, and business rows remain unchanged.",
-      "assessed_at": "2026-10-01T00:00:00+08:00",
+      "reasoning": "The candidate changes only the internal control authority, pause boundary, and bounded continuation behavior for prompt-cache materialization. Existing routes and response fields remain stable, and the business-database legacy control value and durable schema remain unchanged.",
+      "assessed_at": "2026-10-02T00:00:00+08:00",
       "evidence": [
-        "docs/adr/0015-coordinated-runtime-sqlite-write-admission.md",
-        "docs/adr/0020-proxy-invocation-identity.md",
+        "docs/adr/0022-prompt-cache-adaptive-materialization.md",
+        "docs/adr/0023-task-operations-state-outside-main-database.md",
         "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md",
+        "src/maintenance_store.rs",
+        "src/maintenance/startup_backfill.rs",
         "src/prompt_cache_conversations.rs",
-        "src/schema.rs"
+        "docs/adr/0027-prompt-cache-materialization-step-boundaries.md"
       ]
     },
     "current": {
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "The candidate remains within internal proxy allocation isolation and one additive route lookup index; public and persistent business contracts do not drift."
+        "description": "The candidate remains within prompt-cache materialization control consistency, pause/resume boundaries, and bounded statistics-page continuation. No public request/response fields or SQLite tables/columns are added. The owner-authorized trigger correction remains within the same online-performance repair; it replaces existing triggers and adds a completion-marker row only."
       },
-      "reasoning": "Per-key locks and weak registry cleanup are process-local. The only durable change is an idempotent partial index that earlier programs may ignore and that does not transform rows.",
-      "reassessed_at": "2026-10-01T00:00:00+08:00",
+      "reasoning": "Prompt-cache enablement and its scheduler checkpoint use existing maintenance tables. A one-time origin marker preserves an existing maintenance control; only a newly created managed row may be seeded from the old business-database enable bit. The business value is unchanged, is not read by the run path, and is never synchronized back to the business database. No table or column is added or business row transformed. Existing control and status fields remain stable; unavailable maintenance control is returned through the existing 503 Unavailable error contract. Independent-database control and paging regressions cover the same injected control core. Linux service-process performance replay remains a separate SHA-bound delivery gate. The working-set UPDATE OF dependency guard excludes persistence timing while retaining all business projection dependencies. DDL and its completion row commit together; this trigger-only upgrade does not rebuild live rows or remove existing state.",
+      "reassessed_at": "2026-10-02T00:00:00+08:00",
       "evidence": [
+        "src/maintenance_store.rs",
+        "src/maintenance/startup_backfill.rs",
         "src/prompt_cache_conversations.rs",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs",
         "src/schema.rs",
-        "src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs"
+        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs",
+        "src/schema/prompt_cache_working_set_triggers.rs"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Allocator, cancellation, schema-index, state-fence, formatting, compiler, backend profile, and candidate runtime evidence verify compatible internal isolation and additive persistent structure.",
-      "verified_at": "2026-10-01T00:00:00+08:00",
+      "reasoning": "Both control PATCH routes and status GET retain existing fields and the existing unavailable error contract. Independent-database control, pagination, generation-change/restart, and status regressions passed. An earlier b6829559 service process read a copied partial-materialization database written by 13cb054b, whose table/column structure and record encodings are unchanged by the final step-boundary correction: health and status GET passed, integrity stayed valid, all 4577 invocation rows and 401 conversations remained, and the additive control-origin metadata was preserved. This verifies compatibility; current-candidate performance acceptance is recorded separately in delivery evidence. The trigger-dependency correction retains existing table/column and row encodings. Production-path and atomic upgrade regressions verify timing writes, relevant projection mutations, interruption rollback and repeated startup. Current-candidate old-reader and Linux runtime evidence must also be passed and SHA-bound by the delivery gate.",
+      "verified_at": "2026-10-03T03:59:03+08:00",
       "evidence": [
-        "cargo test prompt_cache_conversation -- --nocapture: 101 passed, 0 failed",
-        "cargo test prompt_cache_conversation_allocator_releases_lease_after_cancellation -- --nocapture: passed",
-        "cargo test ensure_schema_adds_idempotent_success_attempt_route_lookup_index -- --nocapture: passed",
-        "cargo fmt --all -- --check",
-        "cargo check --locked --all-targets --all-features",
-        "candidate shared-testbox profile and long-wait replay evidence are required before delivery"
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/old-reader-http.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/result.json",
+        "src/maintenance_store.rs: existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state and legacy_only_prompt_cache_control_is_imported_once_into_maintenance",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: independent-database control, status, single-traversal paging, and restart regressions",
+        "src/api/slices/system_routes_and_tasks.rs: prompt_cache_control_patch_paths_share_the_injected_maintenance_store",
+        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs: production timing, projection mutations and atomic legacy-trigger upgrade regressions"
       ]
     }
   },
   "compatibility_evidence": {
     "public_api": {
       "change": "additive-compatible",
-      "supported_consumer_range": "Existing HTTP, WebSocket, prompt-cache aggregate, and subscription consumers; response fields, error envelopes, and the ApiError::Unavailable contract are unchanged.",
+      "supported_consumer_range": "Existing HTTP, WebSocket, prompt-cache aggregate, and subscription consumers; prompt-cache route and response fields remain stable, with unavailable maintenance control reported through ApiError::Unavailable.",
       "evidence": [
-        "No public response field, route, status code policy, or unavailable envelope change is included in this candidate."
+        "Existing routes and request/response fields are unchanged; missing or unavailable maintenance control uses the existing 503 Unavailable error contract instead of appearing disabled."
       ]
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Prompt-cache conversation identities plus the additive pool_upstream_request_attempts success route lookup index.",
-      "source_program_compatibility_range": "Earlier application versions that understand the existing prompt-cache rows; earlier readers ignore the additive index and no row conversion is required.",
+      "state_description": "Existing maintenance-database managed task and scheduler checkpoint rows plus one additive maintenance_metadata control-origin marker, and business-database prompt-cache identity, statistics staging, queue, and progress rows. No new table or column is added. Existing working-set trigger definitions are replaced atomically with one schema_refresh_migrations completion row; no source data is transformed.",
+      "source_program_compatibility_range": "Earlier application versions that understand the existing prompt-cache and maintenance tables can read the unchanged schema and ignore the additive metadata key. On rollback, older prompt-cache task code may again use its legacy business-database enable bit; this candidate neither rewrites nor removes that value.",
       "evidence": [
-        "src/schema.rs creates idx_pool_attempts_account_model_success with CREATE INDEX IF NOT EXISTS.",
-        "ensure_schema_adds_idempotent_success_attempt_route_lookup_index verifies repeat startup and query-plan use."
+        "Prompt-cache materialization uses existing maintenance managed_tasks/checkpoint rows; one maintenance metadata marker records whether the prompt-cache task row existed before seeding so stale legacy state cannot overwrite an existing control. A business-only legacy value can seed a newly created control once, and is not changed by the repair.",
+        "The two existing PATCH routes retain their request/response fields; the status GET retains its response shape and deferReason string field, including distinct bounded-retry reasons.",
+        "The existing trigger names and live-window/key reconciliation remain stable. Terminal timing columns remain writable without projection recomputation. Atomic DDL/marker rollback and repeated-startup preservation are checked by prompt_working_set_trigger_upgrade_is_atomic_and_reentrant_without_row_rebuild; exact current-writer/older-reader results are separately bound to the delivery candidate."
       ]
     }
   },
@@ -77,8 +84,8 @@
     "member_change_records": [
       "docs/specs/proxy-invocation-identity/assets/version-impact-record.json"
     ],
-      "maximum_verified_impact": "patch",
-      "calculation_evidence": [
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
       "public_api=patch",
       "persistent_state=patch",
       "release unit=max(public_api,persistent_state)=patch"

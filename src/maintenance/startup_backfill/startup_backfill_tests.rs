@@ -219,6 +219,88 @@ fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
     assert_eq!(recovered.failed_task_count, 0);
 }
 
+#[tokio::test]
+async fn startup_pass_does_not_swallow_a_wake_before_the_wait_loop() {
+    let scheduler = StartupBackfillScheduler::default();
+    let observed_generation = scheduler.generation();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+
+    scheduler.wake(task);
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        scheduler.wait_for_wake(observed_generation),
+    )
+    .await
+    .expect("wake recorded during the startup pass must be observed afterward");
+
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+}
+
+#[tokio::test]
+async fn prompt_cache_wake_respects_pressure_retry_deadline() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect maintenance store test pool");
+    let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_name = task.name();
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+        .bind(task_key)
+        .execute(&store.pool)
+        .await
+        .expect("enable prompt-cache task fixture");
+    store
+        .initialize_prompt_cache_materialization_control(task_key, task_name)
+        .await
+        .expect("initialize prompt-cache control");
+
+    let scheduler = StartupBackfillScheduler::default();
+    scheduler.defer_for_pressure(task, Utc::now() + ChronoDuration::seconds(30));
+    let before = scheduler.health_snapshot();
+    assert_eq!(
+        wake_prompt_cache_materialization_with_scheduler(
+            &store,
+            "test_terminal_write",
+            &scheduler,
+        )
+        .await
+        .expect("attempt wake during pressure defer"),
+        0
+    );
+    assert_eq!(scheduler.health_snapshot().wake_count, before.wake_count);
+    assert_eq!(
+        load_startup_backfill_progress_from_pool(&store.pool, task_name)
+            .await
+            .expect("load deferred progress")
+            .wake_generation,
+        0
+    );
+
+    scheduler.record_next_due(task, Utc::now() - ChronoDuration::seconds(1));
+    assert_eq!(
+        wake_prompt_cache_materialization_with_scheduler(&store, "test_retry_due", &scheduler,)
+            .await
+            .expect("wake after retry deadline"),
+        1
+    );
+    assert_eq!(
+        scheduler.health_snapshot().wake_count,
+        before.wake_count + 1
+    );
+    assert_eq!(
+        load_startup_backfill_progress_from_pool(&store.pool, task_name)
+            .await
+            .expect("load due progress")
+            .wake_generation,
+        1
+    );
+}
+
 #[test]
 fn pressure_defer_uses_the_gate_absolute_deadline() {
     let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(60));
@@ -273,6 +355,48 @@ fn pressure_defer_schedules_one_deadline_and_dispatches_once() {
     assert_eq!(deferred.pressure_defer_count, 1);
     assert_eq!(deferred.scheduled_task_count, 0);
     assert_eq!(deferred.deferred_task_count, 1);
+}
+
+#[test]
+fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
+    let prompt_cache_task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let selected = [
+        StartupBackfillTask::ProxyUsage,
+        prompt_cache_task,
+        StartupBackfillTask::ReasoningEffort,
+    ];
+
+    assert_eq!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(Some(&selected)),
+        vec![prompt_cache_task]
+    );
+    assert_eq!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(None),
+        vec![prompt_cache_task]
+    );
+    assert!(
+        prompt_cache_tasks_when_startup_backfill_root_is_skipped(Some(&[
+            StartupBackfillTask::ProxyUsage,
+        ]))
+        .is_empty()
+    );
+
+    let scheduler = StartupBackfillScheduler::default();
+    let generic_task = StartupBackfillTask::ProxyUsage;
+    let deadline = DateTime::<Utc>::from_timestamp_millis(1_800_000_000_750)
+        .expect("valid fixed pressure deadline");
+    scheduler.defer_for_pressure(generic_task, deadline);
+    scheduler.defer_for_pressure(prompt_cache_task, deadline);
+
+    assert_eq!(
+        scheduler.take_pressure_deferred_tasks_matching(deadline, Some(&[prompt_cache_task])),
+        vec![prompt_cache_task]
+    );
+    assert_eq!(
+        scheduler.take_pressure_deferred_tasks(deadline),
+        vec![generic_task],
+        "root-disabled dispatch must leave generic pressure work queued"
+    );
 }
 
 #[tokio::test]
@@ -700,4 +824,21 @@ fn managed_prompt_cache_observation_keeps_root_task_identity() {
         startup_backfill_observation_task_key(None),
         "startup_backfill"
     );
+}
+
+#[test]
+fn stale_prompt_cache_disable_schedule_cannot_erase_a_resume_wake() {
+    let control = crate::maintenance_store::PromptCacheMaterializationControl::default();
+    control.initialize(true);
+    let disabled = control.publish_committed(false);
+    let resumed = control.publish_committed(true);
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    apply_prompt_cache_control_schedule(&control, resumed, &scheduler, task);
+    let resumed_deadline = scheduler.next_due_for(task);
+    apply_prompt_cache_control_schedule(&control, disabled, &scheduler, task);
+    assert_eq!(scheduler.next_due_for(task), resumed_deadline);
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+    assert_eq!(scheduler.drain_due_tasks(Utc::now()), vec![task]);
+    assert_eq!(scheduler.wake_count.load(Ordering::Relaxed), 1);
 }

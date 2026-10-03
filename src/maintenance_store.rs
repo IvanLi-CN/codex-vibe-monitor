@@ -10,9 +10,10 @@ use std::{
     path::PathBuf,
     str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
+use tokio::sync::Mutex as AsyncMutex;
 
 const MIN_INTERVAL_SECS: i64 = 60;
 const MAX_TASK_ERROR_DETAIL_CHARS: usize = 4_000;
@@ -26,6 +27,7 @@ const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
+const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
@@ -87,6 +89,150 @@ pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecution
 #[derive(Debug, Clone)]
 pub(crate) struct MaintenanceStore {
     pub(crate) pool: Pool<Sqlite>,
+    pub(crate) prompt_cache_materialization_control: Arc<PromptCacheMaterializationControl>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PromptCacheMaterializationControlSnapshot {
+    pub(crate) enabled: bool,
+    pub(crate) generation: u64,
+}
+
+#[derive(Debug, Default)]
+struct PromptCacheMaterializationControlState {
+    snapshot: Option<PromptCacheMaterializationControlSnapshot>,
+    active_steps: u64,
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct PromptCacheMaterializationControl {
+    state: Mutex<PromptCacheMaterializationControlState>,
+    update_lock: AsyncMutex<()>,
+}
+
+pub(crate) struct PromptCacheMaterializationStep {
+    control: Arc<PromptCacheMaterializationControl>,
+    pub(crate) generation: u64,
+}
+
+pub(crate) enum PromptCacheMaterializationStepAdmission {
+    Started(PromptCacheMaterializationStep),
+    Disabled,
+    GenerationChanged,
+    Unavailable,
+}
+
+impl PromptCacheMaterializationControl {
+    // Control commits and maintenance checkpoint finalization share this lock.
+    // The short state mutex never covers SQL or waits for this async lock.
+    pub(crate) async fn lock_current_generation(
+        &self,
+        expected_generation: u64,
+    ) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        let guard = self.update_lock.lock().await;
+        self.snapshot()
+            .is_some_and(|snapshot| snapshot.enabled && snapshot.generation == expected_generation)
+            .then_some(guard)
+    }
+
+    pub(crate) fn initialize(&self, enabled: bool) -> PromptCacheMaterializationControlSnapshot {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *state
+            .snapshot
+            .get_or_insert(PromptCacheMaterializationControlSnapshot {
+                enabled,
+                generation: 1,
+            })
+    }
+
+    pub(crate) fn snapshot(&self) -> Option<PromptCacheMaterializationControlSnapshot> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot
+    }
+
+    pub(crate) fn with_current_generation<R>(
+        &self,
+        expected_generation: u64,
+        action: impl FnOnce() -> R,
+    ) -> Option<R> {
+        let state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state
+            .snapshot
+            .is_some_and(|snapshot| snapshot.generation == expected_generation)
+            .then(action)
+    }
+
+    pub(crate) fn publish_committed(
+        &self,
+        enabled: bool,
+    ) -> PromptCacheMaterializationControlSnapshot {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let snapshot = match state.snapshot {
+            Some(current) if current.enabled == enabled => current,
+            Some(current) => PromptCacheMaterializationControlSnapshot {
+                enabled,
+                generation: current.generation.saturating_add(1),
+            },
+            None => PromptCacheMaterializationControlSnapshot {
+                enabled,
+                generation: 1,
+            },
+        };
+        state.snapshot = Some(snapshot);
+        snapshot
+    }
+
+    pub(crate) fn begin_step(
+        self: &Arc<Self>,
+        expected_generation: Option<u64>,
+    ) -> PromptCacheMaterializationStepAdmission {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(snapshot) = state.snapshot else {
+            return PromptCacheMaterializationStepAdmission::Unavailable;
+        };
+        if expected_generation.is_some_and(|generation| generation != snapshot.generation) {
+            return PromptCacheMaterializationStepAdmission::GenerationChanged;
+        }
+        if !snapshot.enabled {
+            return PromptCacheMaterializationStepAdmission::Disabled;
+        }
+        state.active_steps = state.active_steps.saturating_add(1);
+        PromptCacheMaterializationStepAdmission::Started(PromptCacheMaterializationStep {
+            control: Arc::clone(self),
+            generation: snapshot.generation,
+        })
+    }
+}
+
+impl Drop for PromptCacheMaterializationStep {
+    fn drop(&mut self) {
+        let mut state = self
+            .control
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.active_steps = state.active_steps.saturating_sub(1);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PromptCacheMaterializationControlUpdate {
+    pub(crate) changed: bool,
+    pub(crate) snapshot: PromptCacheMaterializationControlSnapshot,
 }
 
 #[derive(Debug, Clone, Default, Serialize, FromRow)]
@@ -725,9 +871,25 @@ pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
         .execute(&pool)
         .await?;
     ensure_schema(&pool).await?;
+    record_prompt_cache_materialization_control_origin(&pool).await?;
     seed_tasks(&pool).await?;
     ensure_task_colors(&pool).await?;
-    Ok(MaintenanceStore { pool })
+    Ok(MaintenanceStore::from_pool(pool))
+}
+
+async fn record_prompt_cache_materialization_control_origin(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        "INSERT OR IGNORE INTO maintenance_metadata (key,value,updated_at)
+         SELECT ?, CASE WHEN EXISTS (
+             SELECT 1 FROM managed_tasks
+             WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'
+         ) THEN 'maintenance' ELSE 'legacy' END, ?",
+    )
+    .bind(PROMPT_CACHE_CONTROL_ORIGIN_MARKER)
+    .bind(format_utc_iso_millis(Utc::now()))
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 async fn ensure_task_colors(pool: &Pool<Sqlite>) -> Result<()> {
@@ -1428,6 +1590,183 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
 }
 
 impl MaintenanceStore {
+    pub(crate) fn from_pool(pool: Pool<Sqlite>) -> Self {
+        Self {
+            pool,
+            prompt_cache_materialization_control: Arc::new(
+                PromptCacheMaterializationControl::default(),
+            ),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn initialize_schema_for_test(&self) -> Result<()> {
+        ensure_schema(&self.pool).await?;
+        seed_tasks(&self.pool).await
+    }
+
+    pub(crate) async fn initialize_prompt_cache_materialization_control(
+        &self,
+        task_key: &str,
+        task_name: &str,
+    ) -> Result<PromptCacheMaterializationControlSnapshot> {
+        if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
+            return Ok(snapshot);
+        }
+        let mut transaction = self.pool.begin().await?;
+        let enabled =
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(task_key)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or_else(|| anyhow!("managed prompt-cache materialization task not found"))?;
+        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+        sqlx::query(
+            "INSERT OR IGNORE INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+        )
+        .bind(task_name)
+        .bind((!enabled).then_some(disabled_until.as_str()))
+        .bind((!enabled).then_some("operator_disabled"))
+        .bind(enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query(
+            "UPDATE startup_backfill_progress
+             SET enabled=?,
+                 next_run_after=CASE
+                     WHEN ?=0 THEN ?
+                     WHEN suspension_reason='operator_disabled' THEN NULL
+                     ELSE next_run_after
+                 END,
+                 suspension_reason=CASE
+                     WHEN ?=0 THEN 'operator_disabled'
+                     WHEN suspension_reason='operator_disabled' THEN NULL
+                     ELSE suspension_reason
+                 END,
+                 next_probe_at=CASE
+                     WHEN ?=0 OR suspension_reason='operator_disabled' THEN NULL
+                     ELSE next_probe_at
+                 END,
+                 wake_generation=CASE
+                     WHEN enabled != ? THEN wake_generation + 1
+                     ELSE wake_generation
+                 END
+             WHERE task_name=? AND enabled != ?",
+        )
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(&disabled_until)
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(enabled as i64)
+        .bind(task_name)
+        .bind(enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(self
+            .prompt_cache_materialization_control
+            .initialize(enabled))
+    }
+
+    pub(crate) async fn update_prompt_cache_materialization_control(
+        &self,
+        task_key: &str,
+        task_name: &str,
+        enabled: bool,
+    ) -> Result<Option<PromptCacheMaterializationControlUpdate>> {
+        let _update_guard = self
+            .prompt_cache_materialization_control
+            .update_lock
+            .lock()
+            .await;
+        let mut transaction = self.pool.begin().await?;
+        let Some((current_enabled, interval_secs, cron_expr, is_manual)) = sqlx::query_as::<
+            _,
+            (bool, Option<i64>, Option<String>, bool),
+        >(
+            "SELECT enabled,interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?",
+        )
+        .bind(task_key)
+        .fetch_optional(&mut *transaction)
+        .await?
+        else {
+            transaction.commit().await?;
+            return Ok(None);
+        };
+        if is_manual {
+            return Err(anyhow!(
+                "prompt-cache materialization cannot be a manual task"
+            ));
+        }
+        let changed = current_enabled != enabled;
+        let next_trigger_at = if enabled {
+            next_trigger_at(interval_secs, cron_expr.as_deref())
+        } else {
+            None
+        };
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
+        )
+        .bind(enabled as i64)
+        .bind(next_trigger_at)
+        .bind(format_utc_iso_millis(Utc::now()))
+        .bind(task_key)
+        .execute(&mut *transaction)
+        .await?;
+
+        let disabled_until = format_utc_iso_millis(Utc::now() + ChronoDuration::days(3650));
+        sqlx::query(
+            "INSERT OR IGNORE INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,
+                last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled
+             ) VALUES (?,0,?,0,NULL,NULL,0,0,'idle',?,NULL,0,?)",
+        )
+        .bind(task_name)
+        .bind((!current_enabled).then_some(disabled_until.as_str()))
+        .bind((!current_enabled).then_some("operator_disabled"))
+        .bind(current_enabled as i64)
+        .execute(&mut *transaction)
+        .await?;
+        if changed {
+            sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET enabled=?,
+                     next_run_after=?,
+                     suspension_reason=?,
+                     next_probe_at=NULL,
+                     wake_generation=wake_generation + 1
+                 WHERE task_name=?",
+            )
+            .bind(enabled as i64)
+            .bind((!enabled).then_some(disabled_until.as_str()))
+            .bind((!enabled).then_some("operator_disabled"))
+            .bind(task_name)
+            .execute(&mut *transaction)
+            .await?;
+        } else {
+            sqlx::query(
+                "UPDATE startup_backfill_progress SET enabled=? WHERE task_name=? AND enabled != ?",
+            )
+            .bind(enabled as i64)
+            .bind(task_name)
+            .bind(enabled as i64)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        transaction.commit().await?;
+        let snapshot = self
+            .prompt_cache_materialization_control
+            .publish_committed(enabled);
+        Ok(Some(PromptCacheMaterializationControlUpdate {
+            changed,
+            snapshot,
+        }))
+    }
+
     pub(crate) async fn start_timeline_session(
         &self,
         session_id: &str,
@@ -2024,6 +2363,11 @@ impl MaintenanceStore {
                 .bind(LEGACY_BACKFILL_ENABLEMENT_MARKER)
                 .fetch_optional(&mut *transaction)
                 .await?;
+        let prompt_cache_control_origin: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(PROMPT_CACHE_CONTROL_ORIGIN_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
         if defaults_applied.is_some() && legacy_enablement_reconciled.is_some() {
             transaction.commit().await?;
             return Ok(changed);
@@ -2056,23 +2400,27 @@ impl MaintenanceStore {
                 continue;
             };
             let managed_key = format!("startup_backfill.{managed_suffix}");
-            // The legacy progress row is the only durable enablement source before this
-            // catalog exists. Seed the managed row from it once, then let the managed row
-            // remain authoritative for later operator changes.
-            sqlx::query(
-                "UPDATE managed_tasks
-                 SET enabled = COALESCE(
-                     (SELECT MAX(enabled) FROM startup_backfill_progress
-                      WHERE task_name=? OR task_name LIKE ?),
-                     enabled
-                 )
-                 WHERE task_key=?",
-            )
-            .bind(task_name)
-            .bind(&like_pattern)
-            .bind(&managed_key)
-            .execute(&mut *transaction)
-            .await?;
+            let legacy_is_enablement_source = task_name
+                != crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION
+                || prompt_cache_control_origin.as_deref() == Some("legacy")
+                || prompt_cache_control_origin.is_none();
+            if legacy_is_enablement_source {
+                // A legacy progress bit may seed a newly created managed control once.
+                sqlx::query(
+                    "UPDATE managed_tasks
+                     SET enabled = COALESCE(
+                         (SELECT MAX(enabled) FROM startup_backfill_progress
+                          WHERE task_name=? OR task_name LIKE ?),
+                         enabled
+                     )
+                     WHERE task_key=?",
+                )
+                .bind(task_name)
+                .bind(&like_pattern)
+                .bind(&managed_key)
+                .execute(&mut *transaction)
+                .await?;
+            }
             sqlx::query(
                 "UPDATE startup_backfill_progress
                  SET enabled=COALESCE((SELECT enabled FROM managed_tasks WHERE task_key=?), 0),
@@ -2989,7 +3337,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query("INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,duration_ms,status) VALUES('retention_archive','manual','2026-10-02T00:00:00.000Z',777,'running')")
             .execute(&store.pool)
             .await
@@ -3199,7 +3547,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .start_timeline_session("drop-session", "2026-10-02T00:00:00.000Z")
             .await
@@ -3265,7 +3613,7 @@ mod tests {
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed managed task registry");
         ensure_task_colors(&pool).await.expect("seed task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let observed_at = format_utc_iso_millis(now);
         store
@@ -3318,7 +3666,7 @@ mod tests {
         ensure_task_colors(&pool)
             .await
             .expect("seed stable task colors");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let started = (0..3)
             .map(
@@ -3501,7 +3849,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         let tasks = store.list_tasks().await.expect("list decorated tasks");
         assert_eq!(
@@ -3572,7 +3920,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed legacy unsupported override");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         let error = store
             .update_control("summary_snapshot", None, Some(Some(180)), None)
@@ -3603,7 +3951,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         store
             .update_control(
@@ -3673,7 +4021,7 @@ mod tests {
         .await
         .expect("insert fresh managed task run");
 
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
         let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
@@ -3703,7 +4051,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         let error = store
             .request_run("startup_backfill.proxy_usage")
@@ -3727,7 +4075,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         assert!(
             store
@@ -3751,6 +4099,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prompt_cache_control_generation_stops_new_steps_without_revoking_started_steps() {
+        let control = std::sync::Arc::new(super::PromptCacheMaterializationControl::default());
+        let enabled = control.initialize(true);
+        let step = match control.begin_step(Some(enabled.generation)) {
+            super::PromptCacheMaterializationStepAdmission::Started(step) => step,
+            _ => panic!("enabled generation should admit a step"),
+        };
+
+        let disabled = control.publish_committed(false);
+        assert_eq!(disabled.generation, enabled.generation + 1);
+        assert_eq!(step.generation, enabled.generation);
+        assert!(matches!(
+            control.begin_step(Some(enabled.generation)),
+            super::PromptCacheMaterializationStepAdmission::GenerationChanged
+        ));
+        assert!(matches!(
+            control.begin_step(None),
+            super::PromptCacheMaterializationStepAdmission::Disabled
+        ));
+
+        drop(step);
+        let resumed = control.publish_committed(true);
+        assert_eq!(resumed.generation, disabled.generation + 1);
+        let repeated = control.publish_committed(true);
+        assert_eq!(repeated.generation, resumed.generation);
+    }
+
+    #[tokio::test]
     async fn claim_retires_requested_runs_after_a_task_is_disabled() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
@@ -3759,7 +4135,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         assert!(
             store
@@ -3811,7 +4187,7 @@ mod tests {
         .await
         .expect("insert backfill control row");
 
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         assert!(store.apply_initial_task_defaults().await.unwrap());
         assert!(
             sqlx::query_scalar::<_, bool>(
@@ -3862,6 +4238,147 @@ mod tests {
         );
     }
 
+    async fn legacy_backfill_pool(enabled: i64, cursor_id: i64) -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect legacy business pool");
+        sqlx::query(
+            "CREATE TABLE system_task_runs (
+                id INTEGER PRIMARY KEY, task_kind TEXT NOT NULL, trigger_kind TEXT NOT NULL,
+                status TEXT NOT NULL, summary TEXT, detail TEXT, started_at TEXT NOT NULL,
+                finished_at TEXT, duration_ms INTEGER
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy run table");
+        sqlx::query(
+            "CREATE TABLE startup_backfill_progress (
+                task_name TEXT PRIMARY KEY, cursor_id INTEGER NOT NULL, next_run_after TEXT,
+                zero_update_streak INTEGER NOT NULL, last_started_at TEXT, last_finished_at TEXT,
+                last_scanned INTEGER NOT NULL, last_updated INTEGER NOT NULL, last_status TEXT NOT NULL,
+                suspension_reason TEXT, next_probe_at TEXT, wake_generation INTEGER NOT NULL,
+                enabled INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy progress table");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (
+                task_name,cursor_id,zero_update_streak,last_scanned,last_updated,last_status,
+                wake_generation,enabled
+             ) VALUES (?, ?, 0, 0, 0, 'idle', 0, ?)",
+        )
+        .bind(crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION)
+        .bind(cursor_id)
+        .bind(enabled)
+        .execute(&pool)
+        .await
+        .expect("insert legacy progress row");
+        pool
+    }
+
+    #[tokio::test]
+    async fn existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state() {
+        let business_pool = legacy_backfill_pool(0, 99).await;
+        let maintenance_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect existing maintenance pool");
+        ensure_schema(&maintenance_pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&maintenance_pool)
+            .await
+            .expect("seed maintenance task registry");
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1
+             WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'",
+        )
+        .execute(&maintenance_pool)
+        .await
+        .expect("preserve existing managed enablement");
+        sqlx::query(
+            "INSERT INTO startup_backfill_progress (
+                task_name,cursor_id,next_run_after,last_status,suspension_reason,
+                wake_generation,enabled
+             ) VALUES (?,41,'2026-10-03T00:00:00.000Z','stats_page_pending',
+                       'stats_page_pending',7,1)",
+        )
+        .bind(crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION)
+        .execute(&maintenance_pool)
+        .await
+        .expect("seed existing scheduler checkpoint");
+        super::record_prompt_cache_materialization_control_origin(&maintenance_pool)
+            .await
+            .expect("record existing maintenance control origin");
+
+        let store = MaintenanceStore::from_pool(maintenance_pool);
+        store
+            .migrate_legacy_state(&business_pool)
+            .await
+            .expect("migrate legacy state without replacing checkpoint");
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+
+        let enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks
+             WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        let checkpoint: (i64, Option<String>, String, Option<String>, i64, i64) = sqlx::query_as(
+            "SELECT cursor_id,next_run_after,last_status,suspension_reason,wake_generation,enabled
+                 FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(crate::STARTUP_BACKFILL_TASK_PROMPT_CACHE_CONVERSATIONS_MATERIALIZATION)
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(enabled);
+        assert_eq!(checkpoint.0, 41);
+        assert_eq!(checkpoint.1.as_deref(), Some("2026-10-03T00:00:00.000Z"));
+        assert_eq!(checkpoint.2, "stats_page_pending");
+        assert_eq!(checkpoint.3.as_deref(), Some("stats_page_pending"));
+        assert_eq!(checkpoint.4, 7);
+        assert_eq!(checkpoint.5, 1);
+        assert!(!store.apply_initial_task_defaults().await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn legacy_only_prompt_cache_control_is_imported_once_into_maintenance() {
+        let business_pool = legacy_backfill_pool(1, 99).await;
+        let maintenance_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect new maintenance pool");
+        ensure_schema(&maintenance_pool)
+            .await
+            .expect("create maintenance schema");
+        super::record_prompt_cache_materialization_control_origin(&maintenance_pool)
+            .await
+            .expect("record missing managed control origin");
+        seed_tasks(&maintenance_pool)
+            .await
+            .expect("seed new maintenance task registry");
+
+        let store = MaintenanceStore::from_pool(maintenance_pool);
+        store
+            .migrate_legacy_state(&business_pool)
+            .await
+            .expect("migrate old business task state");
+        assert!(store.apply_initial_task_defaults().await.unwrap());
+
+        let enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks
+             WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(enabled);
+        assert!(!store.apply_initial_task_defaults().await.unwrap());
+    }
+
     #[tokio::test]
     async fn retention_default_schedule_is_observable_and_overrideable() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -3871,7 +4388,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
 
         assert!(store.apply_initial_task_defaults().await.unwrap());
         let task = store
@@ -3929,7 +4446,7 @@ mod tests {
         .await
         .expect("insert legacy enabled backfill row");
 
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         assert!(store.apply_initial_task_defaults().await.unwrap());
         assert!(
             sqlx::query_scalar::<_, bool>(
@@ -4006,9 +4523,7 @@ mod tests {
         seed_tasks(&maintenance_pool)
             .await
             .expect("seed maintenance task registry");
-        let store = MaintenanceStore {
-            pool: maintenance_pool,
-        };
+        let store = MaintenanceStore::from_pool(maintenance_pool);
 
         store
             .migrate_legacy_state(&main_pool)
@@ -4067,7 +4582,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let run_id = store
             .begin_run(
                 "retention_archive",
@@ -4126,7 +4641,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let run_id = store
             .begin_run(
                 "retention_archive",
@@ -4173,7 +4688,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query("UPDATE managed_tasks SET next_catchup_at='2000-01-01T00:00:00.000Z' WHERE task_key='retention_archive'")
             .execute(&store.pool)
             .await
@@ -4229,7 +4744,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .apply_initial_task_defaults()
             .await
@@ -4266,7 +4781,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let inspection = format_utc_iso_millis(now + ChronoDuration::hours(1));
         let catchup = format_utc_iso_millis(now - ChronoDuration::seconds(1));
@@ -4318,7 +4833,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         sqlx::query(
             "UPDATE managed_tasks
              SET next_trigger_at='2000-01-01T00:00:00.000Z',
@@ -4354,7 +4869,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let now = Utc::now();
         let bucket = floor_utc_hour(now);
         store

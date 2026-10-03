@@ -10,7 +10,8 @@ Run the independent performance telemetry acceptance workload on codex-testbox.
 Options:
   --testbox HOST       SSH host alias (default: codex-testbox)
   --reuse-image TAG    Skip docker build and reuse an existing image tag
-  --scenario NAME      overhead, sustained, long-wait, or capacity (default: sustained)
+  --scenario NAME      overhead, sustained, long-wait, prompt-cache-control, or capacity (default: sustained)
+  --mode NAME          baseline or candidate for prompt-cache-control (default: candidate)
   --duration SECONDS   Sustained round duration (default: 300)
   --rounds COUNT       Sustained round count (default: 3)
   --rate COUNT         Proxy requests per second (default: 50)
@@ -26,6 +27,7 @@ USAGE
 TESTBOX="codex-testbox"
 REUSE_IMAGE_TAG=""
 SCENARIO="sustained"
+PROMPT_CACHE_CONTROL_MODE="candidate"
 DURATION_SECONDS=300
 ROUNDS=3
 REQUEST_RATE=50
@@ -49,6 +51,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --scenario)
       SCENARIO="$2"
+      shift 2
+      ;;
+    --mode)
+      PROMPT_CACHE_CONTROL_MODE="$2"
       shift 2
       ;;
     --duration)
@@ -101,11 +107,29 @@ if [ "$SCENARIO" = "overhead" ]; then
     MOCK_UPSTREAM_DELAY_MS=50
   fi
 fi
+if [ "$SCENARIO" = "prompt-cache-control" ] && [ "$REQUEST_RATE_SET" -eq 0 ]; then
+  REQUEST_RATE=4
+fi
 
 case "$SCENARIO" in
-  overhead|sustained|long-wait|capacity) ;;
-  *) echo "--scenario must be overhead, sustained, long-wait, or capacity" >&2; exit 2 ;;
+  overhead|sustained|long-wait|prompt-cache-control|capacity) ;;
+  *) echo "--scenario must be overhead, sustained, long-wait, prompt-cache-control, or capacity" >&2; exit 2 ;;
 esac
+if [ "$SCENARIO" = "prompt-cache-control" ]; then
+  case "$PROMPT_CACHE_CONTROL_MODE" in
+    baseline|candidate) ;;
+    *) echo '--mode must be baseline or candidate for prompt-cache-control' >&2; exit 2 ;;
+  esac
+elif [ "$PROMPT_CACHE_CONTROL_MODE" != "candidate" ]; then
+  echo '--mode is only supported with --scenario prompt-cache-control' >&2
+  exit 2
+fi
+if [ "$SCENARIO" = "prompt-cache-control" ] && [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+  if [ "$DURATION_SECONDS" -ne 300 ] || [ "$ROUNDS" -ne 3 ] || [ "$REQUEST_RATE" -ne 4 ]; then
+    echo 'candidate prompt-cache-control requires --duration 300 --rounds 3 --rate 4' >&2
+    exit 2
+  fi
+fi
 if ! [[ "$DURATION_SECONDS" =~ ^[0-9]+$ && "$DURATION_SECONDS" -ge 1 ]]; then
   echo '--duration must be a positive integer' >&2
   exit 2
@@ -151,17 +175,19 @@ if git -C "$REPO_ROOT" ls-files -s | awk '$1 == "160000" { found=1 } END { exit 
   echo 'submodules must be transferred directly; sync helper only supports ordinary worktrees' >&2
   exit 64
 fi
-GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
-RUN_ID="$(date +%Y%m%d_%H%M%S)_performance_${GIT_SHA}_$$"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo nogit)"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_performance_${GIT_SHA:0:12}_$$"
 WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
 REMOTE_AGENT="/srv/codex/agents/${AGENT_ID}"
-REMOTE_WORKSPACE="${REMOTE_AGENT}/workspace"
 REMOTE_RUN="${REMOTE_AGENT}/runs/${RUN_ID}"
+REMOTE_WORKSPACE="${REMOTE_RUN}/workspace"
 COMPOSE_PROJECT_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
 COMPOSE_PROJECT="$(python3 - <<'PY' "$COMPOSE_PROJECT_RAW"
-import re, sys
+import hashlib, re, sys
 value = re.sub(r'[^a-z0-9_-]+', '_', sys.argv[1].lower()).strip('_')
-print(value[:63])
+suffix = hashlib.sha256(sys.argv[1].encode()).hexdigest()[:10]
+prefix = value[:52].rstrip('_')
+print(f'{prefix}_{suffix}')
 PY
 )"
 IMAGE_TAG="${REUSE_IMAGE_TAG}"
@@ -179,7 +205,7 @@ printf '== local repo ==\n%s\n' "$REPO_ROOT"
 printf '== remote run ==\n%s\n' "$REMOTE_RUN"
 printf '== image tag ==\n%s\n' "$IMAGE_TAG"
 printf '== compose project ==\n%s\n' "$COMPOSE_PROJECT"
-printf '== workload ==\nscenario=%s rate=%s mock_delay_ms=%s warmup_seconds=%s capture_p1_ack=%s\n' "$SCENARIO" "$REQUEST_RATE" "${MOCK_UPSTREAM_DELAY_MS:-default}" "$WARMUP_SECONDS" "$CAPTURE_P1_ACK"
+printf '== workload ==\nscenario=%s mode=%s rate=%s mock_delay_ms=%s warmup_seconds=%s capture_p1_ack=%s\n' "$SCENARIO" "$PROMPT_CACHE_CONTROL_MODE" "$REQUEST_RATE" "${MOCK_UPSTREAM_DELAY_MS:-default}" "$WARMUP_SECONDS" "$CAPTURE_P1_ACK"
 
 ssh -o BatchMode=yes "$TESTBOX" bash -s -- "$AGENT_ID" "$REMOTE_WORKSPACE" "$REMOTE_RUN" <<'REMOTE'
 set -euo pipefail
@@ -196,13 +222,6 @@ else
   mkdir -- "$agent_dir"
 fi
 [[ "$(readlink -f -- "$agent_dir")" == "$agent_dir" ]]
-if [[ -e "$workspace" || -L "$workspace" ]]; then
-  [[ -d "$workspace" && ! -L "$workspace" ]]
-else
-  mkdir -- "$workspace"
-fi
-[[ "$(readlink -f -- "$workspace")" == "$workspace" ]]
-find "$workspace" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 if [[ -e "$run_parent" || -L "$run_parent" ]]; then
   [[ -d "$run_parent" && ! -L "$run_parent" ]]
 else
@@ -213,8 +232,13 @@ case "$run_dir" in
   "$run_parent"/*) ;;
   *) exit 64 ;;
 esac
+[[ ! -e "$run_dir" && ! -L "$run_dir" ]]
 mkdir -- "$run_dir"
 [[ -d "$run_dir" && ! -L "$run_dir" ]]
+[[ "$(readlink -f -- "$run_dir")" == "$run_dir" ]]
+[[ "$workspace" == "$run_dir/workspace" ]]
+mkdir -- "$workspace"
+[[ "$(readlink -f -- "$workspace")" == "$workspace" ]]
 REMOTE
 
 rsync -az --from0 --files-from=- \
@@ -239,6 +263,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   REQUEST_RATE="$REQUEST_RATE" \
   MOCK_UPSTREAM_DELAY_MS="$MOCK_UPSTREAM_DELAY_MS" \
   WARMUP_SECONDS="$WARMUP_SECONDS" \
+  PROMPT_CACHE_CONTROL_MODE="$PROMPT_CACHE_CONTROL_MODE" \
   CAPTURE_P1_ACK="$CAPTURE_P1_ACK" \
   CLEANUP="$CLEANUP" \
   COMPOSE_PROJECT="$COMPOSE_PROJECT" \
@@ -251,6 +276,8 @@ COMPOSE_FILE="$REMOTE_RUN/.codex-performance.compose.yaml"
 CAPS_OVERRIDE="$REMOTE_RUN/.codex.caps-compat.yaml"
 MOCK_SCRIPT="$REMOTE_RUN/.codex-performance-mock.py"
 LOADGEN_SCRIPT="$REMOTE_RUN/.codex-performance-loadgen.py"
+CONTROL_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-control-loadgen.py"
+BASE_COMPOSE_FILE="$REMOTE_RUN/.codex-performance.compose.base.yaml"
 DATA_DIR="$REMOTE_RUN/data"
 LOG_DIR="$REMOTE_RUN/logs"
 LOAD_LOG="$LOG_DIR/loadgen.jsonl"
@@ -259,26 +286,78 @@ TOKEN="pool-shared-testbox-key"
 ACCOUNT_KEY="upstream-primary-key"
 DIRECT_PROXY_KEY="__direct__"
 ENCRYPTION_SECRET="shared-testbox-encryption-secret"
+stats_pid=""
+app_logs_pid=""
+LIVE_APP_LOG="$LOG_DIR/prompt-cache-pressure-live.log"
+APP_RUST_LOG=warn
+if [ "$SCENARIO" = "prompt-cache-control" ]; then
+  APP_RUST_LOG=info
+fi
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
+python3 - <<'PY' "$LOG_DIR/run-metadata.json"
+import json
+import os
+import sys
+from datetime import datetime, timezone
+
+metadata = {
+    'candidate_sha': os.environ.get('GIT_SHA'),
+    'scenario': os.environ.get('SCENARIO'),
+    'mode': os.environ.get('PROMPT_CACHE_CONTROL_MODE'),
+    'duration_seconds': int(os.environ.get('DURATION_SECONDS', '0')),
+    'rounds': int(os.environ.get('ROUNDS', '0')),
+    'request_rate': int(os.environ.get('REQUEST_RATE', '0')),
+    'mock_upstream_delay_ms': os.environ.get('MOCK_UPSTREAM_DELAY_MS') or 'default',
+    'started_at_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+}
+with open(sys.argv[1], 'w', encoding='utf-8') as destination:
+    json.dump(metadata, destination, indent=2)
+    destination.write('\n')
+PY
+
+stop_prompt_cache_log_reader() {
+  if [ -n "$app_logs_pid" ]; then
+    kill "$app_logs_pid" >/dev/null 2>&1 || true
+    wait "$app_logs_pid" >/dev/null 2>&1 || true
+    app_logs_pid=""
+  fi
+}
+
+start_prompt_cache_log_reader() {
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" \
+    logs --follow --no-color app >> "$LIVE_APP_LOG" 2>&1 &
+  app_logs_pid=$!
+}
 
 cleanup_remote() {
   set +e
-  if [ -f "$COMPOSE_FILE" ]; then
-    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down -v --remove-orphans >/dev/null 2>&1 || true
+  stop_prompt_cache_log_reader
+  if [ -n "$stats_pid" ]; then
+    kill "$stats_pid" >/dev/null 2>&1 || true
+    wait "$stats_pid" >/dev/null 2>&1 || true
+    stats_pid=""
   fi
-  rm -f "$MOCK_SCRIPT" "$LOADGEN_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE"
+  if [ -f "$COMPOSE_FILE" ]; then
+    if [ "$SCENARIO" = "prompt-cache-control" ] && [ -d "$LOG_DIR" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs --no-color app \
+        > "$LOG_DIR/app-on-exit.log" 2>/dev/null || true
+    fi
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans >/dev/null 2>&1 || true
+  fi
+  rm -f "$MOCK_SCRIPT" "$LOADGEN_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE" "$BASE_COMPOSE_FILE"
   if [ "$CLEANUP" = "1" ]; then
     run_parent="$(dirname "$REMOTE_RUN")"
-    if [ -L "$run_parent" ] || [ "$(readlink -f -- "$run_parent")" != "$run_parent" ]; then
-      echo "refusing cleanup outside Agent Directory: $run_parent" >&2
+    agent_dir="$(dirname "$run_parent")"
+    if [ -L "$run_parent" ] || [ -L "$agent_dir" ] \
+      || [ "$(readlink -f -- "$run_parent")" != "$run_parent" ] \
+      || [ "$(readlink -f -- "$agent_dir")" != "$agent_dir" ] \
+      || [ ! -d "$REMOTE_RUN" ] || [ -L "$REMOTE_RUN" ] \
+      || [ "$(readlink -f -- "$REMOTE_RUN")" != "$REMOTE_RUN" ]; then
+      echo "refusing cleanup outside the current Agent Directory run: $REMOTE_RUN" >&2
       return 1
     fi
-    docker run --rm --cap-drop=all \
-      -v "$REMOTE_RUN:/work" \
-      python:3.12-alpine \
-      python -c "import shutil; shutil.rmtree('/work/data', ignore_errors=True)" >/dev/null 2>&1 || true
     if [ -z "$REUSE_IMAGE_TAG" ]; then
       docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
     fi
@@ -1197,7 +1276,7 @@ services:
       DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
       HTTP_BIND: 0.0.0.0:8080
       OPENAI_UPSTREAM_BASE_URL: http://mock-upstream:18080/
-      RUST_LOG: warn
+      RUST_LOG: "$APP_RUST_LOG"
       PROXY_RAW_MAX_BYTES: "65536"
       UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: "$ENCRYPTION_SECRET"
       PERFORMANCE_TELEMETRY_ENABLED: "$PERFORMANCE_TELEMETRY_ENABLED"
@@ -1216,8 +1295,11 @@ services:
     command: ["sh", "-lc", "sleep infinity"]
     environment:
       CAPTURE_P1_ACK: "$CAPTURE_P1_ACK"
+      PROMPT_CACHE_PRESSURE_LOG: /work/logs/prompt-cache-pressure-live.log
     volumes:
+      - "$LOG_DIR:/work/logs:ro"
       - "$LOADGEN_SCRIPT:/work/loadgen.py:ro"
+      - "$CONTROL_LOADGEN_SCRIPT:/work/prompt-cache-control-loadgen.py:ro"
       - "$DATA_DIR:/work/data"
 YAML
 
@@ -1255,15 +1337,93 @@ else
   docker image inspect "$IMAGE_TAG" >/dev/null
 fi
 
-printf '== compose up ==\n'
-docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
-docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py wait-health </dev/null
-if [ "$WARMUP_SECONDS" -gt 0 ]; then
-  printf '== warmup ==\nseconds=%s\n' "$WARMUP_SECONDS"
-  sleep "$WARMUP_SECONDS"
+if [ "$SCENARIO" != "prompt-cache-control" ]; then
+  printf '== compose up ==\n'
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
+  docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py wait-health </dev/null
+  if [ "$WARMUP_SECONDS" -gt 0 ]; then
+    printf '== warmup ==\nseconds=%s\n' "$WARMUP_SECONDS"
+    sleep "$WARMUP_SECONDS"
+  fi
 fi
 
-if [ "$SCENARIO" = "sustained" ] || [ "$SCENARIO" = "overhead" ] || [ "$SCENARIO" = "long-wait" ]; then
+if [ "$SCENARIO" = "prompt-cache-control" ]; then
+  cp "$COMPOSE_FILE" "$BASE_COMPOSE_FILE"
+  : > "$LOAD_LOG"
+  : > "$STATS_LOG"
+  if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then
+    ROUNDS=1
+  fi
+  for round_index in $(seq 1 "$ROUNDS"); do
+    printf '== prompt-cache-control round %s/%s (%s) ==\n' "$round_index" "$ROUNDS" "$PROMPT_CACHE_CONTROL_MODE"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans
+    round_data="$REMOTE_RUN/data/prompt-cache-control/round-$round_index"
+    mkdir -p "$round_data"
+    cp "$BASE_COMPOSE_FILE" "$COMPOSE_FILE"
+    sed -i "s|$DATA_DIR|$round_data|g" "$COMPOSE_FILE"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
+    : > "$LIVE_APP_LOG"
+    start_prompt_cache_log_reader
+    (
+      while docker inspect "${COMPOSE_PROJECT}-app-1" >/dev/null 2>&1; do
+        docker stats --no-stream --format '{{json .}}' "${COMPOSE_PROJECT}-app-1" >> "$STATS_LOG" 2>/dev/null || true
+        sleep 10
+      done
+    ) &
+    stats_pid=$!
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+    legacy_enabled=0
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py seed-history "$round_index" "$legacy_enabled" </dev/null >> "$LOAD_LOG"
+    if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py baseline-probe "$round_index" "$DURATION_SECONDS" </dev/null >> "$LOAD_LOG"
+    else
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py priority-yield-probe "$round_index" </dev/null >> "$LOAD_LOG"
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-input "$round_index" "$((DURATION_SECONDS * 2 / 5))" "$REQUEST_RATE" </dev/null >> "$LOAD_LOG"
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
+      printf '== restart app after draining proxy requests ==\n'
+      stop_prompt_cache_log_reader
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" restart app
+      start_prompt_cache_log_reader
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
+    fi
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-prompt-cache-control-round-$round_index.log" || true
+    stop_prompt_cache_log_reader
+    cp "$LIVE_APP_LOG" "$LOG_DIR/pressure-live-round-$round_index.log"
+    kill "$stats_pid" >/dev/null 2>&1 || true
+    wait "$stats_pid" >/dev/null 2>&1 || true
+    stats_pid=""
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans
+  done
+  tail -n 80 "$LOAD_LOG"
+  python3 - <<'PY' "$STATS_LOG"
+import json
+import pathlib
+import statistics
+import sys
+
+samples = []
+for line in pathlib.Path(sys.argv[1]).read_text().splitlines():
+    try:
+        row = json.loads(line)
+        samples.append(float(row['CPUPerc'].rstrip('%')))
+    except (KeyError, ValueError, json.JSONDecodeError):
+        continue
+if not samples:
+    raise SystemExit('prompt-cache-control captured no container resource samples')
+ordered = sorted(samples)
+print(json.dumps({
+    'phase': 'prompt-cache-control-resource-profile',
+    'samples': len(samples),
+    'cpu_average_percent': round(statistics.mean(samples), 2),
+    'cpu_p95_percent': round(ordered[min(len(ordered) - 1, int(len(ordered) * 0.95))], 2),
+    'cpu_max_percent': round(max(samples), 2),
+}))
+PY
+  printf '== prompt-cache-control testbox evidence ==\nmode=%s rounds=%s input_rate=%s logs=%s app_logs=%s stats=%s\n' \
+    "$PROMPT_CACHE_CONTROL_MODE" "$ROUNDS" "$REQUEST_RATE" "$LOAD_LOG" "$LOG_DIR" "$STATS_LOG"
+  printf 'candidate_sha=%s metadata=%s\n' "$GIT_SHA" "$LOG_DIR/run-metadata.json"
+elif [ "$SCENARIO" = "sustained" ] || [ "$SCENARIO" = "overhead" ] || [ "$SCENARIO" = "long-wait" ]; then
   load_command="$SCENARIO"
   docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py "$load_command" "$DURATION_SECONDS" "$ROUNDS" "$REQUEST_RATE" > "$LOAD_LOG" &
   load_pid=$!

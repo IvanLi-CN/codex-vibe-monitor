@@ -10,7 +10,7 @@
   },
   "durable_state": {
     "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization; pool_upstream_request_attempts also has an additive partial success lookup index.",
-    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, startup_backfill_progress with its durable enabled flag, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, and idx_pool_attempts_account_model_success.",
+    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, maintenance-database managed_tasks and startup_backfill_progress control/checkpoint rows, the additive maintenance_metadata prompt_cache_materialization_control_origin_v1 marker, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, and idx_pool_attempts_account_model_success. No table or column is added by the control-consistency repair. The trigger-dependency repair replaces existing working-set trigger definitions and adds only the prompt_cache_working_set_relevant_updates_v1 completion row in schema_refresh_migrations.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -67,13 +67,27 @@
         ],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "ddl-prompt-working-set-trigger-dependencies",
+        "description": "Replace existing Prompt live working-set triggers with an UPDATE OF dependency guard; commit DDL and the prompt_cache_working_set_relevant_updates_v1 completion marker atomically. Existing initialized projections receive no row rebuild, and an interrupted marker write rolls back all trigger changes for safe startup retry.",
+        "order": 6,
+        "observable": true,
+        "pauseable": false
       }
     ],
     "dml_changes": [
       {
+        "id": "dml-prompt-cache-control-origin",
+        "description": "Before task-registry seeding, record whether the prompt-cache managed task row already exists. Existing maintenance control remains authoritative; the legacy business enabled bit can seed the managed control once only when that row was absent.",
+        "order": 7,
+        "observable": true,
+        "pauseable": true
+      },
+      {
         "id": "dml-prompt-cache-conversation-identity-backfill",
         "description": "In the background identity_backfill phase, snapshot the maximum invocation ID and materialize distinct historical prompt-cache keys by keyset pages; after the snapshot scan, run uncursored missing-identity reconciliation and record the identity marker only after coverage is complete.",
-        "order": 6,
+        "order": 8,
         "depends_on": [
           "ddl-prompt-cache-conversation-master",
           "ddl-prompt-cache-conversation-migration-progress",
@@ -84,8 +98,8 @@
       },
       {
         "id": "dml-prompt-cache-conversation-statistics",
-        "description": "In the background stats_rebuild phase, refresh aggregate fields for conversation keys by 400-key logical pages split into adaptive 32..400-key micro-batches; each micro-batch uses one set-based aggregate writeback and commits identity ensure, aggregate refresh, queue clearing, and its durable cursor checkpoint in one transaction after identity coverage is complete.",
-        "order": 7,
+        "description": "After identity coverage is complete, stats_rebuild traverses conversation keys and stages bounded 256-invocation pages. Only a generation-consistent final page publishes an aggregate and clears that queue generation; the outer key cursor advances after all required statistics are complete.",
+        "order": 9,
         "depends_on": [
           "dml-prompt-cache-conversation-identity-backfill"
         ],
@@ -95,7 +109,7 @@
       {
         "id": "dml-prompt-cache-conversation-queue-drain",
         "description": "In the background queue_drain phase, refresh and clear durable mutation-queue keys only after successful aggregate refresh, then record the statistics freshness marker and complete phase when the queue is empty.",
-        "order": 8,
+        "order": 10,
         "depends_on": [
           "dml-prompt-cache-conversation-statistics",
           "ddl-prompt-cache-conversation-stats-refresh-queue"
@@ -113,22 +127,26 @@
       "ddl-prompt-cache-conversation-migration-progress",
       "ddl-prompt-cache-conversation-materialization-runs",
       "ddl-pool-attempt-success-route-index",
+      "ddl-prompt-working-set-trigger-dependencies",
+      "dml-prompt-cache-control-origin",
       "dml-prompt-cache-conversation-identity-backfill",
       "dml-prompt-cache-conversation-statistics",
       "dml-prompt-cache-conversation-queue-drain"
     ],
     "progress_signals": [
       "The prompt_cache_conversation_migration_progress row exposes the current phase, invocation snapshot boundary, keyset cursor, committed identity-key counter, and updated_at checkpoint; schema setup repairs counters for older complete rows.",
-      "The system prompt-cache materialization status surface exposes total keys, completed keys, progress, queue backlog, estimated remaining time, the latest 10 bounded run records, and a durable pause/resume control.",
+      "The system prompt-cache materialization status surface exposes total keys, completed keys, progress, queue backlog, estimated remaining time, the latest 10 bounded run records, and the maintenance-database pause/resume control; the legacy business-database enabled value is retained and can seed a newly created managed control once, but is ignored after initialization.",
+      "The maintenance_metadata prompt_cache_materialization_control_origin_v1 marker preserves an existing maintenance task control across upgrade and records whether one-time legacy initialization is applicable; older programs can ignore the additive metadata row.",
       "Structured startup-backfill logs expose phase, scanned, updated, completion, retry, failure, and defer status, together with micro-batch count, last/max batch size, accumulated batch time, and defer reason; failed prompt-cache records retain the durable phase checkpoint.",
       "Structured identity creation, collision retry, database recovery, statistics refresh, and retention release logs.",
       "The prompt_cache_conversations_stats_v2 marker identifies a completed aggregate refresh only when the prompt_cache_conversation_stats_refresh_queue is empty; its absence or a pending queue triggers a paged startup rebuild.",
-      "The latest-success route lookup index is additive, partial on status='success', timed during startup creation, and recreated idempotently after interruption; older readers continue to use the unchanged attempt rows."
+      "The latest-success route lookup index is additive, partial on status='success', timed during startup creation, and recreated idempotently after interruption; older readers continue to use the unchanged attempt rows.",
+      "Startup logs the committed working-set trigger refresh marker and elapsed time. Repeated startup skips this completed trigger-only upgrade; existing projection rows and unrelated migration markers remain unchanged."
     ],
     "pause_points": [
       "Schema installation stops after additive DDL and does not scan historical invocations, allowing HTTP readiness to continue.",
-      "The operator control disables the prompt-cache task at the next committed micro-batch boundary and wakes it from its durable cursor when re-enabled; it does not interrupt an active SQLite transaction.",
-      "Each 400-key logical page is split into adaptive 32..400-key transactions. A micro-batch runs to commit or explicit failure, and its phase cursor advances in that same transaction; after a committed adaptive batch a 10 ms scheduler window gives foreground readers a bounded opportunity before the next batch. Prompt-cache pressure defers the next boundary while process exit or failure repeats the latest idempotent micro-batch.",
+      "The operator control commits managed_tasks.enabled and its maintenance scheduler checkpoint together, then publishes the in-process generation. Disable stops new short SQL steps at the next boundary while an already registered step may finish; re-enable wakes from the durable business cursor.",
+      "Identity discovery commits adaptive 32..400-key identity batches with their cursor and counter. Statistics pages commit bounded staging progress separately; only complete aggregates advance the outer statistics cursor. A committed boundary may yield to priority or pause, and a process restart repeats only idempotent work. Completed pages and empty phase transitions use the remaining run budget; incomplete pages retain the 15-second follow-up.",
       "SQLite invocation mutation triggers enqueue affected prompt-cache keys and remove the freshness marker in the source transaction; startup recovery can rebuild aggregates and identities after a stopped release."
     ]
   },
@@ -143,12 +161,15 @@
       "required_test_evidence": [
         "Schema installation completes without scanning historical prompt-cache invocations.",
         "A bounded startup materialization creates identities, checkpoints committed pages, and reruns without duplicate identities.",
-        "Adaptive 32..400-key micro-batches keep identity, statistics, queue clearing, and cursor checkpoint work in committed transactions and yield only at boundaries.",
+        "Adaptive identity batches commit identities and their cursor together; bounded statistics pages retain staging progress, publish only complete generation-consistent aggregates, and yield only at committed boundaries.",
         "A stopped release or process restart resumes from the durable phase/cursor and converges to both markers with an empty queue.",
+        "Independent business and maintenance databases prove that an existing maintenance control wins when the legacy business enable bit disagrees, while a legacy-only database can seed a newly created managed control once; later execution follows only maintenance managed_tasks.enabled and never synchronizes the legacy bit.",
+        "A statistics key requiring multiple source pages retains committed staging progress, reports a typed defer reason, and resumes without advancing the outer cursor or publishing a premature freshness marker.",
         "An invocation payload update enqueues its prompt-cache key and startup recovery creates the missing identity before rebuilding aggregates.",
         "Aggregate reads return the existing unavailable contract while identity, statistics, or queue completeness is not satisfied.",
         "A cache miss recovers the next sequence from retained invocation IDs.",
-        "Retention releases orphan masters without a permanent ID blacklist."
+        "Retention releases orphan masters without a permanent ID blacklist.",
+        "The production terminal timing write does not recompute the live working set. Relevant mutations match a source rebuild; a failed completion-marker insertion rolls back legacy trigger replacement, and successful/repeated startup preserves live rows. Older service readers accept the unchanged tables and additive marker."
       ]
     }
   }

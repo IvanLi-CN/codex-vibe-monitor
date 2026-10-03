@@ -234,7 +234,23 @@ pub(crate) async fn run() -> Result<()> {
                                 "recovered incomplete managed task runs at startup"
                             );
                         }
-                        crate::maintenance_store::set_global(Arc::new(store.clone()));
+                        let task =
+                            crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
+                        let task_name = task.name();
+                        let task_suffix =
+                            crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+                                .expect("prompt-cache materialization has a managed task key");
+                        let task_key = format!("startup_backfill.{task_suffix}");
+                        match store
+                            .initialize_prompt_cache_materialization_control(&task_key, task_name)
+                            .await
+                        {
+                            Ok(_) => crate::maintenance_store::set_global(Arc::new(store.clone())),
+                            Err(error) => warn!(
+                                error = %error,
+                                "prompt-cache materialization control could not be initialized; maintenance control remains unavailable"
+                            ),
+                        }
                     }
                     Err(error) => {
                         warn!(error = %error, "incomplete managed task runs could not be recovered; keeping maintenance observation unavailable until the next startup retry");
@@ -1615,10 +1631,9 @@ async fn run_managed_task_once_with_observation(
         .fetch_one(&state.pool)
         .await
         .ok();
-        let prompt_cache_enabled =
-            crate::prompt_cache_conversation_materialization_enabled(&state.pool)
-                .await
-                .ok();
+        let prompt_cache_enabled = crate::maintenance_store::global()
+            .and_then(|store| store.prompt_cache_materialization_control.snapshot())
+            .map(|control| control.enabled);
         let prompt_cache_state = match (prompt_cache_enabled, prompt_cache_pending) {
             (Some(false), _) => ("unavailable", "materialization_disabled"),
             (Some(true), Some(pending)) if pending > 0 => {

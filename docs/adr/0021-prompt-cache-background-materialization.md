@@ -4,6 +4,10 @@
 
 Accepted
 
+The combined identity/statistics transaction boundary below is succeeded by
+[ADR 0027](0027-prompt-cache-materialization-step-boundaries.md). Ordered phases and read
+completeness remain active.
+
 ## Context
 
 The prompt-cache conversation master is derived from retained proxy invocations. Installing its
