@@ -33,6 +33,7 @@ class Run:
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
+        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds,"warmupSeconds":60},indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
         for name in ["metrics-token","read-token","grafana-admin-password"]:
             path=self.private/name;path.write_text(secrets.token_hex(32));path.chmod(0o640)
@@ -162,7 +163,8 @@ class Run:
                 app["volumes"][0]=str(directory)+":/srv/app/data"
                 self.compose_file.write_text(json.dumps(self.definition,indent=2))
                 self.compose("up","-d","app");self.wait_app()
-                self.client("load","--seconds","20","--rate",str(self.args.rate))
+                # Observe two complete 30s resource-sampler cycles before timing.
+                self.client("load","--seconds","60","--rate",str(self.args.rate))
                 before=self.cpu_usec()
                 result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
                 result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]

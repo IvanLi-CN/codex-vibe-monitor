@@ -127,9 +127,21 @@ pub(crate) fn prepare_hotpath(config: &ObservabilityConfig) {
         config.enabled && cfg!(feature = "hotpath"),
         Ordering::Relaxed,
     );
-    let settings = [
+    for (name, value) in hotpath_settings(config) {
+        // SAFETY: the executable calls this before constructing Tokio or a profiler guard.
+        unsafe {
+            env::set_var(name, value);
+        }
+    }
+}
+
+fn hotpath_settings(config: &ObservabilityConfig) -> [(&'static str, String); 13] {
+    [
         ("HOTPATH_ENTRIES_LIMIT", "100".to_string()),
         ("HOTPATH_LOGS_LIMIT", "1".to_string()),
+        // The SDK adds 19 ASCII bytes to truncated labels. 120 Unicode scalars
+        // plus that suffix fit the Prometheus 512-byte label limit even at 4 B/char.
+        ("HOTPATH_MAX_LOG_LEN", "120".to_string()),
         ("HOTPATH_SQL_RAW_LOGS", "false".to_string()),
         ("HOTPATH_METRICS_PORT", "6770".to_string()),
         ("HOTPATH_METRICS_SERVER_OFF", (!config.enabled).to_string()),
@@ -146,18 +158,38 @@ pub(crate) fn prepare_hotpath(config: &ObservabilityConfig) {
             "HOTPATH_PROMETHEUS_AUTH_TOKEN",
             config.scrape_token.as_deref().unwrap_or("").to_string(),
         ),
-    ];
-    for (name, value) in settings {
-        // SAFETY: the executable calls this before constructing Tokio or a profiler guard.
-        unsafe {
-            env::set_var(name, value);
-        }
-    }
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotpath_sql_label_budget_fits_prometheus_with_utf8_and_hash_suffix() {
+        let settings = hotpath_settings(&ObservabilityConfig::default());
+        let query_chars: usize = settings
+            .iter()
+            .find(|(name, _)| *name == "HOTPATH_MAX_LOG_LEN")
+            .expect("startup must bound SDK query labels")
+            .1
+            .parse()
+            .unwrap();
+        let hotpath_job = include_str!("../../ops/observability/prometheus.yml")
+            .split_once("- job_name: cvm-hotpath")
+            .unwrap()
+            .1;
+        let label_bytes: usize = hotpath_job
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("label_value_length_limit:"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // hotpath 0.28 appends three dots and the 16-digit normalized-query hash.
+        let suffix_bytes = "...0000000000000000".len();
+        assert!(query_chars * char::MAX.len_utf8() + suffix_bytes <= label_bytes);
+    }
 
     #[test]
     fn credentials_are_separate_and_never_serialized() {

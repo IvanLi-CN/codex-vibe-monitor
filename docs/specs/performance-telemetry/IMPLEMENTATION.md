@@ -21,6 +21,9 @@ hotpath 固定版本的 SQL worker 使用本地有界归一化缓存；相同语
 应用 runtime 镜像在 `/usr/local/share/licenses/hotpath/` 保留该许可证。
 SQL 归一化文本由整份报告的 1 MiB 上限约束，覆盖组合多个生成语句的启动触发器；
 报告仍受 100 行与 2 秒限制，其他字段保留更小的类型/长度边界。
+启动桥接将 hotpath 的 SQL 标签正文限制为 120 个 Unicode 字符；计入四字节
+字符与 SDK 的 19 字节唯一性后缀后，仍符合 Prometheus 的 512 字节标签值边界。
+该限制不截断只读 SQL 报告中的完整归一化 query。
 
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
@@ -67,6 +70,8 @@ WebSocket 终态补全回归启用独立 recorder，验证更丰富、更少及�
 速率探针中 20 req/s 出现积压，40 秒窗口约 66 秒才完成；5 req/s 的 200/200 请求
 在约 40 秒完成、平均约 0.24 核。因此完整 A/B 使用 5 req/s 的非饱和流量，
 同时检查完成窗口不积压，CPU/请求与 p95 的 5% 上限不变。
+A/B 每个开关状态先以同一负载预热 60 秒，覆盖两个完整的资源采样周期；
+速率、预热与测量时长保存在候选运行的 `run-config.json`，便于复现。
 容器采样的 perf ring-buffer 需要足够 memlock 预算和 IPC_LOCK，采样容器限定为 256 MiB；
 A/B 的每份合成数据副本给予应用固定 GID 写权限，避免无 capability 的应用将
 宿主复制出的文件误作只读库。监控停机场景已有 50/50 请求正常完成的运行证据，
