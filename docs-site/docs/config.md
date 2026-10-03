@@ -18,6 +18,10 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 | 应用监听地址   | `HTTP_BIND`                                             | 本地默认 `127.0.0.1:8080`；运行镜像默认 `0.0.0.0:8080` | 本地开发、容器部署或反向代理拓扑不同时              |
 | 数据库存放位置 | `DATABASE_PATH`                                         | `codex_vibe_monitor.db`                                | 想把 SQLite 和归档放到持久化卷时                    |
 | 性能指标库     | `PERFORMANCE_DATABASE_PATH`                             | 主库同目录的 `.performance.sqlite`                     | 想把可丢弃的聚合指标放到独立路径时                  |
+| 维护状态库     | `MAINTENANCE_DATABASE_PATH`                             | 主库同目录的 `.maintenance.sqlite`                     | 想把任务状态库单独放置时                            |
+| 原始 payload   | `PROXY_RAW_DIR`                                         | `proxy_raw_payloads`                                   | 想把代理 request/response 文件放到独立持久化卷时    |
+| 离线归档       | `ARCHIVE_DIR`                                           | `archives`                                             | 想把历史归档文件放到独立持久化卷时                  |
+| Xray runtime   | `XRAY_RUNTIME_DIR`                                      | `.codex/xray-forward`（相对进程工作目录）              | 想调整 Xray 状态与配置目录时                        |
 | 性能指标采集   | `PERFORMANCE_TELEMETRY_ENABLED`                         | `true`                                                 | A/B 或故障时关闭观测，不影响业务请求                |
 | 上游代理目标   | `OPENAI_UPSTREAM_BASE_URL`                              | OpenAI 官方默认地址                                    | 你接的是自建兼容上游或其他转发层时                  |
 | 账号池写能力   | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                   | 无                                                     | 只要你要新增账号、改账号或用 OAuth 登录，就必须配置 |
@@ -61,6 +65,17 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 
 这些参数控制在线明细、离线 archive 与后台 maintenance 行为。\
 如果你希望数据库体积可控、raw 文件不无限增长、归档路径能备份，就不要只停在“默认值也能跑”这个阶段。
+
+项目状态页的项目存储总体积会扫描 `DATABASE_PATH` 父目录，并纳入单独配置的外置存储。`PROXY_RAW_DIR` 保存代理 request/response payload，`ARCHIVE_DIR` 保存离线归档；二者相对路径都以主库父目录为锚点，使用绝对路径可以放到不同卷。目录在数据目录内时会自然包含在主目录扫描中，外置时会完整统计该目录，包括临时文件和未关联残留。外置的性能库、维护库只计数据库文件及 WAL/SHM/journal 侧文件，不会把同级无关文件纳入。所有路径最后按文件系统对象去重，因此重叠目录、别名和硬链接不会重复计入。
+
+要把 raw 与离线归档分别放到独立持久卷，可向服务进程传入绝对路径：
+
+```dotenv
+PROXY_RAW_DIR=/mnt/cvm/raw
+ARCHIVE_DIR=/mnt/cvm/archives
+```
+
+`PROXY_RAW_DIR` 用于代理 request/response 原始文件，`ARCHIVE_DIR` 用于离线归档；容器部署时还需把对应宿主机目录挂载到这些容器内路径。省略变量时分别使用 `proxy_raw_payloads` 和 `archives`，相对路径仍以主库父目录为基准。
 
 ## 代理运行时常见的补充参数
 

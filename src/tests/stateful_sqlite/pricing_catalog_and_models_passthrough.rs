@@ -519,6 +519,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),

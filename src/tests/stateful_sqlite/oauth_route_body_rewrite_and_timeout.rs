@@ -2655,9 +2655,9 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.request_timeout = Duration::from_millis(200);
     let http_clients = HttpClients::build(&config).expect("http clients");
-    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -2680,7 +2680,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         ),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
-        semaphore,
+        semaphore: Arc::new(Semaphore::new(config.max_parallel_polls)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(

@@ -1890,6 +1890,12 @@ pub(crate) async fn fetch_system_status(
     ))
 }
 
+pub(crate) async fn fetch_system_storage(
+    State(state): State<Arc<AppState>>,
+) -> Json<SystemStorageResponse> {
+    Json(get_system_storage_snapshot(state.as_ref()).await)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PromptCacheMaterializationControlRequest {

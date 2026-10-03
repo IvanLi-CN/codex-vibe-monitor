@@ -807,6 +807,7 @@ impl RuntimeProjectionHub {
 
 #[derive(Debug)]
 pub(crate) struct AppState {
+    pub(crate) system_storage: Arc<SystemStorageRuntime>,
     pub(crate) config: AppConfig,
     pub(crate) pool: Pool<Sqlite>,
     pub(crate) process_started_at_utc: DateTime<Utc>,

@@ -152,10 +152,11 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
     });
     let http_clients = HttpClients::build(&config).expect("build http clients");
     let (broadcaster, _) = broadcast::channel(8);
-    let proxy_raw_async_writer_limit = proxy_raw_async_writer_limit(&config);
     let raw_capture_root = config.resolved_proxy_raw_dir();
     let pool = test_pool().await;
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         config,
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -180,7 +181,6 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         shutdown: CancellationToken::new(),
         semaphore: Arc::new(Semaphore::new(4)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit)),
         raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(raw_capture_root)),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),

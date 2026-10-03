@@ -46,6 +46,18 @@ describe("demo runtime selection", () => {
     expect(sceneFromLocation(location)).toBe("runtime-pressure-accounting-error");
   });
 
+  it("keeps raw inventory preparation independent from storage scanning", () => {
+    const rawLocation = new URL(
+      "https://demo.invalid/#/system/status?demoScene=system-raw-inventory-preparing",
+    ) as unknown as Location;
+    const storageLocation = new URL(
+      "https://demo.invalid/#/system/status?demoScene=system-storage-preparing",
+    ) as unknown as Location;
+
+    expect(sceneFromLocation(rawLocation)).toBe("system-raw-inventory-preparing");
+    expect(sceneFromLocation(storageLocation)).toBe("system-storage-preparing");
+  });
+
   it("parses the mobile viewport wrapper state from hash query params", () => {
     const outerLocation = new URL(
       "https://demo.invalid/#/dashboard/invocations/demo-invocation-9002?demoScene=attention&demoViewport=mobile390",

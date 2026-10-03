@@ -119,6 +119,7 @@ export {
   fetchStats,
   fetchSummary,
   fetchSystemStatus,
+  fetchSystemStorage,
   fetchSystemTaskRuns,
   fetchTags,
   fetchTimeseries,

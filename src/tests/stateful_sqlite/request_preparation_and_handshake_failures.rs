@@ -114,9 +114,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.openai_proxy_handshake_timeout = Duration::from_millis(100);
     let http_clients = HttpClients::build(&config).expect("http clients");
-    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -139,7 +139,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         ),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
-        semaphore,
+        semaphore: Arc::new(Semaphore::new(config.max_parallel_polls)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
@@ -224,9 +224,9 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.openai_proxy_handshake_timeout = Duration::from_millis(100);
     let http_clients = HttpClients::build(&config).expect("http clients");
-    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
     let (broadcaster, _rx) = broadcast::channel(16);
     let state = Arc::new(AppState {
+        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
         config: config.clone(),
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
@@ -249,7 +249,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         ),
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
-        semaphore,
+        semaphore: Arc::new(Semaphore::new(config.max_parallel_polls)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config))),
         raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(

@@ -262,10 +262,11 @@ bun run worktree:setup -- --force
 | 变量                                                   | 作用                                                                                                                                |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
-| `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                   | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                                               |
+| `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                  | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                                            |
 | `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
-| `PERFORMANCE_DATABASE_PATH`                             | 独立性能指标 SQLite 路径；未配置时使用主库同目录的 `<主库名>.performance.sqlite`                                                     |
-| `PERFORMANCE_TELEMETRY_ENABLED`                        | 是否启用性能指标采集，默认 `true`；设为 `false` 只关闭观测，不影响业务请求                                                         |
+| `PERFORMANCE_DATABASE_PATH`                            | 独立性能指标 SQLite 路径；未配置时使用主库同目录的 `<主库名>.performance.sqlite`                                                    |
+| `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径；未配置时使用主库同目录的 `<主库名>.maintenance.sqlite`                                                    |
+| `PERFORMANCE_TELEMETRY_ENABLED`                        | 是否启用性能指标采集，默认 `true`；设为 `false` 只关闭观测，不影响业务请求                                                          |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
 | `OPENAI_PROXY_WEBSOCKET_ENABLED`                       | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |
@@ -275,7 +276,10 @@ bun run worktree:setup -- --force
 | `RETENTION_ENABLED`                                    | 是否启用后台保留任务                                                                                                                |
 | `ARCHIVE_DIR`                                          | 归档目录                                                                                                                            |
 | `PROXY_RAW_DIR`                                        | 原始 payload 落盘目录                                                                                                               |
+| `XRAY_RUNTIME_DIR`                                     | Xray runtime 状态与配置目录；默认 `.codex/xray-forward`                                                                             |
 | `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`                | 长期统计小时汇总保留天数，默认 400 天，低于 366 天时按 366 天处理；每日汇总永久保留                                                 |
+
+项目存储总体积按 `DATABASE_PATH` 父目录及单独配置的外置项目存储实测文件系统分配字节，并统一去重。`PROXY_RAW_DIR` 用于代理 request/response payload 落盘，`ARCHIVE_DIR` 用于离线归档；两者可以指向独立挂载卷。它们的相对路径以 `DATABASE_PATH` 父目录为基准，配置绝对路径即可外置。默认位于数据目录内时会由数据目录扫描覆盖；外置时完整计入目录内容，包括临时文件和未关联残留。性能库与维护库外置时只计数据库文件及 WAL/SHM/journal，不会扩展到父目录中的无关文件。
 
 更完整的部署与配置说明请直接看：
 
