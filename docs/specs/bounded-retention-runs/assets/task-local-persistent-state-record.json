@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Task-local monthly archive batches; no main database schema changes",
+    "release_unit_description": "Retention batch closure and optional task throughput metrics",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "Existing canonical monthly gzip SQLite, manifests, V2 Summary proof, raw links and immutable maintenance run JSON",
+    "storage_implementation": "Existing SQLite tables and canonical gzip SQLite files",
+    "source_compatibility_range": {
+      "from_program_versions": "Declared retention fixtures v2.71.45/v2.80.2 plus development baseline 162253ad; same-Minor compatibility verification pending",
+      "to_program_version": "Current PR candidate, version assigned after merge",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "Isolate old preparing/published prepared facts using existing quarantined state without resuming source IDs; retain manifests and raw ownership. Retire only grace-expired unowned artifacts.",
+        "order": 1,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-002",
+        "description": "Publish one task-local batch to the canonical monthly target and transform verified source rows in short transactions; failed live rows are reselected rather than resumed.",
+        "order": 2,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "dml-003",
+        "description": "Append optional throughput fields to immutable maintenance run details; missing historical fields stay unknown.",
+        "order": 3,
+        "depends_on": [
+          "dml-002"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "dml-001",
+      "dml-002",
+      "dml-003"
+    ],
+    "progress_signals": [
+      "Source rows committed by dataset/month",
+      "Batch rows, full-task service rate, arrival rate, multiple, timeout count, file preparation and lock wait",
+      "Existing manifests/proof/raw ownership and isolation state"
+    ],
+    "pause_points": [
+      "Before a new selected file batch",
+      "After any fully committed source microtransaction",
+      "Between task qualifications"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "A forward version verifies existing manifest/file replacement facts, discards abandoned task-local work, and reselects remaining live source rows. It does not resume old candidate IDs, temporary files, cursors or accumulators.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "No main business table/column/state-value additions",
+        "Existing monthly gzip/V2 snapshot and manifests readable by supported same-Minor reader",
+        "Old JSON response and old prepared state safely handled",
+        "Failed publication retains live rows/raw links and task work is removed",
+        "Repeated tasks rewrite the same canonical target without duplicate counts"
+      ]
+    },
+    "minor": {
+      "required_test_evidence": [
+        "public API remains compatible within the Major",
+        "candidate reads and writes supported earlier-Minor state",
+        "earlier-Minor programs are not required to read newly migrated state",
+        "a forward-repair version handles state left by a stopped faulty release"
+      ]
+    },
+    "major": {
+      "required_test_evidence": [
+        "current program upgrades and uses state from the immediately preceding Major",
+        "direct major skipping is rejected or routed through an explicit intermediate upgrade",
+        "a forward-repair version handles state left by a stopped faulty release"
+      ]
+    },
+    "completed_evidence": [],
+    "status": "pending-current-candidate"
+  }
+}

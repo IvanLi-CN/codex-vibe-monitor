@@ -493,7 +493,7 @@ async fn retention_recovery_persistence_failure_does_not_scan_orphan_raw_files()
 }
 
 #[tokio::test]
-async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_recovery_journal() {
+async fn retention_archive_finalization_failure_keeps_live_rows_and_reselects_without_journal() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-archive-recovery").await;
     let occurred_at = shanghai_local_days_ago(91, 10, 0, 0);
@@ -565,46 +565,26 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
         raw_path.exists(),
         "raw payload remains source-owned before publication"
     );
-    let (journal_state, journal_sha): (String, Option<String>) = sqlx::query_as(
-        r#"
-        SELECT state, artifact_sha256
-        FROM retention_prepared_archives
-        WHERE dataset = 'codex_invocations'
-        "#,
+    let journal_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM retention_prepared_archives")
+        .fetch_one(&pool)
+        .await
+        .expect("no task continuation journal");
+    assert_eq!(journal_count, 0);
+    let (published_path, status): (String, String) = sqlx::query_as(
+        "SELECT file_path,status FROM archive_batches WHERE dataset='codex_invocations'",
     )
     .fetch_one(&pool)
     .await
-    .expect("load prepared archive after rollback");
-    assert_eq!(journal_state, "published");
-    assert!(journal_sha.is_some());
-    let published_path: String = sqlx::query_scalar(
-        "SELECT file_path FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load published recovery artifact path");
+    .expect("existing manifest fact");
     assert!(Path::new(&published_path).is_file());
-
-    let published_recovery_summary =
-        run_data_retention_maintenance(&pool, &config, Some(false), None)
-            .await
-            .expect("retention should continue after valid published recovery reconciliation");
-    assert_eq!(published_recovery_summary.orphan_raw_files_removed, 0);
-    let published_reconciled_state: String = sqlx::query_scalar(
-        "SELECT state FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load published recovery journal state");
-    assert_eq!(published_reconciled_state, "published");
-    let fingerprint: String = sqlx::query_scalar(
-        "SELECT last_failure_fingerprint FROM retention_prepared_archives WHERE dataset = 'codex_invocations'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("load persisted sanitized failure fingerprint");
-    assert_eq!(fingerprint.len(), 16);
-    assert!(fingerprint.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_eq!(status, ARCHIVE_STATUS_MATERIALIZING);
+    let failed = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("structured task failure");
+    assert!(failed.fatal_error.is_some());
+    assert_eq!(failed.invocation_rows_archived, 0);
+    assert!(raw_path.exists());
+    let fingerprint = failed.fatal_error.expect("sanitized fatal result");
     for sensitive in [
         "retention-test-secret",
         "/private/retention-test/raw.bin",
@@ -613,17 +593,10 @@ async fn retention_archive_finalization_failure_keeps_live_rows_raw_files_and_re
     ] {
         assert!(!fingerprint.contains(sensitive));
     }
-
     sqlx::query("DROP TRIGGER retention_test_abort_archive_finalize")
         .execute(&pool)
         .await
         .expect("remove finalization failure trigger");
-    sqlx::query(
-        "UPDATE retention_prepared_archives SET next_retry_at = NULL WHERE dataset = 'codex_invocations'",
-    )
-    .execute(&pool)
-    .await
-    .expect("make the retained archive retry due");
     let recovered = run_data_retention_maintenance(&pool, &config, Some(false), None)
         .await
         .expect("retry published archive finalization after removing injected failure");
@@ -720,7 +693,10 @@ async fn retention_quarantines_invalid_publication_kind_instead_of_retrying() {
     .expect("load invalid publication kind journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+    assert_eq!(
+        last_failure_stage.as_deref(),
+        Some("task_local_reselection")
+    );
     let (failure_count, defer_reason): (i64, Option<String>) = sqlx::query_as(
         "SELECT consecutive_failure_count, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
     )
@@ -775,14 +751,17 @@ async fn retention_quarantines_missing_published_archive_instead_of_retrying() {
         .expect("load missing published archive journal");
     assert_eq!(state, "quarantined");
     assert_eq!(next_retry_at, None);
-    assert_eq!(last_failure_stage.as_deref(), Some("prepared_reconcile"));
+    assert_eq!(
+        last_failure_stage.as_deref(),
+        Some("task_local_reselection")
+    );
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn retention_pressure_defer_persists_prepared_retry_cursor() {
+async fn retention_pressure_defer_keeps_legacy_prepared_rows_unconsumed() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-prepared-pressure-cursor").await;
     sqlx::query(
@@ -819,7 +798,7 @@ async fn retention_pressure_defer_persists_prepared_retry_cursor() {
     let _busy_permit = pressure_gate
         .try_begin_background("retention_prepared_pressure_cursor")
         .expect("occupy the test background pressure slot");
-    crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
+    let summary = crate::maintenance::RETENTION_TEST_DB_PRESSURE_GATE
         .scope(
             pressure_gate,
             run_data_retention_maintenance(&pool, &config, Some(false), None),
@@ -827,17 +806,15 @@ async fn retention_pressure_defer_persists_prepared_retry_cursor() {
         .await
         .expect("pressure defer should keep independent retention stages alive");
 
-    let (next_retry_at, defer_reason): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT next_retry_at, defer_reason FROM retention_recovery_cursors WHERE scope = 'prepared_archives'",
+    assert!(summary.deferred);
+    assert_eq!(summary.invocation_rows_archived, 0);
+    let state: String = sqlx::query_scalar(
+        "SELECT state FROM retention_prepared_archives WHERE prepared_key='pressure-cursor'",
     )
     .fetch_one(&pool)
     .await
-    .expect("load durable prepared pressure cursor");
-    assert!(
-        next_retry_at.is_some(),
-        "pressure retry deadline must survive refresh"
-    );
-    assert_eq!(defer_reason.as_deref(), Some("sqlite_pressure"));
+    .expect("pressure does not consume old source IDs");
+    assert_eq!(state, "preparing");
 
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
@@ -888,7 +865,7 @@ async fn retention_finalization_rejects_source_content_changed_after_archive_cop
     assert!(
         error
             .to_string()
-            .contains("source identity verification failed")
+            .contains("source changed before conversion")
     );
     let source = sqlx::query(
         "SELECT payload FROM codex_invocations WHERE invoke_id = 'retention-source-content-identity'",
@@ -898,7 +875,7 @@ async fn retention_finalization_rejects_source_content_changed_after_archive_cop
     .expect("source row remains after verification rollback");
     assert_eq!(
         source.get::<Option<String>, _>("payload").as_deref(),
-        Some("{\"endpoint\":\"/v1/responses\"}")
+        Some("{\"error\":\"changed-during-finalization\"}")
     );
     assert!(
         raw_path.exists(),

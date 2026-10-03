@@ -4680,7 +4680,10 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
         .expect("query totals after retention");
 
     assert_eq!(summary.invocation_rows_archived, 2);
-    assert_eq!(summary.archive_batches_touched, 2);
+    let expected_months = [&old_occurred_at[..7], &old_failed_at[..7]]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(summary.archive_batches_touched, expected_months.len());
     assert_eq!(before.total_count, after.total_count);
     assert_eq!(before.success_count, after.success_count);
     assert_eq!(before.failure_count, after.failure_count);
@@ -4723,13 +4726,18 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     .fetch_all(&pool)
     .await
     .expect("load invocation archive batches");
-    assert_eq!(batches.len(), 2);
+    assert_eq!(batches.len(), expected_months.len());
     for (file_path, row_count, status, layout, summary_source_kind) in batches {
         let file_path = PathBuf::from(file_path);
         assert!(file_path.exists());
         assert!(row_count >= 1);
         assert_eq!(status, ARCHIVE_STATUS_COMPLETED);
-        assert_eq!(layout, ARCHIVE_LAYOUT_SEGMENT_V1);
+        assert_eq!(layout, ARCHIVE_LAYOUT_LEGACY_MONTH);
+        assert!(expected_months.iter().any(|month| {
+            file_path
+                == archive_batch_file_path(&config, "codex_invocations", month)
+                    .expect("canonical month target")
+        }));
         assert_eq!(
             summary_source_kind,
             SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
@@ -5036,7 +5044,7 @@ async fn ensure_schema_migrates_staged_archive_path_without_dropping_journal_row
 }
 
 #[tokio::test]
-async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() {
+async fn retention_task_local_isolation_skips_already_quarantined_prepared_rows() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-recovery-actionable-queue").await;
     let recovery_archive_root = config.archive_dir.join("codex_invocations");
@@ -5100,7 +5108,7 @@ async fn retention_reconciliation_skips_quarantines_until_due_work_is_reached() 
     .await
     .expect("load actionable journal state");
     assert_eq!(due_state.0, "quarantined");
-    assert_eq!(due_state.1.as_deref(), Some("prepared_reconcile"));
+    assert_eq!(due_state.1.as_deref(), Some("task_local_reselection"));
     let unexpired_quarantine_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM retention_prepared_archives WHERE state = 'quarantined' AND prepared_key LIKE 'unexpired-quarantine-%'",
     )

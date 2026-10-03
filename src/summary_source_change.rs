@@ -531,6 +531,119 @@ pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
     .fetch_all(&mut *connection)
     .await
     .context("load Summary Snapshot V2 final proof metadata")?;
+    store_summary_archive_snapshot_final_metadata_tx(
+        connection,
+        archive_batch_id,
+        manifest_sha256,
+        &pages,
+    )
+    .await
+}
+
+#[derive(Debug)]
+pub(crate) struct VerifiedSummaryArchiveSnapshot {
+    archive_batch_id: i64,
+    manifest_sha256: String,
+    pages: Vec<(i64, String, i64, String, String)>,
+    storage: Vec<(i64, i64, i64)>,
+}
+
+/// Validate payloads in a read snapshot, outside the maintenance writer permit. The token is
+/// opaque: only this validator can construct it. Publication compares all page identities in
+/// its short transaction so concurrent replacement invalidates the token.
+pub(crate) async fn prepare_verified_summary_archive_snapshot(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<VerifiedSummaryArchiveSnapshot> {
+    let mut transaction = pool.begin().await?;
+    if !summary_archive_snapshot_has_proof_tx(
+        transaction.as_mut(),
+        archive_batch_id,
+        manifest_sha256,
+    )
+    .await?
+    {
+        bail!("Summary Snapshot V2 semantic proof validation failed");
+    }
+    let pages = sqlx::query_as::<_, (i64, String, i64, String, String)>(
+        "SELECT page_index, snapshot_sha256, row_count, coverage_start, coverage_end \
+         FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 \
+         ORDER BY page_index ASC",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_all(&mut *transaction.as_mut())
+    .await
+    .context("load Summary Snapshot V2 final proof metadata")?;
+
+    let storage = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT page_index, format_version, payload_bytes FROM summary_archive_snapshot WHERE archive_batch_id=?1 AND manifest_sha256=?2 ORDER BY page_index"
+    ).bind(archive_batch_id).bind(manifest_sha256).fetch_all(transaction.as_mut()).await?;
+    transaction.rollback().await?;
+    Ok(VerifiedSummaryArchiveSnapshot {
+        archive_batch_id,
+        manifest_sha256: manifest_sha256.to_string(),
+        pages,
+        storage,
+    })
+}
+
+pub(crate) async fn store_verified_summary_archive_snapshot_tx(
+    connection: &mut SqliteConnection,
+    proof: &VerifiedSummaryArchiveSnapshot,
+) -> Result<()> {
+    let archive_batch_id = proof.archive_batch_id;
+    let manifest_sha256 = proof.manifest_sha256.as_str();
+    let pages = sqlx::query_as::<_, (i64, String, i64, String, String)>(
+        "SELECT page_index, snapshot_sha256, row_count, coverage_start, coverage_end \
+         FROM summary_archive_snapshot \
+         WHERE archive_batch_id = ?1 AND manifest_sha256 = ?2 \
+         ORDER BY page_index ASC",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .fetch_all(&mut *connection)
+    .await
+    .context("load Summary Snapshot V2 final proof metadata")?;
+
+    let storage = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT page_index, format_version, payload_bytes FROM summary_archive_snapshot WHERE archive_batch_id=?1 AND manifest_sha256=?2 ORDER BY page_index"
+    ).bind(archive_batch_id).bind(manifest_sha256).fetch_all(&mut *connection).await?;
+    if pages != proof.pages || storage != proof.storage {
+        bail!("Summary Snapshot pages changed after task-local validation");
+    }
+    let matches_manifest: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM archive_batches WHERE id=?1 AND sha256=?2
+         AND row_count=?3 AND coverage_start_at=?4 AND coverage_end_at=?5
+         AND status IN ('materializing','completed') AND summary_source_kind='authoritative')",
+    )
+    .bind(archive_batch_id)
+    .bind(manifest_sha256)
+    .bind(pages.iter().map(|page| page.2).sum::<i64>())
+    .bind(pages.first().map(|page| page.3.as_str()))
+    .bind(pages.last().map(|page| page.4.as_str()))
+    .fetch_one(&mut *connection)
+    .await?;
+    if !matches_manifest {
+        bail!("Summary Snapshot manifest changed after task-local validation");
+    }
+    store_summary_archive_snapshot_final_metadata_tx(
+        connection,
+        archive_batch_id,
+        manifest_sha256,
+        &pages,
+    )
+    .await
+}
+
+async fn store_summary_archive_snapshot_final_metadata_tx(
+    connection: &mut SqliteConnection,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+    pages: &[(i64, String, i64, String, String)],
+) -> Result<()> {
     if pages.is_empty()
         || pages.iter().enumerate().any(|(index, page)| {
             page.0 != i64::try_from(index).unwrap_or(-1)
@@ -542,7 +655,7 @@ pub(crate) async fn store_summary_archive_snapshot_v2_final_proof_tx(
         bail!("Summary Snapshot V2 final proof metadata is incomplete");
     }
     let mut semantic_hasher = Sha256::new();
-    for (page_index, snapshot_sha256, row_count, coverage_start, coverage_end) in &pages {
+    for (page_index, snapshot_sha256, row_count, coverage_start, coverage_end) in pages {
         semantic_hasher.update(page_index.to_le_bytes());
         semantic_hasher.update(snapshot_sha256.as_bytes());
         semantic_hasher.update(row_count.to_le_bytes());
@@ -925,6 +1038,36 @@ mod tests {
                 .await
                 .expect("snapshot proof")
         );
+        sqlx::query("UPDATE archive_batches SET summary_source_kind='authoritative' WHERE id=9")
+            .execute(&pool)
+            .await
+            .expect("authoritative manifest");
+        let token = prepare_verified_summary_archive_snapshot(&pool, 9, "manifest-9")
+            .await
+            .expect("read validation token");
+        sqlx::query(
+            "UPDATE summary_archive_snapshot SET format_version=3 WHERE archive_batch_id=9",
+        )
+        .execute(&pool)
+        .await
+        .expect("concurrent storage revision");
+        let mut transaction = pool.begin().await.expect("publication transaction");
+        assert!(
+            store_verified_summary_archive_snapshot_tx(transaction.as_mut(), &token)
+                .await
+                .is_err(),
+            "storage change must invalidate task-local validation"
+        );
+        transaction
+            .rollback()
+            .await
+            .expect("rollback refused publication");
+        sqlx::query(
+            "UPDATE summary_archive_snapshot SET format_version=2 WHERE archive_batch_id=9",
+        )
+        .execute(&pool)
+        .await
+        .expect("restore fixture version");
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof WHERE archive_batch_id = 9",

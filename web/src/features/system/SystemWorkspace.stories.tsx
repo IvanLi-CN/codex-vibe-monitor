@@ -471,6 +471,20 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
         elapsedMs: STORYBOOK_LATEST_RUN_DURATION,
         settlementMs: 4_000,
         budgetExhausted: STORYBOOK_LATEST_RUN_DURATION >= 60_000,
+        timeoutCount: STORYBOOK_LATEST_RUN_DURATION >= 60_000 ? 1 : 0,
+        archiveBatches: [
+          {
+            dataset: "codex_invocations",
+            monthKey: "2026-09",
+            batchRows: 1000,
+            committedRows: 1000,
+            committedRowsPerSecond: 15.625,
+            arrivalRowsPerSecond: 0.3472,
+            serviceRateMultiple: 45.0,
+            filePrepareMs: 3600,
+            lockWaitMs: 125,
+          },
+        ],
         waitReason: "prompt_cache_materialization_pending",
         promptCacheStats: {
           state: "unavailable",
@@ -532,6 +546,7 @@ function retentionTaskDetailForState(
         completion: "completed",
         coreCompletion: "completed",
         budgetExhausted: false,
+        timeoutCount: 0,
         waitReason: null,
         promptCacheStats: { state: "available", pending: 0, reason: "fresh" },
       },

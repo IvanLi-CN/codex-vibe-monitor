@@ -3607,13 +3607,42 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     updatedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1780),
     errorDetail: null,
     completion: taskKey === "retention_archive" ? "partial" : "completed",
-    coreCompletion: task.isManual ? null : "completed",
+    coreCompletion: task.isManual
+      ? null
+      : taskKey === "retention_archive"
+        ? "partial"
+        : "completed",
     details:
       taskKey === "retention_archive"
         ? {
             budgetMs: 60000,
             elapsedMs: latestRunDurationMs || 31_000,
             settlementMs: 2,
+            timeoutCount: 0,
+            archiveBatches: [
+              {
+                dataset: "codex_invocations",
+                monthKey: "2026-09",
+                batchRows: 1000,
+                committedRows: 1000,
+                committedRowsPerSecond: 32.26,
+                arrivalRowsPerSecond: 0.3472,
+                serviceRateMultiple: 92.9,
+                filePrepareMs: 3600,
+                lockWaitMs: 125,
+              },
+              {
+                dataset: "pool_upstream_request_attempts",
+                monthKey: "2026-09",
+                batchRows: 1000,
+                committedRows: 1000,
+                committedRowsPerSecond: 32.26,
+                arrivalRowsPerSecond: 0.4167,
+                serviceRateMultiple: 77.4,
+                filePrepareMs: 1800,
+                lockWaitMs: 80,
+              },
+            ],
             promptCacheStats: {
               state: "unavailable",
               pending: 3,

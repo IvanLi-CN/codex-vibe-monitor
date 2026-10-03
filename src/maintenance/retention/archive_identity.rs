@@ -5,6 +5,53 @@ use sqlx::{QueryBuilder, Row, Sqlite, SqliteConnection};
 
 use super::CODEX_INVOCATIONS_ARCHIVE_COLUMNS;
 
+pub(crate) async fn archive_table_source_identity_sha256(
+    connection: &mut SqliteConnection,
+    spec: super::ArchiveTableSpec,
+    schema: &str,
+    ids: &[i64],
+) -> Result<String> {
+    if ids.is_empty() || !matches!(schema, "main" | "archive_db") {
+        bail!("archive table identity requires source rows and a known schema");
+    }
+    let table = format!("{schema}.{}", spec.dataset);
+    let columns = spec.columns.split(", ").collect::<Vec<_>>();
+    let projection = columns
+        .iter()
+        .map(|column| format!("typeof({table}.{column}), CAST({table}.{column} AS BLOB)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let query = format!(
+        "SELECT {projection} FROM {table} WHERE id IN (SELECT value FROM json_each(?1)) ORDER BY id"
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-vibe-monitor/task-local-archive-identity/v1\0");
+    hash_identity_component(&mut hasher, spec.dataset.as_bytes());
+    hasher.update((ids.len() as u64).to_be_bytes());
+    let mut count = 0;
+    let mut rows = sqlx::query(&query)
+        .bind(serde_json::to_string(ids)?)
+        .fetch(&mut *connection);
+    while let Some(row) = rows.try_next().await? {
+        count += 1;
+        for (index, column) in columns.iter().enumerate() {
+            hash_identity_component(&mut hasher, column.as_bytes());
+            hash_identity_component(&mut hasher, row.try_get::<String, _>(2 * index)?.as_bytes());
+            match row.try_get::<Option<Vec<u8>>, _>(2 * index + 1)? {
+                Some(value) => {
+                    hasher.update([1]);
+                    hash_identity_component(&mut hasher, &value);
+                }
+                None => hasher.update([0]),
+            }
+        }
+    }
+    if count != ids.len() {
+        bail!("archive source row count changed before conversion");
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum InvocationArchiveIdentityDatabase {
     Main,

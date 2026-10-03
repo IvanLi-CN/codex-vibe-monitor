@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/ca
 import { Input } from "../../components/ui/input";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
+import { RetentionRunThroughput } from "../../features/system/RetentionRunThroughput";
 import {
   type CurrentTaskExecution,
   fetchManagedTask,
@@ -486,6 +487,9 @@ export default function SystemTaskDetailPage() {
                     </div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
+                  {taskKey === "retention_archive" ? (
+                    <RetentionRunThroughput details={run.details} />
+                  ) : null}
                 </div>
               ))
             )}

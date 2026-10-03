@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Duration as ChronoDuration, NaiveDateTime, TimeZone, Utc};
 use chrono_tz::Asia::Shanghai;
 use flate2::{Compression, read::GzDecoder, write::GzEncoder};
@@ -341,13 +341,15 @@ pub(crate) fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Res
     let output = fs::File::create(destination)
         .with_context(|| format!("failed to create temp archive db {}", destination.display()))?;
     let mut writer = io::BufWriter::new(output);
-    io::copy(&mut decoder, &mut writer).with_context(|| {
-        format!(
-            "failed to decompress archive batch {} into {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    copy_archive_bytes_with_task_deadline(&mut decoder, &mut writer, destination).with_context(
+        || {
+            format!(
+                "failed to decompress archive batch {} into {}",
+                source.display(),
+                destination.display()
+            )
+        },
+    )?;
     writer.flush()?;
     Ok(())
 }
@@ -359,18 +361,43 @@ pub(crate) fn deflate_sqlite_file_to_gzip(source: &Path, destination: &Path) -> 
         .with_context(|| format!("failed to create archive gzip {}", destination.display()))?;
     let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
     let mut reader = io::BufReader::new(input);
-    io::copy(&mut reader, &mut encoder).with_context(|| {
-        format!(
-            "failed to compress temp archive db {} into {}",
-            source.display(),
-            destination.display()
-        )
-    })?;
+    copy_archive_bytes_with_task_deadline(&mut reader, &mut encoder, destination).with_context(
+        || {
+            format!(
+                "failed to compress temp archive db {} into {}",
+                source.display(),
+                destination.display()
+            )
+        },
+    )?;
     let mut writer = encoder
         .finish()
         .context("failed to finish archive gzip writer")?;
     writer.flush()?;
     Ok(())
+}
+
+fn copy_archive_bytes_with_task_deadline(
+    reader: &mut impl io::Read,
+    writer: &mut impl io::Write,
+    destination: &Path,
+) -> Result<()> {
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        if super::retention::retention_run_budget_expired() {
+            bail!("retention archive file work exceeded the task timeout");
+        }
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            return Ok(());
+        }
+        if crate::filesystem_available_bytes(destination)
+            .is_some_and(|available| available < 64 * 1024 * 1024 + read as u64)
+        {
+            bail!("insufficient disk space for task-local archive file work");
+        }
+        writer.write_all(&buffer[..read])?;
+    }
 }
 
 pub(crate) fn sha256_hex_file(path: &Path) -> Result<String> {

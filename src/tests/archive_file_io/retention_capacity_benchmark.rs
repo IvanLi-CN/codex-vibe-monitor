@@ -188,7 +188,7 @@ async fn retention_capacity_fixed_cohort_candidate_benchmark() {
         )
         .await
         .expect("reopen retention capacity sqlite pool");
-    config.retention_batch_rows = 64;
+    config.retention_batch_rows = 1_000;
     config.invocation_success_full_days = config.invocation_max_days;
     config.proxy_raw_compression = RawCompressionCodec::None;
 

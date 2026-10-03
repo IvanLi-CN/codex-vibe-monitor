@@ -8696,13 +8696,7 @@ async fn pool_upstream_node_health_archive_backfill_reuses_stable_temp_db_when_b
         .await;
     }
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("run pool attempt retention");
-    assert_eq!(
-        summary.pool_upstream_request_attempt_rows_archived,
-        row_count
-    );
+    super::retention_task_local_batches::archive_two_attempt_tasks(&pool, &config, row_count).await;
 
     let archive_path = PathBuf::from(
         sqlx::query_scalar::<_, String>(
@@ -8901,13 +8895,7 @@ async fn pool_upstream_node_health_archive_backfill_refreshes_stale_temp_after_a
         .await;
     }
 
-    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("run initial pool attempt retention");
-    assert_eq!(
-        summary.pool_upstream_request_attempt_rows_archived,
-        row_count
-    );
+    super::retention_task_local_batches::archive_two_attempt_tasks(&pool, &config, row_count).await;
 
     let archive_path = PathBuf::from(
         sqlx::query_scalar::<_, String>(

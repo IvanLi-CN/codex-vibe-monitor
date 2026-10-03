@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
+  fetchManagedTask,
   fetchSystemStatus,
   fetchSystemStorage,
   normalizePoolRoutingSelectionAudit,
@@ -10,6 +11,61 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("retention throughput optional contract", () => {
+  it("keeps old runs unknown and normalizes valid zero without accepting malformed batches", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              task: {
+                taskKey: "retention_archive",
+                title: "Retention",
+                description: "Archive eligible records",
+                triggerMode: "interval",
+                enabled: true,
+                isManual: false,
+              },
+              recentRuns: [
+                { id: 1, startedAt: "2026-10-04T00:00:00Z", status: "success" },
+                {
+                  id: 2,
+                  startedAt: "2026-10-04T01:00:00Z",
+                  status: "success",
+                  details: {
+                    timeoutCount: 0,
+                    archiveBatches: [
+                      {
+                        dataset: "codex_invocations",
+                        monthKey: "2026-09",
+                        committedRows: 0,
+                        arrivalRowsPerSecond: 0,
+                        committedRowsPerSecond: "bad",
+                        serviceRateMultiple: -1,
+                      },
+                      { dataset: 12, monthKey: "2026-09" },
+                    ],
+                  },
+                },
+              ],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+    const detail = await fetchManagedTask("retention_archive");
+    expect(detail.recentRuns[0].details).toBeUndefined();
+    expect(detail.recentRuns[1].details?.archiveBatches).toHaveLength(1);
+    expect(detail.recentRuns[1].details?.archiveBatches?.[0]).toMatchObject({
+      committedRows: 0,
+      arrivalRowsPerSecond: 0,
+      committedRowsPerSecond: null,
+      serviceRateMultiple: null,
+    });
+  });
 });
 
 describe("releaseInvocationTimelineSnapshot", () => {

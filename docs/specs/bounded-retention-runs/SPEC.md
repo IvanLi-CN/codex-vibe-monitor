@@ -23,7 +23,7 @@
 
 ### REQ-BRR-002 — 运行预算
 
-单轮 MUST 从实际执行开始计入准入等待、SQL、文件处理和阶段切换，工作预算为 60 秒。预算耗尽 MUST 阻止新批次并保存安全检查点；已开始的提交只能在安全边界结束。耗尽后的收尾耗时 MUST 单独可观测，不得把 60 秒宣称为强制杀死事务的保证。
+60 秒 MUST 作为任务规划的设计预算，覆盖准入等待、SQL、文件准备、校验、阶段切换及安全收尾。规划须选择预期可在该预算内闭环的批次；执行阶段的超时只用于安全兜底，不得以频繁超时或正常降到单条批次作为稳态吞吐策略。已开始的提交只能在安全边界结束；收尾耗时及超时次数 MUST 可观测，不得把 60 秒宣称为强制杀死事务的保证。
 
 ### REQ-BRR-003 — 真正有界的 Prompt 查询
 
@@ -117,6 +117,18 @@
 
 图表 MUST 展示实际观测时间、缺测及观测新鲜度，不以最后一次运行成果充当待处理量，不把缺测或过期值画成真实零值。上游尝试、会话统计刷新、孤儿清理和 raw 文件的积压须按各自单位分别展示；缺少准确测量时明确未知，不能加入主图 invocation 总量。新字段缺失的旧接口与升级初期不足 7 天的数据必须可正常展示。
 
+### REQ-BRR-022 — 任务内批次闭环
+
+每次运行 MUST 从 live rows 选择本轮固定候选范围，按数据集及月份合并候选，并在本轮完成文件准备、摘要与源身份校验、manifest 发布和对应源记录转换。月份是目标文件分组键，不是任务完成边界；一个运行无需处理完整月份。正常负载且候选充足时文件批次至少 512 行，目标约 1000 行；配置上限、剩余尾批、空间或 payload 边界导致的小批须可解释，不能将 50 行当作吞吐目标。
+
+临时文件、未完成 prepared/staging、续作 cursor 或未完成累计值 MUST NOT 成为下一次运行的正常输入。成功、超时及失败出口清理本轮临时文件；进程中断留下的临时文件只可丢弃，不可继续写入。后续运行重新选择仍在线的源记录。已完成的独立批次保持成功事实，一个月份失败不得破坏其他已完成批次。旧版本的恢复状态须可安全读取或隔离，不新增主库列或表。
+
+### REQ-BRR-023 — 同月目标与服务速率
+
+同一数据集、同一月份 MUST 更新同一规范目标 `archives/<dataset>/<year>/<dataset>-YYYY-MM.sqlite.gz`；在事务外为本轮聚合候选准备文件，只进行一次目标发布。发布及源转换保持 Verified Archive、摘要完整性、raw 所有权和短事务准入规则；重复源身份不得重复计数。既有其他布局的归档保持读取兼容。
+
+普通负载容量的首轮工程目标为对应到达速率约 50 倍：以每日 30,000 条 invocation 和 1.2 倍上游尝试计，成功提交服务速率分别至少 17.4 和 20.8 rows/s。两个数据集 MUST 分别报告批次行数、服务速率、到达速率、倍率、文件准备耗时、锁等待及超时次数。该目标与固定百万级存量在 24 小时内消化、在线 p95/p99 不劣于基线共同实测；压缩写入或 staging 行数不能冒充成功提交。
+
 ## Verification
 
 ### VER-BRR-001
@@ -185,6 +197,12 @@
 - 方法：桌面和移动端 Demo/Storybook 及交互 fixture 展示下降/增长、零积压、缺测、过期、升级初期、统计待刷新、任务停用、自定义巡检和追赶重试；验证非整点 7 天查询与新字段缺失的旧响应。
 - 通过条件：最近 7 天相交小时桶完整，两项指标时间轴一致、单位可辨、实际观测时间可读；不连接或补零缺口；其他阶段分别计量，未知不画为零；默认/覆盖巡检与追赶区别清楚，桌面和移动端满足视觉比较与交互契约。
 
+### VER-BRR-012
+
+- covers: `REQ-BRR-002`, `REQ-BRR-004`, `REQ-BRR-022`, `REQ-BRR-023`
+- 方法：同月多次任务、迟到记录、重复身份、文件摘要失败、准入拒绝、超时及进程中断夹具；检查目标路径、源记录/raw link、临时文件和未新增主库结构。发布构建使用同种子百万级 cohort、30,000/day invocation、1.2 倍 attempt 与在线读写进行基线/候选各三次实测。
+- 通过条件：任务内闭环且下轮从 live rows 重选；失败未证明源行不转换，不依赖旧 staging/cursor；同月只使用规范目标且重复记录不计数；正常批次达到数百到约千行，两个数据集达到规定服务速率并在 24 小时内消化固定 cohort；超时/空间/锁等待可观测，在线 p95/p99 不劣于基线。
+
 ## Related ADRs
 
 - [Prompt-cache background materialization](../../adr/0021-prompt-cache-background-materialization.md)
@@ -192,6 +210,7 @@
 - [Task operations state outside the main database](../../adr/0023-task-operations-state-outside-main-database.md)
 - [Retention core and conversation derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
 - [Retention catch-up independent of inspection schedules](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
+- [Retention task-local batches and monthly archive targets](../../adr/0028-retention-task-local-batches-and-monthly-archive-targets.md)
 
 ## References
 
