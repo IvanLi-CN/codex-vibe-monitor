@@ -1,5 +1,7 @@
 use crate::*;
 
+const REPORT_MAX_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug)]
 pub(super) struct ReportLimiter {
     started: Instant,
@@ -63,7 +65,7 @@ pub(crate) async fn hotpath_report(
         Ok(Ok(rows)) => {
             let response = json!({"report":report,"collectedAt":format_utc_iso_millis(Utc::now()),"processStartedAt":format_utc_iso_millis(state.observability.started_at),"revision":option_env!("APP_GIT_REVISION").unwrap_or("unknown"),"functionSamplingRate":0.1,"rows":rows});
             match serde_json::to_vec(&response) {
-                Ok(bytes) if bytes.len() <= 1024 * 1024 => {
+                Ok(bytes) if bytes.len() <= REPORT_MAX_BYTES => {
                     ([(header::CONTENT_TYPE, "application/json")], bytes).into_response()
                 }
                 _ => unavailable(),
@@ -99,7 +101,7 @@ async fn read_report(path: &str) -> Result<Vec<serde_json::Value>> {
     let mut bytes = Vec::new();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
-        if bytes.len() + chunk.len() > 1024 * 1024 {
+        if bytes.len() + chunk.len() > REPORT_MAX_BYTES {
             bail!("profiler response exceeds limit");
         }
         bytes.extend_from_slice(&chunk);
@@ -223,15 +225,17 @@ fn sanitize_report(path: &str, value: &serde_json::Value) -> Result<Vec<serde_js
                 _ => {
                     let limit = match field {
                         "avg" | "total" => 64,
-                        // Startup trigger statements exceed 4 KiB after normalization.
-                        // The raw and serialized whole reports retain the 1 MiB cap.
-                        "query" => 16 * 1024,
+                        // Generated triggers combine multiple long statements. Bound
+                        // them by the whole report, rather than rejecting valid SQL.
+                        "query" => REPORT_MAX_BYTES,
                         _ => 4096,
                     };
                     let text = v
                         .as_str()
-                        .filter(|text| text.len() <= limit)
-                        .context("invalid profiler text field")?;
+                        .with_context(|| format!("invalid profiler text type: {field}"))?;
+                    if text.len() > limit {
+                        bail!("profiler text limit exceeded: {field}");
+                    }
                     safe.insert(field.into(), json!(text));
                 }
             }
@@ -286,11 +290,13 @@ mod tests {
 
     #[test]
     fn sql_report_contract_uses_hotpath_serializer_shape() {
-        let query = crate::observability::hotpath_sql_normalization::normalize(
-            &prompt_cache_working_set_live_refresh_sql_for_key("NEW.prompt_cache_key"),
-        );
+        let statement = prompt_cache_working_set_live_refresh_sql_for_key("NEW.prompt_cache_key");
+        // Trigger refreshes compose several of the real generated statements.
+        let query = crate::observability::hotpath_sql_normalization::normalize(&format!(
+            "CREATE TRIGGER fixture AFTER UPDATE ON codex_invocations BEGIN {statement}; {statement}; {statement}; END"
+        ));
         assert!(
-            query.len() > 4096,
+            query.len() > 16 * 1024,
             "exercise the actual long startup statement"
         );
         let row = serde_json::to_value(hotpath::json::JsonSqlEntry {
@@ -319,7 +325,7 @@ mod tests {
         for (field, value) in [
             ("count", json!("1")),
             ("avg", json!(2)),
-            ("query", json!("x".repeat(16 * 1024 + 1))),
+            ("query", json!("x".repeat(REPORT_MAX_BYTES + 1))),
             ("percentiles", json!({"p95":{"secret":1}})),
         ] {
             let mut invalid = row.clone();

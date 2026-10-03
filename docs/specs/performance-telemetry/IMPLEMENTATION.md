@@ -19,8 +19,8 @@ hotpath 固定版本的 SQL worker 使用本地有界归一化缓存；相同语
 第三方来源摘要与两处补丁说明在 `vendor/`，缓存测试读取实际生产补丁文件。
 源快照保留原 crate 摘要，并从同一 VCS commit 补齐公开包遗漏的 MIT 许可证。
 应用 runtime 镜像在 `/usr/local/share/licenses/hotpath/` 保留该许可证。
-SQL 报告接纳最长 16 KiB 的归一化 query，以覆盖实际启动触发器 SQL；报告整体
-仍受 1 MiB、100 行与 2 秒限制，其他字段保留更小的类型/长度边界。
+SQL 归一化文本由整份报告的 1 MiB 上限约束，覆盖组合多个生成语句的启动触发器；
+报告仍受 100 行与 2 秒限制，其他字段保留更小的类型/长度边界。
 
 旧 collector/writer/rollup、性能 SQLite 模块、配置和图表已移除。旧 API 仅静态 410；
 任务旧 performance 摘要移除，业务主库、任务库、TerminalJournal、raw/archive 与
@@ -46,7 +46,7 @@ CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 
 ## Validation
 
 已通过的迭代验证：Rust all-targets/all-features check/clippy、对齐主线后的三分桶
-共 2936 项后端回归；Web 全量单测 1745 项（6 项跳过）；
+共 2951 项后端回归；Web 全量单测 1745 项（6 项跳过）；
 Web 类型/lint/build；18 项退役/CPU/CLI 工具回归；7 项 recording rules 和仓库合同检查。
 已对齐包含任务执行模块拆分的新主线。四张 mock UI 证据已展示、确认并落盘；
 对齐主线后两个 Storybook 文件的 61 项用例通过，相关 E2E 在构建后的 mock demo 上 10 项全部通过。
@@ -54,7 +54,8 @@ Web 类型/lint/build；18 项退役/CPU/CLI 工具回归；7 项 recording rule
 WebSocket 终态补全回归启用独立 recorder，验证更丰富、更少及无关的重复终态均不重计 invocation。
 请求体超时夹具在实际 body 读取时启动延迟，避免 admission 期间提前入队；
 启动健康检查在计时外构造无代理本地客户端，隔离宿主代理环境与客户端冷启动。
-这两项定向回归已通过；当前候选仍必须通过完整三分桶与 Rust 静态门禁。
+这两项定向回归已通过，包含归一化缓存补丁的完整三分桶与 Rust 静态门禁也已通过。
+报告适配的后续修复仍须完成对应定向回归与静态检查。
 
 新候选仍须完成当前 SHA 绑定的受控 Linux Compose、HTTPS 鉴权、原实例 CPU attach
 与默认观测 A/B。采样权限探针能保存 profile，不等于真实应用符号验收通过。
