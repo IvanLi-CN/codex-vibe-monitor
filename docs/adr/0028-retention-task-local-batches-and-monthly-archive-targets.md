@@ -25,6 +25,7 @@ Online writes must also avoid historical-key scans in the synchronous short work
 - A single run should process many rows and may update several monthly targets, but it is not required to finish an entire calendar month.
 - The writer must amortize monthly-file preparation across the rows selected in the current run; one-row rewrites are a defect signal.
 - A timeout leaves the current incomplete batch uncommitted and its temporary files removed. Completed batches remain final facts.
+- A kernel lock on task work identifies its live owner even when a container reuses the same PID. Abandoned work is discarded before disk preflight; a short nonblocking directory fence protects work creation and cleanup without spanning file preparation.
 - Capacity validation must report committed rows per second, arrival rate, timeout frequency, file I/O, lock waits, and online p95/p99 separately for each dataset.
 
 ## References

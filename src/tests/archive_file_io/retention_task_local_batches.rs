@@ -431,6 +431,16 @@ async fn retention_task_local_low_disk_space_keeps_live_sources() {
     config.retention_batch_rows = 1_000;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
     seed_task_batch(&pool, &occurred_at, 0, 1_000).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month).expect("target");
+    fs::create_dir_all(target.parent().expect("archive parent")).expect("archive parent");
+    let abandoned = PathBuf::from(format!(
+        "{}.task-{}-1-0.sqlite",
+        target.display(),
+        std::process::id()
+    ));
+    fs::write(&abandoned, b"abandoned work on a constrained filesystem")
+        .expect("abandoned fixture");
     let result = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
         .await
         .expect("low disk admission is a safe defer");

@@ -709,6 +709,9 @@ async fn archive_rows_into_month_batch_with_snapshots(
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
     }
 
+    // Interrupted work must release disk space even when preflight would otherwise refuse
+    // to start a new archive batch. Contents are discarded, never used as a continuation.
+    super::archive_task_work::discard_abandoned_task_work(&final_path)?;
     if !super::super::retention::archive_file_can_start(pool, spec, &final_path, ids).await? {
         return Err(super::super::retention::retention_write_deferred(
             "archive_batch_planning",
@@ -716,9 +719,10 @@ async fn archive_rows_into_month_batch_with_snapshots(
     }
 
     let suffix = retention_temp_suffix();
-    discard_dead_task_work_files(&final_path)?;
     let work_path = PathBuf::from(format!("{}.task-{}.sqlite", final_path.display(), suffix));
     let temp_gzip_path = PathBuf::from(format!("{}.task-{}.tmp", final_path.display(), suffix));
+    let _work_owner_file =
+        super::archive_task_work::create_task_work_file(&final_path, &work_path)?;
     // Drop also runs when the caller's timeout cancels this future. Never hand unfinished
     // work files to a later retention run.
     let _work_cleanup = TempSqliteCleanup(work_path.clone());
@@ -762,9 +766,6 @@ async fn archive_rows_into_month_batch_with_snapshots(
         }
     }
 
-    if work_path.exists() {
-        let _ = fs::remove_file(&work_path);
-    }
     if temp_gzip_path.exists() {
         let _ = fs::remove_file(&temp_gzip_path);
     }
@@ -1053,52 +1054,6 @@ async fn prepare_task_month_snapshot_pages(
     }.await;
     archive_pool.close().await;
     result
-}
-
-fn discard_dead_task_work_files(final_path: &Path) -> Result<()> {
-    let Some(parent) = final_path.parent() else {
-        return Ok(());
-    };
-    let Some(name) = final_path.file_name().and_then(|value| value.to_str()) else {
-        return Ok(());
-    };
-    let prefix = format!("{name}.task-");
-    for entry in fs::read_dir(parent)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_file() {
-            continue;
-        }
-        let name = entry.file_name();
-        let Some(suffix) = name.to_str().and_then(|name| name.strip_prefix(&prefix)) else {
-            continue;
-        };
-        let Some(pid) = suffix
-            .split('-')
-            .next()
-            .and_then(|value| value.parse::<i32>().ok())
-            .filter(|pid| *pid > 0)
-        else {
-            continue;
-        };
-        let owned_extension = [
-            ".sqlite",
-            ".tmp",
-            ".sqlite-journal",
-            ".sqlite-wal",
-            ".sqlite-shm",
-        ]
-        .iter()
-        .any(|extension| suffix.ends_with(extension));
-        #[cfg(unix)]
-        let owner_gone = unsafe { libc::kill(pid, 0) } == -1
-            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
-        #[cfg(not(unix))]
-        let owner_gone = false;
-        if owned_extension && owner_gone {
-            fs::remove_file(entry.path()).context("discard abandoned task-local archive work")?;
-        }
-    }
-    Ok(())
 }
 
 async fn clear_legacy_archive_replacement_journal(

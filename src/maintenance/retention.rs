@@ -368,6 +368,17 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
     retention_file_lock(path, libc::LOCK_EX, retention_archive_locks_are_try_only())
 }
 
+#[cfg(unix)]
+pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    match retention_file_lock(path, libc::LOCK_EX, true) {
+        Err(error) if error.to_string() == "archive directory lock busy" => {
+            retention_record_defer("archive_work_cleanup", "archive_directory_lock_busy");
+            Err(retention_write_deferred("archive_work_cleanup"))
+        }
+        result => result,
+    }
+}
+
 pub(crate) fn retention_archive_parent_identity(path: &Path) -> Option<String> {
     let parent = path.parent()?;
     let metadata = fs::metadata(parent).ok()?;
@@ -404,6 +415,11 @@ impl RetentionArchiveFileLock {
 #[cfg(not(unix))]
 pub(crate) fn retention_archive_file_lock(_path: &Path) -> Result<RetentionArchiveFileLock> {
     Ok(RetentionArchiveFileLock)
+}
+
+#[cfg(not(unix))]
+pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    retention_archive_file_lock(path)
 }
 
 pub(crate) fn acquire_retention_raw_write_fence(

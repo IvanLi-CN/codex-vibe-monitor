@@ -12,6 +12,8 @@ mod archive_hourly_rollups;
 mod archive_manifest;
 #[path = "archive/quota_compaction.rs"]
 mod archive_quota_compaction;
+#[path = "archive/task_work.rs"]
+mod archive_task_work;
 #[path = "archive/writers.rs"]
 mod archive_writers;
 
