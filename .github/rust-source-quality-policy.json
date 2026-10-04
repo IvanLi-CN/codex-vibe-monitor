@@ -219,7 +219,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
       "role": "test_helper",
-      "line_budget": 4474,
+      "line_budget": 4478,
       "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
     },
     {
