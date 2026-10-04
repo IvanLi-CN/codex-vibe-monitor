@@ -306,6 +306,7 @@ MOCK_SCRIPT="$REMOTE_RUN/.codex-performance-mock.py"
 LOADGEN_SCRIPT="$REMOTE_RUN/.codex-performance-loadgen.py"
 CONTROL_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-control-loadgen.py"
 CHECKPOINT_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-checkpoint-loadgen.py"
+RANGE_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/invocation-range-acceptance.py"
 BASE_COMPOSE_FILE="$REMOTE_RUN/.codex-performance.compose.base.yaml"
 OLD_READER_OVERRIDE="$REMOTE_RUN/.codex-old-reader.compose.yaml"
 DATA_DIR="$REMOTE_RUN/data"
@@ -323,6 +324,9 @@ APP_RUST_LOG=warn
 if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]]; then
   APP_RUST_LOG=info
 fi
+if [[ "$SCENARIO" = "long-wait" || "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]]; then
+  APP_RUST_LOG="$APP_RUST_LOG,codex_vibe_monitor::prompt_cache_conversations::invocation_ranges=debug"
+fi
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
@@ -336,7 +340,7 @@ from datetime import datetime, timezone
 
 scenario_sources = [
     pathlib.Path(os.environ["REMOTE_WORKSPACE"]) / "scripts" / name
-    for name in ("shared-testbox-performance-acceptance", "prompt-cache-control-loadgen.py", "prompt-cache-checkpoint-loadgen.py")
+    for name in ("shared-testbox-performance-acceptance", "prompt-cache-control-loadgen.py", "prompt-cache-checkpoint-loadgen.py", "invocation-range-acceptance.py")
 ]
 scenario_digest = hashlib.sha256(b"".join(path.read_bytes() for path in scenario_sources)).hexdigest()
 metadata = {
@@ -499,6 +503,7 @@ import os
 import queue
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -1037,6 +1042,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
 
 def run_long_wait(duration_seconds, rounds, request_rate):
     seed()
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'install'], check=True)
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'probe'], check=True)
     for round_index in range(1, rounds + 1):
         run_long_wait_round(round_index, duration_seconds, request_rate)
     print(json.dumps({
@@ -1344,6 +1351,7 @@ services:
       - "$LOADGEN_SCRIPT:/work/loadgen.py:ro"
       - "$CONTROL_LOADGEN_SCRIPT:/work/prompt-cache-control-loadgen.py:ro"
       - "$CHECKPOINT_LOADGEN_SCRIPT:/work/prompt-cache-checkpoint-loadgen.py:ro"
+      - "$RANGE_LOADGEN_SCRIPT:/work/invocation-range-acceptance.py:ro"
       - "$DATA_DIR:/work/data"
 YAML
 
@@ -1416,6 +1424,9 @@ if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkp
     ) &
     stats_pid=$!
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+    if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py install </dev/null >> "$LOAD_LOG"
+    fi
     if [ "$SCENARIO" = "prompt-cache-checkpoint" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py seed-history "$round_index" </dev/null >> "$LOAD_LOG"
       if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ] && [ "$round_index" -eq 1 ]; then
@@ -1458,6 +1469,9 @@ YAML
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
       fi
+    fi
+    if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py verify </dev/null >> "$LOAD_LOG"
     fi
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-$SCENARIO-round-$round_index.log" || true
     stop_prompt_cache_log_reader
@@ -1512,6 +1526,14 @@ elif [ "$SCENARIO" = "sustained" ] || [ "$SCENARIO" = "overhead" ] || [ "$SCENAR
   if [ "$load_status" -ne 0 ]; then
     echo "sustained workload failed with status $load_status" >&2
     exit "$load_status"
+  fi
+  if [ "$SCENARIO" = "long-wait" ]; then
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py snapshot </dev/null >> "$LOAD_LOG"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" kill -s SIGKILL app
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" start app
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py recover </dev/null >> "$LOAD_LOG"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py verify </dev/null >> "$LOAD_LOG"
   fi
   printf '== wait for telemetry flush ==\n'
   sleep 70
