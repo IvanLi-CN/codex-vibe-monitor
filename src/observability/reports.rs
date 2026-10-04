@@ -32,7 +32,7 @@ pub(crate) async fn observability_capabilities(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     Json(
-        json!({"enabled":state.observability.enabled,"state":if !state.observability.enabled {"disabled"} else if state.observability.degraded.load(Ordering::Relaxed) {"degraded"} else {"enabled"},"grafanaPublicUrl":state.config.observability.grafana_public_url,"grafanaConnectivity":"unknown","hotpath":cfg!(feature="hotpath"),"dashboards":["cvm-overview","cvm-proxy","cvm-sqlite","cvm-runtime","cvm-web"],"datasourceUid":"cvm-prometheus","variables":["service","environment","instance","task_key"]}),
+        json!({"enabled":state.observability.enabled,"state":state.observability.state(),"grafanaPublicUrl":state.config.observability.grafana_public_url,"grafanaConnectivity":"unknown","hotpath":cfg!(feature="hotpath"),"dashboards":["cvm-overview","cvm-proxy","cvm-sqlite","cvm-runtime","cvm-web"],"datasourceUid":"cvm-prometheus","variables":["service","environment","instance","task_key"]}),
     )
 }
 pub(crate) async fn hotpath_report(
@@ -316,6 +316,34 @@ mod tests {
         assert_eq!(rows[0]["query"], query);
         assert_eq!(rows[0]["count"], 3);
         assert_eq!(rows[0]["percentiles"]["p95"], "1ms");
+    }
+
+    #[test]
+    fn sql_report_serializer_preserves_only_redacted_sqlite_templates() {
+        let query = crate::observability::hotpath_sql_normalization::normalize(
+            "SELECT \"private-value\", 'private-value', 0xCAFE, .125e+2 FROM t /* private-value */",
+        );
+        let row = serde_json::to_value(hotpath::json::JsonSqlEntry {
+            id: 1,
+            query,
+            source: None,
+            route: None,
+            count: 3,
+            avg: "1ms".into(),
+            total: "3ms".into(),
+            percent_total: "100%".into(),
+            percentiles: HashMap::from([("p95".into(), "1ms".into())]),
+            location: None,
+        })
+        .unwrap();
+        let rows = sanitize_report("sql", &json!({"data": [row]})).unwrap();
+        assert_eq!(rows[0]["query"], "SELECT ?, ?, ?, ? FROM t");
+        assert_eq!(rows[0]["count"], 3);
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("private-value")
+        );
     }
 
     #[test]

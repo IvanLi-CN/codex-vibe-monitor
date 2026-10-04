@@ -2,7 +2,7 @@
 //! statement into one bucket using cheap regex substitutions (no SQL parser).
 //!
 //! Transformations, applied in order:
-//! - single-quoted string literals -> `?`
+//! - single/double-quoted text -> `?`; SQL comments -> whitespace
 //! - PostgreSQL positional placeholders (`$1`, `$2`, ...) -> `?`
 //! - SQLite numbered placeholders (`?1`, `?2`, ...) -> `?`
 //! - numeric literals -> `?`
@@ -14,7 +14,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, LazyLock};
 
 // Account for both raw and normalized text. Oversized statements still run through
-// the original normalizer, but cannot occupy this cache or evict its useful entries.
+// the uncached normalizer, but cannot occupy this cache or evict its useful entries.
 const CACHE_ENTRIES: usize = 256;
 const CACHE_BYTES: usize = 2 * 1024 * 1024;
 const CACHE_ENTRY_BYTES: usize = 64 * 1024;
@@ -51,8 +51,14 @@ impl Cache {
     }
 }
 
-// Single-quoted literal, with '' as an escaped quote inside.
-static STRING_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"'(?:[^']|'')*'").unwrap());
+// SQLite can interpret double-quoted text as a literal, depending on schema and
+// connection options. Conservatively redact both quoted forms, including doubled
+// quotes, before exporting a template. Match comments in the same pass so comment
+// markers inside a literal cannot expose its tail. Incomplete text is fail-closed.
+static TEXT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"'(?:[^']|'')*(?:'|$)|"(?:[^"]|"")*(?:"|$)|(?s:/\*.*?(?:\*/|$))|--[^\r\n]*"#)
+        .unwrap()
+});
 
 static PG_PLACEHOLDER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\d+\b").unwrap());
 
@@ -63,7 +69,12 @@ static NUMBERED_PLACEHOLDER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"
 // Numeric candidates (int/float); identifier boundaries are checked in
 // `replace_numbers` because regex-lite's `\b` is ASCII-only and would split
 // `café1` into `café` + `1`.
-static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d+(?:\.\d+)?").unwrap());
+static NUMBER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)(?:0x[0-9a-f_]+|(?:[0-9][0-9_]*(?:\.[0-9_]*)?|\.[0-9][0-9_]*)(?:e[+-]?[0-9_]+)?)",
+    )
+    .unwrap()
+});
 
 static IN_LIST_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bIN\s*\(\s*\?(?:\s*,\s*\?)*\s*\)").unwrap());
@@ -72,7 +83,14 @@ static WHITESPACE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwr
 
 /// Normalize a raw SQL string into a stable bucket key.
 pub(crate) fn normalize(sql: &str) -> String {
-    let s = STRING_RE.replace_all(sql, "?");
+    let s = TEXT_RE.replace_all(sql, |capture: &regex_lite::Captures<'_>| {
+        let text = capture.get(0).unwrap().as_str();
+        if text.starts_with("--") || text.starts_with("/*") {
+            " "
+        } else {
+            "?"
+        }
+    });
     let s = PG_PLACEHOLDER_RE.replace_all(&s, "?");
     let s = NUMBERED_PLACEHOLDER_RE.replace_all(&s, "?");
     let s = replace_numbers(&s);
@@ -252,14 +270,47 @@ mod tests {
     }
 
     #[test]
-    fn keeps_digits_after_combining_marks() {
+    fn keeps_digits_after_combining_marks_in_unquoted_identifiers() {
         // Decomposed form: `e` followed by U+0301 COMBINING ACUTE ACCENT.
-        let decomposed = "SELECT \"cafe\u{301}1\" FROM t";
+        let decomposed = "SELECT cafe\u{301}1 FROM t";
         assert_eq!(normalize(decomposed), decomposed);
         assert_ne!(
             normalize(decomposed),
-            normalize("SELECT \"cafe\u{301}2\" FROM t"),
+            normalize("SELECT cafe\u{301}2 FROM t"),
         );
+    }
+
+    #[test]
+    fn sqlite_export_templates_redact_ambiguous_quotes_comments_and_numeric_forms() {
+        let query = "SELECT \"private \"\" value\", 'private '' value', x'ABCD', 0xDEAD, -12.5e+3, .125, 1_234; -- private-token\n/* private-token */SELECT café1 FROM t1 WHERE id IN (1, 42)";
+        assert_eq!(
+            normalize(query),
+            "SELECT ?, ?, x?, ?, -?, ?, ?; SELECT café1 FROM t1 WHERE id IN (?)"
+        );
+        assert_eq!(normalize("SELECT \"private-value\""), "SELECT ?");
+        assert_eq!(
+            normalize("SELECT \"cafe\u{301}1\" FROM t"),
+            "SELECT ? FROM t"
+        );
+        assert_eq!(
+            normalize("SELECT '--private-value' /* \"secret\" */"),
+            "SELECT ?"
+        );
+        assert_eq!(
+            normalize("SELECT '/*private-value*/' -- 'secret'"),
+            "SELECT ?"
+        );
+        for query in [
+            "SELECT 'private-value",
+            "SELECT \"private-value",
+            "SELECT 1 /*private-value",
+        ] {
+            assert_eq!(normalize(query), "SELECT ?");
+        }
+        let mut cache = Cache::default();
+        let raw: Arc<str> = Arc::from(query);
+        assert_eq!(cache.normalize(&raw), normalize(query));
+        assert_eq!(cache.normalize(&raw), normalize(query));
     }
 
     #[test]

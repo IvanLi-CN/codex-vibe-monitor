@@ -1,5 +1,26 @@
 use super::*;
 
+#[cfg(target_os = "linux")]
+#[test]
+fn cpu_sampler_failure_degrades_capabilities_without_fabricating_samples() {
+    let metrics = ObservabilityRuntime::new(true);
+    let independent = ObservabilityRuntime::new(true);
+    assert_eq!(metrics.state(), "enabled");
+    observability::record_cpu_sample(&metrics, Some((100, 20, 100.0)));
+    let before = metrics.render();
+    assert!(before.contains("cvm_process_cpu_seconds_total{mode=\"user\"} 1"));
+    observability::record_cpu_sample(&metrics, None);
+    assert_eq!(metrics.state(), "degraded");
+    assert_eq!(independent.state(), "enabled");
+    let failed = metrics.render();
+    assert!(failed.contains("cvm_observability_sampler_errors_total{source=\"cpu\"} 1"));
+    assert!(failed.contains("cvm_process_cpu_seconds_total{mode=\"user\"} 1"));
+    assert!(failed.contains("cvm_process_cpu_seconds_total{mode=\"system\"} 0.2"));
+    let disabled = ObservabilityRuntime::new(false);
+    disabled.degraded.store(true, Ordering::Relaxed);
+    assert_eq!(disabled.state(), "disabled");
+}
+
 #[tokio::test]
 async fn coordinator_recorders_are_isolated_and_retired_bindings_can_be_replaced() {
     use crate::proxy_sqlite_write_coordinator::{

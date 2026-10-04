@@ -21,6 +21,8 @@ pub(crate) use browser::{BROWSER_MAX_BYTES, ingest_browser_observations};
 pub(crate) use config::{ObservabilityConfig, prepare_hotpath};
 pub(crate) use http::{observability_http_middleware, retired_performance_preflight};
 pub(crate) use reports::{hotpath_report, observability_capabilities};
+#[cfg(all(test, target_os = "linux"))]
+pub(crate) use sampler::record_cpu_sample;
 pub(crate) use sampler::spawn_observability_sampler;
 
 const METADATA: Metadata<'static> = Metadata::new("cvm", metrics::Level::INFO, None);
@@ -52,6 +54,16 @@ impl std::fmt::Debug for ObservabilityRuntime {
     }
 }
 impl ObservabilityRuntime {
+    pub(crate) fn state(&self) -> &'static str {
+        if !self.enabled {
+            "disabled"
+        } else if self.degraded.load(Ordering::Relaxed) {
+            "degraded"
+        } else {
+            "enabled"
+        }
+    }
+
     pub(crate) fn new(enabled: bool) -> Arc<Self> {
         let mut builder = PrometheusBuilder::new()
             .set_buckets(SHORT_BUCKETS)

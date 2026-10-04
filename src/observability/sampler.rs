@@ -25,7 +25,12 @@ pub(crate) fn spawn_observability_sampler(state: Arc<AppState>) -> JoinHandle<()
 }
 #[cfg(target_os = "linux")]
 fn sample_cpu(metrics: &ObservabilityRuntime) {
-    let Some((user, system, hz)) = cpu_ticks() else {
+    record_cpu_sample(metrics, cpu_ticks());
+}
+#[cfg(target_os = "linux")]
+pub(crate) fn record_cpu_sample(metrics: &ObservabilityRuntime, ticks: Option<(u64, u64, f64)>) {
+    let Some((user, system, hz)) = ticks else {
+        metrics.degraded.store(true, Ordering::Relaxed);
         metrics.counter(
             "cvm_observability_sampler_errors_total",
             &[("source", "cpu")],
