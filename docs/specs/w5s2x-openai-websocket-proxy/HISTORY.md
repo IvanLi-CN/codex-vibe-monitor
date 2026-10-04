@@ -10,6 +10,7 @@
 - 修正历史 transport chip 的可见文案，使其与专题合同一致显示为 `WebSocket（历史）`；刷新 Storybook evidence、UI 测试与版本影响验证记录。
 - 修复 SQLite tag 清理在保留合法 JSON 对象/数组时的类型保持问题，并补充迁移与通用 tag cleanup 回归覆盖。
 - 在 `c22fb448` 基线上完成 required CI 验证并刷新 version-impact 的 verified evidence；Archive/File I/O required check 通过。
+- 最终 runtime candidate 的 required CI run `37222753000` 全绿；随后仅刷新 verified evidence，未改变运行时实现。
 
 ## 2026-07-07
 
