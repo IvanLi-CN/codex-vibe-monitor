@@ -459,6 +459,9 @@ export function TaskWorkloadTrend({
     () => buildWorkloadChartModels(visibleSamples, capabilities),
     [capabilities, visibleSamples],
   );
+  const hasVisibleCoverageGap = visibleSamples.some((sample) =>
+    sample.sampleId.startsWith("coverage-gap:"),
+  );
   const colors = taskWorkloadTokens(themeMode);
   const axis = chartBaseTokens(themeMode);
   const isRetention = taskKey === "retention_archive";
@@ -467,7 +470,7 @@ export function TaskWorkloadTrend({
   const runPanelHeight =
     (isCompactViewport ? 72 : 32) +
     models.length * (chartHeight + 12) +
-    ((trend?.coverageGaps?.length ?? 0) > 0 ? 40 : 0);
+    (hasVisibleCoverageGap ? 40 : 0);
   const retentionRows = isCompactViewport ? 2 : 1;
   const retentionPanelHeight = retentionRows * (chartHeight + 20) + (retentionRows - 1) * 12;
   const panelMinHeight = isRetention
@@ -609,7 +612,7 @@ export function TaskWorkloadTrend({
             {legend}
             {runWindowControl}
           </div>
-          {(trend?.coverageGaps?.length ?? 0) > 0 ? (
+          {hasVisibleCoverageGap ? (
             <p role="note" className="text-xs text-warning">
               观测缺口
             </p>
@@ -711,8 +714,9 @@ export function TaskWorkloadSummary({ trend }: { trend?: TaskWorkloadTrendData |
         .filter(Boolean)
         .join(" · "),
     });
-  } else if (trend.latestPending?.value != null && trend.latestPending.value > 0) {
+  } else if (trend.latestPending?.value != null) {
     const reason = {
+      capture_gap: "观测存在缺口，清零预估暂不可用",
       no_net_backlog_decline: "积压未下降，暂无法估算",
       task_disabled: "任务已停用，暂停清零预估",
       stale_observation: "观测已过期，等待新数据",

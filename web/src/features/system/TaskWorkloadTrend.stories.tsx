@@ -43,6 +43,25 @@ const captureGapTrend: WorkloadTrend = {
   clearanceEstimateReason: "capture_gap",
 };
 
+const captureGapOutsideWindowTrend: WorkloadTrend = {
+  ...captureGapTrend,
+  coverageGaps: [
+    {
+      id: "story-old-gap",
+      startedAt: new Date(Date.parse(samples[10].attemptedAt) + 2_000).toISOString(),
+      finishedAt: new Date(Date.parse(samples[11].attemptedAt) - 2_000).toISOString(),
+      reason: "event_channel_overflow",
+    },
+  ],
+};
+
+const zeroPendingTrend = (clearanceEstimateReason: string): WorkloadTrend => ({
+  ...trend,
+  latestPending: trend.latestPending ? { ...trend.latestPending, value: 0 } : null,
+  clearanceEta: null,
+  clearanceEstimateReason,
+});
+
 const meta = {
   title: "System/TaskWorkloadTrend",
   component: TaskWorkloadTrend,
@@ -158,6 +177,52 @@ export const CaptureGap: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByRole("note")).toHaveTextContent("观测缺口");
     await expect(canvas.getByRole("figure", { name: "工作量：invocation rows" })).toBeVisible();
+  },
+};
+
+export const CaptureGapOutsideVisibleWindow: Story = {
+  args: { taskKey: "retention_archive", trend: captureGapOutsideWindowTrend, state: "ready" },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    await expect(within(canvasElement).queryByRole("note")).toBeNull();
+  },
+};
+
+export const ExactZeroEstimateStates: Story = {
+  args: { taskKey: "retention_archive", trend, state: "ready" },
+  render: () => (
+    <div className="grid gap-4 md:grid-cols-2">
+      <TaskWorkloadSummary trend={zeroPendingTrend("stale_observation")} />
+      <TaskWorkloadSummary trend={zeroPendingTrend("task_disabled")} />
+      <TaskWorkloadSummary trend={zeroPendingTrend("capture_gap")} />
+    </div>
+  ),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.getByText("观测已过期，等待新数据")).toBeVisible();
+    await expect(canvas.getByText("任务已停用，暂停清零预估")).toBeVisible();
+    await expect(canvas.getByText("观测存在缺口，清零预估暂不可用")).toBeVisible();
+    await expect(canvas.queryByText("已清空")).toBeNull();
+  },
+};
+
+export const AccessiblePointInspection: Story = {
+  args: { taskKey: "retention_archive", trend, state: "ready" },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chart = canvasElement.querySelector<HTMLElement>('[role="application"]');
+    const point = canvasElement.querySelector<SVGCircleElement>("circle.recharts-dot");
+    if (!chart || !point) throw new Error("Accessible chart point is missing");
+
+    await userEvent.pointer({ target: point, keys: "[TouchA]" });
+    await expect(canvas.getByText(/触发：/)).toBeVisible();
+    await userEvent.pointer({ target: point, keys: "[/TouchA]" });
+
+    chart.focus();
+    await userEvent.keyboard("{ArrowRight}");
+    await expect(canvas.getByText(/触发：/)).toBeVisible();
   },
 };
 

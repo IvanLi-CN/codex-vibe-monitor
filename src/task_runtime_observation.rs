@@ -574,6 +574,7 @@ impl TaskWorkloadObservation {
         update_workload_sample(&self.execution_uid, &self.task_key, false, |sample| {
             if let Some(metric) = sample_metric(sample, "processed") {
                 metric.value = processed_count;
+                metric.range = "run-window".to_string();
                 metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
                 metric.coverage = "window".to_string();
             }
@@ -595,6 +596,9 @@ impl TaskWorkloadObservation {
             sample.status = status.to_string();
             if let Some(metric) = sample_metric(sample, "processed") {
                 metric.value = processed_count;
+                if processed_count.is_some() {
+                    metric.range = "run-window".to_string();
+                }
                 metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
                 metric.coverage = if processed_count.is_some() {
                     "window".to_string()
@@ -892,6 +896,13 @@ mod tests {
         assert_eq!(
             sample.processed.as_ref().and_then(|metric| metric.value),
             Some(12)
+        );
+        assert_eq!(
+            sample
+                .processed
+                .as_ref()
+                .map(|metric| metric.range.as_str()),
+            Some("run-window")
         );
         assert_eq!(sample.status, "success");
         observation.finish_with_status("success");

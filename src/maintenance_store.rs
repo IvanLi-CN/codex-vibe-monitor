@@ -22,7 +22,6 @@ const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
-const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
@@ -2693,21 +2692,17 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
-        let recovery_cutoff = format_utc_iso_millis(
-            Utc::now() - ChronoDuration::seconds(TASK_RUNNING_RECOVERY_STALE_AFTER_SECS),
-        );
         let finished_at = format_utc_iso_millis(Utc::now());
         let result = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary=COALESCE(summary, ?),
                  error_detail=COALESCE(error_detail, ?)
-             WHERE status='running' AND started_at < ?",
+             WHERE status='running'",
         )
         .bind(&finished_at)
         .bind("服务重启前运行未完成，已标记为失败")
         .bind("服务重启时回收未完成运行")
-        .bind(&recovery_cutoff)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -2771,6 +2766,12 @@ impl MaintenanceStore {
         )
         .fetch_all(main_pool)
         .await?;
+        let progress = sqlx::query_as::<_, (String, i64, Option<String>, i64, Option<String>, Option<String>, i64, i64, String, Option<String>, Option<String>, i64, i64)>(
+            "SELECT task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled FROM startup_backfill_progress",
+        )
+        .fetch_all(main_pool)
+        .await?;
+        let mut transaction = self.pool.begin().await?;
         for (
             id,
             task_kind,
@@ -2831,15 +2832,10 @@ impl MaintenanceStore {
             .bind(migrated_status)
             .bind(migrated_summary)
             .bind(migrated_detail)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
 
-        let progress = sqlx::query_as::<_, (String, i64, Option<String>, i64, Option<String>, Option<String>, i64, i64, String, Option<String>, Option<String>, i64, i64)>(
-            "SELECT task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled FROM startup_backfill_progress",
-        )
-        .fetch_all(main_pool)
-        .await?;
         for (
             task_name,
             cursor_id,
@@ -2872,7 +2868,7 @@ impl MaintenanceStore {
             .bind(&next_probe_at)
             .bind(wake_generation)
             .bind(enabled)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
             let Some(managed_suffix) = managed_startup_backfill_suffix(&task_name) else {
                 // Keep versioned or catalog-specific legacy rows without inventing a page.
@@ -2891,9 +2887,10 @@ impl MaintenanceStore {
             .bind(cursor_id.to_string())
             .bind(updated_at)
             .bind(freshness)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -5382,7 +5379,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovers_incomplete_runs_idempotently() {
+    async fn recovers_all_incomplete_runs_on_restart_idempotently() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect maintenance test pool");
@@ -5406,7 +5403,7 @@ mod tests {
         .expect("insert fresh managed task run");
 
         let store = MaintenanceStore::from_pool(pool);
-        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 2);
         let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
         )
@@ -5416,14 +5413,70 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
-        let fresh_status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
+        let fresh_status = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
         )
         .fetch_one(&store.pool)
         .await
         .expect("load fresh managed task run");
-        assert_eq!(fresh_status, "running");
+        assert_eq!(fresh_status.0, "failed");
+        assert!(fresh_status.1.is_some());
+        assert_eq!(fresh_status.2.as_deref(), Some("服务重启时回收未完成运行"));
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_state_migration_rolls_back_every_write_on_failure() {
+        let business_pool = legacy_backfill_pool(1, 99).await;
+        sqlx::query(
+            "INSERT INTO system_task_runs (id,task_kind,trigger_kind,status,started_at)
+             VALUES (1,'retention_archive','startup','success','2026-10-03T00:00:00.000Z')",
+        )
+        .execute(&business_pool)
+        .await
+        .expect("seed legacy run");
+
+        let maintenance_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&maintenance_pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&maintenance_pool)
+            .await
+            .expect("seed maintenance task registry");
+        sqlx::query(
+            "CREATE TRIGGER fail_legacy_progress_import
+             BEFORE INSERT ON managed_task_progress
+             BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END",
+        )
+        .execute(&maintenance_pool)
+        .await
+        .expect("install migration failure trigger");
+
+        let store = MaintenanceStore::from_pool(maintenance_pool);
+        assert!(store.migrate_legacy_state(&business_pool).await.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_runs")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count runs after migration rollback"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM startup_backfill_progress")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count legacy checkpoints after migration rollback"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_progress")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count progress snapshots after migration rollback"),
+            0
+        );
     }
 
     #[tokio::test]
