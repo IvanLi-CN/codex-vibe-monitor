@@ -85,6 +85,7 @@ pub(crate) struct PromptCacheConversationIdentity {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PromptCacheConversationIdentityCache {
+    pub(crate) range_manager: Arc<invocation_ranges::InvocationRangeManager>,
     pub(crate) conversations: HashMap<String, PromptCacheConversationIdentity>,
     pub(crate) active_prompt_cache_keys: HashMap<String, usize>,
     /// Per-key allocation locks keep slow identity/sequence SQL from blocking
@@ -93,14 +94,6 @@ pub(crate) struct PromptCacheConversationIdentityCache {
     pub(crate) allocation_locks: HashMap<String, std::sync::Weak<Mutex<()>>>,
     /// Unbound IDs share one lock because their hourly prefix is process-local.
     pub(crate) unbound_allocation_lock: Arc<Mutex<()>>,
-    pub(crate) unbound_prefix: Option<UnboundInvokePrefix>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct UnboundInvokePrefix {
-    pub(crate) hour_key: i64,
-    pub(crate) prefix: String,
-    pub(crate) next_sequence: u32,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -416,33 +409,6 @@ fn normalize_prompt_cache_key(prompt_cache_key: Option<&str>) -> Option<&str> {
     prompt_cache_key
         .map(str::trim)
         .filter(|value| !value.is_empty())
-}
-
-fn cache_prompt_cache_conversation_identity(
-    cache: &mut PromptCacheConversationIdentityCache,
-    prompt_cache_key: &str,
-    identity: PromptCacheConversationIdentity,
-) -> bool {
-    if cache.conversations.contains_key(prompt_cache_key) {
-        return true;
-    }
-    if cache.conversations.len() >= PROMPT_CACHE_CONVERSATION_IDENTITY_CACHE_CAPACITY {
-        let evicted_key = cache
-            .conversations
-            .keys()
-            .find(|key| !cache.active_prompt_cache_keys.contains_key(key.as_str()))
-            .cloned();
-        if let Some(evicted_key) = evicted_key {
-            cache.conversations.remove(&evicted_key);
-        }
-    }
-    if cache.conversations.len() >= PROMPT_CACHE_CONVERSATION_IDENTITY_CACHE_CAPACITY {
-        return false;
-    }
-    cache
-        .conversations
-        .insert(prompt_cache_key.to_string(), identity);
-    true
 }
 
 fn trim_prompt_cache_conversation_identity_cache(cache: &mut PromptCacheConversationIdentityCache) {
@@ -2439,16 +2405,6 @@ async fn ensure_prompt_cache_conversation_row_on_connection(
     Ok(created)
 }
 
-async fn conversation_id_exists(pool: &Pool<Sqlite>, conversation_id: &str) -> Result<bool> {
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1)",
-    )
-    .bind(conversation_id)
-    .fetch_one(pool)
-    .await?
-        != 0)
-}
-
 async fn conversation_id_exists_on_connection(
     connection: &mut SqliteConnection,
     conversation_id: &str,
@@ -2458,27 +2414,6 @@ async fn conversation_id_exists_on_connection(
     )
     .bind(conversation_id)
     .fetch_one(&mut *connection)
-    .await?
-        != 0)
-}
-
-async fn conversation_prefix_conflicts_with_live_invocation(
-    pool: &Pool<Sqlite>,
-    conversation_id: &str,
-) -> Result<bool> {
-    // The generated suffix alphabet is A-Z followed by digits. '[' is the
-    // first byte after that alphabet in SQLite's BINARY collation.
-    let upper_bound = format!("{conversation_id}[");
-    Ok(sqlx::query_scalar::<_, i64>(
-        "SELECT EXISTS(\
-            SELECT 1 FROM codex_invocations \
-            WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3
-        )",
-    )
-    .bind(conversation_id)
-    .bind(upper_bound)
-    .bind(PROXY_INVOKE_ID_LENGTH as i64)
-    .fetch_one(pool)
     .await?
         != 0)
 }
@@ -2511,6 +2446,7 @@ async fn prompt_cache_conversation_id_candidate_conflicts_on_connection(
     let upper_bound = format!("{conversation_id}[");
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1) \
+         OR EXISTS(SELECT 1 FROM hourly_invoke_prefixes WHERE prefix = ?1) \
          OR EXISTS(SELECT 1 FROM codex_invocations \
                    WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3)",
     )
@@ -2529,6 +2465,7 @@ async fn prompt_cache_conversation_id_candidate_conflicts(
     let upper_bound = format!("{conversation_id}[");
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE conversation_id = ?1) \
+         OR EXISTS(SELECT 1 FROM hourly_invoke_prefixes WHERE prefix = ?1) \
          OR EXISTS(SELECT 1 FROM codex_invocations \
                    WHERE invoke_id >= ?1 AND invoke_id < ?2 AND length(invoke_id) = ?3)",
     )
@@ -2673,8 +2610,7 @@ where
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
         let conversation_id = generate();
         if excluded_prefixes.is_some_and(|prefixes| prefixes.contains(&conversation_id))
-            || conversation_id_exists(pool, &conversation_id).await?
-            || conversation_prefix_conflicts_with_live_invocation(pool, &conversation_id).await?
+            || prompt_cache_conversation_id_candidate_conflicts(pool, &conversation_id).await?
         {
             debug!(
                 attempt,
@@ -2780,73 +2716,6 @@ async fn recover_prompt_cache_conversation_identity(
     })
 }
 
-async fn reserve_prompt_cache_conversation_sequence(
-    pool: &Pool<Sqlite>,
-    prompt_cache_key: &str,
-    next_sequence: u32,
-) -> Result<Option<(String, u32)>> {
-    let reservation_floor = i64::from(next_sequence) - 1;
-    let maximum_sequence = i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY - 1);
-    let mut transaction = pool
-        .begin()
-        .await
-        .context("failed to begin prompt-cache conversation sequence reservation")?;
-    let update_result = sqlx::query(
-        r#"
-        UPDATE prompt_cache_conversations
-        SET last_invoke_sequence = MAX(last_invoke_sequence, ?1) + 1,
-            updated_at = STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE prompt_cache_key = ?2
-          AND MAX(last_invoke_sequence, ?1) < ?3
-        "#,
-    )
-    .bind(reservation_floor)
-    .bind(prompt_cache_key)
-    .bind(maximum_sequence)
-    .execute(&mut *transaction)
-    .await
-    .context("failed to reserve prompt-cache conversation invoke sequence")?;
-    let row = sqlx::query_as::<_, (String, i64)>(
-        "SELECT conversation_id, last_invoke_sequence \
-         FROM prompt_cache_conversations WHERE prompt_cache_key = ?1",
-    )
-    .bind(prompt_cache_key)
-    .fetch_optional(&mut *transaction)
-    .await
-    .context("failed to read reserved prompt-cache conversation invoke sequence")?;
-    transaction
-        .commit()
-        .await
-        .context("failed to commit prompt-cache conversation sequence reservation")?;
-
-    let Some((reserved_conversation_id, reserved_sequence)) = row else {
-        return Ok(None);
-    };
-    if update_result.rows_affected() == 0 {
-        if reserved_sequence >= maximum_sequence {
-            bail!(
-                "prompt-cache conversation invoke sequence overflow: sequence={} capacity={}",
-                PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY,
-                PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY
-            );
-        }
-        bail!(
-            "failed to reserve prompt-cache conversation invoke sequence for key fingerprint {}",
-            prompt_cache_key_fingerprint(prompt_cache_key)
-        );
-    }
-    let reserved_sequence = u32::try_from(reserved_sequence)
-        .context("reserved prompt-cache conversation invoke sequence was out of range")?;
-    if reserved_sequence >= PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY {
-        bail!(
-            "prompt-cache conversation invoke sequence overflow: sequence={} capacity={}",
-            reserved_sequence,
-            PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY
-        );
-    }
-    Ok(Some((reserved_conversation_id, reserved_sequence)))
-}
-
 async fn max_live_sequence_for_conversation(
     pool: &Pool<Sqlite>,
     conversation_id: &str,
@@ -2917,96 +2786,18 @@ fn allocation_lock_for_cache(
     }
 }
 
-async fn prompt_cache_allocation_lock(
-    state: &AppState,
-    prompt_cache_key: Option<&str>,
-) -> Arc<Mutex<()>> {
-    let mut cache = state.prompt_cache_conversation_cache.lock().await;
-    allocation_lock_for_cache(&mut cache.identity_cache, prompt_cache_key)
-}
-
-#[derive(Debug)]
-enum PromptCacheInvokeIdCacheUpdate {
-    Conversation {
-        conversation_id: String,
-        next_sequence: u32,
-    },
-    Unbound {
-        prefix: UnboundInvokePrefix,
-    },
-}
-
-#[derive(Debug)]
-struct PromptCacheInvokeIdAllocation {
-    invoke_id: String,
-    cache_update: PromptCacheInvokeIdCacheUpdate,
-}
-
-async fn apply_prompt_cache_invoke_id_cache_update(
-    state: &AppState,
-    prompt_cache_key: Option<&str>,
-    cache_update: PromptCacheInvokeIdCacheUpdate,
-) {
-    let mut cache = state.prompt_cache_conversation_cache.lock().await;
-    match cache_update {
-        PromptCacheInvokeIdCacheUpdate::Conversation {
-            conversation_id,
-            next_sequence,
-        } => {
-            if let Some(prompt_cache_key) = prompt_cache_key
-                && let Some(identity) = cache.identity_cache.conversations.get_mut(prompt_cache_key)
-            {
-                identity.conversation_id = conversation_id;
-                identity.next_sequence = next_sequence;
-            }
-        }
-        PromptCacheInvokeIdCacheUpdate::Unbound { prefix } => {
-            cache.identity_cache.unbound_prefix = Some(prefix);
-        }
-    }
-}
-
-async fn initialize_unbound_prompt_cache_prefix(
-    pool: &Pool<Sqlite>,
-    hour_key: i64,
-) -> Result<UnboundInvokePrefix> {
-    let mut namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
-    for _ in 0..PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
-        let candidate = generate_prompt_cache_conversation_id();
-        if namespace.contains(&candidate)
-            || prompt_cache_conversation_id_candidate_conflicts(pool, &candidate).await?
-        {
-            continue;
-        }
-        namespace.insert(candidate.clone());
-        return Ok(UnboundInvokePrefix {
-            hour_key,
-            prefix: candidate,
-            next_sequence: 0,
-        });
-    }
-    bail!(
-        "failed to allocate unbound prompt-cache invoke prefix after {PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS} attempts"
-    )
-}
-
 pub(crate) async fn allocate_proxy_invoke_id(
     state: &AppState,
     prompt_cache_key: Option<&str>,
 ) -> Result<String> {
-    let prompt_cache_key = normalize_prompt_cache_key(prompt_cache_key).map(ToOwned::to_owned);
-    let allocation_lock = prompt_cache_allocation_lock(state, prompt_cache_key.as_deref()).await;
-    let _allocation_guard = allocation_lock.lock().await;
-    let allocation =
-        allocate_proxy_invoke_id_serialized(state, prompt_cache_key.as_deref()).await?;
-    let invoke_id = allocation.invoke_id.clone();
-    apply_prompt_cache_invoke_id_cache_update(
-        state,
-        prompt_cache_key.as_deref(),
-        allocation.cache_update,
-    )
-    .await;
-    Ok(invoke_id)
+    let manager = state
+        .prompt_cache_conversation_cache
+        .lock()
+        .await
+        .identity_cache
+        .range_manager
+        .clone();
+    manager.allocate(&state.pool, prompt_cache_key).await
 }
 
 pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
@@ -3036,213 +2827,20 @@ pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
         )
     });
     let _allocation_guard = allocation_lock.lock().await;
-    let result = allocate_proxy_invoke_id_serialized(state, prompt_cache_key.as_deref()).await;
-    match result {
-        Ok(allocation) => {
-            let invoke_id = allocation.invoke_id.clone();
-            apply_prompt_cache_invoke_id_cache_update(
-                state,
-                prompt_cache_key.as_deref(),
-                allocation.cache_update,
-            )
-            .await;
-            if let Some(mut lease_guard) = lease_guard {
-                lease_guard.disarm();
-            }
-            Ok(invoke_id)
-        }
-        Err(err) => {
-            if let Some(prompt_cache_key) = prompt_cache_key.as_deref() {
-                release_active_prompt_cache_conversation(
-                    &state.prompt_cache_conversation_cache,
-                    prompt_cache_key,
-                )
-                .await;
-            }
-            if let Some(mut lease_guard) = lease_guard {
-                lease_guard.disarm();
-            }
-            Err(err)
-        }
-    }
-}
-
-async fn allocate_proxy_invoke_id_serialized(
-    state: &AppState,
-    prompt_cache_key: Option<&str>,
-) -> Result<PromptCacheInvokeIdAllocation> {
-    if let Some(prompt_cache_key) = normalize_prompt_cache_key(prompt_cache_key) {
-        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-            .await;
-        let (conversation_id, sequence) = 'reserve: {
-            for recovery_attempt in 0..=1 {
-                let cached_identity = {
-                    let cache = state.prompt_cache_conversation_cache.lock().await;
-                    cache
-                        .identity_cache
-                        .conversations
-                        .get(prompt_cache_key)
-                        .cloned()
-                };
-                let identity = if let Some(identity) = cached_identity {
-                    debug!(
-                        prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                        conversation_id = %identity.conversation_id,
-                        "prompt-cache conversation identity cache hit"
-                    );
-                    identity
-                } else {
-                    debug!(
-                        prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                        "prompt-cache conversation identity cache miss; loading from database"
-                    );
-                    let identity = match load_or_create_prompt_cache_conversation_identity(
-                        &state.pool,
-                        prompt_cache_key,
-                    )
-                    .await
-                    {
-                        Ok(identity) => identity,
-                        Err(err) => {
-                            error!(
-                                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                                error = %err,
-                                "failed to recover or create prompt-cache conversation identity"
-                            );
-                            return Err(err);
-                        }
-                    };
-                    debug!(
-                        prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                        conversation_id = %identity.conversation_id,
-                        "prompt-cache conversation identity recovered from database"
-                    );
-                    let mut cache = state.prompt_cache_conversation_cache.lock().await;
-                    if !cache_prompt_cache_conversation_identity(
-                        &mut cache.identity_cache,
-                        prompt_cache_key,
-                        identity.clone(),
-                    ) {
-                        debug!(
-                            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-                            capacity = PROMPT_CACHE_CONVERSATION_IDENTITY_CACHE_CAPACITY,
-                            "prompt-cache conversation identity cache is full; using durable identity only"
-                        );
-                    }
-                    identity
-                };
-                let conversation_id = identity.conversation_id;
-                let next_sequence = identity.next_sequence;
-                if next_sequence >= PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY {
-                    let err = encode_prompt_cache_conversation_sequence(next_sequence)
-                        .expect_err("sequence capacity check should reject exhausted identity");
-                    error!(
-                        conversation_id = %conversation_id,
-                        sequence = next_sequence,
-                        error = %err,
-                        "prompt-cache conversation invoke sequence exhausted"
-                    );
-                    return Err(err);
-                }
-                if let Some(reservation) = reserve_prompt_cache_conversation_sequence(
-                    &state.pool,
-                    prompt_cache_key,
-                    next_sequence,
-                )
-                .await?
-                {
-                    break 'reserve reservation;
-                }
-                if recovery_attempt == 0 {
-                    state
-                        .prompt_cache_conversation_cache
-                        .lock()
-                        .await
-                        .identity_cache
-                        .conversations
-                        .remove(prompt_cache_key);
-                    continue;
-                }
-                bail!(
-                    "prompt-cache conversation identity disappeared during sequence reservation: key fingerprint {}",
-                    prompt_cache_key_fingerprint(prompt_cache_key)
-                );
-            }
-            unreachable!("prompt-cache conversation reservation loop should return or retry")
-        };
-        let suffix = encode_prompt_cache_conversation_sequence(sequence)?;
-        let invoke_id = format!("{}{}", conversation_id, suffix);
-        debug!(
-            conversation_id = %conversation_id,
-            invoke_id = %invoke_id,
-            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-            sequence,
-            "allocated conversation-bound proxy invoke id"
-        );
-        drop(_write_permit);
-        return Ok(PromptCacheInvokeIdAllocation {
-            invoke_id,
-            cache_update: PromptCacheInvokeIdCacheUpdate::Conversation {
-                conversation_id,
-                next_sequence: sequence.saturating_add(1),
-            },
-        });
-    }
-
-    let hour_key = Utc::now().timestamp().div_euclid(60 * 60);
-    let cached_prefix = {
-        let cache = state.prompt_cache_conversation_cache.lock().await;
-        cache
-            .identity_cache
-            .unbound_prefix
-            .as_ref()
-            .filter(|prefix| prefix.hour_key == hour_key)
-            .cloned()
-    };
-    let _write_permit = if cached_prefix.is_none() {
-        Some(
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-                .acquire(
-                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy,
-                )
-                .await,
+    let result = allocate_proxy_invoke_id(state, prompt_cache_key.as_deref()).await;
+    if result.is_err()
+        && let Some(prompt_cache_key) = prompt_cache_key.as_deref()
+    {
+        release_active_prompt_cache_conversation(
+            &state.prompt_cache_conversation_cache,
+            prompt_cache_key,
         )
-    } else {
-        None
-    };
-    let mut prefix = if let Some(prefix) = cached_prefix {
-        prefix
-    } else {
-        initialize_unbound_prompt_cache_prefix(&state.pool, hour_key).await?
-    };
-    let sequence = prefix.next_sequence;
-    let suffix = match encode_prompt_cache_conversation_sequence(sequence) {
-        Ok(suffix) => suffix,
-        Err(err) => {
-            error!(
-                prefix = %prefix.prefix,
-                prefix_hour = hour_key,
-                sequence,
-                error = %err,
-                "unbound proxy invoke sequence exhausted"
-            );
-            return Err(err);
-        }
-    };
-    prefix.next_sequence = sequence.saturating_add(1);
-    let invoke_id = format!("{}{}", prefix.prefix, suffix);
-    debug!(
-        invoke_id = %invoke_id,
-        prefix_hour = hour_key,
-        sequence,
-        "allocated unbound proxy invoke id"
-    );
-    drop(_write_permit);
-    Ok(PromptCacheInvokeIdAllocation {
-        invoke_id,
-        cache_update: PromptCacheInvokeIdCacheUpdate::Unbound { prefix },
-    })
+        .await;
+    }
+    if let Some(mut lease_guard) = lease_guard {
+        lease_guard.disarm();
+    }
+    result
 }
 
 const PROMPT_CACHE_CONVERSATION_STATS_REFRESH_ATTEMPTS: usize = 3;
