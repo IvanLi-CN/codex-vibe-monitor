@@ -57,14 +57,14 @@
     "verified": {
       "impact": "major",
       "reasoning": "Current-head validation confirms the planned major public API retirement and the separately minor forward-only persistent-state migration; no scope drift was found.",
-      "verified_at": "2026-10-04T18:10:53Z",
+      "verified_at": "2026-10-04T19:01:20Z",
       "evidence": [
         "501 websocket_proxy_removed rejection regression",
         "stateful SQLite migration idempotency and rollback regressions",
         "historical WebSocket read/filter/serialization regression",
         "cargo test retire_websocket_proxy_migration -- --nocapture: 2 passed",
         "cargo test cleanup_non_system_tags_removes_custom_tags_links_and_session_references -- --nocapture: 1 passed",
-        "CI PR 37222753000: all required checks passed for the current runtime candidate; the remaining head change only refreshes this record"
+        "CI PR 37226138705 (head abe361ba9bee399e6c09696a21f5f10f553a017c): all required checks passed for the final candidate"
       ]
     }
   },
