@@ -29,6 +29,7 @@
 - The catalog computes default policy metadata without writing schedule overrides. Existing unsupported overrides remain readable and require an explicit reset; `enabled` is preserved when overrides are cleared.
 - Legacy run-history request timestamps and durations retain their previous meanings; the implementation does not infer actual execution start times from them.
 - The owner confirmed the mock-only desktop/mobile timeline and SSE connection-state evidence on 2026-10-02. Canonical assets are stored in `docs/specs/task-operations/assets/`; the mobile capture keeps the 12-hour chart compact without row labels.
+- The owner confirmed all six workload-chart rectification screenshots on 2026-10-04. The accepted Storybook evidence replaces the earlier workload images and covers shared single-row Tabs, Retention's time view, mobile chart space, hidden-pending rescaling, and a running task without counters.
 
 ## Related Changes
 

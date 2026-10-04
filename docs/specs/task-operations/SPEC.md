@@ -217,45 +217,57 @@
 
 ### Task Workload Trend Charts — Desktop
 
-- source_type: `ui_demo`
-- target_program: `vite_web_demo`
-- viewport_strategy: `ui-demo-source + devtools-emulate`
-- desktop_viewport: `1440x900`
-- state: deterministic workload mock; dark state shows 100 runs and light state selects the Retention backlog tab
-- comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186`
-- rendered_candidate: `c11fc81980fe346614b3bb8167afd3a44bfed756`
-- owner_confirmation: confirmed in chat for both displayed desktop candidates on 2026-10-04
-- assets:
-  - `./assets/task-workload-trend-desktop-dark.png`
-  - `./assets/task-workload-trend-desktop-light-backlog.png`
+- source_type: `storybook_canvas`
+- story_group: `System/TaskWorkloadTrend`
+- target_program: `mock-only`
+- capture_scope: `element`
+- viewport_strategy: `storybook-viewport`
+- requested_viewport: `1440x900`
+- margin_policy: `require_margin`
+- evidence_surface: `component`
+- surface_selector: `[data-visual-evidence-surface]`
+- target_selector: `[data-visual-evidence-target]`
+- sensitive_exclusion: `N/A`
+- comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186c`
+- comparison: `current-only`; the locked baseline contains no workload image at these exact paths
+- rendered_candidate: `d981c0b1a584a9232855f11ac57b9bae3a9877ab`
+- owner_confirmation: confirmed in chat for the six displayed rectification screenshots on 2026-10-04 (“准确。”)
+- submission_gate: `approved`
+- stories:
+  - `system-taskworkloadtrend--dark-theme`
+  - `system-taskworkloadtrend--overview`
 - images:
   - ![Task workload trend, desktop dark, 100 runs](./assets/task-workload-trend-desktop-dark.png)
-  - ![Task workload trend with Retention backlog tab, desktop light](./assets/task-workload-trend-desktop-light-backlog.png)
+  - ![Retention backlog, desktop light](./assets/task-workload-trend-desktop-light-backlog.png)
 
-### Task Workload Trend Charts — Current Mobile States
+### Task Workload Trend Charts — Mobile
 
 - source_type: `storybook_canvas`
 - story_group: `System/TaskWorkloadTrend`
-- target_program: `mock-only Storybook canvas`
+- target_program: `mock-only`
+- capture_scope: `element`
 - viewport_strategy: `storybook-viewport`
 - requested_viewport: `393x852`
 - margin_policy: `require_margin`
 - evidence_surface: `component`
-- capture_scope: `declared visual-evidence surface`
-- state: 20-run dark trend, light Retention backlog tab, light trend with pending hidden and remaining series rescaled, and a running task with no observed counters
-- comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186`
-- rendered_candidate: `d78b974455c5e4e1d841c4bacecbe80f6c609817`
-- owner_confirmation: confirmed in chat for all four displayed mobile candidates on 2026-10-04
-- assets:
-  - `./assets/task-workload-trend-mobile-dark-393x852.png`
-  - `./assets/task-workload-trend-mobile-light-393x852.png`
-  - `./assets/task-workload-trend-mobile-light-candidates-393x852.png`
-  - `./assets/task-workload-trend-mobile-running-unknown-393x852.png`
+- surface_selector: `[data-visual-evidence-surface]`
+- target_selector: `[data-visual-evidence-target]`
+- sensitive_exclusion: `N/A`
+- comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186c`
+- comparison: `current-only`; the locked baseline contains no workload image at these exact paths
+- rendered_candidate: `d981c0b1a584a9232855f11ac57b9bae3a9877ab`
+- owner_confirmation: confirmed in chat for the six displayed rectification screenshots on 2026-10-04 (“准确。”)
+- submission_gate: `approved`
+- stories:
+  - `system-taskworkloadtrend--mobile-dark`
+  - `system-taskworkloadtrend--mobile-light-backlog`
+  - `system-taskworkloadtrend--mobile-light-candidates`
+  - `system-taskworkloadtrend--mobile-running-without-counters`
 - images:
-  - ![Task workload trend, mobile dark, 393 by 852](./assets/task-workload-trend-mobile-dark-393x852.png)
-  - ![Task workload trend, Retention backlog tab, mobile light, 393 by 852](./assets/task-workload-trend-mobile-light-393x852.png)
-  - ![Task workload trend without pending series, mobile light, 393 by 852](./assets/task-workload-trend-mobile-light-candidates-393x852.png)
-  - ![Running task without observed counters, mobile, 393 by 852](./assets/task-workload-trend-mobile-running-unknown-393x852.png)
+  - ![Task workload trend, mobile dark, 20 runs](./assets/task-workload-trend-mobile-dark-393x852.png)
+  - ![Retention backlog, mobile light](./assets/task-workload-trend-mobile-light-393x852.png)
+  - ![Pending hidden, remaining series rescaled, mobile light](./assets/task-workload-trend-mobile-light-candidates-393x852.png)
+  - ![Running task without observed counters, mobile light](./assets/task-workload-trend-mobile-running-unknown-393x852.png)
 
 ## References
 
