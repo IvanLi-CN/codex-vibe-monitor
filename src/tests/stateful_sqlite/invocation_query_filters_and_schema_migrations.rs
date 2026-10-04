@@ -244,7 +244,7 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
 }
 
 #[tokio::test]
-async fn retire_websocket_proxy_migration_rolls_back_on_failure() {
+async fn retire_websocket_proxy_migration_rolls_back_and_reenters_after_failure() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -312,6 +312,24 @@ async fn retire_websocket_proxy_migration_rolls_back_on_failure() {
     .await
     .expect("count marker after rollback");
     assert_eq!(marker_count, 0);
+
+    crate::schema::retire_openai_websocket_proxy(&pool)
+        .await
+        .expect("forward-repair migration after rollback");
+    let repaired_settings: (i64, i64, i64) = sqlx::query_as(
+        "SELECT openai_proxy_websocket_enabled, openai_proxy_upstream_websocket_default_enabled, websocket_settings_migrated FROM proxy_model_settings WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load settings after forward repair");
+    assert_eq!(repaired_settings, (0, 0, 1));
+    let repaired_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count marker after forward repair");
+    assert_eq!(repaired_marker_count, 1);
 }
 
 async fn fetch_prompt_cache_conversations(

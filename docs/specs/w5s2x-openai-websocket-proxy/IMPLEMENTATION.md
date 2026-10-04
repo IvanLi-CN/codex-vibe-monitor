@@ -42,7 +42,7 @@
 
 ## Validation
 
-- Targeted Rust regression: the early `501` rejection, Settings compatibility, migration idempotency/rollback, and legacy system-tag cleanup tests pass.
+- Targeted Rust regression: the early `501` rejection, Settings compatibility, migration idempotency/rollback plus forward re-entry, and legacy system-tag cleanup tests pass.
 - `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
 - The repository Rust source-quality policy check passes after synchronizing the explicit inventory, suppression counts, and budgets for the retired surface.
 - Web unit tests pass: `1779 passed / 6 skipped`; typecheck, lint, and production build pass. The Storybook suite passes with `200/200` tests and `48` intentional skips.
@@ -55,7 +55,8 @@
 - `proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing` verifies legacy WebSocket request fields are ignored and omitted from responses.
 - `retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state` verifies legacy columns, exact integer tag cleanup, unrelated-tag preservation, OAuth session JSON cleanup, malformed/non-integer value preservation, and the completion marker.
 - The retirement migration and non-system tag cleanup regressions also preserve JSON object/array values instead of re-encoding them as strings.
-- `retire_websocket_proxy_migration_rolls_back_on_failure` verifies a mid-transaction failure leaves settings, tag associations, tag rows, and the marker unchanged.
+- `retire_websocket_proxy_migration_rolls_back_and_reenters_after_failure` verifies a mid-transaction failure leaves settings, tag associations, tag rows, and the marker unchanged, then a newer attempt repairs forward and commits the retirement.
+- Direct multi-major skips remain unsupported by the declared source compatibility range; an explicit intermediate upgrade is required and this release does not claim a direct-skip migration path.
 - `cleanup_non_system_tags_removes_custom_tags_links_and_session_references` verifies custom tag references are removed while system-tag session references survive for exact retirement cleanup.
 - The demo model regression verifies retired WebSocket Settings request fields are ignored and omitted from the response/state.
 - `normal_http_terminal_persistence_does_not_emit_retired_websocket_state` verifies a normal HTTP terminal record does not recreate WebSocket transport, stream-terminal state, or the exact retired tag and association.

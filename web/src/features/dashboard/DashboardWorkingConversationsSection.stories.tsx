@@ -1429,13 +1429,13 @@ const transportBadgeResponse = createResponse([
   createConversation("pck-websocket-mixed", [
     createPreview({
       id: 36,
-      invokeId: "invoke-ws-current",
+      invokeId: "invoke-ws-historical",
       occurredAt: "2026-04-04T10:04:55Z",
-      status: "running",
+      status: "completed",
       transport: "websocket",
       upstreamAccountName: "ws-alpha@example.com",
       reasoningEffort: "medium",
-      tTotalMs: null,
+      tTotalMs: 1824,
     }),
     createPreview({
       id: 35,
