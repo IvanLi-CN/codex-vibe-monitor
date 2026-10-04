@@ -53,7 +53,7 @@ RUNNER_X64 = "ubuntu-24.04"
 RUNNER_ARM64 = "ubuntu-24.04-arm"
 ACTION_CHECKOUT = "actions/checkout@v7"
 TEST_CACHE_INPUT_HASH = "${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}"
-RUST_SOURCE_INPUT_HASH = "${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}"
+RUST_SOURCE_INPUT_HASH = "${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}"
 CARGO_TEST_CACHE_KEY = "${{ runner.os }}-cargo-test-v4-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
 CARGO_CLIPPY_CACHE_KEY = "${{ runner.os }}-cargo-clippy-v2-" + TEST_CACHE_INPUT_HASH + "-" + RUST_SOURCE_INPUT_HASH
 
@@ -108,6 +108,24 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
         actual_args == expected_args,
         f"{workflow_name} must run partition {partition}",
     )
+
+
+def require_observability_performance_contract(workflow: dict[str, Any], build_job: dict[str, Any]) -> None:
+    performance_job = job_config(workflow, "observability-performance", "ci-pr.yml")
+    image_job = job_config(workflow, "observability-performance-image", "ci-pr.yml")
+    require(performance_job.get("name") == "Observability Performance Budget" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
+    require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
+    for name, job in [("observability-performance", performance_job), ("observability-performance-image", image_job)]:
+        require(job.get("runs-on") == RUNNER_X64, f"{name} must use the fixed GitHub-hosted runner")
+        require_job_and_steps_fail_closed(job, f"ci-pr.yml.jobs.{name}")
+    acceptance = step_config(performance_job, "Run candidate-bound runtime and performance acceptance", "ci-pr.yml.jobs.observability-performance")
+    require("--environment github-actions --suite full --seconds 300 --rate 5" in str(acceptance.get("run", "")), "performance gate must use the full fixed Actions acceptance contract")
+    guard = step_config(build_job, "Verify observability performance budget", "ci-pr.yml.jobs.build")
+    require_no_if(guard, "Build Artifacts performance result assertion")
+    require(guard.get("env", {}).get("PERFORMANCE_RESULT") == "${{ needs.observability-performance.result }}" and guard.get("run") == 'test "$PERFORMANCE_RESULT" = success', "Build Artifacts must fail when performance acceptance is not successful")
+    upload = step_config(performance_job, "Upload performance acceptance evidence", "ci-pr.yml.jobs.observability-performance")
+    require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
+    require("empirical-card.json" in str(upload.get("with", {}).get("path", "")), "performance evidence must include the Candidate card")
 
 
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
@@ -465,7 +483,7 @@ def require_exact_cargo_cache_reuse(job: dict[str, Any], step_name: str, cache_i
     run = str(reuse.get("run", ""))
     require(
         reuse.get("if") == f"${{{{ steps.{cache_id}.outputs.cache-hit == 'true' }}}}"
-        and "find src -type f -name '*.rs' -exec touch -d '@1' {} +" in run
+        and "find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +" in run
         and "touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml" in run
         and "for input in build.rs .cargo/config.toml; do" in run
         and 'if [ -f "$input" ]; then touch -d \'@1\' "$input"; fi' in run,
@@ -813,10 +831,13 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
         )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
+    performance_declared = "Observability Performance Budget" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ())
     require(
-        build_job.get("needs") == "build-pr-smoke-artifacts",
+        build_job.get("needs") == (["build-pr-smoke-artifacts", "observability-performance"] if performance_declared else "build-pr-smoke-artifacts"),
         "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer",
     )
+    if performance_declared:
+        require_observability_performance_contract(workflow, build_job)
     require_exact_if(
         build_job,
         "${{ always() && github.event_name == 'pull_request' }}",

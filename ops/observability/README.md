@@ -143,14 +143,25 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
-未通过这些实测不能宣布 Ready，测试机通过也不能代替 101 公网验收。
+完整性能验收由 CI PR 的 GitHub-hosted Actions job 执行，未通过不能宣布 Ready。
+任何测试环境通过都不能代替 101 公网验收。
 
 使用已提交候选运行 `scripts/shared-testbox-performance-acceptance --candidate <full SHA> --samply /srv/codex/agents/<thread>/tools/samply-x86_64-unknown-linux-gnu/samply --seconds 300 --rate 5`。
 工具从该 commit 传输不可变源码、构建镜像，使用独立 Compose project、卷与私网，
 不发布 host port。HTTPS 入口是受控测试 fixture；不能替代生产 Authelia 验收。
-默认 5 req/s、3 次配对、每窗口 300 秒；另有 60 秒预热。场景包含 JSON/SSE 代理、
-固定 dashboard SSE、monitoring 停机隔离与原容器 CPU attach。
-A/B 同时限制 CPU 饱和与窗口末尾积压，不能用延长排队完成时间证明非饱和。
-可增大 `--seconds` 获取更多样本；这不放宽稳定性或 5% 开销预算。
-运行日志、逐场景结果、A/B 原始数据与七字段 `empirical-card.json` 保存在打印出的
-Agent Directory run locator，失败或环境不可用均阻止 Ready。旧 SQLite 验收卡仅作历史记录。
+共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
+原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
+
+CI PR 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
+ID、revision 与 archive checksum；`Observability Performance Budget` 在另一个
+`ubuntu-24.04` runner 上加载同一镜像，先完成运行时场景，再串行测量 A/B。
+测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
+默认 5 req/s、3 次交替配对、每窗口 300 秒与 60 秒预热；保留两组 CV ≤5% 的稳定性
+门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。
+资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。
+
+每次 attempt 的 `observability-acceptance-<run_id>-<attempt>` artifact 保留 14 天，
+包含原始样本、比较摘要、runner/资源环境、场景结果与七字段 `empirical-card.json`。
+只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions
+run/attempt。失败或环境不可用阻断现有 `Build Artifacts` 必需检查，无需新增远端保护规则。
+旧共享测试机 A/B 与旧 SQLite 验收卡仅作历史诊断记录。

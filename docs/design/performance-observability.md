@@ -229,9 +229,11 @@ profile 位于监控目录的项目隔离子目录，manifest 记录 UTC 起止�
 | 退役与迁移      | 无旧库创建/读取/写入、无旧 writer/rollup；absent/custom-path/WAL/corrupt/unknown/中断/重复执行/回滚均有证据                           |
 | 性能与容量      | 同一候选版本观测开/关、相同非饱和负载 A/B，默认 CPU 每完成请求与 p95 延迟增加均不超过 5%；内存与系列有界，profile/Prometheus 容量验证 |
 
-性能比较必须固定 offered load、完成数、SSE 订阅与基线，重复稳定窗口。共享测试机干扰或主库饱和导致无法归因时结论是未验证，不能写成通过；也不能把其他争用归因于观测。测量超出初始预算时收窄默认计时/导出，而不是静默放宽接受条件。
+性能比较必须由 GitHub Actions 的 GitHub-hosted runner 完成：生产镜像构建与测量拆为不同 job，测量 job 只使用当前 Candidate 的预构建镜像，串行运行三对交替窗口。固定 offered load、完成数、SSE 订阅与基线，每窗口 60 秒预热、300 秒测量；两组重复窗口 CV 各不超过 5% 后，才比较 CPU 每完成请求与 p95 的 5% 增幅预算。保留 runner 环境、原始样本、资源观察和绑定 run/attempt 的七字段证据卡，失败也上传白名单产物并阻断 PR 门禁。
 
-实现使用仓库的 Rust fmt/check/clippy、资源分桶 backend runner，Web unit/type/lint/build 与必要 UI 证据；重型、Docker/Compose 验证在 shared-testbox。本轮只核验文档、指标映射、链接与已确认决策，不执行这些实现验证。
+本地和共享测试机仅承担功能、集成与诊断验证，不能证明性能预算达标。Actions 的环境干扰或主库饱和导致无法归因时结论仍是未验证，不能写成通过；也不能把其他争用归因于观测。测量超出初始预算时收窄默认计时/导出，而不是静默放宽接受条件。
+
+实现使用仓库的 Rust fmt/check/clippy、资源分桶 backend runner，Web unit/type/lint/build 与必要 UI 证据；重型功能、Docker/Compose 集成验证在 shared-testbox，性能开销验收只由 Actions 完成。本轮只核验文档、指标映射、链接与已确认决策，不执行这些实现验证。
 
 实施交付包括应用替换与旧代码删除、Grafana/Prometheus provisioning、Agent Skill/CLI、CPU 符号与受限命令、归档回滚流程、文档/Spec/配置迁移和验收证据。部署任务拥有监控平台；应用任务拥有埋点、前端入口、指标/仪表盘合同和旧系统退役，不能以“平台已经部署”替代应用验收。开始实施前，按 topic-spec 把现有性能主题需求及 migration contract 对齐本设计；旧 Spec 保留的是切换前实现，不能视为新设计授权。
 

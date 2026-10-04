@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Candidate-bound, isolated Prometheus/Grafana/app acceptance on codex-testbox."""
+"""Candidate-bound runtime checks and GitHub-hosted performance acceptance."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
@@ -10,10 +10,10 @@ from pathlib import Path
 import re
 import secrets
 import shutil
-import statistics
 import subprocess
 import sys
 import time
+from environment import actions_context, comparison_report, observe_resources, quiet_admission
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -25,7 +25,14 @@ def digest(paths):
 class Run:
     def __init__(self,args):
         self.args=args; self.source=Path(args.source).resolve();self.root=Path(args.run).resolve()
-        if not self.root.is_relative_to(Path("/srv/codex/agents")/args.agent) or self.root==self.source:
+        self.environment=getattr(args,"environment","shared-testbox")
+        self.suite=getattr(args,"suite","runtime")
+        self.context=actions_context(self.source,self.root,args.candidate) if self.environment=="github-actions" else None
+        if self.suite=="full" and self.context is None:
+            raise ValueError("full performance acceptance must run in GitHub Actions")
+        if self.suite=="full" and not re.fullmatch(r"sha256:[a-f0-9]{64}",args.image or ""):
+            raise ValueError("performance acceptance requires an immutable prebuilt image ID")
+        if (self.context is None and not self.root.is_relative_to(Path("/srv/codex/agents")/args.agent)) or self.root==self.source or self.source.is_relative_to(self.root) or self.root.is_relative_to(self.source):
             raise ValueError("acceptance run must be inside the exact Agent Directory")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*",args.agent) or not re.fullmatch(r"[a-f0-9]{40}",args.candidate):
             raise ValueError("invalid agent or candidate identity")
@@ -33,7 +40,8 @@ class Run:
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
-        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds,"warmupSeconds":60},indent=2)+"\n")
+        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":2,"appMemoryLimit":"1g"},indent=2)+"\n")
+        if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
         for name in ["metrics-token","read-token","grafana-admin-password"]:
             path=self.private/name;path.write_text(secrets.token_hex(32));path.chmod(0o640)
@@ -71,9 +79,9 @@ class Run:
         for service in compose["services"].values():
             service["cap_drop"]=["ALL"];service.pop("ports",None)
         fixture=self.source/"scripts/observability-acceptance"
-        common={"image":"python:3.12-alpine","user":"1000:1000","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.private)+":/private"]}
+        common={"image":"python:3.12-alpine","user":f"{os.getuid()}:{os.getgid()}","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.private)+":/private"]}
         compose["services"].update({
-            "app":{"image":self.image,"user":"0:1000","cap_drop":["ALL"],"cpus":2,"mem_limit":"1g","networks":{"monitoring":{"aliases":["codex-vibe-monitor"]}},"volumes":[str(self.data)+":/srv/app/data",str(self.private/"metrics-token")+":/run/secrets/metrics-token:ro",str(self.private/"read-token")+":/run/secrets/read-token:ro"],"environment":{"DATABASE_PATH":"/srv/app/data/codex_vibe_monitor.db","HTTP_BIND":"0.0.0.0:8080","METRICS_BIND":"0.0.0.0:9091","METRICS_TOKEN_FILE":"/run/secrets/metrics-token","OBSERVABILITY_READ_TOKEN_FILE":"/run/secrets/read-token","GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_ENABLED":"true","UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET":"synthetic-testbox-encryption-secret","RUST_LOG":"warn"}},
+            "app":{"image":self.image,"user":f"0:{os.getgid()}","cap_drop":["ALL"],"cpus":2,"mem_limit":"1g","networks":{"monitoring":{"aliases":["codex-vibe-monitor"]}},"volumes":[str(self.data)+":/srv/app/data",str(self.private/"metrics-token")+":/run/secrets/metrics-token:ro",str(self.private/"read-token")+":/run/secrets/read-token:ro"],"environment":{"DATABASE_PATH":"/srv/app/data/codex_vibe_monitor.db","HTTP_BIND":"0.0.0.0:8080","METRICS_BIND":"0.0.0.0:9091","METRICS_TOKEN_FILE":"/run/secrets/metrics-token","OBSERVABILITY_READ_TOKEN_FILE":"/run/secrets/read-token","GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_ENABLED":"true","UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET":"synthetic-testbox-encryption-secret","RUST_LOG":"warn"}},
             "mock-upstream":{**common,"command":["python","/work/fixture.py","upstream"]},
             "entry":{**common,"command":["python","/work/fixture.py","https"]},
             "client":{**common,"command":["sleep","infinity"]},
@@ -94,6 +102,8 @@ class Run:
             time.sleep(1)
         raise TimeoutError("application readiness timeout")
     def start(self):
+        # Pull before any measured window, including the client image used by exec.
+        self.compose("pull","prometheus","grafana","mock-upstream","entry","client",timeout=600)
         self.compose("up","-d",timeout=180);self.wait_app()
         self.client("seed")
         deadline=time.monotonic()+120
@@ -128,7 +138,7 @@ class Run:
         (build/"binding.json").write_text(json.dumps({"container":container,"profileRoot":str(profiles),"symbolRoot":str(symbols),"profilerImage":sampler_id}))
         shutil.copyfile(self.source/"scripts/cvm-hotpath-cpu",build/"capture.py")
         # The driver has no perf capability; only the fixed sampler can attach.
-        (build/"Dockerfile").write_text("FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends python3 binutils ca-certificates && rm -rf /var/lib/apt/lists/*\nCOPY binding.json /etc/cvm-observability/cpu.json\nCOPY capture.py /capture.py\nUSER 0:1000\nENTRYPOINT [\"python3\",\"/capture.py\"]\n")
+        (build/"Dockerfile").write_text("FROM ubuntu:24.04\nRUN apt-get update && apt-get install -y --no-install-recommends python3 binutils ca-certificates && rm -rf /var/lib/apt/lists/*\nCOPY binding.json /etc/cvm-observability/cpu.json\nCOPY capture.py /capture.py\nUSER 0:"+str(os.getgid())+"\nENTRYPOINT [\"python3\",\"/capture.py\"]\n")
         profiler_image=self.project+":profiler"
         with (self.root/"profiler-build.log").open("w") as log:
             subprocess.run(["docker","build","-t",profiler_image,str(build)],stdout=log,stderr=subprocess.STDOUT,check=True,timeout=600)
@@ -154,6 +164,14 @@ class Run:
         values=self.compose("exec","-T","app","cat","/sys/fs/cgroup/cpu.stat")
         return int(dict(line.split() for line in values.splitlines())["usage_usec"])
     def overhead(self):
+        # An SSH shell or self-hosted Actions job cannot certify the performance budget.
+        if self.environment!="github-actions":
+            raise ValueError("performance acceptance must run in GitHub Actions")
+        actions_context(self.source,self.root,self.args.candidate)
+        quiet_admission(self.root)
+        with observe_resources(self.root):
+            return self.overhead_windows()
+    def overhead_windows(self):
         # Stop before snapshotting, then use the same seeded state and offered load every round.
         self.compose("stop","app")
         baseline=self.root/"baseline-data";shutil.copytree(self.data,baseline)
@@ -161,7 +179,7 @@ class Run:
         for index in range(3):
             for enabled in ["false","true"] if index%2==0 else ["true","false"]:
                 directory=self.root/f"ab-{index}-{enabled}";shutil.copytree(baseline,directory);directory.chmod(0o770)
-                # copytree creates host-owned files; the cap-free app writes as GID 1000.
+                # The cap-free app uses the host's group for its synthetic state.
                 for path in directory.rglob("*"):
                     assert not path.is_symlink(),"unexpected symlink in synthetic A/B state"
                     path.chmod(0o770 if path.is_dir() else 0o660)
@@ -176,38 +194,41 @@ class Run:
                 result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
                 result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
                 result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
+                samples[enabled].append(result)
+                (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
                 assert result["cpuCores"]<1.5,"saturated load cannot establish observability overhead"
                 assert result["durationSeconds"]<=self.args.seconds*1.05,"request backlog cannot establish non-saturated overhead"
-                samples[enabled].append(result);self.compose("stop","app")
-                (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
-        comparisons={}
-        for key in ["cpuSecondsPerRequest","p95Seconds"]:
-            for enabled in ["false","true"]:
-                values=[row[key] for row in samples[enabled]]
-                assert statistics.pstdev(values)/statistics.mean(values)<=0.05,"unstable shared testbox windows: "+key
-            comparisons[key]=statistics.median(row[key] for row in samples["true"])/statistics.median(row[key] for row in samples["false"])-1
-            assert comparisons[key]<=0.05,"5% observability budget exceeded: "+key
-        return comparisons
+                self.compose("stop","app")
+        report=comparison_report(samples)
+        (self.root/"ab-summary.json").write_text(json.dumps(report,indent=2)+"\n")
+        assert all(metric[mode]["stable"] for metric in report["metrics"].values() for mode in ["false","true"]),"unstable measurement windows"
+        assert all(metric["withinBudget"] for metric in report["metrics"].values()),"5% observability budget exceeded"
+        return report
     def finish(self):
-        success=all(row["status"]=="passed" for row in self.results.values()) and len(self.results)==4
+        expected={"https-auth-query","monitoring-fault-isolation","original-process-cpu"}
+        if self.suite=="full": expected.add("default-observability-ab")
+        success=all(row["status"]=="passed" for row in self.results.values()) and set(self.results)==expected
         status="passed" if success else "unavailable" if any(row["status"]=="unavailable" for row in self.results.values()) else "failed"
-        card={"empirical_acceptance":"required","empirical_acceptance_rationale":"Container attach/symbols, HTTPS machine auth, monitoring fault isolation and default CPU/request plus p95 overhead require runtime observation.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))),"evidence_locator":str(self.root)}
-        (self.root/"empirical-card.json").write_text(json.dumps(card,indent=2)+"\n")
+        card={"empirical_acceptance":"required","empirical_acceptance_rationale":"GitHub-hosted exact-image runtime and default CPU/request plus p95 overhead acceptance." if self.suite=="full" else "Runtime integration only; this card does not certify the performance budget.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))),"evidence_locator":self.context["evidenceLocator"] if self.context else str(self.root)}
+        (self.root/("empirical-card.json" if self.suite=="full" else "runtime-card.json")).write_text(json.dumps(card,indent=2)+"\n")
         return success
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ["source","run","agent","candidate","samply"]: parser.add_argument("--"+name,required=True)
     parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=300);parser.add_argument("--rate",type=int,default=5)
+    parser.add_argument("--environment",choices=["shared-testbox","github-actions"],default="shared-testbox")
+    parser.add_argument("--suite",choices=["runtime","full"],default="runtime")
     args=parser.parse_args()
     if args.seconds<60 or not 1<=args.rate<=100: parser.error("use at least 60-second windows and a fixed 1..100 request/s rate")
+    if args.suite=="full" and (args.environment!="github-actions" or args.seconds<300): parser.error("full acceptance requires GitHub Actions and at least 300-second windows")
     run=Run(args)
     try:
         run.build();run.configure();run.start()
         run.checkpoint("https-auth-query",lambda:run.client("functional"))
         run.checkpoint("monitoring-fault-isolation",run.isolation)
         run.checkpoint("original-process-cpu",run.cpu)
-        run.checkpoint("default-observability-ab",run.overhead)
+        if args.suite=="full": run.checkpoint("default-observability-ab",run.overhead)
         return 0 if run.finish() else 1
     except Exception as error:
         run.results["setup"]={"status":"unavailable","error":str(error)}

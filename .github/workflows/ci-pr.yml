@@ -198,7 +198,7 @@ jobs:
               echo "::error::merge_group ref ${GITHUB_REF} must use the gh-readonly-queue/<base_branch>/... format."
               exit 1
             fi
-            queue_ref="${GITHUB_REF#${queue_prefix}}"
+            queue_ref="${GITHUB_REF#"${queue_prefix}"}"
             if [[ "${queue_ref}" != */pr-* ]]; then
               echo "::error::Unable to derive the merge_group base branch from ${GITHUB_REF}."
               exit 1
@@ -291,6 +291,13 @@ jobs:
           bash .github/scripts/test-live-quality-gates.sh
           bash .github/scripts/test-backend-test-contract.sh
           bash .github/scripts/test-representative-scale-contract.sh
+
+      - name: Observability tooling and performance evidence checks
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/test-observability-tools.py
+          python3 scripts/test-observability-acceptance.py
 
       - name: Front-end lint
         run: bun run lint:web
@@ -921,9 +928,151 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  observability-performance-image:
+    name: Observability Performance Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      candidate: ${{ steps.identity.outputs.candidate }}
+    steps:
+      - name: Checkout performance candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Bind candidate identity
+        id: identity
+        run: echo "candidate=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build exact production image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cvm-observability:${{ steps.identity.outputs.candidate }}
+          build-args: |
+            APP_GIT_REVISION=${{ steps.identity.outputs.candidate }}
+            APP_EFFECTIVE_VERSION=3.0.0-ci.${{ github.run_id }}.${{ github.run_attempt }}
+          cache-from: type=gha,scope=observability-performance-amd64
+          cache-to: type=gha,mode=max,scope=observability-performance-amd64
+
+      - name: Export immutable candidate image
+        env:
+          CANDIDATE: ${{ steps.identity.outputs.candidate }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/observability-image"
+          docker save "cvm-observability:$CANDIDATE" | gzip -1 > "$RUNNER_TEMP/observability-image/candidate.tar.gz"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
+          sha=os.environ['CANDIDATE']
+          image=json.loads(subprocess.check_output(['docker','image','inspect','cvm-observability:'+sha],text=True))[0]
+          assert image['Config']['Labels']['org.opencontainers.image.revision']==sha
+          digest=hashlib.file_digest((root/'candidate.tar.gz').open('rb'),'sha256').hexdigest()
+          (root/'candidate.json').write_text(json.dumps({'candidate':sha,'imageId':image['Id'],'archiveSha256':digest},indent=2)+'\n')
+          PY
+
+      - name: Upload performance candidate image
+        uses: actions/upload-artifact@v7
+        with:
+          name: observability-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observability-image/
+          if-no-files-found: error
+          retention-days: 1
+
+  observability-performance:
+    name: Observability Performance Budget
+    needs: observability-performance-image
+    # A fresh VM measures the prebuilt image; no compiler or parallel suite shares it.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout performance candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.observability-performance-image.outputs.candidate }}
+          persist-credentials: false
+
+      - name: Download performance candidate image
+        uses: actions/download-artifact@v7
+        with:
+          name: observability-image-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observability-image
+
+      - name: Verify and load candidate image
+        env:
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+        run: |
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
+          metadata=json.loads((root/'candidate.json').read_text())
+          assert metadata['candidate']==os.environ['CANDIDATE']==subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          archive=root/'candidate.tar.gz'
+          assert hashlib.file_digest(archive.open('rb'),'sha256').hexdigest()==metadata['archiveSha256']
+          subprocess.run(['docker','load','--input',str(archive)],check=True)
+          image=json.loads(subprocess.check_output(['docker','image','inspect',metadata['imageId']],text=True))[0]
+          assert image['Config']['Labels']['org.opencontainers.image.revision']==metadata['candidate']
+          with open(os.environ['GITHUB_ENV'],'a') as output: output.write('OBSERVABILITY_IMAGE='+image['Id']+'\n')
+          PY
+
+      - name: Prepare pinned CPU sampler
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/observability-tools"
+          curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
+            https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-x86_64-unknown-linux-gnu.tar.xz \
+            -o "$RUNNER_TEMP/observability-tools/samply.tar.xz"
+          echo "61875daad67888798690dea3cb2748279df6ac299c5c6a857d67eed7642473d9  $RUNNER_TEMP/observability-tools/samply.tar.xz" | sha256sum --check
+          tar -xJf "$RUNNER_TEMP/observability-tools/samply.tar.xz" -C "$RUNNER_TEMP/observability-tools"
+          echo "0ca59d520059aa2ee4db1860c732089829e75740ee75314e84d2b0ab8c90873e  $RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" | sha256sum --check
+          sudo sysctl -w kernel.perf_event_paranoid=1
+
+      - name: Run candidate-bound runtime and performance acceptance
+        env:
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 scripts/observability-acceptance/run.py \
+            --source "$PWD" --run "$RUNNER_TEMP/observability-acceptance" \
+            --agent "actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE" \
+            --samply "$RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" \
+            --environment github-actions --suite full --seconds 300 --rate 5
+
+      - name: Upload performance acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: observability-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          # Whitelist synthetic evidence; exclude token files, Compose secrets and databases.
+          path: |
+            ${{ runner.temp }}/observability-acceptance/empirical-card.json
+            ${{ runner.temp }}/observability-acceptance/scenarios.json
+            ${{ runner.temp }}/observability-acceptance/ab-samples.json
+            ${{ runner.temp }}/observability-acceptance/ab-summary.json
+            ${{ runner.temp }}/observability-acceptance/run-config.json
+            ${{ runner.temp }}/observability-acceptance/image-identity.json
+            ${{ runner.temp }}/observability-acceptance/runner-context.json
+            ${{ runner.temp }}/observability-acceptance/environment-admission.jsonl
+            ${{ runner.temp }}/observability-acceptance/resource-observer.jsonl
+            ${{ runner.temp }}/observability-acceptance/cpu-verified/*.manifest.json
+            ${{ runner.temp }}/observability-acceptance/cpu-verified/*.json.gz
+            ${{ runner.temp }}/observability-acceptance/cpu-verified/*.syms.json
+          if-no-files-found: warn
+          retention-days: 14
+
   build:
     name: Build Artifacts
-    needs: build-pr-smoke-artifacts
+    needs: [build-pr-smoke-artifacts, observability-performance]
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -932,6 +1081,11 @@ jobs:
         env:
           PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
         run: test "$PRODUCER_RESULT" = success
+
+      - name: Verify observability performance budget
+        env:
+          PERFORMANCE_RESULT: ${{ needs.observability-performance.result }}
+        run: test "$PERFORMANCE_RESULT" = success
 
       - name: Checkout
         uses: actions/checkout@v7

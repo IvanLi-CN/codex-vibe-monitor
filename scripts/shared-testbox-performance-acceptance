@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Transfer a committed candidate and run isolated observability acceptance."""
+"""Run runtime integration on the testbox; performance acceptance is Actions-only."""
 import argparse
 import datetime as dt
 import os
@@ -42,7 +42,8 @@ def main():
         raise RuntimeError("candidate source transfer failed")
     command = ["python3", source + "/scripts/observability-acceptance/run.py", "--source", source,
                "--run", run + "/runtime", "--agent", agent, "--candidate", candidate, "--samply", args.samply,
-               "--seconds", str(args.seconds), "--rate", str(args.rate)]
+               "--seconds", str(args.seconds), "--rate", str(args.rate),
+               "--environment", "shared-testbox", "--suite", "runtime"]
     if args.reuse_image: command += ["--image", args.reuse_image]
     print("Evidence locator: " + args.testbox + ":" + run + "/runtime", flush=True)
     return subprocess.call(["ssh", args.testbox, shlex.join(command)])

@@ -27,7 +27,7 @@
 - REQ-013: 人类通过公网 HTTPS 与交互认证访问 Grafana，Agent 用独立 Viewer Token 经 HTTPS 查询，无需 SSH 或直连 Prometheus；入口只为必要机器路径跳过交互挑战且仍验证 Token，拒绝缺失/错误 Token 与写请求。 covers: [访问合同](../../design/performance-observability.md#101-服务访问和权限)
 - REQ-014: SSH 仅用于本项目 hotpath 与 CPU 诊断；CPU 对运行实例 attach，默认 100 Hz/30 秒、上限 60 秒、单实例单并发，符号必须匹配 build ID，产物保留 7 天/512 MiB，不新增 daemon 或任意 PID/root shell。 covers: [CPU 合同](../../design/performance-observability.md#cpu-采样与-ssh-运维合同)
 - REQ-015: 退役须精确核验文件身份与 schema，停旧 writer 后含 WAL 一致归档并校验，再移出应用挂载；未知归属或备份失败保留源。阶段清单可重入，中断用前向恢复，恢复备份是独立灾难恢复操作。 covers: [退役合同](../../design/performance-observability.md#旧系统一次性退役与恢复)
-- REQ-016: 同一候选版本默认观测开/关、相同非饱和负载与重复稳定窗口下，CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job，测量 job 串行运行同一候选镜像的默认观测开/关、相同非饱和负载与重复稳定窗口。CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过，本地或共享测试机结果不能证明预算达标。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
 
 ## API Contract
 
@@ -51,7 +51,7 @@
 - VER-005: HTTPS 机器查询、只读权限、凭据隔离、报告限额与降级可观察；报告适配使用依赖的实际序列化模型并覆盖应用实际的组合长启动 SQL，SQL 文本保持整份报告的 1 MiB 边界；hotpath SQL 标签包含 UTF-8 与截断唯一性后缀后符合 Prometheus 标签值上限，抓取不因长启动 SQL 失败；故障只记录报告类型与错误类别，图表和规则可重建。 covers: REQ-007, REQ-012, REQ-013
 - VER-006: 原运行实例 CPU 热点可用匹配符号解析；固定一次性镜像读取原映射路径，应用镜像保留 profiler 的第三方许可，采样目标、并发、时限与产物容量受限。 covers: REQ-014
 - VER-007: WAL、自定义路径、symlink、absent、损坏、未知归属、中断、重复及备份恢复有证据；新进程无旧库依赖，业务状态保留。 covers: REQ-001, REQ-005, REQ-015
-- VER-008: 默认观测实际 A/B 使用相同非饱和负载与重复稳定窗口，完成窗口无积压，CPU 每完成请求与 p95 增幅各不超 5%；共享环境干扰不得作为通过证据。 covers: REQ-016
+- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；失败仍上传白名单证据及绑定 run/attempt 的七字段卡，阻断现有 Build Artifacts 门禁。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016
 
 ## Related ADRs
 
