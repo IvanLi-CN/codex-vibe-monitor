@@ -2,13 +2,59 @@
 
 ## Context and Scope
 
-This spec owns invocation observability and the read-only model identity presentation used by invocation and model-performance surfaces. The GPT-6 extension changes only the recognized model identities and their visual presentation.
+This spec owns invocation observability and the read-only model identity presentation used by invocation and model-performance surfaces. Model generation and family identity are frontend presentation contracts; recognition does not establish upstream availability, pricing, or request capabilities.
 
 ## Requirements
 
-- REQ-GPT6-PERFORMANCE-IDENTITY: GPT-6 Astra/Sol/Luna identities in model-performance rows must reuse the shared accessible model identity, integrate into the badge's existing outline, and preserve single-line rows and badge height.
+- REQ-GPT6-PERFORMANCE-IDENTITY: GPT-6 Astra/Sol/Luna identities in model-performance rows must reuse the shared accessible model identity as bare glyphs, integrate into the badge's single existing outer border, and preserve single-line rows and badge height.
+- REQ-MODEL-GENERATION-IDENTITY: 共享只读身份必须按下方识别表区分完整模型代次 `5.6`、`6`、`6.1`，不能把 `5.6` 压成 `5` 或把 `6.1` 压成 `6`。合法日期别名沿用基础模型代次；非法日期、preview、未知家族及未列出的代次必须保留原模型文本，不推断身份。完整模型 ID 必须继续保留在 title 与可访问名称中。
+- REQ-MODEL-FAMILY-ICON: 所有共享只读身份必须按家族复用图标的形状与颜色：Sol 使用 `white-balance-sunny` 及 warning 色，Luna 使用 `weather-night` 及 info 色，Astra 使用 `creation` 及既有紫色，GPT-5.6 Terra 保留 `earth` 及既有 success 色。同一家族的图标颜色不得随代次变化。图标必须始终以裸 glyph 呈现；图标本体及其对齐容器不得有背景、边框/轮廓、圆角、阴影或代次专属底板。外层业务组件可保留既有边界。图标不得被称为官方 OpenAI 图标。
+- REQ-DASHBOARD-MODEL-CONTEXT-FORMAT: Dashboard 全局和账号级模型性能、用量明细在详细模式命中身份时，必须在同一单行胶囊内按 `<代次> <家族图标> <推理强度>` 排列；可见代次只显示版本段，不含 `GPT-` 前缀或日期。代次使用中性色紧凑等宽文本，图标保留固定尺寸模型段，推理强度只显示已有格式化文本与 tone，不在强度前显示圆点或其它 marker；不得重复展示完整模型 ID，不得给图标段添加背景、边框/轮廓、圆角或阴影，胶囊仅保留一个外层边框且高度不变。桌面浮层与窄屏详情复用同一身份顺序，且不得产生横向滚动。
+- REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK: 两类 Dashboard 明细详细模式中的缺失、空白或格式化为破折号的推理强度必须显示 `—`，不得推断模型默认值；显式 `none` 必须仍显示 `none`。未知推理强度必须按既有格式化规则保留其文本并使用 unknown 色调。未命中模型身份时必须沿用模型名与推理强度的文本回退。
+- REQ-MODEL-IDENTITY-SCOPE: 简单模式必须继续显示完整模型名且不显示推理强度，也不使用详细模式的代次胶囊。新的代次顺序只适用于上述 Dashboard 明细；其它只读身份表面共享家族图标映射与模型识别，但保留自身布局、FAST、请求/响应模型和改路由信号。编辑器、筛选器、选择器及原始 payload 必须保持文本值。身份展示不得改变模型目录、价格、API/SSE、数据库、历史记录、筛选值、聚合键或排序规则。
 - REQ-DASHBOARD-MODEL-BREAKDOWN: The Dashboard model-performance and usage-breakdown floaters must expose one shared frontend grouping mode. `detailed` is the default and keeps one row per response model plus reasoning effort; `simple` shows one row per response model. The selected mode is persisted globally for all eligible floaters, synchronizes already-open floaters, and applies to future openings. The model-performance simple view must consume an exact backend `modelGroups` projection using the same qualifying-sample and interval-union rules as detailed performance data; the frontend must not approximate it by merging detailed rows. Long-term statistics surfaces are outside this contract.
 - REQ-DASHBOARD-MODEL-BREAKDOWN-SORT: Each logical floater type persists its own frontend sort preference. The model column provides name ascending, name descending, reasoning-effort ascending, and reasoning-effort descending in detailed mode, and only the two name rules in simple mode. Numeric metric columns toggle ascending/descending; missing values sort last in either direction, the total row remains pinned first, and usage numeric sorting uses token counts as the primary value while cost remains display-only. Reasoning-effort order is `minimal < low < medium < high < xhigh < max < ultra`, with unknown values last.
+
+## Model generation and family presentation
+
+### Identity recognition
+
+模型代次表示模型 ID 中的完整版本段，家族图标表示 Astra、Sol、Luna 或 Terra，推理强度表示调用记录已有的 `reasoningEffort`；界面中所称的“思考等级”使用同一字段，不是模型等级或推理 Token 数量。
+
+| 基础模型 ID              | 可见代次 | 家族图标                   |
+| ------------------------ | -------- | -------------------------- |
+| `gpt-5.6`、`gpt-5.6-sol` | `5.6`    | Sol：`white-balance-sunny` |
+| `gpt-5.6-luna`           | `5.6`    | Luna：`weather-night`      |
+| `gpt-5.6-terra`          | `5.6`    | Terra：`earth`             |
+| `gpt-6-sol`              | `6`      | Sol：`white-balance-sunny` |
+| `gpt-6-luna`             | `6`      | Luna：`weather-night`      |
+| `gpt-6-astra`            | `6`      | Astra：`creation`          |
+| `gpt-6.1-sol`            | `6.1`    | Sol：`white-balance-sunny` |
+| `gpt-6.1-luna`           | `6.1`    | Luna：`weather-night`      |
+| `gpt-6.1-astra`          | `6.1`    | Astra：`creation`          |
+
+输入首尾空白忽略，模型身份匹配不区分大小写。带家族名的基础模型允许追加一个日历有效的 `-YYYY-MM-DD` 后缀；日期不展示在代次段中，但完整原模型 ID 仍可通过 hover 和可访问名称获知。裸别名 `gpt-5.6` 继续代表 Sol，不扩展其日期形式；裸 `gpt-6`、裸 `gpt-6.1`、`gpt-6-terra`、`gpt-6.1-terra`、preview 后缀、其它未知代次及非法日期继续按原文回退。
+
+### Detailed and simple modes
+
+详细模式的示例顺序为 `5.6 [Sol 图标] high`、`6 [Sol 图标] high`、`6.1 [Sol 图标] high`，三个版本使用相同的 Sol 图标形状与颜色，并由代次文本明确区分。日期别名与基础模型可以有相同可见身份；展示身份不是记录身份，也不是合并统计分组的依据。
+
+缺失推理强度的示例为 `6.1 [Sol 图标] —`；完整可访问文案继续表达 `gpt-6.1-sol · —`。已有推理强度文本颜色、未知值格式化与安全截断规则继续使用；详细胶囊中的强度前不显示圆点 marker。代次与图标必须完整可见，长自定义推理强度可以安全截断，并保留完整 title/可访问文案。
+
+简单模式继续按实际模型 ID 聚合，并显示完整模型名，不生成推理强度占位。共享图标映射适用于其它只读表面，但长期统计图例、调用记录和 Dashboard 对话卡不在新增代次顺序的范围内；其中原有缺失推理强度的省略行为也不采用明细的 `—` 占位规则。
+
+### Acceptance scenarios
+
+- Given 详细模式同时存在 `gpt-5.6-sol`、`gpt-6-sol` 和 `gpt-6.1-sol` 且推理强度均为 `high`，When 查看任一模型性能或用量明细，Then 依次可见相应 `5.6`、`6`、`6.1` 代次，Sol 图标形状与颜色相同，胶囊内顺序为代次、图标、推理强度。
+- Given `gpt-6.1-luna` 或 `gpt-6.1-astra`，When 共享身份渲染，Then 分别使用 `weather-night` 或 `creation`，且 title/可访问名称保留完整模型 ID。
+- Given 首尾有空白的 `GPT-6.1-SOL-2026-09-25` 或 `gpt-6-astra-2024-02-29`，When 解析身份，Then 忽略首尾空白和匹配大小写、验证合法日期，并分别显示代次 `6.1` 或 `6`；不会把日期或家族名混入代次文本。
+- Given `gpt-5.6-sol-2026-02-30`、`gpt-6.1-sol-2025-02-29`、`gpt-6.1-sol-preview`、`gpt-6.1-terra`、`gpt-6.1` 或其它未识别 ID，When 详细明细渲染，Then 保留模型文本与推理强度，不展示推断的代次或家族图标。
+- Given `gpt-5.6` 或 `gpt-5.6-terra`，When 详细明细渲染，Then 分别显示 `5.6 [Sol 图标]` 或 `5.6 [Terra 图标]`，保持已有别名和 Terra 身份。
+- Given 推理强度为缺失、空白、`—`、显式 `none` 或自定义值，When 详细明细渲染，Then 前三者显示 `—`，`none` 保持明确文本，自定义值沿用既有格式化文本与 unknown 色调；不会生成模型默认推理强度。
+- Given 命中模型身份的详细胶囊具有外层边框且显示任一推理强度，When 展示代次、家族图标和推理强度，Then 推理强度前没有圆点或其它 marker，图标仍是无背景、无自身边框的裸 glyph。
+- Given 同一组数据从详细切换为简单模式，When 全局或账号级两类明细渲染，Then 显示完整模型名并按既有规则合并，不显示推理强度；切回详细模式恢复代次胶囊，模式和排序记忆行为保持一致。
+- Given 详细模式有多个不同代次、最长已知推理强度 `ultra`、长自定义推理强度及未知模型，When 在浅色/深色桌面、平板和窄屏布局中查看，Then 代次和图标完整可见、胶囊高度保持不变、桌面每行保持单行，内容安全截断且不存在文档级或明细级横向滚动。
+- Given 调用记录、对话卡、详情、长期统计、编辑器或原始 payload，When 使用共享模型身份，Then 只应用已确认的家族图标与识别规则；原有信息布局、FAST、双模型/改路由语义、纯文本编辑值及聚合归属保持原合同。
 
 ## Shared invocation card presentation
 
@@ -131,13 +177,13 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - 运行态号池账号提示只在 `routeMode=pool`、状态为 `running` / `pending`、且存在非空账号名或有限数值账号 ID 时成立；显示值只允许为账号名或 `账号 #<id>`，不得添加“路由中”前缀。
 - 运行态号池账号提示必须复用现有账号点击路径；存在账号 ID 时，Live、Records、Dashboard working conversations 与 Dashboard 调用详情抽屉中的账号文本仍可打开上游账号详情。
 - 运行态号池账号提示必须是 text-only 蓝色语义状态，动画周期在 1500-2200ms 内；`prefers-reduced-motion: reduce` 下关闭呼吸动画但保留蓝色文本。
-- Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，思考程度为空时显示“未指定”。
+- Dashboard 模型性能明细的样本资格固定为：状态为 `success` 或 `completed`、失败分类为 `none`、且 `cost` 非空；`cost=0` 仍属于已计费。模型取 `responseModel`，详细模式推理强度为空时显示 `—`，表示未指定而非模型默认值。
 - Dashboard 总览的模型性能与用量明细浮窗共享“简单 / 详细”分组切换：详细模式按响应模型与思考程度保留行，简单模式按模型合并；模式默认为详细，并由前端跨两个浮窗全局持久化，已打开浮窗必须立即同步。简单性能模式使用接口提供的 `modelGroups` 精确结果，不能在前端从详细行近似合并。
 - 两类浮窗分别记忆自己的排序设置。排序必须通过表头直接操作，不使用原生下拉控件；模型列在详细模式支持名称升序、名称降序、思考程度升序、思考程度降序四条规则，简单模式仅保留名称升序/降序；指标列支持升序/降序，缺失值双向均排在末尾，总计行固定置顶。用量明细仅允许缓存命中率与总计列排序，缓存写入、缓存读取、输出列只展示不排序；用量排序按 Token 数取主值，成本仅作为同一行的展示字段。桌面表格保持稳定列宽；一般手机视口改用纵向指标布局，必须不产生文档级或组件级横向滚动条，且排序入口仍可操作。
 - TPM 为合格调用总 token 除以当前完整选择范围的分钟数；流式响应速率为输出 token 除以上游流式响应时长；响应时长为完整代理总时长平均值；TTFT 为 `first_token_ms` 样本平均值，不得从 `t_upstream_ttfb_ms` 或阶段累计值计算。墙钟时长为合格调用区间 `intersection([occurred_at, occurred_at + t_total_ms), [range.start, range.end))` 的并集时长；累计时长为合格调用 `t_total_ms` 直接求和；并行数为 `cumulativeUsageDurationMs / wallClockUsageDurationMs`。分母缺失、非有限值或小于等于零时，并行数显示 `—`；缺少有效样本的其他单项同样显示 `—`。
 - `modelPerformance.total.tokensPerMinute` 与账号级模型性能总计继续使用本规格定义的成功已计费完整范围分母；Dashboard 顶部实时 `TPM / 消费速率 / 首字用时 / 响应时间` 的 owner-facing 当前值由 `z6ysw` 的 `last_complete_1m_sma` 合同负责，不复用这些完整范围总计。
 - 桌面端性能明细触发器必须支持 hover、键盘聚焦与点击保留；浮窗宽度随视口自适应且上限为 `72rem`，表格不得产生横向滚动，只允许在模型数量或可用高度不足时纵向滚动。总计行置顶，模型行按累计时长降序；显式时长列顺序固定为 `墙钟时长 / 累计时长 / 并行数`；总计墙钟时长允许小于模型行墙钟时长的算术和。
-- 模型性能明细的每个桌面模型数据行必须保持单行。命中 GPT-5.6 或 GPT-6 专用身份方案时只显示模型图标/思考程度分组胶囊，不得同时重复显示模型名称；GPT-6 图标在徽标既有外框内融入模型段且不改变高度。未命中专用方案时显示可省略的模型名与思考程度。完整模型值始终通过 title 与可访问名称保留。窄屏详情抽屉复用同一模型身份语义，并继续使用无横向滚动的指标网格。
+- 模型性能明细的每个桌面模型数据行必须保持单行。详细模式命中模型身份时只显示“代次 / 家族图标 / 推理强度”胶囊，不得同时重复显示模型名称；图标在徽标既有外框内融入固定模型段且不改变高度。未命中身份时显示可省略的模型名与推理强度；简单模式继续显示完整模型名。完整模型值始终通过 title 与可访问名称保留。窄屏详情抽屉复用同一模型身份语义，并继续使用无横向滚动的指标网格。
 - `GET /api/invocations/locate` 必须按 `upstreamAccountId + requestId` 在 retained live records 与当前 runtime overlay 中精确定位，固定采用 `occurredAt DESC, id DESC`，返回目标所在的单个分页窗口、稳定 `snapshotId`、短生命周期 `anchorId`、`targetIndex` 与 `targetAbsoluteIndex`。
 - 锚点定位未命中时必须返回结构化 `404`；不得为了定位查询 archive，也不得返回或预加载目标页之外的调用记录。
 
@@ -335,10 +381,10 @@ For in-flight records, missing TTFT and response duration values display elapsed
 - Given 号池调用仍处于 `running` 或 `pending` 且已有 `upstreamAccountName`，When Live、Records、Dashboard working conversations 或 Dashboard 调用详情抽屉渲染该 invocation，Then 账号位置显示该账号名并使用蓝色呼吸文本，不显示“号池路由中”。
 - Given 号池运行态调用没有 `upstreamAccountName` 或 `upstreamAccountId`，When owner-facing 调用界面渲染，Then 继续显示既有“号池路由中”fallback，且不伪造账号、不启用呼吸状态。
 - Given 号池调用已进入成功或失败等终态，When owner-facing 调用界面渲染其账号字段，Then 保持普通账号显示与点击行为，不启用运行态呼吸状态。
-- Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，空思考程度显示“未指定”。
+- Given 当前 Dashboard 范围内同时存在成功已计费、失败、运行中和未计费调用，When 请求模型性能明细，Then 仅成功已计费调用进入总计和模型行，且 `cost=0` 的成功调用仍保留；模型按响应模型归属，详细模式空推理强度显示 `—`。
 - Given 同一模型两次成功已计费调用分别持续 `10s`、`10s` 且重叠 `5s`，When 请求模型性能明细，Then 该模型返回 `wallClockUsageDurationMs=15s`、`cumulativeUsageDurationMs=20s`、`parallelism≈1.33`。
 - Given 两个不同模型在所选范围内各自活跃 `4s` 且跨模型重叠 `1s`，When owner 查看模型性能明细，Then 总计墙钟时长为 `7s`、两个模型行墙钟时长之和为 `8s`，并且说明文案明确“跨模型重叠时模型行墙钟和可能大于总计”。
-- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，GPT-5.6/GPT-6 专用图标方案不得与模型名称重复显示，GPT-6 模型段不添加第二道边框或改变徽标高度，未知模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
+- Given owner 在桌面 hover、键盘聚焦或点击 Dashboard 的模型性能入口，When 性能明细打开，Then 显示置顶总计与按累计时长降序的模型行，且显式展示 `墙钟时长 / 累计时长 / 并行数` 三列，缺失指标显示 `—`；每个模型行保持单行，详细模式的代次/家族图标/推理强度胶囊不重复完整模型名，简单模式保留完整模型名，模型段不添加第二道边框或改变徽标高度，未知模型名安全省略，表格 `scrollWidth <= clientWidth`；Given 窄屏点击同一入口，Then 以无横向滚动的抽屉和相同模型身份语义展示同一数据。
 - Given owner 在任一模型性能或用量明细浮窗切换为“简单”，When 该浮窗和另一个已打开的 eligible 浮窗仍在页面上，Then 两个浮窗都按模型合并且不显示思考程度分行；重新打开的同类浮窗继续使用该模式。
 - Given owner 在模型性能浮窗的详细模式打开模型排序菜单，When 选择名称或思考程度排序规则，Then 只改变当前模型性能浮窗类型的排序偏好；切换到简单模式时思考程度规则不可选，切回详细模式仍恢复此前保存的思考程度规则。
 - Given owner 在用量明细浮窗点击任一指标表头，When 列表排序，Then 以 Token 数值升序或降序排列、成本仍随模型行展示，缺失数值排在末尾且总计行保持第一行；模型性能浮窗的各项数值指标遵循相同的缺失值规则。
@@ -583,6 +629,23 @@ For in-flight records, missing TTFT and response duration values display elapsed
   submission_gate: approved
   image:
   ![Dashboard compact mobile model performance drawer](./assets/model-performance-compact-mobile-storybook.png)
+
+- source_type: storybook_canvas
+  story_id_or_title: dashboard-usagebreakdowntooltip--mobile-390
+  state: detailed usage breakdown showing generations, family glyphs, and reasoning effort without effort markers
+  requested_viewport: 390x844
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: '[data-visual-evidence-surface=dashboard-usage-breakdown-tooltip]'
+  target_selector: '[data-visual-evidence-target=dashboard-usage-breakdown-table]'
+  evidence_note: confirms GPT-5.6 Sol and GPT-6.1 Sol use the same yellow sun glyph, GPT-6 is Luna with the blue moon glyph, family glyphs have no decoration, reasoning effort has no preceding dot, and the mobile detail has no horizontal overflow.
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: fixture-only Dashboard data
+  submission_gate: approved
+  image:
+  ![Dashboard mobile model generations without effort markers](./assets/model-generation-usage-mobile390-no-effort-dot-storybook.png)
 
 - source_type: storybook_canvas
   story_id_or_title: Dashboard/ModelPerformanceTrigger/DesktopTooltip
@@ -882,6 +945,9 @@ For in-flight records, missing TTFT and response duration values display elapsed
 ## Verification
 
 - VER-GPT6-PERFORMANCE-IDENTITY: covers: REQ-GPT6-PERFORMANCE-IDENTITY; ModelPerformanceModelIdentity and Dashboard performance tests verify badge composition, accessible model labels, and row layout.
+- VER-MODEL-GENERATION-IDENTITY: covers: REQ-MODEL-GENERATION-IDENTITY, REQ-MODEL-FAMILY-ICON; shared identity tests verify every listed generation/family, the legacy Sol alias, case/whitespace handling, valid dates including leap years, invalid dates for all supported generations, unsupported-ID text fallback, consistent family glyph and color mapping, no icon background/border/outline/rounded frame/shadow, and complete tooltip/accessible IDs.
+- VER-DASHBOARD-MODEL-CONTEXT: covers: REQ-DASHBOARD-MODEL-CONTEXT-FORMAT, REQ-DASHBOARD-MODEL-CONTEXT-FALLBACK; shared context and performance/usage tests verify visible generation, element order, unchanged glyph segment/badge height, no reasoning-effort marker, missing-versus-explicit-none effort, custom effort tone, and safe unknown-model fallback. Deterministic mock Storybook evidence verifies light/dark desktop, tablet and narrow layouts, multiple Sol generations in one view, and no horizontal overflow.
+- VER-MODEL-IDENTITY-SCOPE: covers: REQ-MODEL-IDENTITY-SCOPE; consumer regression coverage verifies simple-mode full names and grouping, complete title/accessible values, unchanged routing/FAST metadata and missing-effort behavior outside detailed Dashboard breakdowns, textual editors/filters/selectors/raw payloads, and unchanged data keys and backend contracts.
 - VER-DASHBOARD-MODEL-BREAKDOWN: covers: REQ-DASHBOARD-MODEL-BREAKDOWN; backend model-performance duration tests, API normalization, ModelPerformanceDetails and UsageBreakdownTooltip tests verify exact model grouping and synchronized frontend mode state.
 - VER-DASHBOARD-MODEL-BREAKDOWN-SORT: covers: REQ-DASHBOARD-MODEL-BREAKDOWN-SORT; dashboardModelBreakdown unit tests, direct-header component tests, and Storybook plays verify cycling model rules, sortable metric boundaries, missing-value ordering, pinned totals, and frontend persistence.
 

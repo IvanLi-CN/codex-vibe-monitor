@@ -78,6 +78,18 @@ zero, neutral, or default effort; compact Dashboard metadata omits the absent
 field rather than presenting a placeholder as a real value.
 _Avoid_: 中性推理, 默认推理强度, 零推理
 
+**模型代次（Model Generation）**:
+The complete version segment identifying a model family release line, such as
+`5.6`, `6`, or `6.1`. A dated alias belongs to its base model's generation;
+unrecognized models have no inferred generation.
+_Avoid_: 模型等级, 推理强度, 发布日期
+
+**模型家族图标（Model Family Icon）**:
+The stable visual identity assigned to a model family such as Astra, Sol, Luna,
+or Terra. Recognized generations of the same family share its icon and family
+color; generation text, rather than icon shape or color, distinguishes versions.
+_Avoid_: 代次图标, 推理状态, 上游品牌
+
 ## Invocation Timing
 
 **请求用时**:

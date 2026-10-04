@@ -5,7 +5,11 @@ import {
   REASONING_EFFORT_FALLBACK,
   type ReasoningEffortTone,
 } from "../invocations/invocation-table-reasoning";
-import { ModelIdentity, resolveModelIdentityGeneration } from "../shared/ModelIdentity";
+import {
+  ModelIdentity,
+  resolveModelIdentityGeneration,
+  resolveModelIdentityGenerationLabel,
+} from "../shared/ModelIdentity";
 
 const EFFORT_TEXT_CLASSNAMES: Record<ReasoningEffortTone, string> = {
   none: "text-base-content/68",
@@ -19,36 +23,26 @@ const EFFORT_TEXT_CLASSNAMES: Record<ReasoningEffortTone, string> = {
   unknown: "text-base-content/62",
 };
 
-const EFFORT_MARKER_CLASSNAMES: Record<ReasoningEffortTone, string> = {
-  none: "bg-base-content/45",
-  minimal: "bg-info/65",
-  low: "bg-info/80",
-  medium: "bg-primary/80",
-  high: "bg-warning/85",
-  xhigh: "bg-warning",
-  max: "bg-error/85",
-  ultra: "bg-error",
-  unknown: "bg-base-content/38",
-};
-
 export function ModelPerformanceModelIdentity({
   model,
   effortValue,
   className,
   modelClassName,
   testId,
+  showGeneration = false,
 }: {
   model: string;
   effortValue: string | null | undefined;
   className?: string;
   modelClassName?: string;
   testId?: string;
+  showGeneration?: boolean;
 }) {
   const effort = formatReasoningEffort(effortValue);
   const tone = effort === REASONING_EFFORT_FALLBACK ? "none" : getReasoningEffortTone(effort);
   const generation = resolveModelIdentityGeneration(model);
+  const generationLabel = showGeneration ? resolveModelIdentityGenerationLabel(model) : null;
   const hasModelIcon = generation !== null;
-  const isGpt6Identity = generation === 6;
   const accessibleLabel = `${model} · ${effort}`;
 
   return (
@@ -71,33 +65,38 @@ export function ModelPerformanceModelIdentity({
         ) : null}
         <span
           data-testid={testId ? `${testId}-badge` : undefined}
+          data-model-identity-badge=""
           className="inline-flex h-6 shrink-0 items-stretch overflow-hidden rounded-md border border-base-300/75 bg-base-200/58 leading-none"
         >
           {hasModelIcon ? (
             <>
-              <span className="flex w-6 shrink-0 items-center justify-center text-base-content/72">
-                <ModelIdentity
-                  model={model}
-                  presentation="embedded"
-                  className={isGpt6Identity ? "h-6 w-6" : undefined}
-                  iconClassName="h-3.5 w-3.5"
-                />
+              {generationLabel ? (
+                <span
+                  data-testid={testId ? `${testId}-generation` : undefined}
+                  data-model-generation-segment={generationLabel}
+                  className="flex shrink-0 items-center px-1.5 font-mono text-xs font-semibold text-base-content/72"
+                >
+                  {generationLabel}
+                </span>
+              ) : null}
+              <span
+                data-model-icon-segment=""
+                className="flex w-6 shrink-0 items-center justify-center text-base-content/72"
+              >
+                <ModelIdentity model={model} iconClassName="h-3.5 w-3.5" />
               </span>
               <span className="w-px shrink-0 bg-base-300/75" />
             </>
           ) : null}
           <span
             data-testid={testId ? `${testId}-effort` : undefined}
+            data-model-effort-segment={tone}
             data-reasoning-effort-tone={tone}
             className={cn(
               "flex items-center gap-1 px-1.5 text-xs font-semibold",
               EFFORT_TEXT_CLASSNAMES[tone],
             )}
           >
-            <span
-              data-testid={testId ? `${testId}-effort-marker` : undefined}
-              className={cn("h-1 w-1 shrink-0 rounded-full", EFFORT_MARKER_CLASSNAMES[tone])}
-            />
             <span className="max-w-20 truncate">{effort}</span>
           </span>
         </span>

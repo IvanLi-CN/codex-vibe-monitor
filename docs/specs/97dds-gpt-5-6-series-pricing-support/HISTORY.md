@@ -2,6 +2,8 @@
 
 ## Key Decisions
 
+- 2026-10-02: Linked read-only identity requirements to the generation/family presentation contract owned by `z9h7v-invocation-log-observability`. Frontend recognition extends to GPT-6.1 Astra/Sol/Luna, while pricing, discovery, capability checks, persisted usage and historical cost remain unchanged.
+
 - 2026-07-10: Created a dedicated topic spec because GPT-5.6 changes both the pricing contract and operator-facing model surfaces, which is larger than a one-off seed refresh.
 - 2026-07-10: Locked the pricing truth source to the official OpenAI 2026-07-08 GPT-5.6 pricing release rather than inheriting `sub2api` fallback billing behavior.
 - 2026-07-10: Chose additive compatibility for `cacheInputPer1m` so old payloads and existing saved rows continue to round-trip during the schema transition.
