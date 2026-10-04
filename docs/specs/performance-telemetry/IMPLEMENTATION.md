@@ -19,6 +19,9 @@ SDK 内部事件队列每 250 ms 排空，减少空队列的周期唤醒；事�
 该批处理设置在启动线程前桥接；完整候选开销仍由相同负载 A/B 验收。
 layer 只观测已匹配的 route template，排除任意 SPA fallback 路径与浏览器上报端点；
 浏览器上报不计入应用请求或 hotpath server 指标。
+浏览器 POST 路由入口先应用现有全局 120 次/分钟、客户端 30 次/分钟配额，
+同源、数值、JSON schema/syntax 与 body 大小拒绝也消耗配额；客户端身份仅保留在
+有界限流状态，不进入指标标签。真实 HTTP 回归覆盖混合拒绝的全局配额和单客户端配额。
 内部报告请求使用 hotpath 的原始 Authorization token，外部只读 API 仍使用独立
 Bearer Token；函数报告的平铺分位数规范化为 API 的固定嵌套对象，回归直接使用
 hotpath 依赖的序列化模型，避免手写 fixture 与真实 schema 不一致。

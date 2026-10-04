@@ -3778,7 +3778,12 @@ fn browser_ingest_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/api/system/observability/browser",
-            post(ingest_browser_observations).layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES)),
+            post(ingest_browser_observations)
+                .layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    browser_ingest_rate_limit,
+                )),
         )
         .with_state(state)
 }

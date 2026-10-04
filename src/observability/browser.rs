@@ -105,6 +105,34 @@ struct Event {
 pub(crate) struct BrowserRequest {
     events: Vec<Event>,
 }
+pub(crate) async fn browser_ingest_rate_limit(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let metrics = &state.observability;
+    // The reverse proxy owns client identity. It is used only in this bounded limiter, never as a label.
+    let client = request
+        .headers()
+        .get("x-real-ip")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    if !metrics
+        .browser_limiter
+        .lock()
+        .map(|mut limiter| limiter.allow(client))
+        .unwrap_or(false)
+    {
+        metrics.counter(
+            "cvm_browser_ingest_total",
+            &[("outcome", "rejected"), ("reason", "rate")],
+            1,
+        );
+        return StatusCode::TOO_MANY_REQUESTS.into_response();
+    }
+    next.run(request).await
+}
+
 pub(crate) async fn ingest_browser_observations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -132,24 +160,6 @@ pub(crate) async fn ingest_browser_observations(
             1,
         );
         return StatusCode::BAD_REQUEST.into_response();
-    }
-    // The reverse proxy owns client identity. It is used only in this bounded limiter, never as a label.
-    let client = headers
-        .get("x-real-ip")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown");
-    if !metrics
-        .browser_limiter
-        .lock()
-        .map(|mut limiter| limiter.allow(client))
-        .unwrap_or(false)
-    {
-        metrics.counter(
-            "cvm_browser_ingest_total",
-            &[("outcome", "rejected"), ("reason", "rate")],
-            1,
-        );
-        return StatusCode::TOO_MANY_REQUESTS.into_response();
     }
     for event in payload.events {
         let page = event.page.label();
