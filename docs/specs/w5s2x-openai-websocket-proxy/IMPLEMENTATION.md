@@ -38,14 +38,15 @@
 - Legacy tag cleanup now removes only non-system integer session references, so existing system-tag JSON survives long enough for the retirement migration to remove only the exact retired WebSocket tag.
 - Settings request deserialization tolerates old WebSocket fields as unknown input while response serialization omits them. Historical `transport="websocket"` rows remain readable and are labeled `WebSocket（历史）` in the UI.
 - The demo and account-pool fixtures no longer create live WebSocket records or capability tags; historical records remain in Records, invocation, and dashboard read fixtures.
+- After rebasing onto the current `origin/main` baseline, the remaining orphaned WebSocket message-conversion test and the unused pre-upstream WebSocket persistence helper were removed; the current baseline-only clippy fixes remain unrelated to the retired transport contract.
 
 ## Validation
 
 - Targeted Rust regression: the early `501` rejection, Settings compatibility, migration idempotency/rollback, and legacy system-tag cleanup tests pass.
 - `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
-- Web typecheck and production build pass. The changed-surface unit suite passes with `9` files and `295` tests, including demo Settings compatibility and expanded historical transport details. The Storybook suite passes (`131/131`, with `51` intentional skips). A full Web unit run had `4` unrelated existing failures in Prompt Cache, Today Stats, Model Performance, and Upstream Accounts tests under the repository's current parallel test environment; it otherwise reported `1648` passed and `6` skipped.
-- Backend resource profiles: lightweight `1110/1110` and archive-file-io `298/298` pass. The stateful-sqlite profile was exercised with its configured six test threads, reached `962/1338`, and was stopped after resource-contention failures and a projection test exceeded seven minutes; the four surfaced unrelated failures all pass when rerun in isolation, and the retirement/migration/network regressions pass in their targeted stateful runs.
-- `bun run lint:docs`, JSON validation for the migration/version evidence assets, and `git diff --check` pass. UI evidence covers the Settings page without WebSocket controls, the Records historical transport filter, and the historical transport chip.
+- Web unit tests pass: `1779 passed / 6 skipped`; typecheck, lint, and production build pass. The Storybook suite passes with `200/200` tests and `48` intentional skips.
+- Backend resource profiles: lightweight `1239/1239` and stateful-sqlite `1397/1397` pass. Archive-file-io reached `305/306`; the only failure is the baseline system-storage concurrent-deletion timing test, which also fails in isolation and is unrelated to this change.
+- `bun run lint:docs` and `git diff --check` pass. UI evidence covers the Settings page without WebSocket controls, the Records historical transport filter, and the historical transport chip.
 
 ## Retirement regression coverage
 

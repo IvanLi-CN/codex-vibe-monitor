@@ -4,6 +4,10 @@
 
 - 依据 [ADR 0020](../../adr/0020-retire-downstream-websocket-proxy.md) 将下游与上游 WebSocket 代理能力退役。保留旧设置列和历史 `transport="websocket"` 记录供迁移安全、审计和读取兼容使用；不再接受新的 WebSocket upgrade、创建新记录或重建 WebSocket capability tag。
 
+## 2026-10-05
+
+- 在更新后的 `origin/main` 基线上完成候选同步：移除未再编译的 WebSocket message-conversion 测试和无调用方的 pre-upstream WebSocket persistence helper；同步刷新当前 Rust、Web、文档和迁移验证记录。此轮没有改变退役合同或历史读取边界。
+
 ## 2026-07-07
 
 - 101 线上只读诊断确认：CIII、TeeTime 等第三方兼容 API-key upstream 能完成 `/v1/responses` WS 握手，但会在 `response.completed` 前关闭连接，客户端表现为 `websocket closed by server before response.completed`。
