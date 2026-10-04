@@ -907,6 +907,39 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         }
         for sequence, (scenario, key_mode, prompt_cache_key) in enumerate(slow_modes)
     ]
+    # Measure long upstream waits on admitted identities. Fresh-key pressure
+    # remains in every third fast request below; a permitted cold refusal must
+    # not prevent the long-wait fixture from reaching the mock upstream.
+    warmed_keys = set()
+    warmup_refusals = 0
+    for spec in slow_specs:
+        key = spec['prompt_cache_key']
+        if key in warmed_keys:
+            continue
+        for attempt in range(1, 6):
+            result = long_wait_proxy_once({
+                **spec,
+                'scenario': 'fast',
+                'key_mode': 'different' if key is not None else 'none',
+            }, 15)
+            if result['status'] == 200 and result['terminal'] is not None:
+                warmed_keys.add(key)
+                break
+            if (
+                result['status'] == 503
+                and result['invoke_id'] is None
+                and result['body'] == '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}'
+                and attempt < 5
+            ):
+                warmup_refusals += 1
+                continue
+            raise SystemExit(f'long-wait fixture admission failed: {result}')
+    print(json.dumps({
+        'phase': 'long-wait-fixture-ready',
+        'round': round_index,
+        'owners': len(warmed_keys),
+        'cold_refusals': warmup_refusals,
+    }), flush=True)
     started_at = time.perf_counter()
     slow_pool = ThreadPoolExecutor(max_workers=8)
     slow_futures = [slow_pool.submit(long_wait_proxy_once, spec, 195) for spec in slow_specs]
