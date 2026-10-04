@@ -344,6 +344,64 @@ async fn retention_task_local_service_rate_release_benchmark() {
         }
         samples
     });
+    // Exercise a real competing maintenance owner on the same pool, pressure gate,
+    // and write coordinator. Synthetic online traffic alone does not prove the
+    // accepted capacity contract under other background work.
+    let background_stopped = stopped.clone();
+    let background_pool = pool.clone();
+    let background_gate = gate.clone();
+    let background_coordinator = coordinator.clone();
+    let background_shutdown = Arc::new(tokio::sync::Notify::new());
+    let background_shutdown_wait = background_shutdown.clone();
+    let background = tokio::spawn(async move {
+        let control =
+            Arc::new(crate::maintenance_store::PromptCacheMaterializationControl::default());
+        let generation = control.initialize(true).generation;
+        let mut runs = 0_u64;
+        let mut scanned = 0_u64;
+        let mut updated = 0_u64;
+        let mut deferred = 0_u64;
+        let mut admission_defers = 0_u64;
+        let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        while !load_finished(&background_stopped) {
+            tokio::select! {
+                _ = ticker.tick() => {},
+                _ = background_shutdown_wait.notified() => break,
+            }
+            if load_finished(&background_stopped) {
+                break;
+            }
+            let Ok(_background_permit) = background_gate.try_begin_background("startup_backfill")
+            else {
+                admission_defers += 1;
+                continue;
+            };
+            let Some(_write_permit) =
+                background_coordinator.try_acquire(ProxySqliteWriteClass::P2Derived)
+            else {
+                admission_defers += 1;
+                continue;
+            };
+            let should_yield =
+                || background_coordinator.p2_should_yield() || load_finished(&background_stopped);
+            let run = crate::prompt_cache_conversations::run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &background_pool,
+                crate::STARTUP_BACKFILL_SCAN_LIMIT,
+                Some(Duration::from_secs(crate::STARTUP_BACKFILL_RUN_BUDGET_SECS)),
+                &should_yield,
+                &control,
+                generation,
+            )
+            .await
+            .expect("competing production Prompt materialization owner");
+            runs += 1;
+            scanned += run.scanned;
+            updated += run.updated;
+            deferred += u64::from(run.deferred);
+        }
+        (runs, scanned, updated, deferred, admission_defers)
+    });
     let started = Instant::now();
     let mut runs = 0;
     let mut timeouts = 0;
@@ -443,8 +501,10 @@ async fn retention_task_local_service_rate_release_benchmark() {
         }
     }
     stopped.store(true, Ordering::Release);
+    background_shutdown.notify_waiters();
     let reads = reader.await.expect("online reader join");
     let writes = writer.await.expect("online writer join");
+    let background = background.await.expect("background owner join");
     let seconds = started.elapsed().as_secs_f64();
     eprintln!(
         "retention-service-rate-result {}",
@@ -456,7 +516,14 @@ async fn retention_task_local_service_rate_release_benchmark() {
             "invocationArrivalRate":30_000.0/86_400.0,"attemptArrivalRate":36_000.0/86_400.0,"readWriteRatio":3,
             "readWriteRatioSource":"explicit conservative replay assumption; production HTTP method ratio unavailable",
             "loadMultiplier":load_multiplier,
+            "backgroundTask":"prompt_cache_conversations_materialization",
+            "backgroundRuns":background.0,"backgroundScanned":background.1,"backgroundUpdated":background.2,"backgroundDeferred":background.3,"backgroundAdmissionDefers":background.4,
+            "backgroundIntervalSeconds":15,"backgroundScanLimit":crate::STARTUP_BACKFILL_SCAN_LIMIT,"backgroundRunBudgetSeconds":crate::STARTUP_BACKFILL_RUN_BUDGET_SECS,
         })
+    );
+    assert!(
+        background.0 > 0 && background.1 + background.2 > 0,
+        "capacity trial did not exercise real competing background work"
     );
     if window.is_none() {
         assert_eq!(remaining, (0, 0));
