@@ -39,11 +39,16 @@
       ]
     },
     "verified": {
-      "impact": null,
-      "reasoning": "Pending implementation and candidate compatibility evidence; this record does not claim release readiness.",
-      "verified_at": null,
-      "evidence": [],
-      "status": "not-run"
+      "impact": "minor",
+      "reasoning": "Focused migration/reentry, legacy live-floor, delayed statistics and restart tests preserve earlier state and compact identifiers. Source inspection confirms no public API field or frontend contract change. Durable hourly ownership and allocator-exclusive ceilings establish the new writer contract. This compatibility classification does not certify full candidate acceptance or production readiness.",
+      "verified_at": "2026-10-05T04:52:00+08:00",
+      "evidence": [
+        "src/tests/stateful_sqlite/invocation_ranges.rs",
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+        "src/tests/archive_file_io/prompt_cache_control_file_lock.rs",
+        "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md"
+      ],
+      "status": "passed"
     }
   },
   "compatibility_evidence": {
@@ -51,26 +56,26 @@
       "change": "compatible",
       "planned_impact": "patch",
       "supported_consumer_range": "Existing HTTP/WebSocket consumers of the compact ID shape and existing Unavailable response contract; no PR2 response fields are added.",
-      "evidence": []
+      "evidence": ["src/proxy/payload_utils.rs: unchanged ID alphabet and length; no response schema or frontend field changes in this delivery"]
     },
     "persistent_state": {
       "applicable": true,
       "planned_impact": "minor",
       "state_description": "Business SQLite conversation ceilings and new hourly prefix ownership, with existing retained IDs and pending terminal journal reconciliation.",
-      "source_program_compatibility_range": "Supported existing 2.x schema/materialization sources, including pre-master, 2.85.1 partial staging, and 2.85.4 single-sequence fixtures; compatibility is planned, not verified.",
-      "evidence": []
+      "source_program_compatibility_range": "Existing schema/materialization sources exercised by fresh-schema, partial staging and legacy single-sequence/live-floor fixtures. The candidate preserves known historical IDs and durable recovery floors; earlier allocation writers are outside the migrated state's supported writer contract.",
+      "evidence": ["src/tests/stateful_sqlite/invocation_ranges.rs", "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs", "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs"]
     }
   },
   "release_unit": {
     "member_change_records": [
       "docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json"
     ],
-    "maximum_verified_impact": null,
+    "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "Planned public-api impact: Patch.",
-      "Planned persistent-state impact: Minor.",
-      "Planned maximum: Minor; verified maximum remains unset until candidate evidence is available."
+      "Compatible public API shape: Patch.",
+      "Verified earlier-state reading and new reservation writer authority: Minor.",
+      "Release-unit maximum: Minor. Full resource-profile, service and delivery gates remain separate obligations."
     ],
-    "validation_status": "pending"
+    "validation_status": "compatibility-passed; final-candidate-acceptance-pending"
   }
 }
