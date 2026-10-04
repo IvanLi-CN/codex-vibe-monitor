@@ -3327,6 +3327,10 @@ mod tests {
 
     #[tokio::test]
     async fn timeline_history_records_actual_execution_and_restart_gaps() {
+        // Keep observations inside the production history window on any calendar day.
+        let base_time = Utc::now() - ChronoDuration::minutes(1);
+        let timestamp =
+            |seconds| format_utc_iso_millis(base_time + ChronoDuration::seconds(seconds));
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect timeline history fixture");
@@ -3338,7 +3342,8 @@ mod tests {
             .await
             .expect("seed stable task colors");
         let store = MaintenanceStore::from_pool(pool);
-        sqlx::query("INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,duration_ms,status) VALUES('retention_archive','manual','2026-10-02T00:00:00.000Z',777,'running')")
+        sqlx::query("INSERT INTO managed_task_runs(task_key,trigger_kind,started_at,duration_ms,status) VALUES('retention_archive','manual',?,777,'running')")
+            .bind(timestamp(0))
             .execute(&store.pool)
             .await
             .expect("insert legacy-semantics run");
@@ -3349,7 +3354,7 @@ mod tests {
         .await
         .expect("load managed run id");
         store
-            .start_timeline_session("session-one", "2026-10-02T00:00:00.000Z")
+            .start_timeline_session("session-one", &timestamp(0))
             .await
             .expect("start first observation session");
         let events = [
@@ -3359,7 +3364,7 @@ mod tests {
                 title: "数据保留与归档".to_string(),
                 trigger_kind: "manual".to_string(),
                 execution_class: Some("maintenance_retention".to_string()),
-                started_at: "2026-10-02T00:00:01.000Z".to_string(),
+                started_at: timestamp(1),
                 managed_run_id: Some(run_id),
             },
             crate::task_timeline::TimelineEvent::DeferralStarted {
@@ -3367,27 +3372,27 @@ mod tests {
                 task_key: "retention_archive".to_string(),
                 reason: "pressure_cooldown".to_string(),
                 retry_at: None,
-                started_at: "2026-10-02T00:00:02.000Z".to_string(),
+                started_at: timestamp(2),
             },
         ];
         store
-            .write_timeline_batch("session-one", &events, 0, "2026-10-02T00:00:03.000Z", false)
+            .write_timeline_batch("session-one", &events, 0, &timestamp(3), false)
             .await
             .expect("write execution and deferral starts");
         let ends = [
             crate::task_timeline::TimelineEvent::ExecutionFinished {
                 id: "execution-one".to_string(),
-                finished_at: "2026-10-02T00:00:06.000Z".to_string(),
+                finished_at: timestamp(6),
                 duration_ms: 5_000,
                 status: "failed".to_string(),
             },
             crate::task_timeline::TimelineEvent::DeferralFinished {
                 id: "deferral-one".to_string(),
-                finished_at: "2026-10-02T00:00:05.000Z".to_string(),
+                finished_at: timestamp(5),
             },
         ];
         store
-            .write_timeline_batch("session-one", &ends, 2, "2026-10-02T00:00:07.000Z", false)
+            .write_timeline_batch("session-one", &ends, 2, &timestamp(7), false)
             .await
             .expect("write execution and deferral finishes");
         let actual_fields: (String, i64, String, i64) = sqlx::query_as(
@@ -3397,9 +3402,9 @@ mod tests {
         .fetch_one(&store.pool)
         .await
         .expect("read legacy and actual execution fields");
-        assert_eq!(actual_fields.0, "2026-10-02T00:00:00.000Z");
+        assert_eq!(actual_fields.0, timestamp(0));
         assert_eq!(actual_fields.1, 777);
-        assert_eq!(actual_fields.2, "2026-10-02T00:00:01.000Z");
+        assert_eq!(actual_fields.2, timestamp(1));
         assert_eq!(actual_fields.3, 5_000);
 
         let open_events = [
@@ -3409,12 +3414,12 @@ mod tests {
                 title: "数据保留与归档".to_string(),
                 trigger_kind: "interval".to_string(),
                 execution_class: None,
-                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+                started_at: timestamp(8),
                 managed_run_id: None,
             },
             crate::task_timeline::TimelineEvent::ExecutionUnknown {
                 id: "execution-unknown".to_string(),
-                last_observed_at: "2026-10-02T00:00:09.000Z".to_string(),
+                last_observed_at: timestamp(9),
             },
             crate::task_timeline::TimelineEvent::ExecutionStarted {
                 id: "execution-open".to_string(),
@@ -3422,7 +3427,7 @@ mod tests {
                 title: "连接池孤儿记录恢复".to_string(),
                 trigger_kind: "interval".to_string(),
                 execution_class: None,
-                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+                started_at: timestamp(8),
                 managed_run_id: None,
             },
             crate::task_timeline::TimelineEvent::DeferralStarted {
@@ -3430,12 +3435,12 @@ mod tests {
                 task_key: "pool_orphan_recovery".to_string(),
                 reason: "resource_busy".to_string(),
                 retry_at: None,
-                started_at: "2026-10-02T00:00:08.000Z".to_string(),
+                started_at: timestamp(8),
             },
             crate::task_timeline::TimelineEvent::CoverageGap {
                 id: "write-gap".to_string(),
-                started_at: "2026-10-02T00:00:09.000Z".to_string(),
-                finished_at: "2026-10-02T00:00:10.000Z".to_string(),
+                started_at: timestamp(9),
+                finished_at: timestamp(10),
                 reason: "maintenance_store_write_unavailable".to_string(),
             },
         ];
@@ -3449,18 +3454,12 @@ mod tests {
             title: "数据保留与归档".to_string(),
             trigger_kind: "manual".to_string(),
             execution_class: None,
-            started_at: "2026-10-02T00:00:12.000Z".to_string(),
+            started_at: timestamp(12),
             managed_run_id: None,
         };
         assert!(
             store
-                .write_timeline_batch(
-                    "session-one",
-                    &[unpersisted],
-                    0,
-                    "2026-10-02T00:00:13.000Z",
-                    true,
-                )
+                .write_timeline_batch("session-one", &[unpersisted], 0, &timestamp(13), true)
                 .await
                 .is_err()
         );
@@ -3469,17 +3468,11 @@ mod tests {
             .await
             .expect("restore maintenance writes");
         store
-            .write_timeline_batch(
-                "session-one",
-                &open_events,
-                2,
-                "2026-10-02T00:00:09.000Z",
-                false,
-            )
+            .write_timeline_batch("session-one", &open_events, 2, &timestamp(9), false)
             .await
             .expect("write open execution and deferral");
         store
-            .start_timeline_session("session-two", "2026-10-02T00:00:20.000Z")
+            .start_timeline_session("session-two", &timestamp(20))
             .await
             .expect("recover open observations after restart");
         let coverage: Vec<(String, String, Option<String>)> = sqlx::query_as(
@@ -3489,10 +3482,10 @@ mod tests {
         .await
         .expect("read coverage after failed shutdown persistence");
         assert_eq!(coverage[0].0, "session-one");
-        assert_eq!(coverage[0].1, "2026-10-02T00:00:09.000Z");
-        assert_eq!(coverage[0].2.as_deref(), Some("2026-10-02T00:00:09.000Z"));
+        assert_eq!(coverage[0].1, timestamp(9));
+        assert_eq!(coverage[0].2.as_deref(), Some(timestamp(9).as_str()));
         assert_eq!(coverage[1].0, "session-two");
-        assert_eq!(coverage[1].1, "2026-10-02T00:00:20.000Z");
+        assert_eq!(coverage[1].1, timestamp(20));
         let missing: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM task_timeline_segments WHERE segment_id='lost-on-shutdown'",
         )
@@ -3509,11 +3502,7 @@ mod tests {
         assert_eq!(recovered.len(), 2);
         assert!(recovered.iter().all(|row| row.1 == "interrupted"));
         assert!(recovered.iter().all(|row| row.2.is_none()));
-        assert!(
-            recovered
-                .iter()
-                .all(|row| row.3 == "2026-10-02T00:00:08.000Z")
-        );
+        assert!(recovered.iter().all(|row| row.3 == timestamp(8)));
         let gap: (String, String, Option<String>, String) = sqlx::query_as(
             "SELECT kind,started_at,finished_at,reason FROM task_timeline_segments WHERE segment_id='write-gap'",
         )
@@ -3521,8 +3510,8 @@ mod tests {
         .await
         .expect("read persisted maintenance-store gap");
         assert_eq!(gap.0, "coverage_gap");
-        assert_eq!(gap.1, "2026-10-02T00:00:09.000Z");
-        assert_eq!(gap.2.as_deref(), Some("2026-10-02T00:00:10.000Z"));
+        assert_eq!(gap.1, timestamp(9));
+        assert_eq!(gap.2.as_deref(), Some(timestamp(10).as_str()));
         assert_eq!(gap.3, "maintenance_store_write_unavailable");
         let unknown: (Option<String>, Option<i64>, String) = sqlx::query_as(
             "SELECT finished_at,duration_ms,status FROM task_timeline_segments WHERE segment_id='execution-unknown'",
@@ -3537,6 +3526,10 @@ mod tests {
 
     #[tokio::test]
     async fn dropped_event_gaps_are_persisted_as_bounded_intervals() {
+        // Keep observations inside the production history window on any calendar day.
+        let base_time = Utc::now() - ChronoDuration::minutes(1);
+        let timestamp =
+            |seconds| format_utc_iso_millis(base_time + ChronoDuration::seconds(seconds));
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect timeline gap fixture");
@@ -3549,39 +3542,27 @@ mod tests {
             .expect("seed stable task colors");
         let store = MaintenanceStore::from_pool(pool);
         store
-            .start_timeline_session("drop-session", "2026-10-02T00:00:00.000Z")
+            .start_timeline_session("drop-session", &timestamp(0))
             .await
             .expect("start drop session");
         let first = crate::task_timeline::TimelineEvent::CoverageGap {
             id: "drop-gap".to_string(),
-            started_at: "2026-10-02T00:00:05.000Z".to_string(),
-            finished_at: "2026-10-02T00:00:06.000Z".to_string(),
+            started_at: timestamp(5),
+            finished_at: timestamp(6),
             reason: "event_channel_overflow".to_string(),
         };
         store
-            .write_timeline_batch(
-                "drop-session",
-                &[first],
-                1,
-                "2026-10-02T00:00:06.000Z",
-                false,
-            )
+            .write_timeline_batch("drop-session", &[first], 1, &timestamp(6), false)
             .await
             .expect("persist first overflow interval");
         let extended = crate::task_timeline::TimelineEvent::CoverageGap {
             id: "drop-gap".to_string(),
-            started_at: "2026-10-02T00:00:05.000Z".to_string(),
-            finished_at: "2026-10-02T00:00:09.000Z".to_string(),
+            started_at: timestamp(5),
+            finished_at: timestamp(9),
             reason: "event_channel_overflow".to_string(),
         };
         store
-            .write_timeline_batch(
-                "drop-session",
-                &[extended],
-                4,
-                "2026-10-02T00:00:09.000Z",
-                false,
-            )
+            .write_timeline_batch("drop-session", &[extended], 4, &timestamp(9), false)
             .await
             .expect("extend overflow interval");
 
@@ -3597,8 +3578,8 @@ mod tests {
         .fetch_one(&store.pool)
         .await
         .expect("read cumulative drop count");
-        assert_eq!(persisted.0, "2026-10-02T00:00:05.000Z");
-        assert_eq!(persisted.1, "2026-10-02T00:00:09.000Z");
+        assert_eq!(persisted.0, timestamp(5));
+        assert_eq!(persisted.1, timestamp(9));
         assert_eq!(persisted.2, 3);
         assert_eq!(dropped_total, 4);
     }

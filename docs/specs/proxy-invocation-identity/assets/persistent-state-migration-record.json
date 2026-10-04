@@ -2,15 +2,15 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Introduce a durable prompt-cache conversation master and compact proxy invocation identity allocation, then add the additive latest-success route lookup index used by online routing checks.",
-    "release_unit_description": "Prompt-cache conversation background materialization follow-up for the conversation and invoke ID redesign.",
+    "description": "Make prompt-cache statistics rebuild progress continuous at each completed conversation while retaining direct recovery of existing partial-page staging.",
+    "release_unit_description": "Prompt-cache statistics checkpoint progress and resumable pagination.",
     "version_impact": "minor",
     "version_impact_scope": "topic_history",
     "current_candidate_version_impact": "patch"
   },
   "durable_state": {
     "description": "Prompt-cache conversation identity rows and delayed aggregate statistics derived from retained proxy invocations, with a durable refresh queue, freshness markers, and resumable phase/cursor state for background materialization; pool_upstream_request_attempts also has an additive partial success lookup index.",
-    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, maintenance-database managed_tasks and startup_backfill_progress control/checkpoint rows, the additive maintenance_metadata prompt_cache_materialization_control_origin_v1 marker, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, and idx_pool_attempts_account_model_success. No table or column is added by the control-consistency repair. The trigger-dependency repair replaces existing working-set trigger definitions and adds only the prompt_cache_working_set_relevant_updates_v1 completion row in schema_refresh_migrations.",
+    "storage_implementation": "SQLite prompt_cache_conversations table, prompt_cache_conversation_stats_refresh_queue table, prompt_cache_conversation_migration_progress table, prompt_cache_conversation_materialization_runs table, codex_invocations mutation triggers, maintenance-database managed_tasks and startup_backfill_progress control/checkpoint rows, the additive maintenance_metadata prompt_cache_materialization_control_origin_v1 marker, schema_refresh_migrations markers for identity backfill and aggregate-statistics freshness, idx_pool_attempts_account_model_success. No table or column is added by the control-consistency repair. The trigger-dependency repair replaces existing working-set trigger definitions and adds only the prompt_cache_working_set_relevant_updates_v1 completion row in schema_refresh_migrations.",
     "source_compatibility_range": {
       "from_program_versions": "0.2.x without prompt_cache_conversations",
       "to_program_version": "next minor release",
@@ -98,7 +98,7 @@
       },
       {
         "id": "dml-prompt-cache-conversation-statistics",
-        "description": "After identity coverage is complete, stats_rebuild traverses conversation keys and stages bounded 256-invocation pages. Only a generation-consistent final page publishes an aggregate and clears that queue generation; the outer key cursor advances after all required statistics are complete.",
+        "description": "After identity coverage is complete, stats_rebuild traverses conversation keys and stages bounded 256-invocation pages. A generation-consistent final page publishes the aggregate, clears its queue generation and staging, and advances the continuous outer key cursor in the same transaction; partial pages update staging only. Queue drain uses generation-matched queue deletion as its checkpoint.",
         "order": 9,
         "depends_on": [
           "dml-prompt-cache-conversation-identity-backfill"
@@ -146,7 +146,7 @@
     "pause_points": [
       "Schema installation stops after additive DDL and does not scan historical invocations, allowing HTTP readiness to continue.",
       "The operator control commits managed_tasks.enabled and its maintenance scheduler checkpoint together, then publishes the in-process generation. Disable stops new short SQL steps at the next boundary while an already registered step may finish; re-enable wakes from the durable business cursor.",
-      "Identity discovery commits adaptive 32..400-key identity batches with their cursor and counter. Statistics pages commit bounded staging progress separately; only complete aggregates advance the outer statistics cursor. A committed boundary may yield to priority or pause, and a process restart repeats only idempotent work. Completed pages and empty phase transitions use the remaining run budget; incomplete pages retain the 15-second follow-up.",
+      "Identity discovery commits adaptive 32..400-key identity batches with their cursor and counter. A final stats_rebuild page atomically commits aggregate publication, generation-bound queue/staging cleanup, and that conversation's continuous cursor. A committed partial page preserves only its staging cursor. Unchanged-source pages continue within the existing three-second run and two-second query budgets, with a 10 ms scheduler window and control/priority checks between pages; repeated pages consume one visited-key allowance. Budget exhaustion/source-generation change retains the 15-second follow-up; queue_drain completion is evidenced by queue deletion rather than the rebuild cursor. Incomplete statistics ETA is null.",
       "SQLite invocation mutation triggers enqueue affected prompt-cache keys and remove the freshness marker in the source transaction; startup recovery can rebuild aggregates and identities after a stopped release."
     ]
   },
@@ -169,7 +169,8 @@
         "Aggregate reads return the existing unavailable contract while identity, statistics, or queue completeness is not satisfied.",
         "A cache miss recovers the next sequence from retained invocation IDs.",
         "Retention releases orphan masters without a permanent ID blacklist.",
-        "The production terminal timing write does not recompute the live working set. Relevant mutations match a source rebuild; a failed completion-marker insertion rolls back legacy trigger replacement, and successful/repeated startup preserves live rows. Older service readers accept the unchanged tables and additive marker."
+        "The production terminal timing write does not recompute the live working set. Relevant mutations match a source rebuild; a failed completion-marker insertion rolls back legacy trigger replacement, and successful/repeated startup preserves live rows. Older service readers accept the unchanged tables and additive marker.",
+        "The SHA-bound Linux dual-database prompt-cache checkpoint acceptance requires three 600-second service-process rounds with cold, 2.85.1 partial-staging, and queue-drain recovery, exact aggregate/queue checks, and an older-reader compatibility probe; current metadata and raw samples are retained with the delivery evidence."
       ]
     }
   }

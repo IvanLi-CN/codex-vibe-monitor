@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Make prompt-cache materialization control and paged continuation consistent across the business and maintenance databases. Avoid redundant live Prompt projection scans for timing-only terminal writes and upgrade existing trigger dependencies atomically.",
-    "release_unit_description": "Prompt-cache materialization control consistency and bounded paged continuation.",
+    "description": "Make prompt-cache statistics rebuild checkpoints continuous per conversation and continue unchanged-source pages within the existing bounded run.",
+    "release_unit_description": "Prompt-cache statistics checkpoint progress and resumable pagination.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -17,8 +17,8 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The candidate changes only the internal control authority, pause boundary, and bounded continuation behavior for prompt-cache materialization. Existing routes and response fields remain stable, and the business-database legacy control value and durable schema remain unchanged.",
-      "assessed_at": "2026-10-02T00:00:00+08:00",
+      "reasoning": "The candidate changes only internal progress/checkpoint and pagination behavior. Existing routes, status fields, legacy state, tables, columns, and durable encodings remain unchanged.",
+      "assessed_at": "2026-10-03T23:59:00+08:00",
       "evidence": [
         "docs/adr/0022-prompt-cache-adaptive-materialization.md",
         "docs/adr/0023-task-operations-state-outside-main-database.md",
@@ -26,38 +26,36 @@
         "src/maintenance_store.rs",
         "src/maintenance/startup_backfill.rs",
         "src/prompt_cache_conversations.rs",
-        "docs/adr/0027-prompt-cache-materialization-step-boundaries.md"
+        "docs/adr/0027-prompt-cache-materialization-step-boundaries.md",
+        "docs/adr/0028-prompt-cache-continuous-statistics-checkpoints.md"
       ]
     },
     "current": {
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "The candidate remains within prompt-cache materialization control consistency, pause/resume boundaries, and bounded statistics-page continuation. No public request/response fields or SQLite tables/columns are added. The owner-authorized trigger correction remains within the same online-performance repair; it replaces existing triggers and adds a completion-marker row only."
+        "description": "The candidate remains within prompt-cache statistics checkpoint and bounded page-continuation behavior. No public request/response fields, SQLite tables/columns, or durable encodings are added or changed."
       },
-      "reasoning": "Prompt-cache enablement and its scheduler checkpoint use existing maintenance tables. A one-time origin marker preserves an existing maintenance control; only a newly created managed row may be seeded from the old business-database enable bit. The business value is unchanged, is not read by the run path, and is never synchronized back to the business database. No table or column is added or business row transformed. Existing control and status fields remain stable; unavailable maintenance control is returned through the existing 503 Unavailable error contract. Independent-database control and paging regressions cover the same injected control core. Linux service-process performance replay remains a separate SHA-bound delivery gate. The working-set UPDATE OF dependency guard excludes persistence timing while retaining all business projection dependencies. DDL and its completion row commit together; this trigger-only upgrade does not rebuild live rows or remove existing state.",
-      "reassessed_at": "2026-10-02T00:00:00+08:00",
+      "reasoning": "The rebuild cursor now advances atomically with each completed conversation's final statistics page and generation-matched queue/staging cleanup, using only existing columns. Partial-page staging and source-generation fences retain their prior encoding and meaning; queue drain remains keyed by its durable deletion checkpoint. No business row format or HTTP field changes. Existing PATCH/GET contracts remain stable; incomplete statistics ETA uses the existing nullable field. Independent SQLite tests and the required Linux service replay validate progress and recovery.",
+      "reassessed_at": "2026-10-03T23:59:00+08:00",
       "evidence": [
-        "src/maintenance_store.rs",
-        "src/maintenance/startup_backfill.rs",
         "src/prompt_cache_conversations.rs",
         "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs",
-        "src/schema.rs",
-        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs",
-        "src/schema/prompt_cache_working_set_triggers.rs"
+        "docs/adr/0028-prompt-cache-continuous-statistics-checkpoints.md"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Both control PATCH routes and status GET retain existing fields and the existing unavailable error contract. Independent-database control, pagination, generation-change/restart, and status regressions passed. An earlier b6829559 service process read a copied partial-materialization database written by 13cb054b, whose table/column structure and record encodings are unchanged by the final step-boundary correction: health and status GET passed, integrity stayed valid, all 4577 invocation rows and 401 conversations remained, and the additive control-origin metadata was preserved. This verifies compatibility; current-candidate performance acceptance is recorded separately in delivery evidence. The trigger-dependency correction retains existing table/column and row encodings. Production-path and atomic upgrade regressions verify timing writes, relevant projection mutations, interruption rollback and repeated startup. Current-candidate old-reader and Linux runtime evidence must also be passed and SHA-bound by the delivery gate.",
-      "verified_at": "2026-10-03T03:59:03+08:00",
+      "reasoning": "Both control PATCH routes and status GET retain their existing fields. The final statistics page publishes the aggregate, clears matching staging/queue state, and advances the existing cursor in one business-database transaction; partial pages retain the existing staging encoding. Independent-database regressions, the full backend resource profiles, old-state recovery tests, and the candidate Linux replay provide the direct evidence. No table, column, durable encoding, or public response field is added.",
+      "verified_at": "2026-10-03T23:08:30Z",
       "evidence": [
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/old-reader-http.json",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/compatibility-control/result.json",
-        "src/maintenance_store.rs: existing_maintenance_prompt_cache_control_and_checkpoint_win_over_legacy_state and legacy_only_prompt_cache_control_is_imported_once_into_maintenance",
-        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: independent-database control, status, single-traversal paging, and restart regressions",
-        "src/api/slices/system_routes_and_tasks.rs: prompt_cache_control_patch_paths_share_the_injected_maintenance_store",
-        "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs: production timing, projection mutations and atomic legacy-trigger upgrade regressions"
+        "src/prompt_cache_conversations.rs: final-page publication/cursor transaction and bounded continuation",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: focused control/checkpoint regressions",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-baseline-run-metadata.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-run-metadata.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-quality.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/budget-no-scan-6c3dac1a.log",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-loadgen.jsonl"
       ]
     }
   },
@@ -71,12 +69,12 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "Existing maintenance-database managed task and scheduler checkpoint rows plus one additive maintenance_metadata control-origin marker, and business-database prompt-cache identity, statistics staging, queue, and progress rows. No new table or column is added. Existing working-set trigger definitions are replaced atomically with one schema_refresh_migrations completion row; no source data is transformed.",
+      "state_description": "Existing maintenance-database managed task and scheduler checkpoint rows plus one additive maintenance_metadata control-origin marker, and business-database prompt-cache identity, statistics staging, queue, and progress rows. No new table or column is added. Statistics final-page publication and cursor advancement reuse existing rows and encodings; no source data is transformed.",
       "source_program_compatibility_range": "Earlier application versions that understand the existing prompt-cache and maintenance tables can read the unchanged schema and ignore the additive metadata key. On rollback, older prompt-cache task code may again use its legacy business-database enable bit; this candidate neither rewrites nor removes that value.",
       "evidence": [
-        "Prompt-cache materialization uses existing maintenance managed_tasks/checkpoint rows; one maintenance metadata marker records whether the prompt-cache task row existed before seeding so stale legacy state cannot overwrite an existing control. A business-only legacy value can seed a newly created control once, and is not changed by the repair.",
-        "The two existing PATCH routes retain their request/response fields; the status GET retains its response shape and deferReason string field, including distinct bounded-retry reasons.",
-        "The existing trigger names and live-window/key reconciliation remain stable. Terminal timing columns remain writable without projection recomputation. Atomic DDL/marker rollback and repeated-startup preservation are checked by prompt_working_set_trigger_upgrade_is_atomic_and_reentrant_without_row_rebuild; exact current-writer/older-reader results are separately bound to the delivery candidate."
+        "Existing prompt_cache_conversations, stats_refresh_queue, stats_refresh_staging, and migration_progress rows are reused; the final-page transaction and partial-page staging preserve their existing columns and encodings.",
+        "The 2.85.1 empty cursor, partial staging, completed aggregate, and queue-drain states are exercised by the focused restart/continuation regressions and the candidate fixture.",
+        "The older application image reads the candidate database through the compatibility-read step without schema conversion or deletion; the result is recorded in the candidate run evidence."
       ]
     }
   },
