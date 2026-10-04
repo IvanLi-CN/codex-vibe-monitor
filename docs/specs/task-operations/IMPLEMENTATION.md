@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: requirements `REQ-TASK-OPS-001..014` are implemented, including durable run workload samples, bounded detail refresh, recent-run charts, Retention backlog Tabs, and conditional estimates. Current-candidate visual evidence is awaiting owner confirmation; formal review and PR CI remain delivery gates.
+- Implementation: requirements `REQ-TASK-OPS-001..014` are implemented, including durable run workload samples, bounded detail refresh, recent-run charts, Retention backlog Tabs, and conditional estimates. The owner confirmed the current-candidate visual evidence on 2026-10-04; formal review and PR CI remain delivery gates.
 - Lifecycle: active
 - Catalog note: Runtime snapshots remain process-local, while execution identity and historical intervals are persisted in the maintenance SQLite database and merged by execution UID when both sources overlap.
 - Requirements coverage: `REQ-TASK-OPS-010..014` are implemented. Shared backend profiles and current-candidate unit, type, lint, build, Storybook, and Spec checks passed; earlier timeline evidence does not validate the task-detail charts.
@@ -37,9 +37,9 @@
 - Shared testbox backend profiles passed: `lightweight` 1,291, `stateful-sqlite` 1,385, and `archive-file-io` 300 tests. Local `cargo fmt --all -- --check`, locked all-target/all-feature `cargo check`, and locked all-target/all-feature Clippy with warnings denied passed.
 - The subset-relation regression for incompatible units passed, followed by current-code `cargo check --locked --all-targets --all-features` and Clippy with warnings denied. `cargo fmt --all -- --check` passed.
 - Web unit tests passed (1,744 passed, 6 skipped); focused `TaskWorkloadTrend` and `SystemWorkspace` Storybook stories passed 66 tests. Web typecheck, lint, and production build passed. Lint reported 96 existing warnings; build reported stale Browserslist data and large-chunk warnings.
-- `SPEC.md` contract validation and Spec drift checks against the locked baseline passed. The five final Demo candidates were compared against their exact intended asset paths; all are `current-only`, so owner confirmation is required before adding canonical images.
+- `SPEC.md` contract validation and Spec drift checks against the locked baseline passed. The five final Demo candidates were compared against their exact intended asset paths; all were `current-only`, then owner-confirmed and persisted in `SPEC.md` and `assets/` on 2026-10-04.
 - Recorder and maintenance-store tests cover persistence without detail subscribers, restart recovery, monotonic sample ordering, legacy unknowns, and queue-overflow gaps. A controlled live run streamed a task-scoped detail event and retained the same two workload identities and values after restart. With the maintenance database held under a 40-second write lock, 23 samples (8 success, 15 confirmed skip) were generated and persisted with their original attempt times after the lock released; `/health` stayed `200` in 21 ms, and the business database had no workload table. A new manual run request correctly returned `409` because its scheduler control record could not be persisted, so no unaccepted run was dispatched. This closes A3's controlled persistence/congestion evidence without representing a production workload or promising ETA accuracy.
-- Remaining delivery gates: owner acceptance of the displayed current-candidate images, four Tier 3 read-only review lanes, live PR checks, and the Fast Flow merge-ready handoff. No merge or release has been performed.
+- Remaining delivery gates: four Tier 3 read-only review lanes, live PR checks, and the Fast Flow merge-ready handoff. No merge or release has been performed.
 
 ## Verification Commands
 
