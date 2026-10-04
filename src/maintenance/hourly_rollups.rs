@@ -3774,20 +3774,6 @@ pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
     build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state))
 }
 
-fn browser_ingest_router(state: Arc<AppState>) -> Router {
-    Router::new()
-        .route(
-            "/api/system/observability/browser",
-            post(ingest_browser_observations)
-                .layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES))
-                .layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    browser_ingest_rate_limit,
-                )),
-        )
-        .with_state(state)
-}
-
 fn build_app_router_without_browser(state: Arc<AppState>) -> Router {
     build_proxy_routes(build_event_routes(build_external_routes(
         build_pool_routes(build_system_routes(build_stats_routes(

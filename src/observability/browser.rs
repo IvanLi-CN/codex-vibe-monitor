@@ -1,6 +1,21 @@
 use crate::*;
 
 pub(crate) const BROWSER_MAX_BYTES: usize = 2048;
+
+pub(crate) fn browser_ingest_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route(
+            "/api/system/observability/browser",
+            post(ingest_browser_observations)
+                .layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES))
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    browser_ingest_rate_limit,
+                )),
+        )
+        .with_state(state)
+}
+
 #[derive(Debug)]
 pub(super) struct BrowserLimiter {
     started: Instant,
@@ -105,7 +120,7 @@ struct Event {
 pub(crate) struct BrowserRequest {
     events: Vec<Event>,
 }
-pub(crate) async fn browser_ingest_rate_limit(
+async fn browser_ingest_rate_limit(
     State(state): State<Arc<AppState>>,
     request: Request<Body>,
     next: axum::middleware::Next,
@@ -133,7 +148,7 @@ pub(crate) async fn browser_ingest_rate_limit(
     next.run(request).await
 }
 
-pub(crate) async fn ingest_browser_observations(
+async fn ingest_browser_observations(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Json(payload): Json<BrowserRequest>,

@@ -17,9 +17,7 @@ mod sampler;
 #[cfg(test)]
 #[path = "../../vendor/hotpath/src/lib_on/sql/normalize.rs"]
 mod hotpath_sql_normalization;
-pub(crate) use browser::{
-    BROWSER_MAX_BYTES, browser_ingest_rate_limit, ingest_browser_observations,
-};
+pub(crate) use browser::{BROWSER_MAX_BYTES, browser_ingest_router};
 pub(crate) use config::{ObservabilityConfig, prepare_hotpath};
 pub(crate) use http::{observability_http_middleware, retired_performance_preflight};
 pub(crate) use reports::{hotpath_report, observability_capabilities};
