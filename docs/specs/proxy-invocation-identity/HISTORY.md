@@ -36,3 +36,4 @@
 - `./IMPLEMENTATION.md`
 
 - Mainline integration preserves the generation-fenced disabled-result path and constructs maintenance test stores through the shared injected-control constructor.
+- The statistics rebuild cursor used to wait for the full logical key batch. A completed large conversation could have its staging deleted, then be selected and scanned again whenever a later large key yielded. The successor rule in [ADR 0028](../../adr/0028-prompt-cache-continuous-statistics-checkpoints.md) advances the continuous key prefix in the same transaction as final-page aggregate publication and matching queue/staging deletion; queue drain continues to use queue deletion as its checkpoint. Unchanged-source pages continue inside the existing run/query budgets, and incomplete statistics ETA is null. Existing 2.85.1 partial staging and empty outer cursors remain directly resumable; no durable schema or API fields change.

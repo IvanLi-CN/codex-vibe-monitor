@@ -26,6 +26,364 @@ async fn prompt_cache_materialization_maintenance_store(enabled: bool) -> Mainte
     store
 }
 
+async fn prompt_cache_statistics_checkpoint_fixture(counts: &[usize]) -> SqlitePool {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("independent business sqlite");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    ensure_schema(&pool).await.expect("install schema");
+    let mut tx = pool.begin().await.expect("begin checkpoint fixture");
+    for (key, count) in counts.iter().enumerate() {
+        for index in 0..*count {
+            sqlx::query(
+                "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,payload,raw_response) \
+                 VALUES (?1,'2026-09-01T00:00:00Z',?2,'success',1,?3,'{}')",
+            )
+            .bind(format!("checkpoint-{key}-{index}"))
+            .bind(SOURCE_PROXY)
+            .bind(json!({"promptCacheKey": format!("checkpoint-key-{key:03}")}).to_string())
+            .execute(&mut *tx)
+            .await
+            .expect("insert checkpoint invocation");
+        }
+    }
+    tx.commit().await.expect("commit checkpoint fixture");
+    run_prompt_cache_conversations_materialization(&pool, counts.len() as u64, None)
+        .await
+        .expect("commit fixture identity discovery");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_migration_progress SET phase='stats_rebuild',cursor_key=NULL \
+         WHERE migration_name='prompt_cache_conversations_materialization_v1'",
+    )
+    .execute(&pool)
+    .await
+    .expect("start statistics rebuild from its first key");
+    sqlx::query(
+        "INSERT OR IGNORE INTO schema_refresh_migrations (migration_name) VALUES ('prompt_cache_conversations_v1')",
+    )
+    .execute(&pool)
+    .await
+    .expect("record complete identity coverage");
+    sqlx::query("CREATE TABLE checkpoint_publications (prompt_cache_key TEXT NOT NULL)")
+        .execute(&pool)
+        .await
+        .expect("create publication observation table");
+    sqlx::query(
+        "CREATE TRIGGER checkpoint_publication AFTER UPDATE OF request_count ON prompt_cache_conversations \
+         BEGIN INSERT INTO checkpoint_publications VALUES (NEW.prompt_cache_key); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("observe real statistics publications");
+    pool
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_checkpoint_continues_multiple_large_keys_in_one_run() {
+    let counts = [1, 512, 37, 768, 257];
+    let pool = prompt_cache_statistics_checkpoint_fixture(&counts).await;
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("trusted control").generation;
+    let outcome = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        Some(Duration::from_secs(3)),
+        &|| false,
+        control,
+        generation,
+    )
+    .await
+    .expect("materialize unchanged multi-key statistics");
+    assert!(
+        outcome.complete,
+        "partial source pages must use the remaining run budget"
+    );
+    let actual: Vec<i64> = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations ORDER BY prompt_cache_key",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("read exact aggregates");
+    assert_eq!(actual, counts.map(|count| count as i64));
+    let publications: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkpoint_publications")
+        .fetch_one(&pool)
+        .await
+        .expect("count complete publications");
+    assert_eq!(publications, counts.len() as i64);
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_checkpoint_rolls_back_publication_when_cursor_commit_fails() {
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[37]).await;
+    sqlx::query(
+        "CREATE TRIGGER fail_checkpoint BEFORE UPDATE OF cursor_key ON prompt_cache_conversation_migration_progress \
+         WHEN NEW.phase='stats_rebuild' AND NEW.cursor_key IS NOT NULL \
+         BEGIN SELECT RAISE(ABORT,'checkpoint commit failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("inject a final-page checkpoint failure");
+    let result = run_prompt_cache_conversations_materialization(&pool, 400, None).await;
+    assert!(result.is_err(), "the final checkpoint must fail");
+    let (request_count, queue_count, publications): (i64, i64, i64) = sqlx::query_as(
+        "SELECT request_count, \
+         (SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue), \
+         (SELECT COUNT(*) FROM checkpoint_publications) FROM prompt_cache_conversations",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("read atomic publication state");
+    assert_eq!((request_count, queue_count, publications), (0, 1, 0));
+    sqlx::query("DROP TRIGGER fail_checkpoint")
+        .execute(&pool)
+        .await
+        .expect("remove injected failure");
+    let repaired = run_prompt_cache_conversations_materialization(&pool, 400, None)
+        .await
+        .expect("resume after transaction failure");
+    assert!(repaired.complete);
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_budget_before_connection_does_not_count_a_scanned_key() {
+    let business = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("independent single-connection business pool");
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("trusted control").generation;
+    let held_connection = business.acquire().await.expect("hold business connection");
+    let (scanned, updated, reason) = run_prompt_cache_statistics_key_with_budget_for_test(
+        &business,
+        "unvisited-key".to_owned(),
+        Duration::from_millis(50),
+        control,
+        generation,
+    )
+    .await
+    .expect("connection wait consumes only the statistics budget");
+    assert_eq!(reason, Some("stats_budget_exhausted"));
+    assert_eq!((scanned, updated), (0, 0));
+    drop(held_connection);
+    assert!(business.acquire().await.is_ok(), "no connection is leaked");
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_checkpoint_budget_preserves_prefix_and_real_work_counts() {
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[1, 10_000, 1]).await;
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("trusted control").generation;
+    let run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        Some(Duration::from_millis(150)),
+        &|| false,
+        control,
+        generation,
+    )
+    .await
+    .expect("bounded statistics run");
+    assert_eq!(run.defer_reason, Some("stats_budget_exhausted"));
+    assert_eq!(
+        run.scanned, 2,
+        "a partial key consumes one allowance; the later key is untouched"
+    );
+    assert_eq!(run.updated, 1, "only the completed key was published");
+    let cursor: Option<String> =
+        sqlx::query_scalar("SELECT cursor_key FROM prompt_cache_conversation_migration_progress")
+            .fetch_one(&pool)
+            .await
+            .expect("continuous checkpoint");
+    assert_eq!(cursor.as_deref(), Some("checkpoint-key-000"));
+    let status =
+        load_prompt_cache_conversation_materialization_status(&pool, &maintenance.pool, control)
+            .await
+            .expect("incomplete statistics status");
+    assert_eq!(status.estimated_remaining_ms, None);
+    // Restoring the control object models process restart, leaving business checkpoints intact.
+    let restarted = MaintenanceStore::from_pool(maintenance.pool.clone());
+    restarted
+        .initialize_prompt_cache_materialization_control(
+            "startup_backfill.prompt_cache_conversations_materialization",
+            StartupBackfillTask::PromptCacheConversationsMaterialization.name(),
+        )
+        .await
+        .expect("restore maintenance control");
+    let generation = restarted
+        .prompt_cache_materialization_control
+        .snapshot()
+        .unwrap()
+        .generation;
+    let done = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        Some(Duration::from_secs(3)),
+        &|| false,
+        &restarted.prompt_cache_materialization_control,
+        generation,
+    )
+    .await
+    .expect("resume partial key after restart");
+    assert!(done.complete);
+    assert_eq!(done.scanned, 2);
+    assert_eq!(done.updated, 2);
+    let publications: Vec<String> =
+        sqlx::query_scalar("SELECT prompt_cache_key FROM checkpoint_publications ORDER BY rowid")
+            .fetch_all(&pool)
+            .await
+            .expect("publication sequence");
+    assert_eq!(
+        publications,
+        [
+            "checkpoint-key-000",
+            "checkpoint-key-001",
+            "checkpoint-key-002"
+        ]
+    );
+    let status = load_prompt_cache_conversation_materialization_status(
+        &pool,
+        &maintenance.pool,
+        &restarted.prompt_cache_materialization_control,
+    )
+    .await
+    .expect("complete statistics status");
+    assert_eq!(status.estimated_remaining_ms, Some(0));
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_checkpoint_pause_cancels_only_future_pages_and_requeues_changed_prefix()
+ {
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[37, 4096, 58]).await;
+    let maintenance =
+        std::sync::Arc::new(prompt_cache_materialization_maintenance_store(true).await);
+    let generation = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .unwrap()
+        .generation;
+    let observer_pool = pool.clone();
+    let observer_store = maintenance.clone();
+    let observer = tokio::spawn(async move {
+        loop {
+            let staged: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-001' AND cursor_id > 0",
+            ).fetch_one(&observer_pool).await.expect("observe committed partial page");
+            if staged > 0 {
+                observer_store
+                    .update_prompt_cache_materialization_control(
+                        "startup_backfill.prompt_cache_conversations_materialization",
+                        StartupBackfillTask::PromptCacheConversationsMaterialization.name(),
+                        false,
+                    )
+                    .await
+                    .expect("pause between committed pages");
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let run = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &|| false,
+        &maintenance.prompt_cache_materialization_control,
+        generation,
+    )
+    .await
+    .expect("stop after registered page commits");
+    observer.await.expect("pause observer");
+    assert!(
+        run.defer_reason == Some("operator_disabled") || run.control_generation_changed,
+        "pause at the page boundary must prevent the next page: {run:?}"
+    );
+    assert_eq!((run.scanned, run.updated), (2, 1));
+    let staged_cursor: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-001'",
+    ).fetch_one(&pool).await.expect("durable partial cursor");
+    assert!(staged_cursor > 37 && staged_cursor < 37 + 4096);
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,payload,raw_response) VALUES ('prefix-new','2026-09-02T00:00:00Z','proxy','success',1,?,'{}')",
+    ).bind(json!({"promptCacheKey":"checkpoint-key-000"}).to_string())
+    .execute(&pool).await.expect("enqueue new source behind completed prefix");
+    maintenance
+        .update_prompt_cache_materialization_control(
+            "startup_backfill.prompt_cache_conversations_materialization",
+            StartupBackfillTask::PromptCacheConversationsMaterialization.name(),
+            true,
+        )
+        .await
+        .expect("resume with a new control generation");
+    let generation = maintenance
+        .prompt_cache_materialization_control
+        .snapshot()
+        .unwrap()
+        .generation;
+    let done = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        None,
+        &|| false,
+        &maintenance.prompt_cache_materialization_control,
+        generation,
+    )
+    .await
+    .expect("finish rebuild and drain changed prefix");
+    assert!(done.complete);
+    let publications: Vec<String> =
+        sqlx::query_scalar("SELECT prompt_cache_key FROM checkpoint_publications ORDER BY rowid")
+            .fetch_all(&pool)
+            .await
+            .expect("only changed prefix gets a second publication");
+    assert_eq!(
+        publications,
+        [
+            "checkpoint-key-000",
+            "checkpoint-key-001",
+            "checkpoint-key-002",
+            "checkpoint-key-000"
+        ]
+    );
+    let count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations WHERE prompt_cache_key='checkpoint-key-000'",
+    ).fetch_one(&pool).await.expect("exact changed aggregate");
+    assert_eq!(count, 38);
+}
+
+#[tokio::test]
+async fn prompt_cache_statistics_checkpoint_queue_drain_does_not_use_rebuild_cursor() {
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[512, 768, 58]).await;
+    sqlx::query("UPDATE prompt_cache_conversation_migration_progress SET phase='queue_drain',cursor_key='preserved-until-complete'")
+        .execute(&pool).await.expect("old queue-drain checkpoint");
+    let run = run_prompt_cache_conversations_materialization(&pool, 1, None)
+        .await
+        .expect("drain only first multi-page conversation");
+    assert_eq!((run.scanned, run.updated), (1, 1));
+    let cursor: String =
+        sqlx::query_scalar("SELECT cursor_key FROM prompt_cache_conversation_migration_progress")
+            .fetch_one(&pool)
+            .await
+            .expect("queue drain leaves scan cursor alone");
+    assert_eq!(cursor, "preserved-until-complete");
+    let done = run_prompt_cache_conversations_materialization(&pool, 400, None)
+        .await
+        .expect("remaining queued conversations advance");
+    assert!(done.complete);
+    assert_eq!((done.scanned, done.updated), (2, 2));
+    let publications: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkpoint_publications")
+        .fetch_one(&pool)
+        .await
+        .expect("each queued conversation published once");
+    assert_eq!(publications, 3);
+}
+
 #[tokio::test]
 async fn prompt_cache_materialization_status_reports_progress_history_and_control() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -284,7 +642,10 @@ async fn prompt_cache_materialization_large_key_is_paged_once_across_phases() {
         }
     }
     assert!(complete, "materialization must converge");
-    assert_eq!(pending_pages, 4, "each 256-row page must be scanned once");
+    assert_eq!(
+        pending_pages, 0,
+        "unchanged pages continue within the same run"
+    );
     let count: i64 = sqlx::query_scalar(
         "SELECT request_count FROM prompt_cache_conversations WHERE prompt_cache_key='single-scan-key'",
     )
@@ -336,7 +697,25 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
         .prompt_cache_materialization_control
         .snapshot()
         .expect("initialized materialization control");
-    let should_yield = || false;
+    let yielded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observer_pool = pool.clone();
+    let observer_yielded = yielded.clone();
+    let observer = tokio::spawn(async move {
+        loop {
+            let staged: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging WHERE cursor_id > 0",
+            )
+            .fetch_one(&observer_pool)
+            .await
+            .expect("observe a committed page before yielding");
+            if staged > 0 {
+                observer_yielded.store(true, std::sync::atomic::Ordering::SeqCst);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+    let should_yield = || yielded.load(std::sync::atomic::Ordering::SeqCst);
     let first_page = run_prompt_cache_conversations_materialization_with_pressure_and_control(
         &pool,
         400,
@@ -347,7 +726,9 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
     )
     .await
     .expect("run first statistics page");
-    assert_eq!(first_page.defer_reason, Some("stats_page_pending"));
+    observer.await.expect("page-boundary priority observer");
+    assert_eq!(first_page.defer_reason, Some("coordinator_priority"));
+    let should_yield = || false;
     let (outer_cursor, completed_keys): (Option<String>, i64) = sqlx::query_as(
         "SELECT cursor_key,completed_keys FROM prompt_cache_conversation_migration_progress \
          WHERE migration_name='prompt_cache_conversations_materialization_v1'",
@@ -498,7 +879,7 @@ async fn prompt_cache_materialization_status_does_not_report_complete_with_pendi
     .expect("load incomplete materialization status");
     assert_eq!(status.queue_pending, 1);
     assert_ne!(status.progress_percent, Some(100.0));
-    assert_ne!(status.estimated_remaining_ms, Some(0));
+    assert_eq!(status.estimated_remaining_ms, None);
 }
 
 #[tokio::test]

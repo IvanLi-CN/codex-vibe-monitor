@@ -144,3 +144,7 @@ runner，测量串行执行同一镜像的运行时场景和三对 300 秒 A/B�
 开销预算。失败产物按 run/attempt 留存并阻断现有 Build Artifacts 门禁。
 共享测试机只签发运行时集成卡；此前受干扰的 A/B 保留为诊断记录，不用于证明预算。
 当前实现已接入工作流，是否通过以对应候选的 Actions 场景结果与验收卡为准。
+
+主线的连续统计检查点修复保留；其 `prompt-cache-checkpoint`、旧版本读取检查和
+服务代码身份记录迁入业务 `shared-testbox-proxy-runtime-acceptance`，避免重新引入
+已退役的性能采集器或允许共享测试机签发观测开销预算证明。

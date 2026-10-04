@@ -10,8 +10,11 @@ Run the business proxy allocation and prompt-cache task-control workloads on cod
 Options:
   --testbox HOST       SSH host alias (default: codex-testbox)
   --reuse-image TAG    Skip docker build and reuse an existing image tag
-  --scenario NAME      prompt-cache-control (default) or long-wait
+  --service-code-sha SHA  Code SHA inside a reused baseline image
+  --compat-image TAG    Older image for a checkpoint read-compatibility smoke
+  --scenario NAME      prompt-cache-control (default), prompt-cache-checkpoint, or long-wait
   --mode NAME          baseline or candidate for prompt-cache-control (default: candidate)
+  --mock-delay-ms N    Override the synthetic upstream delay
   --duration SECONDS   Candidate round duration (default: 300)
   --rounds COUNT       Candidate round count (default: 3)
   --rate COUNT         Proxy requests per second (default: 4)
@@ -23,6 +26,10 @@ USAGE
 
 TESTBOX="codex-testbox"
 REUSE_IMAGE_TAG=""
+SERVICE_CODE_SHA=""
+COMPAT_IMAGE_TAG=""
+MOCK_UPSTREAM_DELAY_MS=""
+MOCK_DELAY_SET=0
 PROMPT_CACHE_CONTROL_MODE="candidate"
 DURATION_SECONDS=300
 ROUNDS=3
@@ -41,12 +48,25 @@ while [ "$#" -gt 0 ]; do
       REUSE_IMAGE_TAG="$2"
       shift 2
       ;;
+    --service-code-sha)
+      SERVICE_CODE_SHA="$2"
+      shift 2
+      ;;
+    --compat-image)
+      COMPAT_IMAGE_TAG="$2"
+      shift 2
+      ;;
     --scenario)
       SCENARIO="$2"
       shift 2
       ;;
     --mode)
       PROMPT_CACHE_CONTROL_MODE="$2"
+      shift 2
+      ;;
+    --mock-delay-ms)
+      MOCK_UPSTREAM_DELAY_MS="$2"
+      MOCK_DELAY_SET=1
       shift 2
       ;;
     --duration)
@@ -82,14 +102,31 @@ case "$PROMPT_CACHE_CONTROL_MODE" in
   *) echo '--mode must be baseline or candidate' >&2; exit 2 ;;
 esac
 case "$SCENARIO" in
-  prompt-cache-control|long-wait) ;;
-  *) echo '--scenario must be prompt-cache-control or long-wait' >&2; exit 2 ;;
+  prompt-cache-control|prompt-cache-checkpoint|long-wait) ;;
+  *) echo '--scenario must be prompt-cache-control, prompt-cache-checkpoint, or long-wait' >&2; exit 2 ;;
 esac
 if [ "$SCENARIO" = "prompt-cache-control" ] && [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
   if [ "$DURATION_SECONDS" != 300 ] || [ "$ROUNDS" != 3 ] || [ "$REQUEST_RATE" != 4 ]; then
     echo 'candidate prompt-cache-control requires --duration 300 --rounds 3 --rate 4' >&2
     exit 2
   fi
+fi
+if [ "$SCENARIO" = "prompt-cache-checkpoint" ]; then
+  expected_rounds=3
+  if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then expected_rounds=1; fi
+  if [ "$DURATION_SECONDS" -ne 600 ] || [ "$ROUNDS" -ne "$expected_rounds" ] || [ "$REQUEST_RATE" -ne 4 ]; then
+    echo 'prompt-cache-checkpoint requires --duration 600 --rate 4 and baseline --rounds 1 or candidate --rounds 3' >&2
+    exit 2
+  fi
+  if [ "$MOCK_DELAY_SET" -eq 0 ]; then MOCK_UPSTREAM_DELAY_MS=50; fi
+  if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ] && [ -z "$COMPAT_IMAGE_TAG" ]; then
+    echo 'prompt-cache-checkpoint candidate requires --compat-image for the older-reader check' >&2
+    exit 2
+  fi
+fi
+if [ -n "$MOCK_UPSTREAM_DELAY_MS" ] && ! [[ "$MOCK_UPSTREAM_DELAY_MS" =~ ^[0-9]+$ ]]; then
+  echo '--mock-delay-ms must be a non-negative integer' >&2
+  exit 2
 fi
 if ! [[ "$DURATION_SECONDS" =~ ^[0-9]+$ && "$DURATION_SECONDS" -ge 1 ]]; then
   echo '--duration must be a positive integer' >&2
@@ -129,6 +166,7 @@ if git -C "$REPO_ROOT" ls-files -s | awk '$1 == "160000" { found=1 } END { exit 
   exit 64
 fi
 GIT_SHA="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo nogit)"
+if [ -z "$SERVICE_CODE_SHA" ]; then SERVICE_CODE_SHA="$GIT_SHA"; fi
 RUN_ID="$(date +%Y%m%d_%H%M%S)_prompt_cache_control_${GIT_SHA:0:12}_$$"
 WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
 REMOTE_AGENT="/srv/codex/agents/${AGENT_ID}"
@@ -211,6 +249,7 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
   OBSERVABILITY_ENABLED="$OBSERVABILITY_ENABLED" \
   SCENARIO="$SCENARIO" \
+  MOCK_UPSTREAM_DELAY_MS="$MOCK_UPSTREAM_DELAY_MS" \
   DURATION_SECONDS="$DURATION_SECONDS" \
   ROUNDS="$ROUNDS" \
   REQUEST_RATE="$REQUEST_RATE" \
@@ -218,6 +257,8 @@ ssh -o BatchMode=yes "$TESTBOX" env \
   CLEANUP="$CLEANUP" \
   COMPOSE_PROJECT="$COMPOSE_PROJECT" \
   GIT_SHA="$GIT_SHA" \
+  SERVICE_CODE_SHA="$SERVICE_CODE_SHA" \
+  COMPAT_IMAGE_TAG="$COMPAT_IMAGE_TAG" \
   bash -s <<'REMOTE'
 set -euo pipefail
 export TZ=Asia/Shanghai
@@ -226,6 +267,8 @@ COMPOSE_FILE="$REMOTE_RUN/.codex-prompt-cache-control.compose.yaml"
 CAPS_OVERRIDE="$REMOTE_RUN/.codex.caps-compat.yaml"
 MOCK_SCRIPT="$REMOTE_RUN/.codex-prompt-cache-control-mock.py"
 CONTROL_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-control-loadgen.py"
+CHECKPOINT_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-checkpoint-loadgen.py"
+OLD_READER_OVERRIDE="$REMOTE_RUN/.codex-old-reader.compose.yaml"
 LONG_WAIT_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/proxy-long-wait-loadgen.py"
 BASE_COMPOSE_FILE="$REMOTE_RUN/.codex-prompt-cache-control.compose.base.yaml"
 DATA_DIR="$REMOTE_RUN/data"
@@ -244,18 +287,31 @@ APP_RUST_LOG=info
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
 python3 - <<'PY' "$LOG_DIR/run-metadata.json"
+import hashlib
 import json
 import os
+import pathlib
 import sys
 from datetime import datetime, timezone
 
+scenario_sources = [
+    pathlib.Path(os.environ["REMOTE_WORKSPACE"]) / "scripts" / name
+    for name in ("shared-testbox-proxy-runtime-acceptance", "prompt-cache-control-loadgen.py", "prompt-cache-checkpoint-loadgen.py")
+]
+scenario_digest = hashlib.sha256(b"".join(path.read_bytes() for path in scenario_sources)).hexdigest()
 metadata = {
-    'candidate_sha': os.environ.get('GIT_SHA'),
+    'harness_sha': os.environ.get('GIT_SHA'),
+    'service_code_sha': os.environ.get('SERVICE_CODE_SHA'),
+    'scenario_digest': scenario_digest,
+    'testbox_run_dir': os.environ.get('REMOTE_RUN'),
+    'service_image': os.environ.get('IMAGE_TAG'),
+    'compatibility_image': os.environ.get('COMPAT_IMAGE_TAG') or None,
     'scenario': os.environ.get('SCENARIO'),
     'mode': os.environ.get('PROMPT_CACHE_CONTROL_MODE'),
     'duration_seconds': int(os.environ.get('DURATION_SECONDS', '0')),
     'rounds': int(os.environ.get('ROUNDS', '0')),
     'request_rate': int(os.environ.get('REQUEST_RATE', '0')),
+    'mock_upstream_delay_ms': os.environ.get('MOCK_UPSTREAM_DELAY_MS') or 'default',
     'started_at_utc': datetime.now(timezone.utc).isoformat(timespec='seconds'),
 }
 with open(sys.argv[1], 'w', encoding='utf-8') as destination:
@@ -286,13 +342,13 @@ cleanup_remote() {
     stats_pid=""
   fi
   if [ -f "$COMPOSE_FILE" ]; then
-    if [ "$SCENARIO" = "prompt-cache-control" ] && [ -d "$LOG_DIR" ]; then
+    if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]] && [ -d "$LOG_DIR" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs --no-color app \
         > "$LOG_DIR/app-on-exit.log" 2>/dev/null || true
     fi
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans >/dev/null 2>&1 || true
   fi
-  rm -f "$MOCK_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE" "$BASE_COMPOSE_FILE"
+  rm -f "$MOCK_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE" "$BASE_COMPOSE_FILE" "$OLD_READER_OVERRIDE"
   if [ "$CLEANUP" = "1" ]; then
     run_parent="$(dirname "$REMOTE_RUN")"
     agent_dir="$(dirname "$run_parent")"
@@ -343,6 +399,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        override_delay_ms = os.environ.get('MOCK_UPSTREAM_DELAY_MS', '')
         try:
             payload = json.loads(bytes(body_bytes).decode() or '{}')
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -356,7 +413,7 @@ class Handler(BaseHTTPRequestHandler):
         delay = (
             scenario_delay
             if scenario_delay is not None
-            else (1.2 if self.path == '/v1/responses' else 0.8)
+            else (float(override_delay_ms) / 1000 if override_delay_ms else (1.2 if self.path == '/v1/responses' else 0.8))
         )
         body = json.dumps({'ok': True, 'path': self.path}).encode()
         if payload.get('testScenario') == 'cancel':
@@ -405,6 +462,8 @@ services:
       - "$DATA_DIR:/srv/app/data"
   mock-upstream:
     image: python:3.12-alpine
+    environment:
+      MOCK_UPSTREAM_DELAY_MS: "$MOCK_UPSTREAM_DELAY_MS"
     command: ["python", "/work/mock_upstream.py"]
     volumes:
       - "$MOCK_SCRIPT:/work/mock_upstream.py:ro"
@@ -416,6 +475,7 @@ services:
     volumes:
       - "$LOG_DIR:/work/logs:ro"
       - "$CONTROL_LOADGEN_SCRIPT:/work/prompt-cache-control-loadgen.py:ro"
+      - "$CHECKPOINT_LOADGEN_SCRIPT:/work/prompt-cache-checkpoint-loadgen.py:ro"
       - "$LONG_WAIT_LOADGEN_SCRIPT:/work/proxy-long-wait-loadgen.py:ro"
       - "$DATA_DIR:/work/data"
 YAML
@@ -454,7 +514,7 @@ else
   docker image inspect "$IMAGE_TAG" >/dev/null
 fi
 
-if [ "$SCENARIO" = "prompt-cache-control" ]; then
+if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]]; then
   cp "$COMPOSE_FILE" "$BASE_COMPOSE_FILE"
   : > "$LOAD_LOG"
   : > "$STATS_LOG"
@@ -462,9 +522,9 @@ if [ "$SCENARIO" = "prompt-cache-control" ]; then
     ROUNDS=1
   fi
   for round_index in $(seq 1 "$ROUNDS"); do
-    printf '== prompt-cache-control round %s/%s (%s) ==\n' "$round_index" "$ROUNDS" "$PROMPT_CACHE_CONTROL_MODE"
+    printf '== %s round %s/%s (%s) ==\n' "$SCENARIO" "$round_index" "$ROUNDS" "$PROMPT_CACHE_CONTROL_MODE"
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down --remove-orphans
-    round_data="$REMOTE_RUN/data/prompt-cache-control/round-$round_index"
+    round_data="$REMOTE_RUN/data/$SCENARIO/round-$round_index"
     mkdir -p "$round_data"
     cp "$BASE_COMPOSE_FILE" "$COMPOSE_FILE"
     sed -i "s|$DATA_DIR|$round_data|g" "$COMPOSE_FILE"
@@ -479,22 +539,50 @@ if [ "$SCENARIO" = "prompt-cache-control" ]; then
     ) &
     stats_pid=$!
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
-    legacy_enabled=0
-    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py seed-history "$round_index" "$legacy_enabled" </dev/null >> "$LOAD_LOG"
-    if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py baseline-probe "$round_index" "$DURATION_SECONDS" </dev/null >> "$LOAD_LOG"
+    if [ "$SCENARIO" = "prompt-cache-checkpoint" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py seed-history "$round_index" </dev/null >> "$LOAD_LOG"
+      if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ] && [ "$round_index" -eq 1 ]; then
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py priority-yield-probe "$round_index" </dev/null >> "$LOAD_LOG"
+      fi
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py input "$round_index" 120 "$REQUEST_RATE" "$PROMPT_CACHE_CONTROL_MODE" </dev/null >> "$LOAD_LOG"
+      if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
+        stop_prompt_cache_log_reader
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" restart app
+        start_prompt_cache_log_reader
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py wait-health </dev/null
+      fi
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py observe "$round_index" 480 "$PROMPT_CACHE_CONTROL_MODE" </dev/null >> "$LOAD_LOG"
+      if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ] && [ "$round_index" -eq 1 ] && [ -n "$COMPAT_IMAGE_TAG" ]; then
+        cat > "$OLD_READER_OVERRIDE" <<YAML
+services:
+  app:
+    image: "$COMPAT_IMAGE_TAG"
+YAML
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" stop app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" up -d app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py wait-health </dev/null
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py compatibility-read "$round_index" </dev/null >> "$LOAD_LOG"
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" stop app
+      fi
     else
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py priority-yield-probe "$round_index" </dev/null >> "$LOAD_LOG"
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-input "$round_index" "$((DURATION_SECONDS * 2 / 5))" "$REQUEST_RATE" </dev/null >> "$LOAD_LOG"
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
-      printf '== restart app after draining proxy requests ==\n'
-      stop_prompt_cache_log_reader
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" restart app
-      start_prompt_cache_log_reader
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
-      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
+      legacy_enabled=0
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py seed-history "$round_index" "$legacy_enabled" </dev/null >> "$LOAD_LOG"
+      if [ "$PROMPT_CACHE_CONTROL_MODE" = "baseline" ]; then
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py baseline-probe "$round_index" "$DURATION_SECONDS" </dev/null >> "$LOAD_LOG"
+      else
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py priority-yield-probe "$round_index" </dev/null >> "$LOAD_LOG"
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-input "$round_index" "$((DURATION_SECONDS * 2 / 5))" "$REQUEST_RATE" </dev/null >> "$LOAD_LOG"
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py maintenance-lock-probe "$round_index" </dev/null >> "$LOAD_LOG"
+        printf '== restart app after draining proxy requests ==\n'
+        stop_prompt_cache_log_reader
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" restart app
+        start_prompt_cache_log_reader
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
+      fi
     fi
-    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-prompt-cache-control-round-$round_index.log" || true
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-$SCENARIO-round-$round_index.log" || true
     stop_prompt_cache_log_reader
     cp "$LIVE_APP_LOG" "$LOG_DIR/pressure-live-round-$round_index.log"
     kill "$stats_pid" >/dev/null 2>&1 || true
@@ -529,7 +617,7 @@ print(json.dumps({
 PY
   printf '== prompt-cache-control testbox evidence ==\nmode=%s rounds=%s input_rate=%s logs=%s app_logs=%s stats=%s\n' \
     "$PROMPT_CACHE_CONTROL_MODE" "$ROUNDS" "$REQUEST_RATE" "$LOAD_LOG" "$LOG_DIR" "$STATS_LOG"
-  printf 'candidate_sha=%s metadata=%s\n' "$GIT_SHA" "$LOG_DIR/run-metadata.json"
+  printf 'harness_sha=%s service_code_sha=%s metadata=%s\n' "$GIT_SHA" "$SERVICE_CODE_SHA" "$LOG_DIR/run-metadata.json"
 else
   docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
   docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/proxy-long-wait-loadgen.py wait-health </dev/null

@@ -54,7 +54,14 @@ def control(enabled, route='dedicated'):
     else:
         path = '/api/system/managed-tasks/' + urllib.parse.quote(TASK_KEY, safe='')
         payload = {'enabled': enabled}
-    status, body, _ = request('PATCH', path, payload)
+    # Startup schema work can briefly hold the business database. Treat only
+    # that bounded SQLite busy response as transient; other control failures
+    # remain immediate test failures.
+    for attempt in range(5):
+        status, body, _ = request('PATCH', path, payload)
+        if status != 503 or 'database is locked' not in body.lower() or attempt == 4:
+            break
+        time.sleep(0.1 * (attempt + 1))
     if status != 200:
         raise RuntimeError(f'{route} control PATCH failed: status={status} body={body[:300]}')
     status, body, _ = request('GET', '/api/system/prompt-cache/materialization')

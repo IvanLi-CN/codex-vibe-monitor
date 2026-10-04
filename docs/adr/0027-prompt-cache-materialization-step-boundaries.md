@@ -2,6 +2,10 @@
 
 Status: Accepted
 
+The statistics batch-cursor and per-pending-page retry decisions below are succeeded by
+[ADR 0028](0028-prompt-cache-continuous-statistics-checkpoints.md). The identity and
+maintenance control step boundaries remain active.
+
 This succeeds the combined identity/statistics transaction and set-based writeback portions of
 ADRs 0021 and 0022. Their ordered phases, adaptive identity batch sizes, priority boundaries,
 and fail-closed aggregate read contract remain applicable.
