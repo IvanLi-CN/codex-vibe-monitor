@@ -22,7 +22,6 @@ const TASK_ERROR_RETENTION_DAYS: i64 = 30;
 const TASK_HISTORY_CLEANUP_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 const TASK_PROGRESS_STALE_AFTER_SECS: i64 = 30;
 const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
-const TASK_RUNNING_RECOVERY_STALE_AFTER_SECS: i64 = 5 * 60;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
@@ -268,6 +267,83 @@ pub(crate) struct ManagedTask {
     pub(crate) schedule_capability_reason: Option<String>,
     #[sqlx(skip)]
     pub(crate) execution_class: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub(crate) measurement_capabilities: Option<TaskMeasurementCapabilities>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskMeasurementCapabilities {
+    pub(crate) pending: TaskMetricCapability,
+    pub(crate) discovered: TaskMetricCapability,
+    pub(crate) processed: TaskMetricCapability,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskMetricCapability {
+    pub(crate) supported: bool,
+    pub(crate) unit: Option<String>,
+    pub(crate) scope: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWorkloadMetric {
+    pub(crate) value: Option<i64>,
+    pub(crate) unit: String,
+    pub(crate) scope: String,
+    pub(crate) range: String,
+    pub(crate) observed_at: Option<String>,
+    pub(crate) coverage: String,
+}
+
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWorkloadSample {
+    pub(crate) sample_id: String,
+    pub(crate) execution_uid: String,
+    pub(crate) managed_run_id: Option<i64>,
+    pub(crate) task_key: String,
+    pub(crate) trigger_kind: String,
+    pub(crate) attempted_at: String,
+    pub(crate) actual_started_at: Option<String>,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) status: String,
+    pub(crate) reason: Option<String>,
+    pub(crate) sequence: u64,
+    pub(crate) pending: Option<TaskWorkloadMetric>,
+    pub(crate) discovered: Option<TaskWorkloadMetric>,
+    pub(crate) processed: Option<TaskWorkloadMetric>,
+    pub(crate) subset_relation: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWorkloadCoverageGap {
+    pub(crate) id: String,
+    pub(crate) started_at: String,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskWorkloadTrend {
+    pub(crate) revision: i64,
+    pub(crate) coverage: String,
+    pub(crate) samples: Vec<TaskWorkloadSample>,
+    pub(crate) coverage_gaps: Vec<TaskWorkloadCoverageGap>,
+    pub(crate) latest_pending: Option<TaskWorkloadMetric>,
+    pub(crate) latest_processed: Option<TaskWorkloadMetric>,
+    pub(crate) latest_observed_at: Option<String>,
+    pub(crate) processing_rate_per_second: Option<f64>,
+    pub(crate) processing_rate_window: Option<String>,
+    pub(crate) clearance_eta: Option<String>,
+    pub(crate) clearance_estimate_window: Option<String>,
+    pub(crate) clearance_estimate_coverage: Option<String>,
+    pub(crate) clearance_estimate_reason: String,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -357,6 +433,7 @@ pub(crate) struct ManagedTaskDetail {
     pub(crate) performance: Option<ManagedTaskPerformance>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retention_backlog_trend: Option<Vec<RetentionBacklogTrendPoint>>,
+    pub(crate) workload_trend: TaskWorkloadTrend,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -437,6 +514,385 @@ struct TaskRunRow {
     completion: Option<String>,
     core_completion: Option<String>,
     details: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct TaskWorkloadLegacyRun {
+    id: i64,
+    trigger_kind: String,
+    started_at: String,
+    actual_started_at: Option<String>,
+    finished_at: Option<String>,
+    actual_finished_at: Option<String>,
+    status: String,
+    error_detail: Option<String>,
+    execution_uid: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct StoredTaskWorkloadRun {
+    execution_uid: String,
+    managed_run_id: Option<i64>,
+    attempted_at: String,
+    sequence: i64,
+    status: String,
+    sample_json: String,
+}
+
+fn restore_stored_task_workload_sample(
+    task_key: &str,
+    row: StoredTaskWorkloadRun,
+) -> TaskWorkloadSample {
+    let mut sample = match serde_json::from_str::<TaskWorkloadSample>(&row.sample_json) {
+        Ok(sample) => sample,
+        Err(_) => TaskWorkloadSample {
+            sample_id: format!("{}:{task_key}", row.execution_uid),
+            execution_uid: row.execution_uid.clone(),
+            managed_run_id: row.managed_run_id,
+            task_key: task_key.to_string(),
+            trigger_kind: "unknown".to_string(),
+            attempted_at: row.attempted_at.clone(),
+            actual_started_at: None,
+            finished_at: None,
+            status: row.status.clone(),
+            reason: Some("工作量记录损坏，计量未知".to_string()),
+            sequence: 0,
+            pending: None,
+            discovered: None,
+            processed: None,
+            subset_relation: "unknown".to_string(),
+        },
+    };
+    sample.sample_id = format!("{}:{task_key}", row.execution_uid);
+    sample.execution_uid = row.execution_uid;
+    sample.managed_run_id = row.managed_run_id;
+    sample.task_key = task_key.to_string();
+    sample.attempted_at = row.attempted_at;
+    sample.sequence = sample.sequence.max(row.sequence.max(0) as u64);
+    sample.status = row.status;
+    sample
+}
+
+#[derive(Debug, FromRow)]
+struct TaskWorkloadCoverageGapRow {
+    segment_id: String,
+    started_at: String,
+    finished_at: Option<String>,
+    reason: Option<String>,
+}
+
+struct TaskWorkloadSummary {
+    latest_pending: Option<TaskWorkloadMetric>,
+    latest_processed: Option<TaskWorkloadMetric>,
+    latest_observed_at: Option<String>,
+    processing_rate_per_second: Option<f64>,
+    processing_rate_window: Option<String>,
+    clearance_eta: Option<String>,
+    clearance_estimate_window: Option<String>,
+    clearance_estimate_coverage: Option<String>,
+    clearance_estimate_reason: String,
+}
+
+fn calculate_task_workload_summary(
+    samples: &[TaskWorkloadSample],
+    enabled: bool,
+    interval_secs: Option<i64>,
+    capture_gap_at: Option<chrono::DateTime<Utc>>,
+    now: chrono::DateTime<Utc>,
+) -> TaskWorkloadSummary {
+    let latest_pending = samples
+        .iter()
+        .rev()
+        .find_map(|sample| sample.pending.as_ref())
+        .filter(|metric| {
+            metric.value.is_some()
+                && metric.coverage == "exact"
+                && capture_gap_at.is_none_or(|gap_at| {
+                    metric
+                        .observed_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .is_some_and(|observed_at| observed_at > gap_at)
+                })
+        })
+        .cloned();
+    let latest_processed = samples
+        .iter()
+        .rev()
+        .find_map(|sample| sample.processed.as_ref())
+        .filter(|metric| {
+            metric.value.is_some()
+                && metric.coverage == "window"
+                && capture_gap_at.is_none_or(|gap_at| {
+                    metric
+                        .observed_at
+                        .as_deref()
+                        .and_then(crate::stats::parse_to_utc_datetime)
+                        .is_some_and(|observed_at| observed_at > gap_at)
+                })
+        })
+        .cloned();
+    let latest_observed_at = latest_pending
+        .as_ref()
+        .and_then(|metric| metric.observed_at.clone())
+        .or_else(|| {
+            latest_processed
+                .as_ref()
+                .and_then(|metric| metric.observed_at.clone())
+        });
+
+    let mut rate_samples = Vec::new();
+    let mut unbound_skips = Vec::new();
+    let mut rate_identity: Option<(String, String)> = None;
+    for sample in samples.iter().rev() {
+        let attempt_time = sample
+            .actual_started_at
+            .as_deref()
+            .or(Some(sample.attempted_at.as_str()))
+            .and_then(crate::stats::parse_to_utc_datetime);
+        if capture_gap_at.is_some_and(|gap_at| attempt_time.is_none_or(|time| time <= gap_at)) {
+            break;
+        }
+        if sample.status == "running" {
+            continue;
+        }
+        if sample.status == "skipped" && sample.actual_started_at.is_none() {
+            let identity = match sample.processed.as_ref() {
+                Some(metric) if metric.value == Some(0) && metric.coverage == "window" => {
+                    (metric.unit.clone(), metric.scope.clone())
+                }
+                Some(_) => break,
+                None => {
+                    let Some(identity) = rate_identity.clone() else {
+                        unbound_skips.push(sample);
+                        continue;
+                    };
+                    identity
+                }
+            };
+            if rate_identity
+                .as_ref()
+                .is_some_and(|expected| *expected != identity)
+            {
+                break;
+            }
+            rate_identity = Some(identity);
+            rate_samples.append(&mut unbound_skips);
+            rate_samples.push(sample);
+            continue;
+        }
+        let Some(metric) = sample.processed.as_ref().filter(|metric| {
+            metric.value.is_some()
+                && metric.coverage == "window"
+                && sample.actual_started_at.is_some()
+                && sample.finished_at.is_some()
+                && sample.status != "unknown"
+        }) else {
+            break;
+        };
+        let identity = (metric.unit.clone(), metric.scope.clone());
+        if rate_identity
+            .as_ref()
+            .is_some_and(|expected| *expected != identity)
+        {
+            break;
+        }
+        rate_identity = Some(identity);
+        rate_samples.append(&mut unbound_skips);
+        rate_samples.push(sample);
+        if rate_samples.len() == 20 {
+            break;
+        }
+    }
+    let rate_samples = rate_samples.into_iter().rev().collect::<Vec<_>>();
+    let rate_count = rate_samples
+        .iter()
+        .filter_map(|sample| sample.processed.as_ref()?.value)
+        .fold(0_i64, i64::saturating_add);
+    let rate_start = rate_samples.iter().find_map(|sample| {
+        sample
+            .actual_started_at
+            .as_deref()
+            .or_else(|| (sample.status == "skipped").then_some(sample.attempted_at.as_str()))
+            .and_then(crate::stats::parse_to_utc_datetime)
+    });
+    let rate_end = rate_samples
+        .iter()
+        .rev()
+        .find_map(|sample| sample.finished_at.as_deref())
+        .and_then(crate::stats::parse_to_utc_datetime);
+    let (processing_rate_per_second, processing_rate_window) = match (rate_start, rate_end) {
+        (Some(start), Some(end)) if end > start => {
+            let elapsed = (end - start).num_milliseconds() as f64 / 1_000.0;
+            if elapsed > 0.0 {
+                (
+                    Some(rate_count.max(0) as f64 / elapsed),
+                    Some(format!(
+                        "{} 次计数完整尝试，{} 至 {}；墙钟覆盖实际运行与轮间等待",
+                        rate_samples.len(),
+                        format_utc_iso_millis(start),
+                        format_utc_iso_millis(end)
+                    )),
+                )
+            } else {
+                (None, None)
+            }
+        }
+        _ => (None, None),
+    };
+
+    let freshness_limit_secs = interval_secs
+        .map(|interval| interval.saturating_mul(2).max(120))
+        .unwrap_or(15 * 60);
+    let latest_pending_time = latest_pending
+        .as_ref()
+        .and_then(|metric| metric.observed_at.as_deref())
+        .and_then(crate::stats::parse_to_utc_datetime);
+    let latest_is_fresh = latest_pending_time.is_some_and(|observed_at| {
+        let age = (now - observed_at).num_seconds();
+        (0..=freshness_limit_secs).contains(&age)
+            && capture_gap_at.is_none_or(|gap_at| observed_at > gap_at)
+    });
+
+    let mut estimate_samples = Vec::new();
+    let mut estimate_identity: Option<(String, String, String)> = None;
+    let estimate_cutoff = now - ChronoDuration::hours(24);
+    for sample in samples.iter().rev() {
+        let Some(metric) = sample.pending.as_ref() else {
+            let attempted = crate::stats::parse_to_utc_datetime(&sample.attempted_at);
+            if attempted.is_some_and(|time| time >= estimate_cutoff) {
+                break;
+            }
+            break;
+        };
+        let Some(observed_at) = metric
+            .observed_at
+            .as_deref()
+            .and_then(crate::stats::parse_to_utc_datetime)
+        else {
+            break;
+        };
+        if capture_gap_at.is_some_and(|gap_at| observed_at <= gap_at) {
+            break;
+        }
+        if observed_at < estimate_cutoff {
+            break;
+        }
+        if metric.value.is_none() || metric.coverage != "exact" {
+            break;
+        }
+        let identity = (
+            metric.unit.clone(),
+            metric.scope.clone(),
+            metric.range.clone(),
+        );
+        if estimate_identity
+            .as_ref()
+            .is_some_and(|expected| *expected != identity)
+        {
+            break;
+        }
+        estimate_identity = Some(identity);
+        estimate_samples.push((observed_at, metric.value.unwrap_or_default()));
+        if estimate_samples.len() == 20 {
+            break;
+        }
+    }
+    estimate_samples.reverse();
+
+    let mut clearance_estimate_window = None;
+    let mut clearance_estimate_coverage = None;
+    let latest_blocked_by_gap = capture_gap_at
+        .is_some_and(|gap_at| latest_pending_time.is_none_or(|observed_at| observed_at <= gap_at));
+    let (clearance_eta, clearance_estimate_reason) = if latest_is_fresh
+        && latest_pending
+            .as_ref()
+            .is_some_and(|metric| metric.value == Some(0))
+    {
+        (None, "cleared".to_string())
+    } else if latest_blocked_by_gap {
+        (None, "capture_gap".to_string())
+    } else if !enabled {
+        (None, "task_disabled".to_string())
+    } else if !latest_is_fresh {
+        (None, "stale_observation".to_string())
+    } else if estimate_samples.len() < 5 {
+        (None, "insufficient_samples".to_string())
+    } else {
+        let first = estimate_samples.first().map(|sample| sample.0);
+        let last = estimate_samples.last().map(|sample| sample.0);
+        let span_secs = first
+            .zip(last)
+            .map(|(first, last)| (last - first).num_seconds())
+            .unwrap_or_default();
+        if span_secs < 60 {
+            (None, "insufficient_span".to_string())
+        } else {
+            let origin = first.unwrap_or(now);
+            let points = estimate_samples
+                .iter()
+                .map(|(time, value)| {
+                    (
+                        (*time - origin).num_milliseconds() as f64 / 1_000.0,
+                        *value as f64,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let mean_x = points.iter().map(|point| point.0).sum::<f64>() / points.len() as f64;
+            let mean_y = points.iter().map(|point| point.1).sum::<f64>() / points.len() as f64;
+            let covariance = points
+                .iter()
+                .map(|(x, y)| (x - mean_x) * (y - mean_y))
+                .sum::<f64>();
+            let variance = points
+                .iter()
+                .map(|(x, _)| (x - mean_x).powi(2))
+                .sum::<f64>();
+            let slope = if variance > 0.0 {
+                covariance / variance
+            } else {
+                0.0
+            };
+            let remaining = points.last().map(|point| point.1).unwrap_or_default();
+            if slope >= 0.0 || remaining <= 0.0 {
+                (None, "no_net_backlog_decline".to_string())
+            } else {
+                let seconds = remaining / -slope;
+                let latest_observation = last.unwrap_or(now);
+                let millis = (seconds * 1_000.0).ceil();
+                let eta = if !millis.is_finite() || millis >= i64::MAX as f64 {
+                    None
+                } else {
+                    latest_observation
+                        .checked_add_signed(ChronoDuration::milliseconds(millis as i64))
+                };
+                if let Some(eta) = eta {
+                    clearance_estimate_window = Some("最近 24 小时".to_string());
+                    clearance_estimate_coverage = Some(format!(
+                        "{} 个准确完整积压快照；{} 至 {}",
+                        estimate_samples.len(),
+                        format_utc_iso_millis(first.unwrap_or(now)),
+                        format_utc_iso_millis(last.unwrap_or(now))
+                    ));
+                    (Some(format_utc_iso_millis(eta)), "estimated".to_string())
+                } else {
+                    (None, "estimate_out_of_range".to_string())
+                }
+            }
+        }
+    };
+
+    TaskWorkloadSummary {
+        latest_pending,
+        latest_processed,
+        latest_observed_at,
+        processing_rate_per_second,
+        processing_rate_window,
+        clearance_eta,
+        clearance_estimate_window,
+        clearance_estimate_coverage,
+        clearance_estimate_reason,
+    }
 }
 
 #[derive(Debug, FromRow)]
@@ -850,7 +1306,98 @@ fn decorate_task(mut task: ManagedTask) -> ManagedTask {
         Some("当前任务只读展示真实 worker 策略".to_string())
     };
     task.execution_class = task_execution_class(&task.task_key).map(str::to_string);
+    task.measurement_capabilities = Some(task_measurement_capabilities(&task.task_key));
     task
+}
+
+fn metric_capability(
+    supported: bool,
+    unit: Option<&str>,
+    scope: Option<&str>,
+) -> TaskMetricCapability {
+    TaskMetricCapability {
+        supported,
+        unit: unit.map(str::to_string),
+        scope: scope.map(str::to_string),
+    }
+}
+
+pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCapabilities {
+    let retention_scope = "expired_invocations:retention_policy";
+    if task_key == "retention_archive" {
+        return TaskMeasurementCapabilities {
+            pending: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
+            discovered: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
+            processed: metric_capability(true, Some("invocation rows"), Some(retention_scope)),
+        };
+    }
+
+    let backfill_unit = match task_key.strip_prefix("startup_backfill.") {
+        Some(
+            "proxy_usage"
+            | "prompt_cache_key"
+            | "requested_service_tier"
+            | "invocation_service_tier"
+            | "proxy_cost"
+            | "reasoning_effort"
+            | "failure_classification",
+        ) => Some("invocation rows"),
+        Some("prompt_cache_conversations_materialization") => Some("conversation sessions"),
+        Some("pool_attempt_public_id_live" | "pool_attempt_public_id_archives") => {
+            Some("pool attempt rows")
+        }
+        Some("upstream_activity_live" | "upstream_activity_archives") => Some("accounts"),
+        Some("account_activity_v2_coverage") => Some("account-activity buckets"),
+        Some("legacy_detail_mirrors") => Some("archive detail paths"),
+        Some("historical_rollups") => Some("archive rollup paths"),
+        _ => None,
+    };
+    if let Some(unit) = backfill_unit {
+        return TaskMeasurementCapabilities {
+            pending: metric_capability(false, None, None),
+            discovered: metric_capability(false, None, None),
+            processed: metric_capability(true, Some(unit), Some(task_key)),
+        };
+    }
+
+    let processed_unit = match task_key {
+        "pool_orphan_recovery" => Some("pool attempts"),
+        "raw_compression" => Some("raw payload files"),
+        "archive_upstream_activity_manifest" => Some("archive batches"),
+        "materialize_historical_rollups" => Some("archive batches"),
+        "verify_archive_storage" => Some("archive manifest rows"),
+        "prune_archive_batches" | "prune_legacy_archive_batches" => Some("archive batches"),
+        _ => None,
+    };
+    if let Some(unit) = processed_unit {
+        return TaskMeasurementCapabilities {
+            pending: metric_capability(false, None, None),
+            discovered: metric_capability(false, None, None),
+            processed: metric_capability(true, Some(unit), Some(task_key)),
+        };
+    }
+
+    TaskMeasurementCapabilities {
+        pending: metric_capability(false, None, None),
+        discovered: metric_capability(false, None, None),
+        processed: metric_capability(false, None, None),
+    }
+}
+
+async fn recent_runs_for_workload_compatibility(
+    pool: &Pool<Sqlite>,
+    task_key: &str,
+) -> Result<Vec<TaskWorkloadLegacyRun>> {
+    Ok(sqlx::query_as::<_, TaskWorkloadLegacyRun>(
+        "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,status,error_detail,execution_uid
+         FROM managed_task_runs
+         WHERE task_key=? AND status NOT IN ('requested','queued')
+           AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
+         ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 100",
+    )
+    .bind(task_key)
+    .fetch_all(pool)
+    .await?)
 }
 
 pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
@@ -1335,6 +1882,19 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           execution_uid TEXT, actual_started_at TEXT, actual_finished_at TEXT,
           actual_duration_ms INTEGER
         );
+        CREATE TABLE IF NOT EXISTS managed_task_work_runs (
+          execution_uid TEXT NOT NULL,
+          task_key TEXT NOT NULL,
+          managed_run_id INTEGER,
+          attempted_at TEXT NOT NULL,
+          sequence INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'unknown',
+          sample_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY(execution_uid,task_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_managed_task_work_runs_task_attempted
+          ON managed_task_work_runs(task_key,attempted_at DESC,execution_uid DESC);
         CREATE TABLE IF NOT EXISTS task_timeline_segments (
           segment_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
           task_key TEXT NOT NULL, title TEXT NOT NULL, started_at TEXT NOT NULL,
@@ -1482,26 +2042,40 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
     // Recompute the persisted trigger at the same time; an interval-derived timestamp is not
     // valid once the cron field becomes authoritative.
+    let mut schedule_repair = pool.begin().await?;
     let legacy_dual_schedule_rows = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT task_key,cron_expr FROM managed_tasks WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *schedule_repair)
     .await?;
     sqlx::query(
         "UPDATE managed_tasks SET interval_secs=NULL WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
-    .execute(pool)
+    .execute(&mut *schedule_repair)
     .await?;
     for (task_key, cron_expr) in legacy_dual_schedule_rows {
         sqlx::query("UPDATE managed_tasks SET next_trigger_at=? WHERE task_key=?")
             .bind(next_trigger_at(None, cron_expr.as_deref()))
             .bind(task_key)
-            .execute(pool)
+            .execute(&mut *schedule_repair)
             .await?;
     }
+    schedule_repair.commit().await?;
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
+    let work_run_status_column: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM pragma_table_info('managed_task_work_runs') WHERE name='status'",
+    )
+    .fetch_optional(pool)
+    .await?;
+    if work_run_status_column.is_none() {
+        sqlx::query(
+            "ALTER TABLE managed_task_work_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'unknown'",
+        )
+        .execute(pool)
+        .await?;
+    }
     let superseded_at = format_utc_iso_millis(Utc::now());
     sqlx::query(
         "UPDATE managed_task_runs
@@ -1537,6 +2111,17 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         .bind(run_cutoff)
         .execute(pool)
         .await?;
+    sqlx::query(
+        "DELETE FROM managed_task_work_runs
+         WHERE rowid IN (
+           SELECT rowid FROM (
+             SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
+             FROM managed_task_work_runs WHERE status <> 'running'
+           ) WHERE sample_rank > 100
+         )",
+    )
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -1797,6 +2382,62 @@ impl MaintenanceStore {
         )
         .execute(&mut *transaction)
         .await?;
+        let running_samples =
+            sqlx::query_as::<_, (String, String, Option<i64>, String, i64, String)>(
+                "SELECT execution_uid,task_key,managed_run_id,attempted_at,sequence,sample_json
+             FROM managed_task_work_runs WHERE status='running'",
+            )
+            .fetch_all(&mut *transaction)
+            .await?;
+        for (execution_uid, task_key, managed_run_id, attempted_at, stored_sequence, sample_json) in
+            running_samples
+        {
+            let parsed = serde_json::from_str::<TaskWorkloadSample>(&sample_json);
+            let malformed = parsed.is_err();
+            let mut sample = parsed.unwrap_or_else(|_| TaskWorkloadSample {
+                sample_id: format!("{execution_uid}:{task_key}"),
+                execution_uid: execution_uid.clone(),
+                managed_run_id,
+                task_key: task_key.clone(),
+                trigger_kind: "unknown".to_string(),
+                attempted_at: attempted_at.clone(),
+                actual_started_at: None,
+                finished_at: None,
+                status: "unknown".to_string(),
+                reason: None,
+                sequence: 0,
+                pending: None,
+                discovered: None,
+                processed: None,
+                subset_relation: "unknown".to_string(),
+            });
+            let sample_sequence = sample.sequence.min(i64::MAX as u64) as i64;
+            let sequence = stored_sequence.max(sample_sequence).saturating_add(1);
+            sample.sample_id = format!("{execution_uid}:{task_key}");
+            sample.execution_uid = execution_uid.clone();
+            sample.managed_run_id = managed_run_id;
+            sample.task_key = task_key.clone();
+            sample.attempted_at = attempted_at;
+            sample.status = "unknown".to_string();
+            sample.reason = Some(if malformed {
+                "服务重启时发现工作量记录损坏，计数未知".to_string()
+            } else {
+                "服务重启前运行未确认结束".to_string()
+            });
+            sample.sequence = sequence as u64;
+            sqlx::query(
+                "UPDATE managed_task_work_runs
+                 SET status='unknown',sequence=?,sample_json=?,updated_at=?
+                 WHERE execution_uid=? AND task_key=? AND status='running'",
+            )
+            .bind(sequence)
+            .bind(serde_json::to_string(&sample)?)
+            .bind(started_at)
+            .bind(&execution_uid)
+            .bind(&task_key)
+            .execute(&mut *transaction)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO task_timeline_coverage(session_id,started_at,last_seen_at,dropped_events) VALUES(?,?,?,0) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,last_seen_at=excluded.last_seen_at,ended_at=NULL,dropped_events=0",
         )
@@ -1925,6 +2566,32 @@ impl MaintenanceStore {
                     sqlx::query("UPDATE task_timeline_segments SET finished_at=?,last_observed_at=?,status='released',revision=? WHERE segment_id=? AND kind='deferral'")
                         .bind(finished_at).bind(finished_at).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::WorkloadSampleChanged { sample } => {
+                    let sample_json = serde_json::to_string(sample)?;
+                    sqlx::query(
+                        "INSERT INTO managed_task_work_runs
+                         (execution_uid,task_key,managed_run_id,attempted_at,sequence,status,sample_json,updated_at)
+                         VALUES(?,?,?,?,?,?,?,?)
+                         ON CONFLICT(execution_uid,task_key) DO UPDATE SET
+                           managed_run_id=excluded.managed_run_id,
+                           attempted_at=excluded.attempted_at,
+                           sequence=excluded.sequence,
+                           status=excluded.status,
+                           sample_json=excluded.sample_json,
+                           updated_at=excluded.updated_at
+                         WHERE excluded.sequence >= managed_task_work_runs.sequence",
+                    )
+                    .bind(&sample.execution_uid)
+                    .bind(&sample.task_key)
+                    .bind(sample.managed_run_id)
+                    .bind(&sample.attempted_at)
+                    .bind(sample.sequence.min(i64::MAX as u64) as i64)
+                    .bind(&sample.status)
+                    .bind(sample_json)
+                    .bind(observed_at)
+                    .execute(&mut *transaction)
+                    .await?;
                 }
             }
         }
@@ -2115,21 +2782,17 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
-        let recovery_cutoff = format_utc_iso_millis(
-            Utc::now() - ChronoDuration::seconds(TASK_RUNNING_RECOVERY_STALE_AFTER_SECS),
-        );
         let finished_at = format_utc_iso_millis(Utc::now());
         let result = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary=COALESCE(summary, ?),
                  error_detail=COALESCE(error_detail, ?)
-             WHERE status='running' AND started_at < ?",
+             WHERE status='running'",
         )
         .bind(&finished_at)
         .bind("服务重启前运行未完成，已标记为失败")
         .bind("服务重启时回收未完成运行")
-        .bind(&recovery_cutoff)
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected())
@@ -2193,6 +2856,12 @@ impl MaintenanceStore {
         )
         .fetch_all(main_pool)
         .await?;
+        let progress = sqlx::query_as::<_, (String, i64, Option<String>, i64, Option<String>, Option<String>, i64, i64, String, Option<String>, Option<String>, i64, i64)>(
+            "SELECT task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled FROM startup_backfill_progress",
+        )
+        .fetch_all(main_pool)
+        .await?;
+        let mut transaction = self.pool.begin().await?;
         for (
             id,
             task_kind,
@@ -2253,15 +2922,10 @@ impl MaintenanceStore {
             .bind(migrated_status)
             .bind(migrated_summary)
             .bind(migrated_detail)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
 
-        let progress = sqlx::query_as::<_, (String, i64, Option<String>, i64, Option<String>, Option<String>, i64, i64, String, Option<String>, Option<String>, i64, i64)>(
-            "SELECT task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled FROM startup_backfill_progress",
-        )
-        .fetch_all(main_pool)
-        .await?;
         for (
             task_name,
             cursor_id,
@@ -2294,7 +2958,7 @@ impl MaintenanceStore {
             .bind(&next_probe_at)
             .bind(wake_generation)
             .bind(enabled)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
             let Some(managed_suffix) = managed_startup_backfill_suffix(&task_name) else {
                 // Keep versioned or catalog-specific legacy rows without inventing a page.
@@ -2313,9 +2977,10 @@ impl MaintenanceStore {
             .bind(cursor_id.to_string())
             .bind(updated_at)
             .bind(freshness)
-            .execute(&self.pool)
+            .execute(&mut *transaction)
             .await?;
         }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -2588,6 +3253,17 @@ impl MaintenanceStore {
             .bind(run_cutoff)
             .execute(&self.pool)
             .await?;
+        sqlx::query(
+            "DELETE FROM managed_task_work_runs
+             WHERE rowid IN (
+               SELECT rowid FROM (
+                 SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
+                 FROM managed_task_work_runs WHERE status <> 'running'
+               ) WHERE sample_rank > 100
+             )",
+        )
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -2950,20 +3626,186 @@ impl MaintenanceStore {
         };
         let progress = sqlx::query_as::<_, TaskProgressRow>("SELECT total,completed,phase,checkpoint,eta_seconds,updated_at,freshness,unit,source_scope,last_progress_at,wait_reason,next_retry_at,next_inspection_at,next_catchup_at,catchup_state,stages FROM managed_task_progress WHERE task_key=?")
             .bind(task_key).fetch_optional(&self.pool).await?.map(task_progress_from_row);
-        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 10")
+        let recent_runs = sqlx::query_as::<_, TaskRunRow>("SELECT id,trigger_kind,started_at,finished_at,duration_ms,status,summary,processed_count,updated_count,error_detail,completion,core_completion,details FROM managed_task_runs WHERE task_key=? ORDER BY started_at DESC LIMIT 100")
             .bind(task_key).fetch_all(&self.pool).await?.into_iter().map(task_run_from_row).collect();
         let retention_backlog_trend = if task_key == "retention_archive" {
             Some(self.retention_backlog_trend(Utc::now()).await?)
         } else {
             None
         };
+        let workload_trend = self.workload_trend(&task).await?;
         Ok(Some(ManagedTaskDetail {
             task,
             progress,
             recent_runs,
             performance: None,
             retention_backlog_trend,
+            workload_trend,
         }))
+    }
+
+    async fn workload_trend(&self, task: &ManagedTask) -> Result<TaskWorkloadTrend> {
+        let task_key = &task.task_key;
+        let stored_running = sqlx::query_as::<_, StoredTaskWorkloadRun>(
+            "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+             FROM managed_task_work_runs
+             WHERE task_key=? AND status='running'
+             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 1",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let stored_recent = sqlx::query_as::<_, StoredTaskWorkloadRun>(
+            "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+             FROM managed_task_work_runs
+             WHERE task_key=? AND status<>'running'
+             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 100",
+        )
+        .bind(task_key)
+        .fetch_all(&self.pool)
+        .await?;
+        let stored = stored_running.into_iter().chain(stored_recent);
+        let mut samples = stored
+            .map(|row| restore_stored_task_workload_sample(task_key, row))
+            .collect::<Vec<_>>();
+        let mut known = samples
+            .iter()
+            .map(|sample| sample.sample_id.clone())
+            .collect::<std::collections::HashSet<_>>();
+        for run in recent_runs_for_workload_compatibility(&self.pool, task_key).await? {
+            let execution_uid = run
+                .execution_uid
+                .clone()
+                .unwrap_or_else(|| format!("legacy:{}", run.id));
+            let sample_id = format!("{execution_uid}:{task_key}");
+            if known.insert(sample_id.clone()) {
+                samples.push(TaskWorkloadSample {
+                    sample_id,
+                    execution_uid,
+                    managed_run_id: Some(run.id),
+                    task_key: task_key.to_string(),
+                    trigger_kind: run.trigger_kind,
+                    attempted_at: run
+                        .actual_started_at
+                        .clone()
+                        .unwrap_or_else(|| run.started_at.clone()),
+                    actual_started_at: run.actual_started_at,
+                    finished_at: run.actual_finished_at.or(run.finished_at),
+                    status: run.status,
+                    reason: run.error_detail,
+                    sequence: 0,
+                    pending: None,
+                    discovered: None,
+                    processed: None,
+                    subset_relation: "unknown".to_string(),
+                });
+            }
+        }
+        if let Some(active) = crate::task_runtime_observation::workload_sample(task_key) {
+            if known.insert(active.sample_id.clone()) {
+                samples.push(active);
+            } else if let Some(existing) = samples
+                .iter_mut()
+                .find(|sample| sample.sample_id == active.sample_id)
+            {
+                *existing = active;
+            }
+        }
+        samples.sort_by(|left, right| {
+            (right.status == "running")
+                .cmp(&(left.status == "running"))
+                .then_with(|| right.attempted_at.cmp(&left.attempted_at))
+                .then_with(|| right.sample_id.cmp(&left.sample_id))
+        });
+        samples.truncate(100);
+        samples.sort_by(|left, right| {
+            left.attempted_at
+                .cmp(&right.attempted_at)
+                .then_with(|| left.sample_id.cmp(&right.sample_id))
+        });
+        let coverage_floor = samples
+            .first()
+            .map(|sample| sample.attempted_at.clone())
+            .unwrap_or_else(|| format_utc_iso_millis(Utc::now() - ChronoDuration::hours(24)));
+        let mut coverage_gaps = sqlx::query_as::<_, TaskWorkloadCoverageGapRow>(
+            "SELECT segment_id,started_at,finished_at,reason FROM task_timeline_segments
+             WHERE kind='coverage_gap' AND last_observed_at>=?
+             ORDER BY started_at DESC LIMIT 100",
+        )
+        .bind(coverage_floor)
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| TaskWorkloadCoverageGap {
+            id: row.segment_id,
+            started_at: row.started_at,
+            finished_at: row.finished_at,
+            reason: row.reason,
+        })
+        .collect::<Vec<_>>();
+        coverage_gaps.sort_by(|left, right| left.started_at.cmp(&right.started_at));
+        let latest_capture_gap = coverage_gaps
+            .iter()
+            .filter_map(|gap| {
+                gap.finished_at
+                    .as_deref()
+                    .or(Some(gap.started_at.as_str()))
+                    .and_then(crate::stats::parse_to_utc_datetime)
+            })
+            .max();
+        let capabilities = task
+            .measurement_capabilities
+            .clone()
+            .unwrap_or_else(|| task_measurement_capabilities(task_key));
+        let supported_metrics = [
+            capabilities.pending.supported,
+            capabilities.discovered.supported,
+            capabilities.processed.supported,
+        ];
+        let coverage = if samples.is_empty() {
+            "no recorded attempts"
+        } else if !coverage_gaps.is_empty() {
+            "incomplete: recorder coverage gap"
+        } else if !supported_metrics.iter().any(|supported| *supported) {
+            "not applicable"
+        } else if samples.iter().any(|sample| {
+            [&sample.pending, &sample.discovered, &sample.processed]
+                .into_iter()
+                .zip(supported_metrics)
+                .any(|(metric, supported)| {
+                    supported
+                        && metric.as_ref().is_none_or(|metric| {
+                            metric.value.is_none() || metric.coverage == "unknown"
+                        })
+                })
+        }) {
+            "some metrics unknown"
+        } else {
+            "recorded"
+        };
+        let summary = calculate_task_workload_summary(
+            &samples,
+            task.enabled,
+            task.interval_secs,
+            latest_capture_gap,
+            Utc::now(),
+        );
+        let revision = self.timeline_revision().await?;
+        Ok(TaskWorkloadTrend {
+            revision,
+            coverage: coverage.to_string(),
+            samples,
+            coverage_gaps,
+            latest_pending: summary.latest_pending,
+            latest_processed: summary.latest_processed,
+            latest_observed_at: summary.latest_observed_at,
+            processing_rate_per_second: summary.processing_rate_per_second,
+            processing_rate_window: summary.processing_rate_window,
+            clearance_eta: summary.clearance_eta,
+            clearance_estimate_window: summary.clearance_estimate_window,
+            clearance_estimate_coverage: summary.clearance_estimate_coverage,
+            clearance_estimate_reason: summary.clearance_estimate_reason,
+        })
     }
 
     pub(crate) async fn set_enabled(&self, task_key: &str, enabled: bool) -> Result<bool> {
@@ -3183,11 +4025,13 @@ mod tests {
     use chrono::{Duration as ChronoDuration, Timelike, Utc};
     use sqlx::SqlitePool;
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        cron_day_matches, ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at,
-        sanitize_task_detail, seed_tasks, task_enabled_by_default, validate_cron_expr,
+        TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary, cron_day_matches,
+        ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail,
+        seed_tasks, task_enabled_by_default, task_measurement_capabilities, validate_cron_expr,
     };
     #[tokio::test]
     async fn schema_repair_preserves_duplicate_active_run_history() {
@@ -3734,6 +4578,759 @@ mod tests {
     }
 
     #[test]
+    fn declares_only_measured_units_for_every_root_and_backfill_task() {
+        for (task_key, ..) in MANAGED_TASKS {
+            let capability = task_measurement_capabilities(task_key);
+            for metric in [
+                capability.pending,
+                capability.discovered,
+                capability.processed,
+            ] {
+                assert_eq!(metric.supported, metric.unit.is_some());
+                assert_eq!(metric.supported, metric.scope.is_some());
+            }
+        }
+        for suffix in STARTUP_BACKFILL_TASKS {
+            let task_key = format!("startup_backfill.{suffix}");
+            let capability = task_measurement_capabilities(&task_key);
+            for metric in [
+                capability.pending,
+                capability.discovered,
+                capability.processed,
+            ] {
+                assert_eq!(metric.supported, metric.unit.is_some(), "{task_key}");
+                assert_eq!(metric.supported, metric.scope.is_some(), "{task_key}");
+            }
+        }
+
+        assert_eq!(
+            task_measurement_capabilities("startup_backfill.upstream_activity_live")
+                .processed
+                .unit
+                .as_deref(),
+            Some("accounts")
+        );
+        assert_eq!(
+            task_measurement_capabilities(
+                "startup_backfill.prompt_cache_conversations_materialization"
+            )
+            .processed
+            .unit
+            .as_deref(),
+            Some("conversation sessions")
+        );
+        assert!(
+            !task_measurement_capabilities("startup_backfill.pool_upstream_node_health_archives")
+                .processed
+                .supported
+        );
+        assert_eq!(
+            task_measurement_capabilities("retention_archive")
+                .pending
+                .unit
+                .as_deref(),
+            Some("invocation rows")
+        );
+    }
+
+    fn workload_fixture_sample(
+        index: usize,
+        observed_at: chrono::DateTime<Utc>,
+        pending: Option<i64>,
+        processed: Option<i64>,
+        status: &str,
+        execution_times: (Option<String>, Option<String>),
+        range: &str,
+    ) -> TaskWorkloadSample {
+        let (actual_started_at, finished_at) = execution_times;
+        let observed_at = format_utc_iso_millis(observed_at);
+        let metric = |value, coverage: &str| TaskWorkloadMetric {
+            value,
+            unit: "invocation rows".to_string(),
+            scope: "expired_invocations:retention_policy:7days".to_string(),
+            range: range.to_string(),
+            observed_at: Some(observed_at.clone()),
+            coverage: coverage.to_string(),
+        };
+        TaskWorkloadSample {
+            sample_id: format!("workload-{index}"),
+            execution_uid: format!("execution-{index}"),
+            managed_run_id: Some(index as i64),
+            task_key: "retention_archive".to_string(),
+            trigger_kind: "interval".to_string(),
+            attempted_at: observed_at.clone(),
+            actual_started_at,
+            finished_at,
+            status: status.to_string(),
+            reason: None,
+            sequence: 1,
+            pending: pending.map(|value| metric(Some(value), "exact")),
+            discovered: None,
+            processed: processed.map(|value| metric(Some(value), "window")),
+            subset_relation: "unknown".to_string(),
+        }
+    }
+
+    #[test]
+    fn estimates_only_from_fresh_complete_same_range_backlog_samples() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let mut samples = (0..5)
+            .map(|index| {
+                let observed = start + ChronoDuration::minutes(index as i64 * 2);
+                workload_fixture_sample(
+                    index,
+                    observed,
+                    Some(100 - index as i64 * 10),
+                    Some(10),
+                    "success",
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
+                    "complete eligible range",
+                )
+            })
+            .collect::<Vec<_>>();
+        let now = start + ChronoDuration::minutes(9);
+        let summary = calculate_task_workload_summary(&samples, true, Some(120), None, now);
+        assert_eq!(
+            summary
+                .latest_pending
+                .as_ref()
+                .and_then(|metric| metric.value),
+            Some(60)
+        );
+        assert!(summary.clearance_eta.is_some());
+        assert_eq!(
+            summary.clearance_estimate_window.as_deref(),
+            Some("最近 24 小时")
+        );
+        assert!(
+            summary
+                .clearance_estimate_coverage
+                .as_deref()
+                .is_some_and(|value| value.contains("5 个准确完整积压快照"))
+        );
+
+        samples[2].pending.as_mut().unwrap().range = "different eligibility range".to_string();
+        let changed_range = calculate_task_workload_summary(&samples, true, Some(120), None, now);
+        assert!(changed_range.clearance_eta.is_none());
+
+        let gap = start + ChronoDuration::minutes(5);
+        let after_gap = calculate_task_workload_summary(&samples, true, Some(120), Some(gap), now);
+        assert!(after_gap.clearance_eta.is_none());
+        assert_eq!(after_gap.clearance_estimate_reason, "insufficient_samples");
+    }
+
+    #[test]
+    fn rejects_clearance_estimates_outside_representable_datetime_range() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let samples = (0..5)
+            .map(|index| {
+                let observed = start + ChronoDuration::minutes(index as i64 * 2);
+                workload_fixture_sample(
+                    index,
+                    observed,
+                    Some(9_000_000_000_000_000 - index as i64 * 100),
+                    Some(10),
+                    "success",
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
+                    "complete eligible range",
+                )
+            })
+            .collect::<Vec<_>>();
+        let now = start + ChronoDuration::minutes(9);
+
+        let summary = calculate_task_workload_summary(&samples, true, Some(120), None, now);
+
+        assert!(summary.clearance_eta.is_none());
+        assert_eq!(summary.clearance_estimate_reason, "estimate_out_of_range");
+    }
+
+    #[test]
+    fn confirmed_skips_count_as_zero_without_fabricating_a_sample_metric() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let first = workload_fixture_sample(
+            0,
+            start + ChronoDuration::minutes(1),
+            None,
+            Some(10),
+            "success",
+            (
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(1) + ChronoDuration::seconds(1),
+                )),
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(1) + ChronoDuration::seconds(30),
+                )),
+            ),
+            "complete eligible range",
+        );
+        let skipped = workload_fixture_sample(
+            1,
+            start + ChronoDuration::minutes(2),
+            None,
+            None,
+            "skipped",
+            (
+                None,
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(2))),
+            ),
+            "complete eligible range",
+        );
+        let leading_skipped = workload_fixture_sample(
+            3,
+            start,
+            None,
+            None,
+            "skipped",
+            (
+                None,
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::milliseconds(500),
+                )),
+            ),
+            "complete eligible range",
+        );
+        let last = workload_fixture_sample(
+            2,
+            start + ChronoDuration::minutes(5),
+            None,
+            Some(10),
+            "success",
+            (
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(5))),
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(5) + ChronoDuration::seconds(30),
+                )),
+            ),
+            "complete eligible range",
+        );
+        let trailing_skipped = workload_fixture_sample(
+            4,
+            start + ChronoDuration::minutes(6),
+            None,
+            None,
+            "skipped",
+            (
+                None,
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(6))),
+            ),
+            "complete eligible range",
+        );
+        assert!(skipped.processed.is_none());
+        let summary = calculate_task_workload_summary(
+            &[leading_skipped, first, skipped, last, trailing_skipped],
+            true,
+            Some(120),
+            None,
+            start + ChronoDuration::minutes(6),
+        );
+        assert!(
+            summary
+                .processing_rate_window
+                .as_deref()
+                .is_some_and(|value| {
+                    value.starts_with("5 次计数完整尝试")
+                        && value.contains(&format_utc_iso_millis(start))
+                })
+        );
+        assert!(summary.processing_rate_per_second.is_some());
+        assert!(summary.clearance_eta.is_none());
+    }
+
+    #[test]
+    fn fresh_snapshot_remains_visible_after_a_confirmed_skip_without_extending_eta_window() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let samples = (0..5)
+            .map(|index| {
+                let observed = start + ChronoDuration::minutes(index as i64 * 2);
+                workload_fixture_sample(
+                    index,
+                    observed,
+                    Some(100 - index as i64 * 10),
+                    Some(10),
+                    "success",
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
+                    "complete eligible range",
+                )
+            })
+            .chain(std::iter::once(workload_fixture_sample(
+                5,
+                start + ChronoDuration::minutes(9),
+                None,
+                None,
+                "skipped",
+                (
+                    None,
+                    Some(format_utc_iso_millis(start + ChronoDuration::minutes(9))),
+                ),
+                "complete eligible range",
+            )))
+            .collect::<Vec<_>>();
+
+        let summary = calculate_task_workload_summary(
+            &samples,
+            true,
+            Some(120),
+            None,
+            start + ChronoDuration::minutes(10),
+        );
+        assert_eq!(
+            summary
+                .latest_pending
+                .as_ref()
+                .and_then(|metric| metric.value),
+            Some(60)
+        );
+        assert!(summary.clearance_eta.is_none());
+        assert_eq!(summary.clearance_estimate_reason, "insufficient_samples");
+    }
+
+    #[tokio::test]
+    async fn workload_migration_is_repeatable_and_protects_recent_and_running_samples() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect workload migration fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=0,interval_secs=123,
+                display_color_light='#123456',display_color_dark='#abcdef'
+             WHERE task_key='retention_archive'",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed persisted task settings");
+
+        let start = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
+        for index in 0..105 {
+            let attempted = start + ChronoDuration::seconds(index as i64);
+            let sample = workload_fixture_sample(
+                index,
+                attempted,
+                None,
+                Some(index as i64),
+                "success",
+                (
+                    Some(format_utc_iso_millis(attempted)),
+                    Some(format_utc_iso_millis(
+                        attempted + ChronoDuration::seconds(1),
+                    )),
+                ),
+                "historical window",
+            );
+            sqlx::query(
+                "INSERT INTO managed_task_work_runs
+                 (execution_uid,task_key,managed_run_id,attempted_at,sequence,status,sample_json,updated_at)
+                 VALUES(?,?,?,?,?,?,?,?)",
+            )
+            .bind(&sample.execution_uid)
+            .bind(&sample.task_key)
+            .bind(sample.managed_run_id)
+            .bind(&sample.attempted_at)
+            .bind(sample.sequence as i64)
+            .bind(&sample.status)
+            .bind(serde_json::to_string(&sample).unwrap())
+            .bind(&sample.attempted_at)
+            .execute(&pool)
+            .await
+            .expect("seed old workload sample");
+        }
+        let mut running = workload_fixture_sample(
+            1000,
+            start - ChronoDuration::days(1),
+            None,
+            None,
+            "running",
+            (
+                Some(format_utc_iso_millis(start - ChronoDuration::days(1))),
+                None,
+            ),
+            "active window",
+        );
+        running.execution_uid = "active-execution".to_string();
+        running.sample_id = "active-execution:retention_archive".to_string();
+        sqlx::query(
+            "INSERT INTO managed_task_work_runs
+             (execution_uid,task_key,attempted_at,sequence,status,sample_json,updated_at)
+             VALUES(?,?,?,?,?,?,?)",
+        )
+        .bind(&running.execution_uid)
+        .bind(&running.task_key)
+        .bind(&running.attempted_at)
+        .bind(running.sequence as i64)
+        .bind(&running.status)
+        .bind(serde_json::to_string(&running).unwrap())
+        .bind(&running.attempted_at)
+        .execute(&pool)
+        .await
+        .expect("seed active workload sample");
+        for index in 0..101 {
+            let attempted_at = format_utc_iso_millis(
+                start - ChronoDuration::days(2) + ChronoDuration::seconds(index as i64),
+            );
+            sqlx::query(
+                "INSERT INTO managed_task_work_runs
+                 (execution_uid,task_key,attempted_at,sequence,status,sample_json,updated_at)
+                 VALUES(?,?,?,?,?,?,?)",
+            )
+            .bind(format!("corrupt-execution-{index}"))
+            .bind("retention_archive")
+            .bind(&attempted_at)
+            .bind(4_i64)
+            .bind("running")
+            .bind("not-json")
+            .bind(&attempted_at)
+            .execute(&pool)
+            .await
+            .expect("seed malformed running workload sample");
+        }
+
+        ensure_schema(&pool)
+            .await
+            .expect("repeat maintenance migration");
+        ensure_schema(&pool).await.expect("repeat migration again");
+        let preserved_settings =
+            sqlx::query_as::<_, (bool, Option<i64>, Option<String>, Option<String>)>(
+                "SELECT enabled,interval_secs,display_color_light,display_color_dark
+             FROM managed_tasks WHERE task_key='retention_archive'",
+            )
+            .fetch_one(&pool)
+            .await
+            .expect("read persisted task settings");
+        assert_eq!(
+            preserved_settings,
+            (
+                false,
+                Some(123),
+                Some("#123456".to_string()),
+                Some("#abcdef".to_string())
+            )
+        );
+        let counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT SUM(status <> 'running'),SUM(status = 'running') FROM managed_task_work_runs",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count protected workload samples");
+        assert_eq!(counts, (100, 102));
+
+        let store = MaintenanceStore::from_pool(pool);
+        let detail = store
+            .detail("retention_archive")
+            .await
+            .expect("read managed task detail")
+            .expect("retention task exists");
+        let trend = detail.workload_trend;
+        assert_eq!(trend.samples.len(), 100);
+        assert!(trend.samples.iter().any(|sample| {
+            sample.sample_id == "active-execution:retention_archive" && sample.status == "running"
+        }));
+        assert!(
+            !trend
+                .samples
+                .iter()
+                .any(|sample| sample.sample_id == "execution-5:retention_archive")
+        );
+        assert_eq!(
+            trend.samples.last().map(|sample| sample.sample_id.as_str()),
+            Some("execution-104:retention_archive")
+        );
+
+        store
+            .start_timeline_session("workload-restart", "2026-10-03T00:00:00.000Z")
+            .await
+            .expect("recover running workload sample after restart");
+        let restarted = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs WHERE execution_uid='active-execution'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read recovered sample");
+        let restarted: TaskWorkloadSample = serde_json::from_str(&restarted).unwrap();
+        assert_eq!(restarted.status, "unknown");
+        assert_eq!(restarted.sequence, 2);
+        let recovered_counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT SUM(status='unknown'),SUM(status='running') FROM managed_task_work_runs",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("count recovered workload samples");
+        assert_eq!(recovered_counts, (102, 0));
+        let malformed = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs
+             WHERE execution_uid='corrupt-execution-0' AND task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read rebuilt malformed sample");
+        let malformed: TaskWorkloadSample = serde_json::from_str(&malformed).unwrap();
+        assert_eq!(malformed.status, "unknown");
+        assert_eq!(malformed.sequence, 5);
+        assert!(malformed.pending.is_none());
+        assert_eq!(
+            malformed.reason.as_deref(),
+            Some("服务重启时发现工作量记录损坏，计数未知")
+        );
+    }
+
+    #[tokio::test]
+    async fn workload_store_ignores_out_of_order_sample_sequences() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect workload sequence fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        let store = MaintenanceStore::from_pool(pool);
+        store
+            .start_timeline_session("workload-sequence", "2026-10-03T00:00:00.000Z")
+            .await
+            .expect("start timeline session");
+        let now = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let mut latest = workload_fixture_sample(
+            1,
+            now,
+            None,
+            Some(7),
+            "success",
+            (
+                Some(format_utc_iso_millis(now)),
+                Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            ),
+            "latest",
+        );
+        latest.execution_uid = "stable-execution".to_string();
+        latest.sample_id = "stable-execution:retention_archive".to_string();
+        latest.sequence = 8;
+        store
+            .write_timeline_batch(
+                "workload-sequence",
+                &[crate::task_timeline::TimelineEvent::WorkloadSampleChanged {
+                    sample: Box::new(latest.clone()),
+                }],
+                0,
+                "2026-10-03T00:00:02.000Z",
+                false,
+            )
+            .await
+            .expect("write newest workload event");
+        latest.sequence = 3;
+        latest.processed.as_mut().unwrap().value = Some(2);
+        store
+            .write_timeline_batch(
+                "workload-sequence",
+                &[crate::task_timeline::TimelineEvent::WorkloadSampleChanged {
+                    sample: Box::new(latest),
+                }],
+                0,
+                "2026-10-03T00:00:03.000Z",
+                false,
+            )
+            .await
+            .expect("write stale workload event");
+        let sample_json = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs
+             WHERE execution_uid='stable-execution' AND task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read monotonic sample");
+        let sample: TaskWorkloadSample = serde_json::from_str(&sample_json).unwrap();
+        assert_eq!(sample.sequence, 8);
+        assert_eq!(
+            sample.processed.as_ref().and_then(|metric| metric.value),
+            Some(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn workload_recorder_persists_runs_without_detail_subscribers() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect workload recorder fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        let store = MaintenanceStore::from_pool(pool);
+        let attempted_at = Utc::now();
+        let sample = workload_fixture_sample(
+            0,
+            attempted_at,
+            Some(12),
+            Some(4),
+            "success",
+            (
+                Some(format_utc_iso_millis(
+                    attempted_at + ChronoDuration::milliseconds(10),
+                )),
+                Some(format_utc_iso_millis(
+                    attempted_at + ChronoDuration::seconds(1),
+                )),
+            ),
+            "complete eligible range",
+        );
+        let execution_uid = sample.execution_uid.clone();
+
+        crate::task_timeline::start_recorder(Arc::new(store.clone())).await;
+        crate::task_timeline::workload_sample_changed(sample);
+        crate::task_timeline::drain_after_shutdown().await;
+
+        let stored = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs WHERE execution_uid=? AND task_key='retention_archive'",
+        )
+        .bind(execution_uid)
+        .fetch_one(&store.pool)
+        .await
+        .expect("read asynchronously persisted workload sample");
+        let stored: TaskWorkloadSample = serde_json::from_str(&stored).unwrap();
+        assert_eq!(stored.status, "success");
+        assert_eq!(
+            stored.pending.as_ref().and_then(|metric| metric.value),
+            Some(12)
+        );
+        assert_eq!(
+            stored.processed.as_ref().and_then(|metric| metric.value),
+            Some(4)
+        );
+
+        let ended_at = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT ended_at FROM task_timeline_coverage ORDER BY started_at DESC LIMIT 1",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read closed recorder session");
+        assert!(ended_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn legacy_run_metrics_remain_unknown_and_associated_samples_deduplicate() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect legacy workload fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore::from_pool(pool);
+        let run_id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO managed_task_runs
+             (task_key,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,status,execution_uid)
+             VALUES('retention_archive','manual','2026-10-03T00:00:00.000Z',
+                    '2026-10-03T00:00:01.000Z','2026-10-03T00:00:02.000Z',
+                    '2026-10-03T00:00:02.000Z','success','legacy-execution')
+             RETURNING id",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("seed legacy managed run");
+        let detail = store.detail("retention_archive").await.unwrap().unwrap();
+        assert_eq!(detail.workload_trend.samples.len(), 1);
+        assert!(detail.workload_trend.samples[0].processed.is_none());
+
+        let now = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 1).unwrap();
+        let mut sample = workload_fixture_sample(
+            0,
+            now,
+            None,
+            Some(4),
+            "success",
+            (
+                Some(format_utc_iso_millis(now)),
+                Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            ),
+            "run window",
+        );
+        let unknown_metric = TaskWorkloadMetric {
+            value: None,
+            unit: "invocation rows".to_string(),
+            scope: "expired_invocations:retention_policy:7days".to_string(),
+            range: "run window".to_string(),
+            observed_at: None,
+            coverage: "unknown".to_string(),
+        };
+        sample.pending = Some(unknown_metric.clone());
+        sample.discovered = Some(unknown_metric);
+        sample.execution_uid = "legacy-execution".to_string();
+        sample.sample_id = "legacy-execution:retention_archive".to_string();
+        sample.managed_run_id = Some(run_id);
+        sqlx::query(
+            "INSERT INTO managed_task_work_runs
+             (execution_uid,task_key,managed_run_id,attempted_at,sequence,status,sample_json,updated_at)
+             VALUES(?,?,?,?,?,?,?,?)",
+        )
+        .bind(&sample.execution_uid)
+        .bind(&sample.task_key)
+        .bind(sample.managed_run_id)
+        .bind(&sample.attempted_at)
+        .bind(sample.sequence as i64)
+        .bind(&sample.status)
+        .bind(serde_json::to_string(&sample).unwrap())
+        .bind(&sample.attempted_at)
+        .execute(&store.pool)
+        .await
+        .expect("associate sample with legacy managed run");
+        let detail = store.detail("retention_archive").await.unwrap().unwrap();
+        assert_eq!(detail.workload_trend.samples.len(), 1);
+        assert_eq!(detail.workload_trend.coverage, "some metrics unknown");
+        assert_eq!(
+            detail.workload_trend.samples[0]
+                .processed
+                .as_ref()
+                .and_then(|metric| metric.value),
+            Some(4)
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_terminal_workload_sample_keeps_attempt_identity_and_unknown_metrics() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect malformed workload fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let store = MaintenanceStore::from_pool(pool);
+        sqlx::query(
+            "INSERT INTO managed_task_work_runs
+             (execution_uid,task_key,managed_run_id,attempted_at,sequence,status,sample_json,updated_at)
+             VALUES('corrupt-run','retention_archive',NULL,'2026-10-03T00:00:00.000Z',4,'failed','not-json','2026-10-03T00:00:02.000Z')",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("seed malformed terminal sample");
+
+        let detail = store.detail("retention_archive").await.unwrap().unwrap();
+        assert_eq!(detail.workload_trend.samples.len(), 1);
+        let sample = &detail.workload_trend.samples[0];
+        assert_eq!(sample.sample_id, "corrupt-run:retention_archive");
+        assert_eq!(sample.execution_uid, "corrupt-run");
+        assert_eq!(sample.status, "failed");
+        assert_eq!(sample.sequence, 4);
+        assert!(sample.pending.is_none());
+        assert!(sample.discovered.is_none());
+        assert!(sample.processed.is_none());
+        assert_eq!(detail.workload_trend.coverage, "some metrics unknown");
+        assert_eq!(sample.reason.as_deref(), Some("工作量记录损坏，计量未知"));
+    }
+
+    #[test]
     fn disables_backfill_and_manual_tasks_by_default() {
         assert!(!task_enabled_by_default("startup_backfill", false));
         assert!(!task_enabled_by_default(
@@ -3858,7 +5455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repairs_legacy_dual_schedule_trigger_on_schema_open() {
+    async fn repairs_legacy_dual_schedule_trigger_atomically_after_transient_failure() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect maintenance migration test pool");
@@ -3872,6 +5469,38 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed legacy dual schedule");
+
+        sqlx::query(
+            "CREATE TRIGGER fail_legacy_schedule_trigger_repair
+             BEFORE UPDATE OF next_trigger_at ON managed_tasks
+             WHEN OLD.task_key='dashboard_runtime_projection_reconcile'
+             BEGIN SELECT RAISE(ABORT, 'injected schedule repair failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("inject schedule repair failure");
+
+        let error = ensure_schema(&pool)
+            .await
+            .expect_err("injected trigger update must abort schedule repair");
+        assert!(
+            error
+                .to_string()
+                .contains("injected schedule repair failure")
+        );
+        let unchanged = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,next_trigger_at FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load schedule after failed migration");
+        assert_eq!(unchanged.0, Some(120));
+        assert_eq!(unchanged.1.as_deref(), Some("2000-01-01T00:02:00.000Z"));
+
+        sqlx::query("DROP TRIGGER fail_legacy_schedule_trigger_repair")
+            .execute(&pool)
+            .await
+            .expect("remove injected schedule repair failure");
 
         ensure_schema(&pool).await.expect("repair legacy schedule");
         let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(
@@ -3979,7 +5608,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovers_incomplete_runs_idempotently() {
+    async fn recovers_all_incomplete_runs_on_restart_idempotently() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect maintenance test pool");
@@ -4003,7 +5632,7 @@ mod tests {
         .expect("insert fresh managed task run");
 
         let store = MaintenanceStore::from_pool(pool);
-        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 1);
+        assert_eq!(store.recover_incomplete_runs().await.unwrap(), 2);
         let row = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
             "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='retention_archive'",
         )
@@ -4013,14 +5642,70 @@ mod tests {
         assert_eq!(row.0, "failed");
         assert!(row.1.is_some());
         assert_eq!(row.2.as_deref(), Some("服务重启时回收未完成运行"));
-        let fresh_status = sqlx::query_scalar::<_, String>(
-            "SELECT status FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
+        let fresh_status = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            "SELECT status,finished_at,error_detail FROM managed_task_runs WHERE task_key='forward_proxy_subscription_refresh'",
         )
         .fetch_one(&store.pool)
         .await
         .expect("load fresh managed task run");
-        assert_eq!(fresh_status, "running");
+        assert_eq!(fresh_status.0, "failed");
+        assert!(fresh_status.1.is_some());
+        assert_eq!(fresh_status.2.as_deref(), Some("服务重启时回收未完成运行"));
         assert_eq!(store.recover_incomplete_runs().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_state_migration_rolls_back_every_write_on_failure() {
+        let business_pool = legacy_backfill_pool(1, 99).await;
+        sqlx::query(
+            "INSERT INTO system_task_runs (id,task_kind,trigger_kind,status,started_at)
+             VALUES (1,'retention_archive','startup','success','2026-10-03T00:00:00.000Z')",
+        )
+        .execute(&business_pool)
+        .await
+        .expect("seed legacy run");
+
+        let maintenance_pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect maintenance test pool");
+        ensure_schema(&maintenance_pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&maintenance_pool)
+            .await
+            .expect("seed maintenance task registry");
+        sqlx::query(
+            "CREATE TRIGGER fail_legacy_progress_import
+             BEFORE INSERT ON managed_task_progress
+             BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END",
+        )
+        .execute(&maintenance_pool)
+        .await
+        .expect("install migration failure trigger");
+
+        let store = MaintenanceStore::from_pool(maintenance_pool);
+        assert!(store.migrate_legacy_state(&business_pool).await.is_err());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_runs")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count runs after migration rollback"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM startup_backfill_progress")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count legacy checkpoints after migration rollback"),
+            0
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM managed_task_progress")
+                .fetch_one(&store.pool)
+                .await
+                .expect("count progress snapshots after migration rollback"),
+            0
+        );
     }
 
     #[tokio::test]

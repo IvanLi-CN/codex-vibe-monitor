@@ -2352,15 +2352,25 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     .await
     .ok()
     .flatten();
+    let observation = crate::TaskExecutionObservation::begin_for_system_task_run(
+        "forward_proxy_subscription_refresh",
+        "manual",
+        "processing",
+        task_run.as_ref().map(|run| run.id),
+    );
 
-    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true, None).await {
+    let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), true, None).await;
+    observation.finish_from_result(&refresh_result);
+
+    if let Err(err) = refresh_result {
+        let detail = err.to_string();
         if let Some(run) = task_run.as_ref() {
             finish_system_task_run_batched(
                 state.as_ref(),
                 run,
                 SystemTaskStatus::Failed,
                 Some("forward proxy manual refresh failed".to_string()),
-                Some(err.to_string()),
+                Some(detail),
             )
             .await;
         }
@@ -2378,9 +2388,6 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     let added_node_count = after_subscription_keys
         .difference(&before_subscription_keys)
         .count();
-    let forward_proxy = build_forward_proxy_settings_response(state.as_ref())
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     if let Some(run) = task_run.as_ref() {
         finish_system_task_run_batched(
             state.as_ref(),
@@ -2388,13 +2395,16 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
             SystemTaskStatus::Success,
             Some(format!(
                 "forward proxy manual refresh completed: subscriptions={} added_nodes={}",
-                forward_proxy.subscription_urls.len(),
+                after_subscription_keys.len(),
                 added_node_count
             )),
             None,
         )
         .await;
     }
+    let forward_proxy = build_forward_proxy_settings_response(state.as_ref())
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     Ok(Json(ForwardProxyRefreshSubscriptionsResponse {
         subscription_count: forward_proxy.subscription_urls.len(),
         forward_proxy,

@@ -32,6 +32,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
         Some(cancel),
         state.raw_capture_circuit.clone(),
         Some(&state.prompt_cache_conversation_cache),
+        Some(observation.clone()),
     )
     .await
     {
@@ -105,7 +106,8 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
                     "retention maintenance deferred; preserving the prompt retry schedule"
                 );
                 invalidate_system_status_cache(state.as_ref()).await;
-                observation.finish_with_status("skipped");
+                observation
+                    .finish_with_status_and_reason("skipped", summary.wait_reason.as_deref());
                 return false;
             }
             // Commit the bounded inventory reset before task bookkeeping or cancellation can

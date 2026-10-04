@@ -2684,6 +2684,69 @@ export interface ManagedTask {
   scheduleEditable?: boolean;
   scheduleCapabilityReason?: string | null;
   executionClass?: string | null;
+  measurementCapabilities?: TaskMeasurementCapabilities;
+}
+
+export interface TaskMetricCapability {
+  supported: boolean;
+  unit?: string | null;
+  scope?: string | null;
+}
+
+export interface TaskMeasurementCapabilities {
+  pending: TaskMetricCapability;
+  discovered: TaskMetricCapability;
+  processed: TaskMetricCapability;
+}
+
+export interface TaskWorkloadMetric {
+  value?: number | null;
+  unit: string;
+  scope: string;
+  range: string;
+  observedAt?: string | null;
+  coverage: "exact" | "window" | "lower_bound" | "unknown" | string;
+}
+
+export interface TaskWorkloadSample {
+  sampleId: string;
+  executionUid: string;
+  managedRunId?: number | null;
+  taskKey: string;
+  triggerKind: string;
+  attemptedAt: string;
+  actualStartedAt?: string | null;
+  finishedAt?: string | null;
+  status: string;
+  reason?: string | null;
+  sequence: number;
+  pending?: TaskWorkloadMetric | null;
+  discovered?: TaskWorkloadMetric | null;
+  processed?: TaskWorkloadMetric | null;
+  subsetRelation: string;
+}
+
+export interface TaskWorkloadCoverageGap {
+  id: string;
+  startedAt: string;
+  finishedAt?: string | null;
+  reason?: string | null;
+}
+
+export interface TaskWorkloadTrend {
+  revision: number;
+  coverage: string;
+  samples: TaskWorkloadSample[];
+  coverageGaps?: TaskWorkloadCoverageGap[];
+  latestPending?: TaskWorkloadMetric | null;
+  latestProcessed?: TaskWorkloadMetric | null;
+  latestObservedAt?: string | null;
+  processingRatePerSecond?: number | null;
+  processingRateWindow?: string | null;
+  clearanceEta?: string | null;
+  clearanceEstimateWindow?: string | null;
+  clearanceEstimateCoverage?: string | null;
+  clearanceEstimateReason: string;
 }
 
 export interface CurrentTaskExecution {
@@ -2845,6 +2908,7 @@ export interface ManagedTaskDetail {
   recentRuns: ManagedTaskRun[];
   performance?: ManagedTaskPerformance | null;
   retentionBacklogTrend?: RetentionBacklogTrendPoint[] | null;
+  workloadTrend?: TaskWorkloadTrend | null;
 }
 
 export interface RetentionBacklogTrendPoint {
@@ -5591,6 +5655,19 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
     return null;
   }
   const schedule = asRecord(payload.effectiveSchedule);
+  const capabilities = asRecord(payload.measurementCapabilities);
+  const readCapability = (value: unknown): TaskMetricCapability | undefined => {
+    const capability = asRecord(value);
+    if (typeof capability?.supported !== "boolean") return undefined;
+    return {
+      supported: capability.supported,
+      unit: typeof capability.unit === "string" ? capability.unit : null,
+      scope: typeof capability.scope === "string" ? capability.scope : null,
+    };
+  };
+  const pendingCapability = readCapability(capabilities?.pending);
+  const discoveredCapability = readCapability(capabilities?.discovered);
+  const processedCapability = readCapability(capabilities?.processed);
   return {
     taskKey: payload.taskKey,
     title: payload.title,
@@ -5632,6 +5709,112 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
           ? null
           : undefined,
     executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
+    measurementCapabilities:
+      pendingCapability && discoveredCapability && processedCapability
+        ? {
+            pending: pendingCapability,
+            discovered: discoveredCapability,
+            processed: processedCapability,
+          }
+        : undefined,
+  };
+}
+
+function normalizeTaskWorkloadMetric(raw: unknown): TaskWorkloadMetric | null {
+  const payload = asRecord(raw);
+  if (
+    !payload ||
+    typeof payload.unit !== "string" ||
+    typeof payload.scope !== "string" ||
+    typeof payload.range !== "string" ||
+    typeof payload.coverage !== "string"
+  ) {
+    return null;
+  }
+  return {
+    value: normalizeFiniteNumber(payload.value) ?? null,
+    unit: payload.unit,
+    scope: payload.scope,
+    range: payload.range,
+    observedAt: typeof payload.observedAt === "string" ? payload.observedAt : null,
+    coverage: payload.coverage,
+  };
+}
+
+function normalizeTaskWorkloadSample(raw: unknown): TaskWorkloadSample | null {
+  const payload = asRecord(raw);
+  if (
+    !payload ||
+    typeof payload.sampleId !== "string" ||
+    typeof payload.executionUid !== "string" ||
+    typeof payload.taskKey !== "string" ||
+    typeof payload.attemptedAt !== "string" ||
+    typeof payload.status !== "string"
+  ) {
+    return null;
+  }
+  const sequence = normalizeFiniteNumber(payload.sequence);
+  if (sequence == null) return null;
+  return {
+    sampleId: payload.sampleId,
+    executionUid: payload.executionUid,
+    managedRunId: normalizeFiniteNumber(payload.managedRunId) ?? null,
+    taskKey: payload.taskKey,
+    triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : "unknown",
+    attemptedAt: payload.attemptedAt,
+    actualStartedAt: typeof payload.actualStartedAt === "string" ? payload.actualStartedAt : null,
+    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    status: payload.status,
+    reason: typeof payload.reason === "string" ? payload.reason : null,
+    sequence,
+    pending: normalizeTaskWorkloadMetric(payload.pending),
+    discovered: normalizeTaskWorkloadMetric(payload.discovered),
+    processed: normalizeTaskWorkloadMetric(payload.processed),
+    subsetRelation: typeof payload.subsetRelation === "string" ? payload.subsetRelation : "unknown",
+  };
+}
+
+function normalizeTaskWorkloadTrend(raw: unknown): TaskWorkloadTrend | null {
+  const payload = asRecord(raw);
+  if (!payload || !Array.isArray(payload.samples)) return null;
+  return {
+    revision: normalizeFiniteNumber(payload.revision) ?? 0,
+    coverage: typeof payload.coverage === "string" ? payload.coverage : "unknown",
+    samples: payload.samples
+      .map(normalizeTaskWorkloadSample)
+      .filter((sample): sample is TaskWorkloadSample => sample != null),
+    coverageGaps: Array.isArray(payload.coverageGaps)
+      ? payload.coverageGaps.flatMap((rawGap) => {
+          const gap = asRecord(rawGap);
+          if (!gap || typeof gap.id !== "string" || typeof gap.startedAt !== "string") return [];
+          return [
+            {
+              id: gap.id,
+              startedAt: gap.startedAt,
+              finishedAt: typeof gap.finishedAt === "string" ? gap.finishedAt : null,
+              reason: typeof gap.reason === "string" ? gap.reason : null,
+            },
+          ];
+        })
+      : [],
+    latestPending: normalizeTaskWorkloadMetric(payload.latestPending),
+    latestProcessed: normalizeTaskWorkloadMetric(payload.latestProcessed),
+    latestObservedAt:
+      typeof payload.latestObservedAt === "string" ? payload.latestObservedAt : null,
+    processingRatePerSecond: normalizeFiniteNumber(payload.processingRatePerSecond) ?? null,
+    processingRateWindow:
+      typeof payload.processingRateWindow === "string" ? payload.processingRateWindow : null,
+    clearanceEta: typeof payload.clearanceEta === "string" ? payload.clearanceEta : null,
+    clearanceEstimateWindow:
+      typeof payload.clearanceEstimateWindow === "string" ? payload.clearanceEstimateWindow : null,
+    clearanceEstimateCoverage:
+      typeof payload.clearanceEstimateCoverage === "string"
+        ? payload.clearanceEstimateCoverage
+        : null,
+    clearanceEstimateReason:
+      typeof payload.clearanceEstimateReason === "string"
+        ? payload.clearanceEstimateReason
+        : "unknown",
   };
 }
 
@@ -5755,6 +5938,7 @@ function normalizeManagedTaskDetail(raw: unknown): ManagedTaskDetail {
     recentRuns: runs,
     performance: normalizeManagedTaskPerformance(payload?.performance),
     retentionBacklogTrend,
+    workloadTrend: normalizeTaskWorkloadTrend(payload?.workloadTrend),
   };
 }
 

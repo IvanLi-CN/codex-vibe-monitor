@@ -3492,6 +3492,13 @@ pub(crate) struct ActiveAccountActivityV2RepairOutcome {
 pub(crate) async fn repair_active_account_activity_v2_coverage(
     pool: &Pool<Sqlite>,
 ) -> Result<ActiveAccountActivityV2RepairOutcome> {
+    repair_active_account_activity_v2_coverage_with_progress(pool, |_| {}).await
+}
+
+pub(crate) async fn repair_active_account_activity_v2_coverage_with_progress(
+    pool: &Pool<Sqlite>,
+    mut on_bucket_committed: impl FnMut(usize) + Send,
+) -> Result<ActiveAccountActivityV2RepairOutcome> {
     let started_at = Instant::now();
     if started_at.elapsed() >= ACTIVE_ACCOUNT_ACTIVITY_V2_REPAIR_BUDGET {
         return Ok(ActiveAccountActivityV2RepairOutcome::default());
@@ -3602,6 +3609,7 @@ pub(crate) async fn repair_active_account_activity_v2_coverage(
         .await?;
         tx.commit().await?;
         repaired_bucket_count += 1;
+        on_bucket_committed(repaired_bucket_count);
     }
 
     let outcome = ActiveAccountActivityV2RepairOutcome {

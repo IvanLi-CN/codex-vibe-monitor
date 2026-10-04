@@ -110,14 +110,24 @@ test.describe("Web Demo runtime", () => {
 
     await expect(page.getByRole("heading", { name: "数据保留与归档" })).toBeVisible();
     await expect(page.getByText("默认计划 · 3600s")).toBeVisible();
-    await expect(page.getByText("invocations", { exact: true })).toBeVisible();
+    const workload = page.getByRole("region", { name: "运行趋势", exact: true });
+    await expect(workload.getByRole("tab", { name: "次数", exact: true })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(workload.getByRole("figure", { name: "工作量：invocation rows" })).toBeVisible();
+    await expect(workload.getByRole("button", { name: "隐藏待处理量", exact: true })).toBeVisible();
+    await expect(workload.getByRole("button", { name: "隐藏本次发现", exact: true })).toBeVisible();
+    await expect(workload.getByRole("button", { name: "隐藏本次处理", exact: true })).toBeVisible();
     await expect(page.getByText(/完成度：部分完成/)).toBeVisible();
     await expect(page.getByText(/Prompt 缓存统计：暂不可用（积压 3）/)).toBeVisible();
-    await expect(page.getByRole("heading", { name: "最近 7 天归档积压" })).toBeVisible();
-    await expect(page.getByText("待归档 invocation 条数", { exact: true })).toBeVisible();
-    await expect(page.getByText("最长逾期时间（小时）", { exact: true })).toBeVisible();
-    await expect(page.getByText("缺测留空，不补零", { exact: true })).toBeVisible();
-    await expect(page.getByText("空积压显示 0 条、逾期未知", { exact: true })).toBeVisible();
+    await workload.getByRole("tab", { name: "时间", exact: true }).click();
+    const backlog = workload.getByRole("tabpanel", { name: "时间", exact: true });
+    await expect(backlog.getByText("待归档数量", { exact: true })).toBeVisible();
+    await expect(backlog.getByText("最长逾期", { exact: true })).toBeVisible();
+    await expect(backlog.locator(".recharts-surface")).toHaveCount(2);
+    await expect(page.getByText("缺测留空，不补零", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("空积压显示 0 条、逾期未知", { exact: true })).toHaveCount(0);
     await expect(page.getByText("92.0%", { exact: true })).toBeVisible();
   });
 

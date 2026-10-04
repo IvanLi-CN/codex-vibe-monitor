@@ -1065,6 +1065,26 @@ _Avoid_: 任意后台线程, 单次 SQL, 页面刷新
 One execution of a Managed Task with a trigger, start and finish timestamps, terminal status, duration, summary, and bounded error detail. A Task Run is an operational record, not a business invocation.
 _Avoid_: 对外调用, 上游尝试, 日志行
 
+**任务待处理量（Task Pending Population）**:
+The complete population awaiting a task's work at a recorded observation point, with an explicit unit and eligibility scope. A bounded scan or candidate window describes only part of this population and does not establish its total.
+_Avoid_: 本页候选数即总量, 扫描上限即积压, 未知即零
+
+**本次发现量（Run Discovered Candidates）**:
+The distinct eligible work items identified within one task run, including previously queued candidates selected by that run. It is a count within the run, not newly arriving work between runs or every item inspected regardless of eligibility.
+_Avoid_: 跨轮新增量, 全量待处理量, 原始扫描量
+
+**本次处理量（Run Committed Work）**:
+The distinct work items whose task-specific completion boundary was successfully reached within one run. Failed attempts and retries do not increase it; confirmed committed work remains part of the run's result even when later work fails.
+_Avoid_: 尝试次数, 发现即完成, 失败整轮成果归零
+
+**任务计量范围（Task Measurement Scope）**:
+The work population described by one task metric, including its unit, eligibility rules, observation boundary, and coverage. Discovery and completion form subsets of a pending population only when those boundaries and item identities are compatible.
+_Avoid_: 同名字段即可相加, 行与批次混用, 截断值即完整值
+
+**固定清理存量（Fixed Clearance Cohort）**:
+A population of eligible work items captured at one observation point and tracked through their completion. Later arrivals belong outside that cohort; its completion fraction is distinct from the current replenished backlog or a single scan's processing ratio.
+_Avoid_: 滚动积压即固定总量, 本次处理除以本次发现即总体进度
+
 **任务执行／让行级别（Task Execution/Deferral Class）**:
 A read-only description of the execution or resource-deferral rules that actually apply to a Managed Task. It remains undefined when no corresponding rule exists and does not grant operators a configurable cross-task execution rank.
 _Avoid_: 可编辑任务优先级, 人工重要性标签, 跨任务排队顺序
