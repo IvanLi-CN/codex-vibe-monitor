@@ -3,6 +3,8 @@
 use super::*;
 use tokio::sync::Notify;
 
+pub(crate) mod lifecycle;
+
 const RANGE_SIZE: u32 = 64;
 const WAIT_BUDGET: Duration = Duration::from_millis(100);
 const MIN_CAPACITY: usize = 128;
@@ -63,6 +65,7 @@ struct Entry {
     failure: Option<String>,
     last_used: i64,
     notify: Arc<Notify>,
+    namespace: Option<lifecycle::PrefixGuard>,
 }
 
 impl Entry {
@@ -79,6 +82,7 @@ impl Entry {
             failure: None,
             last_used: Utc::now().timestamp_millis(),
             notify: Arc::new(Notify::new()),
+            namespace: None,
         }
     }
 
@@ -100,6 +104,9 @@ struct Memory {
     target: usize,
     leases: HashMap<String, usize>,
     allocations: HashMap<Owner, usize>,
+    active_ids: HashSet<String>,
+    active_prefixes: HashMap<String, usize>,
+    hourly_cleanup_cursor: Option<i64>,
     activity: HashMap<String, i64>,
     activity_order: std::collections::BTreeSet<(i64, String)>,
 }
@@ -113,6 +120,9 @@ impl Default for Memory {
             target: MIN_CAPACITY,
             leases: HashMap::new(),
             allocations: HashMap::new(),
+            active_ids: HashSet::new(),
+            active_prefixes: HashMap::new(),
+            hourly_cleanup_cursor: None,
             activity: HashMap::new(),
             activity_order: std::collections::BTreeSet::new(),
         }
@@ -176,6 +186,10 @@ impl Memory {
             .filter(|(owner, entry)| {
                 matches!(owner, Owner::Conversation(key) if !self.leases.contains_key(key))
                     && !self.allocations.contains_key(*owner)
+                    && !entry
+                        .prefix
+                        .as_deref()
+                        .is_some_and(lifecycle::pending_prefix)
                     && !entry.operation
                     && !entry.retiring
             })
@@ -235,6 +249,29 @@ impl Drop for AllocationGuard {
 }
 
 impl InvocationRangeManager {
+    pub(crate) fn occupancy(&self) -> usize {
+        self.memory
+            .lock()
+            .expect("invocation range memory")
+            .occupancy()
+    }
+    pub(crate) fn reconcile_persistence(self: &Arc<Self>, id: &str) {
+        {
+            let mut memory = self.memory.lock().expect("invocation range memory");
+            if memory.active_ids.remove(id) {
+                let prefix = &id[..6];
+                if let Some(count) = memory.active_prefixes.get_mut(prefix) {
+                    *count -= 1;
+                    if *count == 0 {
+                        memory.active_prefixes.remove(prefix);
+                    }
+                }
+            }
+        }
+        self.admission.notify_waiters();
+        self.shrink();
+    }
+
     #[cfg(test)]
     pub(crate) fn test_observe_activity(&self, prefix: &str, timestamp: i64) {
         self.memory
@@ -246,6 +283,16 @@ impl InvocationRangeManager {
     #[cfg(test)]
     pub(crate) fn test_activity_time(&self, prefix: &str) -> Option<i64> {
         self.memory.lock().unwrap().activity.get(prefix).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_allocate_hour(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        hour: i64,
+    ) -> Result<String> {
+        self.pool.get_or_init(|| pool.clone());
+        self.allocate_owner(pool, Owner::Hour(hour), true).await
     }
 
     #[cfg(test)]
@@ -490,10 +537,24 @@ impl InvocationRangeManager {
         key: Option<&str>,
     ) -> Result<String> {
         self.pool.get_or_init(|| pool.clone());
-        self.allocate_owner(pool, Owner::from_key(key)).await
+        self.allocate_owner(pool, Owner::from_key(key), false).await
     }
 
-    async fn allocate_owner(self: &Arc<Self>, pool: &Pool<Sqlite>, owner: Owner) -> Result<String> {
+    pub(crate) async fn allocate_leased(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        key: Option<&str>,
+    ) -> Result<String> {
+        self.pool.get_or_init(|| pool.clone());
+        self.allocate_owner(pool, Owner::from_key(key), true).await
+    }
+
+    async fn allocate_owner(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        owner: Owner,
+        leased: bool,
+    ) -> Result<String> {
         *self
             .memory
             .lock()
@@ -551,12 +612,19 @@ impl InvocationRangeManager {
                 } else {
                     None
                 };
-                (
-                    entry.notify.clone(),
-                    initialization,
-                    issued,
-                    entry.can_refill(32),
-                )
+                let notify = entry.notify.clone();
+                let trigger = entry.can_refill(32);
+                if leased
+                    && matches!(owner, Owner::Hour(_))
+                    && let Some(id) = &issued
+                    && memory.active_ids.insert(id.clone())
+                {
+                    *memory
+                        .active_prefixes
+                        .entry(id[..6].to_owned())
+                        .or_default() += 1;
+                }
+                (notify, initialization, issued, trigger)
             };
             // Register notification before dispatch so a fast commit cannot be missed.
             let notified = notify.notified();
@@ -622,6 +690,7 @@ impl InvocationRangeManager {
         entry.operation = false;
         match result {
             Ok((prefix, range)) => {
+                entry.namespace = Some(lifecycle::PrefixGuard::new(&prefix));
                 entry.prefix = Some(prefix.clone());
                 entry.ceiling = i64::from(range.end) - 1;
                 entry.issued_floor = i64::from(range.next) - 1;
@@ -664,6 +733,7 @@ impl InvocationRangeManager {
                 (prefix, floor)
             }
         };
+        let floor = floor.max(lifecycle::pending_floor(&prefix));
         let reservation = Reservation {
             owner: owner.clone(),
             prefix: prefix.clone(),

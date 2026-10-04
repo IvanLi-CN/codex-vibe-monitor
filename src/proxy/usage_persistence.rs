@@ -2399,6 +2399,15 @@ pub(crate) async fn recover_guard_dropped_pool_invocation_orphan_with_prompt_cac
     }
     .await;
 
+    if flush_completed {
+        state
+            .prompt_cache_conversation_cache
+            .lock()
+            .await
+            .identity_cache
+            .range_manager
+            .reconcile_persistence(&selector.invoke_id);
+    }
     if let Some(prompt_cache_key) = prompt_cache_key {
         if flush_completed {
             release_active_prompt_cache_conversation(

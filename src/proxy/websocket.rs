@@ -203,6 +203,10 @@ pub(crate) async fn proxy_openai_v1_ws_common(
         state.prompt_cache_conversation_cache.clone(),
         header_prompt_cache_key.as_deref(),
     );
+    let invocation_lease_guard = PromptCacheInvocationLeaseGuard::new(
+        state.prompt_cache_conversation_cache.clone(),
+        &invoke_id,
+    );
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id,
         occurred_at: shanghai_now_string(),
@@ -223,6 +227,7 @@ pub(crate) async fn proxy_openai_v1_ws_common(
     ws.on_upgrade(move |downstream| {
         let mut prompt_cache_lease_guard = prompt_cache_lease_guard;
         async move {
+            let _invocation_lease_guard = invocation_lease_guard;
             prompt_cache_lease_guard.disarm();
             if requires_response_create_first_frame {
                 proxy_websocket_tunnel_deferred_prepare(
@@ -2472,6 +2477,7 @@ pub(crate) struct WsUsageTracker {
     first_token_ms: Option<f64>,
     usage: WebSocketUsageAccumulator,
     active_prompt_cache_keys: HashSet<String>,
+    invocation_leases: HashMap<String, PromptCacheInvocationLeaseGuard>,
 }
 
 impl WsUsageTracker {
@@ -2503,6 +2509,7 @@ impl WsUsageTracker {
             first_token_ms: None,
             usage: WebSocketUsageAccumulator::default(),
             active_prompt_cache_keys: HashSet::new(),
+            invocation_leases: HashMap::new(),
         }
     }
 
@@ -2601,6 +2608,7 @@ impl WsUsageTracker {
     }
 
     fn mark_terminal_prompt_cache_key(&mut self) {
+        self.invocation_leases.remove(&self.turn_invoke_id());
         if let Some(prompt_cache_key) =
             websocket_effective_prompt_cache_key(self.current_turn_prompt_cache_key())
                 .map(ToOwned::to_owned)
@@ -2642,6 +2650,13 @@ impl WsUsageTracker {
                     return Err(err);
                 }
             };
+        self.invocation_leases.insert(
+            invoke_id.clone(),
+            PromptCacheInvocationLeaseGuard::new(
+                state.prompt_cache_conversation_cache.clone(),
+                &invoke_id,
+            ),
+        );
         self.active_turn_invoke_id = Some(invoke_id);
         self.turn_prompt_cache_key = turn_prompt_cache_key.clone();
         if let Some(prompt_cache_key) = turn_prompt_cache_key {

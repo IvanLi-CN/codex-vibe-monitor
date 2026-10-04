@@ -415,3 +415,118 @@ async fn invocation_ranges_async_seed_merges_live_activity_without_preallocation
         (128, 0, 1)
     );
 }
+
+#[tokio::test]
+async fn invocation_ranges_pending_recovery_floor_and_namespace_release() {
+    use prompt_cache_conversations::invocation_ranges::{
+        InvocationRangeManager, lifecycle::PendingIdentityRegistry,
+    };
+    let pool = ranges_fixture().await;
+    sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invoke_sequence) VALUES ('ABCDEF','pending-floor',5)").execute(&pool).await.unwrap();
+    let pending = PendingIdentityRegistry::default();
+    let pending_id = format!(
+        "ABCDEF{}",
+        encode_prompt_cache_conversation_sequence(100).unwrap()
+    );
+    pending.register(&pending_id, "2026-10-01 00:00:00", false);
+    let manager = Arc::new(InvocationRangeManager::default());
+    let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    cache.lock().await.identity_cache.range_manager = manager.clone();
+    let id = manager
+        .allocate(&pool, Some("pending-floor"))
+        .await
+        .unwrap();
+    assert_eq!(
+        id,
+        format!(
+            "ABCDEF{}",
+            encode_prompt_cache_conversation_sequence(101).unwrap()
+        )
+    );
+    sqlx::query("UPDATE prompt_cache_conversations SET last_invocation_at='2026-01-01 00:00:00',updated_at='2026-01-01 00:00:00'").execute(&pool).await.unwrap();
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(&pool, false, &cache)
+            .await
+            .unwrap(),
+        0
+    );
+    pending.acknowledge(&pending_id, "2026-10-01 00:00:00", false);
+    assert_eq!(
+        cleanup_orphan_prompt_cache_conversations_with_cache(&pool, false, &cache)
+            .await
+            .unwrap(),
+        1
+    );
+    let identity = create_prompt_cache_conversation_row_with_test_candidates(
+        &pool,
+        "reuse-after-release",
+        &["ABCDEF"],
+    )
+    .await
+    .unwrap();
+    assert_eq!(identity.conversation_id, "ABCDEF");
+}
+
+#[tokio::test]
+async fn invocation_ranges_hour_rollover_protects_active_pending_and_retained_ids() {
+    use prompt_cache_conversations::invocation_ranges::{
+        InvocationRangeManager, lifecycle::PendingIdentityRegistry,
+    };
+    let pool = ranges_fixture().await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let old_hour = Utc::now().timestamp().div_euclid(3600) - 1;
+    let old_id = manager.test_allocate_hour(&pool, old_hour).await.unwrap();
+    let current_id = manager.allocate(&pool, None).await.unwrap();
+    assert_ne!(&old_id[..6], &current_id[..6]);
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    let count = || {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM hourly_invoke_prefixes WHERE utc_hour=?1",
+        )
+        .bind(old_hour)
+        .fetch_one(&pool)
+    };
+    assert_eq!(count().await.unwrap(), 1);
+    let pending = PendingIdentityRegistry::default();
+    pending.register(&old_id, "2026-10-01 00:00:00", false);
+    manager.reconcile_persistence(&old_id);
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    assert_eq!(count().await.unwrap(), 1);
+    sqlx::query("INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,raw_response) VALUES (?1,'2026-10-01 00:00:00','proxy','success','{}')").bind(&old_id).execute(&pool).await.unwrap();
+    pending.acknowledge(&old_id, "2026-10-01 00:00:00", false);
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    assert_eq!(count().await.unwrap(), 1);
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id=?1")
+        .bind(&old_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    assert_eq!(count().await.unwrap(), 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM hourly_invoke_prefixes")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(
+        !prompt_cache_conversations::invocation_ranges::lifecycle::prefix_occupied(&old_id[..6])
+    );
+}
+
+#[tokio::test]
+async fn invocation_ranges_pending_raw_and_terminal_references_are_independent() {
+    use prompt_cache_conversations::invocation_ranges::lifecycle::{
+        PendingIdentityRegistry, pending_floor, pending_prefix,
+    };
+    let pending = PendingIdentityRegistry::default();
+    pending.register("ABCDEFAAAA", "time", false);
+    pending.register("ABCDEFAAAA", "time", false);
+    pending.register("ABCDEFAAAA", "time", true);
+    assert_eq!(pending_floor("ABCDEF"), 0);
+    pending.acknowledge("ABCDEFAAAA", "time", false);
+    assert!(pending_prefix("ABCDEF"));
+    pending.acknowledge("ABCDEFAAAA", "time", true);
+    assert!(!pending_prefix("ABCDEF"));
+}

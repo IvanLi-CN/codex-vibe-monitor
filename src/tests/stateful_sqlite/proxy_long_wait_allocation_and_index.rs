@@ -65,16 +65,9 @@ async fn prompt_cache_conversation_allocator_releases_lease_after_failure() {
     )
     .await;
     let prompt_cache_key = "failed-allocator-lease";
-    {
-        let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        cache.identity_cache.conversations.insert(
-            prompt_cache_key.to_string(),
-            PromptCacheConversationIdentity {
-                conversation_id: "ABCDEF".to_string(),
-                next_sequence: PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY,
-            },
-        );
-    }
+    sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invoke_sequence) VALUES ('ABCDEF',?1,?2)")
+        .bind(prompt_cache_key).bind(i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY) - 1)
+        .execute(&state.pool).await.unwrap();
 
     let error = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
         .await
