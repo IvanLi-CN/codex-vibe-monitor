@@ -386,7 +386,7 @@ cleanup_remote() {
     stats_pid=""
   fi
   if [ -f "$COMPOSE_FILE" ]; then
-    if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]] && [ -d "$LOG_DIR" ]; then
+    if [ -d "$LOG_DIR" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs --no-color app \
         > "$LOG_DIR/app-on-exit.log" 2>/dev/null || true
     fi
@@ -947,15 +947,31 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
     slow_pool.shutdown(wait=True)
     cancel_thread.join(timeout=10)
 
+    # C3 permits a cold owner's empty-range/admission wait to fail closed at
+    # 100 ms. Keep these visible and include their full response latency in
+    # the allocation percentile; cached owners must still succeed.
+    cold_rejections = [
+        item for item in fast_results
+        if item['key_mode'] == 'different'
+        and item['status'] == 503
+        and item['invoke_id'] is None
+        and item['body'] in (
+            '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}',
+            '{"error":"failed to allocate proxy invoke id: invocation cache admission timed out after 100ms"}',
+        )
+    ]
+    cold_rejected_sequences = {item['sequence'] for item in cold_rejections}
     fast_bad = [
         item for item in fast_results
         if item['status'] != 200 or item['terminal'] is None
+        if item['sequence'] not in cold_rejected_sequences
     ]
     fast_parse_ms = [
         item['terminal']['request_parse_ms']
         for item in fast_results
         if item['terminal'] and isinstance(item['terminal']['request_parse_ms'], (int, float))
     ]
+    fast_parse_ms.extend(item['response_ms'] for item in cold_rejections)
     fast_confirm_ms = [
         item['terminal']['confirm_ms']
         for item in fast_results
@@ -1018,6 +1034,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         'fast_submitted': len(fast_results),
         'fast_bad_count': len(fast_bad),
         'fast_bad_examples': fast_bad[:3],
+        'cold_rejection_count': len(cold_rejections),
+        'cold_rejection_examples': cold_rejections[:3],
         'allocation_parse_p99_ms': percentile(fast_parse_ms, 0.99),
         'terminal_confirm_p99_ms': percentile(fast_confirm_ms, 0.99),
         'slow_success_ok': success_ok,
