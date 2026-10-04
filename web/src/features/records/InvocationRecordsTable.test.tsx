@@ -337,7 +337,7 @@ describe("InvocationRecordsTable", () => {
     expect(text).not.toContain("0.741 s");
   });
 
-  it("renders the WS transport badge for websocket records", () => {
+  it("renders the historical WebSocket transport badge for websocket records", () => {
     render(
       <InvocationRecordsTable
         focus="network"
@@ -357,14 +357,14 @@ describe("InvocationRecordsTable", () => {
     expect(
       Array.from(badges ?? []).every(
         (badge) =>
-          badge.querySelector('[aria-hidden="true"]')?.textContent === "WS" &&
+          badge.textContent?.trim() === "WebSocket（历史）" &&
           badge.textContent?.includes("WebSocket（历史）") &&
           badge.getAttribute("title") === "WebSocket（历史）",
       ),
     ).toBe(true);
   });
 
-  it("does not render the WS transport badge for http or legacy records", () => {
+  it("does not render the historical WebSocket transport badge for http or legacy records", () => {
     render(
       <InvocationRecordsTable
         focus="network"

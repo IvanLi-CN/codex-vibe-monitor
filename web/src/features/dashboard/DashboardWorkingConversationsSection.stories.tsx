@@ -4302,7 +4302,7 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport working-conversation cards. The historical WebSocket invocation shows `WS` between the status badge and endpoint pill; the previous HTTP slot stays unbadged.",
+          "Mixed transport working-conversation cards. The historical WebSocket invocation shows `WebSocket（历史）` between the status badge and endpoint pill; the previous HTTP slot stays unbadged.",
       },
     },
   },
@@ -4310,9 +4310,7 @@ export const TransportBadgeMixed: Story = {
     const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges.length).toBeGreaterThanOrEqual(1);
     expect(
-      Array.from(badges).every(
-        (badge) => badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
-      ),
+      Array.from(badges).every((badge) => badge.textContent?.trim() === "WebSocket（历史）"),
     ).toBe(true);
   },
 };

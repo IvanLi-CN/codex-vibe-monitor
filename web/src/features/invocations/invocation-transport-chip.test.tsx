@@ -14,17 +14,19 @@ function renderChip(initialLocale: "zh" | "en") {
 }
 
 describe("renderInvocationTransportChip", () => {
-  it("uses the Chinese historical label for the title and accessible text", () => {
+  it("uses the Chinese historical label as the visible chip text", () => {
     const markup = renderChip("zh");
 
     expect(markup).toContain('title="WebSocket（历史）"');
-    expect(markup).toContain("WebSocket（历史）");
+    expect(markup).toContain(">WebSocket（历史）</span>");
+    expect(markup).not.toContain(">WS</span>");
   });
 
-  it("uses the English historical label for the title and accessible text", () => {
+  it("uses the English historical label as the visible chip text", () => {
     const markup = renderChip("en");
 
     expect(markup).toContain('title="WebSocket (historical)"');
-    expect(markup).toContain("WebSocket (historical)");
+    expect(markup).toContain(">WebSocket (historical)</span>");
+    expect(markup).not.toContain(">WS</span>");
   });
 });

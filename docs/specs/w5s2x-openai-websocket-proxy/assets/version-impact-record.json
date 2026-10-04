@@ -54,7 +54,17 @@
         "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
       ]
     },
-    "verified": null
+    "verified": {
+      "impact": "major",
+      "reasoning": "Current-head validation confirms the planned major public API retirement and the separately minor forward-only persistent-state migration; no scope drift was found.",
+      "verified_at": "2026-10-04T17:24:21Z",
+      "evidence": [
+        "501 websocket_proxy_removed rejection regression",
+        "stateful SQLite migration idempotency and rollback regressions",
+        "historical WebSocket read/filter/serialization regression",
+        "current-head Rust, Web, docs, and CI validation after baseline sync"
+      ]
+    }
   },
   "compatibility_evidence": {
     "public_api": {
@@ -79,12 +89,14 @@
       "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
     ],
     "maximum_planned_impact": "major",
-    "maximum_verified_impact": null,
+    "maximum_verified_impact": "major",
     "calculation_evidence": [
       "public_api=major",
       "persistent_state=minor",
       "release unit=max(public_api,persistent_state)=major",
-      "verification remains pending implementation and release validation"
+      "verified public_api=major",
+      "verified persistent_state=minor",
+      "verified release unit=max(public_api,persistent_state)=major"
     ]
   }
 }

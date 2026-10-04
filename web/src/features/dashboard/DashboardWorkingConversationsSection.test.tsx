@@ -2690,7 +2690,7 @@ describe("DashboardWorkingConversationsSection", () => {
     }
   });
 
-  it("renders the WS transport badge only in websocket invocation slots", () => {
+  it("renders the historical WebSocket transport badge only in websocket invocation slots", () => {
     renderSection(
       createResponse([
         createConversation("pck-ws-transport", [
@@ -2714,8 +2714,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     const badges = host?.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges).toHaveLength(1);
-    expect(badges?.[0]?.querySelector('[aria-hidden="true"]')?.textContent).toBe("WS");
-    expect(badges?.[0]?.textContent).toContain("WebSocket（历史）");
+    expect(badges?.[0]?.textContent?.trim()).toBe("WebSocket（历史）");
     expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket（历史）");
   });
 

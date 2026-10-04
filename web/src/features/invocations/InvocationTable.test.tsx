@@ -849,7 +849,7 @@ describe("InvocationTable", () => {
     expect(card?.getAttribute("aria-current")).toBeNull();
   });
 
-  it("renders the WS transport badge for websocket records", () => {
+  it("renders the historical WebSocket transport badge for websocket records", () => {
     const websocketHtml = renderTable([
       {
         id: 21,
@@ -865,12 +865,12 @@ describe("InvocationTable", () => {
     ]);
 
     expect(websocketHtml).toContain('data-testid="invocation-transport-badge"');
-    expect(websocketHtml).toContain('aria-hidden="true">WS</span>');
-    expect(websocketHtml).toContain("WebSocket（历史）");
+    expect(websocketHtml).toContain(">WebSocket（历史）</span>");
+    expect(websocketHtml).not.toContain(">WS</span>");
     expect(websocketHtml).toContain('title="WebSocket（历史）"');
   });
 
-  it("does not render the WS transport badge for http or legacy records", () => {
+  it("does not render the historical WebSocket transport badge for http or legacy records", () => {
     const html = renderTable([
       {
         id: 22,

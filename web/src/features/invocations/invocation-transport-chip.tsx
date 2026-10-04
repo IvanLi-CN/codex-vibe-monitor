@@ -27,8 +27,7 @@ function InvocationTransportChip({ className }: { className?: string }) {
       data-testid="invocation-transport-badge"
       className={className}
     >
-      <span aria-hidden="true">WS</span>
-      <span className="sr-only">{historicalLabel}</span>
+      <span>{historicalLabel}</span>
     </Chip>
   );
 }

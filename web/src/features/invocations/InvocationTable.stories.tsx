@@ -1868,7 +1868,7 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport state: only the historical WebSocket invocation shows the compact `WS` badge beside the model name, while HTTP/legacy records remain unbadged.",
+          "Mixed transport state: only the historical WebSocket invocation shows the `WebSocket（历史）` badge beside the model name, while HTTP/legacy records remain unbadged.",
       },
     },
   },
@@ -1876,9 +1876,7 @@ export const TransportBadgeMixed: Story = {
     const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges.length).toBeGreaterThanOrEqual(1);
     expect(
-      Array.from(badges).every(
-        (badge) => badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
-      ),
+      Array.from(badges).every((badge) => badge.textContent?.trim() === "WebSocket（历史）"),
     ).toBe(true);
   },
 };

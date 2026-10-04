@@ -7,6 +7,7 @@
 ## 2026-10-05
 
 - 在更新后的 `origin/main` 基线上完成候选同步：移除未再编译的 WebSocket message-conversion 测试和无调用方的 pre-upstream WebSocket persistence helper；同步刷新当前 Rust、Web、文档和迁移验证记录。此轮没有改变退役合同或历史读取边界。
+- 修正历史 transport chip 的可见文案，使其与专题合同一致显示为 `WebSocket（历史）`；刷新 Storybook evidence、UI 测试与版本影响验证记录。
 
 ## 2026-07-07
 
