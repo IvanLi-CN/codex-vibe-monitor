@@ -180,6 +180,11 @@ impl Memory {
     }
 
     fn retire_candidate(&mut self) -> Option<(Reservation, i64)> {
+        // A retirement can wait for SQLite worker drain after its 100 ms budget.
+        // Keep that work bounded instead of starting one return per callback.
+        if self.entries.values().any(|entry| entry.retiring) {
+            return None;
+        }
         let owner = self
             .entries
             .iter()
@@ -406,28 +411,28 @@ impl InvocationRangeManager {
             notified.as_mut().enable();
             let retirement = {
                 let mut memory = self.memory.lock().expect("invocation range memory");
-                if let Some(entry) = memory.entries.get(owner) {
-                    if !entry.retiring {
-                        return Ok(None);
-                    }
+                if memory
+                    .entries
+                    .get(owner)
+                    .is_some_and(|entry| !entry.retiring)
+                {
+                    return Ok(None);
+                }
+                if memory
+                    .entries
+                    .get(owner)
+                    .is_some_and(|entry| entry.retiring)
+                {
                     None
                 } else {
                     let occupancy = memory.occupancy();
-                    let retirement =
-                        if matches!(owner, Owner::Conversation(_)) && occupancy >= memory.target {
-                            memory.retire_candidate()
-                        } else {
-                            None
-                        };
-                    if retirement.is_none()
-                        && (matches!(owner, Owner::Hour(_)) || occupancy < MAX_CAPACITY)
-                    {
+                    if matches!(owner, Owner::Hour(_)) || occupancy < MAX_CAPACITY {
                         if occupancy >= memory.target && matches!(owner, Owner::Conversation(_)) {
                             debug!(
                                 target = memory.target,
                                 occupancy,
                                 maximum = MAX_CAPACITY,
-                                "invocation cache temporarily grows around protected entries"
+                                "invocation cache grows until asynchronous retirement catches up"
                             );
                         }
                         memory.generation += 1;
@@ -437,7 +442,7 @@ impl InvocationRangeManager {
                             .insert(owner.clone(), Entry::initializing(generation));
                         return Ok(Some(generation));
                     }
-                    retirement
+                    memory.retire_candidate()
                 }
             };
             if let Some((reservation, ceiling)) = retirement {
@@ -462,24 +467,21 @@ impl InvocationRangeManager {
         let Some(pool) = self.pool.get() else {
             return;
         };
-        let retirements = {
+        let retirement = {
             let mut memory = self.memory.lock().expect("invocation range memory");
-            let mut retirements = Vec::new();
-            while memory
+            if memory
                 .entries
                 .iter()
                 .filter(|(owner, entry)| matches!(owner, Owner::Conversation(_)) && !entry.retiring)
                 .count()
                 > memory.target
             {
-                let Some(retirement) = memory.retire_candidate() else {
-                    break;
-                };
-                retirements.push(retirement);
+                memory.retire_candidate()
+            } else {
+                None
             }
-            retirements
         };
-        for (reservation, ceiling) in retirements {
+        if let Some((reservation, ceiling)) = retirement {
             self.spawn_return(pool, reservation, ceiling);
         }
     }

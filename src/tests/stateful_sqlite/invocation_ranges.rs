@@ -445,6 +445,37 @@ async fn invocation_ranges_late_lease_callback_keeps_namespace_until_drained() {
 }
 
 #[tokio::test]
+async fn invocation_ranges_cold_admission_does_not_wait_for_unrelated_tail_return() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    for number in 0..128 {
+        manager
+            .allocate(&pool, Some(&format!("idle-{number}")))
+            .await
+            .unwrap();
+    }
+    let blocker = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    manager.test_retire(&pool, "idle-0");
+    let allocation = {
+        let manager = manager.clone();
+        let pool = pool.clone();
+        tokio::spawn(async move { manager.allocate(&pool, Some("new-owner")).await })
+    };
+    tokio::time::timeout(Duration::from_millis(80), async {
+        while manager.occupancy() != 129 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("new owner reserves its slot before the unrelated return completes");
+    drop(blocker);
+    allocation.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn invocation_ranges_busy_return_discards_tail_without_blocking_hot_owner() {
     let pool = ranges_fixture().await;
     let manager =
