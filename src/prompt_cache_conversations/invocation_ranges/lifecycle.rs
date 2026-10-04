@@ -161,11 +161,10 @@ impl Drop for LifecycleFence {
             .entries
             .get(&self.owner)
             .is_some_and(|entry| entry.generation == self.generation && entry.retiring)
+            && let Some(entry) = memory.entries.remove(&self.owner)
         {
-            if let Some(entry) = memory.entries.remove(&self.owner) {
-                debug!(owner_type = self.owner.kind(), utc_hour = self.owner.hour(), prefix = ?entry.prefix, generation = self.generation, reserved_ceiling = entry.ceiling, issued_floor = entry.issued_floor, "invocation lifecycle fence drained; allocation generation invalidated");
-                entry.notify.notify_waiters();
-            }
+            debug!(owner_type = self.owner.kind(), utc_hour = self.owner.hour(), prefix = ?entry.prefix, generation = self.generation, reserved_ceiling = entry.ceiling, issued_floor = entry.issued_floor, "invocation lifecycle fence drained; allocation generation invalidated");
+            entry.notify.notify_waiters();
         }
         self.manager.admission.notify_waiters();
     }

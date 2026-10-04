@@ -522,10 +522,9 @@ impl InvocationRangeManager {
                 .entries
                 .get(&reservation.owner)
                 .is_some_and(|entry| entry.generation == reservation.generation && entry.retiring)
+                && let Some(entry) = memory.entries.remove(&reservation.owner)
             {
-                if let Some(entry) = memory.entries.remove(&reservation.owner) {
-                    entry.notify.notify_waiters();
-                }
+                entry.notify.notify_waiters();
             }
             manager.admission.notify_waiters();
         });
