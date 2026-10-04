@@ -13,6 +13,7 @@ export interface WorkloadPlotDatum {
   label: string;
   sample: TaskWorkloadSample | null;
   runningMarker: number | null;
+  skipMarker: number | null;
   [key: string]: unknown;
 }
 
@@ -230,6 +231,7 @@ export function buildWorkloadChartModels(
         })
           ? 0
           : null,
+      skipMarker: isConfirmedSkip(sample) ? 0 : null,
     }));
     const segments: WorkloadSeriesSegment[] = [];
     let nextSegment = 0;

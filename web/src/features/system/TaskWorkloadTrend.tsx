@@ -139,6 +139,7 @@ function createEmptyPlotData(): WorkloadPlotDatum[] {
     label: "",
     sample: null,
     runningMarker: null,
+    skipMarker: null,
   }));
 }
 
@@ -230,6 +231,7 @@ function RunMetricChart({
   compact: boolean;
   capabilities?: TaskMeasurementCapabilities;
 }) {
+  const [inspectedSkipSample, setInspectedSkipSample] = useState<WorkloadPlotDatum["sample"]>(null);
   const chartData = model.data.length > 0 ? model.data : createEmptyPlotData();
   return (
     <figure className="relative w-full" style={{ height }} aria-label={`工作量：${model.unit}`}>
@@ -265,6 +267,7 @@ function RunMetricChart({
           />
           <ReferenceLine y={0} stroke={axis.axisText} strokeOpacity={0.55} />
           <Tooltip
+            active={inspectedSkipSample ? false : undefined}
             content={({ active, payload }) => {
               const sample = payload?.[0]?.payload?.sample as
                 | WorkloadPlotDatum["sample"]
@@ -338,8 +341,77 @@ function RunMetricChart({
               isAnimationActive={false}
             />
           ) : null}
+          {chartData.some((datum) => datum.skipMarker != null) ? (
+            <Line
+              className="task-workload-skip-marker"
+              dataKey="skipMarker"
+              name="确认跳过"
+              type="linear"
+              stroke="transparent"
+              strokeWidth={0}
+              dot={(props) => {
+                const datum = props.payload as WorkloadPlotDatum | undefined;
+                if (datum?.sample?.status !== "skipped" || props.cx == null || props.cy == null) {
+                  return null;
+                }
+                return (
+                  <foreignObject
+                    className="task-workload-skip-marker-dot"
+                    x={props.cx - 8}
+                    y={props.cy - 8}
+                    width={16}
+                    height={16}
+                  >
+                    <div className="flex h-4 w-4 items-center justify-center">
+                      <button
+                        type="button"
+                        data-testid="task-workload-skip-marker-dot"
+                        className="h-2 w-2 rounded-full border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+                        style={{ backgroundColor: axis.axisText, borderColor: axis.axisText }}
+                        aria-label={`查看跳过运行详情：${datum.sample.reason ?? "原因未知"}`}
+                        onFocus={() => setInspectedSkipSample(datum.sample)}
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setInspectedSkipSample(datum.sample);
+                        }}
+                      />
+                    </div>
+                  </foreignObject>
+                );
+              }}
+              activeDot={{ r: 6, fill: axis.axisText, stroke: axis.axisText, strokeWidth: 1 }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          ) : null}
         </ComposedChart>
       </ResponsiveContainer>
+      {inspectedSkipSample ? (
+        <section
+          aria-label="跳过运行详情"
+          data-testid="task-workload-skip-detail"
+          className="absolute left-2 top-2 z-20 max-w-[min(24rem,calc(100%-1rem))] rounded-md border border-base-300 bg-base-100 p-3 text-base-content shadow-lg"
+        >
+          <div className="mb-1 flex items-start justify-between gap-3 text-xs font-semibold">
+            <span>
+              {formatTime(inspectedSkipSample.attemptedAt)} ·{" "}
+              {statusLabel(inspectedSkipSample.status)}
+            </span>
+            <button
+              type="button"
+              aria-label="关闭运行详情"
+              className="-mr-1 -mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center text-base-content/65 hover:text-base-content"
+              onClick={() => setInspectedSkipSample(null)}
+            >
+              <span aria-hidden="true">关闭</span>
+            </button>
+          </div>
+          <div className="max-h-40 overflow-auto">
+            {sampleDetail(inspectedSkipSample, capabilities)}
+          </div>
+        </section>
+      ) : null}
       {hint ? (
         <div className="pointer-events-none absolute inset-x-3 top-1/2 -translate-y-1/2 text-center text-sm text-base-content/65">
           <span className="bg-base-100/85 px-2 py-1">{hint}</span>
@@ -538,8 +610,8 @@ export function TaskWorkloadTrend({
       <legend className="sr-only">运行计量图例</legend>
       {WORKLOAD_SERIES.map((series) => {
         const hasCapability = capabilities?.[series]?.supported;
-        const hasSamples = trend?.samples.some((sample) => sample[series] != null) ?? false;
-        const hasObservation = trend?.samples.some((sample) => sample[series]?.value != null);
+        const hasSamples = visibleSamples.some((sample) => sample[series] != null);
+        const hasObservation = visibleSamples.some((sample) => sample[series]?.value != null);
         const availability =
           hasCapability === false ? "不适用" : !hasSamples || !hasObservation ? "暂无观测" : null;
         return (

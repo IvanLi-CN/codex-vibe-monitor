@@ -254,6 +254,22 @@ impl Drop for ObservationLease {
 }
 
 impl TaskExecutionObservation {
+    pub(crate) fn begin_for_system_task_run(
+        task_key: &str,
+        trigger_kind: &str,
+        phase: &str,
+        managed_run_id: Option<i64>,
+    ) -> Self {
+        Self::begin_for_managed_run(
+            task_key,
+            &crate::maintenance_store::task_title_for_observation(task_key),
+            trigger_kind,
+            crate::maintenance_store::task_execution_class(task_key),
+            phase,
+            managed_run_id,
+        )
+    }
+
     pub(crate) fn begin(
         task_key: &str,
         title: &str,
@@ -717,7 +733,7 @@ mod tests {
     use super::{
         TaskExecutionObservation, clear_task_runtime_observation_for_tests,
         record_managed_task_processed_work, refresh_subset_relation, task_runtime_snapshot,
-        with_managed_task_observation,
+        with_managed_task_observation, workload_sample,
     };
     use std::{
         sync::{Mutex, OnceLock},
@@ -810,6 +826,12 @@ mod tests {
         let child = TaskExecutionObservation::for_managed_run(managed_run_id)
             .expect("resolve the managed parent observation");
         assert_eq!(child.inner.execution_id, parent.inner.execution_id);
+        assert_eq!(
+            workload_sample("startup_backfill")
+                .expect("record managed workload sample")
+                .managed_run_id,
+            Some(managed_run_id)
+        );
         child.set_child("startup_backfill.proxy_usage", "代理用量回填");
         let snapshot = task_runtime_snapshot().expect("read shared runtime observation");
         assert_eq!(snapshot.active_runs.len(), 1);
@@ -826,6 +848,25 @@ mod tests {
                 .active_runs
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn system_task_observation_keeps_the_managed_run_identity() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let run_id = 42;
+        let observation = TaskExecutionObservation::begin_for_system_task_run(
+            "forward_proxy_subscription_refresh",
+            "manual",
+            "processing",
+            Some(run_id),
+        );
+
+        let sample = workload_sample("forward_proxy_subscription_refresh")
+            .expect("record the manual workload attempt");
+        assert_eq!(sample.managed_run_id, Some(run_id));
+        assert_eq!(sample.trigger_kind, "manual");
+        observation.finish_with_status("success");
     }
 
     #[test]

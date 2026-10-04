@@ -2338,17 +2338,13 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 break (pressure_permit, write_permit);
             };
 
-            task_run.observation = Some(crate::TaskExecutionObservation::begin(
-                SystemTaskKind::HourlyRollupBootstrap.as_str(),
-                &crate::maintenance_store::task_title_for_observation(
+            task_run.observation =
+                Some(crate::TaskExecutionObservation::begin_for_system_task_run(
                     SystemTaskKind::HourlyRollupBootstrap.as_str(),
-                ),
-                "startup",
-                crate::maintenance_store::task_execution_class(
-                    SystemTaskKind::HourlyRollupBootstrap.as_str(),
-                ),
-                "processing",
-            ));
+                    "startup",
+                    "processing",
+                    Some(task_run.id),
+                ));
 
             let hourly_rollups_started_at = Instant::now();
             let hourly_rollups = tokio::select! {
@@ -2673,16 +2669,11 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                     }
                 },
             };
-            let observation = crate::TaskExecutionObservation::begin(
+            let observation = crate::TaskExecutionObservation::begin_for_system_task_run(
                 "forward_proxy_subscription_refresh",
-                &crate::maintenance_store::task_title_for_observation(
-                    "forward_proxy_subscription_refresh",
-                ),
                 "startup",
-                crate::maintenance_store::task_execution_class(
-                    "forward_proxy_subscription_refresh",
-                ),
                 "processing",
+                startup_run.as_ref().map(|run| run.id),
             );
             let refresh_result = refresh_forward_proxy_subscriptions(
                 state.clone(),
@@ -2696,6 +2687,8 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 "failed"
             });
             if let Err(err) = refresh_result {
+                let detail = err.to_string();
+                observation.finish_with_status_and_reason("failed", Some(&detail));
                 if let Some(run) = startup_run.as_ref() {
                     let _ = finish_system_task_run_reliably(
                         state.as_ref(),
@@ -2703,21 +2696,24 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         run,
                         SystemTaskStatus::Failed,
                         Some("forward proxy startup refresh failed".to_string()),
-                        Some(err.to_string()),
+                        Some(detail),
                     )
                     .await;
                 }
                 warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
-            } else if let Some(run) = startup_run.as_ref() {
-                let _ = finish_system_task_run_reliably(
-                    state.as_ref(),
-                    Some(&cancel),
-                    run,
-                    SystemTaskStatus::Success,
-                    Some("forward proxy startup refresh completed".to_string()),
-                    None,
-                )
-                .await;
+            } else {
+                observation.finish_with_status("success");
+                if let Some(run) = startup_run.as_ref() {
+                    let _ = finish_system_task_run_reliably(
+                        state.as_ref(),
+                        Some(&cancel),
+                        run,
+                        SystemTaskStatus::Success,
+                        Some("forward proxy startup refresh completed".to_string()),
+                        None,
+                    )
+                    .await;
+                }
             }
         }
 
@@ -2761,16 +2757,11 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                             }
                         },
                     };
-                    let observation = crate::TaskExecutionObservation::begin(
+                    let observation = crate::TaskExecutionObservation::begin_for_system_task_run(
                         "forward_proxy_subscription_refresh",
-                        &crate::maintenance_store::task_title_for_observation(
-                            "forward_proxy_subscription_refresh",
-                        ),
                         "interval",
-                        crate::maintenance_store::task_execution_class(
-                            "forward_proxy_subscription_refresh",
-                        ),
                         "processing",
+                        task_run.as_ref().map(|run| run.id),
                     );
                     let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), false, None).await;
                     observation.finish_with_status(if refresh_result.is_ok() {
@@ -2779,6 +2770,8 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         "failed"
                     });
                     if let Err(err) = refresh_result {
+                        let detail = err.to_string();
+                        observation.finish_with_status_and_reason("failed", Some(&detail));
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
                                 state.as_ref(),
@@ -2786,21 +2779,24 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                                 run,
                                 SystemTaskStatus::Failed,
                                 Some("forward proxy interval refresh failed".to_string()),
-                                Some(err.to_string()),
+                                Some(detail),
                             )
                             .await;
                         }
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
-                    } else if let Some(run) = task_run.as_ref() {
-                        let _ = finish_system_task_run_reliably(
-                            state.as_ref(),
-                            Some(&cancel),
-                            run,
-                            SystemTaskStatus::Success,
-                            Some("forward proxy interval refresh completed".to_string()),
-                            None,
-                        )
-                        .await;
+                    } else {
+                        observation.finish_with_status("success");
+                        if let Some(run) = task_run.as_ref() {
+                            let _ = finish_system_task_run_reliably(
+                                state.as_ref(),
+                                Some(&cancel),
+                                run,
+                                SystemTaskStatus::Success,
+                                Some("forward proxy interval refresh completed".to_string()),
+                                None,
+                            )
+                            .await;
+                        }
                     }
                     if let Err(err) = flush_dashboard_network_socket_minute_rollups(
                         &state.pool,

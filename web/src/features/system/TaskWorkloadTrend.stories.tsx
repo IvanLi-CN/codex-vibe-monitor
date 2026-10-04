@@ -20,6 +20,13 @@ const fixture = buildRetentionWorkloadFixture({
 const samples = fixture.samples;
 const backlog = fixture.backlog;
 const trend = fixture.trend;
+const skippedRunTrend = buildRetentionWorkloadFixture({
+  nowMs: NOW,
+  sampleCount: 15,
+  intervalMs: 60 * 60_000,
+  finalPending: 32_000,
+  skippedIndices: [6],
+}).trend;
 
 const emptyTrend: WorkloadTrend = {
   revision: 0,
@@ -261,6 +268,64 @@ export const AccessiblePointInspection: Story = {
     chart.focus();
     await userEvent.keyboard("{ArrowRight}");
     await expect(canvas.getByText(/触发：/)).toBeVisible();
+  },
+};
+
+export const SkippedRunInspection: Story = {
+  args: { taskKey: "retention_archive", trend: skippedRunTrend, state: "ready" },
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chart = canvasElement.querySelector<HTMLElement>('[role="application"]');
+    const marker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-skip-marker-dot']",
+    );
+    if (!chart || !marker) throw new Error("Skipped-run marker is missing");
+
+    await userEvent.pointer({ target: marker, keys: "[TouchA]" });
+    let detail = canvas.getByTestId("task-workload-skip-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("确认跳过");
+    await expect(detail).toHaveTextContent("资源准入确认跳过");
+    await userEvent.pointer({ target: marker, keys: "[/TouchA]" });
+    await userEvent.click(canvas.getByRole("button", { name: "关闭运行详情" }));
+
+    const keyboardMarker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-skip-marker-dot']",
+    );
+    if (!keyboardMarker) throw new Error("Skipped-run marker was removed");
+    keyboardMarker.focus();
+    await userEvent.keyboard("{Enter}");
+    detail = canvas.getByTestId("task-workload-skip-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("确认跳过");
+    await expect(detail).toHaveTextContent("资源准入确认跳过");
+  },
+};
+
+export const LegendAvailabilityFollowsRunWindow: Story = {
+  args: {
+    taskKey: "retention_archive",
+    trend: {
+      ...trend,
+      samples: trend.samples.map((sample, index) =>
+        index < trend.samples.length - 20
+          ? sample
+          : { ...sample, discovered: null, subsetRelation: "unknown" },
+      ),
+    },
+    state: "ready",
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const discoveredLegend = canvas.getByRole("button", { name: "隐藏本次发现" });
+    await expect(discoveredLegend).not.toHaveTextContent("暂无观测");
+    await userEvent.click(canvas.getByRole("button", { name: "最近 20 次" }));
+    await expect(discoveredLegend).toHaveTextContent("本次发现 · 暂无观测");
+    await userEvent.click(canvas.getByRole("button", { name: "最近 100 次" }));
+    await expect(discoveredLegend).not.toHaveTextContent("暂无观测");
   },
 };
 

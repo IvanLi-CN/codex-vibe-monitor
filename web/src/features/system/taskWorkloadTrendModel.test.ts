@@ -109,6 +109,9 @@ describe("buildWorkloadChartModels", () => {
     expect(withSkip.data[0][bridgeKey as string]).toBe(1_000);
     expect(withSkip.data[1][bridgeKey as string]).toBeUndefined();
     expect(withSkip.data[2][bridgeKey as string]).toBe(900);
+    expect(withSkip.data[0].skipMarker).toBeNull();
+    expect(withSkip.data[1].skipMarker).toBe(0);
+    expect(withSkip.data[2].skipMarker).toBeNull();
 
     const ordinaryGap = sample(1, { pending: null });
     const withGap = buildWorkloadChartModels([start, ordinaryGap, end])[0];
