@@ -53,7 +53,7 @@
         "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: focused control/checkpoint regressions",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-baseline-run-metadata.json",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-run-metadata.json",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/quality-6c3dac1a.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-quality.json",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/budget-no-scan-6c3dac1a.log",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-loadgen.jsonl"
       ]
