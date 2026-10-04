@@ -22,6 +22,8 @@ ADR 0029 将归档文件批次与主库写批次区分，规定月份只决定�
 
 ## Related Changes
 
+- 同步 main 的 PR #1074（v2.86.0）后，保留其独立任务工作量观测与趋势，并将去重发现量、已提交 invocation 数量和固定起点 cutoff 接入任务内批次路径。旧候选 a53ad60c 的两次完整容量结果只作历史记录；整合后的候选必须重新完成实测、验证和视觉门禁。
+
 - `b018ae06`：提交本主题的设计基线与 ADR 0025。
 - [PR #1062](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1062)：最终 topic head `802bbc0da27c791267dfd1240ecc53d60fcaade2`，合并 commit `146ee9124388af96c4a59fca76684eb7c7e3d6f8`，随 v2.82.0 发布。
 - 原交付资源 profile：lightweight 1,246/1,246、stateful-sqlite 1,375/1,375、archive-file-io 299/299；Prompt 百万行对照见 [benchmark card](assets/shared-testbox-candidate-benchmark-card.md)。该试验不执行真实 retention 归档，不能证明 24 小时存量消化或在线延迟不劣于基线。

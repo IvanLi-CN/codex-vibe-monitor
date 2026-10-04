@@ -373,7 +373,12 @@ pub(crate) async fn archive_old_invocations(
 ) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     archive_old_invocations_with_source_max(
-        pool, config, raw_path_fallback_root, dry_run, &cutoff, None,
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        &cutoff,
+        None,
     )
     .await
 }

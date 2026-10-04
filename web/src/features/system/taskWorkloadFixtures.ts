@@ -29,6 +29,7 @@ export interface RetentionWorkloadFixtureOptions {
   finalPending?: number;
   skippedIndices?: number[];
   zeroCommitFailureIndices?: number[];
+  maxProcessedPerRun?: number;
 }
 
 function rowMetric(
@@ -133,6 +134,7 @@ export function buildRetentionWorkloadFixture({
   finalPending = 2_544,
   skippedIndices = [],
   zeroCommitFailureIndices = [],
+  maxProcessedPerRun = Number.POSITIVE_INFINITY,
 }: RetentionWorkloadFixtureOptions): RetentionWorkloadFixture {
   const skipped = new Set(skippedIndices);
   const zeroCommitFailures = new Set(zeroCommitFailureIndices);
@@ -141,7 +143,7 @@ export function buildRetentionWorkloadFixture({
   );
   const processedCounts = Array.from({ length: sampleCount }, (_, index) => {
     if (skipped.has(index) || zeroCommitFailures.has(index)) return 0;
-    const processed = processingForRun(index, intervalMs);
+    const processed = Math.min(processingForRun(index, intervalMs), maxProcessedPerRun);
     return index % 19 === 0 ? Math.floor(processed * 0.55) : processed;
   });
   const pendingBeforeFirst = Math.max(

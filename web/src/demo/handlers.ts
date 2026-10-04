@@ -3543,6 +3543,7 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
         finalPending: 2_544,
         skippedIndices: [47, 82],
         zeroCommitFailureIndices: [46, 81],
+        maxProcessedPerRun: 1000,
       })
     : null;
   const workloadMetric = (
@@ -3596,6 +3597,8 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     0,
     Date.parse(latestRunFinishedAt) - Date.parse(latestRunStartedAt),
   );
+  const retentionCommittedRows = latestSample?.processed?.value ?? 0;
+  const retentionElapsedSeconds = (latestRunDurationMs || 31_000) / 1000;
   const defaultRun: DemoManagedTaskRun = {
     id: latestSample?.managedRunId ?? 1,
     startedAt: latestRunStartedAt,
@@ -3623,11 +3626,11 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
               {
                 dataset: "codex_invocations",
                 monthKey: "2026-09",
-                batchRows: 1000,
-                committedRows: 1000,
-                committedRowsPerSecond: 32.26,
+                batchRows: retentionCommittedRows,
+                committedRows: retentionCommittedRows,
+                committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
                 arrivalRowsPerSecond: 0.3472,
-                serviceRateMultiple: 92.9,
+                serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
                 filePrepareMs: 3600,
                 lockWaitMs: 125,
               },
@@ -3636,9 +3639,9 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
                 monthKey: "2026-09",
                 batchRows: 1000,
                 committedRows: 1000,
-                committedRowsPerSecond: 32.26,
+                committedRowsPerSecond: 1000 / retentionElapsedSeconds,
                 arrivalRowsPerSecond: 0.4167,
-                serviceRateMultiple: 77.4,
+                serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
                 filePrepareMs: 1800,
                 lockWaitMs: 80,
               },

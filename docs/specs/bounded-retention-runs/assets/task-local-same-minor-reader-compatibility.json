@@ -1,82 +1,84 @@
 {
   "method": "Exact source hashes for the supported same-Minor format readers, plus candidate monthly roundtrip and unchanged main-schema regression; this is not a claim that historical full binaries were executed.",
   "supportedSameMinorVersions": [
-    "v2.85.0",
-    "v2.85.1",
-    "v2.85.2",
-    "v2.85.3",
-    "v2.85.4"
+    "v2.86.0"
   ],
   "sourceFacts": {
     "src/maintenance/archive/manifest.rs": {
-      "currentSha256": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+      "currentSha256": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610",
       "readerSha256": {
         "v2.85.0": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
         "v2.85.1": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
         "v2.85.2": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
         "v2.85.3": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
-        "v2.85.4": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9"
+        "v2.85.4": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
+        "v2.86.0": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610"
       }
     },
     "decode_summary_archive_snapshot_v2_payload": {
       "path": "src/summary_source_change.rs",
-      "currentSha256": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+      "currentSha256": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845",
       "readerSha256": {
         "v2.85.0": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
         "v2.85.1": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
         "v2.85.2": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
         "v2.85.3": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
-        "v2.85.4": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a"
+        "v2.85.4": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
+        "v2.86.0": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845"
       }
     },
     "summary_archive_snapshot_has_proof_tx": {
       "path": "src/summary_source_change.rs",
-      "currentSha256": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+      "currentSha256": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5",
       "readerSha256": {
         "v2.85.0": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
         "v2.85.1": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
         "v2.85.2": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
         "v2.85.3": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
-        "v2.85.4": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89"
+        "v2.85.4": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
+        "v2.86.0": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5"
       }
     },
     "summary_archive_snapshot_has_final_proof_read_only": {
       "path": "src/summary_source_change.rs",
-      "currentSha256": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+      "currentSha256": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e",
       "readerSha256": {
         "v2.85.0": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
         "v2.85.1": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
         "v2.85.2": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
         "v2.85.3": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
-        "v2.85.4": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c"
+        "v2.85.4": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
+        "v2.86.0": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e"
       }
     },
     "encode_summary_archive_snapshot_v2_payload": {
       "path": "src/maintenance/retention.rs",
-      "currentSha256": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+      "currentSha256": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727",
       "readerSha256": {
         "v2.85.0": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
         "v2.85.1": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
         "v2.85.2": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
         "v2.85.3": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
-        "v2.85.4": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b"
+        "v2.85.4": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
+        "v2.86.0": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727"
       }
     },
     "build_invocation_archive_rows_chunk_query": {
       "path": "src/maintenance/hourly_rollups.rs",
-      "currentSha256": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+      "currentSha256": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6",
       "readerSha256": {
         "v2.85.0": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
         "v2.85.1": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
         "v2.85.2": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
         "v2.85.3": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
-        "v2.85.4": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4"
+        "v2.85.4": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
+        "v2.86.0": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6"
       }
     }
   },
   "candidateEvidence": [
-    "monthly-archive-disk-rw.log: same-month 1000+200 roundtrip, existing manifest, no main schema change, disk and shared-memory sources passed",
-    "monthly-web-final3.log: old task JSON compatibility and optional throughput normalization passed"
+    "Current-candidate roundtrip, main schema and compatibility regressions remain required after main integration.",
+    "Historical prior logs are retained outside Git and are not rebound as current Candidate results."
   ],
   "sourceTagFacts": {
     "v2.85.4": {
@@ -89,6 +91,23 @@
         "src/summary_source_change.rs"
       ],
       "method": "Whole source files match v2.85.3 byte-for-byte; existing reader fingerprints therefore apply unchanged. Current reader functions and manifest were also compared directly."
+    },
+    "v2.86.0": {
+      "commit": "7681ce2dce52810e75397a33eb224a10d7c49038",
+      "verifiedPaths": [
+        "src/maintenance/archive/manifest.rs",
+        "src/maintenance/hourly_rollups.rs",
+        "src/maintenance/retention.rs",
+        "src/summary_source_change.rs"
+      ],
+      "method": "Whole manifest source and the five named codec/proof/query functions match current candidate byte-for-byte. The main telemetry addition in manifest is inherited from this release; old v2.85 fingerprints retained as historical earlier-Minor evidence."
     }
-  }
+  },
+  "historicalEarlierMinorReaderSources": [
+    "v2.85.0",
+    "v2.85.1",
+    "v2.85.2",
+    "v2.85.3",
+    "v2.85.4"
+  ]
 }

@@ -387,6 +387,7 @@ const STORYBOOK_RETENTION_FIXTURE = buildRetentionWorkloadFixture({
   finalPending: 32_000,
   skippedIndices: [10, 22],
   zeroCommitFailureIndices: [9, 21],
+  maxProcessedPerRun: 1000,
 });
 const STORYBOOK_RETENTION_BACKLOG_TREND = STORYBOOK_RETENTION_FIXTURE.backlog;
 const STORYBOOK_WORKLOAD_SAMPLES = STORYBOOK_RETENTION_FIXTURE.samples;
@@ -476,11 +477,16 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
           {
             dataset: "codex_invocations",
             monthKey: "2026-09",
-            batchRows: 1000,
-            committedRows: 1000,
-            committedRowsPerSecond: 15.625,
+            batchRows: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
+            committedRows: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
+            committedRowsPerSecond:
+              ((STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0) * 1000) /
+              STORYBOOK_LATEST_RUN_DURATION,
             arrivalRowsPerSecond: 0.3472,
-            serviceRateMultiple: 45.0,
+            serviceRateMultiple:
+              ((STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0) * 1000) /
+              STORYBOOK_LATEST_RUN_DURATION /
+              0.3472,
             filePrepareMs: 3600,
             lockWaitMs: 125,
           },

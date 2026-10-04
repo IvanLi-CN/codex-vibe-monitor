@@ -45,6 +45,8 @@
 
 服务速率使用本数据集实际提交行数除以整轮 elapsed，包含其他阶段、准入和收尾，避免只用压缩的短时速度。到达速率在独占连接上以真实 SQLite progress handler 的 2 秒预算读取最近 24 小时行数；不可观测则为未知，真实零到达时倍率未知。运行结果一经持久化，后台统计刷新不改写它。
 
+既有工作量观测继续使用本轮起点的固定 cutoff/MAX(id) 范围。新批次路径累计去重后的 invocation 候选 ID，并在每个主库微事务提交后增加 processed；文件发布本身不计作源行完成，attempt 不混入 invocation 指标。批次中途失败仍保留已提交数量。Demo 和 Storybook 的工作量与吞吐取自同一运行样本及实际运行时长。
+
 主页面继续显示 7 天逐小时待归档 invocation 数量及最长逾期。attempt、Prompt 会话、raw 文件按原单位独立计量。页面读维护库和运行结果，不同步扫描主库或触发物化。
 
 ## Compatibility and Migration
@@ -52,6 +54,8 @@
 本轮不增加主库表、列、状态枚举或迁移标识。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。旧 prepared 状态隔离和当前任务源行转换属于运行 DML。历史吞吐缺失保持未知。
 
 新增任务 JSON 字段和 Web 归一化向后兼容。API 与持久化影响分开评估；本轮记录见 [version impact](assets/task-local-version-impact-record.json) 和 [state compatibility](assets/task-local-persistent-state-record.json)。最终分类由当前候选兼容验证决定；旧 PR 的 minor 记录仅作为历史。
+
+当前同 Minor 兼容来源为 v2.86.0：现有 manifest 模块以及五个编解码、证明和查询函数与其源码逐一比较；v2.85.0..4 的指纹保留为历史较早 Minor 证据。源码等价性不能替代当前候选的文件往返、状态升级和运行验证。
 
 ## Verification
 
@@ -61,7 +65,7 @@
 - 在线探针覆盖聚合、列表、详情和 P1 terminal 写；生产 HTTP 方法比例暂无准确观测，当前 3:1 读写重放是显式保守假设，不能写成生产实测比例。持续峰值用相同发布构建和序列的 20 倍到达速率观察让行与在线等待；磁盘边界在独立 32 MiB tmpfs 中运行拒绝夹具，确认 1000 条未证明源行保留且没有归档发布。锁释放由取消后的独占连接与写锁回归验证。
 - 容量夹具同时在同一主库运行真实 Prompt 会话物化所有者，共享后台准入槽和 P2/P1 写协调器，使用生产的 2000 行扫描上限、3 秒运行上限与 15 秒续作间隔。锁竞争按现有压力冷却及 active interval 重试，非压力异常仍使试验失败；结果记录实际扫描/更新、延期及压力失败次数；只重放在线探针的试验保留为诊断证据，不能替代含后台竞争的当前候选验收。
 - 容量通过要求 invocation >=17.4 rows/s、attempt >=20.8 rows/s、普通负载不频繁超时，以及在线 p95/p99 中位数不劣于基线。
-- `retention_task_local_batches` 覆盖同月重复更新、主库结构不变、取消后的 ATTACH 连接/临时文件清理、坏文件保留源行、旧 prepared 隔离和跨数据集失败计数。第二个源数据事务失败夹具验证已提交 64 行准确报告、未提交源行保留、Summary 精确总量及下一轮重新选取；不创建续作 journal。
+- `retention_task_local_batches` 覆盖同月重复更新、主库结构不变、取消后的 ATTACH 连接/临时文件清理、坏文件保留源行、旧 prepared 隔离和跨数据集失败计数。第二个源数据事务失败夹具验证已提交 64 行准确报告、工作量样本发现 1000 行但仅完成 64 行、未提交源行保留、Summary 精确总量及下一轮重新选取；不创建续作 journal。
 - 工作集回归比较近期/旧活跃/变更身份/失败状态/删除与准确全量参考；万行历史下用真实 SQLite VM 指令预算拒绝退回历史正文扫描。触发器定义识别、迁移事务中断、重启及原完成事实不改写分别验证。
 - 工作文件回归用真实持锁子进程验证活跃所有者保留、终止后内核释放、PID 复用下废弃清理、目录竞争立即延期及非规范文件名保留。受限磁盘夹具还验证废弃工作在空间预检前清理，源行和 manifest 不变。
 - 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
@@ -73,6 +77,8 @@
 本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。
 
 同路径基线不存在，比较为 current-only；主人明确确认「截图准确，接受此布局」。此确认只证明布局和模拟状态，不能替代容量实测。旧 retention-task / retention-catchup-trend 图片保留为历史，排除于本轮 Task Evidence Set。
+
+同步 main 的工作量图表后，吞吐的 Demo 数值按相同运行样本重新计算。上述图片及确认仍是此前布局证据；当前渲染输入的比较与确认必须在 PR 交付前刷新。
 
 ![Desktop task batch throughput](assets/retention-monthly-throughput-desktop.png)
 

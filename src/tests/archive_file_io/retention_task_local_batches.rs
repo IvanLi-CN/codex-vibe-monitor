@@ -444,9 +444,40 @@ async fn retention_task_local_partial_source_commit_preserves_exact_summary_and_
         .expect("exact totals before source conversion");
     sqlx::query("CREATE TRIGGER task_local_stop_second_chunk BEFORE DELETE ON codex_invocations WHEN OLD.id=65 BEGIN SELECT RAISE(ABORT,'injected source conversion failure'); END")
         .execute(&pool).await.expect("stop after a committed source chunk");
-    let failed = run_data_retention_maintenance(&pool, &config, Some(false), None)
-        .await
-        .expect("structured source failure");
+    let observation = crate::TaskExecutionObservation::begin(
+        "retention_archive",
+        "Retention partial source commit",
+        "manual",
+        Some("maintenance_retention"),
+        "processing",
+    );
+    let failed = run_data_retention_maintenance_with_circuit_and_prompt_cache(
+        &pool,
+        &config,
+        Some(false),
+        None,
+        Arc::new(RawCaptureCircuitBreaker::new(config.archive_dir.clone())),
+        None,
+        Some(observation.clone()),
+    )
+    .await
+    .expect("structured source failure");
+    observation.finish_with_status("failed");
+    let workload = crate::task_runtime_observation::workload_sample("retention_archive")
+        .expect("failed run retains committed workload");
+    assert_eq!(
+        workload.pending.as_ref().and_then(|metric| metric.value),
+        Some(1_000)
+    );
+    assert_eq!(
+        workload.discovered.as_ref().and_then(|metric| metric.value),
+        Some(1_000)
+    );
+    assert_eq!(
+        workload.processed.as_ref().and_then(|metric| metric.value),
+        Some(64)
+    );
+    assert_eq!(workload.status, "failed");
     assert!(failed.fatal_error.is_some());
     assert_eq!(failed.invocation_rows_archived, 64);
     assert_eq!(

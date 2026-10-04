@@ -10,8 +10,9 @@ test.describe("Retention task throughput", () => {
       await expect(throughput).toContainText("调用记录 · 2026-09");
       await expect(throughput).toContainText("上游尝试 · 2026-09");
       await expect(throughput).toContainText("1000 / 1000 条");
-      await expect(throughput).toContainText("32.26 条/s");
-      await expect(throughput).toContainText("92.9×");
+      await expect(throughput).toContainText("898 / 898 条");
+      await expect(throughput).toContainText("18.71 条/s");
+      await expect(throughput).toContainText("53.9×");
       await expect(throughput).toContainText("超时次数：0");
       await expect(page.getByText(/Prompt 缓存统计：暂不可用/).first()).toBeVisible();
       await throughput.scrollIntoViewIfNeeded();
