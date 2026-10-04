@@ -12,7 +12,12 @@ pub(super) async fn run_startup_backfill_coverage_repair_if_due(
         gate,
         observation_parent_task_key,
         managed_run_id,
-        || repair_active_account_activity_v2_coverage(&state.pool),
+        |on_bucket_committed| {
+            repair_active_account_activity_v2_coverage_with_progress(
+                &state.pool,
+                on_bucket_committed,
+            )
+        },
     )
     .await
 }
@@ -27,8 +32,10 @@ where
     Repair: FnOnce() -> RepairFuture,
     RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
 {
-    run_startup_backfill_coverage_repair_if_due_with_observation(state, gate, None, None, repair)
-        .await
+    run_startup_backfill_coverage_repair_if_due_with_observation(state, gate, None, None, |_| {
+        repair()
+    })
+    .await
 }
 
 async fn run_startup_backfill_coverage_repair_if_due_with_observation<Repair, RepairFuture>(
@@ -39,7 +46,7 @@ async fn run_startup_backfill_coverage_repair_if_due_with_observation<Repair, Re
     repair: Repair,
 ) -> Result<StartupBackfillTaskRunOutcome>
 where
-    Repair: FnOnce() -> RepairFuture,
+    Repair: FnOnce(Box<dyn FnMut(usize) + Send>) -> RepairFuture,
     RepairFuture: Future<Output = Result<ActiveAccountActivityV2RepairOutcome>>,
 {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
@@ -129,6 +136,7 @@ where
     observation.set_child(child_key, &child_title);
     let _child_observation_guard = TaskObservationChildGuard(observation.clone());
     let mut workload_observation = observation.begin_subtask_workload(child_key);
+    let on_bucket_committed = workload_observation.processed_work_recorder();
 
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     let repair_outcome = tokio::select! {
@@ -146,7 +154,7 @@ where
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
             ));
         }
-        outcome = repair() => outcome,
+        outcome = repair(Box::new(on_bucket_committed)) => outcome,
     };
     let repair_outcome = match repair_outcome {
         Ok(outcome) => {
@@ -156,6 +164,7 @@ where
             outcome
         }
         Err(err) => {
+            workload_observation.finish_with_status("failed");
             warn!(
                 task = task.log_label(),
                 error = %err,
@@ -186,10 +195,8 @@ where
             if let Some(outcome) =
                 startup_backfill_pressure_error_defer_outcome_if_recorded(task, gate, &err)
             {
-                workload_observation.finish_with_status("failed");
                 return Ok(outcome);
             }
-            workload_observation.finish_with_status("failed");
             return Ok(StartupBackfillTaskRunOutcome {
                 actionable: false,
                 failed: true,

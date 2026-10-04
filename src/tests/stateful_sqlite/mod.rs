@@ -146,6 +146,7 @@ mod schema_templates;
 mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
 mod system_status_and_account_roster;
+mod task_workload_coverage;
 
 pub(crate) use parallel_work_stats_and_timeseries::*;
 pub(crate) use proxy_backfill_and_cost_repairs::*;

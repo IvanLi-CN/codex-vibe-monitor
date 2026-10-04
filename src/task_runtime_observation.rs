@@ -376,6 +376,9 @@ impl TaskExecutionObservation {
                 format_utc_iso_millis(Utc::now()),
             );
             if let Ok(mut samples) = workload_observations().lock() {
+                samples.retain(|_, existing| {
+                    existing.task_key != task_key || existing.status == "running"
+                });
                 samples.insert(sample.sample_id.clone(), sample.clone());
             }
             crate::task_timeline::workload_sample_changed(sample);
@@ -389,7 +392,6 @@ impl TaskExecutionObservation {
         TaskWorkloadObservation {
             execution_uid: self.inner.execution_uid.clone(),
             task_key: task_key.to_string(),
-            processed_count: None,
             finalized: false,
         }
     }
@@ -593,22 +595,24 @@ impl TaskExecutionObservation {
 pub(crate) struct TaskWorkloadObservation {
     execution_uid: String,
     task_key: String,
-    processed_count: Option<i64>,
     finalized: bool,
 }
 
 impl TaskWorkloadObservation {
     pub(crate) fn set_processed_work(&mut self, count: i64) {
-        self.processed_count = Some(count.max(0));
-        let processed_count = self.processed_count;
-        update_workload_sample(&self.execution_uid, &self.task_key, false, |sample| {
-            if let Some(metric) = sample_metric(sample, "processed") {
-                metric.value = processed_count;
-                metric.range = "run-window".to_string();
-                metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
-                metric.coverage = "window".to_string();
-            }
-        });
+        set_child_processed_work(&self.execution_uid, &self.task_key, count);
+    }
+
+    pub(crate) fn processed_work_recorder(&self) -> impl FnMut(usize) + Send + 'static {
+        let execution_uid = self.execution_uid.clone();
+        let task_key = self.task_key.clone();
+        move |count| {
+            set_child_processed_work(
+                &execution_uid,
+                &task_key,
+                i64::try_from(count).unwrap_or(i64::MAX),
+            );
+        }
     }
 
     pub(crate) fn finish_with_status(&mut self, status: &str) {
@@ -620,12 +624,11 @@ impl TaskWorkloadObservation {
             return;
         }
         self.finalized = true;
-        let processed_count = self.processed_count;
         update_workload_sample(&self.execution_uid, &self.task_key, true, |sample| {
             sample.finished_at = Some(format_utc_iso_millis(Utc::now()));
             sample.status = status.to_string();
+            let processed_count = sample.processed.as_ref().and_then(|metric| metric.value);
             if let Some(metric) = sample_metric(sample, "processed") {
-                metric.value = processed_count;
                 if processed_count.is_some() {
                     metric.range = "run-window".to_string();
                 }
@@ -652,6 +655,17 @@ impl TaskWorkloadObservation {
             }
         });
     }
+}
+
+fn set_child_processed_work(execution_uid: &str, task_key: &str, count: i64) {
+    update_workload_sample(execution_uid, task_key, false, |sample| {
+        if let Some(metric) = sample_metric(sample, "processed") {
+            metric.value = Some(count.max(0));
+            metric.range = "run-window".to_string();
+            metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+            metric.coverage = "window".to_string();
+        }
+    });
 }
 
 impl Drop for TaskWorkloadObservation {
@@ -979,6 +993,103 @@ mod tests {
                 .expect("read workload notification throttles")
                 .contains_key(&parent_key)
         );
+    }
+
+    #[test]
+    fn repeated_child_runs_prune_terminal_samples_and_preserve_active_work() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let task_key = "startup_backfill.proxy_usage";
+        let active_parent = TaskExecutionObservation::begin(
+            "startup_backfill",
+            "启动回填",
+            "manual",
+            Some("p2_derived"),
+            "processing",
+        );
+        let mut active_child = active_parent.begin_subtask_workload(task_key);
+        let active_sample_id = format!("{}:{task_key}", active_parent.inner.execution_uid);
+
+        for _ in 0..120 {
+            let parent = TaskExecutionObservation::begin(
+                "startup_backfill",
+                "启动回填",
+                "interval",
+                Some("p2_derived"),
+                "processing",
+            );
+            let mut child = parent.begin_subtask_workload(task_key);
+            let sample_count = workload_observations()
+                .lock()
+                .expect("read samples")
+                .values()
+                .filter(|sample| sample.task_key == task_key)
+                .count();
+            assert_eq!(
+                sample_count, 2,
+                "retain the active child and this attempt only"
+            );
+            child.set_processed_work(1);
+            child.finish_with_status("success");
+            parent.finish_with_status("success");
+        }
+
+        active_child.set_processed_work(7);
+        let samples = workload_observations().lock().expect("read active sample");
+        let active = samples
+            .get(&active_sample_id)
+            .expect("active sample survives pruning");
+        assert_eq!(active.status, "running");
+        assert_eq!(
+            active.processed.as_ref().and_then(|metric| metric.value),
+            Some(7)
+        );
+        drop(samples);
+        active_child.finish_with_status("success");
+        active_parent.finish_with_status("success");
+    }
+
+    #[test]
+    fn child_progress_callback_survives_failed_or_unknown_finalization() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let task_key = "startup_backfill.account_activity_v2_coverage";
+        for status in ["failed", "unknown", "skipped"] {
+            let parent = TaskExecutionObservation::begin(
+                "startup_backfill",
+                "启动回填",
+                "manual",
+                Some("p2_derived"),
+                "processing",
+            );
+            let mut child = parent.begin_subtask_workload(task_key);
+            let mut on_commit = child.processed_work_recorder();
+            on_commit(1);
+            on_commit(2);
+            if status == "unknown" {
+                drop(child);
+            } else {
+                child.finish_with_status(status);
+            }
+            let sample = workload_sample(task_key).expect("terminal child sample");
+            assert_eq!(sample.status, status);
+            assert_eq!(
+                sample.processed.as_ref().and_then(|metric| metric.value),
+                Some(2)
+            );
+            assert_eq!(
+                sample
+                    .processed
+                    .as_ref()
+                    .map(|metric| metric.coverage.as_str()),
+                Some("window")
+            );
+            assert!(
+                sample.actual_started_at.is_some(),
+                "committed work has a real execution start"
+            );
+            parent.finish_with_status(status);
+        }
     }
 
     #[test]
