@@ -4633,17 +4633,16 @@ mod tests {
         );
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn workload_fixture_sample(
         index: usize,
         observed_at: chrono::DateTime<Utc>,
         pending: Option<i64>,
         processed: Option<i64>,
         status: &str,
-        actual_started_at: Option<String>,
-        finished_at: Option<String>,
+        execution_times: (Option<String>, Option<String>),
         range: &str,
     ) -> TaskWorkloadSample {
+        let (actual_started_at, finished_at) = execution_times;
         let observed_at = format_utc_iso_millis(observed_at);
         let metric = |value, coverage: &str| TaskWorkloadMetric {
             value,
@@ -4684,10 +4683,12 @@ mod tests {
                     Some(100 - index as i64 * 10),
                     Some(10),
                     "success",
-                    Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
-                    Some(format_utc_iso_millis(
-                        observed + ChronoDuration::seconds(20),
-                    )),
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
                     "complete eligible range",
                 )
             })
@@ -4735,10 +4736,12 @@ mod tests {
                     Some(9_000_000_000_000_000 - index as i64 * 100),
                     Some(10),
                     "success",
-                    Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
-                    Some(format_utc_iso_millis(
-                        observed + ChronoDuration::seconds(20),
-                    )),
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
                     "complete eligible range",
                 )
             })
@@ -4760,12 +4763,14 @@ mod tests {
             None,
             Some(10),
             "success",
-            Some(format_utc_iso_millis(
-                start + ChronoDuration::minutes(1) + ChronoDuration::seconds(1),
-            )),
-            Some(format_utc_iso_millis(
-                start + ChronoDuration::minutes(1) + ChronoDuration::seconds(30),
-            )),
+            (
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(1) + ChronoDuration::seconds(1),
+                )),
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(1) + ChronoDuration::seconds(30),
+                )),
+            ),
             "complete eligible range",
         );
         let skipped = workload_fixture_sample(
@@ -4774,8 +4779,10 @@ mod tests {
             None,
             None,
             "skipped",
-            None,
-            Some(format_utc_iso_millis(start + ChronoDuration::minutes(2))),
+            (
+                None,
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(2))),
+            ),
             "complete eligible range",
         );
         let leading_skipped = workload_fixture_sample(
@@ -4784,10 +4791,12 @@ mod tests {
             None,
             None,
             "skipped",
-            None,
-            Some(format_utc_iso_millis(
-                start + ChronoDuration::milliseconds(500),
-            )),
+            (
+                None,
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::milliseconds(500),
+                )),
+            ),
             "complete eligible range",
         );
         let last = workload_fixture_sample(
@@ -4796,10 +4805,12 @@ mod tests {
             None,
             Some(10),
             "success",
-            Some(format_utc_iso_millis(start + ChronoDuration::minutes(5))),
-            Some(format_utc_iso_millis(
-                start + ChronoDuration::minutes(5) + ChronoDuration::seconds(30),
-            )),
+            (
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(5))),
+                Some(format_utc_iso_millis(
+                    start + ChronoDuration::minutes(5) + ChronoDuration::seconds(30),
+                )),
+            ),
             "complete eligible range",
         );
         let trailing_skipped = workload_fixture_sample(
@@ -4808,8 +4819,10 @@ mod tests {
             None,
             None,
             "skipped",
-            None,
-            Some(format_utc_iso_millis(start + ChronoDuration::minutes(6))),
+            (
+                None,
+                Some(format_utc_iso_millis(start + ChronoDuration::minutes(6))),
+            ),
             "complete eligible range",
         );
         assert!(skipped.processed.is_none());
@@ -4845,10 +4858,12 @@ mod tests {
                     Some(100 - index as i64 * 10),
                     Some(10),
                     "success",
-                    Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
-                    Some(format_utc_iso_millis(
-                        observed + ChronoDuration::seconds(20),
-                    )),
+                    (
+                        Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                        Some(format_utc_iso_millis(
+                            observed + ChronoDuration::seconds(20),
+                        )),
+                    ),
                     "complete eligible range",
                 )
             })
@@ -4858,8 +4873,10 @@ mod tests {
                 None,
                 None,
                 "skipped",
-                None,
-                Some(format_utc_iso_millis(start + ChronoDuration::minutes(9))),
+                (
+                    None,
+                    Some(format_utc_iso_millis(start + ChronoDuration::minutes(9))),
+                ),
                 "complete eligible range",
             )))
             .collect::<Vec<_>>();
@@ -4909,10 +4926,12 @@ mod tests {
                 None,
                 Some(index as i64),
                 "success",
-                Some(format_utc_iso_millis(attempted)),
-                Some(format_utc_iso_millis(
-                    attempted + ChronoDuration::seconds(1),
-                )),
+                (
+                    Some(format_utc_iso_millis(attempted)),
+                    Some(format_utc_iso_millis(
+                        attempted + ChronoDuration::seconds(1),
+                    )),
+                ),
                 "historical window",
             );
             sqlx::query(
@@ -4938,8 +4957,10 @@ mod tests {
             None,
             None,
             "running",
-            Some(format_utc_iso_millis(start - ChronoDuration::days(1))),
-            None,
+            (
+                Some(format_utc_iso_millis(start - ChronoDuration::days(1))),
+                None,
+            ),
             "active window",
         );
         running.execution_uid = "active-execution".to_string();
@@ -5088,8 +5109,10 @@ mod tests {
             None,
             Some(7),
             "success",
-            Some(format_utc_iso_millis(now)),
-            Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            (
+                Some(format_utc_iso_millis(now)),
+                Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            ),
             "latest",
         );
         latest.execution_uid = "stable-execution".to_string();
@@ -5152,12 +5175,14 @@ mod tests {
             Some(12),
             Some(4),
             "success",
-            Some(format_utc_iso_millis(
-                attempted_at + ChronoDuration::milliseconds(10),
-            )),
-            Some(format_utc_iso_millis(
-                attempted_at + ChronoDuration::seconds(1),
-            )),
+            (
+                Some(format_utc_iso_millis(
+                    attempted_at + ChronoDuration::milliseconds(10),
+                )),
+                Some(format_utc_iso_millis(
+                    attempted_at + ChronoDuration::seconds(1),
+                )),
+            ),
             "complete eligible range",
         );
         let execution_uid = sample.execution_uid.clone();
@@ -5225,8 +5250,10 @@ mod tests {
             None,
             Some(4),
             "success",
-            Some(format_utc_iso_millis(now)),
-            Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            (
+                Some(format_utc_iso_millis(now)),
+                Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
+            ),
             "run window",
         );
         let unknown_metric = TaskWorkloadMetric {

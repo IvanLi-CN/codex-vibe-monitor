@@ -1076,9 +1076,8 @@ mod tests {
         observation.finish_with_status("success");
     }
 
-    #[tokio::test]
-    #[allow(clippy::await_holding_lock)]
-    async fn scoped_committed_work_is_limited_to_its_managed_task() {
+    #[test]
+    fn scoped_committed_work_is_limited_to_its_managed_task() {
         let _guard = test_lock();
         clear_task_runtime_observation_for_tests();
         let observation = TaskExecutionObservation::begin(
@@ -1088,11 +1087,13 @@ mod tests {
             Some("p2_derived"),
             "processing",
         );
-        with_managed_task_observation(observation.clone(), async {
-            record_managed_task_processed_work(&["raw_compression"], 2);
-            record_managed_task_processed_work(&["archive_upstream_activity_manifest"], 7);
-        })
-        .await;
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("build observation test runtime")
+            .block_on(with_managed_task_observation(observation.clone(), async {
+                record_managed_task_processed_work(&["raw_compression"], 2);
+                record_managed_task_processed_work(&["archive_upstream_activity_manifest"], 7);
+            }));
 
         let sample = super::workload_sample("raw_compression").expect("root sample exists");
         assert_eq!(

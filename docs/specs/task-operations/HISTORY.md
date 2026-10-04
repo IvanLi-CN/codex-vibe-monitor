@@ -33,6 +33,8 @@
 
 ## Related Changes
 
+- [PR #1074: durable workload trends and evidence-based estimates](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1074)
+
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
 - `docs/adr/0026-durable-task-execution-and-deferral-timelines.md`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
