@@ -70,6 +70,22 @@ describe("buildWorkloadChartModels", () => {
     expect(model.data[0][model.segments[1].key]).toBe(0);
   });
 
+  it("keeps an unmeasured running attempt visible at the baseline", () => {
+    const running = sample(0, {
+      actualStartedAt: "2026-10-03T00:00:01.000Z",
+      finishedAt: null,
+      status: "running",
+      pending: null,
+      discovered: null,
+      processed: null,
+    });
+
+    const model = buildWorkloadChartModels([running])[0];
+
+    expect(model.data[0].runningMarker).toBe(0);
+    expect(model.segments).toHaveLength(0);
+  });
+
   it("draws a dashed bridge only over confirmed skipped attempts", () => {
     const start = sample(0);
     const skipped = sample(1, {

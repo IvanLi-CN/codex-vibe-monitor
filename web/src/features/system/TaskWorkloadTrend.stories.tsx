@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
 import { expect, userEvent, within } from "storybook/test";
-import type { TaskWorkloadTrend as WorkloadTrend } from "../../lib/api";
+import type {
+  TaskMeasurementCapabilities,
+  TaskWorkloadTrend as WorkloadTrend,
+} from "../../lib/api";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "./TaskWorkloadTrend";
 import { buildRetentionWorkloadFixture } from "./taskWorkloadFixtures";
 
@@ -23,6 +26,41 @@ const emptyTrend: WorkloadTrend = {
   coverage: "no recorded attempts",
   samples: [],
   clearanceEstimateReason: "insufficient_samples",
+};
+
+const recoveryCapabilities: TaskMeasurementCapabilities = {
+  pending: { supported: false, unit: null, scope: null },
+  discovered: { supported: false, unit: null, scope: null },
+  processed: { supported: true, unit: "pool attempts", scope: "pool_orphan_recovery" },
+};
+
+const runningWithoutCounters: WorkloadTrend = {
+  ...emptyTrend,
+  coverage: "incomplete: run has no observed counters",
+  samples: [
+    {
+      ...samples[samples.length - 1],
+      sampleId: "active-no-counters:pool_orphan_recovery",
+      executionUid: "active-no-counters",
+      managedRunId: null,
+      taskKey: "pool_orphan_recovery",
+      attemptedAt: new Date(NOW - 60_000).toISOString(),
+      actualStartedAt: new Date(NOW - 60_000).toISOString(),
+      finishedAt: null,
+      status: "running",
+      subsetRelation: "unknown",
+      pending: null,
+      discovered: null,
+      processed: {
+        unit: "pool attempts",
+        scope: "pool_orphan_recovery",
+        value: null,
+        range: "not-observed",
+        observedAt: null,
+        coverage: "unknown",
+      },
+    },
+  ],
 };
 
 const captureGapTrend: WorkloadTrend = {
@@ -69,7 +107,7 @@ const meta = {
   parameters: { layout: "padded", viewport: { defaultViewport: "desktop1440" } },
   decorators: [
     (Story: () => ReactNode) => (
-      <div data-visual-evidence-surface className="bg-base-100 p-8 text-base-content">
+      <div data-visual-evidence-surface className="bg-base-100 p-4 md:p-8 text-base-content">
         <div data-visual-evidence-target>
           <Story />
         </div>
@@ -226,6 +264,34 @@ export const AccessiblePointInspection: Story = {
   },
 };
 
+export const RunningWithoutCounters: Story = {
+  args: {
+    taskKey: "pool_orphan_recovery",
+    capabilities: recoveryCapabilities,
+    trend: runningWithoutCounters,
+    state: "ready",
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const chart = canvasElement.querySelector<HTMLElement>('[role="application"]');
+    const point = canvasElement.querySelector<SVGCircleElement>("circle.recharts-dot");
+    if (!chart || !point) throw new Error("Unmeasured running point is missing");
+
+    await userEvent.pointer({ target: point, keys: "[TouchA]" });
+    await expect(canvas.getByText(/运行中/)).toBeVisible();
+    await expect(canvas.getByText(/实际开始：/)).toBeVisible();
+    await expect(canvas.getByText("待处理量：")).toBeVisible();
+    await expect(canvas.getAllByText("不适用")).toHaveLength(2);
+    await expect(canvas.getAllByText("未知").length).toBeGreaterThan(0);
+    await userEvent.pointer({ target: point, keys: "[/TouchA]" });
+
+    chart.focus();
+    await userEvent.keyboard("{Enter}");
+    await expect(canvas.getByText(/运行中/)).toBeVisible();
+  },
+};
+
 export const Loading: Story = {
   args: { taskKey: "retention_archive", state: "loading" },
   tags: ["test"],
@@ -268,7 +334,29 @@ export const MobileLight: Story = {
   },
 };
 
+export const MobileLightBacklog: Story = {
+  args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await expect(canvas.getByText("待归档数量")).toBeVisible();
+    await expect(canvas.getByText("最长逾期")).toBeVisible();
+  },
+};
+
 export const MobileDark: Story = {
   ...DarkTheme,
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+};
+
+export const MobileRunningWithoutCounters: Story = {
+  args: {
+    taskKey: "pool_orphan_recovery",
+    capabilities: recoveryCapabilities,
+    trend: runningWithoutCounters,
+    state: "ready",
+  },
   parameters: { viewport: { defaultViewport: "mobile393" } },
 };

@@ -2338,16 +2338,62 @@ impl MaintenanceStore {
         )
         .execute(&mut *transaction)
         .await?;
-        sqlx::query(
-            "UPDATE managed_task_work_runs
-             SET status='unknown', sequence=sequence+1,
-                 sample_json=json_set(sample_json, '$.status', 'unknown', '$.reason', 'process restarted before terminal state was recorded', '$.sequence', sequence+1),
-                 updated_at=?
-             WHERE status='running'",
-        )
-        .bind(started_at)
-        .execute(&mut *transaction)
-        .await?;
+        let running_samples =
+            sqlx::query_as::<_, (String, String, Option<i64>, String, i64, String)>(
+                "SELECT execution_uid,task_key,managed_run_id,attempted_at,sequence,sample_json
+             FROM managed_task_work_runs WHERE status='running'",
+            )
+            .fetch_all(&mut *transaction)
+            .await?;
+        for (execution_uid, task_key, managed_run_id, attempted_at, stored_sequence, sample_json) in
+            running_samples
+        {
+            let parsed = serde_json::from_str::<TaskWorkloadSample>(&sample_json);
+            let malformed = parsed.is_err();
+            let mut sample = parsed.unwrap_or_else(|_| TaskWorkloadSample {
+                sample_id: format!("{execution_uid}:{task_key}"),
+                execution_uid: execution_uid.clone(),
+                managed_run_id,
+                task_key: task_key.clone(),
+                trigger_kind: "unknown".to_string(),
+                attempted_at: attempted_at.clone(),
+                actual_started_at: None,
+                finished_at: None,
+                status: "unknown".to_string(),
+                reason: None,
+                sequence: 0,
+                pending: None,
+                discovered: None,
+                processed: None,
+                subset_relation: "unknown".to_string(),
+            });
+            let sample_sequence = sample.sequence.min(i64::MAX as u64) as i64;
+            let sequence = stored_sequence.max(sample_sequence).saturating_add(1);
+            sample.sample_id = format!("{execution_uid}:{task_key}");
+            sample.execution_uid = execution_uid.clone();
+            sample.managed_run_id = managed_run_id;
+            sample.task_key = task_key.clone();
+            sample.attempted_at = attempted_at;
+            sample.status = "unknown".to_string();
+            sample.reason = Some(if malformed {
+                "服务重启时发现工作量记录损坏，计数未知".to_string()
+            } else {
+                "服务重启前运行未确认结束".to_string()
+            });
+            sample.sequence = sequence as u64;
+            sqlx::query(
+                "UPDATE managed_task_work_runs
+                 SET status='unknown',sequence=?,sample_json=?,updated_at=?
+                 WHERE execution_uid=? AND task_key=? AND status='running'",
+            )
+            .bind(sequence)
+            .bind(serde_json::to_string(&sample)?)
+            .bind(started_at)
+            .bind(&execution_uid)
+            .bind(&task_key)
+            .execute(&mut *transaction)
+            .await?;
+        }
         sqlx::query(
             "INSERT INTO task_timeline_coverage(session_id,started_at,last_seen_at,dropped_events) VALUES(?,?,?,0) ON CONFLICT(session_id) DO UPDATE SET started_at=excluded.started_at,last_seen_at=excluded.last_seen_at,ended_at=NULL,dropped_events=0",
         )
@@ -3556,14 +3602,23 @@ impl MaintenanceStore {
 
     async fn workload_trend(&self, task: &ManagedTask) -> Result<TaskWorkloadTrend> {
         let task_key = &task.task_key;
-        let stored = sqlx::query_scalar::<_, String>(
-            "SELECT sample_json FROM managed_task_work_runs WHERE task_key=?
-             ORDER BY CASE WHEN status='running' THEN 0 ELSE 1 END,
-                      attempted_at DESC,execution_uid DESC LIMIT 100",
+        let stored_running = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs
+             WHERE task_key=? AND status='running'
+             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 1",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        let stored_recent = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs
+             WHERE task_key=? AND status<>'running'
+             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 100",
         )
         .bind(task_key)
         .fetch_all(&self.pool)
         .await?;
+        let stored = stored_running.into_iter().chain(stored_recent);
         let mut samples = stored
             .into_iter()
             .filter_map(|json| serde_json::from_str::<TaskWorkloadSample>(&json).ok())
@@ -4859,6 +4914,26 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed active workload sample");
+        for index in 0..101 {
+            let attempted_at = format_utc_iso_millis(
+                start - ChronoDuration::days(2) + ChronoDuration::seconds(index as i64),
+            );
+            sqlx::query(
+                "INSERT INTO managed_task_work_runs
+                 (execution_uid,task_key,attempted_at,sequence,status,sample_json,updated_at)
+                 VALUES(?,?,?,?,?,?,?)",
+            )
+            .bind(format!("corrupt-execution-{index}"))
+            .bind("retention_archive")
+            .bind(&attempted_at)
+            .bind(4_i64)
+            .bind("running")
+            .bind("not-json")
+            .bind(&attempted_at)
+            .execute(&pool)
+            .await
+            .expect("seed malformed running workload sample");
+        }
 
         ensure_schema(&pool)
             .await
@@ -4887,7 +4962,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count protected workload samples");
-        assert_eq!(counts, (100, 1));
+        assert_eq!(counts, (100, 102));
 
         let store = MaintenanceStore::from_pool(pool);
         let detail = store
@@ -4924,6 +4999,28 @@ mod tests {
         let restarted: TaskWorkloadSample = serde_json::from_str(&restarted).unwrap();
         assert_eq!(restarted.status, "unknown");
         assert_eq!(restarted.sequence, 2);
+        let recovered_counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT SUM(status='unknown'),SUM(status='running') FROM managed_task_work_runs",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("count recovered workload samples");
+        assert_eq!(recovered_counts, (102, 0));
+        let malformed = sqlx::query_scalar::<_, String>(
+            "SELECT sample_json FROM managed_task_work_runs
+             WHERE execution_uid='corrupt-execution-0' AND task_key='retention_archive'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read rebuilt malformed sample");
+        let malformed: TaskWorkloadSample = serde_json::from_str(&malformed).unwrap();
+        assert_eq!(malformed.status, "unknown");
+        assert_eq!(malformed.sequence, 5);
+        assert!(malformed.pending.is_none());
+        assert_eq!(
+            malformed.reason.as_deref(),
+            Some("服务重启时发现工作量记录损坏，计数未知")
+        );
     }
 
     #[tokio::test]

@@ -30,7 +30,7 @@ import {
   workloadSubsetPartition,
 } from "./taskWorkloadTrendModel";
 
-const COMPACT_FRAME_HEIGHT = 380;
+const COMPACT_FRAME_HEIGHT = 280;
 const WIDE_FRAME_HEIGHT = 300;
 const RUN_WINDOWS = [20, 50, 100] as const;
 
@@ -138,6 +138,7 @@ function createEmptyPlotData(): WorkloadPlotDatum[] {
     index,
     label: "",
     sample: null,
+    runningMarker: null,
   }));
 }
 
@@ -167,7 +168,10 @@ function workloadHint(
   return null;
 }
 
-function sampleDetail(sample: NonNullable<WorkloadPlotDatum["sample"]>) {
+function sampleDetail(
+  sample: NonNullable<WorkloadPlotDatum["sample"]>,
+  capabilities?: TaskMeasurementCapabilities,
+) {
   const partition = workloadSubsetPartition(sample);
   return (
     <div className="min-w-60 space-y-1.5 text-xs">
@@ -178,12 +182,15 @@ function sampleDetail(sample: NonNullable<WorkloadPlotDatum["sample"]>) {
       <div>触发：{sample.triggerKind}</div>
       {WORKLOAD_SERIES.map((series) => {
         const metric = sample[series];
+        const supported = capabilities?.[series]?.supported !== false;
         return (
           <div key={series} className="border-t border-base-300/60 pt-1">
             <span className="font-medium">{workloadSeriesLabel(series)}：</span>
-            <span>{metricValue(metric)}</span>
-            <span className="ml-1 text-base-content/65">{coverageLabel(metric?.coverage)}</span>
-            {metric ? (
+            <span>{supported ? metricValue(metric) : "不适用"}</span>
+            {supported ? (
+              <span className="ml-1 text-base-content/65">{coverageLabel(metric?.coverage)}</span>
+            ) : null}
+            {metric && supported ? (
               <div className="break-all text-base-content/60">
                 范围：{metric.scope} · {metric.range}
               </div>
@@ -212,6 +219,7 @@ function RunMetricChart({
   hint,
   height,
   compact,
+  capabilities,
 }: {
   model: WorkloadChartModel;
   colors: ReturnType<typeof taskWorkloadTokens>;
@@ -220,6 +228,7 @@ function RunMetricChart({
   hint: string | null;
   height: number;
   compact: boolean;
+  capabilities?: TaskMeasurementCapabilities;
 }) {
   const chartData = model.data.length > 0 ? model.data : createEmptyPlotData();
   return (
@@ -263,7 +272,7 @@ function RunMetricChart({
               if (!active || !sample) return null;
               return (
                 <div className="max-w-sm rounded-md border border-base-300 bg-base-100 p-3 text-base-content shadow-lg">
-                  {sampleDetail(sample)}
+                  {sampleDetail(sample, capabilities)}
                 </div>
               );
             }}
@@ -306,6 +315,29 @@ function RunMetricChart({
                 />
               )),
           )}
+          {chartData.some((datum) => datum.runningMarker != null) ? (
+            <Line
+              dataKey="runningMarker"
+              name="运行中"
+              type="linear"
+              stroke="transparent"
+              strokeWidth={0}
+              dot={{
+                r: 4,
+                fill: axis.axisText,
+                stroke: colors.processed,
+                strokeWidth: 2,
+              }}
+              activeDot={{
+                r: 6,
+                fill: axis.axisText,
+                stroke: colors.processed,
+                strokeWidth: 2,
+              }}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          ) : null}
         </ComposedChart>
       </ResponsiveContainer>
       {hint ? (
@@ -628,6 +660,7 @@ export function TaskWorkloadTrend({
                   hint={runHint}
                   height={chartHeight}
                   compact={isCompactViewport}
+                  capabilities={capabilities}
                 />
               ))
             : null}

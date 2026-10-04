@@ -12,6 +12,7 @@ export interface WorkloadPlotDatum {
   index: number;
   label: string;
   sample: TaskWorkloadSample | null;
+  runningMarker: number | null;
   [key: string]: unknown;
 }
 
@@ -220,6 +221,15 @@ export function buildWorkloadChartModels(
       index,
       label: sample.attemptedAt,
       sample,
+      runningMarker:
+        unit === units[0] &&
+        sample.status === "running" &&
+        !WORKLOAD_SERIES.some((series) => {
+          const metric = metricFor(sample, series);
+          return usableMetric(metric) && metric.unit === unit && metric.coverage !== "unknown";
+        })
+          ? 0
+          : null,
     }));
     const segments: WorkloadSeriesSegment[] = [];
     let nextSegment = 0;
