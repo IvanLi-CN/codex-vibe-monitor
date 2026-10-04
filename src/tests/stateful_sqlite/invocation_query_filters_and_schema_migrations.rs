@@ -231,6 +231,27 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     .expect("count WebSocket retirement markers");
     assert_eq!(marker_count, 1);
 
+    let reintroduced_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (name, system_key, protected, created_at, updated_at)
+        VALUES ('Reintroduced WebSocket capability', 'unsupported_transport:websocket', 1, datetime('now'), datetime('now'))
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("reintroduce retired WebSocket capability tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        VALUES (4242, ?1, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(reintroduced_tag_id)
+    .execute(&pool)
+    .await
+    .expect("reintroduce retired WebSocket capability link");
+
     crate::schema::retire_openai_websocket_proxy(&pool)
         .await
         .expect("rerun WebSocket proxy retirement migration");
@@ -241,6 +262,13 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     .await
     .expect("load settings after idempotent rerun");
     assert_eq!(rerun_settings, settings);
+    let reintroduced_tag_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_tags WHERE id = ?1")
+            .bind(reintroduced_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count reintroduced WebSocket tag after rerun");
+    assert_eq!(reintroduced_tag_count, 0);
 }
 
 #[tokio::test]

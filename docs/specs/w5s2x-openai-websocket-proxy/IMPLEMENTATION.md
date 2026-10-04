@@ -34,7 +34,7 @@
 
 - `src/proxy/request_entry.rs` performs header-only upgrade detection and returns the fixed `501` JSON envelope before invoking the shared HTTP proxy entrypoint.
 - The Axum WebSocket feature, relay/dialer module, direct tungstenite dependencies, WebSocket settings initialization, capability tag ensure/learning, and WebSocket-only usage refresh/persistence paths are removed.
-- The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction, preserves non-scalar JSON values while removing retired integer tag IDs, records the named migration marker, and logs only affected-row counts.
+- The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction even when its completion marker already exists, preserves non-scalar JSON values while removing retired integer tag IDs, records the named migration marker, and logs only affected-row counts.
 - Legacy tag cleanup now removes only non-system integer session references, so existing system-tag JSON survives long enough for the retirement migration to remove only the exact retired WebSocket tag.
 - Settings request deserialization tolerates old WebSocket fields as unknown input while response serialization omits them. Historical `transport="websocket"` rows remain readable and are labeled `WebSocket（历史）` in the UI.
 - The demo and account-pool fixtures no longer create live WebSocket records or capability tags; historical records remain in Records, invocation, and dashboard read fixtures.

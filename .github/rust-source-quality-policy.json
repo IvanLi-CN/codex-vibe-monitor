@@ -129,7 +129,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 9872,
+      "line_budget": 9920,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {

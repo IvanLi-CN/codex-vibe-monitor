@@ -126,23 +126,10 @@ async fn record_schema_refresh_completion_in_transaction(
 }
 
 pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result<()> {
-    if schema_refresh_completed(pool, RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME).await? {
-        return Ok(());
-    }
-
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
         .context("failed to begin WebSocket proxy retirement migration")?;
-    if schema_refresh_completed_in_transaction(
-        &mut tx,
-        RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME,
-    )
-    .await?
-    {
-        tx.commit().await?;
-        return Ok(());
-    }
 
     let settings_rows = sqlx::query(
         r#"
@@ -152,6 +139,11 @@ pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result
             websocket_settings_migrated = 1,
             updated_at = datetime('now')
         WHERE id = 1
+          AND (
+              openai_proxy_websocket_enabled <> 0
+              OR openai_proxy_upstream_websocket_default_enabled <> 0
+              OR websocket_settings_migrated <> 1
+          )
         "#,
     )
     .execute(tx.as_mut())
