@@ -2566,8 +2566,8 @@ export const RetentionTaskDetail: Story = {
       canvas.findByRole("figure", { name: "工作量：invocation rows" }),
     ).resolves.toBeVisible();
     await expect(canvas.findByRole("heading", { name: "运行趋势" })).resolves.toBeVisible();
-    await expect(canvas.findByRole("tab", { name: "最近 100 次运行" })).resolves.toBeVisible();
-    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await expect(canvas.findByRole("tab", { name: "次数" })).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("待归档数量")).toBeVisible();
     await expect(canvas.getByText("最长逾期", { exact: true })).toBeVisible();
     await expect(canvas.getByText("prompt_cache")).toBeVisible();

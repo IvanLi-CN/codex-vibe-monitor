@@ -797,7 +797,7 @@ export function TaskWorkloadTrend({
         size="compact"
         role="tablist"
         aria-label="运行趋势视图"
-        className="mb-3 max-w-full flex-wrap"
+        className="mb-3 min-w-0 max-w-full flex-nowrap overflow-x-auto"
         onKeyDown={handleTabKeyDown}
       >
         <SegmentedControlItem
@@ -811,10 +811,10 @@ export function TaskWorkloadTrend({
           aria-selected={view === "runs"}
           aria-controls="task-workload-runs-panel"
           tabIndex={view === "runs" ? 0 : -1}
-          className="max-w-full px-2"
+          className="shrink-0 whitespace-nowrap px-2"
           onClick={() => setView("runs")}
         >
-          最近 100 次运行
+          次数
         </SegmentedControlItem>
         {isRetention ? (
           <SegmentedControlItem
@@ -828,10 +828,10 @@ export function TaskWorkloadTrend({
             aria-selected={view === "retention"}
             aria-controls="task-workload-retention-panel"
             tabIndex={view === "retention" ? 0 : -1}
-            className="max-w-full px-2"
+            className="shrink-0 whitespace-nowrap px-2"
             onClick={() => setView("retention")}
           >
-            最近 7 天归档积压
+            时间
           </SegmentedControlItem>
         ) : null}
       </SegmentedControl>

@@ -10,6 +10,11 @@ const BACKLOG_HOURS = 7 * 24;
 const WORK_SCOPE = "expired_invocations:retention_policy:7days";
 const WORK_RANGE = "expired_at < observed_at - retention 7 days";
 
+function stableVariation(index: number, salt: number): number {
+  const value = Math.sin(index * 12.9898 + salt * 78.233) * 43_758.5453;
+  return (value - Math.floor(value)) * 2 - 1;
+}
+
 export interface RetentionWorkloadFixture {
   samples: TaskWorkloadSample[];
   backlog: RetentionBacklogTrendPoint[];
@@ -47,12 +52,17 @@ function processingForRun(index: number, intervalMs: number): number {
     1_850 +
     330 * Math.sin(index * 0.43) +
     210 * Math.sin(index * 0.17 + 1.2) +
+    460 * stableVariation(index, 1) +
     (index % 9 === 0 ? -260 : 0);
   return Math.max(0, Math.round((hourlyCapacity * intervalMs) / HOUR_MS));
 }
 
 function arrivalsForRun(index: number, intervalMs: number): number {
-  const hourlyArrivals = 520 + 170 * Math.sin(index * 0.29 + 0.8) + 110 * Math.sin(index * 0.71);
+  const hourlyArrivals =
+    520 +
+    170 * Math.sin(index * 0.29 + 0.8) +
+    110 * Math.sin(index * 0.71) +
+    220 * stableVariation(index, 2);
   return Math.max(0, Math.round((hourlyArrivals * intervalMs) / HOUR_MS));
 }
 
@@ -152,7 +162,10 @@ export function buildRetentionWorkloadFixture({
     const processed = Math.min(processedCounts[index], pendingPopulation);
     const discovered = Math.min(
       pendingPopulation,
-      Math.max(processed, Math.round(processingForRun(index, intervalMs) * 1.14)),
+      Math.max(
+        processed,
+        Math.round(processingForRun(index, intervalMs) * (1.08 + stableVariation(index, 3) * 0.24)),
+      ),
     );
     const sample: TaskWorkloadSample = {
       sampleId: `fixture:${taskKey}:${attemptedAtMs}`,

@@ -15,8 +15,8 @@ const fixture = buildRetentionWorkloadFixture({
   sampleCount: 100,
   intervalMs: 60 * 60_000,
   finalPending: 32_000,
-  skippedIndices: [10, 22],
-  zeroCommitFailureIndices: [9, 21],
+  skippedIndices: [10, 22, 83, 90],
+  zeroCommitFailureIndices: [9, 21, 82, 95],
 });
 const samples = fixture.samples;
 const backlog = fixture.backlog;
@@ -125,7 +125,8 @@ const meta = {
   title: "System/TaskWorkloadTrend",
   component: TaskWorkloadTrend,
   tags: ["autodocs"],
-  parameters: { layout: "padded", viewport: { defaultViewport: "desktop1440" } },
+  parameters: { layout: "padded" },
+  globals: { viewport: { value: "desktop1440", isRotated: false } },
   decorators: [
     (Story: () => ReactNode) => (
       <div data-visual-evidence-surface className="bg-base-100 p-4 md:p-8 text-base-content">
@@ -175,7 +176,7 @@ export const Overview: Story = {
     await expect(
       canvas.queryByText(/满足包含关系|范围变化和缺测|不作累加|按原始值重叠于零基线/),
     ).toBeNull();
-    await expect(canvas.getByRole("tab", { name: "最近 100 次运行" })).toHaveAttribute(
+    await expect(canvas.getByRole("tab", { name: "次数" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
@@ -194,14 +195,14 @@ export const Overview: Story = {
       "aria-pressed",
       "false",
     );
-    const backlogTab = canvas.getByRole("tab", { name: "最近 7 天归档积压" });
+    const backlogTab = canvas.getByRole("tab", { name: "时间" });
     await userEvent.click(backlogTab);
     await userEvent.keyboard("{ArrowLeft}");
-    await expect(canvas.getByRole("tab", { name: "最近 100 次运行" })).toHaveAttribute(
+    await expect(canvas.getByRole("tab", { name: "次数" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("待归档数量")).toBeVisible();
     await expect(Math.round(panelArea.getBoundingClientRect().height)).toBe(initialPanelHeight);
   },
@@ -287,7 +288,7 @@ export const AccessiblePointInspection: Story = {
 
 export const SkippedRunInspection: Story = {
   args: { taskKey: "retention_archive", trend: skippedRunTrend, state: "ready" },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -319,13 +320,13 @@ export const SkippedRunInspection: Story = {
 };
 
 export const FailedMeasuredRunInspection: Story = {
-  args: { taskKey: "retention_archive", trend, state: "ready" },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  args: { taskKey: "retention_archive", trend: skippedRunTrend, state: "ready" },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const marker = canvasElement.querySelector<HTMLButtonElement>(
-      "button[data-testid='task-workload-failed-marker']",
+      "button[aria-label='查看失败运行详情：部分归档提交后遇到可恢复错误']",
     );
     if (!marker) throw new Error("Measured failed-run marker is missing");
 
@@ -338,7 +339,7 @@ export const FailedMeasuredRunInspection: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "关闭运行详情" }));
 
     const keyboardMarker = canvasElement.querySelector<HTMLButtonElement>(
-      "button[data-testid='task-workload-failed-marker']",
+      "button[aria-label='查看失败运行详情：部分归档提交后遇到可恢复错误']",
     );
     if (!keyboardMarker) throw new Error("Measured failed-run marker was removed");
     await act(async () => keyboardMarker.focus());
@@ -352,7 +353,7 @@ export const FailedMeasuredRunInspection: Story = {
 
 export const RunningWithCountersInspection: Story = {
   args: { taskKey: "retention_archive", trend: runningWithCountersTrend, state: "ready" },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -469,9 +470,16 @@ export const DarkTheme: Story = {
 
 export const MobileLight: Story = {
   ...Overview,
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const tabs = canvas.getAllByRole("tab");
+    await expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["次数", "时间"]);
+    const tabTops = tabs.map((tab) => Math.round(tab.getBoundingClientRect().top));
+    if (new Set(tabTops).size !== 1) {
+      throw new Error("Task workload tabs wrapped to multiple rows on mobile");
+    }
+    await expect(canvas.queryByRole("button", { name: /最近 \d+ 小时/ })).toBeNull();
     const panelArea = canvasElement.querySelector<HTMLElement>(
       "[data-testid=task-workload-panels]",
     );
@@ -482,7 +490,7 @@ export const MobileLight: Story = {
       "true",
     );
     await expect(canvas.getByRole("figure", { name: "工作量：invocation rows" })).toBeVisible();
-    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("最长逾期")).toBeVisible();
     await expect(Math.round(panelArea.getBoundingClientRect().height)).toBe(initialPanelHeight);
   },
@@ -490,11 +498,11 @@ export const MobileLight: Story = {
 
 export const MobileLightBacklog: Story = {
   args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("tab", { name: "最近 7 天归档积压" }));
+    await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("待归档数量")).toBeVisible();
     await expect(canvas.getByText("最长逾期")).toBeVisible();
   },
@@ -502,12 +510,17 @@ export const MobileLightBacklog: Story = {
 
 export const MobileDark: Story = {
   ...DarkTheme,
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { ...DarkTheme.globals, viewport: { value: "mobile393", isRotated: false } },
+};
+
+export const MobileLightCount: Story = {
+  args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
 };
 
 export const MobileLightCandidates: Story = {
   args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -541,5 +554,5 @@ export const MobileRunningWithoutCounters: Story = {
     trend: runningWithoutCounters,
     state: "ready",
   },
-  parameters: { viewport: { defaultViewport: "mobile393" } },
+  globals: { viewport: { value: "mobile393", isRotated: false } },
 };
