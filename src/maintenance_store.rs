@@ -3557,7 +3557,9 @@ impl MaintenanceStore {
     async fn workload_trend(&self, task: &ManagedTask) -> Result<TaskWorkloadTrend> {
         let task_key = &task.task_key;
         let stored = sqlx::query_scalar::<_, String>(
-            "SELECT sample_json FROM managed_task_work_runs WHERE task_key=? ORDER BY attempted_at DESC,execution_uid DESC LIMIT 100",
+            "SELECT sample_json FROM managed_task_work_runs WHERE task_key=?
+             ORDER BY CASE WHEN status='running' THEN 0 ELSE 1 END,
+                      attempted_at DESC,execution_uid DESC LIMIT 100",
         )
         .bind(task_key)
         .fetch_all(&self.pool)
@@ -3610,13 +3612,17 @@ impl MaintenanceStore {
             }
         }
         samples.sort_by(|left, right| {
+            (right.status == "running")
+                .cmp(&(left.status == "running"))
+                .then_with(|| right.attempted_at.cmp(&left.attempted_at))
+                .then_with(|| right.sample_id.cmp(&left.sample_id))
+        });
+        samples.truncate(100);
+        samples.sort_by(|left, right| {
             left.attempted_at
                 .cmp(&right.attempted_at)
                 .then_with(|| left.sample_id.cmp(&right.sample_id))
         });
-        if samples.len() > 100 {
-            samples.drain(..samples.len() - 100);
-        }
         let coverage_floor = samples
             .first()
             .map(|sample| sample.attempted_at.clone())
@@ -4884,6 +4890,27 @@ mod tests {
         assert_eq!(counts, (100, 1));
 
         let store = MaintenanceStore::from_pool(pool);
+        let detail = store
+            .detail("retention_archive")
+            .await
+            .expect("read managed task detail")
+            .expect("retention task exists");
+        let trend = detail.workload_trend;
+        assert_eq!(trend.samples.len(), 100);
+        assert!(trend.samples.iter().any(|sample| {
+            sample.sample_id == "active-execution:retention_archive" && sample.status == "running"
+        }));
+        assert!(
+            !trend
+                .samples
+                .iter()
+                .any(|sample| sample.sample_id == "workload-5")
+        );
+        assert_eq!(
+            trend.samples.last().map(|sample| sample.sample_id.as_str()),
+            Some("workload-104")
+        );
+
         store
             .start_timeline_session("workload-restart", "2026-10-03T00:00:00.000Z")
             .await
