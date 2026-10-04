@@ -76,6 +76,6 @@
       "Verified earlier-state reading and new reservation writer authority: Minor.",
       "Release-unit maximum: Minor. Full resource-profile, service and delivery gates remain separate obligations."
     ],
-    "validation_status": "compatibility-passed; final-candidate-acceptance-pending"
+    "validation_status": "compatibility-passed; full-candidate-verification-is-a-separate-delivery-gate"
   }
 }

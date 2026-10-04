@@ -67,7 +67,7 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "focused-regressions-passed; final-candidate-acceptance-pending",
+    "status": "focused-regressions-passed; full-candidate-verification-is-a-delivery-gate",
     "executed_test_evidence": [
       "src/tests/stateful_sqlite/invocation_ranges.rs: atomic marker/DDL rollback and reentry, legacy live-floor preservation, committed-range restart, allocator-exclusive ceiling and pending namespace recovery.",
       "src/tests/archive_file_io/prompt_cache_control_file_lock.rs: real SQLite worker drain after timed-out return, followed by safe replacement generation.",

@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: Materialization, long-wait isolation, and allocation-range correction implemented; final candidate validation in progress
+- Implementation: Materialization, long-wait isolation, and allocation-range correction implemented
 - Lifecycle: active
 - Catalog note: Durable backend identity, allocation, persistence, and retention contract.
 
@@ -73,7 +73,7 @@
 - Existing invocation IDs remain readable as historical rows; only new proxy capture and WebSocket IDs use the compact contract.
 - PR2 public response fields and frontend consumers are intentionally deferred.
 
-## Remaining Gaps
+## Delivery and Rollout Gates
 
 - `REQ-PII-008`, `REQ-PII-009`, and `REQ-PII-010` require final candidate regression and service evidence. Focused stateful SQLite and file-lock regressions cover memory-only issuance with the pool closed and write admission held, mixed-owner thresholds, commit failure, restart skipping, bounded activity and seed merge, covering-index selection, conditional/busy tail return, protected-slot saturation, legacy/pending recovery floors, namespace release, hourly rollover, late guard callbacks, and cancellation. These package checks do not replace final candidate validation.
 - The extended Linux harness installs ceiling-update observation triggers only in isolated acceptance databases. A controlled 73-call probe prepares two conversations and one hourly owner, then verifies six ceiling updates and a shared three-owner refill. Long-wait replay additionally kills the service after recording committed ceilings and requires restart to preserve prefixes and issue above those ceilings. Checkpoint older-reader smoke snapshots durable ownership and requires it to remain unchanged. The scenario digest includes `scripts/invocation-range-acceptance.py`; these fixtures add no production allocation files.
@@ -100,12 +100,12 @@ the owner fence until cancellation/rollback or the committed outcome is known. A
 not race that operation; it follows bounded admission rather than extending an old SQL operation
 into an unlimited request wait. No global cache lock spans a database wait.
 
-Migration and release-impact planning records are
+Migration and release-impact records are
 `assets/allocation-range-migration-record.json` and
-`assets/allocation-range-version-impact-record.json`. They describe intended validation, not
-completed execution. The planned impact is Minor because durable ownership changes the supported
-writer contract; public response fields remain compatible. Actual release classification requires
-candidate compatibility evidence.
+`assets/allocation-range-version-impact-record.json`. They distinguish focused compatibility
+verification from full candidate service and delivery gates. The verified compatibility impact is
+Minor because durable ownership changes the supported writer contract; public response fields
+remain compatible. Final release identity follows live repository policy and candidate evidence.
 
 Place focused regressions in the matching backend resource bucket. Run named regressions and
 formatting checks appropriate to each package; use the documented resource-profile runner and
@@ -118,7 +118,7 @@ PR2 may begin only after the deployed backend candidate is confirmed to allocate
 without sequence database operations, recover without ID reuse, keep cache/cleanup behavior within
 the locked bounds, and converge to complete conversation statistics with an empty refresh queue.
 PR2 then updates public API and frontend consumers to use persisted conversation identity and
-delayed aggregate statistics. This work order does not report either implementation as completed.
+delayed aggregate statistics. PR2 and production acceptance remain outside this backend delivery.
 
 ## Related Changes
 
