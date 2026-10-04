@@ -1994,23 +1994,25 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     // Keep databases written by the old dual-field form deterministic: an explicit cron wins.
     // Recompute the persisted trigger at the same time; an interval-derived timestamp is not
     // valid once the cron field becomes authoritative.
+    let mut schedule_repair = pool.begin().await?;
     let legacy_dual_schedule_rows = sqlx::query_as::<_, (String, Option<String>)>(
         "SELECT task_key,cron_expr FROM managed_tasks WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
-    .fetch_all(pool)
+    .fetch_all(&mut *schedule_repair)
     .await?;
     sqlx::query(
         "UPDATE managed_tasks SET interval_secs=NULL WHERE cron_expr IS NOT NULL AND trim(cron_expr) <> '' AND interval_secs IS NOT NULL",
     )
-    .execute(pool)
+    .execute(&mut *schedule_repair)
     .await?;
     for (task_key, cron_expr) in legacy_dual_schedule_rows {
         sqlx::query("UPDATE managed_tasks SET next_trigger_at=? WHERE task_key=?")
             .bind(next_trigger_at(None, cron_expr.as_deref()))
             .bind(task_key)
-            .execute(pool)
+            .execute(&mut *schedule_repair)
             .await?;
     }
+    schedule_repair.commit().await?;
     sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_managed_task_runs_legacy_id ON managed_task_runs(legacy_id) WHERE legacy_id IS NOT NULL")
         .execute(pool)
         .await?;
@@ -3643,12 +3645,31 @@ impl MaintenanceStore {
                     .and_then(crate::stats::parse_to_utc_datetime)
             })
             .max();
+        let capabilities = task
+            .measurement_capabilities
+            .clone()
+            .unwrap_or_else(|| task_measurement_capabilities(task_key));
+        let supported_metrics = [
+            capabilities.pending.supported,
+            capabilities.discovered.supported,
+            capabilities.processed.supported,
+        ];
         let coverage = if samples.is_empty() {
             "no recorded attempts"
         } else if !coverage_gaps.is_empty() {
             "incomplete: recorder coverage gap"
+        } else if !supported_metrics.iter().any(|supported| *supported) {
+            "not applicable"
         } else if samples.iter().any(|sample| {
-            sample.pending.is_none() && sample.discovered.is_none() && sample.processed.is_none()
+            [&sample.pending, &sample.discovered, &sample.processed]
+                .into_iter()
+                .zip(supported_metrics)
+                .any(|(metric, supported)| {
+                    supported
+                        && metric.as_ref().is_none_or(|metric| {
+                            metric.value.is_none() || metric.coverage == "unknown"
+                        })
+                })
         }) {
             "some metrics unknown"
         } else {
@@ -5009,6 +5030,16 @@ mod tests {
             Some(format_utc_iso_millis(now + ChronoDuration::seconds(1))),
             "run window",
         );
+        let unknown_metric = TaskWorkloadMetric {
+            value: None,
+            unit: "invocation rows".to_string(),
+            scope: "expired_invocations:retention_policy:7days".to_string(),
+            range: "run window".to_string(),
+            observed_at: None,
+            coverage: "unknown".to_string(),
+        };
+        sample.pending = Some(unknown_metric.clone());
+        sample.discovered = Some(unknown_metric);
         sample.execution_uid = "legacy-execution".to_string();
         sample.sample_id = "legacy-execution:retention_archive".to_string();
         sample.managed_run_id = Some(run_id);
@@ -5030,6 +5061,7 @@ mod tests {
         .expect("associate sample with legacy managed run");
         let detail = store.detail("retention_archive").await.unwrap().unwrap();
         assert_eq!(detail.workload_trend.samples.len(), 1);
+        assert_eq!(detail.workload_trend.coverage, "some metrics unknown");
         assert_eq!(
             detail.workload_trend.samples[0]
                 .processed
@@ -5164,7 +5196,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repairs_legacy_dual_schedule_trigger_on_schema_open() {
+    async fn repairs_legacy_dual_schedule_trigger_atomically_after_transient_failure() {
         let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
             .await
             .expect("connect maintenance migration test pool");
@@ -5178,6 +5210,38 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed legacy dual schedule");
+
+        sqlx::query(
+            "CREATE TRIGGER fail_legacy_schedule_trigger_repair
+             BEFORE UPDATE OF next_trigger_at ON managed_tasks
+             WHEN OLD.task_key='dashboard_runtime_projection_reconcile'
+             BEGIN SELECT RAISE(ABORT, 'injected schedule repair failure'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("inject schedule repair failure");
+
+        let error = ensure_schema(&pool)
+            .await
+            .expect_err("injected trigger update must abort schedule repair");
+        assert!(
+            error
+                .to_string()
+                .contains("injected schedule repair failure")
+        );
+        let unchanged = sqlx::query_as::<_, (Option<i64>, Option<String>)>(
+            "SELECT interval_secs,next_trigger_at FROM managed_tasks WHERE task_key='dashboard_runtime_projection_reconcile'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load schedule after failed migration");
+        assert_eq!(unchanged.0, Some(120));
+        assert_eq!(unchanged.1.as_deref(), Some("2000-01-01T00:02:00.000Z"));
+
+        sqlx::query("DROP TRIGGER fail_legacy_schedule_trigger_repair")
+            .execute(&pool)
+            .await
+            .expect("remove injected schedule repair failure");
 
         ensure_schema(&pool).await.expect("repair legacy schedule");
         let row = sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>)>(

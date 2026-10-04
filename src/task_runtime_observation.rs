@@ -115,6 +115,9 @@ fn update_workload_sample(
     };
     let notification_key = format!("{execution_uid}:{task_key}");
     let should_notify = if force_notify {
+        if let Ok(mut notifications) = last_workload_notifications().lock() {
+            notifications.remove(&notification_key);
+        }
         true
     } else if let Ok(mut notifications) = last_workload_notifications().lock() {
         let now = Instant::now();
@@ -818,6 +821,49 @@ mod tests {
                 .expect("read finished runtime observation")
                 .active_runs
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn terminal_workload_samples_release_notification_throttle_entries() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let parent = TaskExecutionObservation::begin(
+            "startup_backfill",
+            "启动回填",
+            "manual",
+            Some("p2_derived"),
+            "processing",
+        );
+        let parent_key = format!("{}:startup_backfill", parent.inner.execution_uid);
+        let child_key = format!(
+            "{}:startup_backfill.proxy_usage",
+            parent.inner.execution_uid
+        );
+        let mut child = parent.begin_subtask_workload("startup_backfill.proxy_usage");
+
+        {
+            let notifications = super::last_workload_notifications()
+                .lock()
+                .expect("read workload notification throttles");
+            assert!(notifications.contains_key(&parent_key));
+            assert!(notifications.contains_key(&child_key));
+        }
+
+        child.finish_with_status("success");
+        assert!(
+            !super::last_workload_notifications()
+                .lock()
+                .expect("read workload notification throttles")
+                .contains_key(&child_key)
+        );
+
+        parent.finish_with_status("success");
+        assert!(
+            !super::last_workload_notifications()
+                .lock()
+                .expect("read workload notification throttles")
+                .contains_key(&parent_key)
         );
     }
 
