@@ -252,3 +252,166 @@ async fn invocation_ranges_failed_commit_cannot_publish() {
     );
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='failed-refill'").fetch_one(&pool).await.unwrap(), 63);
 }
+
+#[tokio::test]
+async fn invocation_ranges_activity_is_bounded_independent_and_memory_only() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    assert_eq!(manager.test_resize(0), (128, 0, 0));
+    pool.close().await;
+    for number in 0..4200 {
+        let prefix = format!(
+            "AA{}",
+            encode_prompt_cache_conversation_sequence(number).unwrap()
+        );
+        manager.test_observe_activity(&prefix, i64::from(number));
+    }
+    assert_eq!(manager.test_resize(4200), (4096, 0, 4096));
+    manager.test_observe_activity("ZZZZZZ", 48 * 3600 * 1000 + 4200);
+    manager.test_observe_activity("ZZZZZZ", 1); // A delayed seed cannot overwrite live activity.
+    assert_eq!(manager.test_resize(48 * 3600 * 1000 + 4201), (128, 0, 1));
+    assert_eq!(manager.test_resize(96 * 3600 * 1000 + 4201), (128, 0, 0));
+}
+
+#[tokio::test]
+async fn invocation_ranges_retirement_returns_only_unissued_tail() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let first = manager.allocate(&pool, Some("return-tail")).await.unwrap();
+    manager.test_retire(&pool, "return-tail");
+    let next = manager.allocate(&pool, Some("return-tail")).await.unwrap();
+    assert_eq!(next, format!("{}AAAB", &first[..6]));
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='return-tail'").fetch_one(&pool).await.unwrap(), 64);
+    assert_eq!(manager.test_resize(Utc::now().timestamp_millis()).2, 1);
+}
+
+#[tokio::test]
+async fn invocation_ranges_seed_uses_bounded_covering_index() {
+    let pool = ranges_fixture().await;
+    let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT conversation_id,last_invocation_at FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 4096")
+        .bind("2026-10-01 00:00:00").fetch_all(&pool).await.unwrap();
+    let details = rows
+        .iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>();
+    assert!(
+        details.iter().any(|detail| detail
+            .contains("COVERING INDEX idx_prompt_cache_conversations_last_invocation")),
+        "{details:?}"
+    );
+    assert!(
+        details.iter().all(|detail| !detail.contains("TEMP B-TREE")
+            && !detail.contains("SCAN prompt_cache_conversations")),
+        "{details:?}"
+    );
+}
+
+#[tokio::test]
+async fn invocation_ranges_protected_cache_saturation_has_bounded_admission() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    for number in 0..4096 {
+        let key = format!("protected-{number}");
+        manager.retain_key(&key);
+        manager.allocate(&pool, Some(&key)).await.unwrap();
+    }
+    assert_eq!(manager.test_resize(0).1, 4096);
+    pool.close().await;
+    let started = Instant::now();
+    assert!(
+        manager
+            .allocate(&pool, Some("overflow-owner"))
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("admission timed out")
+    );
+    assert!(started.elapsed() < Duration::from_millis(200));
+    assert!(manager.allocate(&pool, Some("protected-0")).await.is_ok());
+}
+
+#[tokio::test]
+async fn invocation_ranges_busy_return_discards_tail_without_blocking_hot_owner() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let first = manager.allocate(&pool, Some("busy-return")).await.unwrap();
+    manager
+        .allocate(&pool, Some("unrelated-hot"))
+        .await
+        .unwrap();
+    let blocker = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    manager.test_retire(&pool, "busy-return");
+    let started = Instant::now();
+    manager
+        .allocate(&pool, Some("unrelated-hot"))
+        .await
+        .unwrap();
+    assert!(started.elapsed() < Duration::from_millis(100));
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='busy-return'").fetch_one(&pool).await.unwrap(), 63);
+    drop(blocker);
+    let next = manager.allocate(&pool, Some("busy-return")).await.unwrap();
+    assert_eq!(
+        next,
+        format!(
+            "{}{}",
+            &first[..6],
+            encode_prompt_cache_conversation_sequence(64).unwrap()
+        )
+    );
+}
+
+#[tokio::test]
+async fn invocation_ranges_async_seed_merges_live_activity_without_preallocation() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let now = Utc::now();
+    let old_time = format_naive(
+        (now - chrono::Duration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    for number in 0..200 {
+        let prefix = format!(
+            "AA{}",
+            encode_prompt_cache_conversation_sequence(number).unwrap()
+        );
+        sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invocation_at) VALUES (?1,?2,?3)")
+            .bind(&prefix).bind(format!("seed-{number}")).bind(&old_time).execute(&pool).await.unwrap();
+    }
+    manager.test_observe_activity("AAAAAA", now.timestamp_millis());
+    assert_eq!(manager.test_resize(now.timestamp_millis()), (128, 0, 1));
+    let shutdown = CancellationToken::new();
+    manager.start_sizing(&pool, shutdown.clone());
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while manager.test_resize(now.timestamp_millis()).2 != 200 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        manager.test_activity_time("AAAAAA"),
+        Some(now.timestamp_millis())
+    );
+    assert_eq!(manager.test_resize(now.timestamp_millis()), (200, 0, 200));
+    let ceilings: Vec<i64> =
+        sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert!(ceilings.iter().all(|ceiling| *ceiling == -1));
+    shutdown.cancel();
+    pool.close().await;
+    assert_eq!(
+        manager.test_resize(now.timestamp_millis() + 47 * 3600 * 1000),
+        (128, 0, 1)
+    );
+}

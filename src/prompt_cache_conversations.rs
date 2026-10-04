@@ -2810,6 +2810,10 @@ pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
         let allocation_lock =
             allocation_lock_for_cache(&mut cache.identity_cache, prompt_cache_key.as_deref());
         if let Some(prompt_cache_key) = prompt_cache_key.as_deref() {
+            cache
+                .identity_cache
+                .range_manager
+                .retain_key(prompt_cache_key);
             let leases = cache
                 .identity_cache
                 .active_prompt_cache_keys
@@ -4043,6 +4047,10 @@ pub(crate) async fn retain_active_prompt_cache_conversation(
     }
     cache_state
         .identity_cache
+        .range_manager
+        .retain_key(prompt_cache_key);
+    cache_state
+        .identity_cache
         .active_prompt_cache_keys
         .entry(prompt_cache_key.to_string())
         .and_modify(|count| *count = count.saturating_add(1))
@@ -4089,6 +4097,7 @@ pub(crate) async fn release_active_prompt_cache_conversation(
 ) {
     let mut cache_state = cache.lock().await;
     let prompt_cache_key = prompt_cache_key.trim();
+    let manager = cache_state.identity_cache.range_manager.clone();
     let Some(count) = cache_state
         .identity_cache
         .active_prompt_cache_keys
@@ -4096,6 +4105,7 @@ pub(crate) async fn release_active_prompt_cache_conversation(
     else {
         return;
     };
+    manager.release_key(prompt_cache_key);
     if *count <= 1 {
         cache_state
             .identity_cache
@@ -4114,6 +4124,7 @@ pub(crate) async fn release_active_prompt_cache_conversations(
         return;
     }
     let mut cache_state = cache.lock().await;
+    let manager = cache_state.identity_cache.range_manager.clone();
     let mut released = 0_usize;
     for prompt_cache_key in prompt_cache_keys {
         let prompt_cache_key = prompt_cache_key.trim();
@@ -4124,6 +4135,7 @@ pub(crate) async fn release_active_prompt_cache_conversations(
         else {
             continue;
         };
+        manager.release_key(prompt_cache_key);
         if *count <= 1 {
             cache_state
                 .identity_cache

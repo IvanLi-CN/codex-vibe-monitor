@@ -5,6 +5,9 @@ use tokio::sync::Notify;
 
 const RANGE_SIZE: u32 = 64;
 const WAIT_BUDGET: Duration = Duration::from_millis(100);
+const MIN_CAPACITY: usize = 128;
+const MAX_CAPACITY: usize = 4096;
+const ACTIVITY_WINDOW_MS: i64 = 48 * 3600 * 1000;
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -89,11 +92,107 @@ impl Entry {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Memory {
     entries: HashMap<Owner, Entry>,
     generation: u64,
     batch_running: bool,
+    target: usize,
+    leases: HashMap<String, usize>,
+    allocations: HashMap<Owner, usize>,
+    activity: HashMap<String, i64>,
+    activity_order: std::collections::BTreeSet<(i64, String)>,
+}
+
+impl Default for Memory {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            generation: 0,
+            batch_running: false,
+            target: MIN_CAPACITY,
+            leases: HashMap::new(),
+            allocations: HashMap::new(),
+            activity: HashMap::new(),
+            activity_order: std::collections::BTreeSet::new(),
+        }
+    }
+}
+
+impl Memory {
+    fn occupancy(&self) -> usize {
+        self.entries
+            .keys()
+            .filter(|owner| matches!(owner, Owner::Conversation(_)))
+            .count()
+    }
+
+    fn observe(&mut self, prefix: String, timestamp: i64) {
+        if let Some(previous) = self.activity.get(&prefix).copied() {
+            if previous >= timestamp {
+                return;
+            }
+            self.activity_order.remove(&(previous, prefix.clone()));
+        }
+        self.activity.insert(prefix.clone(), timestamp);
+        self.activity_order.insert((timestamp, prefix));
+        while self.activity.len() > MAX_CAPACITY {
+            let (_, oldest) = self
+                .activity_order
+                .pop_first()
+                .expect("bounded activity order");
+            self.activity.remove(&oldest);
+        }
+    }
+
+    fn resize(&mut self, now_ms: i64, source: &'static str) {
+        while self
+            .activity_order
+            .first()
+            .is_some_and(|(time, _)| *time < now_ms - ACTIVITY_WINDOW_MS)
+        {
+            let (_, prefix) = self.activity_order.pop_first().unwrap();
+            self.activity.remove(&prefix);
+        }
+        let previous = self.target;
+        self.target = self.activity.len().clamp(MIN_CAPACITY, MAX_CAPACITY);
+        info!(
+            source,
+            cutoff_ms = now_ms - ACTIVITY_WINDOW_MS,
+            capped = self.activity.len() == MAX_CAPACITY,
+            activity_count_lower_bound = self.activity.len(),
+            old_target = previous,
+            new_target = self.target,
+            occupancy = self.occupancy(),
+            deferred_shrink = self.occupancy().saturating_sub(self.target),
+            "invocation cache capacity estimated from memory activity"
+        );
+    }
+
+    fn retire_candidate(&mut self) -> Option<(Reservation, i64)> {
+        let owner = self
+            .entries
+            .iter()
+            .filter(|(owner, entry)| {
+                matches!(owner, Owner::Conversation(key) if !self.leases.contains_key(key))
+                    && !self.allocations.contains_key(*owner)
+                    && !entry.operation
+                    && !entry.retiring
+            })
+            .min_by_key(|(_, entry)| entry.last_used)
+            .map(|(owner, _)| owner.clone())?;
+        let entry = self.entries.get_mut(&owner).unwrap();
+        entry.retiring = true;
+        Some((
+            Reservation {
+                owner,
+                prefix: entry.prefix.clone().unwrap_or_default(),
+                generation: entry.generation,
+                floor: entry.issued_floor,
+            },
+            entry.ceiling,
+        ))
+    }
 }
 
 /// Memory is the issuance authority; only committed SQLite ranges may enter it.
@@ -101,6 +200,9 @@ struct Memory {
 #[derive(Debug, Default)]
 pub(crate) struct InvocationRangeManager {
     memory: std::sync::Mutex<Memory>,
+    admission: Notify,
+    pool: std::sync::OnceLock<Pool<Sqlite>>,
+    sizing_started: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Clone)]
@@ -111,35 +213,311 @@ struct Reservation {
     floor: i64,
 }
 
+struct AllocationGuard {
+    manager: Arc<InvocationRangeManager>,
+    owner: Owner,
+}
+
+impl Drop for AllocationGuard {
+    fn drop(&mut self) {
+        {
+            let mut memory = self.manager.memory.lock().expect("invocation range memory");
+            if let Some(count) = memory.allocations.get_mut(&self.owner) {
+                *count -= 1;
+                if *count == 0 {
+                    memory.allocations.remove(&self.owner);
+                }
+            }
+        }
+        self.manager.admission.notify_waiters();
+        self.manager.shrink();
+    }
+}
+
 impl InvocationRangeManager {
+    #[cfg(test)]
+    pub(crate) fn test_observe_activity(&self, prefix: &str, timestamp: i64) {
+        self.memory
+            .lock()
+            .unwrap()
+            .observe(prefix.to_owned(), timestamp);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_activity_time(&self, prefix: &str) -> Option<i64> {
+        self.memory.lock().unwrap().activity.get(prefix).copied()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_resize(&self, timestamp: i64) -> (usize, usize, usize) {
+        let mut memory = self.memory.lock().unwrap();
+        memory.resize(timestamp, "controlled_clock");
+        (memory.target, memory.occupancy(), memory.activity.len())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_retire(self: &Arc<Self>, pool: &Pool<Sqlite>, key: &str) {
+        let (reservation, ceiling) = {
+            let mut memory = self.memory.lock().unwrap();
+            assert!(!memory.leases.contains_key(key));
+            let owner = Owner::Conversation(key.to_owned());
+            let entry = memory.entries.get_mut(&owner).unwrap();
+            assert!(!entry.operation && !entry.retiring);
+            entry.retiring = true;
+            (
+                Reservation {
+                    owner,
+                    prefix: entry.prefix.clone().unwrap(),
+                    generation: entry.generation,
+                    floor: entry.issued_floor,
+                },
+                entry.ceiling,
+            )
+        };
+        self.spawn_return(pool, reservation, ceiling);
+    }
+
+    pub(crate) fn retain_key(&self, key: &str) {
+        *self
+            .memory
+            .lock()
+            .expect("invocation range memory")
+            .leases
+            .entry(key.to_owned())
+            .or_default() += 1;
+    }
+
+    pub(crate) fn release_key(self: &Arc<Self>, key: &str) {
+        {
+            let mut memory = self.memory.lock().expect("invocation range memory");
+            if let Some(count) = memory.leases.get_mut(key) {
+                *count -= 1;
+                if *count == 0 {
+                    memory.leases.remove(key);
+                }
+            }
+        }
+        self.admission.notify_waiters();
+        self.shrink();
+    }
+
+    pub(crate) fn start_sizing(self: &Arc<Self>, pool: &Pool<Sqlite>, shutdown: CancellationToken) {
+        if self.sizing_started.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        self.pool.get_or_init(|| pool.clone());
+        let manager = self.clone();
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let now = Utc::now();
+            let cutoff = now - chrono::Duration::hours(48);
+            // The master preserves the existing Shanghai-local invocation timestamp
+            // representation. Convert the captured UTC instant, without SQL functions
+            // on the indexed column, so the bounded covering range scan stays usable.
+            let query_cutoff = format_naive(cutoff.with_timezone(&Shanghai).naive_local());
+            let started = Instant::now();
+            let seed = tokio::time::timeout(Duration::from_secs(2), sqlx::query_as::<_, (String, String)>(
+                "SELECT conversation_id,last_invocation_at FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 4096"
+            ).bind(query_cutoff).fetch_all(&pool)).await;
+            match seed {
+                Ok(Ok(rows)) => {
+                    let mut memory = manager.memory.lock().expect("invocation range memory");
+                    for (prefix, timestamp) in &rows {
+                        if let Some(timestamp) = activity_timestamp_ms(timestamp) {
+                            memory.observe(prefix.clone(), timestamp);
+                        }
+                    }
+                    info!(source = "database_seed", cutoff_utc = %cutoff, row_count = rows.len(), capped = rows.len() == MAX_CAPACITY, elapsed_ms = started.elapsed().as_millis(), "invocation cache activity seed merged");
+                    memory.resize(Utc::now().timestamp_millis(), "database_seed");
+                }
+                result => {
+                    warn!(source = "database_seed", cutoff_utc = %cutoff, elapsed_ms = started.elapsed().as_millis(), error = ?result, "invocation activity seed unavailable; using memory estimate without retry")
+                }
+            }
+            manager.shrink();
+            loop {
+                tokio::select! {
+                    _ = shutdown.cancelled() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(3600)) => {
+                        manager.memory.lock().expect("invocation range memory").resize(Utc::now().timestamp_millis(), "hourly_memory");
+                        manager.shrink();
+                    }
+                }
+            }
+        });
+    }
+
+    async fn admit(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        owner: &Owner,
+        deadline: tokio::time::Instant,
+    ) -> Result<Option<u64>> {
+        loop {
+            let notified = self.admission.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            let retirement = {
+                let mut memory = self.memory.lock().expect("invocation range memory");
+                if let Some(entry) = memory.entries.get(owner) {
+                    if !entry.retiring {
+                        return Ok(None);
+                    }
+                    None
+                } else {
+                    let occupancy = memory.occupancy();
+                    let retirement =
+                        if matches!(owner, Owner::Conversation(_)) && occupancy >= memory.target {
+                            memory.retire_candidate()
+                        } else {
+                            None
+                        };
+                    if retirement.is_none()
+                        && (matches!(owner, Owner::Hour(_)) || occupancy < MAX_CAPACITY)
+                    {
+                        if occupancy >= memory.target && matches!(owner, Owner::Conversation(_)) {
+                            debug!(
+                                target = memory.target,
+                                occupancy,
+                                maximum = MAX_CAPACITY,
+                                "invocation cache temporarily grows around protected entries"
+                            );
+                        }
+                        memory.generation += 1;
+                        let generation = memory.generation;
+                        memory
+                            .entries
+                            .insert(owner.clone(), Entry::initializing(generation));
+                        return Ok(Some(generation));
+                    }
+                    retirement
+                }
+            };
+            if let Some((reservation, ceiling)) = retirement {
+                self.spawn_return(pool, reservation, ceiling);
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                let memory = self.memory.lock().expect("invocation range memory");
+                warn!(
+                    owner_type = owner.kind(),
+                    target = memory.target,
+                    occupancy = memory.occupancy(),
+                    maximum = MAX_CAPACITY,
+                    budget_ms = 100,
+                    "invocation cache admission timed out"
+                );
+                bail!("invocation cache admission timed out after 100ms");
+            }
+        }
+    }
+
+    fn shrink(self: &Arc<Self>) {
+        let Some(pool) = self.pool.get() else {
+            return;
+        };
+        let retirements = {
+            let mut memory = self.memory.lock().expect("invocation range memory");
+            let mut retirements = Vec::new();
+            while memory
+                .entries
+                .iter()
+                .filter(|(owner, entry)| matches!(owner, Owner::Conversation(_)) && !entry.retiring)
+                .count()
+                > memory.target
+            {
+                let Some(retirement) = memory.retire_candidate() else {
+                    break;
+                };
+                retirements.push(retirement);
+            }
+            retirements
+        };
+        for (reservation, ceiling) in retirements {
+            self.spawn_return(pool, reservation, ceiling);
+        }
+    }
+
+    fn spawn_return(self: &Arc<Self>, pool: &Pool<Sqlite>, reservation: Reservation, ceiling: i64) {
+        let manager = self.clone();
+        let pool = pool.clone();
+        // The clock includes queueing the worker, admission and connection acquisition.
+        let started = Instant::now();
+        let deadline = tokio::time::Instant::now() + WAIT_BUDGET;
+        tokio::spawn(async move {
+            let mut connection = None;
+            let mut permit = None;
+            let result = tokio::time::timeout_at(deadline, async {
+                if reservation.prefix.is_empty() { return Ok(()); }
+                permit = Some(crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                    .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy).await);
+                connection = Some(pool.acquire().await?);
+                let connection = connection.as_mut().unwrap();
+                return_tail(connection, &reservation, ceiling).await
+            }).await;
+            let confirmed = matches!(&result, Ok(Ok(())));
+            if confirmed {
+                info!(owner_type = reservation.owner.kind(), prefix = %reservation.prefix, generation = reservation.generation, expected_ceiling = ceiling, return_floor = reservation.floor, attempted_return_count = ceiling - reservation.floor, elapsed_ms = started.elapsed().as_millis(), "unused invocation reservation tail returned");
+            } else {
+                warn!(owner_type = reservation.owner.kind(), prefix = %reservation.prefix, generation = reservation.generation, expected_ceiling = ceiling, return_floor = reservation.floor, attempted_return_count = ceiling - reservation.floor, elapsed_ms = started.elapsed().as_millis(), error = ?result, "invocation tail return unconfirmed; discarding issuance rights and retaining fence until connection closes");
+            }
+            // A timed-out SQLite future may still be executing in its worker. Closing
+            // this owned connection drains that worker before replacement is admitted.
+            if let Some(connection) = connection {
+                if confirmed {
+                    drop(connection);
+                } else if let Err(error) = connection.close().await {
+                    warn!(prefix = %reservation.prefix, generation = reservation.generation, error = %error, "retired invocation connection close failed");
+                }
+            }
+            drop(permit);
+            let mut memory = manager.memory.lock().expect("invocation range memory");
+            if memory
+                .entries
+                .get(&reservation.owner)
+                .is_some_and(|entry| entry.generation == reservation.generation && entry.retiring)
+            {
+                if let Some(entry) = memory.entries.remove(&reservation.owner) {
+                    entry.notify.notify_waiters();
+                }
+            }
+            manager.admission.notify_waiters();
+        });
+    }
+
     pub(crate) async fn allocate(
         self: &Arc<Self>,
         pool: &Pool<Sqlite>,
         key: Option<&str>,
     ) -> Result<String> {
+        self.pool.get_or_init(|| pool.clone());
         self.allocate_owner(pool, Owner::from_key(key)).await
     }
 
     async fn allocate_owner(self: &Arc<Self>, pool: &Pool<Sqlite>, owner: Owner) -> Result<String> {
+        *self
+            .memory
+            .lock()
+            .expect("invocation range memory")
+            .allocations
+            .entry(owner.clone())
+            .or_default() += 1;
+        let _guard = AllocationGuard {
+            manager: self.clone(),
+            owner: owner.clone(),
+        };
         let deadline = tokio::time::Instant::now() + WAIT_BUDGET;
         loop {
+            let initialization = self.admit(pool, &owner, deadline).await?;
             let (notify, initialization, issued, trigger) = {
                 let mut memory = self.memory.lock().expect("invocation range memory");
-                let initialization = if !memory.entries.contains_key(&owner) {
-                    memory.generation += 1;
-                    let generation = memory.generation;
-                    memory
-                        .entries
-                        .insert(owner.clone(), Entry::initializing(generation));
-                    Some(generation)
-                } else {
-                    None
+                let Some(entry) = memory.entries.get_mut(&owner) else {
+                    continue;
                 };
-                let entry = memory
-                    .entries
-                    .get_mut(&owner)
-                    .expect("admitted invocation owner");
-                if let Some(failure) = &entry.failure {
+                if let Some(failure) = entry.failure.clone() {
+                    let notify = entry.notify.clone();
+                    memory.entries.remove(&owner);
+                    notify.notify_waiters();
+                    self.admission.notify_waiters();
                     bail!("invocation range allocation failed: {failure}");
                 }
                 let issued = if !entry.retiring && entry.prefix.is_some() {
@@ -196,6 +574,12 @@ impl InvocationRangeManager {
                 self.start_refill(pool);
             }
             if let Some(invoke_id) = issued {
+                if matches!(owner, Owner::Conversation(_)) {
+                    self.memory
+                        .lock()
+                        .expect("invocation range memory")
+                        .observe(invoke_id[..6].to_owned(), Utc::now().timestamp_millis());
+                }
                 debug!(owner_type = owner.kind(), utc_hour = owner.hour(), invoke_id = %invoke_id, "allocated proxy invoke id from committed memory range");
                 return Ok(invoke_id);
             }
@@ -250,6 +634,8 @@ impl InvocationRangeManager {
             }
         }
         entry.notify.notify_waiters();
+        drop(memory);
+        self.shrink();
     }
 
     async fn initialize_committed(
@@ -358,6 +744,7 @@ impl InvocationRangeManager {
                     entry.notify.notify_waiters();
                 }
             }
+            manager.shrink();
         });
     }
 }
@@ -446,6 +833,48 @@ async fn load_or_create_hour(pool: &Pool<Sqlite>, hour: i64) -> Result<String> {
         return Ok(prefix);
     }
     bail!("failed to allocate hourly invoke prefix after 5 attempts")
+}
+
+fn activity_timestamp_ms(value: &str) -> Option<i64> {
+    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
+        return Some(timestamp.timestamp_millis());
+    }
+    let naive = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S%.f").ok()?;
+    Shanghai
+        .from_local_datetime(&naive)
+        .single()
+        .map(|timestamp| timestamp.timestamp_millis())
+}
+
+async fn return_tail(
+    connection: &mut SqliteConnection,
+    reservation: &Reservation,
+    ceiling: i64,
+) -> Result<()> {
+    let (table, column, identity, prefix_column) = match &reservation.owner {
+        Owner::Conversation(key) => (
+            "prompt_cache_conversations",
+            "prompt_cache_key",
+            key.clone(),
+            "conversation_id",
+        ),
+        Owner::Hour(hour) => (
+            "hourly_invoke_prefixes",
+            "utc_hour",
+            hour.to_string(),
+            "prefix",
+        ),
+    };
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *connection)
+        .await?;
+    let updated = sqlx::query(&format!("UPDATE {table} SET last_invoke_sequence=?1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE {column}=?2 AND {prefix_column}=?3 AND last_invoke_sequence=?4"))
+        .bind(reservation.floor).bind(identity).bind(&reservation.prefix).bind(ceiling).execute(&mut *connection).await?;
+    if updated.rows_affected() != 1 {
+        bail!("invocation tail return condition did not match");
+    }
+    sqlx::query("COMMIT").execute(connection).await?;
+    Ok(())
 }
 
 const MIGRATION: &str = "invocation_range_ownership_v1";
