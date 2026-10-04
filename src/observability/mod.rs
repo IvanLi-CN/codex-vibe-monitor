@@ -24,6 +24,8 @@ pub(crate) use reports::{hotpath_report, observability_capabilities};
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use sampler::record_cpu_sample;
 pub(crate) use sampler::spawn_observability_sampler;
+#[cfg(test)]
+pub(crate) use sampler::{record_file_samples, record_memory_sample};
 
 const METADATA: Metadata<'static> = Metadata::new("cvm", metrics::Level::INFO, None);
 const SHORT_BUCKETS: &[f64] = &[

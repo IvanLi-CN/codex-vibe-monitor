@@ -30,12 +30,7 @@ fn sample_cpu(metrics: &ObservabilityRuntime) {
 #[cfg(target_os = "linux")]
 pub(crate) fn record_cpu_sample(metrics: &ObservabilityRuntime, ticks: Option<(u64, u64, f64)>) {
     let Some((user, system, hz)) = ticks else {
-        metrics.degraded.store(true, Ordering::Relaxed);
-        metrics.counter(
-            "cvm_observability_sampler_errors_total",
-            &[("source", "cpu")],
-            1,
-        );
+        record_sampler_failure(metrics, "cpu");
         return;
     };
     metrics.gauge(
@@ -158,12 +153,63 @@ async fn sample_runtime(state: &AppState) {
 async fn sample_process_health(state: &AppState) {
     let telemetry = &state.observability;
     let snapshot = state.memory_diagnostics.runtime_pressure_snapshot();
-    if snapshot.process.rss_bytes > 0 {
-        telemetry.gauge(
-            "cvm_observability_sampler_last_success_timestamp_seconds",
-            &[("source", "memory")],
-            Utc::now().timestamp() as f64,
-        );
+    record_memory_sample(telemetry, &snapshot, read_process_thread_count());
+    let available_bytes = crate::proxy::filesystem_available_bytes(
+        state
+            .config
+            .database_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    );
+    // In-memory SQLite has no database/WAL files to observe.
+    let (database_size, wal_size) = if state.config.database_path == Path::new(":memory:") {
+        (None, None)
+    } else {
+        let main_wal_path = PathBuf::from(format!("{}-wal", state.config.database_path.display()));
+        (
+            Some(
+                std::fs::metadata(&state.config.database_path)
+                    .map(|metadata| metadata.len())
+                    .map_err(|error| error.kind()),
+            ),
+            Some(
+                std::fs::metadata(main_wal_path)
+                    .map(|metadata| metadata.len())
+                    .map_err(|error| error.kind()),
+            ),
+        )
+    };
+    record_file_samples(telemetry, available_bytes, database_size, wal_size);
+}
+
+fn record_sampler_failure(telemetry: &ObservabilityRuntime, source: &'static str) {
+    telemetry.degraded.store(true, Ordering::Relaxed);
+    telemetry.counter(
+        "cvm_observability_sampler_errors_total",
+        &[("source", source)],
+        1,
+    );
+}
+
+fn record_sampler_success(telemetry: &ObservabilityRuntime, source: &'static str) {
+    telemetry.gauge(
+        "cvm_observability_sampler_last_success_timestamp_seconds",
+        &[("source", source)],
+        Utc::now().timestamp() as f64,
+    );
+}
+
+pub(crate) fn record_memory_sample(
+    telemetry: &ObservabilityRuntime,
+    snapshot: &crate::memory_diagnostics::RuntimeMemoryPressureSnapshot,
+    thread_count: Option<u64>,
+) {
+    use crate::memory_diagnostics::ProcessMemorySampleStatus;
+    let available = snapshot.process_sample_status == ProcessMemorySampleStatus::Available;
+    let failed = snapshot.process_sample_status == ProcessMemorySampleStatus::Failed
+        || (cfg!(target_os = "linux") && thread_count.is_none());
+    if available {
         telemetry.record_gauge(
             "process.rss_bytes",
             "process",
@@ -185,40 +231,51 @@ async fn sample_process_health(state: &AppState) {
         "process",
         snapshot.managed_bytes as f64,
     );
-    if snapshot.process.rss_bytes > 0 {
+    if available {
         telemetry.record_gauge(
             "process.unattributed_anon_bytes",
             "process",
             snapshot.unattributed_anon_bytes as f64,
         );
     }
-    if let Some(thread_count) = read_process_thread_count() {
+    if let Some(thread_count) = thread_count {
         telemetry.record_gauge("process.thread_count", "process", thread_count as f64);
     }
-    if let Some(available_bytes) = crate::proxy::filesystem_available_bytes(
-        state
-            .config
-            .database_path
-            .parent()
-            .unwrap_or_else(|| Path::new(".")),
-    ) {
+    if failed {
+        record_sampler_failure(telemetry, "memory");
+    } else if available {
+        record_sampler_success(telemetry, "memory");
+    }
+}
+
+pub(crate) fn record_file_samples(
+    telemetry: &ObservabilityRuntime,
+    available_bytes: Option<u64>,
+    database_size: Option<Result<u64, std::io::ErrorKind>>,
+    wal_size: Option<Result<u64, std::io::ErrorKind>>,
+) {
+    let mut failed = cfg!(unix) && available_bytes.is_none();
+    let observed = available_bytes.is_some() || database_size.is_some() || wal_size.is_some();
+    if let Some(available_bytes) = available_bytes {
         telemetry.record_gauge("process.disk_free_bytes", "process", available_bytes as f64);
     }
-    if let Ok(metadata) = std::fs::metadata(&state.config.database_path) {
-        telemetry.gauge(
-            "cvm_observability_sampler_last_success_timestamp_seconds",
-            &[("source", "files")],
-            Utc::now().timestamp() as f64,
-        );
-        telemetry.record_gauge("storage.main_db_bytes", "main_db", metadata.len() as f64);
+    match database_size {
+        Some(Ok(bytes)) => telemetry.record_gauge("storage.main_db_bytes", "main_db", bytes as f64),
+        Some(Err(_)) => failed = true,
+        None => {}
     }
-    let main_wal_path = PathBuf::from(format!("{}-wal", state.config.database_path.display()));
-    match std::fs::metadata(main_wal_path) {
-        Ok(metadata) => telemetry.record_gauge("sqlite.wal_bytes", "main", metadata.len() as f64),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    match wal_size {
+        Some(Ok(bytes)) => telemetry.record_gauge("sqlite.wal_bytes", "main", bytes as f64),
+        Some(Err(std::io::ErrorKind::NotFound)) => {
             telemetry.record_gauge("sqlite.wal_bytes", "main", 0.0)
         }
-        Err(_) => {}
+        Some(Err(_)) => failed = true,
+        None => {}
+    }
+    if failed {
+        record_sampler_failure(telemetry, "files");
+    } else if observed {
+        record_sampler_success(telemetry, "files");
     }
 }
 
