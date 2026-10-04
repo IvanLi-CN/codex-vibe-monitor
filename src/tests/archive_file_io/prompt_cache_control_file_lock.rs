@@ -16,6 +16,74 @@ async fn open_file_pool(path: &std::path::Path, busy_timeout: Duration) -> sqlx:
 }
 
 #[tokio::test]
+async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() {
+    use crate::prompt_cache_conversations::invocation_ranges::InvocationRangeManager;
+    use std::sync::Arc;
+
+    let temp_dir = crate::tests::make_temp_test_dir("invocation-range-return-worker-fence");
+    let pool = open_file_pool(&temp_dir.join("business.sqlite"), Duration::from_secs(1)).await;
+    crate::ensure_schema(&pool).await.unwrap();
+    // Warm the pool after additive schema setup, before measuring a deliberate
+    // database lock. Connection setup is not the return operation under test.
+    let mut warm_connections = Vec::new();
+    for _ in 0..4 {
+        warm_connections.push(pool.acquire().await.unwrap());
+    }
+    drop(warm_connections);
+    let manager = Arc::new(InvocationRangeManager::default());
+    let first = manager.allocate(&pool, Some("worker-fence")).await.unwrap();
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+
+    manager.test_retire(&pool, "worker-fence");
+    tokio::time::sleep(Duration::from_millis(140)).await;
+    // The return budget has elapsed, but BEGIN is still executing in SQLite's
+    // worker. Replacement must wait on the generation fence, not recover early.
+    let started = std::time::Instant::now();
+    assert!(manager.allocate(&pool, Some("worker-fence")).await.is_err());
+    assert!(started.elapsed() < Duration::from_millis(250));
+    assert_eq!(
+        manager.test_resize(chrono::Utc::now().timestamp_millis()).1,
+        1
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while manager.test_resize(chrono::Utc::now().timestamp_millis()).1 != 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let replacement = manager.allocate(&pool, Some("worker-fence")).await.unwrap();
+    assert_eq!(&first[..6], &replacement[..6]);
+    assert_eq!(
+        &replacement[6..],
+        crate::encode_prompt_cache_conversation_sequence(64).unwrap()
+    );
+    let next = manager.allocate(&pool, Some("worker-fence")).await.unwrap();
+    assert_eq!(
+        &next[6..],
+        crate::encode_prompt_cache_conversation_sequence(65).unwrap()
+    );
+    let ceiling: i64 = sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='worker-fence'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(
+        ceiling, 127,
+        "old completion cannot mutate the replacement reservation"
+    );
+    pool.close().await;
+    crate::tests::cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn maintenance_file_write_lock_does_not_block_business_database_or_publish_control() {
     let temp_dir = crate::tests::make_temp_test_dir("prompt-cache-control-maintenance-lock");
     let business_path = temp_dir.join("business.sqlite");

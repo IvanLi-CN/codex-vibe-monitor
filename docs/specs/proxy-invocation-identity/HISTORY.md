@@ -18,6 +18,7 @@
 - Cache sizing starts at the minimum before a bounded asynchronous history seed, then follows memory-only hourly activity estimates. Eviction attempts to return never-issued tails within a fixed budget; uncertain returns preserve durable recovery rather than reusing memory ranges.
 - [ADR 0029](../../adr/0029-conversation-invocation-range-reservations.md) locks the 64-sequence reservation, refill, return, and bounded cache contract. [ADR 0030](../../adr/0030-durable-hourly-invocation-prefixes.md) places unbound hourly ownership in the business SQLite database and the same manager. This supersedes the process-local-only hourly authority described below without rewriting historical IDs.
 - The allocation correction preserves known legacy sequence floors on demand, keeps structural migration separate from statistics materialization, and uses forward repair for stopped releases. Earlier writers unaware of reservation ownership are outside the newly migrated state's supported writer contract; planned migration and compatibility evidence are recorded separately from implementation results.
+- The unified manager replaces the earlier per-key async allocation locks: concurrent cold callers share one initialization and one bounded wait instead of queuing serial wait budgets. Scoped callback and pending-journal namespace references prevent cleanup from releasing an identity before its old callbacks reconcile.
 
 ## Compatibility Follow-up
 

@@ -1554,6 +1554,7 @@ pub(crate) struct PoolInvocationCleanupGuard {
     recovery_trigger: &'static str,
     prompt_cache_key: Option<String>,
     armed: bool,
+    namespace: Option<crate::prompt_cache_conversations::invocation_ranges::lifecycle::PrefixGuard>,
 }
 
 impl std::fmt::Debug for PoolInvocationCleanupGuard {
@@ -1578,6 +1579,7 @@ impl PoolInvocationCleanupGuard {
         prompt_cache_key: Option<&str>,
     ) -> Self {
         Self {
+            namespace: crate::prompt_cache_conversations::invocation_ranges::lifecycle::PrefixGuard::for_invocation(&selector.invoke_id),
             state,
             selector,
             recovery_trigger,
@@ -1604,6 +1606,7 @@ impl Drop for PoolInvocationCleanupGuard {
         let selector = self.selector.clone();
         let recovery_trigger = self.recovery_trigger;
         let prompt_cache_key = self.prompt_cache_key.take();
+        let namespace = self.namespace.take();
         tokio::spawn(async move {
             if let Err(err) = recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
                 state.as_ref(),
@@ -1615,6 +1618,7 @@ impl Drop for PoolInvocationCleanupGuard {
             {
                 warn!(error = %err, recovery_trigger, "failed to recover dropped pool invocation orphan");
             }
+            drop(namespace);
         });
     }
 }

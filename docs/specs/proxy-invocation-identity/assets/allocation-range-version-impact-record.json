@@ -29,9 +29,9 @@
       "impact": "minor",
       "scope_drift": {
         "detected": false,
-        "description": "Locked design scope; implementation has not started in this documentation change."
+        "description": "Implemented the locked backend range, cache and lifecycle boundary; public fields and frontend consumers remain deferred to PR2."
       },
-      "reasoning": "The planned public-API impact is Patch and persistent-state impact is Minor, so the planned release-unit maximum is Minor. No candidate compatibility run has been performed.",
+      "reasoning": "Public fields and compact ID shape remain compatible. Focused SQLite regressions preserve prior master, retained-ID and pending identity state while establishing the new reservation writer authority. The release-unit maximum remains Minor; final candidate acceptance is still required.",
       "reassessed_at": "2026-10-05T02:02:28+08:00",
       "evidence": [
         "docs/specs/proxy-invocation-identity/SPEC.md",

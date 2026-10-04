@@ -66,15 +66,58 @@ async fn invocation_ranges_statistics_do_not_own_reservation_ceiling() {
 }
 
 #[tokio::test]
+async fn invocation_ranges_legacy_live_floor_survives_upgrade_and_statistics() {
+    let pool = ranges_fixture().await;
+    sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invoke_sequence) VALUES ('ABCDEF','legacy-floor',9)")
+        .execute(&pool).await.unwrap();
+    let retained = format!(
+        "ABCDEF{}",
+        encode_prompt_cache_conversation_sequence(100).unwrap()
+    );
+    sqlx::query("INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,payload,raw_response) VALUES (?1,'2026-10-05T00:00:00Z','proxy','success','{\"promptCacheKey\":\"legacy-floor\"}','{}')")
+        .bind(&retained).execute(&pool).await.unwrap();
+    prompt_cache_conversations::invocation_ranges::ensure_schema(&pool)
+        .await
+        .unwrap();
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let issued = manager.allocate(&pool, Some("legacy-floor")).await.unwrap();
+    assert_eq!(
+        issued,
+        format!(
+            "ABCDEF{}",
+            encode_prompt_cache_conversation_sequence(101).unwrap()
+        )
+    );
+    refresh_prompt_cache_conversation_stats(&pool, &HashSet::from(["legacy-floor".to_owned()]))
+        .await
+        .unwrap();
+    let ceiling: i64 = sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='legacy-floor'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(ceiling, 164);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>("SELECT invoke_id FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        retained
+    );
+}
+
+#[tokio::test]
 async fn invocation_ranges_hot_issuance_survives_closed_database() {
     let pool = ranges_fixture().await;
     let manager =
         Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
     let first = manager.allocate(&pool, Some("memory-only")).await.unwrap();
+    let hourly = manager.allocate(&pool, None).await.unwrap();
     let ceiling: i64 = sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='memory-only'")
         .fetch_one(&pool).await.unwrap();
     assert_eq!(ceiling, 63);
     pool.close().await;
+    let _blocker = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
     for sequence in 1..=30 {
         let id = manager.allocate(&pool, Some("memory-only")).await.unwrap();
         assert_eq!(
@@ -82,6 +125,14 @@ async fn invocation_ranges_hot_issuance_survives_closed_database() {
             format!(
                 "{}{}",
                 &first[..6],
+                encode_prompt_cache_conversation_sequence(sequence).unwrap()
+            )
+        );
+        assert_eq!(
+            manager.allocate(&pool, None).await.unwrap(),
+            format!(
+                "{}{}",
+                &hourly[..6],
                 encode_prompt_cache_conversation_sequence(sequence).unwrap()
             )
         );
@@ -316,7 +367,20 @@ async fn invocation_ranges_protected_cache_saturation_has_bounded_admission() {
     for number in 0..4096 {
         let key = format!("protected-{number}");
         manager.retain_key(&key);
-        manager.allocate(&pool, Some(&key)).await.unwrap();
+        // This prepares the protected working set, not the measured saturated
+        // request. A cold admission may legitimately time out under parallel
+        // profile load while its independent initialization keeps running.
+        let mut initialized = false;
+        for _ in 0..5 {
+            match manager.allocate(&pool, Some(&key)).await {
+                Ok(_) => {
+                    initialized = true;
+                    break;
+                }
+                Err(error) => assert!(error.to_string().contains("timed out"), "{error}"),
+            }
+        }
+        assert!(initialized, "fixture owner {number} did not initialize");
     }
     assert_eq!(manager.test_resize(0).1, 4096);
     pool.close().await;
@@ -331,6 +395,53 @@ async fn invocation_ranges_protected_cache_saturation_has_bounded_admission() {
     );
     assert!(started.elapsed() < Duration::from_millis(200));
     assert!(manager.allocate(&pool, Some("protected-0")).await.is_ok());
+}
+
+#[tokio::test]
+async fn invocation_ranges_late_lease_callback_keeps_namespace_until_drained() {
+    let pool = ranges_fixture().await;
+    let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let manager = cache.lock().await.identity_cache.range_manager.clone();
+    let hour = Utc::now().timestamp().div_euclid(3600) - 1;
+    let id = manager.test_allocate_hour(&pool, hour).await.unwrap();
+    let guard = PromptCacheInvocationLeaseGuard::new(cache.clone(), &id);
+    manager.reconcile_persistence(&id);
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM hourly_invoke_prefixes")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    let callback_blocker = cache.lock().await;
+    drop(guard);
+    manager.cleanup_hours(&pool, false).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM hourly_invoke_prefixes")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    drop(callback_blocker);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            manager.cleanup_hours(&pool, false).await.unwrap();
+            if sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM hourly_invoke_prefixes")
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                == 0
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    assert!(!prompt_cache_conversations::invocation_ranges::lifecycle::prefix_occupied(&id[..6]));
 }
 
 #[tokio::test]

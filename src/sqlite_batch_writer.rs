@@ -2093,11 +2093,6 @@ impl SqliteBatchWriter {
             .await
             .expect("flush buffered sqlite batch writes for test");
             for terminal in batch.terminal_invocations.values() {
-                self.terminal_journal.acknowledge(
-                    &terminal.record.invoke_id,
-                    &terminal.record.occurred_at,
-                    terminal.raw_capture,
-                );
                 if let Some(cache) = &self.prompt_cache_conversation_cache {
                     cache
                         .lock()
@@ -2106,6 +2101,11 @@ impl SqliteBatchWriter {
                         .range_manager
                         .reconcile_persistence(&terminal.record.invoke_id);
                 }
+                self.terminal_journal.acknowledge(
+                    &terminal.record.invoke_id,
+                    &terminal.record.occurred_at,
+                    terminal.raw_capture,
+                );
             }
             let deferred_writes = deferred.into_writes();
             let retained_count = deferred_writes.len();
@@ -3509,11 +3509,6 @@ pub(crate) async fn flush_pending_batch(
                 );
                 accounting.transfer_p1_to_p2(deferred.estimated_memory_bytes());
                 for terminal in p1_batch.terminal_invocations.values() {
-                    terminal_journal.acknowledge(
-                        &terminal.record.invoke_id,
-                        &terminal.record.occurred_at,
-                        terminal.raw_capture,
-                    );
                     if let Some(cache) = prompt_cache_conversation_cache {
                         cache
                             .lock()
@@ -3522,6 +3517,13 @@ pub(crate) async fn flush_pending_batch(
                             .range_manager
                             .reconcile_persistence(&terminal.record.invoke_id);
                     }
+                    // Pending namespace protection covers the await above; only
+                    // release it after the old in-memory reference is reconciled.
+                    terminal_journal.acknowledge(
+                        &terminal.record.invoke_id,
+                        &terminal.record.occurred_at,
+                        terminal.raw_capture,
+                    );
                 }
                 batch.merge_p2(deferred);
             }

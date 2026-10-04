@@ -24,6 +24,10 @@ fn decrement(map: &mut HashMap<String, usize>, key: &str) {
 pub(crate) struct PrefixGuard(String);
 
 impl PrefixGuard {
+    pub(crate) fn for_invocation(id: &str) -> Option<Self> {
+        (id.len() == PROXY_INVOKE_ID_LENGTH && id.is_ascii()).then(|| Self::new(&id[..6]))
+    }
+
     pub(super) fn new(prefix: &str) -> Self {
         *NAMESPACE
             .lock()

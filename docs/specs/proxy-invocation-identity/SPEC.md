@@ -107,7 +107,7 @@
 
 ### VER-PII-003
 
-- Method: Source inspection plus allocator recovery test after clearing the process cache.
+- Method: Source inspection, allocator recovery after clearing the process cache, closed-pool/held-admission hot issuance, and concurrent entrypoint wait-budget regressions.
 - covers: `REQ-PII-003`
 - Pass condition: Cache recovery preserves the issued-sequence floor, and issuance from a committed range performs no database read, write, or database write-admission wait, including under unrelated SQLite contention. Prefix creation and cold recovery remain serialized without holding the global cache mutex across SQL.
 

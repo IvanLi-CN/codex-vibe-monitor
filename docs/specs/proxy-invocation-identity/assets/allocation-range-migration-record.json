@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "planned",
+  "status": "implemented",
   "migration": {
     "description": "Persist hourly prefix reservation authority and assign existing conversation ceilings exclusively to the range manager.",
     "release_unit_description": "Backend PR1 allocation correction before PR2 API and frontend integration.",
@@ -67,7 +67,12 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "not-run",
+    "status": "focused-regressions-passed; final-candidate-acceptance-pending",
+    "executed_test_evidence": [
+      "src/tests/stateful_sqlite/invocation_ranges.rs: atomic marker/DDL rollback and reentry, legacy live-floor preservation, committed-range restart, allocator-exclusive ceiling and pending namespace recovery.",
+      "src/tests/archive_file_io/prompt_cache_control_file_lock.rs: real SQLite worker drain after timed-out return, followed by safe replacement generation.",
+      "Current-candidate full resource profiles and Linux service evidence are required by IMPLEMENTATION.md and the delivery report; package regressions alone do not certify readiness."
+    ],
     "patch": {
       "required_test_evidence": [
         "Not the selected impact: previous per-invocation and volatile-hour writers do not implement the new durable ownership contract."

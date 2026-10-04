@@ -85,12 +85,6 @@ pub(crate) struct PromptCacheConversationIdentity {
 pub(crate) struct PromptCacheConversationIdentityCache {
     pub(crate) range_manager: Arc<invocation_ranges::InvocationRangeManager>,
     pub(crate) active_prompt_cache_keys: HashMap<String, usize>,
-    /// Per-key allocation locks keep slow identity/sequence SQL from blocking
-    /// unrelated prompt-cache conversations. Weak entries are reclaimed when no
-    /// allocator still owns the corresponding lock.
-    pub(crate) allocation_locks: HashMap<String, std::sync::Weak<Mutex<()>>>,
-    /// Unbound IDs share one lock because their hourly prefix is process-local.
-    pub(crate) unbound_allocation_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
@@ -2691,31 +2685,6 @@ async fn load_or_create_prompt_cache_conversation_identity(
     create_prompt_cache_conversation_row(pool, prompt_cache_key).await
 }
 
-fn allocation_lock_for_cache(
-    cache: &mut PromptCacheConversationIdentityCache,
-    prompt_cache_key: Option<&str>,
-) -> Arc<Mutex<()>> {
-    cache
-        .allocation_locks
-        .retain(|_, lock| lock.strong_count() > 0);
-    if let Some(prompt_cache_key) = prompt_cache_key {
-        if let Some(lock) = cache
-            .allocation_locks
-            .get(prompt_cache_key)
-            .and_then(std::sync::Weak::upgrade)
-        {
-            return lock;
-        }
-        let lock = Arc::new(Mutex::new(()));
-        cache
-            .allocation_locks
-            .insert(prompt_cache_key.to_string(), Arc::downgrade(&lock));
-        lock
-    } else {
-        cache.unbound_allocation_lock.clone()
-    }
-}
-
 pub(crate) async fn allocate_proxy_invoke_id(
     state: &AppState,
     prompt_cache_key: Option<&str>,
@@ -2735,10 +2704,8 @@ pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
     prompt_cache_key: Option<&str>,
 ) -> Result<String> {
     let prompt_cache_key = normalize_prompt_cache_key(prompt_cache_key).map(ToOwned::to_owned);
-    let allocation_lock = {
+    let manager = {
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        let allocation_lock =
-            allocation_lock_for_cache(&mut cache.identity_cache, prompt_cache_key.as_deref());
         if let Some(prompt_cache_key) = prompt_cache_key.as_deref() {
             cache
                 .identity_cache
@@ -2751,7 +2718,7 @@ pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
                 .or_default();
             *leases = leases.saturating_add(1);
         }
-        allocation_lock
+        cache.identity_cache.range_manager.clone()
     };
 
     let lease_guard = prompt_cache_key.as_deref().map(|prompt_cache_key| {
@@ -2760,14 +2727,6 @@ pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
             Some(prompt_cache_key),
         )
     });
-    let _allocation_guard = allocation_lock.lock().await;
-    let manager = state
-        .prompt_cache_conversation_cache
-        .lock()
-        .await
-        .identity_cache
-        .range_manager
-        .clone();
     let result = manager
         .allocate_leased(&state.pool, prompt_cache_key.as_deref())
         .await;
@@ -3999,6 +3958,7 @@ pub(crate) async fn retain_active_prompt_cache_conversation(
 pub(crate) struct PromptCacheInvocationLeaseGuard {
     cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     invoke_id: String,
+    namespace: Option<invocation_ranges::lifecycle::PrefixGuard>,
 }
 
 impl PromptCacheInvocationLeaseGuard {
@@ -4009,6 +3969,7 @@ impl PromptCacheInvocationLeaseGuard {
         Self {
             cache,
             invoke_id: invoke_id.to_owned(),
+            namespace: invocation_ranges::lifecycle::PrefixGuard::for_invocation(invoke_id),
         }
     }
 }
@@ -4017,6 +3978,7 @@ impl Drop for PromptCacheInvocationLeaseGuard {
     fn drop(&mut self) {
         let cache = self.cache.clone();
         let invoke_id = self.invoke_id.clone();
+        let namespace = self.namespace.take();
         tokio::spawn(async move {
             cache
                 .lock()
@@ -4024,6 +3986,9 @@ impl Drop for PromptCacheInvocationLeaseGuard {
                 .identity_cache
                 .range_manager
                 .reconcile_persistence(&invoke_id);
+            // Keep the prefix occupied until this callback has finished. A late
+            // guard must never reconcile an ID issued after legitimate reuse.
+            drop(namespace);
         });
     }
 }
