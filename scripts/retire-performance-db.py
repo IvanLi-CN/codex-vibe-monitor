@@ -11,6 +11,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 
 TABLES = {
     "performance_meta": [("key", "TEXT", 0, 1), ("value", "TEXT", 1, 0)],
@@ -271,6 +272,16 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
         write_json(manifest_path, manifest)
     return manifest
 
+def restore_alias(source, target):
+    if source.is_symlink():
+        if source.resolve(strict=False) != target:
+            raise ValueError("restore alias changed; preserving existing destination")
+    else:
+        source.symlink_to(target)
+    directory = os.open(source.parent, os.O_RDONLY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+
 def restore(manifest_path, previous_image, previous_config):
     manifest_path = Path(manifest_path).resolve(strict=True)
     manifest = json.loads(manifest_path.read_text())
@@ -290,16 +301,30 @@ def restore(manifest_path, previous_image, previous_config):
             raise ValueError("restore alias occupied")
     if target.exists() and not target.is_symlink() and not any(Path(str(target) + suffix).exists() for suffix in ["-wal", "-shm"]):
         valid_backup(target, manifest["backupSha256"])
-        if not leaf_alias or source.is_symlink():
-            return {"state": "restored", "source": str(source), "backupSha256": manifest["backupSha256"]}
+        if leaf_alias: restore_alias(source, target)
+        return {"state": "restored", "source": str(source), "backupSha256": manifest["backupSha256"]}
     if any(Path(str(target) + suffix).exists() or Path(str(target) + suffix).is_symlink() for suffix in ["", "-wal", "-shm"]):
         raise ValueError("restore destination is occupied; no overwrite allowed")
-    with target.open("xb") as destination, backup.open("rb") as original:
-        shutil.copyfileobj(original, destination); destination.flush(); os.fsync(destination.fileno())
-    os.chmod(target, 0o600)
-    valid_backup(target, manifest["backupSha256"])
-    if leaf_alias:
-        source.symlink_to(target)
+    # Publish only a completely validated same-directory file. Hard-link creation
+    # is atomic and refuses a destination that appears after the occupancy check.
+    descriptor, name = tempfile.mkstemp(prefix=f".{target.name}.restore-", dir=target.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as destination, backup.open("rb") as original:
+            shutil.copyfileobj(original, destination); destination.flush(); os.fsync(destination.fileno())
+        valid_backup(temporary, manifest["backupSha256"])
+        if any(Path(str(target) + suffix).exists() or Path(str(target) + suffix).is_symlink() for suffix in ["", "-wal", "-shm"]):
+            raise ValueError("restore destination is occupied; no overwrite allowed")
+        os.link(temporary, target, follow_symlinks=False)
+        directory = os.open(target.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+        directory = os.open(target.parent, os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+    if leaf_alias: restore_alias(source, target)
     return {"state": "restored", "source": str(source), "backupSha256": manifest["backupSha256"]}
 
 def main():

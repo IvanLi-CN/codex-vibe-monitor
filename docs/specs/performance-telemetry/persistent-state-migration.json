@@ -66,7 +66,7 @@
     "deployed_migrations_immutable": true,
     "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
     "faulty_release_recovery": "forward-repair-by-a-new-program-version using immutable phase manifest",
-    "backup_restore_role": "separate-disaster-recovery; verify old image/config and business/task schema before restoring a compatible backup"
+    "backup_restore_role": "separate-disaster-recovery; verify old image/config and business/task schema before restoring a compatible backup; fsync and validate a private same-directory temporary before atomic no-overwrite publication; reuse matching complete targets and expected aliases; preserve abrupt-exit orphan temporaries and unrelated conflicts"
   },
   "validation": {
     "major": {
@@ -78,6 +78,7 @@
         "unknown or conflicting identity refused",
         "corrupt known family preserved and marked failed",
         "interruption and safe re-entry",
+        "restore partial-copy, staged-validation and pre-publication failures leave final destination absent; actual process death preserves only unpublished private temporary; retry succeeds; matching dangling alias reused; missing alias repaired; racing destination and late WAL preserved",
         "forward repair of stopped release",
         "compatible old-version backup restore without business modification",
         "direct multi-major jumps refused"

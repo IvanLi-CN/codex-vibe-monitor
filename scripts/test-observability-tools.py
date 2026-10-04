@@ -317,6 +317,119 @@ class RetirementTests(unittest.TestCase):
         self.assertFalse(self.source.exists())
         self.assertEqual(list(other.iterdir()), [])
 
+    def archived_restore(self, target=None):
+        target = target or self.source
+        fixture(target).close()
+        if target != self.source: self.source.symlink_to(target)
+        self.run_archive()
+        return self.archive / "cutover" / "manifest.json"
+
+    def test_restore_copy_failure_preserves_absent_target_and_retry(self):
+        manifest = self.archived_restore()
+        def interrupt(original, destination, *args, **kwargs):
+            destination.write(original.read(4096))
+            raise OSError("injected partial copy")
+        with patch.object(migration.shutil, "copyfileobj", interrupt):
+            with self.assertRaisesRegex(OSError, "partial copy"):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        self.assertFalse(self.source.exists())
+        self.assertFalse(list(self.data.glob(".custom.metrics.sqlite.restore-*")))
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+        migration.valid_backup(self.source, json.loads(manifest.read_text())["backupSha256"])
+
+    def test_restore_before_publication_failure_is_reentrant(self):
+        manifest = self.archived_restore()
+        with patch.object(migration.os, "link", side_effect=OSError("injected before publication")):
+            with self.assertRaisesRegex(OSError, "before publication"):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        self.assertFalse(self.source.exists())
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+
+    def test_restore_temporary_validation_failure_preserves_absent_target(self):
+        manifest = self.archived_restore()
+        validate = migration.valid_backup
+        def reject(path, expected):
+            if path.name.startswith(".custom.metrics.sqlite.restore-"):
+                raise ValueError("injected staged validation failure")
+            return validate(path, expected)
+        with patch.object(migration, "valid_backup", reject):
+            with self.assertRaisesRegex(ValueError, "staged validation"):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        self.assertFalse(self.source.exists())
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+
+    def test_restore_racing_destination_is_never_overwritten(self):
+        manifest = self.archived_restore()
+        link = migration.os.link
+        def occupy(original, destination, **kwargs):
+            Path(destination).write_bytes(b"unrelated racing destination")
+            return link(original, destination, **kwargs)
+        with patch.object(migration.os, "link", occupy):
+            with self.assertRaises(FileExistsError):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        self.assertEqual(self.source.read_bytes(), b"unrelated racing destination")
+
+    def test_restore_existing_expected_dangling_alias_is_reused(self):
+        target = self.root / "custom.sqlite"
+        manifest = self.archived_restore(target)
+        self.source.symlink_to(target)
+        alias_identity = self.source.lstat()
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+        self.assertEqual(self.source.lstat().st_ino, alias_identity.st_ino)
+        self.assertEqual(self.source.resolve(), target)
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+
+    def test_restore_alias_interruption_resumes_from_complete_target(self):
+        target = self.root / "custom.sqlite"
+        manifest = self.archived_restore(target)
+        symlink = Path.symlink_to
+        def interrupt(path, *args, **kwargs):
+            if path == self.source: raise OSError("injected before alias publication")
+            return symlink(path, *args, **kwargs)
+        with patch.object(Path, "symlink_to", interrupt):
+            with self.assertRaisesRegex(OSError, "before alias"):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        migration.valid_backup(target, json.loads(manifest.read_text())["backupSha256"])
+        self.assertFalse(self.source.is_symlink())
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+        self.assertEqual(self.source.resolve(), target)
+
+    def test_restore_process_death_leaves_only_unpublished_private_temp(self):
+        manifest = self.archived_restore()
+        code = '''import importlib.util,os,sys
+from pathlib import Path
+spec=importlib.util.spec_from_file_location("interrupted_restore",sys.argv[1]);m=importlib.util.module_from_spec(spec);spec.loader.exec_module(m)
+def fail(original,destination,*args,**kwargs):
+ destination.write(original.read(4096));destination.flush();os.fsync(destination.fileno());os._exit(73)
+m.shutil.copyfileobj=fail
+m.restore(Path(sys.argv[2]),sys.argv[3],Path(sys.argv[4]))
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", code, str(SCRIPTS / "retire-performance-db.py"), str(manifest), OLD_IMAGE, str(self.config)], check=False)
+        self.assertEqual(result.returncode, 73)
+        self.assertFalse(self.source.exists())
+        orphan = list(self.data.glob(".custom.metrics.sqlite.restore-*"))
+        self.assertEqual(len(orphan), 1)
+        self.assertEqual(orphan[0].stat().st_size, 4096)
+        before = orphan[0].read_bytes()
+        self.assertEqual(migration.restore(manifest, OLD_IMAGE, self.config)["state"], "restored")
+        self.assertEqual(orphan[0].read_bytes(), before)
+        migration.valid_backup(self.source, json.loads(manifest.read_text())["backupSha256"])
+
+    def test_restore_late_sidecar_preserved_before_publication(self):
+        manifest = self.archived_restore()
+        wal = Path(str(self.source) + "-wal")
+        validate = migration.valid_backup
+        def occupy(path, expected):
+            validate(path, expected)
+            if path.name.startswith(".custom.metrics.sqlite.restore-"):
+                wal.write_bytes(b"unknown sidecar")
+        with patch.object(migration, "valid_backup", occupy):
+            with self.assertRaisesRegex(ValueError, "destination is occupied"):
+                migration.restore(manifest, OLD_IMAGE, self.config)
+        self.assertFalse(self.source.exists())
+        self.assertEqual(wal.read_bytes(), b"unknown sidecar")
+
+
 class DiagnosticsTests(unittest.TestCase):
     def test_container_deadline_signals_and_removes_only_the_owned_sampler(self):
         process = Mock()

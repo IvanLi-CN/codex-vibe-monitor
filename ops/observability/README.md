@@ -140,6 +140,11 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 4. 启动新应用，核对新抓取、报告、任务/ACK、410 和无旧库文件访问，再切换正式流量。
 5. 回滚是独立恢复操作：停止新应用，核验旧镜像/配置与业务/任务 schema 兼容，执行
    `restore --manifest <archive-manifest> --container <stopped-app> --previous-image <recorded-digest> --previous-config <recorded-config>`，再启动兼容旧镜像。工具拒绝覆盖非匹配目标。
+   恢复数据先在目标同目录的 0600 临时文件完成同步与校验，再原子发布且禁止覆盖。
+   普通复制/校验失败不会留下部分最终目标；中断后可重复相同 restore 命令，完整匹配
+   目标会复用并补齐缺失 alias，正确的既有 alias 保留。冲突目标或 WAL/SHM 原地保留并拒绝。
+   进程骤停可能留下 `.目标文件名.restore-*` 私有未发布文件；重试不使用或删除这些文件。
+   如需清理，停止所有恢复进程后逐个核验确切路径和归属，仅处理已确认的遗留文件，禁止宽泛清理。
 
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
