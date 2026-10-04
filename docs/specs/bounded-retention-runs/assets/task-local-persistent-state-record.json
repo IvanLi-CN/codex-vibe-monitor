@@ -10,7 +10,7 @@
     "description": "Existing canonical monthly gzip SQLite, manifests, V2 Summary proof, raw links and immutable maintenance run JSON",
     "storage_implementation": "Existing SQLite tables and canonical gzip SQLite files",
     "source_compatibility_range": {
-      "from_program_versions": "Supported same-Minor v2.85.0-v2.85.3 reader sources plus declared retention fixture upgrades v2.71.45/v2.80.2 and development baseline 162253ad",
+      "from_program_versions": "Supported same-Minor v2.85.0-v2.85.4 reader sources plus declared retention fixture upgrades v2.71.45/v2.80.2 and development baseline 162253ad",
       "to_program_version": "Current PR candidate, version assigned after merge",
       "direct_major_skips_supported": false
     }
@@ -117,6 +117,6 @@
       "web/src/lib/api/core-foundation.test.ts",
       "src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs"
     ],
-    "status": "same-minor-archive-reader-compatibility-verified; current-candidate-trigger-and-delivery-validation-pending"
+    "status": "same-minor-archive-reader-compatibility-verified; current-candidate-trigger-and-delivery-validation-required"
   }
 }

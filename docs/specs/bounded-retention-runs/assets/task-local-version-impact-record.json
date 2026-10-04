@@ -30,7 +30,7 @@
         "detected": true,
         "description": "Capacity diagnosis identified a synchronous historical-key scan in online P1 writes and unbounded retention admission; equivalent indexed working-set queries and deadline cancellation repair the accepted online-impact and timeout contract."
       },
-      "reasoning": "No main table, column, enum or migration identity additions. The three existing trigger definitions retain exact short working-set source semantics and deployed completion facts. Archive readers and optional task JSON remain compatible; current candidate full validation is pending.",
+      "reasoning": "No main table, column, enum or migration identity additions. The three existing trigger definitions retain exact short working-set source semantics and deployed completion facts. Archive readers and optional task JSON remain compatible; current candidate full validation is a separate delivery gate.",
       "reassessed_at": "2026-10-03T21:31:00Z",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
@@ -64,7 +64,7 @@
       "applicable": true,
       "impact": "patch",
       "state_description": "Existing monthly gzip SQLite and existing V2 Snapshot/manifests/raw ownership; optional maintenance JSON fields",
-      "source_program_compatibility_range": "Supported same-Minor v2.85.0-v2.85.3 readers verified by exact source equivalence and current roundtrip; candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
+      "source_program_compatibility_range": "Supported same-Minor v2.85.0-v2.85.4 readers verified by exact source equivalence and current roundtrip; candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
