@@ -20,6 +20,8 @@
 
 准入等待受本轮剩余超时约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一约束，避免归档未开始时等待超过整轮兜底时间。没有旧 prepared 行时不提交空隔离事务。
 
+每轮通过 task-local 保存首次实际准入拒绝原因，供不可变运行结果使用；后续阶段成功提交不会擦除该原因，下一轮也不会继承历史恢复或共享写状态的原因。后台槽占用保留 `background_busy`，不能误报为 SQLite 压力。
+
 主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒且不超过整轮剩余时间的执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成整轮超时，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
 
 容量排查发现在线 terminal 写入复用大历史 Prompt key 时，原工作集触发器的 OR 条件会对历史正文反复计算展示状态，持续占用 P1。查询改为现有 key/时间索引上的近期范围，以及 `invocation_in_progress_live` 的旧活跃 ID 和当前变更 ID；仍回到源记录复核 key、时间和展示状态。当前 ID 覆盖 INSERT/UPDATE/DELETE 的触发器执行顺序，两个时间范围不重叠。此优化保留实时工作集口径，不调用会话历史统计物化。

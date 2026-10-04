@@ -95,6 +95,7 @@ static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
     static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
+    static RETENTION_RUN_DEFER_REASON: RefCell<Option<String>>;
     static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     static RETENTION_TRY_ARCHIVE_LOCKS: ();
     static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
@@ -990,6 +991,13 @@ pub(super) fn retention_micro_batch_limit(config: &AppConfig, operation: &'stati
 fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     RETENTION_DEFER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reason = reason.to_string();
+    // Later stages may commit and clear shared health; retain this run's first actual cause.
+    let _ = RETENTION_RUN_DEFER_REASON.try_with(|current| {
+        let mut current = current.borrow_mut();
+        if current.is_none() {
+            *current = Some(reason.clone());
+        }
+    });
     let mut health = RETENTION_WRITE_HEALTH
         .lock()
         .expect("retention write health");
@@ -8500,7 +8508,6 @@ async fn run_data_retention_maintenance_with_prompt_cache(
     shutdown: Option<&CancellationToken>,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
-    let defer_generation = retention_defer_generation();
     let run_started_at = Instant::now();
     let run_deadline = run_started_at + RETENTION_WORK_BUDGET;
     let run = async {
@@ -8533,17 +8540,22 @@ async fn run_data_retention_maintenance_with_prompt_cache(
             RefCell::new(Some(run_deadline)),
             RETENTION_CURRENT_PREPARED_KEY.scope(
                 RefCell::new(None),
-                batch_plan::TASK_BATCH_METRICS.scope(RefCell::new(Vec::new()), async {
-                    run.await.map(|mut summary| {
-                        batch_plan::collect_run_metrics(&mut summary);
-                        summary
-                    })
-                }),
+                batch_plan::TASK_BATCH_METRICS.scope(
+                    RefCell::new(Vec::new()),
+                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                        run.await.map(|mut summary| {
+                            batch_plan::collect_run_metrics(&mut summary);
+                            let defer_reason =
+                                RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+                            (summary, defer_reason)
+                        })
+                    }),
+                ),
             ),
         )
         .await;
-    result.map(|mut summary| {
-        summary.deferred |= retention_defer_generation() != defer_generation;
+    result.map(|(mut summary, defer_reason)| {
+        summary.deferred |= defer_reason.is_some();
         summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
         summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
         summary.timeout_count = Some(u64::from(summary.budget_exhausted));
@@ -8565,7 +8577,7 @@ async fn run_data_retention_maintenance_with_prompt_cache(
             summary.wait_reason = if summary.budget_exhausted {
                 Some("retention_work_budget".to_string())
             } else {
-                retention_recovery_health_snapshot().defer_reason
+                defer_reason
             };
         }
         summary

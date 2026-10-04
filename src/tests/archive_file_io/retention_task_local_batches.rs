@@ -2,6 +2,55 @@ use super::*;
 use crate::maintenance::{RETENTION_TEST_DB_PRESSURE_GATE, RETENTION_TEST_WRITE_COORDINATOR};
 
 #[tokio::test]
+async fn retention_task_local_admission_reason_is_current_and_cleared_next_run() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-defer-reason").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1_000).await;
+    let pressure = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator(),
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(pressure.clone(), async {
+                let owner = pressure
+                    .try_begin_background("test_prompt_owner")
+                    .expect("hold the competing owner's background slot");
+                let deferred = run_data_retention_maintenance(&pool, &config, Some(false), None)
+                    .await
+                    .expect("safe admission deferral");
+                assert!(deferred.deferred);
+                assert_eq!(deferred.wait_reason.as_deref(), Some("background_busy"));
+                assert_eq!(deferred.invocation_rows_archived, 0);
+                assert_eq!(
+                    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+                        .fetch_one(&pool)
+                        .await
+                        .expect("deferred source remains"),
+                    1_000,
+                );
+                assert_no_task_work_files(&config.archive_dir);
+                drop(owner);
+                let completed = run_data_retention_maintenance(&pool, &config, Some(false), None)
+                    .await
+                    .expect("fresh run after admission is available");
+                assert_eq!(completed.invocation_rows_archived, 1_000);
+                assert!(!completed.deferred);
+                assert_eq!(completed.wait_reason, None);
+                assert_no_task_work_files(&config.archive_dir);
+            }),
+        )
+        .await;
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_optional_sqlite_maintenance_stops_and_releases_writer() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-pragma-budget").await;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
