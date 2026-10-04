@@ -165,7 +165,12 @@ pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result
         SET tag_ids_json = (
             SELECT CASE
                 WHEN COUNT(*) = 0 THEN NULL
-                ELSE json_group_array(json_each.value)
+                ELSE json_group_array(
+                    CASE
+                        WHEN json_each.type IN ('object', 'array') THEN json(json_each.value)
+                        ELSE json_each.value
+                    END
+                )
             END
             FROM json_each(pool_oauth_login_sessions.tag_ids_json)
             WHERE json_each.type != 'integer'

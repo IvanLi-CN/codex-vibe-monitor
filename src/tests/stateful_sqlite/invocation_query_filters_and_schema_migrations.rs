@@ -118,6 +118,28 @@ async fn seed_websocket_retirement_state(pool: &SqlitePool) -> (i64, i64) {
     .execute(pool)
     .await
     .expect("seed malformed OAuth session tag values");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy JSON tag values', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-json-values', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-json-values-session")
+    .bind(format!(
+        "[{websocket_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],null,\"keep\"]"
+    ))
+    .bind("state-retire-websocket-json-values")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed non-scalar JSON tag values");
     (websocket_tag_id, unrelated_tag_id)
 }
 
@@ -190,6 +212,16 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     assert_eq!(
         malformed_session_tags,
         format!("[\"{websocket_tag_id}x\",{websocket_tag_id}.9,\"{websocket_tag_id}\"]")
+    );
+    let json_value_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-json-values-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load JSON tag values after retirement");
+    assert_eq!(
+        json_value_session_tags,
+        r#"[{"kind":"object"},["nested",{"ok":true}],null,"keep"]"#
     );
     let marker_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",

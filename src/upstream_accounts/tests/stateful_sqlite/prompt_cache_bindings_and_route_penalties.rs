@@ -3645,10 +3645,12 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
         "#,
     )
     .bind(&created.login_id)
-    .bind(serde_json::to_string(&vec![custom_tag_id, system_tag_id]).expect("encode tag ids"))
+    .bind(format!(
+        "[{custom_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],null,\"keep\",{system_tag_id}]"
+    ))
     .execute(&state.pool)
     .await
-    .expect("seed legacy session tag ids");
+    .expect("seed non-scalar JSON tag values");
 
     cleanup_non_system_tags(&state.pool)
         .await
@@ -3700,7 +3702,9 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
         .expect("cleaned login session should exist");
     assert_eq!(
         stored.tag_ids_json,
-        Some(serde_json::to_string(&vec![system_tag_id]).expect("encode preserved system tag"))
+        Some(format!(
+            r#"[{{"kind":"object"}},["nested",{{"ok":true}}],null,"keep",{system_tag_id}]"#
+        ))
     );
 }
 

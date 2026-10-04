@@ -34,7 +34,7 @@
 
 - `src/proxy/request_entry.rs` performs header-only upgrade detection and returns the fixed `501` JSON envelope before invoking the shared HTTP proxy entrypoint.
 - The Axum WebSocket feature, relay/dialer module, direct tungstenite dependencies, WebSocket settings initialization, capability tag ensure/learning, and WebSocket-only usage refresh/persistence paths are removed.
-- The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction, records the named migration marker, and logs only affected-row counts.
+- The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction, preserves non-scalar JSON values while removing retired integer tag IDs, records the named migration marker, and logs only affected-row counts.
 - Legacy tag cleanup now removes only non-system integer session references, so existing system-tag JSON survives long enough for the retirement migration to remove only the exact retired WebSocket tag.
 - Settings request deserialization tolerates old WebSocket fields as unknown input while response serialization omits them. Historical `transport="websocket"` rows remain readable and are labeled `WebSocket（历史）` in the UI.
 - The demo and account-pool fixtures no longer create live WebSocket records or capability tags; historical records remain in Records, invocation, and dashboard read fixtures.
@@ -54,6 +54,7 @@
 - `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers return the exact raw `501` JSON body without invoke, attempt, upstream connection, retry, or CVM headers.
 - `proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing` verifies legacy WebSocket request fields are ignored and omitted from responses.
 - `retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state` verifies legacy columns, exact integer tag cleanup, unrelated-tag preservation, OAuth session JSON cleanup, malformed/non-integer value preservation, and the completion marker.
+- The retirement migration and non-system tag cleanup regressions also preserve JSON object/array values instead of re-encoding them as strings.
 - `retire_websocket_proxy_migration_rolls_back_on_failure` verifies a mid-transaction failure leaves settings, tag associations, tag rows, and the marker unchanged.
 - `cleanup_non_system_tags_removes_custom_tags_links_and_session_references` verifies custom tag references are removed while system-tag session references survive for exact retirement cleanup.
 - The demo model regression verifies retired WebSocket Settings request fields are ignored and omitted from the response/state.
