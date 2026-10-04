@@ -335,6 +335,28 @@ def proxy_once(sequence, prompt_cache_key):
     }
 
 
+def admit_fixture_owner(round_index, prompt_cache_key):
+    """Prepare a committed range before measuring hot allocation under SQL pressure."""
+    for attempt in range(1, 6):
+        result = proxy_once(f'fixture-r{round_index}-{attempt}', prompt_cache_key)
+        print(json.dumps({
+            'phase': 'fixture-owner-admission', 'round': round_index,
+            'attempt': attempt, **result,
+        }), flush=True)
+        if result['status'] == 200 and result['terminal'] is not None:
+            return result
+        expected_cold_refusal = (
+            result['status'] == 503 and result['invoke_id'] is None
+            and result['body'] in (
+                '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}',
+                '{"error":"failed to allocate proxy invoke id: invocation cache admission timed out after 100ms"}',
+            )
+        )
+        if not expected_cold_refusal:
+            break
+    raise SystemExit(f'fixture owner admission failed in round {round_index}')
+
+
 def percentile(values, fraction):
     if not values:
         return None
@@ -466,6 +488,8 @@ def observe_progress(probe, state, elapsed_seconds):
 
 def priority_yield_probe(round_index):
     """Queue an interactive writer behind an admitted, unfinished SQL step."""
+    control(False)
+    admit_fixture_owner(round_index, f'priority-probe-r{round_index}')
     started = time.monotonic()
     started_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
     deadline = started + 60
@@ -535,6 +559,8 @@ def priority_yield_probe(round_index):
 
 
 def candidate_input(round_index, duration_seconds, request_rate):
+    control(False)
+    admit_fixture_owner(round_index, f'acceptance-r{round_index}-key-000')
     start = time.monotonic()
     deadline = start + duration_seconds
     pause_at = start + min(60, max(5, duration_seconds // 2))
@@ -696,6 +722,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
         'submitted': sequence,
         'achieved_request_rate_per_second': round(sequence / duration_seconds, 3),
         'completed': len(results),
+        'target_fixture_calls': 1,
         'priority_probe_calls': len(priority_probe['samples']),
         'bad_count': len(bad),
         'bad_examples': bad[:3],
@@ -911,7 +938,7 @@ def candidate_observe(round_index, duration_seconds):
     final = snapshot()
     status, body, _ = request('GET', '/api/system/prompt-cache/materialization')
     api_status = json.loads(body) if status == 200 else {}
-    expected_target_count = 1024 + input_summary['completed']
+    expected_target_count = 1024 + input_summary['target_fixture_calls'] + input_summary['completed']
     target_count_ok = final['large_key_request_count'] >= expected_target_count
     all_keys_ok = final['history_key_count'] == 400
     summary = {
