@@ -2696,9 +2696,9 @@ describe("DashboardWorkingConversationsSection", () => {
         createConversation("pck-ws-transport", [
           createPreview({
             id: 1,
-            invokeId: "invoke-current-ws",
+            invokeId: "invoke-historical-ws",
             occurredAt: "2026-04-04T10:04:00Z",
-            status: "running",
+            status: "completed",
             transport: "websocket",
           }),
           createPreview({
