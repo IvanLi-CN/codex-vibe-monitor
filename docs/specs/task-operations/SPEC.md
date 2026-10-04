@@ -215,29 +215,47 @@
   - `./assets/task-operations-sse-connecting-desktop.png`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 
-### Task Workload Trend Charts
+### Task Workload Trend Charts — Desktop
 
 - source_type: `ui_demo`
 - target_program: `vite_web_demo`
 - viewport_strategy: `ui-demo-source + devtools-emulate`
 - desktop_viewport: `1440x900`
-- mobile_viewport: `393x852`
-- state: deterministic workload mock; desktop shows 100 runs, mobile shows 20 runs, the desktop light state selects Retention backlog, and the mobile light candidate state hides pending work to verify rescaling
+- state: deterministic workload mock; dark state shows 100 runs and light state selects the Retention backlog tab
 - comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186`
 - rendered_candidate: `c11fc81980fe346614b3bb8167afd3a44bfed756`
-- owner_confirmation: confirmed in chat for these five displayed candidates on 2026-10-04
+- owner_confirmation: confirmed in chat for both displayed desktop candidates on 2026-10-04
 - assets:
   - `./assets/task-workload-trend-desktop-dark.png`
   - `./assets/task-workload-trend-desktop-light-backlog.png`
-  - `./assets/task-workload-trend-mobile-dark-393x852.png`
-  - `./assets/task-workload-trend-mobile-light-393x852.png`
-  - `./assets/task-workload-trend-mobile-light-candidates-393x852.png`
 - images:
   - ![Task workload trend, desktop dark, 100 runs](./assets/task-workload-trend-desktop-dark.png)
   - ![Task workload trend with Retention backlog tab, desktop light](./assets/task-workload-trend-desktop-light-backlog.png)
+
+### Task Workload Trend Charts — Current Mobile States
+
+- source_type: `storybook_canvas`
+- story_group: `System/TaskWorkloadTrend`
+- target_program: `mock-only Storybook canvas`
+- viewport_strategy: `storybook-viewport`
+- requested_viewport: `393x852`
+- margin_policy: `require_margin`
+- evidence_surface: `component`
+- capture_scope: `declared visual-evidence surface`
+- state: 20-run dark trend, light Retention backlog tab, light trend with pending hidden and remaining series rescaled, and a running task with no observed counters
+- comparison_base: `179275c0b44ca8515aff1871c8fcfd37b268186`
+- rendered_candidate: `d78b974455c5e4e1d841c4bacecbe80f6c609817`
+- owner_confirmation: confirmed in chat for all four displayed mobile candidates on 2026-10-04
+- assets:
+  - `./assets/task-workload-trend-mobile-dark-393x852.png`
+  - `./assets/task-workload-trend-mobile-light-393x852.png`
+  - `./assets/task-workload-trend-mobile-light-candidates-393x852.png`
+  - `./assets/task-workload-trend-mobile-running-unknown-393x852.png`
+- images:
   - ![Task workload trend, mobile dark, 393 by 852](./assets/task-workload-trend-mobile-dark-393x852.png)
-  - ![Task workload trend, mobile light, 393 by 852](./assets/task-workload-trend-mobile-light-393x852.png)
+  - ![Task workload trend, Retention backlog tab, mobile light, 393 by 852](./assets/task-workload-trend-mobile-light-393x852.png)
   - ![Task workload trend without pending series, mobile light, 393 by 852](./assets/task-workload-trend-mobile-light-candidates-393x852.png)
+  - ![Running task without observed counters, mobile, 393 by 852](./assets/task-workload-trend-mobile-running-unknown-393x852.png)
 
 ## References
 
