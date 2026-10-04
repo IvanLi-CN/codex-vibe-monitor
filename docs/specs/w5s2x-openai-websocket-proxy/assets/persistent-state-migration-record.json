@@ -75,10 +75,9 @@
       ]
     },
     "major": {
-      "required_test_evidence": [
-        "The candidate upgrades supported pre-retirement state and retains historical WebSocket reads.",
-        "A forward-repair version handles state left by a stopped retirement migration.",
-        "Direct multi-Major skips remain unsupported without an explicit intermediate upgrade."
+      "required_test_evidence": [],
+      "excluded_compatibility_scenarios": [
+        "Direct multi-Major skips are outside the declared source compatibility range and are not a claimed migration contract; an explicit intermediate upgrade is required."
       ]
     }
   }
