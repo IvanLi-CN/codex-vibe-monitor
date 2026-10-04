@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.86.0",
+  "base_stable_version": "2.85.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-04T19:20:00Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.86.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d0275b46472e0a4a05fcb968d0d22c2689d8bf19",
+  "pr_number": 1074,
+  "pr_title": "feat(task-ops): add durable workload trends and evidence-based estimates",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.86.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.86.0",
+  "target_sha": "7681ce2dce52810e75397a33eb224a10d7c49038",
+  "type_label": "type:minor"
+}
