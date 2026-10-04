@@ -54,6 +54,7 @@ const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
 const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(60);
+const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS: i32 = 1_000;
@@ -9140,11 +9141,64 @@ pub(crate) async fn run_best_effort_retention_pragma(
         return Ok(());
     };
     let execute_started = Instant::now();
-    match sqlx::query(sql)
-        .execute(pool)
+    let query_budget = retention_run_remaining_budget()
+        .unwrap_or(RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET)
+        .min(RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET);
+    let deadline = Instant::now() + query_budget;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let shutdown = RETENTION_SHUTDOWN.try_with(Clone::clone).ok();
+    let mut cleanup_failed = false;
+    let result =
+        async {
+            // PRAGMA optimize can run ANALYZE even with SQLite's default sampling limit.
+            // Use a dedicated connection so cancellation never returns live SQLite work or
+            // a progress handler to the pool. Await execution and close before releasing P2.
+            let options = pool
+                .connect_options()
+                .as_ref()
+                .clone()
+                .busy_timeout(query_budget);
+            let mut connection =
+                match tokio::time::timeout(query_budget, SqliteConnection::connect_with(&options))
+                    .await
+                {
+                    Ok(connection) => connection?,
+                    Err(_) => {
+                        interrupted.store(true, Ordering::Release);
+                        return Err(anyhow!(
+                            "retention SQLite maintenance connection budget exceeded"
+                        ));
+                    }
+                };
+            {
+                let interrupted = interrupted.clone();
+                let query_shutdown = shutdown.clone();
+                let mut handle = connection.lock_handle().await?;
+                handle.set_progress_handler(1_000, move || {
+                    let keep_running = Instant::now() < deadline
+                        && query_shutdown
+                            .as_ref()
+                            .is_none_or(|token| !token.is_cancelled());
+                    if !keep_running {
+                        interrupted.store(true, Ordering::Release);
+                    }
+                    keep_running
+                });
+            }
+            let result = sqlx::query(sql).execute(&mut connection).await;
+            let cleanup = connection.lock_handle().await.map(|mut handle| {
+                handle.remove_progress_handler();
+            });
+            // Closing also rolls back any interrupted implicit ANALYZE transaction.
+            let closed = connection.close().await;
+            cleanup_failed = cleanup.is_err() || closed.is_err();
+            cleanup?;
+            closed?;
+            result.map_err(anyhow::Error::from)
+        }
         .await
-        .with_context(|| format!("failed to run {description}"))
-    {
+        .with_context(|| format!("failed to run {description}"));
+    match result {
         Ok(_) => {
             retention_record_commit!(
                 "retention_pragma",
@@ -9157,6 +9211,21 @@ pub(crate) async fn run_best_effort_retention_pragma(
                 Duration::ZERO,
                 admission.p1_waiter_count,
                 0,
+            );
+            Ok(())
+        }
+        Err(_) if interrupted.load(Ordering::Acquire) && !cleanup_failed => {
+            let reason = if shutdown.as_ref().is_some_and(|token| token.is_cancelled()) {
+                "shutdown"
+            } else {
+                "sqlite_maintenance_query_budget"
+            };
+            debug!(
+                operation = "retention_pragma",
+                reason,
+                elapsed_ms = execute_started.elapsed().as_millis() as u64,
+                description,
+                "optional SQLite maintenance cancelled; archive commits remain complete"
             );
             Ok(())
         }

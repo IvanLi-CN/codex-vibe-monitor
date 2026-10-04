@@ -1,4 +1,59 @@
 use super::*;
+use crate::maintenance::{RETENTION_TEST_DB_PRESSURE_GATE, RETENTION_TEST_WRITE_COORDINATOR};
+
+#[tokio::test]
+async fn retention_task_local_optional_sqlite_maintenance_stops_and_releases_writer() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-pragma-budget").await;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let original: i64 = sqlx::query_scalar("SELECT total_tokens FROM codex_invocations")
+        .fetch_one(&pool)
+        .await
+        .expect("original source value");
+    let started = Instant::now();
+    RETENTION_TEST_WRITE_COORDINATOR
+        .scope(
+            crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator(),
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                Arc::new(crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30))),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_millis(100),
+                    run_best_effort_retention_pragma(
+                        &pool,
+                        "UPDATE codex_invocations SET total_tokens = (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000000) SELECT SUM(i) FROM n)",
+                        "test expensive optional SQLite maintenance",
+                    ),
+                ),
+            ),
+        )
+        .await
+        .expect("optional maintenance cancellation is nonfatal");
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT total_tokens FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("uncommitted statement rolled back"),
+        original,
+    );
+    let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("independent writer");
+    tokio::time::timeout(
+        Duration::from_millis(250),
+        sqlx::query("BEGIN IMMEDIATE").execute(&mut writer),
+    )
+    .await
+    .expect("cancelled maintenance released SQLite write lock")
+    .expect("new write transaction");
+    sqlx::query("ROLLBACK")
+        .execute(&mut writer)
+        .await
+        .expect("rollback probe");
+    writer.close().await.expect("close writer");
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
 
 #[tokio::test]
 async fn retention_task_local_cancel_closes_attached_connection_and_cleans_work() {
