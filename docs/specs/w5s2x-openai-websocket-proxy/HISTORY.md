@@ -11,7 +11,7 @@
 - 修复 SQLite tag 清理在保留合法 JSON 对象/数组时的类型保持问题，并补充迁移与通用 tag cleanup 回归覆盖。
 - 在 `c22fb448` 基线上完成 required CI 验证并刷新 version-impact 的 verified evidence；Archive/File I/O required check 通过。
 - 早期 runtime candidate 的 required CI run `37222753000` 全绿；后续 review repair 继续补齐迁移 forward-repair、历史 fixture、Specs 索引和 active streaming regression 覆盖。
-- 最终 candidate `abe361ba9bee399e6c09696a21f5f10f553a017c` 的 required CI run `37226138705` 全绿，覆盖 Rust source quality/Clippy、三类 backend profile、Web、Storybook、E2E、docs/tooling 和 smoke/build artifacts。
+- 最终 runtime candidate `abe361ba9bee399e6c09696a21f5f10f553a017c` 的 required CI run `37226138705` 全绿，覆盖 Rust source quality/Clippy、三类 backend profile、Web、Storybook、E2E、docs/tooling 和 smoke/build artifacts；当前 release head `6b6cce12eff2797ba84185bcd55bc663e8aec0f5` 仅刷新本条 evidence/HISTORY metadata。
 
 ## 2026-07-07
 

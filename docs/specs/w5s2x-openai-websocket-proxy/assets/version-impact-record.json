@@ -64,7 +64,7 @@
         "historical WebSocket read/filter/serialization regression",
         "cargo test retire_websocket_proxy_migration -- --nocapture: 2 passed",
         "cargo test cleanup_non_system_tags_removes_custom_tags_links_and_session_references -- --nocapture: 1 passed",
-        "CI PR 37226138705 (head abe361ba9bee399e6c09696a21f5f10f553a017c): all required checks passed for the final candidate"
+        "CI PR 37226138705 (runtime candidate abe361ba9bee399e6c09696a21f5f10f553a017c): all required checks passed; current release head 6b6cce12eff2797ba84185bcd55bc663e8aec0f5 contains only this evidence/HISTORY refresh"
       ]
     }
   },
