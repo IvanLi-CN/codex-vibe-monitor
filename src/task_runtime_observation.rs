@@ -91,7 +91,11 @@ pub(crate) fn workload_sample(
         samples
             .values()
             .filter(|sample| sample.task_key == task_key)
-            .max_by(|left, right| left.attempted_at.cmp(&right.attempted_at))
+            .max_by(|left, right| {
+                left.attempted_at
+                    .cmp(&right.attempted_at)
+                    .then_with(|| left.execution_uid.cmp(&right.execution_uid))
+            })
             .cloned()
     })
 }
@@ -741,9 +745,9 @@ pub(crate) fn clear_task_runtime_observation_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::{
-        TaskExecutionObservation, clear_task_runtime_observation_for_tests,
+        TaskExecutionObservation, clear_task_runtime_observation_for_tests, new_workload_sample,
         record_managed_task_processed_work, refresh_subset_relation, task_runtime_snapshot,
-        with_managed_task_observation, workload_sample,
+        with_managed_task_observation, workload_observations, workload_sample,
     };
     use std::{
         sync::{Mutex, OnceLock},
@@ -877,6 +881,38 @@ mod tests {
         assert_eq!(sample.managed_run_id, Some(run_id));
         assert_eq!(sample.trigger_kind, "manual");
         observation.finish_with_status("success");
+    }
+
+    #[test]
+    fn latest_in_memory_workload_sample_breaks_timestamp_ties_by_execution_uid() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let attempted_at = "2026-10-04T12:00:00.000Z".to_string();
+        let first = new_workload_sample(
+            "execution-a",
+            "retention_archive",
+            "interval",
+            None,
+            attempted_at.clone(),
+        );
+        let second = new_workload_sample(
+            "execution-b",
+            "retention_archive",
+            "interval",
+            None,
+            attempted_at,
+        );
+        {
+            let mut samples = workload_observations()
+                .lock()
+                .expect("lock workload observations");
+            samples.insert(first.sample_id.clone(), first);
+            samples.insert(second.sample_id.clone(), second);
+        }
+
+        let latest = workload_sample("retention_archive").expect("read latest workload sample");
+
+        assert_eq!(latest.execution_uid, "execution-b");
     }
 
     #[test]
