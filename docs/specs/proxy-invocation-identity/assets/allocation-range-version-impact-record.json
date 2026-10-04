@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Replace per-invocation sequence SQL with committed memory-issued ranges and durable hourly ownership.",
+    "release_unit_description": "Backend PR1 allocation correction; PR2 API/frontend integration remains a later delivery boundary.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Public response fields and the ten-character ID shape remain compatible. New hourly durable ownership and allocator-exclusive reservation ceilings require a new writer contract; earlier-Minor writers are not required to support migrated state.",
+      "assessed_at": "2026-10-05T02:02:28+08:00",
+      "evidence": [
+        "docs/adr/0029-conversation-invocation-range-reservations.md",
+        "docs/adr/0030-durable-hourly-invocation-prefixes.md",
+        "docs/specs/proxy-invocation-identity/assets/allocation-range-migration-record.json"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "Locked design scope; implementation has not started in this documentation change."
+      },
+      "reasoning": "The planned public-API impact is Patch and persistent-state impact is Minor, so the planned release-unit maximum is Minor. No candidate compatibility run has been performed.",
+      "reassessed_at": "2026-10-05T02:02:28+08:00",
+      "evidence": [
+        "docs/specs/proxy-invocation-identity/SPEC.md",
+        "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md"
+      ]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "Pending implementation and candidate compatibility evidence; this record does not claim release readiness.",
+      "verified_at": null,
+      "evidence": [],
+      "status": "not-run"
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "planned_impact": "patch",
+      "supported_consumer_range": "Existing HTTP/WebSocket consumers of the compact ID shape and existing Unavailable response contract; no PR2 response fields are added.",
+      "evidence": []
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "state_description": "Business SQLite conversation ceilings and new hourly prefix ownership, with existing retained IDs and pending terminal journal reconciliation.",
+      "source_program_compatibility_range": "Supported existing 2.x schema/materialization sources, including pre-master, 2.85.1 partial staging, and 2.85.4 single-sequence fixtures; compatibility is planned, not verified.",
+      "evidence": []
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": [
+      "Planned public-api impact: Patch.",
+      "Planned persistent-state impact: Minor.",
+      "Planned maximum: Minor; verified maximum remains unset until candidate evidence is available."
+    ],
+    "validation_status": "pending"
+  }
+}

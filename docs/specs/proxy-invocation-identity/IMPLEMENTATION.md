@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: Implemented for prompt-cache materialization and long-wait proxy isolation
+- Implementation: Materialization and long-wait isolation implemented; allocation-range correction in progress
 - Lifecycle: active
 - Catalog note: Durable backend identity, allocation, persistence, and retention contract.
 
@@ -12,9 +12,11 @@
 
 - `REQ-PII-001`: `src/prompt_cache_conversations.rs` owns the six-character conversation prefix, four-character base-31 sequence, hourly unbound prefix, overflow handling, and cache recovery; HTTP capture and WebSocket preparation use the allocator.
 - `REQ-PII-002`: `prompt_cache_conversations` stores identity and delayed aggregate statistics; `src/schema.rs` installs only additive structure, while the ordered `prompt_cache_conversations_materialization_v1` startup task performs historical materialization in the background. Each 400-key logical page uses an in-memory adaptive 64..400 micro-batch controller with a 32-key floor. The additive `idx_pool_attempts_account_model_success` partial covering index supports the model-health latest-success check without a temporary sort and is safe to create repeatedly during startup. Statistics pages use the existing prompt-cache key/occurred-at expression index and the SQLite rowid tie-breaker without a temporary sort.
-- `REQ-PII-003`: `AppState` cache state carries conversation identities; normalized prompt-cache keys use independent `Arc`/`Weak` allocation locks whose idle registry entries are reclaimed. Identity recovery and sequence reservation run outside the global cache mutex, then update cached state briefly after the interactive SQLite permit is released. Active references are registered before waiting and a drop guard releases them on cancellation; cache capacity remains 4096 and a full cache remains a durable-cache miss rather than a request rejection. Unbound hourly prefixes use a process-local namespace lock only during initialization and exclude issued prefixes, conversation masters, and invocation prefixes.
+- `REQ-PII-003`: `AppState` cache state carries conversation identities; normalized prompt-cache keys use independent `Arc`/`Weak` allocation locks whose idle registry entries are reclaimed. Identity recovery and sequence reservation run outside the global cache mutex, then update cached state briefly after the interactive SQLite permit is released. Active references are registered before waiting and a drop guard releases them on cancellation. Current conversation-bound cache hits still acquire an interactive write permit and reserve one sequence through `UPDATE`, `SELECT`, and transaction commit; they do not yet satisfy the memory-only range-issuance requirement. Cache capacity remains a fixed 4096, and a full cache still uses durable identity without caching rather than rejecting admission. Unbound hourly prefixes remain process-local and exclude issued prefixes, conversation masters, and invocation prefixes.
 - `REQ-PII-004`: `src/sqlite_batch_writer.rs` and prompt-cache key backfill enqueue touched keys without synchronously scanning retained invocations; the startup materialization task drains the durable refresh queue. Identity discovery commits adaptive identity batches and their cursor together. During `stats_rebuild`, each conversation's final source page atomically publishes its aggregate, deletes only the matching queue generation/staging row, and advances the continuous key cursor in one business transaction. A partial source page commits staging alone, so completed prefixes survive a later key's pause or budget boundary. `queue_drain` uses queue deletion rather than the rebuild cursor. Unchanged-source pages continue within the existing three-second run and two-second query budgets, with one visited-key allowance for all pages of that key and a 10 ms scheduler window between page commits. Actual scanned keys and published rows drive run counts, and ETA is nullable until statistics are complete. `src/maintenance/retention.rs` deletes archived invocations before refreshing affected aggregates, releases orphan masters, and clears released identities from memory.
 - `REQ-PII-005`: Allocation, migration, recovery, statistics, retention, collision, and exhaustion paths emit structured diagnostic events using prompt-key fingerprints.
+- `REQ-PII-008`: Aggregate publication no longer updates `last_invoke_sequence`; ceiling ownership is reserved to allocation and recovery. Committed-range issuance and conditional return remain pending.
+- `REQ-PII-010`: Schema setup atomically installs `hourly_invoke_prefixes` and the immutable `invocation_range_ownership_v1` marker. Allocation and lifecycle integration remain pending.
 - `REQ-PII-007`: The live working-set update trigger in `src/schema/prompt_cache_working_set_triggers.rs` declares the source columns used by key, scope, status, timestamp and aggregate projection. The terminal writer's `t_persist_ms` follow-up no longer runs two redundant same-key scans. Relevant updates retain the original old/new-key refresh bodies and live-window guard. Startup atomically replaces the existing three working-set triggers and records `prompt_cache_working_set_relevant_updates_v1` in the existing `schema_refresh_migrations` table; an already initialized database needs no projection-row rebuild for this upgrade.
 - Long-wait acceptance coverage: `scripts/shared-testbox-performance-acceptance --scenario long-wait --duration 600 --rounds 3 --rate 4` drives eight 179-second/180-second-boundary proxy calls, two fast workers, same-key/different-key/unbound allocation, and cancellation while recording allocation, request, terminal confirmation, status, and incomplete-work samples. Fast-call terminal confirmation is observed immediately after each response so the measurement timestamp does not include the sustained workload window; cancellation requires a persisted downstream-closed/client-abort terminal row as well as a bounded client-close duration.
 - Operational follow-up: `GET/PATCH /api/system/prompt-cache/materialization` and managed-task control use the same committed `managed_tasks.enabled` value in the maintenance database. The matching `startup_backfill_progress` checkpoint is updated in that maintenance transaction. Both PATCH handlers use the existing 503 Unavailable response when the control transaction fails. A one-time origin marker preserves an existing maintenance control; only a newly created managed row may be seeded from the old business-database enable bit. The business bit is not read by the run path or written by this task. An in-memory generation gate lets an already registered short SQL step finish while preventing later steps from starting under a stale generation. The existing status response still exposes durable progress, estimated remaining time, recent bounded run history, and the pause/resume control.
@@ -71,9 +73,51 @@
 
 ## Remaining Gaps
 
+- `REQ-PII-008` remains incomplete: the existing per-invocation reservation must become committed 64-sequence ranges, centrally coordinated refill, crash-safe ceiling recovery, and bounded conditional return of unused tails. Statistics publication has relinquished reservation authority.
+- `REQ-PII-009` is not implemented: immediate minimum capacity, one asynchronous indexed seed, a bounded independent activity index, hourly memory-only resizing, and bounded saturation admission are required.
+- `REQ-PII-010` remains incomplete: the additive table exists, but hourly prefix authority must move from process-local state into it, share the range manager, and protect active/pending owners across rollover and retention. The design is settled in ADR 0030.
 - Three-round Linux, non-test service-process `prompt-cache-control` acceptance is a required delivery gate. Delivery evidence carries the exact candidate SHA, scenario digest, persistent checkpoint samples, and completion results; the older adaptive benchmark does not replace this gate.
 - Three-round Linux, non-test service-process `prompt-cache-checkpoint` acceptance is a required delivery gate. Current SHA-bound raw samples and metadata must pass before review or PR readiness.
 - The representative runtime fixture is intentionally ignored by default and must be rerun in a controlled environment when SQLite size or lock-contention characteristics change.
+
+## Development Work Order
+
+This is the locked scope for the PR1 allocation correction. Its packages form one backend delivery
+boundary; they are not separate independently deployable allocator implementations. Public API
+and frontend implementation belongs to PR2 after backend acceptance.
+
+| Package                                  | Dependencies  | Required result                                                                                                                                                                                                     | Acceptance                                                                                                                                               |
+| ---------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1: Durable ownership and upgrade        | None          | Add the hourly table and immutable schema marker; preserve existing conversation masters and historical IDs; make the allocator the only ceiling writer; recover known floors on demand.                            | Idempotent and interrupted upgrade, old partial materialization state, no statistics overwrite, forward repair of committed reservation state.           |
+| A2: Unified range manager                | A1            | One coordinator for conversation and hourly owners; 64-sequence reservations; strict 31/32 and 47/48 thresholds; one standby/refill; commit before memory publication; hot issuance without SQL.                    | Concurrent mixed-owner batching, failed/ambiguous commit, same-hour restart, cancellation, final partial range, and database contention.                 |
+| A3: Activity sizing and cache retirement | A2            | Immediate capacity 128; one indexed asynchronous seed of at most 4096 rows; independent 48-hour activity memory; hourly memory-only resizing; temporary growth and bounded slot admission; conditional tail return. | Delayed seed merge, expiry, query plan, protected shrink, 4096 saturation, 100 ms admission/return/refill waits, and stale-generation fences.            |
+| A4: Lifecycle and diagnostics            | A2, A3        | Protect active and pending persistence identities; carry existing IDs across hour changes; release eligible masters/hourly rows and namespace state; add structured owner/range/cache logs.                         | Terminal journal recovery, retention versus refill/return races, busy/timeout warnings, release then reuse, no raw keys or fragmented reservation files. |
+| A5: Candidate and online acceptance      | A1 through A4 | Bind focused regressions and Linux service-process evidence to the delivery SHA; verify statistics convergence and allocation under pressure before PR2.                                                            | `VER-PII-003`, `VER-PII-008`, `VER-PII-009`, `VER-PII-010`, plus the existing materialization and online latency gates.                                  |
+
+For timed-out return SQL, discard the cache's issuance rights within the budget while retaining
+the owner fence until cancellation/rollback or the committed outcome is known. A replacement must
+not race that operation; it follows bounded admission rather than extending an old SQL operation
+into an unlimited request wait. No global cache lock spans a database wait.
+
+Migration and release-impact planning records are
+`assets/allocation-range-migration-record.json` and
+`assets/allocation-range-version-impact-record.json`. They describe intended validation, not
+completed execution. The planned impact is Minor because durable ownership changes the supported
+writer contract; public response fields remain compatible. Actual release classification requires
+candidate compatibility evidence.
+
+Place focused regressions in the matching backend resource bucket. Run named regressions and
+formatting checks appropriate to each package; use the documented resource-profile runner and
+shared testbox for heavy backend validation and non-test Linux replay. Reuse the existing
+materialization scenarios and their latency/completion limits; extend evidence with actual database
+operation counts, range commit/publication, cache sizing, crash recovery, rollover, and cleanup.
+Historical acceptance locators above do not certify the new allocator candidate.
+
+PR2 may begin only after the deployed backend candidate is confirmed to allocate cache-hit IDs
+without sequence database operations, recover without ID reuse, keep cache/cleanup behavior within
+the locked bounds, and converge to complete conversation statistics with an empty refresh queue.
+PR2 then updates public API and frontend consumers to use persisted conversation identity and
+delayed aggregate statistics. This work order does not report either implementation as completed.
 
 ## Related Changes
 
@@ -81,6 +125,10 @@
 - `docs/adr/0022-prompt-cache-adaptive-materialization.md`
 - `docs/adr/0027-prompt-cache-materialization-step-boundaries.md`
 - `docs/adr/0028-prompt-cache-continuous-statistics-checkpoints.md`
+- `docs/adr/0029-conversation-invocation-range-reservations.md`
+- `docs/adr/0030-durable-hourly-invocation-prefixes.md`
+- `docs/specs/proxy-invocation-identity/assets/allocation-range-migration-record.json`
+- `docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json`
 - `docs/specs/proxy-invocation-identity/assets/version-impact-record.json`
 
 ## References

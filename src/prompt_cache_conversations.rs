@@ -1,5 +1,7 @@
 use super::*;
 
+pub(crate) mod invocation_ranges;
+
 const PROMPT_CACHE_CONVERSATION_STATS_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const PROMPT_CACHE_CONVERSATION_STATS_PROGRESS_OPS: i32 = 1_000;
 const PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED: &str =
@@ -467,6 +469,7 @@ pub(crate) fn prompt_cache_key_fingerprint(prompt_cache_key: &str) -> String {
 }
 
 pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    invocation_ranges::ensure_schema(pool).await?;
     let conversation_id_alphabet = PROXY_INVOKE_ID_ALPHABET.iter().collect::<String>();
     let schema_sql = format!(
         r#"
@@ -3698,14 +3701,9 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             visited: true,
         });
     }
-    let max_sequence = accumulator.max_invoke_id.as_deref().and_then(|invoke_id| {
-        let suffix = invoke_id_suffix(invoke_id, &accumulator.conversation_id)?;
-        decode_prompt_cache_conversation_sequence(suffix)
-    });
     sqlx::query(
-        "UPDATE prompt_cache_conversations SET last_invoke_sequence=MAX(last_invoke_sequence,COALESCE(?1,-1)),request_count=?2,success_count=?3,failure_count=?4,input_tokens=?5,output_tokens=?6,cache_input_tokens=?7,reported_cache_write_tokens=?8,reasoning_tokens=?9,total_tokens=?10,cost=?11,cost_input=?12,cost_cache_write=?13,cost_cache_read=?14,cost_output=?15,cost_reasoning=?16,first_invocation_at=?17,last_invocation_at=?18,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?19",
+        "UPDATE prompt_cache_conversations SET request_count=?1,success_count=?2,failure_count=?3,input_tokens=?4,output_tokens=?5,cache_input_tokens=?6,reported_cache_write_tokens=?7,reasoning_tokens=?8,total_tokens=?9,cost=?10,cost_input=?11,cost_cache_write=?12,cost_cache_read=?13,cost_output=?14,cost_reasoning=?15,first_invocation_at=?16,last_invocation_at=?17,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?18",
     )
-    .bind(max_sequence.map(i64::from))
     .bind(accumulator.request_count)
     .bind(accumulator.success_count)
     .bind(accumulator.failure_count)
@@ -4000,8 +3998,7 @@ pub(crate) async fn refresh_prompt_cache_conversation_stats_on_connection(
     }
     update_query.push(
         ") UPDATE prompt_cache_conversations AS c
-         SET last_invoke_sequence = MAX(c.last_invoke_sequence, COALESCE(r.max_invoke_sequence, -1)),
-             request_count = r.request_count,
+         SET request_count = r.request_count,
              success_count = r.success_count,
              failure_count = r.failure_count,
              input_tokens = r.input_tokens,

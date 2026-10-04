@@ -12,6 +12,13 @@
 - The prompt-cache conversation master replaces request-time derivation as the durable owner of conversation identity and delayed aggregate statistics. Historical materialization is completed by an ordered background task; its 400-key logical pages use adaptive committed micro-batches and yield only at transaction boundaries.
 - WebSocket pre-upstream and per-turn diagnostics now use the same compact identifier contract as HTTP proxy capture.
 
+## Allocation Reservation Boundary
+
+- The range reservation contract assigns the conversation master's `last_invoke_sequence` to committed reservation authority, independently of actual invocation statistics. This corrects the gap where avoiding existence queries still allowed a database transaction for every issued sequence; current implementation gaps remain explicit in `IMPLEMENTATION.md`.
+- Cache sizing starts at the minimum before a bounded asynchronous history seed, then follows memory-only hourly activity estimates. Eviction attempts to return never-issued tails within a fixed budget; uncertain returns preserve durable recovery rather than reusing memory ranges.
+- [ADR 0029](../../adr/0029-conversation-invocation-range-reservations.md) locks the 64-sequence reservation, refill, return, and bounded cache contract. [ADR 0030](../../adr/0030-durable-hourly-invocation-prefixes.md) places unbound hourly ownership in the business SQLite database and the same manager. This supersedes the process-local-only hourly authority described below without rewriting historical IDs.
+- The allocation correction preserves known legacy sequence floors on demand, keeps structural migration separate from statistics materialization, and uses forward repair for stopped releases. Earlier writers unaware of reservation ownership are outside the newly migrated state's supported writer contract; planned migration and compatibility evidence are recorded separately from implementation results.
+
 ## Compatibility Follow-up
 
 - Proxy allocation now uses per-normalized-key async locks with weak idle-entry cleanup, registers active references before waits, and releases them on failure or cancellation. The global cache mutex is held only for short in-memory operations; identity and sequence SQL use one `InteractiveProxy` admission and cache state is updated after admission is released.
