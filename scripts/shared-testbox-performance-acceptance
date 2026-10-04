@@ -1448,10 +1448,12 @@ services:
     image: "$COMPAT_IMAGE_TAG"
 YAML
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" stop app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py reader-snapshot </dev/null >> "$LOAD_LOG"
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" up -d app
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py wait-health </dev/null
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py compatibility-read "$round_index" </dev/null >> "$LOAD_LOG"
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" stop app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py reader-compare </dev/null >> "$LOAD_LOG"
       fi
     else
       legacy_enabled=0

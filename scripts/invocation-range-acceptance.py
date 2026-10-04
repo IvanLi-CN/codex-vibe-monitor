@@ -147,5 +147,24 @@ def verify():
          returns=len(returns), duplicate_ids=0, largest_range=max(end-start for _, start, end in reservations))
 
 
+def reader_ownership(compare=False):
+    with base.open_db(base.BUSINESS_DB, timeout=10) as db:
+        ownership = {
+            'conversations': db.execute('SELECT conversation_id,last_invoke_sequence FROM prompt_cache_conversations ORDER BY conversation_id').fetchall(),
+            'hours': db.execute('SELECT utc_hour,prefix,last_invoke_sequence FROM hourly_invoke_prefixes ORDER BY utc_hour').fetchall(),
+        }
+    # JSON normalization makes tuple/list shapes identical for the persisted snapshot.
+    ownership = json.loads(json.dumps(ownership))
+    if compare:
+        with open(STATE, encoding='utf-8') as source:
+            if json.load(source) != ownership:
+                raise RuntimeError('older-reader smoke changed durable reservation ownership')
+        emit('range-older-reader-ownership-preserved', conversations=len(ownership['conversations']), hours=len(ownership['hours']))
+    else:
+        with open(STATE, 'w', encoding='utf-8') as output:
+            json.dump(ownership, output)
+
+
 if __name__ == '__main__':
-    {'install': install, 'probe': probe, 'snapshot': snapshot, 'recover': recover, 'verify': verify}[sys.argv[1]]()
+    {'install': install, 'probe': probe, 'snapshot': snapshot, 'recover': recover, 'verify': verify,
+     'reader-snapshot': reader_ownership, 'reader-compare': lambda: reader_ownership(True)}[sys.argv[1]]()
