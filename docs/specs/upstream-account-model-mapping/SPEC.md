@@ -101,7 +101,7 @@
 
 ### Testing
 
-- Rust 单元与集成测试覆盖匹配优先级、API 验证、候选资格、缓存 generation、保存事务、HTTP/流式/WS 改写和尝试归档。
+- Rust 单元与集成测试覆盖匹配优先级、API 验证、候选资格、缓存 generation、保存事务、HTTP/流式改写和尝试归档；WS 改写覆盖属于 ADR 0020 前的历史测试范围，当前不再宣称 live WebSocket 改写能力。
 - Vitest 覆盖编辑器的自定义输入、重复验证、排序、保存和脏草稿门禁。
 
 ### UI / Storybook (if applicable)
