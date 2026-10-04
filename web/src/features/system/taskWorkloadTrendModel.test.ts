@@ -83,7 +83,31 @@ describe("buildWorkloadChartModels", () => {
     const model = buildWorkloadChartModels([running])[0];
 
     expect(model.data[0].runningMarker).toBe(0);
+    expect(model.data[0].failedMarker).toBeNull();
     expect(model.segments).toHaveLength(0);
+  });
+
+  it("marks counted running and failed attempts at their highest measured value", () => {
+    const running = sample(0, {
+      status: "running",
+      finishedAt: null,
+      pending: metric(1_200),
+      discovered: metric(180),
+      processed: metric(90),
+    });
+    const failed = sample(1, {
+      status: "failed",
+      pending: metric(800),
+      discovered: null,
+      processed: metric(0),
+    });
+
+    const model = buildWorkloadChartModels([running, failed])[0];
+
+    expect(model.data[0].runningMarker).toBe(1_200);
+    expect(model.data[0].failedMarker).toBeNull();
+    expect(model.data[1].runningMarker).toBeNull();
+    expect(model.data[1].failedMarker).toBe(800);
   });
 
   it("draws a dashed bridge only over confirmed skipped attempts", () => {

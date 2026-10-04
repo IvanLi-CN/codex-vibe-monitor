@@ -2359,9 +2359,11 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         task_run.as_ref().map(|run| run.id),
     );
 
-    if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), true, None).await {
+    let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), true, None).await;
+    observation.finish_from_result(&refresh_result);
+
+    if let Err(err) = refresh_result {
         let detail = err.to_string();
-        observation.finish_with_status_and_reason("failed", Some(&detail));
         if let Some(run) = task_run.as_ref() {
             finish_system_task_run_batched(
                 state.as_ref(),
@@ -2386,7 +2388,6 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
     let added_node_count = after_subscription_keys
         .difference(&before_subscription_keys)
         .count();
-    observation.finish_with_status("success");
     if let Some(run) = task_run.as_ref() {
         finish_system_task_run_batched(
             state.as_ref(),

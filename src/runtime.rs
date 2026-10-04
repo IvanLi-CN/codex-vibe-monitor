@@ -2681,14 +2681,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 Some(startup_known_subscription_keys),
             )
             .await;
-            observation.finish_with_status(if refresh_result.is_ok() {
-                "success"
-            } else {
-                "failed"
-            });
+            observation.finish_from_result(&refresh_result);
             if let Err(err) = refresh_result {
                 let detail = err.to_string();
-                observation.finish_with_status_and_reason("failed", Some(&detail));
                 if let Some(run) = startup_run.as_ref() {
                     let _ = finish_system_task_run_reliably(
                         state.as_ref(),
@@ -2702,7 +2697,6 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 }
                 warn!(error = %err, "failed to refresh forward proxy subscriptions at startup");
             } else {
-                observation.finish_with_status("success");
                 if let Some(run) = startup_run.as_ref() {
                     let _ = finish_system_task_run_reliably(
                         state.as_ref(),
@@ -2764,14 +2758,9 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         task_run.as_ref().map(|run| run.id),
                     );
                     let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), false, None).await;
-                    observation.finish_with_status(if refresh_result.is_ok() {
-                        "success"
-                    } else {
-                        "failed"
-                    });
+                    observation.finish_from_result(&refresh_result);
                     if let Err(err) = refresh_result {
                         let detail = err.to_string();
-                        observation.finish_with_status_and_reason("failed", Some(&detail));
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
                                 state.as_ref(),
@@ -2785,7 +2774,6 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         }
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
                     } else {
-                        observation.finish_with_status("success");
                         if let Some(run) = task_run.as_ref() {
                             let _ = finish_system_task_run_reliably(
                                 state.as_ref(),

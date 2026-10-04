@@ -1,3 +1,4 @@
+// biome-ignore-all lint/a11y/noNoninteractiveTabindex: the scrollable run details region must be keyboard focusable
 import { type KeyboardEvent, useMemo, useRef, useState } from "react";
 import {
   Area,
@@ -17,7 +18,12 @@ import type {
   TaskWorkloadMetric,
   TaskWorkloadTrend as TaskWorkloadTrendData,
 } from "../../lib/api";
-import { chartBaseTokens, taskWorkloadTokens, withOpacity } from "../../lib/chartTheme";
+import {
+  chartBaseTokens,
+  chartStatusTokens,
+  taskWorkloadTokens,
+  withOpacity,
+} from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import {
   buildWorkloadChartModels,
@@ -139,6 +145,7 @@ function createEmptyPlotData(): WorkloadPlotDatum[] {
     label: "",
     sample: null,
     runningMarker: null,
+    failedMarker: null,
     skipMarker: null,
   }));
 }
@@ -212,6 +219,46 @@ function sampleDetail(
   );
 }
 
+function InspectableStatusMarker({
+  sample,
+  cx,
+  cy,
+  status,
+  color,
+  onInspect,
+}: {
+  sample: NonNullable<WorkloadPlotDatum["sample"]>;
+  cx: number;
+  cy: number;
+  status: "running" | "failed";
+  color: string;
+  onInspect: (sample: NonNullable<WorkloadPlotDatum["sample"]>) => void;
+}) {
+  const isRunning = status === "running";
+  const label = statusLabel(status);
+  return (
+    <foreignObject x={cx - 8} y={cy - 8} width={16} height={16}>
+      <div className="flex h-4 w-4 items-center justify-center">
+        <button
+          type="button"
+          data-testid={`task-workload-${status}-marker`}
+          className={`inline-flex h-3.5 w-3.5 items-center justify-center border bg-base-100 text-[9px] font-bold leading-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary ${isRunning ? "rounded-full border-dashed" : "rounded-sm"}`}
+          style={{ borderColor: color, color }}
+          aria-label={`查看${label}运行详情${sample.reason ? `：${sample.reason}` : ""}`}
+          onFocus={() => onInspect(sample)}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onInspect(sample);
+          }}
+        >
+          {isRunning ? null : "!"}
+        </button>
+      </div>
+    </foreignObject>
+  );
+}
+
 function RunMetricChart({
   model,
   colors,
@@ -221,6 +268,7 @@ function RunMetricChart({
   height,
   compact,
   capabilities,
+  failureColor,
 }: {
   model: WorkloadChartModel;
   colors: ReturnType<typeof taskWorkloadTokens>;
@@ -230,8 +278,9 @@ function RunMetricChart({
   height: number;
   compact: boolean;
   capabilities?: TaskMeasurementCapabilities;
+  failureColor: string;
 }) {
-  const [inspectedSkipSample, setInspectedSkipSample] = useState<WorkloadPlotDatum["sample"]>(null);
+  const [inspectedSample, setInspectedSample] = useState<WorkloadPlotDatum["sample"]>(null);
   const chartData = model.data.length > 0 ? model.data : createEmptyPlotData();
   return (
     <figure className="relative w-full" style={{ height }} aria-label={`工作量：${model.unit}`}>
@@ -267,7 +316,7 @@ function RunMetricChart({
           />
           <ReferenceLine y={0} stroke={axis.axisText} strokeOpacity={0.55} />
           <Tooltip
-            active={inspectedSkipSample ? false : undefined}
+            active={inspectedSample ? false : undefined}
             content={({ active, payload }) => {
               const sample = payload?.[0]?.payload?.sample as
                 | WorkloadPlotDatum["sample"]
@@ -325,18 +374,51 @@ function RunMetricChart({
               type="linear"
               stroke="transparent"
               strokeWidth={0}
-              dot={{
-                r: 4,
-                fill: axis.axisText,
-                stroke: colors.processed,
-                strokeWidth: 2,
+              dot={(props) => {
+                const datum = props.payload as WorkloadPlotDatum | undefined;
+                if (datum?.sample?.status !== "running" || props.cx == null || props.cy == null) {
+                  return null;
+                }
+                return (
+                  <InspectableStatusMarker
+                    sample={datum.sample}
+                    cx={props.cx}
+                    cy={props.cy}
+                    status="running"
+                    color={colors.processed}
+                    onInspect={setInspectedSample}
+                  />
+                );
               }}
-              activeDot={{
-                r: 6,
-                fill: axis.axisText,
-                stroke: colors.processed,
-                strokeWidth: 2,
+              activeDot={false}
+              connectNulls={false}
+              isAnimationActive={false}
+            />
+          ) : null}
+          {chartData.some((datum) => datum.failedMarker != null) ? (
+            <Line
+              dataKey="failedMarker"
+              name="失败"
+              type="linear"
+              stroke="transparent"
+              strokeWidth={0}
+              dot={(props) => {
+                const datum = props.payload as WorkloadPlotDatum | undefined;
+                if (datum?.sample?.status !== "failed" || props.cx == null || props.cy == null) {
+                  return null;
+                }
+                return (
+                  <InspectableStatusMarker
+                    sample={datum.sample}
+                    cx={props.cx}
+                    cy={props.cy}
+                    status="failed"
+                    color={failureColor}
+                    onInspect={setInspectedSample}
+                  />
+                );
               }}
+              activeDot={false}
               connectNulls={false}
               isAnimationActive={false}
             />
@@ -369,11 +451,11 @@ function RunMetricChart({
                         className="h-2 w-2 rounded-full border focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
                         style={{ backgroundColor: axis.axisText, borderColor: axis.axisText }}
                         aria-label={`查看跳过运行详情：${datum.sample.reason ?? "原因未知"}`}
-                        onFocus={() => setInspectedSkipSample(datum.sample)}
+                        onFocus={() => setInspectedSample(datum.sample)}
                         onPointerDown={(event) => event.stopPropagation()}
                         onClick={(event) => {
                           event.stopPropagation();
-                          setInspectedSkipSample(datum.sample);
+                          setInspectedSample(datum.sample);
                         }}
                       />
                     </div>
@@ -387,29 +469,28 @@ function RunMetricChart({
           ) : null}
         </ComposedChart>
       </ResponsiveContainer>
-      {inspectedSkipSample ? (
+      {inspectedSample ? (
         <section
-          aria-label="跳过运行详情"
-          data-testid="task-workload-skip-detail"
+          aria-label="运行详情"
+          data-testid="task-workload-run-detail"
           className="absolute left-2 top-2 z-20 max-w-[min(24rem,calc(100%-1rem))] rounded-md border border-base-300 bg-base-100 p-3 text-base-content shadow-lg"
         >
           <div className="mb-1 flex items-start justify-between gap-3 text-xs font-semibold">
             <span>
-              {formatTime(inspectedSkipSample.attemptedAt)} ·{" "}
-              {statusLabel(inspectedSkipSample.status)}
+              {formatTime(inspectedSample.attemptedAt)} · {statusLabel(inspectedSample.status)}
             </span>
             <button
               type="button"
               aria-label="关闭运行详情"
               className="-mr-1 -mt-1 inline-flex h-7 w-7 shrink-0 items-center justify-center text-base-content/65 hover:text-base-content"
-              onClick={() => setInspectedSkipSample(null)}
+              onClick={() => setInspectedSample(null)}
             >
               <span aria-hidden="true">关闭</span>
             </button>
           </div>
-          <div className="max-h-40 overflow-auto">
-            {sampleDetail(inspectedSkipSample, capabilities)}
-          </div>
+          <section tabIndex={0} aria-label="运行计量详情" className="max-h-40 overflow-auto">
+            {sampleDetail(inspectedSample, capabilities)}
+          </section>
         </section>
       ) : null}
       {hint ? (
@@ -567,6 +648,7 @@ export function TaskWorkloadTrend({
     sample.sampleId.startsWith("coverage-gap:"),
   );
   const colors = taskWorkloadTokens(themeMode);
+  const statusColors = chartStatusTokens(themeMode);
   const axis = chartBaseTokens(themeMode);
   const isRetention = taskKey === "retention_archive";
   const backlogPoints = retentionTrend ?? [];
@@ -589,6 +671,15 @@ export function TaskWorkloadTrend({
       return next;
     });
   };
+
+  const hasVisibleRunningSample = visibleSamples.some((sample) => sample.status === "running");
+  const hasVisibleMeasuredFailure = visibleSamples.some(
+    (sample) =>
+      sample.status === "failed" &&
+      WORKLOAD_SERIES.some(
+        (series) => sample[series]?.value != null && sample[series]?.coverage !== "unknown",
+      ),
+  );
 
   const handleTabKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const activeIndex = view === "runs" ? 0 : 1;
@@ -637,6 +728,28 @@ export function TaskWorkloadTrend({
           </button>
         );
       })}
+      {hasVisibleRunningSample ? (
+        <span className="inline-flex min-h-8 items-center gap-2 text-sm text-base-content">
+          <span
+            aria-hidden="true"
+            className="h-3 w-3 shrink-0 rounded-full border-2 border-dashed"
+            style={{ borderColor: colors.processed }}
+          />
+          运行中
+        </span>
+      ) : null}
+      {hasVisibleMeasuredFailure ? (
+        <span className="inline-flex min-h-8 items-center gap-2 text-sm text-base-content">
+          <span
+            aria-hidden="true"
+            className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-sm text-[9px] font-bold leading-none"
+            style={{ backgroundColor: statusColors.failure, color: axis.tooltipBg }}
+          >
+            !
+          </span>
+          失败
+        </span>
+      ) : null}
     </fieldset>
   );
 
@@ -733,6 +846,7 @@ export function TaskWorkloadTrend({
                   height={chartHeight}
                   compact={isCompactViewport}
                   capabilities={capabilities}
+                  failureColor={statusColors.failure}
                 />
               ))
             : null}

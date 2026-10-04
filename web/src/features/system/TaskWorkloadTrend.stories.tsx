@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
+import { act } from "react";
 import { expect, userEvent, within } from "storybook/test";
 import type {
   TaskMeasurementCapabilities,
@@ -8,7 +9,7 @@ import type {
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "./TaskWorkloadTrend";
 import { buildRetentionWorkloadFixture } from "./taskWorkloadFixtures";
 
-const NOW = Date.now();
+const NOW = Date.parse("2026-10-04T12:00:00.000Z");
 const fixture = buildRetentionWorkloadFixture({
   nowMs: NOW,
   sampleCount: 100,
@@ -27,6 +28,19 @@ const skippedRunTrend = buildRetentionWorkloadFixture({
   finalPending: 32_000,
   skippedIndices: [6],
 }).trend;
+const runningWithCountersTrend: WorkloadTrend = {
+  ...trend,
+  samples: trend.samples.map((sample, index) =>
+    index === trend.samples.length - 1
+      ? {
+          ...sample,
+          status: "running",
+          finishedAt: null,
+          reason: null,
+        }
+      : sample,
+  ),
+};
 
 const emptyTrend: WorkloadTrend = {
   revision: 0,
@@ -284,7 +298,7 @@ export const SkippedRunInspection: Story = {
     if (!chart || !marker) throw new Error("Skipped-run marker is missing");
 
     await userEvent.pointer({ target: marker, keys: "[TouchA]" });
-    let detail = canvas.getByTestId("task-workload-skip-detail");
+    let detail = canvas.getByTestId("task-workload-run-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toHaveTextContent("确认跳过");
     await expect(detail).toHaveTextContent("资源准入确认跳过");
@@ -295,12 +309,76 @@ export const SkippedRunInspection: Story = {
       "button[data-testid='task-workload-skip-marker-dot']",
     );
     if (!keyboardMarker) throw new Error("Skipped-run marker was removed");
-    keyboardMarker.focus();
+    await act(async () => keyboardMarker.focus());
     await userEvent.keyboard("{Enter}");
-    detail = canvas.getByTestId("task-workload-skip-detail");
+    detail = canvas.getByTestId("task-workload-run-detail");
     await expect(detail).toBeVisible();
     await expect(detail).toHaveTextContent("确认跳过");
     await expect(detail).toHaveTextContent("资源准入确认跳过");
+  },
+};
+
+export const FailedMeasuredRunInspection: Story = {
+  args: { taskKey: "retention_archive", trend, state: "ready" },
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const marker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-failed-marker']",
+    );
+    if (!marker) throw new Error("Measured failed-run marker is missing");
+
+    await userEvent.pointer({ target: marker, keys: "[TouchA]" });
+    let detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("失败");
+    await expect(detail).toHaveTextContent(/ invocation rows|invocation rows/);
+    await userEvent.pointer({ target: marker, keys: "[/TouchA]" });
+    await userEvent.click(canvas.getByRole("button", { name: "关闭运行详情" }));
+
+    const keyboardMarker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-failed-marker']",
+    );
+    if (!keyboardMarker) throw new Error("Measured failed-run marker was removed");
+    await act(async () => keyboardMarker.focus());
+    await userEvent.keyboard("{Enter}");
+    detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("失败");
+    await expect(detail).toHaveTextContent("部分归档提交后遇到可恢复错误");
+  },
+};
+
+export const RunningWithCountersInspection: Story = {
+  args: { taskKey: "retention_archive", trend: runningWithCountersTrend, state: "ready" },
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const marker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-running-marker']",
+    );
+    if (!marker) throw new Error("Measured running-run marker is missing");
+
+    await userEvent.pointer({ target: marker, keys: "[TouchA]" });
+    let detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("运行中");
+    await expect(detail).toHaveTextContent(/待处理量：\s*\d/);
+    await userEvent.pointer({ target: marker, keys: "[/TouchA]" });
+    await userEvent.click(canvas.getByRole("button", { name: "关闭运行详情" }));
+
+    const keyboardMarker = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-running-marker']",
+    );
+    if (!keyboardMarker) throw new Error("Measured running-run marker was removed");
+    keyboardMarker.focus();
+    await userEvent.keyboard("{Enter}");
+    detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("运行中");
+    await expect(detail).toHaveTextContent("实际开始：");
   },
 };
 
@@ -340,20 +418,31 @@ export const RunningWithoutCounters: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const chart = canvasElement.querySelector<HTMLElement>('[role="application"]');
-    const point = canvasElement.querySelector<SVGCircleElement>("circle.recharts-dot");
+    const point = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-running-marker']",
+    );
     if (!chart || !point) throw new Error("Unmeasured running point is missing");
 
     await userEvent.pointer({ target: point, keys: "[TouchA]" });
-    await expect(canvas.getByText(/运行中/)).toBeVisible();
-    await expect(canvas.getByText(/实际开始：/)).toBeVisible();
-    await expect(canvas.getByText("待处理量：")).toBeVisible();
-    await expect(canvas.getAllByText("不适用")).toHaveLength(2);
-    await expect(canvas.getAllByText("未知").length).toBeGreaterThan(0);
+    let detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("运行中");
+    await expect(detail).toHaveTextContent("实际开始：");
+    await expect(detail).toHaveTextContent("待处理量：");
+    await expect(detail).toHaveTextContent("不适用");
+    await expect(detail).toHaveTextContent("未知");
     await userEvent.pointer({ target: point, keys: "[/TouchA]" });
+    await userEvent.click(canvas.getByRole("button", { name: "关闭运行详情" }));
 
-    chart.focus();
+    const keyboardPoint = canvasElement.querySelector<HTMLButtonElement>(
+      "button[data-testid='task-workload-running-marker']",
+    );
+    if (!keyboardPoint) throw new Error("Unmeasured running point was removed");
+    await act(async () => keyboardPoint.focus());
     await userEvent.keyboard("{Enter}");
-    await expect(canvas.getByText(/运行中/)).toBeVisible();
+    detail = canvas.getByTestId("task-workload-run-detail");
+    await expect(detail).toBeVisible();
+    await expect(detail).toHaveTextContent("运行中");
   },
 };
 
@@ -414,6 +503,21 @@ export const MobileLightBacklog: Story = {
 export const MobileDark: Story = {
   ...DarkTheme,
   parameters: { viewport: { defaultViewport: "mobile393" } },
+};
+
+export const MobileLightCandidates: Story = {
+  args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
+  parameters: { viewport: { defaultViewport: "mobile393" } },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "隐藏待处理量" }));
+    await expect(canvas.getByRole("button", { name: "显示待处理量" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    await expect(canvas.getByRole("figure", { name: "工作量：invocation rows" })).toBeVisible();
+  },
 };
 
 export const MobileRunningWithoutCounters: Story = {

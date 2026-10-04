@@ -524,6 +524,16 @@ impl TaskExecutionObservation {
         self.finish_with_status_and_reason(status, None);
     }
 
+    pub(crate) fn finish_from_result<E: std::fmt::Display>(&self, result: &Result<(), E>) {
+        match result {
+            Ok(()) => self.finish_with_status("success"),
+            Err(error) => {
+                let reason = error.to_string();
+                self.finish_with_status_and_reason("failed", Some(&reason));
+            }
+        }
+    }
+
     pub(crate) fn finish_with_status_and_reason(&self, status: &str, reason: Option<&str>) {
         if self.inner.ended.swap(true, Ordering::AcqRel) {
             return;
@@ -867,6 +877,29 @@ mod tests {
         assert_eq!(sample.managed_run_id, Some(run_id));
         assert_eq!(sample.trigger_kind, "manual");
         observation.finish_with_status("success");
+    }
+
+    #[test]
+    fn failed_system_task_observation_keeps_the_result_reason() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let observation = TaskExecutionObservation::begin_for_system_task_run(
+            "forward_proxy_subscription_refresh",
+            "interval",
+            "processing",
+            Some(43),
+        );
+        let result: Result<(), &str> = Err("subscription refresh failed");
+
+        observation.finish_from_result(&result);
+
+        let sample = workload_sample("forward_proxy_subscription_refresh")
+            .expect("record the failed refresh attempt");
+        assert_eq!(sample.status, "failed");
+        assert_eq!(
+            sample.reason.as_deref(),
+            Some("subscription refresh failed")
+        );
     }
 
     #[test]

@@ -13,6 +13,7 @@ export interface WorkloadPlotDatum {
   label: string;
   sample: TaskWorkloadSample | null;
   runningMarker: number | null;
+  failedMarker: number | null;
   skipMarker: number | null;
   [key: string]: unknown;
 }
@@ -218,21 +219,24 @@ export function buildWorkloadChartModels(
   if (units.length === 0) units.push("单位未知");
 
   return units.map((unit) => {
-    const data: WorkloadPlotDatum[] = ordered.map((sample, index) => ({
-      index,
-      label: sample.attemptedAt,
-      sample,
-      runningMarker:
-        unit === units[0] &&
-        sample.status === "running" &&
-        !WORKLOAD_SERIES.some((series) => {
-          const metric = metricFor(sample, series);
-          return usableMetric(metric) && metric.unit === unit && metric.coverage !== "unknown";
-        })
-          ? 0
-          : null,
-      skipMarker: isConfirmedSkip(sample) ? 0 : null,
-    }));
+    const data: WorkloadPlotDatum[] = ordered.map((sample, index) => {
+      const measuredValues = WORKLOAD_SERIES.flatMap((series) => {
+        const metric = metricFor(sample, series);
+        return usableMetric(metric) && metric.unit === unit && metric.coverage !== "unknown"
+          ? [metric.value]
+          : [];
+      });
+      const statusValue = measuredValues.length > 0 ? Math.max(...measuredValues) : null;
+      return {
+        index,
+        label: sample.attemptedAt,
+        sample,
+        runningMarker:
+          sample.status !== "running" ? null : (statusValue ?? (unit === units[0] ? 0 : null)),
+        failedMarker: sample.status === "failed" ? statusValue : null,
+        skipMarker: isConfirmedSkip(sample) ? 0 : null,
+      };
+    });
     const segments: WorkloadSeriesSegment[] = [];
     let nextSegment = 0;
 
