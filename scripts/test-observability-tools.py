@@ -26,13 +26,13 @@ observe = load("cvm_observe", SCRIPTS / "cvm-observe")
 cpu = load("cvm_cpu", SCRIPTS / "cvm-hotpath-cpu")
 OLD_IMAGE = "example/cvm@sha256:" + "a" * 64
 
-def fixture(path):
+def fixture(path, ddl_transform=None):
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode=WAL")
     connection.execute("PRAGMA wal_autocheckpoint=0")
     connection.execute("PRAGMA user_version=1")
     # The actual retired v1 DDL is independent of the migration validator's tuples.
-    connection.executescript('''
+    ddl = '''
         CREATE TABLE performance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE performance_epochs (epoch TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT);
         CREATE TABLE performance_buckets (
@@ -47,7 +47,8 @@ def fixture(path):
         CREATE TABLE performance_collector_health (
             id INTEGER PRIMARY KEY CHECK(id = 1), state TEXT NOT NULL, last_successful_flush TEXT,
             dropped_samples INTEGER NOT NULL, flush_failure_count INTEGER NOT NULL, last_error TEXT);
-    ''')
+    '''
+    connection.executescript(ddl_transform(ddl) if ddl_transform is not None else ddl)
     connection.execute("INSERT INTO performance_meta VALUES ('schema_version','1')")
     connection.execute("INSERT INTO performance_epochs VALUES ('wal-only','now',NULL)")
     connection.commit()
@@ -266,6 +267,33 @@ class RetirementTests(unittest.TestCase):
             self.assertEqual(rejected["state"], "failed")
             self.assertEqual(rejected["failureClass"], "unrecognized_schema")
             self.assertEqual(rejected["sourceOwnership"], "unverified")
+
+    def test_extra_table_check_and_changed_default_preserve_unknown_source(self):
+        changes = [
+            lambda ddl: ddl.replace("PRIMARY KEY(bucket_start", "CHECK(sample_count >= 0), PRIMARY KEY(bucket_start"),
+            lambda ddl: ddl.replace("weighted_sum REAL NOT NULL DEFAULT 0", "weighted_sum REAL NOT NULL DEFAULT 9"),
+        ]
+        for index, change in enumerate(changes):
+            with self.subTest(change=index):
+                source = self.data / f"unknown-ddl-{index}.sqlite"
+                fixture(source, change).close()
+                before = migration.digest(source)
+                with closing(sqlite3.connect(source)) as connection:
+                    self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone(), ("ok",))
+                with self.assertRaisesRegex(ValueError, "schema DDL"):
+                    migration.archive(source, self.business, self.data, self.archive, f"unknown-ddl-{index}", OLD_IMAGE, self.config, "2.60.0")
+                self.assertEqual(migration.digest(source), before)
+                manifest = json.loads((self.archive / f"unknown-ddl-{index}" / "manifest.json").read_text())
+                self.assertEqual(manifest["state"], "failed")
+                self.assertEqual(manifest["sourceOwnership"], "unverified")
+                self.assertEqual(manifest["failureClass"], "unrecognized_schema")
+
+    def test_known_schema_accepts_formatting_and_comments(self):
+        original = fixture(self.source, lambda ddl: ddl.replace("CREATE TABLE", "create /* formatting only */ table"))
+        try:
+            self.assertEqual(self.run_archive()["state"], "archived")
+        finally:
+            original.close()
 
     def test_parent_symlink_restores_without_creating_a_leaf_alias(self):
         alias = self.root / "data-alias"

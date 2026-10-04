@@ -160,6 +160,18 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。
 资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。
 
+资源准入使用 PSI `some avg10/avg60`：CPU <2%、IO <5%、memory <0.1%。每轮
+预热后按 20 秒间隔取得连续三次安静样本；额外等待每轮最多 300 秒、总计 900 秒。
+正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；压力
+超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable 并阻断门禁。
+等待超限不自动重跑；70 分钟 job 上限、5% CV 和开销预算保持不变。
+`measurement-windows.json` 保存逐窗口判定，`resource-observer.jsonl` 与
+`environment-admission.jsonl` 保存带窗口身份的原始证据，失败时也按白名单上传。
+
+应用浏览器上报使用固定 60 秒限流窗口；客户端身份由现有反向代理负责。
+101 上线验收必须确认入口覆盖客户端传入的 `X-Real-IP`，且应用监听端口不能
+从公网直接访问；该检查不能用测试 fixture 推定通过。
+
 每次 attempt 的 `observability-acceptance-<run_id>-<attempt>` artifact 保留 14 天，
 包含原始样本、比较摘要、runner/资源环境、场景结果与七字段 `empirical-card.json`。
 只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions

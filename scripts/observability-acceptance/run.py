@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from environment import actions_context, comparison_report, observe_resources, quiet_admission
+from environment import AdmissionBudget, actions_context, comparison_report, observe_resources, quiet_admission, verify_measurement_evidence
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -169,13 +169,13 @@ class Run:
             raise ValueError("performance acceptance must run in GitHub Actions")
         actions_context(self.source,self.root,self.args.candidate)
         quiet_admission(self.root)
-        with observe_resources(self.root):
-            return self.overhead_windows()
+        return self.overhead_windows()
     def overhead_windows(self):
         # Stop before snapshotting, then use the same seeded state and offered load every round.
         self.compose("stop","app")
         baseline=self.root/"baseline-data";shutil.copytree(self.data,baseline)
         samples={"false":[],"true":[]}
+        admission_budget=AdmissionBudget()
         for index in range(3):
             for enabled in ["false","true"] if index%2==0 else ["true","false"]:
                 directory=self.root/f"ab-{index}-{enabled}";shutil.copytree(baseline,directory);directory.chmod(0o770)
@@ -190,12 +190,16 @@ class Run:
                 self.compose("up","-d","app");self.wait_app()
                 # Observe two complete 30s resource-sampler cycles before timing.
                 self.client("load","--seconds","60","--rate",str(self.args.rate))
-                before=self.cpu_usec()
-                result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
-                result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
-                result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
-                samples[enabled].append(result)
-                (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
+                window={"windowId":f"{index}-{enabled}","pairIndex":index,"enabled":enabled}
+                window["admissionWaitSeconds"]=quiet_admission(self.root,timeout=300,window=window,budget=admission_budget)
+                with observe_resources(self.root,window):
+                    before=self.cpu_usec()
+                    result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
+                    result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
+                    result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
+                    result["windowId"]=window["windowId"]
+                    samples[enabled].append(result)
+                    (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
                 assert result["cpuCores"]<1.5,"saturated load cannot establish observability overhead"
                 assert result["durationSeconds"]<=self.args.seconds*1.05,"request backlog cannot establish non-saturated overhead"
                 self.compose("stop","app")
@@ -208,6 +212,13 @@ class Run:
         expected={"https-auth-query","monitoring-fault-isolation","original-process-cpu"}
         if self.suite=="full": expected.add("default-observability-ab")
         success=all(row["status"]=="passed" for row in self.results.values()) and set(self.results)==expected
+        if success and self.suite=="full":
+            try:
+                verify_measurement_evidence(self.root)
+            except OSError:
+                self.results["default-observability-ab"]={"status":"unavailable","error":"measurement environment evidence is incomplete or invalid"}
+                (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
+                success=False
         status="passed" if success else "unavailable" if any(row["status"]=="unavailable" for row in self.results.values()) else "failed"
         card={"empirical_acceptance":"required","empirical_acceptance_rationale":"GitHub-hosted exact-image runtime and default CPU/request plus p95 overhead acceptance." if self.suite=="full" else "Runtime integration only; this card does not certify the performance budget.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))),"evidence_locator":self.context["evidenceLocator"] if self.context else str(self.root)}
         (self.root/("empirical-card.json" if self.suite=="full" else "runtime-card.json")).write_text(json.dumps(card,indent=2)+"\n")

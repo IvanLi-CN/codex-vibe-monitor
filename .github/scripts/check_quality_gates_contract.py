@@ -125,7 +125,14 @@ def require_observability_performance_contract(workflow: dict[str, Any], build_j
     require(guard.get("env", {}).get("PERFORMANCE_RESULT") == "${{ needs.observability-performance.result }}" and guard.get("run") == 'test "$PERFORMANCE_RESULT" = success', "Build Artifacts must fail when performance acceptance is not successful")
     upload = step_config(performance_job, "Upload performance acceptance evidence", "ci-pr.yml.jobs.observability-performance")
     require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
-    require("empirical-card.json" in str(upload.get("with", {}).get("path", "")), "performance evidence must include the Candidate card")
+    evidence = str(upload.get("with", {}).get("path", "")).splitlines()
+    expected_evidence = {"empirical-card.json", "scenarios.json", "ab-samples.json", "ab-summary.json",
+                         "run-config.json", "image-identity.json", "runner-context.json",
+                         "environment-admission.jsonl", "resource-observer.jsonl", "measurement-windows.json",
+                         "cpu-verified/*.manifest.json", "cpu-verified/*.json.gz", "cpu-verified/*.syms.json"}
+    prefix = "${{ runner.temp }}/observability-acceptance/"
+    require({line.strip() for line in evidence if line.strip()} == {prefix + name for name in expected_evidence},
+            "performance evidence must include exactly the declared artifact whitelist")
 
 
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:

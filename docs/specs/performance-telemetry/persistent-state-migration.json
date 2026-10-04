@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "identify",
-        "description": "Resolve physical identity, validate schema-v1 and exclusion of business/task files; no DDL",
+        "description": "Resolve physical identity, validate complete preceding-v2 schema-v1 DDL including defaults, table constraints and indexes, ignoring only formatting/comments; exclude business/task files; no DDL",
         "order": 1,
         "observable": true,
         "pauseable": true
@@ -72,6 +72,7 @@
     "major": {
       "required_test_evidence": [
         "schema-v1 and absent source states",
+        "extra CHECK and changed DEFAULT refused without changing source hashes; formatting/comments of known DDL accepted",
         "custom path and symlink identity",
         "WAL consistency",
         "unknown or conflicting identity refused",

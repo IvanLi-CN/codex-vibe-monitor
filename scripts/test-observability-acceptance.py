@@ -22,6 +22,142 @@ sys.modules[spec.name] = contract
 spec.loader.exec_module(contract)
 
 
+def psi(cpu=0, io=0, memory=0):
+    return {name: f"some avg10={value} avg60={value} avg300=0 total=0\nfull avg10=0 avg60=0 avg300=0 total=0"
+            for name, value in [("cpu", cpu), ("io", io), ("memory", memory)]}
+
+
+class ResourceAdmissionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.clock = 100.0
+        self.window = {"windowId": "0-false", "pairIndex": 0, "enabled": "false"}
+
+    def sleep(self, seconds):
+        self.assertLessEqual(seconds, 20)
+        self.clock += seconds
+
+    def fake_clock(self):
+        return patch.object(environment.time, "monotonic", side_effect=lambda: self.clock)
+
+    def test_thresholds_are_strict_and_invalid_values_are_unknown(self):
+        self.assertTrue(environment.pressure_eligible(psi(1.99, 4.99, 0.09)))
+        for values in [(2, 0, 0), (0, 5, 0), (0, 0, 0.1)]:
+            self.assertFalse(environment.pressure_eligible(psi(*values)))
+        for value in ["nan", "inf", -1, 101]:
+            with self.assertRaises(ValueError): environment.pressure_eligible(psi(cpu=value))
+        missing = psi(); del missing["memory"]
+        with self.assertRaises(ValueError): environment.pressure_eligible(missing)
+        invalid = psi(); invalid["cpu"] = "full avg10=0 avg60=0"
+        with patch.object(environment, "pressure", return_value=invalid):
+            sample = environment.pressure_sample(self.window)
+        self.assertFalse(sample["eligible"])
+        self.assertEqual(sample["hostPressure"], invalid)
+        self.assertIn("errorClass", sample)
+
+    def test_three_consecutive_samples_after_warmup_consume_shared_budget(self):
+        budget = environment.AdmissionBudget()
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", side_effect=[psi(), psi(cpu=3), psi(), psi(), psi()]):
+            elapsed = environment.quiet_admission(self.root, timeout=300, window=self.window, budget=budget)
+        self.assertEqual(elapsed, 80)
+        self.assertEqual(budget.remaining_seconds, 820)
+        rows = [json.loads(row) for row in (self.root / "environment-admission.jsonl").read_text().splitlines()]
+        self.assertEqual([row["consecutive"] for row in rows], [1, 0, 1, 2, 3])
+        self.assertTrue(all(row["windowId"] == "0-false" and row["phase"] == "admission" for row in rows))
+
+    def test_per_window_and_cumulative_timeouts_do_not_retry_measurement(self):
+        budget = environment.AdmissionBudget()
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", return_value=psi(cpu=3)):
+            for index in range(3):
+                window = {**self.window, "windowId": f"{index}-false", "pairIndex": index}
+                with self.assertRaises(OSError): environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
+            self.assertEqual(self.clock, 1000)
+            self.assertEqual(budget.remaining_seconds, 0)
+            with self.assertRaisesRegex(OSError, "cumulative"):
+                environment.quiet_admission(self.root, timeout=300, window=self.window, budget=budget)
+        self.assertFalse((self.root / "measurement-windows.json").exists())
+
+    def test_collector_fault_is_unavailable_and_raw_failure_is_preserved(self):
+        with patch.object(environment, "pressure", side_effect=OSError("synthetic collector fault")):
+            with self.assertRaisesRegex(OSError, "invalid"):
+                environment.quiet_admission(self.root, window=self.window, budget=environment.AdmissionBudget())
+        rows = [json.loads(row) for row in (self.root / "environment-admission.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["errorClass"], "OSError")
+
+    def test_mid_window_pressure_cannot_be_hidden_by_quiet_final_sample(self):
+        with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
+            with self.assertRaisesRegex(OSError, "pressure_exceeded"):
+                with environment.observe_resources(self.root, self.window) as observer:
+                    self.clock += 10
+                    with patch.object(environment, "pressure", return_value=psi(cpu=3)):
+                        observer.sample()
+                    self.clock += 10
+        windows = json.loads((self.root / "measurement-windows.json").read_text())
+        self.assertEqual(windows[0]["status"], "unavailable")
+        self.assertEqual(windows[0]["sampleCount"], 3)
+        rows = [json.loads(row) for row in (self.root / "resource-observer.jsonl").read_text().splitlines()]
+        self.assertEqual([row["eligible"] for row in rows], [True, False, True])
+        self.assertTrue(all(row["windowId"] == "0-false" for row in rows))
+
+    def test_sample_gap_and_malformed_pressure_block_window(self):
+        for reason in ["sample_gap", "invalid_sample"]:
+            with self.subTest(reason=reason), tempfile.TemporaryDirectory() as directory:
+                with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
+                    with self.assertRaisesRegex(OSError, reason):
+                        with environment.observe_resources(Path(directory), self.window) as observer:
+                            if reason == "sample_gap":
+                                self.clock += 21
+                            else:
+                                with patch.object(environment, "pressure", return_value={}): observer.sample()
+                self.assertEqual(json.loads((Path(directory) / "measurement-windows.json").read_text())[0]["status"], "unavailable")
+
+    def test_valid_windows_keep_explicit_boundaries_and_separate_identity(self):
+        with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
+            for mode in ["false", "true"]:
+                window = {**self.window, "enabled": mode, "windowId": f"0-{mode}"}
+                with environment.observe_resources(self.root, window): self.clock += 10
+        windows = json.loads((self.root / "measurement-windows.json").read_text())
+        self.assertEqual([row["windowId"] for row in windows], ["0-false", "0-true"])
+        self.assertTrue(all(row["status"] == "passed" and row["sampleCount"] == 2 for row in windows))
+        self.assertTrue(all(row["endedMonotonicSeconds"] - row["startedMonotonicSeconds"] == 10 for row in windows))
+
+    def test_raw_measurement_evidence_must_exist_even_with_successful_scenarios(self):
+        run = object.__new__(Run)
+        run.root = self.root; run.source = SOURCE; run.args = SimpleNamespace(candidate="a" * 40)
+        run.context = {"evidenceLocator": "https://github.com/owner/repo/actions/runs/123/attempts/2"}
+        run.suite = "full"
+        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
+        self.assertFalse(run.finish())
+        self.assertEqual(json.loads((self.root / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
+
+    def test_six_window_certificate_rechecks_raw_pressure_and_completeness(self):
+        samples = {"false": [], "true": []}
+        budget = environment.AdmissionBudget()
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", return_value=psi()):
+            for index in range(3):
+                for mode in ["false", "true"]:
+                    window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
+                    window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
+                    with environment.observe_resources(self.root, window): self.clock += 10
+                    samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10})
+        (self.root / "ab-samples.json").write_text(json.dumps(samples))
+        environment.verify_measurement_evidence(self.root)
+        path = self.root / "resource-observer.jsonl"
+        original = path.read_text()
+        rows = [json.loads(row) for row in original.splitlines()]
+        rows[1]["hostPressure"] = psi(cpu=3)
+        path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -162,6 +298,16 @@ class WorkflowGateTests(unittest.TestCase):
         step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
         step.pop("if")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
+        for extra in [False, True]:
+            workflow = copy.deepcopy(self.workflow)
+            upload = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Upload performance acceptance evidence")
+            if extra:
+                upload["with"]["path"] += "\n${{ runner.temp }}/observability-acceptance/private/*"
+            else:
+                upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/measurement-windows.json", "")
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_shortened_windows_are_rejected(self):
         workflow = copy.deepcopy(self.workflow)

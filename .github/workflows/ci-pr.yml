@@ -1064,6 +1064,7 @@ jobs:
             ${{ runner.temp }}/observability-acceptance/runner-context.json
             ${{ runner.temp }}/observability-acceptance/environment-admission.jsonl
             ${{ runner.temp }}/observability-acceptance/resource-observer.jsonl
+            ${{ runner.temp }}/observability-acceptance/measurement-windows.json
             ${{ runner.temp }}/observability-acceptance/cpu-verified/*.manifest.json
             ${{ runner.temp }}/observability-acceptance/cpu-verified/*.json.gz
             ${{ runner.temp }}/observability-acceptance/cpu-verified/*.syms.json

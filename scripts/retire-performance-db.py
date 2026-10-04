@@ -32,6 +32,40 @@ TABLES = {
 }
 ALLOWED = set(TABLES) | {"idx_performance_buckets_range"}
 
+# Frozen from the immediately preceding v2 writer's schema-v1 CREATE statements.
+EXPECTED_SCHEMA_DDL = {
+    "performance_meta": "CREATE TABLE performance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+    "performance_epochs": "CREATE TABLE performance_epochs (epoch TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT)",
+    "performance_buckets": """CREATE TABLE performance_buckets (
+        bucket_start INTEGER NOT NULL, resolution_seconds INTEGER NOT NULL,
+        metric_id TEXT NOT NULL, dimension_code TEXT NOT NULL,
+        sample_count INTEGER NOT NULL, expected_count INTEGER NOT NULL, sum_value REAL NOT NULL,
+        min_value REAL, max_value REAL, last_value REAL,
+        weighted_sum REAL NOT NULL DEFAULT 0, weighted_seconds REAL NOT NULL DEFAULT 0,
+        histogram_json TEXT NOT NULL, epoch TEXT NOT NULL,
+        PRIMARY KEY(bucket_start, resolution_seconds, metric_id, dimension_code))""",
+    "idx_performance_buckets_range": "CREATE INDEX idx_performance_buckets_range ON performance_buckets(resolution_seconds, bucket_start)",
+    "performance_collector_health": """CREATE TABLE performance_collector_health (
+        id INTEGER PRIMARY KEY CHECK(id = 1), state TEXT NOT NULL, last_successful_flush TEXT,
+        dropped_samples INTEGER NOT NULL, flush_failure_count INTEGER NOT NULL, last_error TEXT)""",
+}
+
+def schema_tokens(sql):
+    # Ignore formatting/comments; preserve quoted text and every semantic token.
+    pattern = r"(--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|`(?:``|[^`])*`|\[[^\]]*\]|[A-Za-z_][A-Za-z0-9_]*|\s+|.)"
+    tokens = re.findall(pattern, sql, re.S)
+    return tuple(token if token[0] in "'\"`[" else token.upper()
+                 for token in tokens if not token.isspace()
+                 and not token.startswith(('--', '/*')))
+
+def exact_schema_ddl(connection):
+    actual = dict(connection.execute("SELECT name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'"))
+    if set(actual) != set(EXPECTED_SCHEMA_DDL) or any(
+        schema_tokens(actual[name] or '') != schema_tokens(expected)
+        for name, expected in EXPECTED_SCHEMA_DDL.items()
+    ):
+        raise ValueError("unexpected performance schema DDL")
+
 def utc_now():
     return dt.datetime.now(dt.timezone.utc)
 
@@ -113,6 +147,7 @@ def schema(connection):
     names = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")}
     if names != ALLOWED:
         raise ValueError("unknown or partial schema; source is untouched")
+    exact_schema_ddl(connection)
     for table, columns in TABLES.items():
         actual = [(row[1], row[2].upper(), row[3], row[5]) for row in connection.execute(f'PRAGMA table_info("{table}")')]
         if actual != columns:
