@@ -4832,7 +4832,7 @@ mod tests {
         .expect("count protected workload samples");
         assert_eq!(counts, (100, 1));
 
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .start_timeline_session("workload-restart", "2026-10-03T00:00:00.000Z")
             .await
@@ -4856,7 +4856,7 @@ mod tests {
         ensure_schema(&pool)
             .await
             .expect("create maintenance schema");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         store
             .start_timeline_session("workload-sequence", "2026-10-03T00:00:00.000Z")
             .await
@@ -4924,7 +4924,7 @@ mod tests {
         ensure_schema(&pool)
             .await
             .expect("create maintenance schema");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let attempted_at = Utc::now();
         let sample = workload_fixture_sample(
             0,
@@ -4982,7 +4982,7 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore { pool };
+        let store = MaintenanceStore::from_pool(pool);
         let run_id = sqlx::query_scalar::<_, i64>(
             "INSERT INTO managed_task_runs
              (task_key,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,status,execution_uid)
