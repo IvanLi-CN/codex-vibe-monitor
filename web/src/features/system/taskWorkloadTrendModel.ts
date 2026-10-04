@@ -1,5 +1,6 @@
 import type {
   TaskMeasurementCapabilities,
+  TaskWorkloadCoverageGap,
   TaskWorkloadMetric,
   TaskWorkloadSample,
 } from "../../lib/api";
@@ -89,6 +90,64 @@ function usableMetric(metric: TaskWorkloadMetric | null): metric is TaskWorkload
 
 function metricIdentity(metric: TaskWorkloadMetric): string {
   return `${metric.scope}\u0000${metric.range}`;
+}
+
+export function selectWorkloadRunWindow(
+  samples: TaskWorkloadSample[],
+  coverageGaps: TaskWorkloadCoverageGap[],
+  runWindow: number,
+  taskKey: string,
+): TaskWorkloadSample[] {
+  const orderedSamples = [...samples].sort((left, right) => {
+    const timestampOrder = Date.parse(left.attemptedAt) - Date.parse(right.attemptedAt);
+    return timestampOrder || left.sampleId.localeCompare(right.sampleId);
+  });
+  const visibleSamples = orderedSamples.slice(-runWindow);
+  if (visibleSamples.length === 0) return coverageGapSamples(coverageGaps, taskKey);
+
+  const firstVisibleAt = Date.parse(visibleSamples[0].attemptedAt);
+  const lastVisibleAt = Date.parse(visibleSamples[visibleSamples.length - 1].attemptedAt);
+  const visibleGaps = coverageGaps.flatMap((gap) => {
+    const gapStart = Date.parse(gap.startedAt);
+    const gapEnd = gap.finishedAt == null ? lastVisibleAt : Date.parse(gap.finishedAt);
+    if (
+      !Number.isFinite(gapStart) ||
+      !Number.isFinite(gapEnd) ||
+      gapEnd < firstVisibleAt ||
+      gapStart > lastVisibleAt
+    ) {
+      return [];
+    }
+    return coverageGapSamples(
+      [{ ...gap, startedAt: new Date(Math.max(gapStart, firstVisibleAt)).toISOString() }],
+      taskKey,
+    );
+  });
+
+  return [...visibleSamples, ...visibleGaps];
+}
+
+function coverageGapSamples(
+  gaps: TaskWorkloadCoverageGap[],
+  taskKey: string,
+): TaskWorkloadSample[] {
+  return gaps.map((gap) => ({
+    sampleId: `coverage-gap:${gap.id}`,
+    executionUid: `coverage-gap:${gap.id}`,
+    managedRunId: null,
+    taskKey,
+    triggerKind: "观测覆盖缺口",
+    attemptedAt: gap.startedAt,
+    actualStartedAt: null,
+    finishedAt: gap.finishedAt ?? null,
+    status: "unknown",
+    reason: gap.reason ?? "工作量观测缺失",
+    sequence: 0,
+    pending: null,
+    discovered: null,
+    processed: null,
+    subsetRelation: "unknown",
+  }));
 }
 
 function isConfirmedSkip(sample: TaskWorkloadSample): boolean {

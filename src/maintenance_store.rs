@@ -816,11 +816,14 @@ fn calculate_task_workload_summary(
             } else {
                 let seconds = remaining / -slope;
                 let latest_observation = last.unwrap_or(now);
-                if !seconds.is_finite() || seconds > i64::MAX as f64 {
-                    (None, "estimate_out_of_range".to_string())
+                let millis = (seconds * 1_000.0).ceil();
+                let eta = if !millis.is_finite() || millis >= i64::MAX as f64 {
+                    None
                 } else {
-                    let eta = latest_observation
-                        + ChronoDuration::milliseconds((seconds * 1_000.0).ceil() as i64);
+                    latest_observation
+                        .checked_add_signed(ChronoDuration::milliseconds(millis as i64))
+                };
+                if let Some(eta) = eta {
                     clearance_estimate_window = Some("最近 24 小时".to_string());
                     clearance_estimate_coverage = Some(format!(
                         "{} 个准确完整积压快照；{} 至 {}",
@@ -829,6 +832,8 @@ fn calculate_task_workload_summary(
                         format_utc_iso_millis(last.unwrap_or(now))
                     ));
                     (Some(format_utc_iso_millis(eta)), "estimated".to_string())
+                } else {
+                    (None, "estimate_out_of_range".to_string())
                 }
             }
         }
@@ -4613,6 +4618,34 @@ mod tests {
         let after_gap = calculate_task_workload_summary(&samples, true, Some(120), Some(gap), now);
         assert!(after_gap.clearance_eta.is_none());
         assert_eq!(after_gap.clearance_estimate_reason, "insufficient_samples");
+    }
+
+    #[test]
+    fn rejects_clearance_estimates_outside_representable_datetime_range() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let samples = (0..5)
+            .map(|index| {
+                let observed = start + ChronoDuration::minutes(index as i64 * 2);
+                workload_fixture_sample(
+                    index,
+                    observed,
+                    Some(9_000_000_000_000_000 - index as i64 * 100),
+                    Some(10),
+                    "success",
+                    Some(format_utc_iso_millis(observed + ChronoDuration::seconds(1))),
+                    Some(format_utc_iso_millis(
+                        observed + ChronoDuration::seconds(20),
+                    )),
+                    "complete eligible range",
+                )
+            })
+            .collect::<Vec<_>>();
+        let now = start + ChronoDuration::minutes(9);
+
+        let summary = calculate_task_workload_summary(&samples, true, Some(120), None, now);
+
+        assert!(summary.clearance_eta.is_none());
+        assert_eq!(summary.clearance_estimate_reason, "estimate_out_of_range");
     }
 
     #[test]

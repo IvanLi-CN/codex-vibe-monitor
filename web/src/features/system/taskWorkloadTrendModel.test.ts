@@ -4,7 +4,11 @@ import type {
   TaskWorkloadMetric,
   TaskWorkloadSample,
 } from "../../lib/api";
-import { buildWorkloadChartModels, workloadSubsetPartition } from "./taskWorkloadTrendModel";
+import {
+  buildWorkloadChartModels,
+  selectWorkloadRunWindow,
+  workloadSubsetPartition,
+} from "./taskWorkloadTrendModel";
 
 function metric(value: number, range = "source<=10", unit = "rows"): TaskWorkloadMetric {
   return {
@@ -145,6 +149,46 @@ describe("buildWorkloadChartModels", () => {
     const models = buildWorkloadChartModels([], capabilities);
     expect(models.map((model) => model.unit)).toEqual(["rows", "files"]);
     expect(models.every((model) => model.segments.length === 0)).toBe(true);
+  });
+});
+
+describe("selectWorkloadRunWindow", () => {
+  it("keeps coverage gaps from consuming real run slots", () => {
+    const runs = Array.from({ length: 125 }, (_, index) => sample(index));
+    const firstVisible = runs[105].attemptedAt;
+    const lastVisible = runs[124].attemptedAt;
+    const gap = {
+      id: "dropped-1",
+      startedAt: new Date(Date.parse(firstVisible) - 30_000).toISOString(),
+      finishedAt: new Date(Date.parse(firstVisible) + 30_000).toISOString(),
+      reason: "recorder queue overflow",
+    };
+
+    const selected = selectWorkloadRunWindow(runs, [gap], 20, "retention_archive");
+
+    expect(selected.filter((entry) => !entry.sampleId.startsWith("coverage-gap:"))).toHaveLength(
+      20,
+    );
+    expect(selected.map((entry) => entry.sampleId)).toContain("coverage-gap:dropped-1");
+    expect(selected[0].attemptedAt).toBe(firstVisible);
+    expect(selected.some((entry) => Date.parse(entry.attemptedAt) > Date.parse(lastVisible))).toBe(
+      false,
+    );
+  });
+
+  it("does not overlay gaps outside the selected run interval", () => {
+    const runs = Array.from({ length: 25 }, (_, index) => sample(index));
+    const gap = {
+      id: "outside-window",
+      startedAt: "2026-10-02T23:00:00.000Z",
+      finishedAt: "2026-10-02T23:30:00.000Z",
+      reason: "recorder queue overflow",
+    };
+
+    const selected = selectWorkloadRunWindow(runs, [gap], 20, "retention_archive");
+
+    expect(selected).toHaveLength(20);
+    expect(selected.some((entry) => entry.sampleId === "coverage-gap:outside-window")).toBe(false);
   });
 });
 

@@ -15,13 +15,13 @@ import type {
   RetentionBacklogTrendPoint,
   TaskMeasurementCapabilities,
   TaskWorkloadMetric,
-  TaskWorkloadSample,
   TaskWorkloadTrend as TaskWorkloadTrendData,
 } from "../../lib/api";
 import { chartBaseTokens, taskWorkloadTokens, withOpacity } from "../../lib/chartTheme";
 import { useTheme } from "../../theme";
 import {
   buildWorkloadChartModels,
+  selectWorkloadRunWindow,
   WORKLOAD_SERIES,
   type WorkloadChartModel,
   type WorkloadPlotDatum,
@@ -450,27 +450,11 @@ export function TaskWorkloadTrend({
   );
   const [hiddenSeries, setHiddenSeries] = useState<Set<WorkloadSeriesKey>>(() => new Set());
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const chartSamples = useMemo(() => {
-    const gaps: TaskWorkloadSample[] = (trend?.coverageGaps ?? []).map((gap) => ({
-      sampleId: `coverage-gap:${gap.id}`,
-      executionUid: `coverage-gap:${gap.id}`,
-      managedRunId: null,
-      taskKey,
-      triggerKind: "观测覆盖缺口",
-      attemptedAt: gap.startedAt,
-      actualStartedAt: null,
-      finishedAt: gap.finishedAt ?? null,
-      status: "unknown",
-      reason: gap.reason ?? "工作量观测缺失",
-      sequence: 0,
-      pending: null,
-      discovered: null,
-      processed: null,
-      subsetRelation: "unknown",
-    }));
-    return [...(trend?.samples ?? []), ...gaps];
-  }, [taskKey, trend?.coverageGaps, trend?.samples]);
-  const visibleSamples = chartSamples.slice(-runWindow);
+  const visibleSamples = useMemo(
+    () =>
+      selectWorkloadRunWindow(trend?.samples ?? [], trend?.coverageGaps ?? [], runWindow, taskKey),
+    [runWindow, taskKey, trend?.coverageGaps, trend?.samples],
+  );
   const models = useMemo(
     () => buildWorkloadChartModels(visibleSamples, capabilities),
     [capabilities, visibleSamples],

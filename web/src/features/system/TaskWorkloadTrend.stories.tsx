@@ -32,8 +32,8 @@ const captureGapTrend: WorkloadTrend = {
   coverageGaps: [
     {
       id: "story-gap-1",
-      startedAt: new Date(Date.parse(samples[11].attemptedAt) + 2_000).toISOString(),
-      finishedAt: new Date(Date.parse(samples[12].attemptedAt) - 2_000).toISOString(),
+      startedAt: new Date(Date.parse(samples[92].attemptedAt) + 2_000).toISOString(),
+      finishedAt: new Date(Date.parse(samples[93].attemptedAt) - 2_000).toISOString(),
       reason: "event_channel_overflow",
     },
   ],
