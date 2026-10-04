@@ -11,6 +11,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { SegmentedControl, SegmentedControlItem } from "../../components/ui/segmented-control";
 import { useCompactViewport } from "../../hooks/useCompactViewport";
 import type {
   RetentionBacklogTrendPoint,
@@ -28,6 +29,7 @@ import { useTheme } from "../../theme";
 import {
   buildWorkloadChartModels,
   selectWorkloadRunWindow,
+  visibleWorkloadMarkerValue,
   WORKLOAD_SERIES,
   type WorkloadChartModel,
   type WorkloadPlotDatum,
@@ -281,12 +283,25 @@ function RunMetricChart({
   failureColor: string;
 }) {
   const [inspectedSample, setInspectedSample] = useState<WorkloadPlotDatum["sample"]>(null);
-  const chartData = model.data.length > 0 ? model.data : createEmptyPlotData();
+  const chartData = useMemo(() => {
+    const visibleSeries = WORKLOAD_SERIES.filter((series) => !hidden.has(series));
+    return model.data.map((datum) => {
+      if (datum.sample == null) return datum;
+      const markerValue = visibleWorkloadMarkerValue(datum.sample, model.unit, visibleSeries);
+      return {
+        ...datum,
+        runningMarker:
+          datum.sample.status === "running" ? (markerValue ?? datum.runningMarker) : null,
+        failedMarker: datum.sample.status === "failed" ? markerValue : null,
+      };
+    });
+  }, [hidden, model.data, model.unit]);
+  const renderedChartData = chartData.length > 0 ? chartData : createEmptyPlotData();
   return (
     <figure className="relative w-full" style={{ height }} aria-label={`工作量：${model.unit}`}>
       <ResponsiveContainer width="100%" height="100%">
         <ComposedChart
-          data={chartData}
+          data={renderedChartData}
           accessibilityLayer
           margin={{ top: 8, right: compact ? 4 : 12, left: 0, bottom: compact ? 10 : 4 }}
         >
@@ -367,7 +382,7 @@ function RunMetricChart({
                 />
               )),
           )}
-          {chartData.some((datum) => datum.runningMarker != null) ? (
+          {renderedChartData.some((datum) => datum.runningMarker != null) ? (
             <Line
               dataKey="runningMarker"
               name="运行中"
@@ -395,7 +410,7 @@ function RunMetricChart({
               isAnimationActive={false}
             />
           ) : null}
-          {chartData.some((datum) => datum.failedMarker != null) ? (
+          {renderedChartData.some((datum) => datum.failedMarker != null) ? (
             <Line
               dataKey="failedMarker"
               name="失败"
@@ -423,7 +438,7 @@ function RunMetricChart({
               isAnimationActive={false}
             />
           ) : null}
-          {chartData.some((datum) => datum.skipMarker != null) ? (
+          {renderedChartData.some((datum) => datum.skipMarker != null) ? (
             <Line
               className="task-workload-skip-marker"
               dataKey="skipMarker"
@@ -778,45 +793,48 @@ export function TaskWorkloadTrend({
           运行趋势
         </h3>
       </div>
-      <div
+      <SegmentedControl
+        size="compact"
         role="tablist"
         aria-label="运行趋势视图"
-        className="mb-3 flex gap-1 border-b border-base-300/70"
+        className="mb-3 max-w-full flex-wrap"
         onKeyDown={handleTabKeyDown}
       >
-        <button
+        <SegmentedControlItem
           ref={(element) => {
             tabRefs.current[0] = element;
           }}
           type="button"
           role="tab"
           id="task-workload-runs-tab"
+          active={view === "runs"}
           aria-selected={view === "runs"}
           aria-controls="task-workload-runs-panel"
           tabIndex={view === "runs" ? 0 : -1}
-          className={`border-b-2 px-3 py-2 text-sm ${view === "runs" ? "border-primary font-medium text-primary" : "border-transparent text-base-content/65"}`}
+          className="max-w-full px-2"
           onClick={() => setView("runs")}
         >
           最近 100 次运行
-        </button>
+        </SegmentedControlItem>
         {isRetention ? (
-          <button
+          <SegmentedControlItem
             ref={(element) => {
               tabRefs.current[1] = element;
             }}
             type="button"
             role="tab"
             id="task-workload-retention-tab"
+            active={view === "retention"}
             aria-selected={view === "retention"}
             aria-controls="task-workload-retention-panel"
             tabIndex={view === "retention" ? 0 : -1}
-            className={`border-b-2 px-3 py-2 text-sm ${view === "retention" ? "border-primary font-medium text-primary" : "border-transparent text-base-content/65"}`}
+            className="max-w-full px-2"
             onClick={() => setView("retention")}
           >
             最近 7 天归档积压
-          </button>
+          </SegmentedControlItem>
         ) : null}
-      </div>
+      </SegmentedControl>
       <div data-testid="task-workload-panels" style={{ minHeight: panelMinHeight }}>
         <div
           id="task-workload-runs-panel"

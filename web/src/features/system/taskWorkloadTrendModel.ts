@@ -41,6 +41,26 @@ export function workloadSeriesLabel(series: WorkloadSeriesKey): string {
   return SERIES_LABELS[series];
 }
 
+export function visibleWorkloadMarkerValue(
+  sample: TaskWorkloadSample,
+  unit: string,
+  visibleSeries: WorkloadSeriesKey[],
+): number | null {
+  const measuredValues = visibleSeries.flatMap((series) => {
+    const metric = metricFor(sample, series);
+    return usableMetric(metric) && metric.unit === unit && metric.coverage !== "unknown"
+      ? [metric.value]
+      : [];
+  });
+  if (measuredValues.length > 0) return Math.max(...measuredValues);
+
+  const hasMeasuredValueInUnit = WORKLOAD_SERIES.some((series) => {
+    const metric = metricFor(sample, series);
+    return usableMetric(metric) && metric.unit === unit && metric.coverage !== "unknown";
+  });
+  return hasMeasuredValueInUnit ? 0 : null;
+}
+
 export function workloadSubsetPartition(
   sample: TaskWorkloadSample,
 ): { processed: number; discoveredRemainder: number; pendingRemainder: number } | null {

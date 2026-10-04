@@ -511,12 +511,26 @@ export const MobileLightCandidates: Story = {
   tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
+    const chart = canvas.getByRole("figure", { name: "工作量：invocation rows" });
     await userEvent.click(canvas.getByRole("button", { name: "隐藏待处理量" }));
     await expect(canvas.getByRole("button", { name: "显示待处理量" })).toHaveAttribute(
       "aria-pressed",
       "false",
     );
-    await expect(canvas.getByRole("figure", { name: "工作量：invocation rows" })).toBeVisible();
+    await expect(chart).toBeVisible();
+    const yTicks = Array.from(
+      chart.querySelectorAll(".recharts-yAxis-tick-labels text"),
+      (tick) => tick.textContent?.trim() ?? "",
+    );
+    const numericTicks = yTicks.map((tick) => Number(tick.replaceAll(",", "")));
+    if (
+      yTicks.length === 0 ||
+      yTicks.some((tick) => tick.includes("万")) ||
+      numericTicks.some((tick) => !Number.isFinite(tick)) ||
+      Math.max(...numericTicks) >= 5_000
+    ) {
+      throw new Error(`Hidden-series axis still includes the pending range: ${yTicks.join(", ")}`);
+    }
   },
 };
 

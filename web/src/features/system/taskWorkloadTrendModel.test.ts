@@ -7,6 +7,7 @@ import type {
 import {
   buildWorkloadChartModels,
   selectWorkloadRunWindow,
+  visibleWorkloadMarkerValue,
   workloadSubsetPartition,
 } from "./taskWorkloadTrendModel";
 
@@ -192,6 +193,27 @@ describe("buildWorkloadChartModels", () => {
     const models = buildWorkloadChartModels([], capabilities);
     expect(models.map((model) => model.unit)).toEqual(["rows", "files"]);
     expect(models.every((model) => model.segments.length === 0)).toBe(true);
+  });
+});
+
+describe("visibleWorkloadMarkerValue", () => {
+  it("respects hidden series so status markers do not keep the old chart scale", () => {
+    const failed = sample(0, {
+      status: "failed",
+      pending: metric(36_000),
+      discovered: metric(1_300),
+      processed: metric(1_200),
+    });
+
+    expect(visibleWorkloadMarkerValue(failed, "rows", ["discovered", "processed"])).toBe(1_300);
+    expect(visibleWorkloadMarkerValue(failed, "rows", ["processed"])).toBe(1_200);
+    expect(visibleWorkloadMarkerValue(failed, "rows", [])).toBe(0);
+    expect(
+      visibleWorkloadMarkerValue({ ...failed, discovered: null, processed: null }, "rows", [
+        "discovered",
+        "processed",
+      ]),
+    ).toBe(0);
   });
 });
 
