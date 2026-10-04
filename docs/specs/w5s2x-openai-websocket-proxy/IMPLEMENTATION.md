@@ -44,6 +44,7 @@
 
 - Targeted Rust regression: the early `501` rejection, Settings compatibility, migration idempotency/rollback, and legacy system-tag cleanup tests pass.
 - `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` pass.
+- The repository Rust source-quality policy check passes after synchronizing the explicit inventory, suppression counts, and budgets for the retired surface.
 - Web unit tests pass: `1779 passed / 6 skipped`; typecheck, lint, and production build pass. The Storybook suite passes with `200/200` tests and `48` intentional skips.
 - Backend resource profiles: lightweight `1239/1239` and stateful-sqlite `1397/1397` pass. Archive-file-io reached `305/306`; the only failure is the baseline system-storage concurrent-deletion timing test, which also fails in isolation and is unrelated to this change.
 - `bun run lint:docs` and `git diff --check` pass. UI evidence covers the Settings page without WebSocket controls, the Records historical transport filter, and the historical transport chip.

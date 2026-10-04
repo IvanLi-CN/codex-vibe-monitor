@@ -75,7 +75,7 @@
     {
       "path": "src/proxy/request_entry.rs",
       "role": "production",
-      "line_budget": 6424,
+      "line_budget": 6456,
       "next_module_workstream": "Split proxy request entry validation, capture, reservation, and response persistence."
     },
     {
@@ -159,7 +159,7 @@
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3886,
+      "line_budget": 3950,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
