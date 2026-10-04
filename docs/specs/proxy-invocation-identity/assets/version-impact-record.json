@@ -51,14 +51,11 @@
       "evidence": [
         "src/prompt_cache_conversations.rs: final-page publication/cursor transaction and bounded continuation",
         "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs: focused control/checkpoint regressions",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-targeted-current.log",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-stateful-current.log",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-archive-current.log",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-lightweight-current.log",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-baseline-run-metadata.json",
         "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-run-metadata.json",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/runs/20261004_063250_performance_dd3886231cd4_9809/logs/run-metadata.json",
-        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/runs/20261004_063250_performance_dd3886231cd4_9809/logs/loadgen.jsonl"
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/quality-6c3dac1a.json",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/budget-no-scan-6c3dac1a.log",
+        "/srv/codex/agents/01a0f565-fc82-7563-a079-af80ead822b6/validation-control/logs/checkpoint-candidate-loadgen.jsonl"
       ]
     }
   },
