@@ -128,6 +128,57 @@ class RetirementTests(unittest.TestCase):
         migration.restore(self.archive / "cutover" / "manifest.json", OLD_IMAGE, self.config)
         self.assertEqual(self.source.resolve(), actual)
 
+    def test_new_sidecar_after_verification_preserves_source_family(self):
+        original_valid_backup = migration.valid_backup
+        for index, (suffix, symlink) in enumerate([(suffix, symlink) for suffix in ["-wal", "-shm"] for symlink in [False, True]]):
+            with self.subTest(suffix=suffix, symlink=symlink):
+                source = self.data / f"late-member-{index}.sqlite"
+                fixture(source).close()
+                with closing(sqlite3.connect(source)) as connection:
+                    connection.execute("PRAGMA journal_mode=DELETE")
+                source_hash = migration.digest(source)
+                sidecar = Path(str(source) + suffix)
+                operation = f"late-member-{index}"
+                def introduce_member(path, expected):
+                    original_valid_backup(path, expected)
+                    if path.name == "performance.sqlite":
+                        if symlink:
+                            sidecar.symlink_to(self.root / "missing-sidecar-target")
+                        else:
+                            sidecar.write_bytes(b"new unverified member")
+                with patch.object(migration, "valid_backup", introduce_member):
+                    with self.assertRaisesRegex(ValueError, "source family changed"):
+                        migration.archive(source, self.business, self.data, self.archive, operation, OLD_IMAGE, self.config, "2.60.0")
+                self.assertEqual(migration.digest(source), source_hash)
+                if symlink:
+                    self.assertTrue(sidecar.is_symlink())
+                else:
+                    self.assertEqual(sidecar.read_bytes(), b"new unverified member")
+                manifest = json.loads((self.archive / operation / "manifest.json").read_text())
+                self.assertEqual(manifest["state"], "verified")
+                self.assertEqual([row["suffix"] for row in manifest["family"]], [""])
+
+    def test_partially_removed_family_resumes_after_unlink_interruption(self):
+        original = fixture(self.source)
+        original_unlink = Path.unlink
+        wal = Path(str(self.source) + "-wal")
+        def interrupt(path, *args, **kwargs):
+            if path == wal:
+                raise OSError("simulated interruption after main removal")
+            return original_unlink(path, *args, **kwargs)
+        try:
+            with patch.object(Path, "unlink", interrupt):
+                with self.assertRaisesRegex(OSError, "interruption after main removal"):
+                    self.run_archive()
+            self.assertFalse(self.source.exists())
+            self.assertTrue(wal.exists())
+            manifest = json.loads((self.archive / "cutover" / "manifest.json").read_text())
+            self.assertEqual(manifest["state"], "verified")
+            self.assertEqual(self.run_archive()["state"], "archived")
+            self.assertFalse(wal.exists())
+        finally:
+            original.close()
+
     def test_unknown_corrupt_business_and_absent_sources(self):
         self.assertEqual(self.run_archive()["state"], "absent")
         self.source.write_bytes(b"not sqlite")

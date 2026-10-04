@@ -216,11 +216,15 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
     valid_backup(backup, manifest["backupSha256"])
     if manifest["state"] == "verified":
         # Stage is immutable after verification. Reentry removes only exact, unchanged owned members.
+        recorded_suffixes = {member["suffix"] for member in manifest["family"]}
+        for suffix in ["", "-wal", "-shm"]:
+            path = Path(str(target) + suffix)
+            if suffix not in recorded_suffixes and (path.exists() or path.is_symlink()):
+                raise ValueError("source family changed; preserving remaining files")
         for member in manifest["family"]:
             path = Path(str(target) + member["suffix"])
-            if path.exists():
-                if path.is_symlink() or identity(path) != member["identity"] or digest(path) != member["sha256"]:
-                    raise ValueError("source family changed; preserving remaining files")
+            if path.is_symlink() or (path.exists() and (identity(path) != member["identity"] or digest(path) != member["sha256"])):
+                raise ValueError("source family changed; preserving remaining files")
         for member in manifest["family"]:
             path = Path(str(target) + member["suffix"])
             if path.exists(): path.unlink()
