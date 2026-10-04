@@ -1697,7 +1697,7 @@ function TaskPageSseFixture({
       }
     }, 100);
     const disconnectTimer = reconnecting
-      ? window.setTimeout(() => getStorybookPageSseController()?.emitError(), 350)
+      ? window.setTimeout(() => getStorybookPageSseController()?.emitError(), 750)
       : null;
     return () => {
       window.clearTimeout(snapshotTimer);
