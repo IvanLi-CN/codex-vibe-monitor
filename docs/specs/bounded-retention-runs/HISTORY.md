@@ -8,12 +8,12 @@
 
 ## Replacements / Background
 
-ADR 0028 将归档文件批次与主库写批次区分，规定月份只决定目标文件、每轮完成自身选中批次和不依赖跨任务 staging。它细化 ADR 0027 的自动追赶：后续资格用于处理剩余 live rows，不用于延续上一轮中间状态。本轮新增 REQ-BRR-022..023 及 VER-BRR-012，50 倍新增速率与当前候选容量需要重新证明。
+ADR 0029 将归档文件批次与主库写批次区分，规定月份只决定目标文件、每轮完成自身选中批次和不依赖跨任务 staging。它细化 ADR 0027 的自动追赶：后续资格用于处理剩余 live rows，不用于延续上一轮中间状态。本轮新增 REQ-BRR-022..023 及 VER-BRR-012，50 倍新增速率与当前候选容量需要重新证明。
 
 本主题补充 retention 的运行预算、会话派生维护边界及任务观测，并不替代既有 archive 证明、保留策略、自主 raw 恢复或全局任务运维数据所有权。
 
 - [归档与保留](../9aucy-db-retention-archive/SPEC.md) 继续拥有归档/汇总证明及删除安全。
-- [自主恢复](../autonomous-retention-recovery/SPEC.md) 继续拥有 raw 恢复和 circuit breaker；ADR 0028 收窄 prepared continuation 在普通 retention 任务中的用途。
+- [自主恢复](../autonomous-retention-recovery/SPEC.md) 继续拥有 raw 恢复和 circuit breaker；ADR 0029 收窄 prepared continuation 在普通 retention 任务中的用途。
 - [ADR 0021](../../adr/0021-prompt-cache-background-materialization.md) 继续拥有精确统计的暂不可用读契约。
 - [ADR 0022](../../adr/0022-prompt-cache-adaptive-materialization.md) 保留自适应与操作控制，并由 ADR 0025 承接单 key 分页及跨提交续作语义。
 - [ADR 0023](../../adr/0023-task-operations-state-outside-main-database.md) 继续拥有独立维护库及异步观测。

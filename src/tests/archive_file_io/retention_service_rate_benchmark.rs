@@ -362,7 +362,9 @@ async fn retention_task_local_service_rate_release_benchmark() {
         let mut updated = 0_u64;
         let mut deferred = 0_u64;
         let mut admission_defers = 0_u64;
-        let mut ticker = tokio::time::interval(Duration::from_secs(15));
+        let mut pressure_failures = 0_u64;
+        let retry_interval = Duration::from_secs(crate::STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS);
+        let mut ticker = tokio::time::interval(retry_interval);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !load_finished(&background_stopped) {
             tokio::select! {
@@ -385,7 +387,8 @@ async fn retention_task_local_service_rate_release_benchmark() {
             };
             let should_yield =
                 || background_coordinator.p2_should_yield() || load_finished(&background_stopped);
-            let run = crate::prompt_cache_conversations::run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            runs += 1;
+            let result = crate::prompt_cache_conversations::run_prompt_cache_conversations_materialization_with_pressure_and_control(
                 &background_pool,
                 crate::STARTUP_BACKFILL_SCAN_LIMIT,
                 Some(Duration::from_secs(crate::STARTUP_BACKFILL_RUN_BUDGET_SECS)),
@@ -393,14 +396,34 @@ async fn retention_task_local_service_rate_release_benchmark() {
                 &control,
                 generation,
             )
-            .await
-            .expect("competing production Prompt materialization owner");
-            runs += 1;
-            scanned += run.scanned;
-            updated += run.updated;
-            deferred += u64::from(run.deferred);
+            .await;
+            match result {
+                Ok(run) => {
+                    scanned += run.scanned;
+                    updated += run.updated;
+                    deferred += u64::from(run.deferred);
+                }
+                Err(error) => {
+                    // The production owner records pressure before releasing admission,
+                    // then retries after its existing active interval. A lock conflict
+                    // must not silently terminate the competing owner in this replay.
+                    assert!(
+                        background_gate.record_error("startup_backfill", &error),
+                        "unexpected competing Prompt materialization failure: {error:#}"
+                    );
+                    pressure_failures += 1;
+                    ticker.reset_after(retry_interval);
+                }
+            }
         }
-        (runs, scanned, updated, deferred, admission_defers)
+        (
+            runs,
+            scanned,
+            updated,
+            deferred,
+            admission_defers,
+            pressure_failures,
+        )
     });
     let started = Instant::now();
     let mut runs = 0;
@@ -518,7 +541,8 @@ async fn retention_task_local_service_rate_release_benchmark() {
             "loadMultiplier":load_multiplier,
             "backgroundTask":"prompt_cache_conversations_materialization",
             "backgroundRuns":background.0,"backgroundScanned":background.1,"backgroundUpdated":background.2,"backgroundDeferred":background.3,"backgroundAdmissionDefers":background.4,
-            "backgroundIntervalSeconds":15,"backgroundScanLimit":crate::STARTUP_BACKFILL_SCAN_LIMIT,"backgroundRunBudgetSeconds":crate::STARTUP_BACKFILL_RUN_BUDGET_SECS,
+            "backgroundPressureFailures":background.5,
+            "backgroundIntervalSeconds":crate::STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS,"backgroundScanLimit":crate::STARTUP_BACKFILL_SCAN_LIMIT,"backgroundRunBudgetSeconds":crate::STARTUP_BACKFILL_RUN_BUDGET_SECS,
         })
     );
     assert!(
