@@ -195,6 +195,7 @@ pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result
                 ELSE json_group_array(
                     CASE
                         WHEN json_each.type IN ('object', 'array') THEN json(json_each.value)
+                        WHEN json_each.type IN ('true', 'false') THEN json(json_each.type)
                         ELSE json_each.value
                     END
                 )

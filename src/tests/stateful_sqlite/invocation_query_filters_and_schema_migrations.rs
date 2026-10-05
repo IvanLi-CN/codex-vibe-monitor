@@ -133,7 +133,7 @@ async fn seed_websocket_retirement_state(pool: &SqlitePool) -> (i64, i64) {
     )
     .bind("retire-websocket-json-values-session")
     .bind(format!(
-        "[{websocket_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],null,\"keep\"]"
+        "[{websocket_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],true,false,null,\"keep\"]"
     ))
     .bind("state-retire-websocket-json-values")
     .bind(chrono::Utc::now().to_rfc3339())
@@ -261,7 +261,7 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     .expect("load JSON tag values after retirement");
     assert_eq!(
         json_value_session_tags,
-        r#"[{"kind":"object"},["nested",{"ok":true}],null,"keep"]"#
+        r#"[{"kind":"object"},["nested",{"ok":true}],true,false,null,"keep"]"#
     );
     let scalar_session_tags: String = sqlx::query_scalar(
         "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-scalar-session'",

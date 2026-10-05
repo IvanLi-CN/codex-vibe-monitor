@@ -3646,7 +3646,7 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
     )
     .bind(&created.login_id)
     .bind(format!(
-        "[{custom_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],null,\"keep\",{system_tag_id}]"
+        "[{custom_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],true,false,null,\"keep\",{system_tag_id}]"
     ))
     .execute(&state.pool)
     .await
@@ -3703,7 +3703,7 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
     assert_eq!(
         stored.tag_ids_json,
         Some(format!(
-            r#"[{{"kind":"object"}},["nested",{{"ok":true}}],null,"keep",{system_tag_id}]"#
+            r#"[{{"kind":"object"}},["nested",{{"ok":true}}],true,false,null,"keep",{system_tag_id}]"#
         ))
     );
 }
