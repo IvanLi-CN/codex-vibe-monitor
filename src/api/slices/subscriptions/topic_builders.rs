@@ -286,6 +286,18 @@ impl SubscriptionTopic {
                 Ok(serde_json::to_value(snapshot)?)
             }
             Self::ManagedTaskTimeline => build_managed_task_timeline_topic_payload(None).await,
+            Self::ManagedTaskDetail { task_key } => {
+                let Some(store) = crate::maintenance_store::global() else {
+                    return Err(ApiError::unavailable(anyhow!(
+                        "maintenance database unavailable"
+                    )));
+                };
+                let Some(mut detail) = store.detail(task_key).await.map_err(ApiError::from)? else {
+                    return Err(ApiError::bad_request(anyhow!("managed task not found")));
+                };
+                detail.performance = state.performance_telemetry.task_run_summary(task_key).await;
+                Ok(serde_json::to_value(detail)?)
+            }
             Self::QuotaCurrent => {
                 let Json(snapshot) = latest_quota_snapshot(State(state)).await?;
                 Ok(serde_json::to_value(snapshot)?)

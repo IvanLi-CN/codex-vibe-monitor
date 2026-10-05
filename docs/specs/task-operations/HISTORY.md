@@ -16,15 +16,26 @@
 - ADR 0026 records the accepted persistent observation boundary: background collection continues without an open page, recent intervals survive service restart, and missing coverage remains explicit rather than reconstructed from request times or aggregate metrics.
 - The task execution chart's visible rolling window is 12 hours. The timeline API continues to support windows up to 24 hours, and shortening the presentation window does not reduce persisted history retention.
 - Live runtime and timeline data use dedicated SSE topics: snapshots seed the page and task-observation changes publish bounded runtime updates and revision deltas. The browser advances the visible clock between events and presents connecting, reconnecting, and disabled states; after the observation grace period it freezes open state and labels it unknown.
+- The implemented task-detail chart region combines recent-100 run metrics and Retention's seven-day backlog with Tabs, rendered empty chart frames and persistent legends. Per-task capabilities separate complete pending population, discovered eligible candidates and committed work; absent measures remain absent.
+- The two existing workload views use the shared segmented control and short labels “次数 / 时间”. The latter denotes Retention's seven-day backlog; this naming does not introduce another run-hour filtering mode. Mock runs conserve pending work across arrivals and committed processing, retain zero-commit and partial-commit failures, and do not infer processing from a skipped attempt.
+- The run metric view uses overlapping areas sharing a zero baseline. Where the same-unit candidate sets are nested, visible bands correspond to C, D−C and P−D while boundaries and Tooltip values remain C, D and P. Mixed units or unproven containment do not authorize difference bands or overall progress.
+- Workload samples use the asynchronous maintenance recorder, remain independent of page lifetime, and protect each task's latest 100 attempts and unconfirmed running sample. Historical attempts retain their identity while unsupported metrics stay unknown. Detail SSE carries revisioned workload snapshots; stale sequences are ignored and recorder gaps are shown.
+- Root and child in-memory overlays retain active attempts and prune previous terminal samples when a new attempt begins. Coverage repair records each successfully committed bucket before continuing; later failure or cancellation preserves those confirmed counts in its final asynchronous snapshot.
+- Processing speed uses at most 20 complete ended attempts and actual wall-clock span. Backlog estimates require at least five fresh same-range exact snapshots within 24 hours, a 60-second minimum span, positive net decline, enabled task state, and no coverage gap. Skips contribute zero only to the rate window and do not fabricate chart metrics or actual start times.
+- The public response additions and maintenance-store workload table are forward-compatible; the API and durable-state compatibility impact is minor. Existing request-time and duration meanings, task configuration, and stored colors remain unchanged.
 
 ## Current Delivery Facts
 
-- The accepted implementation includes process-local runtime observation, separate live dispatcher and admission wait lists, stable persisted task colors, a restart-safe execution/deferral timeline, and bounded revision-based reads, alongside the 37-entry capability catalog, safe schedule editing, reset-to-default semantics, combined filters, and responsive detail views.
+- The accepted implementation includes process-local runtime observation, separate live dispatcher and admission wait lists, stable persisted task colors, a restart-safe execution/deferral timeline, bounded revision-based reads, and durable task workload samples, alongside the 37-entry capability catalog, safe schedule editing, reset-to-default semantics, combined filters, and responsive detail views.
 - The catalog computes default policy metadata without writing schedule overrides. Existing unsupported overrides remain readable and require an explicit reset; `enabled` is preserved when overrides are cleared.
 - Legacy run-history request timestamps and durations retain their previous meanings; the implementation does not infer actual execution start times from them.
 - The owner confirmed the mock-only desktop/mobile timeline and SSE connection-state evidence on 2026-10-02. Canonical assets are stored in `docs/specs/task-operations/assets/`; the mobile capture keeps the 12-hour chart compact without row labels.
+- The owner confirmed all six workload-chart rectification screenshots on 2026-10-04. The accepted Storybook evidence replaces the earlier workload images and covers shared single-row Tabs, Retention's time view, mobile chart space, hidden-pending rescaling, and a running task without counters.
+- PR #1074's reconnect Storybook fixture allows 750 ms before the simulated disconnect while preserving its connection-state assertions and timer cleanup. The test-only correction passed current-head CI at `62354bb8`; it does not change production SSE behavior or the accepted workload-chart evidence.
 
 ## Related Changes
+
+- [PR #1074: durable workload trends and evidence-based estimates](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1074)
 
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
 - `docs/adr/0026-durable-task-execution-and-deferral-timelines.md`

@@ -1,25 +1,18 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
+import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
+import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
   type CurrentTaskExecution,
   fetchManagedTask,
-  fetchManagedTaskRuntime,
   type ManagedTaskDetail,
   runManagedTaskNow,
+  type TaskRuntimeSnapshot,
   updateManagedTask,
 } from "../../lib/api";
 import {
@@ -53,51 +46,48 @@ function formatStartedAt(value?: string | null): string {
   }).format(new Date(timestamp));
 }
 
-function formatTrendHour(value: string): string {
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return "未知";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(timestamp));
-}
-
 type ScheduleKind = "interval" | "cron";
 
-type RetentionTrendChartDatum = {
-  bucketStart: string;
-  state: string;
-  observedAt?: string | null;
-  retentionDays?: number | null;
-  label: string;
-  invocationCount: number | null;
-  maxOverdueHours: number | null;
-};
+function preferNewerWorkloadTrend(
+  current: ManagedTaskDetail | null,
+  incoming: ManagedTaskDetail,
+): ManagedTaskDetail {
+  const currentRevision = current?.workloadTrend?.revision ?? -1;
+  const incomingRevision = incoming.workloadTrend?.revision ?? -1;
+  return currentRevision > incomingRevision
+    ? { ...incoming, workloadTrend: current?.workloadTrend }
+    : incoming;
+}
 
 export default function SystemTaskDetailPage() {
   const { taskKey = "" } = useParams();
   const [detail, setDetail] = useState<ManagedTaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [intervalSecs, setIntervalSecs] = useState("");
   const [cronExpr, setCronExpr] = useState("");
   const [scheduleKind, setScheduleKind] = useState<ScheduleKind>("interval");
   const [saving, setSaving] = useState(false);
   const [runningNow, setRunningNow] = useState(false);
   const [activeRuntime, setActiveRuntime] = useState<CurrentTaskExecution | null>(null);
-  const [runtimeUnavailable, setRuntimeUnavailable] = useState(false);
   const [runtimeSampleClock, setRuntimeSampleClock] = useState<number | null>(null);
   const [runtimeSampleElapsedMs, setRuntimeSampleElapsedMs] = useState<number | null>(null);
   const [runtimeNow, setRuntimeNow] = useState(() => window.performance.now());
+  const runtimeTopic = useSubscriptionTopic<TaskRuntimeSnapshot>(
+    { topic: "system.managed-tasks.runtime" },
+    Boolean(taskKey),
+  );
+  const detailTopic = useSubscriptionTopic<ManagedTaskDetail>(
+    { topic: "system.managed-tasks.detail", params: { taskKey } },
+    Boolean(taskKey),
+  );
 
   useEffect(() => {
     if (!taskKey) return;
+    setDetail(null);
+    setError(null);
     fetchManagedTask(taskKey)
       .then((next) => {
-        setDetail(next);
+        setDetail((current) => preferNewerWorkloadTrend(current, next));
         setIntervalSecs(next.task.intervalSecs == null ? "" : String(next.task.intervalSecs));
         setCronExpr(next.task.cronExpr ?? "");
         setScheduleKind(next.task.cronExpr?.trim() ? "cron" : "interval");
@@ -105,58 +95,39 @@ export default function SystemTaskDetailPage() {
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
   }, [taskKey]);
 
-  const progressPercent = useMemo(() => {
-    const total = detail?.progress?.total;
-    const completed = detail?.progress?.completed;
-    if (total == null || completed == null || total <= 0) return null;
-    return Math.min(100, Math.max(0, (completed / total) * 100));
-  }, [detail]);
+  useEffect(() => {
+    const snapshot = runtimeTopic.data;
+    if (runtimeTopic.error) {
+      setActiveRuntime(null);
+      setRuntimeSampleElapsedMs(null);
+      setRuntimeSampleClock(null);
+      return;
+    }
+    if (!snapshot) return;
+    const next =
+      snapshot.activeRuns.find(
+        (run) => run.taskKey === taskKey || run.activeChildTaskKey === taskKey,
+      ) ?? null;
+    setActiveRuntime(next);
+    setRuntimeSampleElapsedMs(
+      next
+        ? next.elapsedMs + Math.max(0, Date.now() - (runtimeTopic.lastReceivedAt ?? Date.now()))
+        : null,
+    );
+    setRuntimeSampleClock(window.performance.now());
+  }, [taskKey, runtimeTopic.data, runtimeTopic.error, runtimeTopic.lastReceivedAt]);
 
   useEffect(() => {
-    if (!taskKey) return;
-    let disposed = false;
-    let inFlight = false;
-    const refreshRuntime = async () => {
-      if (disposed || inFlight || document.visibilityState === "hidden") return;
-      inFlight = true;
-      try {
-        const snapshot = await fetchManagedTaskRuntime();
-        if (disposed) return;
-        const next =
-          snapshot.activeRuns.find(
-            (run) => run.taskKey === taskKey || run.activeChildTaskKey === taskKey,
-          ) ?? null;
-        setActiveRuntime(next);
-        setRuntimeSampleElapsedMs(next?.elapsedMs ?? null);
-        setRuntimeSampleClock(window.performance.now());
-        setRuntimeError(null);
-        setRuntimeUnavailable(false);
-      } catch (reason) {
-        if (!disposed) {
-          setActiveRuntime(null);
-          setRuntimeSampleElapsedMs(null);
-          setRuntimeSampleClock(null);
-          setRuntimeError(reason instanceof Error ? reason.message : String(reason));
-          setRuntimeUnavailable(true);
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    void refreshRuntime();
-    const timer = window.setInterval(() => void refreshRuntime(), 2000);
+    const incoming = detailTopic.data;
+    if (!incoming || incoming.task.taskKey !== taskKey) return;
+    setDetail((current) => preferNewerWorkloadTrend(current, incoming));
+  }, [detailTopic.data, taskKey]);
+
+  useEffect(() => {
+    if (!activeRuntime) return;
     const elapsedTimer = window.setInterval(() => setRuntimeNow(window.performance.now()), 1000);
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") void refreshRuntime();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => {
-      disposed = true;
-      window.clearInterval(timer);
-      window.clearInterval(elapsedTimer);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [taskKey]);
+    return () => window.clearInterval(elapsedTimer);
+  }, [activeRuntime]);
 
   const hasActiveRun = activeRuntime != null;
   const displayedElapsedMs =
@@ -164,26 +135,21 @@ export default function SystemTaskDetailPage() {
       ? runtimeSampleElapsedMs + Math.max(0, runtimeNow - runtimeSampleClock)
       : activeRuntime?.elapsedMs;
 
-  const retentionBacklogTrend = detail?.retentionBacklogTrend;
-  const retentionTrendChartData = useMemo<RetentionTrendChartDatum[]>(
-    () =>
-      (retentionBacklogTrend ?? []).map((point) => ({
-        ...point,
-        label: formatTrendHour(point.bucketStart),
-        invocationCount: point.state === "observed" ? (point.invocationCount ?? null) : null,
-        maxOverdueHours:
-          point.state === "observed" && point.maxOverdueSeconds != null
-            ? point.maxOverdueSeconds / 3600
-            : null,
-      })),
-    [retentionBacklogTrend],
-  );
-  const hasObservedRetentionTrend = retentionTrendChartData.some(
-    (point) => point.state === "observed",
-  );
-  if (error && !detail) return <Alert variant="error">任务观测不可用：{error}</Alert>;
-  if (!detail)
-    return <div className="surface-panel p-6 text-base-content/65">正在读取任务详情…</div>;
+  const runtimeError = runtimeTopic.error;
+  const runtimeUnavailable = runtimeError != null;
+  if (!detail) {
+    const chartState = error ? "error" : "loading";
+    return (
+      <section className="surface-panel surface-panel-body gap-5">
+        {error ? (
+          <Alert variant="error">任务观测不可用：{error}</Alert>
+        ) : (
+          <div className="text-sm text-base-content/65">正在读取任务详情…</div>
+        )}
+        <TaskWorkloadTrend taskKey={taskKey} state={chartState} error={error} />
+      </section>
+    );
+  }
 
   const { task, progress, recentRuns } = detail;
   const nextCatchupAt = progress?.nextCatchupAt ?? task.nextCatchupAt;
@@ -195,7 +161,7 @@ export default function SystemTaskDetailPage() {
     setSaving(true);
     try {
       const next = await updateManagedTask(task.taskKey, payload);
-      setDetail(next);
+      setDetail((current) => preferNewerWorkloadTrend(current, next));
       setIntervalSecs(next.task.intervalSecs == null ? "" : String(next.task.intervalSecs));
       setCronExpr(next.task.cronExpr ?? "");
       setScheduleKind(next.task.cronExpr?.trim() ? "cron" : "interval");
@@ -209,7 +175,8 @@ export default function SystemTaskDetailPage() {
   const runNow = async () => {
     setRunningNow(true);
     try {
-      setDetail(await runManagedTaskNow(task.taskKey));
+      const next = await runManagedTaskNow(task.taskKey);
+      setDetail((current) => preferNewerWorkloadTrend(current, next));
       setError(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -250,22 +217,6 @@ export default function SystemTaskDetailPage() {
         </div>
         {error ? <Alert variant="error">{error}</Alert> : null}
         {!error && runtimeError ? <Alert variant="error">{runtimeError}</Alert> : null}
-        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-          {[
-            ["总量", progress?.total == null ? "—" : progress.total.toLocaleString()],
-            ["已完成", progress?.completed == null ? "—" : progress.completed.toLocaleString()],
-            ["当前进度", progressPercent == null ? "—" : `${progressPercent.toFixed(1)}%`],
-            ["预计剩余", progress?.etaSeconds == null ? "—" : `${progress.etaSeconds}s`],
-            ["计量单位", progress?.unit ?? "未知"],
-          ].map(([label, value]) => (
-            <Card key={label}>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-xs text-base-content/60">{label}</CardTitle>
-              </CardHeader>
-              <CardContent className="text-2xl font-semibold">{value}</CardContent>
-            </Card>
-          ))}
-        </div>
         <Card>
           <CardHeader>
             <CardTitle className="text-base">调度与观测</CardTitle>
@@ -479,112 +430,14 @@ export default function SystemTaskDetailPage() {
             ) : null}
           </CardContent>
         </Card>
-        {task.taskKey === "retention_archive" ? (
-          <Card>
-            <CardHeader>
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <CardTitle className="text-base">最近 7 天归档积压</CardTitle>
-                <span className="text-xs text-base-content/60">
-                  每小时最后一次准确快照 · UTC 桶，按上海时间显示
-                </span>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {retentionTrendChartData.length === 0 || !hasObservedRetentionTrend ? (
-                <div className="text-sm text-base-content/60">暂无观测数据</div>
-              ) : (
-                <>
-                  <div>
-                    <div className="mb-1 flex items-center justify-between text-xs text-base-content/60">
-                      <span>待归档 invocation 条数</span>
-                      <span>缺测留空，不补零</span>
-                    </div>
-                    <div className="h-44 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart
-                          data={retentionTrendChartData}
-                          margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" stroke="#64748b66" />
-                          <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 10 }} />
-                          <YAxis
-                            width={54}
-                            tick={{ fontSize: 10 }}
-                            tickFormatter={(value) => value.toLocaleString()}
-                          />
-                          <Tooltip
-                            labelFormatter={(label, payload) => {
-                              const point = payload?.[0]?.payload as
-                                | RetentionTrendChartDatum
-                                | undefined;
-                              if (point?.state !== "observed") return `${String(label)} · 缺测`;
-                              return `${String(label)} · 观测 ${formatStartedAt(point.observedAt)} · 策略 ${point.retentionDays ?? "未知"} 天`;
-                            }}
-                            formatter={(value) =>
-                              value == null ? "缺测" : Number(value).toLocaleString()
-                            }
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="invocationCount"
-                            stroke="#0ea5e9"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls={false}
-                            name="invocation"
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="mb-1 flex items-center justify-between text-xs text-base-content/60">
-                      <span>最长逾期时间（小时）</span>
-                      <span>空积压显示 0 条、逾期未知</span>
-                    </div>
-                    <div className="h-44 w-full">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <LineChart
-                          data={retentionTrendChartData}
-                          margin={{ top: 8, right: 8, left: 8, bottom: 0 }}
-                        >
-                          <CartesianGrid strokeDasharray="3 3" stroke="#64748b66" />
-                          <XAxis dataKey="label" minTickGap={28} tick={{ fontSize: 10 }} />
-                          <YAxis
-                            width={54}
-                            tick={{ fontSize: 10 }}
-                            tickFormatter={(value) => `${value}h`}
-                          />
-                          <Tooltip
-                            labelFormatter={(label, payload) => {
-                              const point = payload?.[0]?.payload as
-                                | RetentionTrendChartDatum
-                                | undefined;
-                              if (point?.state !== "observed") return `${String(label)} · 缺测`;
-                              return `${String(label)} · 观测 ${formatStartedAt(point.observedAt)} · 策略 ${point.retentionDays ?? "未知"} 天`;
-                            }}
-                            formatter={(value) =>
-                              value == null ? "缺测" : `${Number(value).toFixed(1)}h`
-                            }
-                          />
-                          <Line
-                            type="monotone"
-                            dataKey="maxOverdueHours"
-                            stroke="#f59e0b"
-                            strokeWidth={2}
-                            dot={false}
-                            connectNulls={false}
-                            name="overdue"
-                          />
-                        </LineChart>
-                      </ResponsiveContainer>
-                    </div>
-                  </div>
-                </>
-              )}
-            </CardContent>
-          </Card>
-        ) : null}
+        <TaskWorkloadSummary trend={detail.workloadTrend} />
+        <TaskWorkloadTrend
+          taskKey={task.taskKey}
+          capabilities={task.measurementCapabilities}
+          trend={detail.workloadTrend}
+          retentionTrend={detail.retentionBacklogTrend}
+          state="ready"
+        />
         <Card>
           <CardHeader>
             <CardTitle className="text-base">最近运行</CardTitle>

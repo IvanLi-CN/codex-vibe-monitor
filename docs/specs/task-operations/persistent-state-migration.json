@@ -2,12 +2,12 @@
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
   "migration": {
-    "description": "Add persistent task identity colors and bounded execution, deferral, and observation-coverage intervals to the maintenance SQLite database.",
-    "release_unit_description": "Task operations runtime API, queue and admission snapshots, and the 12-hour timeline view with a 24-hour API query window.",
+    "description": "Add persistent task identity colors, execution and deferral timelines, observation coverage, and bounded per-run workload samples to the maintenance SQLite database.",
+    "release_unit_description": "Task operations API, durable run workload observations, recent-100 overlapping detail charts, and Retention's seven-day backlog view.",
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Managed task controls and stable colors, progress snapshots, legacy task-run history, actual execution timestamps, execution and deferral intervals, observation sessions, and explicit coverage gaps.",
+    "description": "Managed task controls and stable colors, progress snapshots, legacy task-run history, actual execution timestamps, execution and deferral intervals, observation sessions, explicit coverage gaps, and per-task run workload samples.",
     "storage_implementation": "Sibling SQLite file derived from DATABASE_PATH or MAINTENANCE_DATABASE_PATH.",
     "source_compatibility_range": {
       "from_program_versions": "v2.79.x and later releases containing system_task_runs/startup_backfill_progress",
@@ -32,14 +32,22 @@
         "depends_on": ["ddl-maintenance-schema"],
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "ddl-task-workload-runs",
+        "description": "Create the maintenance-store workload sample table and task-attempt index with execution UID plus task key identity, monotonic sequence, status, and serialized per-metric coverage; add the status column idempotently when upgrading an earlier table shape.",
+        "order": 3,
+        "depends_on": ["ddl-task-timeline"],
+        "observable": true,
+        "pauseable": true
       }
     ],
     "dml_changes": [
       {
         "id": "dml-maintenance-registry",
-        "description": "Seed the stable task registry idempotently, assign deterministic colors only where a color is missing, and preserve existing enablement and schedule overrides.",
-        "order": 3,
-        "depends_on": ["ddl-maintenance-schema", "ddl-task-timeline"],
+        "description": "Seed the stable task registry and measurement capabilities idempotently, assign deterministic colors only where a color is missing, and preserve existing enablement and schedule overrides.",
+        "order": 4,
+        "depends_on": ["ddl-maintenance-schema", "ddl-task-timeline", "ddl-task-workload-runs"],
         "observable": true,
         "pauseable": true
       }
@@ -48,7 +56,7 @@
       {
         "id": "backfill-legacy-task-state",
         "description": "Retain the existing idempotent compatibility copy for legacy task runs and startup-backfill state.",
-        "order": 4,
+        "order": 5,
         "depends_on": ["ddl-maintenance-schema", "dml-maintenance-registry"],
         "observable": true,
         "pauseable": true
@@ -56,8 +64,16 @@
       {
         "id": "backfill-execution-timeline",
         "description": "Not applicable: legacy request timestamps and cumulative durations cannot prove actual execution boundaries, so no historical execution intervals are inferred.",
-        "order": 5,
+        "order": 6,
         "depends_on": ["ddl-task-timeline"],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "preserve-unknown-workload-history",
+        "description": "Do not backfill metric values. Confirmed legacy managed attempts may be merged by stable identity at read time, but their missing P/D/C values and actual-start uncertainty remain unknown.",
+        "order": 7,
+        "depends_on": ["ddl-task-workload-runs"],
         "observable": true,
         "pauseable": true
       }
@@ -65,9 +81,9 @@
   },
   "rollout_observability": {
     "operations_must_remain_separate": true,
-    "operation_sequence": ["ddl-maintenance-schema", "ddl-task-timeline", "dml-maintenance-registry", "backfill-legacy-task-state", "backfill-execution-timeline"],
-    "progress_signals": ["maintenance database health", "required table and column presence", "stable registry and color counts", "timeline revision and session coverage", "legacy copied row counts"],
-    "pause_points": ["after additive schema creation", "after stable task-color assignment", "after each legacy compatibility copy batch"]
+    "operation_sequence": ["ddl-maintenance-schema", "ddl-task-timeline", "ddl-task-workload-runs", "dml-maintenance-registry", "backfill-legacy-task-state", "backfill-execution-timeline", "preserve-unknown-workload-history"],
+    "progress_signals": ["maintenance database health", "required table and column presence", "stable registry, capability, and color counts", "timeline revision and session coverage", "workload sample count and per-task latest-100 retention", "legacy copied row counts"],
+    "pause_points": ["after each additive schema creation", "after stable task-color and capability assignment", "after each legacy compatibility copy batch"]
   },
   "recovery": {
     "deployed_migrations_immutable": true,
@@ -82,7 +98,9 @@
         "restarting after a partial copy is idempotent and does not duplicate runs",
         "maintenance database unavailability and dropped observations create explicit coverage gaps without writing task observations to the main database",
         "legacy request-time and duration fields retain their prior meanings and no historical execution start is inferred",
-        "legacy task API remains readable while additive runtime and timeline fields are available"
+        "legacy task API remains readable while additive runtime, timeline, measurement-capability, and workload-trend fields are available",
+        "the workload table migration is idempotent, rejects stale sample sequences, protects each task's latest 100 samples and running sample, and does not reconstruct old P/D/C metrics",
+        "legacy managed attempts deduplicate against new samples by execution identity while their historical metric values remain unknown"
       ]
     }
   }

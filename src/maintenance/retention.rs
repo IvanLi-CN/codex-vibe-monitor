@@ -16,6 +16,8 @@ use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
 #[path = "retention/task_runner.rs"]
 mod task_runner;
+#[path = "retention/workload.rs"]
+mod workload;
 use sqlx::FromRow;
 use std::{
     cell::RefCell,
@@ -26,6 +28,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 pub(crate) use task_runner::run_data_retention_maintenance_best_effort;
+pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
@@ -106,31 +109,9 @@ pub(crate) async fn run_data_retention_maintenance_with_circuit(
     circuit: Arc<RawCaptureCircuitBreaker>,
 ) -> Result<RetentionRunSummary> {
     run_data_retention_maintenance_with_circuit_and_prompt_cache(
-        pool, config, dry_run, shutdown, circuit, None,
+        pool, config, dry_run, shutdown, circuit, None, None,
     )
     .await
-}
-
-pub(crate) async fn run_data_retention_maintenance_with_circuit_and_prompt_cache(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    dry_run: Option<bool>,
-    shutdown: Option<&CancellationToken>,
-    circuit: Arc<RawCaptureCircuitBreaker>,
-    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
-) -> Result<RetentionRunSummary> {
-    RETENTION_RAW_CAPTURE_CIRCUIT
-        .scope(
-            RefCell::new(Some(circuit)),
-            run_data_retention_maintenance_with_prompt_cache(
-                pool,
-                config,
-                dry_run,
-                shutdown,
-                prompt_cache_conversation_cache,
-            ),
-        )
-        .await
 }
 
 pub(crate) async fn retention_try_archive_locks_scope<F: Future>(future: F) -> F::Output {
@@ -8538,6 +8519,7 @@ async fn run_data_retention_maintenance_inner(
             summary.backlog_observed_at = Some(format_utc_iso_millis(Utc::now()));
         }
     }
+    workload::record_pending_population(config, &summary, source_max_result.is_some());
     let raw_path_fallback_root = config.database_path.parent();
 
     if !dry_run {
@@ -8694,6 +8676,7 @@ async fn run_data_retention_maintenance_inner(
             config,
             raw_path_fallback_root,
             dry_run,
+            &archive_cutoff,
             summary.source_max_invocation_id,
         )
         .await
@@ -9211,6 +9194,7 @@ async fn compress_cold_pool_attempt_response_raw_lane(
             }
             if outcome.compressed {
                 summary.files_compressed += 1;
+                crate::record_managed_task_processed_work(&["raw_compression"], 1);
             }
             summary.bytes_before += outcome.bytes_before;
             summary.bytes_after += outcome.bytes_after;
@@ -9392,6 +9376,7 @@ pub(crate) async fn compress_cold_proxy_raw_payload_lane(
             }
             if outcome.compressed {
                 summary.files_compressed += 1;
+                crate::record_managed_task_processed_work(&["raw_compression"], 1);
             }
             summary.bytes_before += outcome.bytes_before;
             summary.bytes_after += outcome.bytes_after;
@@ -10355,8 +10340,16 @@ pub(crate) async fn archive_old_invocations(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
-    archive_old_invocations_with_source_max(pool, config, raw_path_fallback_root, dry_run, None)
-        .await
+    let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    archive_old_invocations_with_source_max(
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        &cutoff,
+        None,
+    )
+    .await
 }
 
 async fn archive_old_invocations_with_source_max(
@@ -10364,9 +10357,9 @@ async fn archive_old_invocations_with_source_max(
     config: &AppConfig,
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
+    cutoff: &str,
     source_max_invocation_id: Option<i64>,
 ) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
-    let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
 
     if dry_run {
@@ -10394,7 +10387,7 @@ async fn archive_old_invocations_with_source_max(
             ORDER BY occurred_at ASC, id ASC
             "#,
         )
-        .bind(&cutoff)
+        .bind(cutoff)
         .bind(source_max_invocation_id)
         .fetch_all(pool);
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
@@ -10441,6 +10434,7 @@ async fn archive_old_invocations_with_source_max(
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
     let mut prompt_cache_keys = std::collections::HashSet::new();
+    let mut discovered_ids = HashSet::new();
 
     loop {
         if retention_run_budget_expired() {
@@ -10472,7 +10466,7 @@ async fn archive_old_invocations_with_source_max(
             LIMIT ?3
             "#,
         )
-        .bind(&cutoff)
+        .bind(cutoff)
         .bind(source_max_invocation_id)
         .bind(candidate_limit as i64)
         .fetch_all(pool);
@@ -10484,6 +10478,11 @@ async fn archive_old_invocations_with_source_max(
         } else {
             candidates_query.await?
         };
+
+        if !dry_run {
+            discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
+            workload::record_discovered_count(discovered_ids.len());
+        }
 
         if candidates.is_empty() {
             break;
@@ -10865,6 +10864,7 @@ async fn archive_old_invocations_with_source_max(
                 had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
             let commit_started = Instant::now();
             tx.commit().await?;
+            workload::record_processed_count(group.len());
             retention_record_commit_with_reference_check!(
                 "invocation_archive",
                 admission.admission_mode(),

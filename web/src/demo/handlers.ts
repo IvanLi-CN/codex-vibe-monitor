@@ -1,8 +1,12 @@
 import { HttpResponse, http, type JsonBodyType } from "msw";
+import { buildRetentionWorkloadFixture } from "../features/system/taskWorkloadFixtures";
 import type {
   ApiInvocationWorkflowDetailResponse,
   LongTermMetrics,
+  ManagedTaskDetail,
   ModelRoutingTimelineRecord,
+  TaskWorkloadMetric,
+  TaskWorkloadSample,
 } from "../lib/api";
 import { isFiniteNonNegativeMilliseconds } from "../lib/invocationTiming";
 import { demoModel, demoNow } from "./model";
@@ -3222,37 +3226,94 @@ function demoTaskOperationsTimeline() {
   };
 }
 
-function managedTaskDetail(taskKey: string) {
+function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
   const task = managedTasks().find((item) => item.taskKey === taskKey);
   if (!task) return null;
   const at = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
-  const retentionBacklogTrend =
-    taskKey === "retention_archive"
-      ? Array.from({ length: 7 * 24 }, (_, index) => {
-          const bucket = new Date(Date.parse(demoNow()) - (7 * 24 - index) * 60 * 60 * 1000);
-          bucket.setUTCMinutes(0, 0, 0);
-          const missing = index % 17 === 0;
-          return {
-            bucketStart: bucket.toISOString(),
-            state: missing ? "missing" : "observed",
-            observedAt: missing ? null : new Date(bucket.getTime() + 55 * 60 * 1000).toISOString(),
-            invocationCount: missing ? null : Math.max(0, 12_900 - index * 42),
-            maxOverdueSeconds: missing ? null : Math.max(0, 9 * 24 * 3600 - index * 900),
-            retentionDays: 7,
-            cutoff: new Date(bucket.getTime() - 7 * 24 * 3600 * 1000).toISOString(),
-            sourceMaxInvocationId: missing ? null : 2_579_364 + index * 128,
-          };
-        })
-      : undefined;
+  const isRetention = taskKey === "retention_archive";
+  const isRowBackfill =
+    taskKey.startsWith("startup_backfill.") &&
+    [
+      "proxy_usage",
+      "prompt_cache_key",
+      "requested_service_tier",
+      "invocation_service_tier",
+      "proxy_cost",
+      "reasoning_effort",
+      "failure_classification",
+      "pool_attempt_public_id_live",
+    ].includes(taskKey.slice("startup_backfill.".length));
+  const retentionFixture = isRetention
+    ? buildRetentionWorkloadFixture({
+        taskKey,
+        nowMs: Date.parse(demoNow()),
+        sampleCount: 100,
+        intervalMs: 60 * 60 * 1000,
+        finalPending: 2_544,
+        skippedIndices: [47, 82],
+        zeroCommitFailureIndices: [46, 81],
+      })
+    : null;
+  const workloadMetric = (
+    value: number,
+    coverage: string,
+    scope: string,
+    range: string,
+    observedAt: string,
+  ): TaskWorkloadMetric => ({ value, unit: "invocation rows", scope, range, observedAt, coverage });
+  const backfillNowMs = Date.parse(demoNow()) - 26_000;
+  const backfillSamples: TaskWorkloadSample[] = Array.from({ length: 100 }, (_, index) => {
+    const attemptedAt = new Date(backfillNowMs - (99 - index) * 4 * 60_000).toISOString();
+    const skipped = index === 47 || index === 82;
+    const failed = index % 19 === 0;
+    const range = "invocation_id <= 315000";
+    const sample: TaskWorkloadSample = {
+      sampleId: `demo:${taskKey}:${index}`,
+      executionUid: `demo-execution-${taskKey}-${index}`,
+      managedRunId: index + 1,
+      taskKey,
+      triggerKind: index % 25 === 0 ? "manual" : "interval",
+      attemptedAt,
+      actualStartedAt: skipped ? null : new Date(Date.parse(attemptedAt) + 4_000).toISOString(),
+      finishedAt: skipped ? null : new Date(Date.parse(attemptedAt) + 26_000).toISOString(),
+      status: skipped ? "skipped" : failed ? "failed" : "success",
+      reason: skipped ? "资源约束确认跳过" : failed ? "批次部分提交后发生可恢复错误" : null,
+      sequence: 3,
+      pending: null,
+      discovered: null,
+      processed: null,
+      subsetRelation: "unknown",
+    };
+    if (skipped) return sample;
+    if (isRowBackfill) {
+      const discovered = Math.round(
+        2_500 + 420 * Math.sin(index * 0.43) + 260 * Math.sin(index * 0.17 + 1.2),
+      );
+      const committed = failed ? Math.floor(discovered * 0.55) : discovered;
+      sample.processed = workloadMetric(committed, "window", taskKey, range, attemptedAt);
+    }
+    return sample;
+  });
+  const workloadSamples = retentionFixture?.samples ?? backfillSamples;
+  const retentionBacklogTrend = retentionFixture?.backlog;
+  const latestSample = [...workloadSamples].reverse().find((sample) => sample.status !== "skipped");
+  const latestObservedAt =
+    latestSample?.pending?.observedAt ?? latestSample?.processed?.observedAt ?? at;
+  const latestRunStartedAt = latestSample?.actualStartedAt ?? at;
+  const latestRunFinishedAt = latestSample?.finishedAt ?? demoNow();
+  const latestRunDurationMs = Math.max(
+    0,
+    Date.parse(latestRunFinishedAt) - Date.parse(latestRunStartedAt),
+  );
   const defaultRun: DemoManagedTaskRun = {
-    id: 1,
-    startedAt: at,
-    finishedAt: demoNow(),
-    durationMs: 31_000,
-    triggerKind: task.isManual ? "manual" : task.triggerMode,
-    status: "success",
-    processedCount: task.isManual ? null : 1842,
-    updatedCount: task.isManual ? null : 1780,
+    id: latestSample?.managedRunId ?? 1,
+    startedAt: latestRunStartedAt,
+    finishedAt: latestRunFinishedAt,
+    durationMs: latestRunDurationMs || 31_000,
+    triggerKind: latestSample?.triggerKind ?? (task.isManual ? "manual" : task.triggerMode),
+    status: latestSample?.status ?? "success",
+    processedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1842),
+    updatedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1780),
     errorDetail: null,
     completion: taskKey === "retention_archive" ? "partial" : "completed",
     coreCompletion: task.isManual ? null : "completed",
@@ -3260,7 +3321,7 @@ function managedTaskDetail(taskKey: string) {
       taskKey === "retention_archive"
         ? {
             budgetMs: 60000,
-            elapsedMs: 31000,
+            elapsedMs: latestRunDurationMs || 31_000,
             settlementMs: 2,
             promptCacheStats: {
               state: "unavailable",
@@ -3270,8 +3331,71 @@ function managedTaskDetail(taskKey: string) {
           }
         : null,
   };
+  const latestPending = latestSample?.pending ?? null;
+  const latestProcessed = latestSample?.processed ?? null;
+  const completeAttempts = workloadSamples
+    .filter(
+      (sample) =>
+        sample.actualStartedAt != null &&
+        sample.finishedAt != null &&
+        sample.processed?.value != null &&
+        sample.processed.coverage === "window",
+    )
+    .slice(-20);
+  const processingSpanMs =
+    completeAttempts.length > 1
+      ? Date.parse(completeAttempts.at(-1)?.finishedAt ?? "") -
+        Date.parse(completeAttempts[0].actualStartedAt ?? "")
+      : 0;
+  const processingTotal = completeAttempts.reduce(
+    (sum, sample) => sum + (sample.processed?.value ?? 0),
+    0,
+  );
+  const backfillTrend = {
+    revision: 100,
+    coverage: "recorded",
+    samples: workloadSamples,
+    latestPending,
+    latestProcessed,
+    latestObservedAt: latestPending?.observedAt ?? latestProcessed?.observedAt ?? null,
+    processingRatePerSecond:
+      processingSpanMs > 0 ? processingTotal / (processingSpanMs / 1000) : null,
+    processingRateWindow:
+      processingSpanMs <= 0
+        ? null
+        : `${completeAttempts.length} 次 · 跨 ${
+            processingSpanMs < 60 * 60 * 1000
+              ? `${Math.round(processingSpanMs / 60_000)} 分钟`
+              : `${(processingSpanMs / (60 * 60 * 1000)).toFixed(1)} 小时`
+          }`,
+    clearanceEta: null,
+    clearanceEstimateReason: "insufficient_samples",
+  };
   return {
-    task,
+    task: {
+      ...task,
+      measurementCapabilities: {
+        pending: {
+          supported: isRetention,
+          unit: isRetention ? "invocation rows" : null,
+          scope: isRetention ? "expired_invocations:retention_policy" : null,
+        },
+        discovered: {
+          supported: isRetention,
+          unit: isRetention ? "invocation rows" : null,
+          scope: isRetention ? "expired_invocations:retention_policy" : null,
+        },
+        processed: {
+          supported: isRetention || isRowBackfill,
+          unit: isRetention || isRowBackfill ? "invocation rows" : null,
+          scope: isRetention
+            ? "expired_invocations:retention_policy"
+            : isRowBackfill
+              ? taskKey
+              : null,
+        },
+      },
+    },
     progress: task.isManual
       ? {
           total: null,
@@ -3279,7 +3403,7 @@ function managedTaskDetail(taskKey: string) {
           phase: "manual",
           checkpoint: null,
           etaSeconds: null,
-          updatedAt: at,
+          updatedAt: latestObservedAt,
           freshness: "fresh",
           unit: "invocations",
           sourceScope: "expired_invocations",
@@ -3295,11 +3419,11 @@ function managedTaskDetail(taskKey: string) {
           phase: "processing",
           checkpoint: "cursor:1842",
           etaSeconds: 420,
-          updatedAt: at,
+          updatedAt: latestObservedAt,
           freshness: "fresh",
           unit: "invocations",
           sourceScope: "expired_invocations",
-          lastProgressAt: at,
+          lastProgressAt: latestObservedAt,
           waitReason: null,
           nextInspectionAt: task.nextTriggerAt,
           nextCatchupAt: task.nextCatchupAt ?? null,
@@ -3311,6 +3435,7 @@ function managedTaskDetail(taskKey: string) {
         },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
     retentionBacklogTrend,
+    workloadTrend: retentionFixture?.trend ?? backfillTrend,
   };
 }
 
@@ -4734,7 +4859,14 @@ export async function handleDemoRequest(request: Request) {
     const taskKey = decodeURIComponent(managedRunMatch[1]);
     const detail = managedTaskDetail(taskKey);
     if (!detail) return json({ error: "not found" }, { status: 404 });
-    const runs = managedTaskRuns.get(taskKey) ?? detail.recentRuns;
+    const runs = (managedTaskRuns.get(taskKey) ?? detail.recentRuns).map((run) => ({
+      ...run,
+      finishedAt: run.finishedAt ?? null,
+      durationMs: run.durationMs ?? null,
+      processedCount: run.processedCount ?? null,
+      updatedCount: run.updatedCount ?? null,
+      errorDetail: run.errorDetail ?? null,
+    }));
     const syntheticRunActive = taskKey === "dashboard_runtime_projection_reconcile";
     if (
       syntheticRunActive ||
