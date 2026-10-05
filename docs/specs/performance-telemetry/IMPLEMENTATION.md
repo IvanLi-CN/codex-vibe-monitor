@@ -45,6 +45,11 @@ artifact 失败。完整 attempt 4 通过仅证明该 SHA 达标，不解释历�
 Agent VM 分配遇到 Incus agents project 实例数量上限，未取得有效租约；全量工程
 验证交由 GitHub Actions，不改用本机 Docker 或共享性能环境。
 
+主线合并候选 `9d6258f0` 的 Actions 在构建前发现锁文件不一致：主线 WS 依赖
+清理同时移除了观测依赖 `metrics-util 0.20.4` 仍需要的 rand 0.9 传递依赖。
+使用离线 workspace 锁定解析补回该依赖族，不更改直接依赖版本、业务行为或预算合同；
+修订候选须重新完成完整 Actions，未运行的经验性场景不能记为通过。
+
 ## Current coverage
 
 `src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与
