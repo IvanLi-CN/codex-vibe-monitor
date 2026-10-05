@@ -32,6 +32,7 @@ async fn counted_http_transport_reports_network_bytes_through_dashboard_projecti
         "2026-09-28 16:00:00",
         Some(42),
         Some("api.example.test"),
+        "/",
     );
 
     let response = send_counted_upstream_http_request(
