@@ -8,7 +8,15 @@ async fn ranges_fixture() -> SqlitePool {
 
 #[tokio::test]
 async fn invocation_ranges_schema_marker_and_ddl_roll_back_together() {
-    let pool = ranges_fixture().await;
+    // SQLx queues rollback when a failed migration transaction is dropped.
+    // Reuse that connection so the structural read follows its rollback,
+    // rather than racing its schema lock from another shared-memory connection.
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_schema(&pool).await.unwrap();
     sqlx::query("DELETE FROM schema_refresh_migrations WHERE migration_name='invocation_range_ownership_v1'")
         .execute(&pool).await.unwrap();
     sqlx::query("DROP TABLE hourly_invoke_prefixes")
