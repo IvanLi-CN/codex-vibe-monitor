@@ -339,6 +339,55 @@ async fn invocation_ranges_retirement_returns_only_unissued_tail() {
 }
 
 #[tokio::test]
+async fn invocation_ranges_deferred_shrink_drains_all_newly_idle_owners() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    for number in 0..130 {
+        let key = format!("deferred-shrink-{number}");
+        manager.retain_key(&key);
+        let mut initialized = false;
+        // Prepare protected owners before the measured retirement interleaving.
+        for _ in 0..5 {
+            match manager.allocate(&pool, Some(&key)).await {
+                Ok(_) => {
+                    initialized = true;
+                    break;
+                }
+                Err(error) => assert_eq!(
+                    error.to_string(),
+                    "invocation range allocation timed out after 100ms"
+                ),
+            }
+        }
+        assert!(initialized, "fixture owner {number} did not initialize");
+    }
+    assert_eq!(manager.occupancy(), 130);
+
+    // This current-thread test does not yield between releases: the first
+    // owner is retiring when the second owner becomes idle.
+    manager.release_key("deferred-shrink-0");
+    manager.release_key("deferred-shrink-1");
+    assert_eq!(manager.occupancy(), 130);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while manager.occupancy() != 128 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("deferred shrink must finish without another resize or release event");
+    for key in ["deferred-shrink-0", "deferred-shrink-1"] {
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?")
+                .bind(key).fetch_one(&pool).await.unwrap(),
+            0,
+            "each retired owner returns only its unissued tail"
+        );
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn invocation_ranges_seed_uses_bounded_covering_index() {
     let pool = ranges_fixture().await;
     let rows = sqlx::query("EXPLAIN QUERY PLAN SELECT conversation_id,last_invocation_at FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 4096")

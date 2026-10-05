@@ -519,16 +519,19 @@ impl InvocationRangeManager {
                 }
             }
             drop(permit);
-            let mut memory = manager.memory.lock().expect("invocation range memory");
-            if memory
-                .entries
-                .get(&reservation.owner)
-                .is_some_and(|entry| entry.generation == reservation.generation && entry.retiring)
-                && let Some(entry) = memory.entries.remove(&reservation.owner)
             {
-                entry.notify.notify_waiters();
+                let mut memory = manager.memory.lock().expect("invocation range memory");
+                if memory.entries.get(&reservation.owner).is_some_and(|entry| {
+                    entry.generation == reservation.generation && entry.retiring
+                }) && let Some(entry) = memory.entries.remove(&reservation.owner)
+                {
+                    entry.notify.notify_waiters();
+                }
             }
             manager.admission.notify_waiters();
+            // Other entries may have become idle while this single return worker
+            // was draining. Continue contraction after releasing the memory lock.
+            manager.shrink();
         });
     }
 
