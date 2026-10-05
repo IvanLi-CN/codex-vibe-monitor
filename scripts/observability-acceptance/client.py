@@ -202,8 +202,9 @@ def load(seconds,rate):
     assert all(item[0]==200 for item in results),{"statuses":{str(status):sum(item[0]==status for item in results) for status,_ in results}}
     return {"offered":seconds*rate,"completed":len(results),"dashboardSubscriptions":1,"durationSeconds":time.perf_counter()-started,"p95Seconds":durations[math.ceil(len(durations)*0.95)-1]}
 
-parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","browser_seed","functional","load"])
-parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
-args=parser.parse_args()
-result=load(args.seconds,args.rate) if args.mode=="load" else globals()[args.mode]()
-print(json.dumps(result))
+if __name__ == "__main__":
+    parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","browser_seed","functional","load"])
+    parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
+    args=parser.parse_args()
+    result=load(args.seconds,args.rate) if args.mode=="load" else globals()[args.mode]()
+    print(json.dumps(result))

@@ -1,5 +1,11 @@
 # 独立性能遥测历史
 
+- Hosted run `37300494717` attempt 2 exposed import-time CLI parsing in `client.py`,
+  making all CPU diagnostic counter snapshots `unknown`. Guard the dispatch with
+  `__main__` and cover the real import path in a subprocess regression. This repairs
+  diagnostic evidence collection; it does not explain CPU variance or certify the
+  budget, and the new candidate requires fresh Actions and formal review evidence.
+
 - 主线合并候选 `9d6258f0` 在 Actions 构建前被 `--locked` 拒绝：WS 依赖清理误删观测依赖仍需的 rand 0.9 传递依赖族。离线 workspace 解析补齐锁文件，直接依赖、性能阈值和普通修复批次数不变；未启动的预算/诊断不作证据。
 
 - 候选 `9d06607c` 的 Actions run `37266146248` 完整 attempt 4 通过全部 20 个 job 与四项经验性场景，CPU/请求 +2.42%、p95 −0.34%。先前环境 unavailable 与部分重跑输入失败分别保留，不以通过结果宣称历史根因已解决。随后同步主线 `75de1168` 的 WS 退役、请求日志脱敏与任务标题对齐；新运行时和 render inputs 须重新绑定验收、任务截图与正式审查，普通修复批次数维持七批。

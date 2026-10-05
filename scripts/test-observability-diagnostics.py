@@ -85,6 +85,37 @@ class EvidenceTests(unittest.TestCase):
         (probe.proc / "123/cgroup").write_text("0::/docker\n")
         with self.assertRaises(ValueError): evidence.Probe(123, CONTAINER, probe.proc, self.root / "groups")
 
+    def test_snapshot_imports_client_without_executing_cli(self):
+        # Match the fresh /diagnostics/snapshot.py process, whose argv has no mode.
+        probe = r"""
+import json
+from pathlib import Path
+import sys
+import tempfile
+sys.path[:0] = [sys.argv[1], sys.argv[2]]
+sys.argv = ["snapshot.py"]
+import snapshot
+import client
+with tempfile.TemporaryDirectory() as directory:
+    client.ROOT = Path(directory)
+    (client.ROOT / "metrics-token").write_text("synthetic-scrape-token")
+    def request(base, path, **kwargs):
+        assert (base, path) == ("http://app:9091", "/metrics")
+        assert kwargs == {"token": "synthetic-scrape-token"}
+        return 200, b"cvm_sqlite_retries_total 2\n"
+    client.request = request
+    result = snapshot.main()
+    assert result["status"] == "observed", result
+    assert result["values"] == {"cvm_sqlite_retries_total": 2.0}, result
+    print(json.dumps({"status": result["status"], "values": result["values"]}))
+"""
+        result = subprocess.run([sys.executable, "-c", probe,
+                                 str(SOURCE / "scripts/observability-diagnostics"),
+                                 str(SOURCE / "scripts/observability-acceptance")],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["status"], "observed")
+
     def test_metrics_emit_fixed_numeric_sums_without_labels(self):
         name = "cvm_sqlite_retries_total"
         result = evidence.metric_summary(f'{name}{{sql="secret",token="private"}} 2\n{name}{{sql="other"}} 3\nprivate_metric 88\n')
