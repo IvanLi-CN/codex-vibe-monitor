@@ -29,12 +29,29 @@ class ProgressClockTests(unittest.TestCase):
     def test_stale_priority_reason_does_not_hide_45_second_stall(self):
         probe = dict(eligible_since=None, durable_seen=False, staging_seen=False,
                      baseline_cursor=list(loadgen.progress_cursor(self.state)),
-                     baseline_staging_cursor=0, max_durable_eligible_wait_seconds=0,
+                     baseline_staging_cursor=0, baseline_staging_commit_count=0,
+                     max_durable_eligible_wait_seconds=0,
                      max_staging_eligible_wait_seconds=0, deadline_failures=[])
         with patch.dict(os.environ, PROMPT_CACHE_PRESSURE_LOG=str(self.log)):
             loadgen.observe_progress(probe, dict(self.state), 0)
             loadgen.observe_progress(probe, dict(self.state), 45)
         self.assertEqual(probe['deadline_failures'], ['durable', 'staging'])
+
+    def test_committed_page_remains_visible_after_publication_removes_staging(self):
+        probe = dict(eligible_since=None, durable_seen=True, staging_seen=False,
+                     baseline_cursor=list(loadgen.progress_cursor(self.state)),
+                     baseline_staging_cursor=0, baseline_staging_commit_count=2,
+                     max_durable_eligible_wait_seconds=0,
+                     max_staging_eligible_wait_seconds=0, deadline_failures=[])
+        with patch.dict(os.environ, PROMPT_CACHE_PRESSURE_LOG=str(self.log)):
+            loadgen.observe_progress(probe, {**self.state, 'staging_max_cursor': 0,
+                                            'staging_commit_count': 2}, 0)
+            self.assertFalse(probe['staging_seen'])
+            loadgen.observe_progress(probe, {**self.state, 'staging_max_cursor': 0,
+                                            'staging_commit_count': 3}, 1)
+            loadgen.observe_progress(probe, {**self.state, 'staging_commit_count': 3}, 45)
+        self.assertTrue(probe['staging_seen'])
+        self.assertEqual(probe['deadline_failures'], [])
 
     def test_fresh_denial_excludes_only_its_unexpired_window(self):
         self.log.write_text(

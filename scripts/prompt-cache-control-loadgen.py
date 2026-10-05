@@ -112,6 +112,15 @@ def seed_history(round_index, legacy_enabled):
     seed_account()
     connection = open_db(BUSINESS_DB, timeout=10)
     connection.execute('BEGIN IMMEDIATE')
+    # Fixture-only commit observation survives publication deleting short-lived
+    # staging rows between two samples. Rolled-back pages leave no audit event.
+    connection.execute('CREATE TABLE control_staging_commits (id INTEGER PRIMARY KEY, cursor_id INTEGER NOT NULL)')
+    for operation in ('INSERT', 'UPDATE'):
+        connection.execute(
+            f'CREATE TRIGGER control_stage_{operation.lower()} AFTER {operation} '
+            'ON prompt_cache_conversation_stats_refresh_staging WHEN NEW.cursor_id>0 BEGIN '
+            'INSERT INTO control_staging_commits (cursor_id) VALUES (NEW.cursor_id); END'
+        )
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
     rows = []
     sequence = 0
@@ -188,6 +197,9 @@ def snapshot():
             'SELECT COUNT(*),COALESCE(MAX(cursor_id),0) '
             'FROM prompt_cache_conversation_stats_refresh_staging'
         ).fetchone()
+        staging_commit_count = 0
+        if business.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_staging_commits'").fetchone():
+            staging_commit_count = business.execute('SELECT COALESCE(MAX(id),0) FROM control_staging_commits').fetchone()[0]
         key_count = business.execute(
             'SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key LIKE ?',
             (f'acceptance-r%-key-%',),
@@ -245,6 +257,7 @@ def snapshot():
         'queue_count': queue_count,
         'staging_count': staging[0],
         'staging_max_cursor': staging[1],
+        'staging_commit_count': staging_commit_count,
         'history_key_count': key_count,
         'large_key_request_count': target[0] if target else 0,
         'latest_run_status': latest[0] if latest else None,
@@ -483,7 +496,10 @@ def observe_progress(probe, state, elapsed_seconds):
                     probe['deadline_failures'].append(name)
     if not state.get('snapshot_error'):
         probe['durable_seen'] |= progress_cursor(state) != tuple(probe['baseline_cursor'])
-        probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
+        probe['staging_seen'] |= (
+            state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
+            or state.get('staging_commit_count', 0) > probe['baseline_staging_commit_count']
+        )
 
 
 def priority_yield_probe(round_index):
@@ -587,6 +603,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
     progress_probe = {
         'baseline_cursor': baseline_cursor,
         'baseline_staging_cursor': baseline_staging_cursor,
+        'baseline_staging_commit_count': first_state.get('staging_commit_count', 0),
         'eligible_since': None,
         'durable_seen': False,
         'staging_seen': False,
@@ -663,7 +680,10 @@ def candidate_input(round_index, duration_seconds, request_rate):
                     first_progress = second
                 if (
                     first_staging_progress is None
-                    and state.get('staging_max_cursor', 0) > baseline_staging_cursor
+                    and (
+                        state.get('staging_max_cursor', 0) > baseline_staging_cursor
+                        or state.get('staging_commit_count', 0) > progress_probe['baseline_staging_commit_count']
+                    )
                 ):
                     first_staging_progress = second
                 if (
@@ -805,6 +825,7 @@ def baseline_probe(round_index, duration_seconds):
 
 def maintenance_lock_probe(round_index):
     control(True, 'managed')
+    admit_fixture_owner(round_index, f'lock-probe-r{round_index}')
     lock_connection = open_db(MAINTENANCE_DB, timeout=10)
     lock_connection.execute('BEGIN IMMEDIATE')
     lock_started = time.monotonic()
