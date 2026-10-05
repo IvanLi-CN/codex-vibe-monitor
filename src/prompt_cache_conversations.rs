@@ -2699,6 +2699,20 @@ pub(crate) async fn allocate_proxy_invoke_id(
     manager.allocate_leased(&state.pool, prompt_cache_key).await
 }
 
+pub(crate) async fn allocate_proxy_invoke_id_without_active_lease(
+    state: &AppState,
+    prompt_cache_key: Option<&str>,
+) -> Result<String> {
+    let manager = state
+        .prompt_cache_conversation_cache
+        .lock()
+        .await
+        .identity_cache
+        .range_manager
+        .clone();
+    manager.allocate(&state.pool, prompt_cache_key).await
+}
+
 pub(crate) async fn allocate_proxy_invoke_id_with_active_lease(
     state: &AppState,
     prompt_cache_key: Option<&str>,

@@ -145,7 +145,7 @@ pub(crate) async fn proxy_openai_v1_common(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            let invoke_id = match allocate_proxy_invoke_id(
+            let invoke_id = match allocate_proxy_invoke_id_without_active_lease(
                 &state,
                 header_prompt_cache_key.as_deref(),
             )

@@ -7,6 +7,65 @@ async fn ranges_fixture() -> SqlitePool {
 }
 
 #[tokio::test]
+async fn invocation_ranges_url_validation_errors_do_not_pin_hourly_owner() {
+    use prompt_cache_conversations::invocation_ranges::Owner;
+
+    let state = test_state_with_openai_base(Url::parse("https://example.invalid/").unwrap()).await;
+    let manager = state
+        .prompt_cache_conversation_cache
+        .lock()
+        .await
+        .identity_cache
+        .range_manager
+        .clone();
+    for path in ["/v1/%2e%2e/admin", "/v1/%zz/responses"] {
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(path.parse().unwrap()),
+            Method::GET,
+            HeaderMap::new(),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let payload: Value = serde_json::from_slice(&body).unwrap();
+        assert!(
+            payload["error"]
+                .as_str()
+                .unwrap()
+                .contains("failed to build upstream url")
+        );
+    }
+    let (hour, prefix): (i64, String) =
+        sqlx::query_as("SELECT utc_hour,prefix FROM hourly_invoke_prefixes")
+            .fetch_one(&state.pool)
+            .await
+            .unwrap();
+    let fence = manager
+        .freeze_owner(Owner::Hour(hour), &prefix)
+        .expect("validation errors have no pending terminal row or active invocation");
+    drop(fence);
+    // Age the now-idle durable owner to exercise the real ended-hour cleanup.
+    sqlx::query("UPDATE hourly_invoke_prefixes SET utc_hour=?1 WHERE prefix=?2")
+        .bind(Utc::now().timestamp().div_euclid(3600) - 1)
+        .bind(&prefix)
+        .execute(&state.pool)
+        .await
+        .unwrap();
+    manager.cleanup_hours(&state.pool, false).await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM hourly_invoke_prefixes WHERE prefix=?1")
+            .bind(&prefix)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap(),
+        0
+    );
+    assert!(!prompt_cache_conversations::invocation_ranges::lifecycle::prefix_occupied(&prefix));
+}
+
+#[tokio::test]
 async fn invocation_ranges_schema_marker_and_ddl_roll_back_together() {
     // SQLx queues rollback when a failed migration transaction is dropped.
     // Reuse that connection so the structural read follows its rollback,
