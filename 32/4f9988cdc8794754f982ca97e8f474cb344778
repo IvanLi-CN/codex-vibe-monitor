@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.86.2",
+  "base_stable_version": "2.86.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-05T04:37:36Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.86.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7f20bd22d4d743748f3f4547a1f9dd3456907f61",
+  "pr_number": 1078,
+  "pr_title": "fix(web): align task workload heading and view tabs",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.86.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.86.2",
+  "target_sha": "324f9988cdc8794754f982ca97e8f474cb344778",
+  "type_label": "type:patch"
+}
