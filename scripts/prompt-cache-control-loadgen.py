@@ -502,6 +502,59 @@ def observe_progress(probe, state, elapsed_seconds):
         )
 
 
+def wait_for_fixture_pressure_idle(round_index, deadline):
+    """Refresh cached pressure inside the caller's existing probe budget."""
+    started_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    last_observation = None
+    requested_snapshot = None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        status, body, _ = request('GET', '/api/system/status', timeout=min(5, remaining))
+        if status != 200:
+            raise SystemExit(f'priority fixture pressure status unavailable: {status}')
+        snapshot = json.loads(body)
+        refreshed_at = snapshot['refreshedAt']
+        refreshed_epoch = datetime.datetime.fromisoformat(
+            refreshed_at.replace('Z', '+00:00'),
+        ).timestamp()
+        runtime = snapshot['runtimePressureHealth']
+        pressure = runtime['databasePressure']
+        coordinator = runtime['proxySqliteWriteCoordinator']
+        pending = runtime['writerAccounting']['pendingDepth']
+        signature = (pressure['pressureCooldownRemainingMs'],
+                     coordinator['activeWriteClass'], coordinator['p2WaiterCount'], pending)
+        if (refreshed_epoch >= started_utc and not signature[0]
+                and signature[1] is None and not signature[2] and not signature[3]):
+            return True
+        observation = (refreshed_at, signature)
+        if observation != last_observation:
+            print(json.dumps({'phase': 'priority-fixture-pressure-wait',
+                              'round': round_index, 'pressure': signature,
+                              'refreshed_at': refreshed_at}), flush=True)
+            last_observation = observation
+        # GET serves a 60-second cache, as long as the entire probe budget.
+        # Request one refresh per observed snapshot through the existing task
+        # API; never extend the deadline or queue duplicate refreshes for it.
+        remaining = deadline - time.monotonic()
+        if requested_snapshot != refreshed_at and remaining > 0:
+            status, _, _ = request(
+                'POST', '/api/system/managed-tasks/system_status_snapshot/run',
+                timeout=min(5, remaining),
+            )
+            if status not in (200, 409):
+                raise SystemExit(f'priority fixture pressure refresh unavailable: {status}')
+            print(json.dumps({'phase': 'priority-fixture-pressure-refresh',
+                              'round': round_index, 'refreshed_at': refreshed_at,
+                              'status': status}), flush=True)
+            requested_snapshot = refreshed_at
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.2, remaining))
+    return False
+
+
 def priority_yield_probe(round_index):
     """Queue an interactive writer behind an admitted, unfinished SQL step."""
     control(False)
@@ -511,29 +564,14 @@ def priority_yield_probe(round_index):
     deadline = started + 60
     calls = []
     attempts = 0
-    last_pressure = None
     while time.monotonic() < deadline and len(calls) < 3:
         attempts += 1
         control(False)
         # History seeding may overlap startup rollup/P2 work. Do not hold the
         # synthetic writer lock while those tasks drain their existing SQL;
         # otherwise the probe itself perpetuates cooldown before P2 admission.
-        status, body, _ = request('GET', '/api/system/status', timeout=5)
-        if status != 200:
-            raise SystemExit(f'priority fixture pressure status unavailable: {status}')
-        runtime = json.loads(body)['runtimePressureHealth']
-        pressure = runtime['databasePressure']
-        coordinator = runtime['proxySqliteWriteCoordinator']
-        pending = runtime['writerAccounting']['pendingDepth']
-        signature = (pressure['pressureCooldownRemainingMs'],
-                     coordinator['activeWriteClass'], coordinator['p2WaiterCount'], pending)
-        if signature[0] or signature[1] is not None or signature[2] or signature[3]:
-            if signature != last_pressure:
-                print(json.dumps({'phase': 'priority-fixture-pressure-wait',
-                                  'round': round_index, 'pressure': signature}), flush=True)
-                last_pressure = signature
-            time.sleep(0.2)
-            continue
+        if not wait_for_fixture_pressure_idle(round_index, deadline):
+            break
         connection = open_db(BUSINESS_DB, timeout=0.5)
         try:
             connection.execute('BEGIN IMMEDIATE')

@@ -2,6 +2,7 @@
 """Check that current pressure evidence preserves the strict progress clock."""
 import datetime
 import importlib.util
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -105,6 +106,65 @@ class ProgressClockTests(unittest.TestCase):
             'defer_reason="coordinator_priority" '
             'startup backfill task yielded at a prompt-cache micro-batch boundary\n')
         self.assertEqual(loadgen.fresh_priority_yields(self.now.timestamp(), self.log), [])
+
+
+class FixturePressureTests(unittest.TestCase):
+    def observe(self, snapshots, deadline, refresh_status=200):
+        clock = [0.0]
+        requests = []
+        snapshots = iter(snapshots)
+        current = [None]
+
+        def request(method, path, payload=None, timeout=30):
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, deadline - clock[0])
+            requests.append((method, path))
+            if method == 'POST':
+                return refresh_status, '{}', {}
+            current[0] = next(snapshots, current[0])
+            return 200, json.dumps(current[0]), {}
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch.object(loadgen, 'request', side_effect=request), \
+                patch.object(loadgen.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(loadgen.time, 'sleep', side_effect=sleep), \
+                patch('builtins.print'):
+            result = loadgen.wait_for_fixture_pressure_idle(1, deadline)
+        return result, requests, clock[0]
+
+    def snapshot(self, offset, pending=0):
+        refreshed = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=offset)
+        return {'refreshedAt': refreshed.isoformat(), 'runtimePressureHealth': {
+            'databasePressure': {'pressureCooldownRemainingMs': 0},
+            'proxySqliteWriteCoordinator': {'activeWriteClass': None, 'p2WaiterCount': 0},
+            'writerAccounting': {'pendingDepth': pending},
+        }}
+
+    def test_cached_idle_does_not_admit_until_fresh_idle_snapshot(self):
+        result, requests, _ = self.observe([
+            self.snapshot(-30), self.snapshot(1, pending=4), self.snapshot(2),
+        ], 60)
+        self.assertTrue(result)
+        self.assertEqual(sum(method == 'POST' for method, _ in requests), 2)
+
+    def test_unchanged_busy_snapshot_queues_only_one_refresh_and_exhausts_budget(self):
+        result, requests, elapsed = self.observe([self.snapshot(-30, pending=4)], 60)
+        self.assertFalse(result)
+        self.assertEqual(sum(method == 'POST' for method, _ in requests), 1)
+        self.assertEqual(elapsed, 60)
+
+    def test_existing_refresh_conflict_requires_new_idle_snapshot(self):
+        result, requests, _ = self.observe([
+            self.snapshot(-30, pending=4), self.snapshot(1),
+        ], 60, refresh_status=409)
+        self.assertTrue(result)
+        self.assertEqual(sum(method == 'POST' for method, _ in requests), 1)
+
+    def test_refresh_failure_remains_unavailable(self):
+        with self.assertRaisesRegex(SystemExit, 'pressure refresh unavailable: 503'):
+            self.observe([self.snapshot(-30)], 60, refresh_status=503)
 
 
 if __name__ == '__main__':
