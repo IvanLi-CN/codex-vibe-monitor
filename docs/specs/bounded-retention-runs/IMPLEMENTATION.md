@@ -70,6 +70,7 @@
 - 工作文件回归用真实持锁子进程验证活跃所有者保留、终止后内核释放、PID 复用下废弃清理、目录竞争立即延期及非规范文件名保留。受限磁盘夹具还验证废弃工作在空间预检前清理，源行和 manifest 不变。
 - 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
 - Web 验证包括旧 API 字段兼容、Demo 真实零/未知值、全量 unit/typecheck/lint/build、六个吞吐状态及 SystemWorkspace Storybook、任务页桌面/移动交互 E2E。视觉确认不代替功能或容量验收。
+- Prompt 会话事件过滤的既有单测等待实际筛选内容完成渲染后检查原断言；单靠两次 Promise flush 不代表异步事件请求已完成。此测试同步修正不改变产品逻辑、超时或 retention 的验收口径。主线整合后的后端输入使用逐文件摘要证明，文档或 Web 测试提交不得冒充重新编译的后端提交。
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选全部验证、实测和视觉门禁完成后启动。
 
 ## Visual Evidence
