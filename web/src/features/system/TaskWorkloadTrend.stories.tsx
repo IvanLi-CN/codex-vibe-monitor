@@ -141,6 +141,25 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+async function expectHeaderAlignment(canvasElement: HTMLElement): Promise<void> {
+  const canvas = within(canvasElement);
+  const heading = canvas.getByRole("heading", { name: "运行趋势" });
+  const tabs = canvas.getByRole("tablist", { name: "运行趋势视图" });
+  const header = heading.parentElement;
+  if (!header) throw new Error("Task workload header is missing");
+  await expect(tabs.parentElement).toBe(header);
+  const headingBounds = heading.getBoundingClientRect();
+  const tabBounds = tabs.getBoundingClientRect();
+  const headerBounds = header.getBoundingClientRect();
+  await expect(Math.abs(headingBounds.left - headerBounds.left)).toBeLessThanOrEqual(1);
+  await expect(Math.abs(tabBounds.right - headerBounds.right)).toBeLessThanOrEqual(1);
+  await expect(
+    Math.abs(headingBounds.top + headingBounds.height / 2 - (tabBounds.top + tabBounds.height / 2)),
+  ).toBeLessThanOrEqual(1);
+  await expect(headingBounds.right).toBeLessThanOrEqual(tabBounds.left);
+  await expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+}
+
 async function expectEmptyChart(canvasElement: HTMLElement, hint: string): Promise<void> {
   const canvas = within(canvasElement);
   await expect(canvas.getByRole("figure", { name: "工作量：单位未知" })).toBeVisible();
@@ -167,6 +186,7 @@ export const Overview: Story = {
   ),
   tags: ["test"],
   play: async ({ canvasElement }) => {
+    await expectHeaderAlignment(canvasElement);
     const canvas = within(canvasElement);
     const panelArea = canvasElement.querySelector<HTMLElement>(
       "[data-testid=task-workload-panels]",
@@ -466,12 +486,17 @@ export const ErrorState: Story = {
 export const DarkTheme: Story = {
   args: { taskKey: "retention_archive", trend, retentionTrend: backlog, state: "ready" },
   globals: { themeMode: "dark" },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    await expectHeaderAlignment(canvasElement);
+  },
 };
 
 export const MobileLight: Story = {
   ...Overview,
   globals: { viewport: { value: "mobile393", isRotated: false } },
   play: async ({ canvasElement }) => {
+    await expectHeaderAlignment(canvasElement);
     const canvas = within(canvasElement);
     const tabs = canvas.getAllByRole("tab");
     await expect(tabs.map((tab) => tab.textContent?.trim())).toEqual(["次数", "时间"]);
