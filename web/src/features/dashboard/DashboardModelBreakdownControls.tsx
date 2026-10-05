@@ -211,6 +211,7 @@ export function ModelBreakdownMetricHeader({
         "min-w-0 border-l border-base-300/35 px-1.5 py-2 text-right font-semibold whitespace-nowrap",
         className,
       )}
+      aria-label={ariaLabel ?? label}
       aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
     >
       <ModelBreakdownMetricSortButton
