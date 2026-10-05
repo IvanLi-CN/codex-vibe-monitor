@@ -64,7 +64,7 @@
       "applicable": true,
       "impact": "patch",
       "state_description": "Existing monthly gzip SQLite and existing V2 Snapshot/manifests/raw ownership; optional maintenance JSON fields",
-      "source_program_compatibility_range": "Supported same-Minor v2.86.0 readers verified by exact source equivalence and current roundtrip; candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
+      "source_program_compatibility_range": "Supported same-Minor v2.86.0..2 readers verified by exact source equivalence and current roundtrip; candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",

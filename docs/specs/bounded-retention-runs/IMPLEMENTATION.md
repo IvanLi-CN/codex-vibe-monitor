@@ -55,7 +55,7 @@
 
 新增任务 JSON 字段和 Web 归一化向后兼容。API 与持久化影响分开评估；本轮记录见 [version impact](assets/task-local-version-impact-record.json) 和 [state compatibility](assets/task-local-persistent-state-record.json)。最终分类由当前候选兼容验证决定；旧 PR 的 minor 记录仅作为历史。
 
-当前同 Minor 兼容来源为 v2.86.0：现有 manifest 模块以及五个编解码、证明和查询函数与其源码逐一比较；v2.85.0..4 的指纹保留为历史较早 Minor 证据。源码等价性不能替代当前候选的文件往返、状态升级和运行验证。
+当前同 Minor 兼容来源为 v2.86.0..2：现有 manifest 模块以及五个编解码、证明和查询函数与其源码逐一比较；v2.85.0..4 的指纹保留为历史较早 Minor 证据。源码等价性不能替代当前候选的文件往返、状态升级和运行验证。
 
 ## Verification
 
