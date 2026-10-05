@@ -135,6 +135,40 @@ def require_observability_performance_contract(workflow: dict[str, Any], build_j
             "performance evidence must include exactly the declared artifact whitelist")
 
 
+def require_observability_diagnostic_contract(workflow: dict[str, Any]) -> None:
+    job = job_config(workflow, "observability-diagnostics", "ci-pr.yml")
+    require(job.get("name") == "Observability CPU Diagnosis"
+            and job.get("needs") == "observability-performance-image"
+            and job.get("runs-on") == RUNNER_X64 and job.get("timeout-minutes") == 70
+            and job.get("if") == "github.event.pull_request.number == 1071",
+            "diagnosis must be the bounded PR-only separate hosted VM experiment")
+    require_job_and_steps_fail_closed(job, "ci-pr.yml.jobs.observability-diagnostics")
+    performance = job_config(workflow, "observability-performance", "ci-pr.yml")
+    for name in ["Checkout performance candidate", "Download performance candidate image",
+                 "Verify and load candidate image", "Prepare pinned CPU sampler"]:
+        require(step_config(job, name, "diagnostics") == step_config(performance, name, "performance"),
+                "diagnosis must use identical candidate image verification and pinned sampler")
+    run = step_config(job, "Run bounded CPU diagnosis", "diagnostics")
+    script = str(run.get("run", ""))
+    require("python3 scripts/observability-diagnostics/run.py" in script
+            and '--candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE"' in script
+            and "--suite" not in script and "observability-acceptance/run.py" not in script,
+            "diagnosis must use the separate non-certifying entrypoint")
+    upload = step_config(job, "Upload bounded CPU diagnostic evidence", "diagnostics")
+    require(upload.get("if") == "always()" and upload.get("with", {}).get("retention-days") == 14,
+            "diagnosis must retain failed evidence with bounded retention")
+    expected = {"diagnostic-card.json", "diagnostic-windows.json", "cpu-timeseries.jsonl", "scenarios.json",
+                "run-config.json", "image-identity.json", "runner-context.json", "environment-admission.jsonl",
+                "resource-observer.jsonl", "measurement-windows.json", "profiles/*/*.manifest.json",
+                "profiles/*/*.json.gz", "profiles/*/*.syms.json"}
+    prefix = "${{ runner.temp }}/observability-diagnostics/"
+    paths = str(upload.get("with", {}).get("path", "")).splitlines()
+    require({p.strip() for p in paths if p.strip()} == {prefix + p for p in expected},
+            "diagnosis artifacts must exclude certificates, secrets, raw payloads, logs and databases")
+    require("observability-diagnostics" not in job_config(workflow, "build", "ci-pr.yml").get("needs", []),
+            "diagnosis must not replace or certify the performance gate")
+
+
 def require_lint_cache_contract(lint_job: dict[str, Any], workflow_name: str) -> None:
     cache = step_config(lint_job, "Restore Cargo Clippy artifacts", f"{workflow_name}.jobs.lint")
     cache_with = require_mapping(cache.get("with"), f"{workflow_name}.jobs.lint Clippy cache")
@@ -845,6 +879,8 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     )
     if performance_declared:
         require_observability_performance_contract(workflow, build_job)
+    if "Observability CPU Diagnosis" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ()):
+        require_observability_diagnostic_contract(workflow)
     require_exact_if(
         build_job,
         "${{ always() && github.event_name == 'pull_request' }}",

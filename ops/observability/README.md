@@ -182,3 +182,18 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions
 run/attempt。失败或环境不可用阻断现有 `Build Artifacts` 必需检查，无需新增远端保护规则。
 旧共享测试机 A/B 与旧 SQLite 验收卡仅作历史诊断记录。
+
+## 有界 Actions CPU 诊断
+
+PR #1071 的独立 `Observability CPU Diagnosis` job 消费同一镜像，在另一台 hosted VM
+运行六个交替 300 秒窗口，不修改上述预算 job。诊断工具位于
+`scripts/observability-diagnostics/`，每秒保留 cgroup user/system/throttle、原进程
+CPU/context switch/IO、可获取的 frequency/steal，缺测保持 unknown。
+合成数据副本在启动前核对相同指纹；固定指标数值摘要不保留 SQL、客户端或其他标签。
+每个开启窗口只做一次 100 Hz/30 秒采样，不重试；profile 和符号必须匹配原容器、
+候选、build ID 与哈希，单份产物总量不超 512 MiB。仅清理本次创建的容器 ID。
+`diagnostic-card.json` 的 `budgetCertification` 始终为 `not-issued`，诊断干扰成本，
+不能替代 `empirical-card.json`。30 秒采样可能错过间歇热点，应报告局限。
+白名单 artifact `observability-diagnostics-<run_id>-<attempt>` 保留 14 天；不上传
+Token、数据库、私有配置、原始业务内容或日志。该临时 job 仅用于本 PR 的已授权
+根因调查，不授权常驻 profiler、反复挑选通过窗口或后续业务修复。

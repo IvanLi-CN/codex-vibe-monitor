@@ -10,6 +10,11 @@
 
 ## Implementation Coverage
 
+The hosted CPU diagnosis reuses the same synthetic proxy request setup and immutable
+candidate image. Invocation identity, retries, terminal deduplication and persisted
+business fields remain unchanged; diagnostic counters omit labels and payloads.
+Current candidate quality and performance evidence must be refreshed after mainline sync.
+
 - `REQ-PII-001`: `src/prompt_cache_conversations.rs` owns the six-character conversation prefix, four-character base-31 sequence, hourly unbound prefix, overflow handling, and cache recovery; HTTP capture and WebSocket preparation use the allocator.
 - `REQ-PII-002`: `prompt_cache_conversations` stores identity and delayed aggregate statistics; `src/schema.rs` installs only additive structure, while the ordered `prompt_cache_conversations_materialization_v1` startup task performs historical materialization in the background. Each 400-key logical page uses an in-memory adaptive 64..400 micro-batch controller with a 32-key floor. The additive `idx_pool_attempts_account_model_success` partial covering index supports the model-health latest-success check without a temporary sort and is safe to create repeatedly during startup. Statistics pages use the existing prompt-cache key/occurred-at expression index and the SQLite rowid tie-breaker without a temporary sort.
 - `REQ-PII-003`: `AppState` cache state carries conversation identities; normalized prompt-cache keys use independent `Arc`/`Weak` allocation locks whose idle registry entries are reclaimed. Identity recovery and sequence reservation run outside the global cache mutex, then update cached state briefly after the interactive SQLite permit is released. Active references are registered before waiting and a drop guard releases them on cancellation; cache capacity remains 4096 and a full cache remains a durable-cache miss rather than a request rejection. Unbound hourly prefixes use a process-local namespace lock only during initialization and exclude issued prefixes, conversation masters, and invocation prefixes.

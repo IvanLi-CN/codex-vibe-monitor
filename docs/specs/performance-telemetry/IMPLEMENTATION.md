@@ -1,5 +1,31 @@
 # 外部性能观测实现
 
+## Hosted CPU diagnosis
+
+候选 `ccfd94b7` 在 Actions run `37225986112` 的开启窗口 CPU/请求 CV 为
+11.77%，超过 5% 稳定性上限；该数值不是已接受的 CPU 开销百分比。先前同合同
+候选 `36d8c612` 通过，仅作为历史比较。普通修复批次停在七批，根因尚未确定。
+
+经授权增加独立 GitHub-hosted VM 的 `Observability CPU Diagnosis`，仅用于本 PR。
+入口在 `scripts/observability-diagnostics/`，不修改预算验收脚本、场景摘要来源或
+阈值；消费同一不可变镜像，复用合成初始化、60 秒预热与六个交替 300 秒窗口。
+每秒记录绑定原容器和 PID start ticks 的 user/system CPU、throttle、context switch、
+进程 IO，以及可获取的 runner frequency/steal。缺测保留 unknown；初始数据副本
+必须具有相同有界指纹，指标只输出固定白名单数值之和，不保留动态标签。
+每个开启窗口仅采样一次 100 Hz/30 秒原实例 profile，验证 revision、container、
+build ID、样本数及产物哈希。驱动清理仅使用本次创建返回的 ID。
+诊断采集会改变成本，`diagnostic-card.json` 永远不签发预算；即使并行的正常
+验收通过，也不能在根因未明时宣称旧回归已解决，不自动重跑或开启正式审查。
+
+诊断前同步主线 `7681ce2d`，保留新的任务工作量趋势、业务状态与 SSE；移除合并
+冲突中的旧性能摘要，保留 Grafana 任务链接。主线业务运行时发生变化，新的诊断
+与旧失败候选只能用于带此限制的比较，不能把差异归因于退役恢复脚本。
+Agent VM 分配因 CPU/RAM 容量不足被拒；当前轻量工具回归与 mock 检查在本机完成，
+全量工程门禁及性能实验交由本次自动 Actions。尚未取得当前候选的验收结果。
+主线同步后的四张 mock 入口、移动、未配置与任务时间趋势截图已直接展示并获确认，
+规范化未裁剪；桌面 CSS viewport 1280×900，移动 393×852。任务页保留两个时间
+趋势图与固定 Grafana 深链接，不再出现旧性能库摘要。
+
 ## Current coverage
 
 `src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与

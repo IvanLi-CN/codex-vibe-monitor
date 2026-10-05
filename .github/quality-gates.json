@@ -99,7 +99,8 @@
         "PR E2E Test Producer",
         "PR Smoke Artifact Producer",
         "Observability Performance Image",
-        "Observability Performance Budget"
+        "Observability Performance Budget",
+        "Observability CPU Diagnosis"
       ]
     },
     {
