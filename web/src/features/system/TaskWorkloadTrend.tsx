@@ -788,53 +788,56 @@ export function TaskWorkloadTrend({
 
   return (
     <section className="border-t border-base-300/70 pt-4" aria-labelledby="task-workload-heading">
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h3 id="task-workload-heading" className="text-base font-semibold">
+      <div className="mb-3 flex items-center justify-between gap-2">
+        <h3
+          id="task-workload-heading"
+          className="shrink-0 whitespace-nowrap text-base font-semibold"
+        >
           运行趋势
         </h3>
-      </div>
-      <SegmentedControl
-        size="compact"
-        role="tablist"
-        aria-label="运行趋势视图"
-        className="mb-3 min-w-0 max-w-full flex-nowrap overflow-x-auto"
-        onKeyDown={handleTabKeyDown}
-      >
-        <SegmentedControlItem
-          ref={(element) => {
-            tabRefs.current[0] = element;
-          }}
-          type="button"
-          role="tab"
-          id="task-workload-runs-tab"
-          active={view === "runs"}
-          aria-selected={view === "runs"}
-          aria-controls="task-workload-runs-panel"
-          tabIndex={view === "runs" ? 0 : -1}
-          className="shrink-0 whitespace-nowrap px-2"
-          onClick={() => setView("runs")}
+        <SegmentedControl
+          size="compact"
+          role="tablist"
+          aria-label="运行趋势视图"
+          className="shrink-0 flex-nowrap"
+          onKeyDown={handleTabKeyDown}
         >
-          次数
-        </SegmentedControlItem>
-        {isRetention ? (
           <SegmentedControlItem
             ref={(element) => {
-              tabRefs.current[1] = element;
+              tabRefs.current[0] = element;
             }}
             type="button"
             role="tab"
-            id="task-workload-retention-tab"
-            active={view === "retention"}
-            aria-selected={view === "retention"}
-            aria-controls="task-workload-retention-panel"
-            tabIndex={view === "retention" ? 0 : -1}
+            id="task-workload-runs-tab"
+            active={view === "runs"}
+            aria-selected={view === "runs"}
+            aria-controls="task-workload-runs-panel"
+            tabIndex={view === "runs" ? 0 : -1}
             className="shrink-0 whitespace-nowrap px-2"
-            onClick={() => setView("retention")}
+            onClick={() => setView("runs")}
           >
-            时间
+            次数
           </SegmentedControlItem>
-        ) : null}
-      </SegmentedControl>
+          {isRetention ? (
+            <SegmentedControlItem
+              ref={(element) => {
+                tabRefs.current[1] = element;
+              }}
+              type="button"
+              role="tab"
+              id="task-workload-retention-tab"
+              active={view === "retention"}
+              aria-selected={view === "retention"}
+              aria-controls="task-workload-retention-panel"
+              tabIndex={view === "retention" ? 0 : -1}
+              className="shrink-0 whitespace-nowrap px-2"
+              onClick={() => setView("retention")}
+            >
+              时间
+            </SegmentedControlItem>
+          ) : null}
+        </SegmentedControl>
+      </div>
       <div data-testid="task-workload-panels" style={{ minHeight: panelMinHeight }}>
         <div
           id="task-workload-runs-panel"
