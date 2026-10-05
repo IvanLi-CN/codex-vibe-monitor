@@ -1,6 +1,4 @@
 use super::*;
-#[cfg(target_os = "linux")]
-use std::process::Command;
 use std::{
     fs,
     path::{Path, PathBuf},
