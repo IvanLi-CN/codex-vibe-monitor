@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "3.0.0",
+  "base_stable_version": "2.86.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-05T06:30:22Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "3.0.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b5a80ed391a2c90fc1f02521e5d896ed80040875",
+  "pr_number": 1075,
+  "pr_title": "major: retire downstream WebSocket proxy",
+  "registry": "ghcr.io",
+  "release_bump": "major",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v3.0.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v3.0.0",
+  "target_sha": "75de1168a960763be810ae320bd5709283c07f74",
+  "type_label": "type:major"
+}
