@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "2.86.1",
+  "base_stable_version": "2.86.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-05T04:06:10Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "2.86.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "29ca6d13e7ed96158867bc19f8f71c18f0968ce5",
+  "pr_number": 1076,
+  "pr_title": "refactor(api): split timeseries source modules",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v2.86.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v2.86.1",
+  "target_sha": "8f9133dd1098f8bc58c37f15cca0b46694ec27a7",
+  "type_label": "type:patch"
+}
