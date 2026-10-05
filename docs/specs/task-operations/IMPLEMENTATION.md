@@ -117,3 +117,7 @@ The evidence below records earlier implementation candidates and is not current-
 
 - `./SPEC.md`
 - `./HISTORY.md`
+
+## External observability integration
+
+The observability replacement retains the mainline workload trend heading, responsive controls, proven business work counters and task timeline. The task detail page removes the retired performance-store summary and provides the fixed `cvm-runtime` Grafana link with its allowlisted `task_key`. The current mock task screenshot was refreshed after mainline heading alignment, displayed directly and owner-confirmed; the integration does not add a second workload chart or change task controls.
