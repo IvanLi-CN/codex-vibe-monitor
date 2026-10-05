@@ -19,49 +19,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::*;
+
+mod invocation_identity;
 use crate::proxy::{websocket_terminal_payload, websocket_usage_is_strictly_richer};
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
 };
-
-#[derive(Debug)]
-pub(crate) struct TrackedTerminalJournal {
-    journal: std::sync::Mutex<Option<TerminalJournal>>,
-    pending:
-        crate::prompt_cache_conversations::invocation_ranges::lifecycle::PendingIdentityRegistry,
-}
-
-impl TrackedTerminalJournal {
-    fn new(journal: Option<TerminalJournal>) -> Self {
-        let pending = crate::prompt_cache_conversations::invocation_ranges::lifecycle::PendingIdentityRegistry::default();
-        if let Some(journal) = &journal {
-            for (id, occurred_at, raw) in journal.pending_identity_keys() {
-                pending.register(&id, &occurred_at, raw);
-            }
-        }
-        Self {
-            journal: std::sync::Mutex::new(journal),
-            pending,
-        }
-    }
-
-    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Option<TerminalJournal>>> {
-        self.journal.lock()
-    }
-
-    fn acknowledge(&self, id: &str, occurred_at: &str, raw: bool) {
-        if let Ok(mut guard) = self.lock() {
-            if let Some(journal) = guard.as_mut() {
-                journal.acknowledge(id, occurred_at, raw);
-                if journal.identity_pending(id, occurred_at, raw) {
-                    return;
-                }
-            }
-            self.pending.acknowledge(id, occurred_at, raw);
-        }
-    }
-}
+pub(crate) use invocation_identity::TrackedTerminalJournal;
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
 pub(crate) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);

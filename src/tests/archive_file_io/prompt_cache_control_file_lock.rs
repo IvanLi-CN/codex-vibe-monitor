@@ -31,7 +31,7 @@ async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() 
     }
     drop(warm_connections);
     let manager = Arc::new(InvocationRangeManager::default());
-    let first = manager.allocate(&pool, Some("worker-fence")).await.unwrap();
+    let first = issue_range_fixture_id(&manager, &pool, "worker-fence").await;
     let mut blocker = pool.acquire().await.unwrap();
     sqlx::query("BEGIN IMMEDIATE")
         .execute(&mut *blocker)
@@ -62,7 +62,7 @@ async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() 
     .await
     .unwrap();
 
-    let replacement = manager.allocate(&pool, Some("worker-fence")).await.unwrap();
+    let replacement = issue_range_fixture_id(&manager, &pool, "worker-fence").await;
     assert_eq!(&first[..6], &replacement[..6]);
     assert_eq!(
         &replacement[6..],
@@ -81,6 +81,32 @@ async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() 
     );
     pool.close().await;
     crate::tests::cleanup_temp_test_dir(&temp_dir);
+}
+
+// Setup may meet the allocator's permitted cold timeout under parallel disk
+// pressure. Retry only that outcome before/after the measured return race;
+// the single allocation under the write lock keeps its original deadline.
+async fn issue_range_fixture_id(
+    manager: &std::sync::Arc<
+        crate::prompt_cache_conversations::invocation_ranges::InvocationRangeManager,
+    >,
+    pool: &sqlx::SqlitePool,
+    key: &str,
+) -> String {
+    for attempt in 1..=5 {
+        match manager.allocate(pool, Some(key)).await {
+            Ok(id) => return id,
+            Err(error)
+                if attempt < 5
+                    && error.to_string() == "invocation range allocation timed out after 100ms" =>
+            {
+                eprintln!("range fixture cold admission timed out on attempt {attempt}");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(error) => panic!("range fixture admission failed on attempt {attempt}: {error}"),
+        }
+    }
+    unreachable!("the last fixture attempt returns or fails")
 }
 
 #[tokio::test]

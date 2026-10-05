@@ -2139,17 +2139,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         observation.activate_reset_monitor();
     }
 
-    let stream_invocation_cleanup_guard = Some({
-        PoolInvocationCleanupGuard::new(
-            state_for_task.clone(),
-            InvocationRecoverySelector::new(
-                invoke_id_for_task.clone(),
-                occurred_at_for_task.clone(),
-            ),
-            "stream_invocation_drop_guard",
-            prompt_cache_key_for_task.as_deref(),
-        )
-    });
+    let stream_invocation_cleanup_guard = Some(PoolInvocationCleanupGuard::new(
+        state_for_task.clone(),
+        InvocationRecoverySelector::new(invoke_id_for_task.clone(), occurred_at_for_task.clone()),
+        "stream_invocation_drop_guard",
+        prompt_cache_key_for_task.as_deref(),
+    ));
     tokio::spawn(async move {
         let mut reservation_guard = reservation_guard_for_task;
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
