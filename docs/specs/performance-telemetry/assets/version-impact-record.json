@@ -53,7 +53,7 @@
     "persistent_state": {
       "applicable": true,
       "state_description": "Schema-v1 performance database retirement; business state unchanged",
-      "source_program_compatibility_range": "immediately preceding major v2; no direct major skips",
+      "source_program_compatibility_range": "immediately preceding major v3; no direct major skips",
       "evidence": [
         "docs/specs/performance-telemetry/persistent-state-migration.json"
       ]

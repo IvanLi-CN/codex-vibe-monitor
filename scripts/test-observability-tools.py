@@ -56,15 +56,15 @@ def fixture(path, ddl_transform=None):
 
 class RetirementTests(unittest.TestCase):
     def test_program_range_and_old_writer_image_are_verified_before_cutover(self):
-        metadata = {"Id": "sha256:old-image", "Config": {"Labels": {"org.opencontainers.image.version": "2.60.0"}}}
+        metadata = {"Id": "sha256:old-image", "Config": {"Labels": {"org.opencontainers.image.version": "3.0.0"}}}
         with patch.object(subprocess, "check_output", side_effect=[json.dumps([metadata]), "sha256:old-image\n"]):
-            self.assertEqual(migration.compatible_image(OLD_IMAGE, "old-app"), "2.60.0")
-        for version in ["1.99.0", "3.0.0", "unknown", ""]:
+            self.assertEqual(migration.compatible_image(OLD_IMAGE, "old-app"), "3.0.0")
+        for version in ["1.99.0", "2.86.2", "4.0.0", "unknown", ""]:
             metadata["Config"]["Labels"]["org.opencontainers.image.version"] = version
             with patch.object(subprocess, "check_output", return_value=json.dumps([metadata])):
                 with self.assertRaisesRegex(ValueError, "major skips"):
                     migration.compatible_image(OLD_IMAGE, "old-app")
-        metadata["Config"]["Labels"]["org.opencontainers.image.version"] = "2.60.0"
+        metadata["Config"]["Labels"]["org.opencontainers.image.version"] = "3.0.0"
         with patch.object(subprocess, "check_output", side_effect=[json.dumps([metadata]), "sha256:unrelated\n"]):
             with self.assertRaisesRegex(ValueError, "does not match"):
                 migration.compatible_image(OLD_IMAGE, "wrong-app")
@@ -84,7 +84,18 @@ class RetirementTests(unittest.TestCase):
         self.temp.cleanup()
 
     def run_archive(self, source=None):
-        return migration.archive(source or self.source, self.business, self.data, self.archive, "cutover", OLD_IMAGE, self.config, "2.60.0")
+        return migration.archive(source or self.source, self.business, self.data, self.archive, "cutover", OLD_IMAGE, self.config, "3.0.0")
+
+    def test_archive_refuses_nonpreceding_major_before_touching_source(self):
+        original = fixture(self.source)
+        original.close()
+        before = migration.digest(self.source)
+        for version in ["2.86.2", "4.0.0"]:
+            with self.assertRaisesRegex(ValueError, "verified v3"):
+                migration.archive(self.source, self.business, self.data, self.archive,
+                                  "cutover", OLD_IMAGE, self.config, version)
+            self.assertEqual(migration.digest(self.source), before)
+            self.assertFalse(self.archive.exists())
 
     def test_wal_backup_idempotency_and_restore(self):
         original = fixture(self.source)
@@ -93,7 +104,7 @@ class RetirementTests(unittest.TestCase):
         original.close()
         self.assertEqual(manifest["state"], "archived")
         self.assertEqual(manifest["schema"]["userVersion"], 1)
-        self.assertEqual(manifest["previousProgramVersion"], "2.60.0")
+        self.assertEqual(manifest["previousProgramVersion"], "3.0.0")
         self.assertEqual(manifest["integrityCheck"], {"status": "passed", "result": "ok"})
         self.assertLessEqual(manifest["verifiedAt"], manifest["archivedAt"])
         self.assertEqual(manifest["cutoverScope"], "performance_file_family")
@@ -149,7 +160,7 @@ class RetirementTests(unittest.TestCase):
                             sidecar.write_bytes(b"new unverified member")
                 with patch.object(migration, "valid_backup", introduce_member):
                     with self.assertRaisesRegex(ValueError, "source family changed"):
-                        migration.archive(source, self.business, self.data, self.archive, operation, OLD_IMAGE, self.config, "2.60.0")
+                        migration.archive(source, self.business, self.data, self.archive, operation, OLD_IMAGE, self.config, "3.0.0")
                 self.assertEqual(migration.digest(source), source_hash)
                 if symlink:
                     self.assertTrue(sidecar.is_symlink())
@@ -189,7 +200,7 @@ class RetirementTests(unittest.TestCase):
         other = self.root / "unknown.sqlite"
         with closing(sqlite3.connect(other)) as connection: connection.execute("CREATE TABLE application_state (value TEXT)")
         with self.assertRaises(ValueError):
-            migration.archive(other, self.business, self.data, self.archive, "unknown", OLD_IMAGE, self.config, "2.60.0")
+            migration.archive(other, self.business, self.data, self.archive, "unknown", OLD_IMAGE, self.config, "3.0.0")
         self.assertTrue(other.exists())
 
     def test_corruption_records_immutable_failure_without_moving_family(self):
@@ -228,7 +239,7 @@ class RetirementTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "recorded retirement failure"):
             self.run_archive()
         self.assertEqual(json.loads((self.archive / "cutover" / "manifest.json").read_text()), failed)
-        migration.archive(self.source, self.business, self.data, self.archive, "retry", OLD_IMAGE, self.config, "2.60.0")
+        migration.archive(self.source, self.business, self.data, self.archive, "retry", OLD_IMAGE, self.config, "3.0.0")
         original.close()
         self.source.write_bytes(b"occupied")
         with self.assertRaises(ValueError):
@@ -261,7 +272,7 @@ class RetirementTests(unittest.TestCase):
             original.executescript(mutation); original.close()
             before = migration.digest(source)
             with self.assertRaisesRegex(ValueError, "unexpected performance"):
-                migration.archive(source, self.business, self.data, self.archive, f"unknown-{index}", OLD_IMAGE, self.config, "2.60.0")
+                migration.archive(source, self.business, self.data, self.archive, f"unknown-{index}", OLD_IMAGE, self.config, "3.0.0")
             self.assertEqual(migration.digest(source), before)
             rejected = json.loads((self.archive / f"unknown-{index}" / "manifest.json").read_text())
             self.assertEqual(rejected["state"], "failed")
@@ -281,7 +292,7 @@ class RetirementTests(unittest.TestCase):
                 with closing(sqlite3.connect(source)) as connection:
                     self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone(), ("ok",))
                 with self.assertRaisesRegex(ValueError, "schema DDL"):
-                    migration.archive(source, self.business, self.data, self.archive, f"unknown-ddl-{index}", OLD_IMAGE, self.config, "2.60.0")
+                    migration.archive(source, self.business, self.data, self.archive, f"unknown-ddl-{index}", OLD_IMAGE, self.config, "3.0.0")
                 self.assertEqual(migration.digest(source), before)
                 manifest = json.loads((self.archive / f"unknown-ddl-{index}" / "manifest.json").read_text())
                 self.assertEqual(manifest["state"], "failed")

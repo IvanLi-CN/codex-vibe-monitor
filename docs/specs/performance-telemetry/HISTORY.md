@@ -28,3 +28,10 @@
 - 性能预算验收转由 GitHub Actions 的独立 GitHub-hosted 测量 job 完成。本地与共享测试机用于功能、集成和诊断；旧 A/B 记录保留但不作为当前预算证明。
 - 主线连续统计检查点验收迁入独立业务运行时入口，保留三轮、重启和旧版本读取验证；观测 A/B 仍限定 GitHub Actions。
 - 记录页严格 E2E mock 补齐观测能力接口的禁用响应，保留未知 API 报错；桌面与窄桌面覆盖通过。
+
+## Mainline release source alignment
+
+- Mainline released v3.0.0 before this major/stable PR; the cutover now targets v3 → v4.
+- The retired writer source is identical in v2.86.2 and v3.0.0; schema-v1 DDL stays frozen.
+- Accept only a pinned v3 image and matching stopped writer; reject v2 direct skips and v4 sources before file operations.
+- Update migration/SemVer/operations records and regression fixtures together; Actions and fresh Tier 4 evidence must bind the changed candidate.

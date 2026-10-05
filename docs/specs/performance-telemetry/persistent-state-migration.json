@@ -10,8 +10,8 @@
     "description": "Schema-v1 performance SQLite family, WAL/SHM, cutover manifest and offline backup",
     "storage_implementation": "SQLite consistent backup and exact file-family archive",
     "source_compatibility_range": {
-      "from_program_versions": "immediately preceding major v2 with performance_meta schema_version=1; absent state accepted",
-      "to_program_version": "next major external-observability candidate",
+      "from_program_versions": "immediately preceding major v3 with performance_meta schema_version=1; absent state accepted",
+      "to_program_version": "major v4 external-observability candidate",
       "direct_major_skips_supported": false
     }
   },
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "identify",
-        "description": "Resolve physical identity, validate complete preceding-v2 schema-v1 DDL including defaults, table constraints and indexes, ignoring only formatting/comments; exclude business/task files; no DDL",
+        "description": "Resolve physical identity, validate complete preceding-v3 schema-v1 DDL including defaults, table constraints and indexes, ignoring only formatting/comments; exclude business/task files; no DDL",
         "order": 1,
         "observable": true,
         "pauseable": true

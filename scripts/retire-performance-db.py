@@ -33,7 +33,7 @@ TABLES = {
 }
 ALLOWED = set(TABLES) | {"idx_performance_buckets_range"}
 
-# Frozen from the immediately preceding v2 writer's schema-v1 CREATE statements.
+# Frozen from the immediately preceding v3 writer's schema-v1 CREATE statements.
 EXPECTED_SCHEMA_DDL = {
     "performance_meta": "CREATE TABLE performance_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
     "performance_epochs": "CREATE TABLE performance_epochs (epoch TEXT PRIMARY KEY, started_at TEXT NOT NULL, ended_at TEXT)",
@@ -120,9 +120,9 @@ def compatible_image(image, container=None):
         raise ValueError("previous image must be pinned by digest")
     metadata = json.loads(subprocess.check_output(["docker", "image", "inspect", image], timeout=10))[0]
     version = metadata.get("Config", {}).get("Labels", {}).get("org.opencontainers.image.version", "")
-    # This migration is the v2 -> v3 cutover contract, not a generic major-skip tool.
-    if not re.fullmatch(r"v?2\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", version):
-        raise ValueError("only the immediately preceding v2 image is supported; direct major skips are refused")
+    # This migration is the v3 -> v4 cutover contract, not a generic major-skip tool.
+    if not re.fullmatch(r"v?3\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", version):
+        raise ValueError("only the immediately preceding v3 image is supported; direct major skips are refused")
     if container:
         actual = subprocess.check_output(["docker", "inspect", "--format", "{{.Image}}", container], text=True, timeout=10).strip()
         if actual != metadata["Id"]:
@@ -178,8 +178,8 @@ def archive(source, business_db, data_root, archive_root, operation, previous_im
     archive_root = Path(archive_root).resolve(strict=False)
     if not re.fullmatch(r"[^\s]+@sha256:[a-f0-9]{64}", previous_image):
         raise ValueError("previous image must be pinned by digest")
-    if not re.fullmatch(r"v?2\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", previous_version):
-        raise ValueError("previous program version must be the verified v2 version")
+    if not re.fullmatch(r"v?3\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?(?:\+[A-Za-z0-9.-]+)?", previous_version):
+        raise ValueError("previous program version must be the verified v3 version")
     if target == business or (target.exists() and business.exists() and os.path.samefile(target, business)):
         raise ValueError("refusing business database identity")
     if archive_root == data_root or archive_root.is_relative_to(data_root):

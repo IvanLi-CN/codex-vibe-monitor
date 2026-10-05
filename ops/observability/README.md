@@ -127,7 +127,7 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 1. 固定旧镜像 digest 与旧配置文件，备份业务/任务数据；停止旧应用并确认 writer 已排空。
 2. 明确 `--source`（含自定义路径/alias）、`--business-db`、`--data-root` 与挂载外
    `--archive-root`，执行 `scripts/retire-performance-db.py archive --container <stopped-app> --previous-image <image@sha256:digest> --previous-config <old-config> --source <exact-db> --business-db <business-db> --data-root <mount> --archive-root <outside-mount> --operation-id <id>`。
-3. 工具先核验归档不在停止容器的任何持久化挂载下，再核验旧镜像 OCI version 属于紧邻的 v2 major；归档时停止的 writer 容器 image ID
+3. 工具先核验归档不在停止容器的任何持久化挂载下，再核验旧镜像 OCI version 属于紧邻的 v3 major（v2 必须先按主线升级到 v3，再迁移至 v4）；归档时停止的 writer 容器 image ID
    必须匹配指定 digest。未知版本和直接跨 major 均拒绝，不移动源文件。
    再核验 schema v1/marker/文件身份，SQLite backup 含已提交 WAL，验证 integrity/hash
    后移出精确旧文件族；manifest 阶段为 identified → verified → archived。未知/损坏/失败保持源。
