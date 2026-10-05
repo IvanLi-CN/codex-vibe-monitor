@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "3.1.0",
+  "base_stable_version": "3.0.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-05T13:14:57Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "3.1.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6d7e36d8066c5d9d27df196bb17ed22890f48b27",
+  "pr_number": 1077,
+  "pr_title": "fix(proxy): allocate invocation IDs from committed memory ranges",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v3.1.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v3.1.0",
+  "target_sha": "83436dd4cb4f72ad33f2284a52187a773c30497a",
+  "type_label": "type:minor"
+}
