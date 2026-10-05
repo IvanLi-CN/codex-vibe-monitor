@@ -1,6 +1,101 @@
 use super::*;
 use serde_json::json;
 
+#[tokio::test]
+async fn counted_http_transport_reports_network_bytes_through_dashboard_projection() {
+    let app = Router::new().route(
+        "/",
+        any(|| async {
+            let body = stream::iter(vec![
+                Ok::<Bytes, Infallible>(Bytes::from_static(b"stream-")),
+                Ok::<Bytes, Infallible>(Bytes::from_static(b"response")),
+            ]);
+            (StatusCode::OK, Body::from_stream(body))
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind counted dashboard upstream test server");
+    let address = listener
+        .local_addr()
+        .expect("read counted dashboard upstream address");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("counted dashboard upstream test server should run");
+    });
+    let state = test_state_from_config(test_config(), true).await;
+    let target_url = Url::parse(&format!("http://{address}/")).expect("valid counted target");
+    let reporter = UpstreamTrafficReporter::new(
+        state.clone(),
+        "network-projection-http",
+        "2026-09-28 16:00:00",
+        Some(42),
+        Some("api.example.test"),
+    );
+
+    let response = send_counted_upstream_http_request(
+        Method::POST,
+        &target_url,
+        &HeaderMap::new(),
+        Body::from("client-request"),
+        None,
+        Some(reporter),
+    )
+    .await
+    .expect("counted HTTP request should succeed");
+    let response_body = axum::body::to_bytes(response.response.into_body(), usize::MAX)
+        .await
+        .expect("read counted dashboard response");
+    assert_eq!(response_body.as_ref(), b"stream-response");
+
+    let now = Utc::now();
+    let global = state
+        .dashboard_network_speed_cache
+        .snapshot_open_bucket(DashboardNetworkScopeKey::Global, now)
+        .totals;
+    let account = state
+        .dashboard_network_speed_cache
+        .snapshot_open_bucket(DashboardNetworkScopeKey::Account(42), now)
+        .totals;
+    assert!(global.upload_bytes > 0);
+    assert!(global.download_bytes > 0);
+    assert_eq!(account, global);
+
+    let pending = state
+        .proxy_runtime_invocations
+        .pending_dashboard_publish_window();
+    assert!(pending.is_some_and(|window| { window.slice == DashboardProjectionSlice::Network }));
+    let projection = state
+        .proxy_runtime_invocations
+        .capture_network_slice()
+        .expect("capture dashboard network projection");
+    let projected_global = projection
+        .slice
+        .network_live_bucket
+        .as_ref()
+        .expect("projected global live bucket");
+    assert_eq!(projected_global.upload_bytes, global.upload_bytes);
+    assert_eq!(projected_global.download_bytes, global.download_bytes);
+    let projected_account = projection
+        .slice
+        .accounts
+        .iter()
+        .find(|account| account.upstream_account_id == Some(42))
+        .expect("projected account network bucket");
+    let projected_account_bucket = projected_account
+        .network_live_bucket
+        .as_ref()
+        .expect("projected account live bucket");
+    assert_eq!(projected_account_bucket.upload_bytes, account.upload_bytes);
+    assert_eq!(
+        projected_account_bucket.download_bytes,
+        account.download_bytes
+    );
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn same_origin_settings_write_rejects_mismatched_origin() {
     let mut headers = HeaderMap::new();
@@ -848,8 +943,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(5),
-            websocket_enabled: Some(true),
-            upstream_websocket_default_enabled: Some(true),
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(false),
             encrypted_session_owner_routing_enabled: Some(false),
@@ -862,12 +955,13 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert!(updated.merge_upstream_enabled);
     assert_eq!(updated.fast_mode_rewrite_mode, "disabled");
     assert_eq!(updated.upstream_429_max_retries, 5);
-    assert!(updated.websocket_enabled);
-    assert!(updated.upstream_websocket_default_enabled);
     assert!(!updated.request_body_logging_enabled);
     assert!(!updated.response_body_logging_enabled);
     assert!(!updated.encrypted_session_owner_routing_enabled);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
+    let serialized = serde_json::to_value(&updated).expect("serialize settings response");
+    assert!(serialized.get("websocketEnabled").is_none());
+    assert!(serialized.get("upstreamWebsocketDefaultEnabled").is_none());
 
     let persisted = load_proxy_model_settings(&state.pool)
         .await
@@ -875,8 +969,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     assert!(persisted.hijack_enabled);
     assert!(persisted.merge_upstream_enabled);
     assert_eq!(persisted.upstream_429_max_retries, 5);
-    assert!(persisted.websocket_enabled);
-    assert!(persisted.upstream_websocket_default_enabled);
     assert!(!persisted.request_body_logging_enabled);
     assert!(!persisted.response_body_logging_enabled);
     assert!(!persisted.encrypted_session_owner_routing_enabled);
@@ -893,8 +985,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(9),
-            websocket_enabled: Some(false),
-            upstream_websocket_default_enabled: Some(false),
             request_body_logging_enabled: Some(true),
             response_body_logging_enabled: Some(true),
             encrypted_session_owner_routing_enabled: Some(true),
@@ -909,8 +999,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         normalized.upstream_429_max_retries,
         MAX_PROXY_UPSTREAM_429_MAX_RETRIES
     );
-    assert!(!normalized.websocket_enabled);
-    assert!(!normalized.upstream_websocket_default_enabled);
     assert!(normalized.request_body_logging_enabled);
     assert!(normalized.response_body_logging_enabled);
     assert!(normalized.encrypted_session_owner_routing_enabled);
@@ -932,8 +1020,6 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(5),
-            websocket_enabled: Some(true),
-            upstream_websocket_default_enabled: Some(true),
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(false),
             encrypted_session_owner_routing_enabled: Some(false),
@@ -950,6 +1036,8 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
         "hijackEnabled": true,
         "mergeUpstreamEnabled": false,
         "fastModeRewriteMode": "fill_missing",
+        "websocketEnabled": true,
+        "upstreamWebsocketDefaultEnabled": true,
         "enabledModels": ["gpt-5.2-codex"],
     }))
     .expect("legacy payload should deserialize");
@@ -959,63 +1047,20 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
             .await
             .expect("legacy payload should not reset upstream429MaxRetries");
     assert_eq!(updated.upstream_429_max_retries, 5);
-    assert!(updated.websocket_enabled);
-    assert!(updated.upstream_websocket_default_enabled);
     assert!(!updated.request_body_logging_enabled);
     assert!(!updated.response_body_logging_enabled);
     assert!(!updated.encrypted_session_owner_routing_enabled);
+    let serialized = serde_json::to_value(&updated).expect("serialize legacy settings response");
+    assert!(serialized.get("websocketEnabled").is_none());
+    assert!(serialized.get("upstreamWebsocketDefaultEnabled").is_none());
 
     let persisted = load_proxy_model_settings(&state.pool)
         .await
         .expect("settings should persist");
     assert_eq!(persisted.upstream_429_max_retries, 5);
-    assert!(persisted.websocket_enabled);
-    assert!(persisted.upstream_websocket_default_enabled);
     assert!(!persisted.request_body_logging_enabled);
     assert!(!persisted.response_body_logging_enabled);
     assert!(!persisted.encrypted_session_owner_routing_enabled);
-}
-
-#[tokio::test]
-async fn proxy_websocket_settings_initialize_from_env_once_then_persist() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("in-memory sqlite");
-    ensure_schema(&pool).await.expect("ensure schema");
-
-    let mut config = test_config();
-    config.openai_proxy_websocket_enabled = true;
-    config.openai_proxy_upstream_websocket_default_enabled = true;
-    ensure_proxy_websocket_settings_initialized(&pool, &config)
-        .await
-        .expect("initialize websocket settings");
-
-    let settings = load_proxy_model_settings(&pool)
-        .await
-        .expect("load proxy model settings");
-    assert!(settings.websocket_enabled);
-    assert!(settings.upstream_websocket_default_enabled);
-
-    let mut next = settings.clone();
-    next.websocket_enabled = false;
-    next.upstream_websocket_default_enabled = false;
-    save_proxy_model_settings(&pool, next)
-        .await
-        .expect("save user websocket settings");
-
-    config.openai_proxy_websocket_enabled = true;
-    config.openai_proxy_upstream_websocket_default_enabled = true;
-    ensure_proxy_websocket_settings_initialized(&pool, &config)
-        .await
-        .expect("second initialization should not override user settings");
-
-    let settings = load_proxy_model_settings(&pool)
-        .await
-        .expect("reload proxy model settings");
-    assert!(!settings.websocket_enabled);
-    assert!(!settings.upstream_websocket_default_enabled);
-    assert!(settings.request_body_logging_enabled);
-    assert!(settings.response_body_logging_enabled);
 }
 
 #[tokio::test]
@@ -1110,8 +1155,6 @@ async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
         settings.upstream_429_max_retries,
         DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
     );
-    assert!(!settings.websocket_enabled);
-    assert!(!settings.upstream_websocket_default_enabled);
     assert!(!settings.encrypted_session_owner_routing_enabled);
     let columns = sqlx::query("PRAGMA table_info('proxy_model_settings')")
         .fetch_all(&pool)
@@ -1805,8 +1848,6 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -1848,8 +1889,6 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -1887,8 +1926,6 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -1940,8 +1977,6 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -1997,8 +2032,6 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -2038,8 +2071,6 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
             merge_upstream_enabled: false,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,
@@ -4233,4 +4264,56 @@ async fn pricing_settings_api_reads_and_persists_updates() {
         .expect("gpt-5.2-codex should persist");
     assert_eq!(pricing.input_per_1m, 8.8);
     assert_eq!(pricing.output_per_1m, 18.8);
+}
+
+#[tokio::test]
+async fn normal_http_terminal_persistence_does_not_emit_retired_websocket_state() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    persist_and_broadcast_proxy_capture_terminal_record(
+        &state,
+        test_proxy_capture_record("normal-http-terminal", "2026-09-28 15:00:00"),
+    )
+    .await
+    .expect("persist normal HTTP terminal record");
+
+    let retired_invocation_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE json_valid(payload)
+          AND (
+                json_extract(payload, '$.transport') = 'websocket'
+                OR json_type(payload, '$.streamTerminalEvent') IS NOT NULL
+          )
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count retired WebSocket invocation state");
+    assert_eq!(retired_invocation_count, 0);
+
+    let retired_tag_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_tags WHERE system_key = 'unsupported_transport:websocket'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count retired WebSocket tags");
+    assert_eq!(retired_tag_count, 0);
+
+    let retired_tag_link_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_account_tags account_tag
+        JOIN pool_tags tag ON tag.id = account_tag.tag_id
+        WHERE tag.system_key = 'unsupported_transport:websocket'
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count retired WebSocket tag links");
+    assert_eq!(retired_tag_link_count, 0);
 }

@@ -299,8 +299,6 @@ pub(crate) struct AppConfig {
     pub(crate) openai_proxy_image_handshake_timeout: Duration,
     pub(crate) openai_proxy_request_read_timeout: Duration,
     pub(crate) openai_proxy_max_request_body_bytes: usize,
-    pub(crate) openai_proxy_websocket_enabled: bool,
-    pub(crate) openai_proxy_upstream_websocket_default_enabled: bool,
     pub(crate) openai_proxy_encrypted_session_owner_routing_enabled: bool,
     pub(crate) proxy_enforce_stream_include_usage: bool,
     pub(crate) proxy_usage_backfill_on_startup: bool,
@@ -484,14 +482,6 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES);
-        let openai_proxy_websocket_enabled = parse_bool_env_var(
-            ENV_OPENAI_PROXY_WEBSOCKET_ENABLED,
-            DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
-        )?;
-        let openai_proxy_upstream_websocket_default_enabled = parse_bool_env_var(
-            ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
-            DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
-        )?;
         let openai_proxy_encrypted_session_owner_routing_enabled = parse_bool_env_var(
             ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
             DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED,
@@ -774,8 +764,6 @@ impl AppConfig {
             openai_proxy_image_handshake_timeout,
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
-            openai_proxy_websocket_enabled,
-            openai_proxy_upstream_websocket_default_enabled,
             openai_proxy_encrypted_session_owner_routing_enabled,
             proxy_enforce_stream_include_usage,
             proxy_usage_backfill_on_startup,

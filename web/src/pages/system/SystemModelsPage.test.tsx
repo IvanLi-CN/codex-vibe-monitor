@@ -90,8 +90,6 @@ function makeSettings(): SettingsPayload {
       mergeUpstreamEnabled: false,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 0,
-      websocketEnabled: false,
-      upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: false,
       responseBodyLoggingEnabled: false,
       encryptedSessionOwnerRoutingEnabled: false,

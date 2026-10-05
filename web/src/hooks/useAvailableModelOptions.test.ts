@@ -9,8 +9,6 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
       mergeUpstreamEnabled: false,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 3,
-      websocketEnabled: false,
-      upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: true,

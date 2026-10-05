@@ -35,7 +35,7 @@ Prompt Cache conversation binding currently models operator routing intent only.
 - Binding read APIs and Prompt Cache conversation detail responses expose read-only owner metadata.
 - `proxy_model_settings.encrypted_session_owner_routing_enabled` defaults to disabled and is exposed through `GET /api/settings` and `PUT /api/settings/proxy` as `encryptedSessionOwnerRoutingEnabled`.
 - `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` may override that default only when the SQLite setting has not been initialized yet; once initialized, later restarts keep using the database value.
-- When encrypted owner routing is disabled, HTTP and WebSocket proxy paths ignore existing encrypted owner rows, do not write new owner rows after encrypted success, and do not return `encrypted_session_owner_unavailable` solely because an encrypted owner is unavailable.
+- When encrypted owner routing is disabled, HTTP proxy paths ignore existing encrypted owner rows, do not write new owner rows after encrypted success, and do not return `encrypted_session_owner_unavailable` solely because an encrypted owner is unavailable.
 - When encrypted owner routing is disabled, binding read APIs and Prompt Cache conversation list/detail responses suppress encrypted owner metadata so the product UI behaves like ordinary manual route binding.
 
 ## Interface Contract
@@ -96,7 +96,6 @@ Prompt Cache conversation binding currently models operator routing intent only.
   story_id_or_title: Monitoring/PromptCacheConversationTable/DrawerBindingControls
   state: encrypted owner lock visible next to manual route binding state
   evidence_note: verifies the binding card shows both the current manual account binding and the encrypted session owner for the same conversation
-  PR: include
   image:
   ![Prompt cache encrypted owner lock card](./assets/prompt-cache-owner-lock-card.png)
 
@@ -109,7 +108,6 @@ Prompt Cache conversation binding currently models operator routing intent only.
   story_id_or_title: Monitoring/PromptCacheConversationTable/DrawerEncryptedOwnerDangerDialogOpen
   state: dangerous route-binding confirmation dialog
   evidence_note: verifies an encrypted-owner route-binding change uses the project Dialog surface, with localized risk copy and no browser-native confirm dialog
-  PR: include
   image:
   ![Prompt cache owner binding confirmation dialog](./assets/prompt-cache-owner-binding-confirm-dialog.png)
 
@@ -122,7 +120,6 @@ Prompt Cache conversation binding currently models operator routing intent only.
   story_id_or_title: Monitoring/PromptCacheConversationTable/DrawerOwnerLockWithoutManualBinding
   state: owner lock preserved after manual binding is cleared
   evidence_note: verifies clearing manual binding leaves the encrypted owner lock intact and surfaces the explanatory hint in the same binding card
-  PR: include
   image:
   ![Prompt cache owner lock clear hint](./assets/prompt-cache-owner-lock-clear-hint-card.png)
 
@@ -135,6 +132,9 @@ Prompt Cache conversation binding currently models operator routing intent only.
   story_id_or_title: Settings/SettingsPage/EncryptedOwnerRoutingDisabled
   state: encrypted owner routing disabled in system settings
   evidence_note: verifies the System Settings proxy section exposes the encrypted conversation routing switch, its first-init env name, and the disabled state without route-binding warning UI
-  PR: include
   image:
   ![Encrypted owner routing disabled setting](./assets/encrypted-owner-routing-disabled-storybook.png)
+
+## Related ADRs
+
+None

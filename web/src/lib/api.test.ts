@@ -1684,8 +1684,6 @@ describe("settings normalization", () => {
               mergeUpstreamEnabled: true,
               fastModeRewriteMode: "disabled",
               upstream429MaxRetries: 5,
-              websocketEnabled: true,
-              upstreamWebsocketDefaultEnabled: false,
               requestBodyLoggingEnabled: true,
               responseBodyLoggingEnabled: true,
               encryptedSessionOwnerRoutingEnabled: true,
@@ -1744,8 +1742,6 @@ describe("settings normalization", () => {
     const settings = await fetchSettings();
     expect(settings.proxy.hijackEnabled).toBe(true);
     expect(settings.proxy.upstream429MaxRetries).toBe(5);
-    expect(settings.proxy.websocketEnabled).toBe(true);
-    expect(settings.proxy.upstreamWebsocketDefaultEnabled).toBe(false);
     expect(settings.proxy.encryptedSessionOwnerRoutingEnabled).toBe(true);
     expect(settings.proxy.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);
     expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
@@ -1786,8 +1782,6 @@ describe("settings normalization", () => {
               mergeUpstreamEnabled: false,
               fastModeRewriteMode: "disabled",
               upstream429MaxRetries: 3,
-              websocketEnabled: false,
-              upstreamWebsocketDefaultEnabled: false,
               requestBodyLoggingEnabled: true,
               responseBodyLoggingEnabled: true,
               defaultHijackEnabled: false,
@@ -1824,8 +1818,6 @@ describe("settings normalization", () => {
             mergeUpstreamEnabled: false,
             fastModeRewriteMode: "disabled",
             upstream429MaxRetries: 9,
-            websocketEnabled: true,
-            upstreamWebsocketDefaultEnabled: true,
             requestBodyLoggingEnabled: false,
             responseBodyLoggingEnabled: false,
             defaultHijackEnabled: false,
@@ -1842,8 +1834,6 @@ describe("settings normalization", () => {
       mergeUpstreamEnabled: false,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 5,
-      websocketEnabled: true,
-      upstreamWebsocketDefaultEnabled: true,
       requestBodyLoggingEnabled: false,
       responseBodyLoggingEnabled: false,
       enabledModels: ["gpt-5.6-sol", "gpt-5.6-terra"],
@@ -1852,8 +1842,6 @@ describe("settings normalization", () => {
     expect(response.hijackEnabled).toBe(true);
     expect(response.mergeUpstreamEnabled).toBe(false);
     expect(response.upstream429MaxRetries).toBe(5);
-    expect(response.websocketEnabled).toBe(true);
-    expect(response.upstreamWebsocketDefaultEnabled).toBe(true);
     expect(response.requestBodyLoggingEnabled).toBe(false);
     expect(response.responseBodyLoggingEnabled).toBe(false);
     expect(response.enabledModels).toEqual(["gpt-5.6-sol", "gpt-5.6-terra"]);

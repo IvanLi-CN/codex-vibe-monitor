@@ -22,7 +22,7 @@
 
 - 不把自动迁移扩大到 `normal` 或 `primary` sticky 来源。
 - 不改变 OAuth 或其他非 API Key 账号的路由行为。
-- 不改变 WebSocket 的选择、重试或会话完成语义。
+- 不改变已退役 transport 的拒绝语义；WebSocket upgrade 的边界由 ADR 0020 定义。
 - 不把闸门做成目标的绝对总请求限流器；已成功迁移的 sticky 路由继续正常发送。
 - 不增加后台探针、持久 FIFO、跨进程租约恢复或数据库热路径读取。
 - 不引入新的迁移请求时长阈值，也不改变既有 HTTP 请求超时合同。
@@ -40,7 +40,7 @@
 
 ### Out of scope
 
-- WebSocket 迁移准入、WebSocket 重试策略或长会话并发管理。
+- 已退役 WebSocket 请求的拒绝实现；该边界由 ADR 0020 管理。
 - OAuth 或非 API Key 的模型级闸门与冷却状态。
 - 目标账号级全局许可证、跨实例分布式协调或持久化许可恢复。
 - 将普通故障切换、人工强制绑定或既有 sticky 复用改为等待闸门。
@@ -59,7 +59,7 @@
 - REQ-003: 恢复准入必须由下一个合格真实请求驱动；`degraded` 可立即尝试，未到期 `cooling_down` 必须排除，普通比较器不得改变。
 - REQ-004: 新接受的临时故障必须重启恢复代际并保留旧在途许可的排他性；旧终态不得污染新代际。
 - REQ-005: 只有通过请求开始时间、reset fence 和 Sticky generation 栅栏的完整终态成功，才能恢复模型健康、推进 `1/3 -> 3/3` 并安全提交绑定。
-- REQ-006: 取消、交付不确定、Fault Failover、WebSocket、非 API Key 与数据库写入失败必须保持既有非等待和保守语义。
+- REQ-006: 取消、交付不确定、Fault Failover、非 API Key 与数据库写入失败必须保持既有非等待和保守语义；已退役 WebSocket 请求不得进入本闸门。
 - REQ-007: `handoffAdmission.trigger` 与恢复 winner reason 必须以向后兼容的审计字段和可读 Web 诊断暴露，且不得记录敏感上游正文。
 - REQ-008: 全局设置与进程重启必须仅重置本地恢复代际，不得恢复持久许可、计数或隐式开放状态。
 
@@ -98,7 +98,7 @@
 
 - 新的运行时状态应集中在一个小而显式的进程本地模块，并通过 RAII 或等价的取消安全清理保证许可释放。
 - 候选选择应先遵守现有账号、模型、绑定、路由策略与传输硬资格；常规候选继续使用原比较器，恢复吸引候选则通过显式的请求驱动恢复通道到达同一准入闸门，不应改写常规比较器的排序规则。
-- 设置界面应明确显示这是全局 HTTP/API Key 的优先级迁移控制，不暗示它会关闭 WebSocket、人工绑定或所有目标流量。
+- 设置界面应明确显示这是全局 HTTP/API Key 的优先级迁移控制，不暗示它会关闭人工绑定或所有目标流量。
 - 审计应使用已有账号显示名与安全原因码，避免把内部数值标识当作运维界面的账号名称。
 
 ### COULD
@@ -201,7 +201,7 @@
 
 - Given 恢复请求已发送后全局开关被关闭，When 请求随后完整成功，Then 它可按时间与 Sticky 所有权栅栏更新健康和本对话绑定，但不得计入关闭后或重新开启的代际；Given 重新开启，Then 从 `0/3 verifying` 开始。
 
-- Given WebSocket 或非 API Key 账号请求，When 解析路由，Then 它们维持升级前的路由、重试和完成语义。
+- Given WebSocket upgrade 请求，When 到达传输边界，Then 在进入路由前返回 ADR 0020 定义的 `501 websocket_proxy_removed`；Given 非 API Key 账号请求，When 解析路由，Then 保持既有路由、重试和完成语义。
 
 ## Verification Details
 
@@ -210,7 +210,7 @@
 - Rust unit tests：本地闸门状态机、状态代际、冷却推进/重置、取消释放与安全回放判定。
 - Stateful SQLite tests：`Fallback` 首选迁移、同目标并发、次优目标不迁移、新分配绕行、sticky generation 防陈旧覆盖、既有模型路由健康兼容和数据库故障隔离。
 - HTTP integration coverage：单次迁移尝试禁止各类自动重试、完整终态才绑定、交付不确定不回放、标准超时不被重写。
-- Compatibility tests：WebSocket、OAuth、人工绑定、普通故障切换和全局开关关闭时保持既有行为。
+- Compatibility tests：已退役 WebSocket upgrade 的拒绝契约、OAuth、人工绑定、普通故障切换和全局开关关闭时保持既有行为。
 
 ### UI / Storybook
 

@@ -1,5 +1,21 @@
 # OpenAI 兼容 WebSocket 代理演进记录（#w5s2x）
 
+## 2026-09-28
+
+- 依据 [ADR 0020](../../adr/0020-retire-downstream-websocket-proxy.md) 将下游与上游 WebSocket 代理能力退役。保留旧设置列和历史 `transport="websocket"` 记录供迁移安全、审计和读取兼容使用；不再接受新的 WebSocket upgrade、创建新记录或重建 WebSocket capability tag。
+
+## 2026-10-05
+
+- 在更新后的 `origin/main` 基线上完成候选同步：移除未再编译的 WebSocket message-conversion 测试和无调用方的 pre-upstream WebSocket persistence helper；同步刷新当前 Rust、Web、文档和迁移验证记录。此轮没有改变退役合同或历史读取边界。
+- 修正历史 transport chip 的可见文案，使其与专题合同一致显示为 `WebSocket（历史）`；刷新 Storybook evidence、UI 测试与版本影响验证记录。
+- 修复 SQLite tag 清理在保留合法 JSON 对象/数组时的类型保持问题，并补充迁移与通用 tag cleanup 回归覆盖。
+- 在 `c22fb448` 基线上完成 required CI 验证并刷新 version-impact 的 verified evidence；Archive/File I/O required check 通过。
+- 早期 runtime candidate 的 required CI run `37222753000` 全绿；后续 review repair 继续补齐迁移 forward-repair、历史 fixture、Specs 索引和 active streaming regression 覆盖。
+- 最终 runtime candidate `abe361ba9bee399e6c09696a21f5f10f553a017c` 的 required CI run `37226138705` 全绿，覆盖 Rust source quality/Clippy、三类 backend profile、Web、Storybook、E2E、docs/tooling 和 smoke/build artifacts；后续 release heads 仅刷新 evidence、HISTORY 和 Specs index metadata。
+- Runtime candidate `3de9c53c68c0af1f6421b3f53ccdfba30914805f` on base `324f9988cdc8794754f982ca97e8f474cb344778` passed required CI PR run `37267059013`; the follow-up head only refreshes evidence and restores the canonical Specs index while retaining the retired WebSocket entry removal.
+- Runtime candidate `06b2876fdb8dd3fb5a7417e8aa6229686a6dc159` adds early rejection for HTTP/2 Extended CONNECT requests carrying `:protocol = websocket`, with a regression covering the same exact `501 websocket_proxy_removed` envelope; required CI PR run `37270300535` passed after the documentation-only evidence follow-up on `accf88f247de4d6a56c98240e7101d77b823bdea`.
+- The evidence refreshes after that runtime candidate are documentation-only and do not change the retired transport contract, runtime candidate, or compatibility classification.
+
 ## 2026-07-07
 
 - 101 线上只读诊断确认：CIII、TeeTime 等第三方兼容 API-key upstream 能完成 `/v1/responses` WS 握手，但会在 `response.completed` 前关闭连接，客户端表现为 `websocket closed by server before response.completed`。

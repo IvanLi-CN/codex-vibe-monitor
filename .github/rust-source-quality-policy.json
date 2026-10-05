@@ -4,8 +4,8 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 38,
-    "suppression_entries": 119
+    "inventory_entries": 37,
+    "suppression_entries": 118
   },
   "loc_targets": {
     "production": 2500,
@@ -75,7 +75,7 @@
     {
       "path": "src/proxy/request_entry.rs",
       "role": "production",
-      "line_budget": 6424,
+      "line_budget": 6462,
       "next_module_workstream": "Split proxy request entry validation, capture, reservation, and response persistence."
     },
     {
@@ -91,15 +91,9 @@
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
-      "path": "src/proxy/websocket.rs",
-      "role": "production",
-      "line_budget": 5488,
-      "next_module_workstream": "Split WebSocket connection, preparation, tunnel, usage, and protocol event handling."
-    },
-    {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6566,
+      "line_budget": 6653,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -135,7 +129,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 9872,
+      "line_budget": 9997,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -159,13 +153,13 @@
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",
       "role": "test_helper",
-      "line_budget": 4236,
+      "line_budget": 4319,
       "next_module_workstream": "Split proxy broadcast/runtime harness fixtures by forward-proxy history, settings, and timeseries."
     },
     {
       "path": "src/tests/stateful_sqlite/request_preparation_and_handshake_failures.rs",
       "role": "test_helper",
-      "line_budget": 3886,
+      "line_budget": 3977,
       "next_module_workstream": "Split request preparation/handshake fixtures by capture, parser cost, body, and handshake paths."
     },
     {
@@ -225,7 +219,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
       "role": "test_helper",
-      "line_budget": 4471,
+      "line_budget": 4522,
       "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
     },
     {
@@ -426,12 +420,6 @@
       "path": "src/proxy/mod.rs",
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Usage persistence adapters preserve established database call contracts.\" )]",
-      "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
-    },
-    {
-      "path": "src/proxy/mod.rs",
-      "kind": "expect",
-      "declaration": "#[expect( clippy::too_many_arguments, reason = \"WebSocket preparation adapters preserve established call-site contracts.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/proxy/mod.rs; remove it when the listed boundary split is complete."
     },
     {

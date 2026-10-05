@@ -1725,8 +1725,6 @@ export interface ProxySettings {
   mergeUpstreamEnabled: boolean;
   fastModeRewriteMode: ProxyFastModeRewriteMode;
   upstream429MaxRetries: number;
-  websocketEnabled: boolean;
-  upstreamWebsocketDefaultEnabled: boolean;
   requestBodyLoggingEnabled: boolean;
   responseBodyLoggingEnabled: boolean;
   encryptedSessionOwnerRoutingEnabled: boolean;
@@ -3501,8 +3499,6 @@ function normalizeProxySettings(raw: unknown): ProxySettings {
       0,
       Math.min(5, Math.trunc(normalizeFiniteNumber(payload.upstream429MaxRetries) ?? 3)),
     ),
-    websocketEnabled: payload.websocketEnabled === true,
-    upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled === true,
     requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled !== false,
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled !== false,
     encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled === true,
@@ -6425,8 +6421,6 @@ export async function updateProxySettings(payload: {
   mergeUpstreamEnabled: boolean;
   fastModeRewriteMode?: ProxyFastModeRewriteMode;
   upstream429MaxRetries: number;
-  websocketEnabled: boolean;
-  upstreamWebsocketDefaultEnabled: boolean;
   requestBodyLoggingEnabled: boolean;
   responseBodyLoggingEnabled: boolean;
   encryptedSessionOwnerRoutingEnabled: boolean;

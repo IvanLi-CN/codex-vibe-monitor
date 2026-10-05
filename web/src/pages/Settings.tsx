@@ -847,22 +847,6 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
     });
   }, [currentProxy, persistProxy]);
 
-  const handleToggleWebsocketDownstream = useCallback(() => {
-    if (!currentProxy) return;
-    persistProxy({
-      ...currentProxy,
-      websocketEnabled: !currentProxy.websocketEnabled,
-    });
-  }, [currentProxy, persistProxy]);
-
-  const handleToggleWebsocketUpstream = useCallback(() => {
-    if (!currentProxy) return;
-    persistProxy({
-      ...currentProxy,
-      upstreamWebsocketDefaultEnabled: !currentProxy.upstreamWebsocketDefaultEnabled,
-    });
-  }, [currentProxy, persistProxy]);
-
   const handleToggleRequestBodyLogging = useCallback(() => {
     if (!currentProxy) return;
     persistProxy({
@@ -1855,87 +1839,9 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                           }
                         >
                           {currentProxy.encryptedSessionOwnerRoutingEnabled
-                            ? t("settings.proxy.websocketEnabled")
-                            : t("settings.proxy.websocketDisabled")}
+                            ? t("settings.proxy.enabled")
+                            : t("settings.proxy.disabled")}
                         </Chip>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="surface-inset space-y-3 rounded-xl p-4">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div className="space-y-1">
-                      <div className="font-medium leading-snug">
-                        {t("settings.proxy.websocketRuntimeTitle")}
-                      </div>
-                      <div className="text-sm leading-snug text-base-content/70">
-                        {t("settings.proxy.websocketRuntimeHint")}
-                      </div>
-                    </div>
-                    <Chip tone="secondary" className="shrink-0">
-                      {t("settings.autoSaved")}
-                    </Chip>
-                  </div>
-
-                  <div className="grid gap-3 xl:grid-cols-2">
-                    <div className="surface-subtle rounded-lg p-3.5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 space-y-1">
-                          <div className="font-medium leading-snug">
-                            {t("settings.proxy.websocketDownstreamLabel")}
-                          </div>
-                          <div className="text-sm leading-snug text-base-content/70">
-                            {t("settings.proxy.websocketDownstreamHint")}
-                          </div>
-                          <div className="break-all font-mono text-[11px] text-base-content/55">
-                            OPENAI_PROXY_WEBSOCKET_ENABLED
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-2">
-                          <Switch
-                            checked={currentProxy.websocketEnabled}
-                            aria-label={t("settings.proxy.websocketDownstreamLabel")}
-                            onCheckedChange={() => handleToggleWebsocketDownstream()}
-                          />
-                          <Chip tone={currentProxy.websocketEnabled ? "success" : "secondary"}>
-                            {currentProxy.websocketEnabled
-                              ? t("settings.proxy.websocketEnabled")
-                              : t("settings.proxy.websocketDisabled")}
-                          </Chip>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="surface-subtle rounded-lg p-3.5">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0 space-y-1">
-                          <div className="font-medium leading-snug">
-                            {t("settings.proxy.websocketUpstreamLabel")}
-                          </div>
-                          <div className="text-sm leading-snug text-base-content/70">
-                            {t("settings.proxy.websocketUpstreamHint")}
-                          </div>
-                          <div className="break-all font-mono text-[11px] text-base-content/55">
-                            OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED
-                          </div>
-                        </div>
-                        <div className="flex shrink-0 flex-col items-end gap-2">
-                          <Switch
-                            checked={currentProxy.upstreamWebsocketDefaultEnabled}
-                            aria-label={t("settings.proxy.websocketUpstreamLabel")}
-                            onCheckedChange={() => handleToggleWebsocketUpstream()}
-                          />
-                          <Chip
-                            tone={
-                              currentProxy.upstreamWebsocketDefaultEnabled ? "success" : "secondary"
-                            }
-                          >
-                            {currentProxy.upstreamWebsocketDefaultEnabled
-                              ? t("settings.proxy.websocketEnabled")
-                              : t("settings.proxy.websocketDisabled")}
-                          </Chip>
-                        </div>
                       </div>
                     </div>
                   </div>
@@ -1977,8 +1883,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             tone={currentProxy.requestBodyLoggingEnabled ? "success" : "secondary"}
                           >
                             {currentProxy.requestBodyLoggingEnabled
-                              ? t("settings.proxy.websocketEnabled")
-                              : t("settings.proxy.websocketDisabled")}
+                              ? t("settings.proxy.enabled")
+                              : t("settings.proxy.disabled")}
                           </Chip>
                         </div>
                       </div>
@@ -2004,8 +1910,8 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
                             tone={currentProxy.responseBodyLoggingEnabled ? "success" : "secondary"}
                           >
                             {currentProxy.responseBodyLoggingEnabled
-                              ? t("settings.proxy.websocketEnabled")
-                              : t("settings.proxy.websocketDisabled")}
+                              ? t("settings.proxy.enabled")
+                              : t("settings.proxy.disabled")}
                           </Chip>
                         </div>
                       </div>

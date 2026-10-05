@@ -125,7 +125,7 @@
 ### `系统/设置`
 
 - 保留原设置页中的：
-  - proxy/hijack 与 websocket runtime 设置
+  - proxy/hijack 设置
   - pricing 设置
   - external API keys 设置
 - 保存语义继续复用 `useSettings` 与现有 `/api/settings*` 写接口。

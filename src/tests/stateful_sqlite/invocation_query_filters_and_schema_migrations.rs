@@ -11,6 +11,412 @@ use crate::upstream_accounts::{
 use serde_json::{Value, json};
 use tokio::time::{Duration, sleep};
 
+const RETIRED_WEBSOCKET_TAG: &str = "unsupported_transport:websocket";
+
+async fn seed_websocket_retirement_state(pool: &SqlitePool) -> (i64, i64) {
+    ensure_schema(pool).await.expect("ensure current schema");
+    sqlx::query(
+        "DELETE FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
+    )
+    .execute(pool)
+    .await
+    .expect("reset WebSocket retirement migration marker");
+    sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET openai_proxy_websocket_enabled = 1,
+            openai_proxy_upstream_websocket_default_enabled = 1,
+            websocket_settings_migrated = 0
+        WHERE id = 1
+        "#,
+    )
+    .execute(pool)
+    .await
+    .expect("seed legacy WebSocket settings");
+
+    let websocket_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, system_key, protected, created_at, updated_at
+        )
+        VALUES (?1, ?2, 1, datetime('now'), datetime('now'))
+        RETURNING id
+        "#,
+    )
+    .bind("Legacy WebSocket capability")
+    .bind(RETIRED_WEBSOCKET_TAG)
+    .fetch_one(pool)
+    .await
+    .expect("seed retired WebSocket capability tag");
+    let unrelated_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, system_key, protected, created_at, updated_at
+        )
+        VALUES (?1, ?2, 1, datetime('now'), datetime('now'))
+        RETURNING id
+        "#,
+    )
+    .bind("Unrelated capability")
+    .bind("unsupported_model:legacy-test")
+    .fetch_one(pool)
+    .await
+    .expect("seed unrelated system tag");
+    for tag_id in [websocket_tag_id, unrelated_tag_id] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_tags (
+                account_id, tag_id, created_at, updated_at
+            )
+            VALUES (4242, ?1, datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(tag_id)
+        .execute(pool)
+        .await
+        .expect("seed system tag association");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy WebSocket session', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-session")
+    .bind(format!("[{websocket_tag_id},{unrelated_tag_id}]"))
+    .bind("state-retire-websocket")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed OAuth session tag selection");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy malformed tag values', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-malformed', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-malformed-session")
+    .bind(format!(
+        "[\"{websocket_tag_id}x\",{websocket_tag_id}.9,\"{websocket_tag_id}\"]"
+    ))
+    .bind("state-retire-websocket-malformed")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed malformed OAuth session tag values");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy JSON tag values', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-json-values', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-json-values-session")
+    .bind(format!(
+        "[{websocket_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],true,false,null,\"keep\"]"
+    ))
+    .bind("state-retire-websocket-json-values")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed non-scalar JSON tag values");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy scalar tag root', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-scalar', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-scalar-session")
+    .bind(websocket_tag_id.to_string())
+    .bind("state-retire-websocket-scalar")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed scalar JSON tag root");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy object tag root', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-object', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-object-session")
+    .bind(format!(r#"{{"retired":{websocket_tag_id}}}"#))
+    .bind("state-retire-websocket-object")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed object JSON tag root");
+    (websocket_tag_id, unrelated_tag_id)
+}
+
+#[tokio::test]
+async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    let (websocket_tag_id, unrelated_tag_id) = seed_websocket_retirement_state(&pool).await;
+
+    ensure_schema(&pool)
+        .await
+        .expect("rerun schema with WebSocket retirement migration");
+
+    let settings: (i64, i64, i64) = sqlx::query_as(
+        r#"
+        SELECT openai_proxy_websocket_enabled,
+               openai_proxy_upstream_websocket_default_enabled,
+               websocket_settings_migrated
+        FROM proxy_model_settings
+        WHERE id = 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load retired WebSocket settings");
+    assert_eq!(settings, (0, 0, 1));
+
+    let websocket_tag_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_tags WHERE id = ?1")
+            .bind(websocket_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count retired WebSocket tag");
+    assert_eq!(websocket_tag_count, 0);
+    let websocket_link_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE tag_id = ?1")
+            .bind(websocket_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count retired WebSocket tag links");
+    assert_eq!(websocket_link_count, 0);
+    let unrelated_tag_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_tags WHERE id = ?1")
+            .bind(unrelated_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count unrelated tag");
+    assert_eq!(unrelated_tag_count, 1);
+    let unrelated_link_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE tag_id = ?1")
+            .bind(unrelated_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count unrelated tag links");
+    assert_eq!(unrelated_link_count, 1);
+    let remaining_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load OAuth session tags after retirement");
+    assert_eq!(remaining_session_tags, format!("[{unrelated_tag_id}]"));
+    let malformed_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-malformed-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load malformed OAuth session tags after retirement");
+    assert_eq!(
+        malformed_session_tags,
+        format!("[\"{websocket_tag_id}x\",{websocket_tag_id}.9,\"{websocket_tag_id}\"]")
+    );
+    let json_value_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-json-values-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load JSON tag values after retirement");
+    assert_eq!(
+        json_value_session_tags,
+        r#"[{"kind":"object"},["nested",{"ok":true}],true,false,null,"keep"]"#
+    );
+    let scalar_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-scalar-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load scalar JSON tag root after retirement");
+    assert_eq!(scalar_session_tags, websocket_tag_id.to_string());
+    let object_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-object-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load object JSON tag root after retirement");
+    assert_eq!(
+        object_session_tags,
+        format!(r#"{{"retired":{websocket_tag_id}}}"#)
+    );
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count WebSocket retirement markers");
+    assert_eq!(marker_count, 1);
+
+    let reintroduced_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (name, system_key, protected, created_at, updated_at)
+        VALUES ('Reintroduced WebSocket capability', 'unsupported_transport:websocket', 1, datetime('now'), datetime('now'))
+        RETURNING id
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("reintroduce retired WebSocket capability tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (account_id, tag_id, created_at, updated_at)
+        VALUES (4242, ?1, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(reintroduced_tag_id)
+    .execute(&pool)
+    .await
+    .expect("reintroduce retired WebSocket capability link");
+
+    crate::schema::retire_openai_websocket_proxy(&pool)
+        .await
+        .expect("rerun WebSocket proxy retirement migration");
+    let rerun_settings: (i64, i64, i64) = sqlx::query_as(
+        "SELECT openai_proxy_websocket_enabled, openai_proxy_upstream_websocket_default_enabled, websocket_settings_migrated FROM proxy_model_settings WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load settings after idempotent rerun");
+    assert_eq!(rerun_settings, settings);
+    let reintroduced_tag_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_tags WHERE id = ?1")
+            .bind(reintroduced_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count reintroduced WebSocket tag after rerun");
+    assert_eq!(reintroduced_tag_count, 0);
+}
+
+#[tokio::test]
+async fn retire_websocket_proxy_migration_rolls_back_and_reenters_after_failure() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+    let (websocket_tag_id, unrelated_tag_id) = seed_websocket_retirement_state(&pool).await;
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_websocket_retirement_settings_update
+        BEFORE UPDATE OF openai_proxy_websocket_enabled ON proxy_model_settings
+        BEGIN
+            SELECT RAISE(ABORT, 'forced WebSocket retirement failure');
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create migration failure trigger");
+
+    let error = crate::schema::retire_openai_websocket_proxy(&pool)
+        .await
+        .expect_err("migration should fail through trigger");
+    assert!(
+        error
+            .to_string()
+            .contains("retire persisted WebSocket proxy settings")
+    );
+
+    sqlx::query("DROP TRIGGER fail_websocket_retirement_settings_update")
+        .execute(&pool)
+        .await
+        .expect("drop migration failure trigger");
+    let settings: (i64, i64, i64) = sqlx::query_as(
+        "SELECT openai_proxy_websocket_enabled, openai_proxy_upstream_websocket_default_enabled, websocket_settings_migrated FROM proxy_model_settings WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load settings after rollback");
+    assert_eq!(settings, (1, 1, 0));
+    let tag_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pool_tags WHERE id = ?1")
+        .bind(websocket_tag_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count WebSocket tag after rollback");
+    assert_eq!(tag_count, 1);
+    let link_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_account_tags WHERE tag_id = ?1")
+            .bind(websocket_tag_id)
+            .fetch_one(&pool)
+            .await
+            .expect("count WebSocket tag link after rollback");
+    assert_eq!(link_count, 1);
+    let session_tags_after_rollback: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load OAuth session tags after rollback");
+    assert_eq!(
+        session_tags_after_rollback,
+        format!("[{websocket_tag_id},{unrelated_tag_id}]")
+    );
+    let marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count marker after rollback");
+    assert_eq!(marker_count, 0);
+
+    crate::schema::retire_openai_websocket_proxy(&pool)
+        .await
+        .expect("forward-repair migration after rollback");
+    let repaired_settings: (i64, i64, i64) = sqlx::query_as(
+        "SELECT openai_proxy_websocket_enabled, openai_proxy_upstream_websocket_default_enabled, websocket_settings_migrated FROM proxy_model_settings WHERE id = 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load settings after forward repair");
+    assert_eq!(repaired_settings, (0, 0, 1));
+    let repaired_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count marker after forward repair");
+    assert_eq!(repaired_marker_count, 1);
+}
+
 async fn fetch_prompt_cache_conversations(
     State(state): State<Arc<AppState>>,
     query: Query<PromptCacheConversationsQuery>,
@@ -1476,10 +1882,10 @@ async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batc
         prompt_cache_key,
     )
     .await;
-    persist_and_broadcast_proxy_capture_terminal_record(&state, success, false)
+    persist_and_broadcast_proxy_capture_terminal_record(&state, success)
         .await
         .expect("queue successful terminal record");
-    persist_and_broadcast_proxy_capture_terminal_record(&state, failure, false)
+    persist_and_broadcast_proxy_capture_terminal_record(&state, failure)
         .await
         .expect("queue failed terminal record");
     state

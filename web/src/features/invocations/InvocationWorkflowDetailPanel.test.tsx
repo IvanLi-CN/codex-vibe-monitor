@@ -40,7 +40,7 @@ vi.mock("../../lib/api", async () => {
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     locale: "zh",
-    t: (key: string) => key,
+    t: (key: string) => (key === "records.filters.transport.websocket" ? "WebSocket（历史）" : key),
   }),
 }));
 
@@ -865,6 +865,39 @@ describe("InvocationWorkflowDetailPanel", () => {
     );
     expect(timingButton).not.toBeNull();
     expect(timingButton?.querySelector('[title="—"]')).not.toBeNull();
+  });
+
+  it("labels historical WebSocket transport in attempt and routing metrics", async () => {
+    const workflowDetail = createWorkflowDetailResponse();
+    const routeEntry = workflowDetail.timeline.find((entry) => entry.kind === "routingDecision");
+    const attemptEntry = workflowDetail.timeline.find((entry) => entry.kind === "attempt");
+    if (!routeEntry?.detail?.request || !attemptEntry?.attempt?.requestSummary) {
+      throw new Error("workflow fixture must contain route and attempt request summaries");
+    }
+    routeEntry.detail.request.transport = "websocket";
+    attemptEntry.attempt.requestSummary.transport = "websocket";
+    apiMocks.fetchInvocationWorkflowDetail.mockResolvedValue(workflowDetail);
+
+    render(<InvocationWorkflowDetailPanel record={createRecord()} />);
+
+    await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
+
+    expect(host?.textContent ?? "").toContain("WebSocket（历史）");
+    expect(host?.textContent ?? "").not.toContain("websocket");
+    const requestButton = Array.from(host?.querySelectorAll("button") ?? []).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.textContent?.includes("请求") &&
+        candidate.textContent?.includes("WebSocket（历史）"),
+    );
+    expect(requestButton).not.toBeNull();
+    act(() => {
+      requestButton?.click();
+    });
+    await flushAsyncWork();
+
+    expect(host?.textContent ?? "").toContain("WebSocket（历史）");
+    expect(host?.textContent ?? "").not.toContain("websocket");
   });
 
   it("keeps a measured TTFT visible when stream timing is invalid", async () => {

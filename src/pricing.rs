@@ -178,8 +178,6 @@ pub(crate) async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<Pro
             hijack_enabled,
             merge_upstream_enabled,
             upstream_429_max_retries,
-            openai_proxy_websocket_enabled,
-            openai_proxy_upstream_websocket_default_enabled,
             request_body_logging_enabled,
             response_body_logging_enabled,
             encrypted_session_owner_routing_enabled,
@@ -212,23 +210,18 @@ pub(crate) async fn save_proxy_model_settings(
         SET hijack_enabled = ?1,
             merge_upstream_enabled = ?2,
             upstream_429_max_retries = ?3,
-            openai_proxy_websocket_enabled = ?4,
-            openai_proxy_upstream_websocket_default_enabled = ?5,
-            request_body_logging_enabled = ?6,
-            response_body_logging_enabled = ?7,
-            encrypted_session_owner_routing_enabled = ?8,
+            request_body_logging_enabled = ?4,
+            response_body_logging_enabled = ?5,
+            encrypted_session_owner_routing_enabled = ?6,
             encrypted_session_owner_routing_initialized = 1,
-            websocket_settings_migrated = 1,
-            enabled_preset_models_json = ?9,
+            enabled_preset_models_json = ?7,
             updated_at = datetime('now')
-        WHERE id = ?10
+        WHERE id = ?8
         "#,
     )
     .bind(settings.hijack_enabled as i64)
     .bind(settings.merge_upstream_enabled as i64)
     .bind(i64::from(settings.upstream_429_max_retries))
-    .bind(settings.websocket_enabled as i64)
-    .bind(settings.upstream_websocket_default_enabled as i64)
     .bind(settings.request_body_logging_enabled as i64)
     .bind(settings.response_body_logging_enabled as i64)
     .bind(settings.encrypted_session_owner_routing_enabled as i64)
@@ -337,47 +330,6 @@ pub(crate) async fn ensure_proxy_enabled_models_contains_new_presets(
         normalize_enabled_preset_models(settings.enabled_preset_models);
     save_proxy_model_settings(pool, settings).await?;
     mark_proxy_preset_models_migrated(pool).await
-}
-
-pub(crate) async fn ensure_proxy_websocket_settings_initialized(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-) -> Result<()> {
-    let migrated = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT websocket_settings_migrated
-        FROM proxy_model_settings
-        WHERE id = ?1
-        LIMIT 1
-        "#,
-    )
-    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
-    .fetch_optional(pool)
-    .await
-    .context("failed to check websocket settings migration flag")?
-    .unwrap_or(0);
-    if migrated != 0 {
-        return Ok(());
-    }
-
-    sqlx::query(
-        r#"
-        UPDATE proxy_model_settings
-        SET openai_proxy_websocket_enabled = ?1,
-            openai_proxy_upstream_websocket_default_enabled = ?2,
-            websocket_settings_migrated = 1,
-            updated_at = datetime('now')
-        WHERE id = ?3
-        "#,
-    )
-    .bind(config.openai_proxy_websocket_enabled as i64)
-    .bind(config.openai_proxy_upstream_websocket_default_enabled as i64)
-    .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
-    .execute(pool)
-    .await
-    .context("failed to initialize websocket settings from deployment defaults")?;
-
-    Ok(())
 }
 
 pub(crate) async fn ensure_proxy_encrypted_session_owner_routing_setting_initialized(
