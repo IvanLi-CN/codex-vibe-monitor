@@ -511,9 +511,29 @@ def priority_yield_probe(round_index):
     deadline = started + 60
     calls = []
     attempts = 0
+    last_pressure = None
     while time.monotonic() < deadline and len(calls) < 3:
         attempts += 1
         control(False)
+        # History seeding may overlap startup rollup/P2 work. Do not hold the
+        # synthetic writer lock while those tasks drain their existing SQL;
+        # otherwise the probe itself perpetuates cooldown before P2 admission.
+        status, body, _ = request('GET', '/api/system/status', timeout=5)
+        if status != 200:
+            raise SystemExit(f'priority fixture pressure status unavailable: {status}')
+        runtime = json.loads(body)['runtimePressureHealth']
+        pressure = runtime['databasePressure']
+        coordinator = runtime['proxySqliteWriteCoordinator']
+        pending = runtime['writerAccounting']['pendingDepth']
+        signature = (pressure['pressureCooldownRemainingMs'],
+                     coordinator['activeWriteClass'], coordinator['p2WaiterCount'], pending)
+        if signature[0] or signature[1] is not None or signature[2] or signature[3]:
+            if signature != last_pressure:
+                print(json.dumps({'phase': 'priority-fixture-pressure-wait',
+                                  'round': round_index, 'pressure': signature}), flush=True)
+                last_pressure = signature
+            time.sleep(0.2)
+            continue
         connection = open_db(BUSINESS_DB, timeout=0.5)
         try:
             connection.execute('BEGIN IMMEDIATE')
