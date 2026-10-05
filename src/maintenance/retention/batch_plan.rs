@@ -170,13 +170,52 @@ pub(crate) fn archive_batch_can_start() -> bool {
         && !retention_run_budget_expired()
 }
 
+pub(crate) fn archive_sqlite_size_from_header(header: &[u8; 100]) -> Result<u64> {
+    if &header[..16] != b"SQLite format 3\0" {
+        bail!("archive disk preflight requires a SQLite database header");
+    }
+    let encoded_page_size = u16::from_be_bytes([header[16], header[17]]);
+    let page_size = if encoded_page_size == 1 {
+        65_536u64
+    } else {
+        u64::from(encoded_page_size)
+    };
+    if !(512..=65_536).contains(&page_size) || !page_size.is_power_of_two() {
+        bail!("archive disk preflight found an invalid SQLite page size");
+    }
+    let page_count = u32::from_be_bytes(header[28..32].try_into()?);
+    // SQLite only considers the in-header page count valid when these counters match.
+    // Do not substitute gzip ISIZE: it wraps modulo 2^32 for large monthly files.
+    if page_count == 0 || header[24..28] != header[92..96] {
+        bail!("archive disk preflight cannot establish the full SQLite file size");
+    }
+    Ok(page_size * u64::from(page_count))
+}
+
+fn archive_inflated_bytes(path: &Path) -> Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let file = File::open(path)?;
+    let mut header = [0; 100];
+    flate2::read::GzDecoder::new(file)
+        .read_exact(&mut header)
+        .context("failed to read archive SQLite size metadata")?;
+    let inflated_bytes = archive_sqlite_size_from_header(&header)?;
+    let mut file = File::open(path)?;
+    file.seek(SeekFrom::End(-4))?;
+    let mut footer = [0; 4];
+    file.read_exact(&mut footer)?;
+    if u32::from_le_bytes(footer) != inflated_bytes as u32 {
+        bail!("archive disk preflight found inconsistent SQLite and gzip sizes");
+    }
+    Ok(inflated_bytes)
+}
+
 pub(crate) async fn archive_file_can_start(
     pool: &Pool<Sqlite>,
     spec: ArchiveTableSpec,
     path: &Path,
     ids: &[i64],
 ) -> Result<bool> {
-    use std::io::{Read, Seek, SeekFrom};
     let sum = spec
         .columns
         .split(", ")
@@ -192,19 +231,14 @@ pub(crate) async fn archive_file_can_start(
     .await?
     .unwrap_or(0)
     .max(0) as u64;
-    let compressed_bytes = fs::metadata(path)
-        .map(|metadata| metadata.len())
-        .unwrap_or(0);
-    let inflated_bytes = if compressed_bytes >= 4 {
-        let mut file = File::open(path)?;
-        file.seek(SeekFrom::End(-4))?;
-        let mut footer = [0; 4];
-        file.read_exact(&mut footer)?;
-        u64::from(u32::from_le_bytes(footer)).max(compressed_bytes)
-    } else {
-        0
+    let (compressed_bytes, inflated_bytes) = match fs::metadata(path) {
+        Ok(metadata) => (metadata.len(), archive_inflated_bytes(path)?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (0, 0),
+        Err(error) => return Err(error.into()),
     };
+    // Reserve a working database and SQLite scratch space, in addition to gzip publication.
     let required = inflated_bytes
+        .saturating_mul(2)
         .saturating_add(source_bytes.saturating_mul(2))
         .saturating_add(compressed_bytes.saturating_mul(2))
         .saturating_add(64 * 1024 * 1024);

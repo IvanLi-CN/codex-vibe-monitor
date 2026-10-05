@@ -1608,7 +1608,11 @@ async fn upsert_archive_batch_manifest_with_status(
                 WHEN excluded.coverage_end_at IS NULL THEN archive_batches.coverage_end_at
                 ELSE MAX(archive_batches.coverage_end_at, excluded.coverage_end_at)
             END,
-            archive_expires_at = excluded.archive_expires_at,
+            archive_expires_at = CASE
+                WHEN archive_batches.archive_expires_at IS NULL OR excluded.archive_expires_at IS NULL
+                    THEN excluded.archive_expires_at
+                ELSE MAX(archive_batches.archive_expires_at, excluded.archive_expires_at)
+            END,
             summary_source_kind = excluded.summary_source_kind,
             created_at = datetime('now')
         WHERE NOT (

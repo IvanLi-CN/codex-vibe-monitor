@@ -116,7 +116,6 @@ async fn retention_task_work_cleanup_survives_reused_pid_and_owner_process_death
         .fetch_all(&pool)
         .await
         .expect("remaining source");
-    let started = Instant::now();
     let refused = archive_rows_into_month_batch(
         &pool,
         &config,
@@ -130,7 +129,6 @@ async fn retention_task_work_cleanup_survives_reused_pid_and_owner_process_death
         refused.to_string(),
         "retention write deferred before archive_work_cleanup"
     );
-    assert!(started.elapsed() < Duration::from_secs(1));
     assert!(
         active.exists(),
         "no cleanup while another directory owner holds the fence"

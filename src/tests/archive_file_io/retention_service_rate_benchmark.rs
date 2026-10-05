@@ -163,7 +163,7 @@ fn percentile(samples: &[u64], percent: usize) -> u64 {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "diagnose one task against an owned synthetic capacity fixture"]
+#[ignore = "GitHub Actions only: optional single-task synthetic capacity diagnosis"]
 async fn retention_task_local_capacity_fixture_diagnostic() {
     let directory = PathBuf::from(
         std::env::var("CVM_RETENTION_DIAGNOSTIC_FIXTURE").expect("owned fixture directory"),
@@ -213,7 +213,7 @@ async fn retention_task_local_capacity_fixture_diagnostic() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "release-build shared-testbox service-rate/online-latency acceptance"]
+#[ignore = "GitHub Actions only: optional release-build service-rate/online-latency acceptance"]
 async fn retention_task_local_service_rate_release_benchmark() {
     let rows = setting("CVM_RETENTION_SERVICE_ROWS", 1_270_000);
     let load_multiplier = setting("CVM_RETENTION_SERVICE_LOAD_MULTIPLIER", 1).min(20);

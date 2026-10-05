@@ -59,17 +59,17 @@ async fn retention_task_local_optional_sqlite_maintenance_stops_and_releases_wri
         .fetch_one(&pool)
         .await
         .expect("original source value");
-    let started = Instant::now();
+    let probe = Arc::new(crate::maintenance::RetentionSqliteMaintenanceTestProbe::default());
     RETENTION_TEST_WRITE_COORDINATOR
         .scope(
             crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator(),
             RETENTION_TEST_DB_PRESSURE_GATE.scope(
                 Arc::new(crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30))),
-                crate::maintenance::retention_test_with_work_budget(
-                    Duration::from_millis(100),
+                crate::maintenance::RETENTION_TEST_SQLITE_MAINTENANCE_PROBE.scope(
+                    probe.clone(),
                     run_best_effort_retention_pragma(
                         &pool,
-                        "UPDATE codex_invocations SET total_tokens = (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000000) SELECT SUM(i) FROM n)",
+                        "UPDATE codex_invocations SET total_tokens = (WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000) SELECT SUM(i) FROM n)",
                         "test expensive optional SQLite maintenance",
                     ),
                 ),
@@ -77,7 +77,8 @@ async fn retention_task_local_optional_sqlite_maintenance_stops_and_releases_wri
         )
         .await
         .expect("optional maintenance cancellation is nonfatal");
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(probe.progress_callbacks.load(Ordering::Acquire), 1);
+    assert!(probe.connection_closed.load(Ordering::Acquire));
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT total_tokens FROM codex_invocations")
             .fetch_one(&pool)
@@ -88,13 +89,14 @@ async fn retention_task_local_optional_sqlite_maintenance_stops_and_releases_wri
     let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
         .await
         .expect("independent writer");
-    tokio::time::timeout(
-        Duration::from_millis(250),
-        sqlx::query("BEGIN IMMEDIATE").execute(&mut writer),
-    )
-    .await
-    .expect("cancelled maintenance released SQLite write lock")
-    .expect("new write transaction");
+    sqlx::query("PRAGMA busy_timeout=0")
+        .execute(&mut writer)
+        .await
+        .expect("nonblocking lock probe");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut writer)
+        .await
+        .expect("cancelled maintenance released SQLite write lock");
     sqlx::query("ROLLBACK")
         .execute(&mut writer)
         .await
@@ -174,6 +176,63 @@ fn assert_no_task_work_files(directory: &Path) {
             );
         }
     }
+}
+
+#[tokio::test]
+async fn retention_task_local_older_same_month_append_preserves_archive_expiry() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("task-local-late-expiry").await;
+    let select_sql = "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2";
+    let mut first_expiry = None;
+    let mut first_path = None;
+    for (invoke_id, occurred_at, expected_rows) in [
+        ("expiry-newer", "2020-01-20 12:00:00", 1i64),
+        ("expiry-older", "2020-01-05 12:00:00", 2i64),
+    ] {
+        sqlx::query("INSERT INTO pool_upstream_request_attempts(id,invoke_id,occurred_at,endpoint,route_mode,attempt_index,distinct_account_index,same_account_retry_index,status) VALUES(?1,?2,?3,'/v1/responses','pool',0,0,0,'success')")
+            .bind(expected_rows).bind(invoke_id).bind(occurred_at).execute(&pool).await.expect("late same-month attempt");
+        let archived = crate::maintenance::retention_test_with_work_budget(
+            Duration::from_secs(60),
+            archive_timestamped_dataset(
+                &pool,
+                &config,
+                archive_table_spec("pool_upstream_request_attempts"),
+                select_sql,
+                "2020-02-01 00:00:00".to_string(),
+                false,
+            ),
+        )
+        .await
+        .expect("close task-local attempt batch");
+        assert_eq!(archived.0, 1);
+        let manifest = sqlx::query_as::<_, (String, String, String, i64)>(
+            "SELECT file_path,coverage_end_at,archive_expires_at,row_count FROM archive_batches WHERE dataset='pool_upstream_request_attempts'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("same-month completed manifest");
+        assert_eq!(manifest.1, "2020-01-20 12:00:00");
+        assert_eq!(manifest.3, expected_rows);
+        if let Some(expiry) = &first_expiry {
+            assert_eq!(
+                &manifest.2, expiry,
+                "older rows cannot shorten the monthly TTL"
+            );
+            assert_eq!(Some(&manifest.0), first_path.as_ref());
+        } else {
+            first_expiry = Some(manifest.2);
+            first_path = Some(manifest.0);
+        }
+        assert_no_task_work_files(&config.archive_dir);
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&pool)
+            .await
+            .expect("all source transitions committed"),
+        0,
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]

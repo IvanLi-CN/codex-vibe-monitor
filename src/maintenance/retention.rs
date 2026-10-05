@@ -15,6 +15,8 @@ pub(crate) use archive_identity::{
     invocation_archive_source_identity_sha256_legacy_for_test,
 };
 pub(crate) use batch_plan::archive_file_can_start;
+#[cfg(test)]
+pub(crate) use batch_plan::archive_sqlite_size_from_header;
 pub(crate) use batch_plan::{
     RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
 };
@@ -137,7 +139,16 @@ fn retention_archive_locks_are_try_only() -> bool {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RetentionSqliteMaintenanceTestProbe {
+    pub(crate) progress_callbacks: std::sync::atomic::AtomicUsize,
+    pub(crate) connection_closed: AtomicBool,
+}
+
+#[cfg(test)]
 tokio::task_local! {
+    pub(crate) static RETENTION_TEST_SQLITE_MAINTENANCE_PROBE:
+        Arc<RetentionSqliteMaintenanceTestProbe>;
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
@@ -9185,9 +9196,21 @@ pub(crate) async fn run_best_effort_retention_pragma(
             {
                 let interrupted = interrupted.clone();
                 let query_shutdown = shutdown.clone();
+                #[cfg(test)]
+                let test_probe = RETENTION_TEST_SQLITE_MAINTENANCE_PROBE
+                    .try_with(Arc::clone)
+                    .ok();
                 let mut handle = connection.lock_handle().await?;
                 handle.set_progress_handler(1_000, move || {
+                    #[cfg(test)]
+                    let test_cancelled = test_probe.as_ref().is_some_and(|probe| {
+                        probe.progress_callbacks.fetch_add(1, Ordering::AcqRel);
+                        true
+                    });
+                    #[cfg(not(test))]
+                    let test_cancelled = false;
                     let keep_running = Instant::now() < deadline
+                        && !test_cancelled
                         && query_shutdown
                             .as_ref()
                             .is_none_or(|token| !token.is_cancelled());
@@ -9203,6 +9226,12 @@ pub(crate) async fn run_best_effort_retention_pragma(
             });
             // Closing also rolls back any interrupted implicit ANALYZE transaction.
             let closed = connection.close().await;
+            #[cfg(test)]
+            let _ = RETENTION_TEST_SQLITE_MAINTENANCE_PROBE.try_with(|probe| {
+                probe
+                    .connection_closed
+                    .store(closed.is_ok(), Ordering::Release);
+            });
             cleanup_failed = cleanup.is_err() || closed.is_err();
             cleanup?;
             closed?;
