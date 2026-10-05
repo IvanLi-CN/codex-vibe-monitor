@@ -2,7 +2,7 @@ import { Component, type ErrorInfo, lazy, type ReactNode, Suspense } from "react
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { Spinner } from "./components/ui/spinner";
 import { AppLayout } from "./features/app-shell/AppLayout";
-import { BrowserPerformanceTelemetry } from "./lib/browserPerformanceTelemetry";
+import { BrowserObservability } from "./lib/browserObservability";
 
 const AccountPoolLayout = lazy(() => import("./pages/account-pool/AccountPoolLayout"));
 const GroupsPage = lazy(() => import("./pages/account-pool/Groups"));
@@ -91,7 +91,7 @@ function App() {
 
   return (
     <AppErrorBoundary>
-      <BrowserPerformanceTelemetry pathname={location.pathname} />
+      <BrowserObservability pathname={location.pathname} />
       <Suspense fallback={<RouteLoadingFallback />}>
         <Routes>
           <Route path="/" element={<AppLayout />}>

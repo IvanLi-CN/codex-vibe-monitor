@@ -17,11 +17,12 @@ FROM rust:1.96.0-bookworm AS rust-builder
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev \
+    && apt-get install -y --no-install-recommends pkg-config libsqlite3-dev binutils python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Cache dependencies (avoid invalidating the dependency layer when only app sources change).
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/hotpath ./vendor/hotpath
 RUN mkdir -p src \
     && printf '%s\n' 'fn main() {}' > src/main.rs \
     && cargo build --release --locked
@@ -29,10 +30,19 @@ RUN mkdir -p src \
 # Copy app sources and build the real binary.
 COPY src ./src
 ARG APP_EFFECTIVE_VERSION
-ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION}
+ARG APP_GIT_REVISION
+ENV APP_EFFECTIVE_VERSION=${APP_EFFECTIVE_VERSION} APP_GIT_REVISION=${APP_GIT_REVISION}
 RUN find src -type f -name '*.rs' -exec touch {} + \
     && rm -f target/release/codex-vibe-monitor \
     && cargo build --release --locked
+
+FROM rust-builder AS symbol-builder
+COPY scripts/export-observability-symbols.py /tmp/export-observability-symbols.py
+RUN python3 /tmp/export-observability-symbols.py --binary /app/target/release/codex-vibe-monitor \
+    --output /symbols --revision "$APP_GIT_REVISION"
+
+FROM scratch AS observability-symbols
+COPY --from=symbol-builder /symbols /symbols
 
 # Stage 3: fetch Xray-core (xray) for forward-proxy subscription validation
 # The app defaults to `XRAY_BINARY=xray` (PATH lookup). If the runtime image doesn't bundle
@@ -72,6 +82,7 @@ WORKDIR /srv/app
 
 COPY --from=xray-downloader /usr/local/bin/xray /usr/local/bin/xray
 COPY --from=xray-downloader /usr/local/share/licenses/xray-core/LICENSE /usr/local/share/licenses/xray-core/LICENSE
+COPY vendor/hotpath/LICENSE.txt /usr/local/share/licenses/hotpath/LICENSE.txt
 COPY scripts/search-raw /usr/local/bin/search-raw
 
 # Stage 5: production runtime image
@@ -162,7 +173,10 @@ RUN apt-get update \
 
 WORKDIR /workspace
 COPY Cargo.toml Cargo.lock ./
+COPY vendor/hotpath ./vendor/hotpath
 COPY src ./src
+COPY docs/design/performance-observability-metrics.md ./docs/design/performance-observability-metrics.md
+COPY ops/observability/prometheus.yml ./ops/observability/prometheus.yml
 COPY scripts/search-raw ./scripts/search-raw
 COPY .github/scripts/run-backend-tests.sh ./.github/scripts/run-backend-tests.sh
 RUN mkdir -p target \

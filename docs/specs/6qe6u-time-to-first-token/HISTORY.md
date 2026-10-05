@@ -19,3 +19,5 @@
 
 - `./SPEC.md`
 - `./IMPLEMENTATION.md`
+
+- External observability mainline synchronization normalized the touched legacy Spec headings and traceability, and moved its completed checklist out of the normative contract. HTTP TTFT and historical WebSocket read semantics are preserved; no new live transport behavior is introduced.

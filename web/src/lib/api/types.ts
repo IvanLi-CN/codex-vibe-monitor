@@ -139,7 +139,6 @@ export type {
   ManagedModelDeleteResponse,
   ManagedTask,
   ManagedTaskDetail,
-  ManagedTaskPerformance,
   ManagedTaskProgress,
   ManagedTaskRun,
   ManagedTaskRunDetails,

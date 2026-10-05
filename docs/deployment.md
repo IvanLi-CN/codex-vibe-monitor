@@ -120,12 +120,15 @@ labels:
 以下变量均为按需覆盖；未配置时使用服务默认值：
 
 - `DATABASE_PATH`：SQLite 主库路径；升级旧版本前请先同步新的公开 env 命名，legacy `XY_*` 公共键会在启动期直接被拒绝。
-- `PERFORMANCE_DATABASE_PATH`：独立性能指标 SQLite 路径；未配置时使用 `DATABASE_PATH` 同目录的 `<主库名>.performance.sqlite`。该文件只保存固定低基数的聚合指标，可按备份策略排除。
 - `MAINTENANCE_DATABASE_PATH`：独立维护状态 SQLite 路径；未配置时使用 `DATABASE_PATH` 同目录的 `<主库名>.maintenance.sqlite`。外置时总体积只计数据库及其 WAL/SHM/journal 文件。
-- `PERFORMANCE_TELEMETRY_ENABLED`：性能指标采集开关，默认 `true`；设为 `false` 或指标库不可用时，主库、代理、P1 terminal ACK 与 `/health` 继续工作。
 - `PROXY_RAW_DIR`：代理 request/response payload 原始文件落盘目录，默认 `proxy_raw_payloads`；相对路径会锚定到 `DATABASE_PATH` 父目录，绝对路径可指向独立持久化卷。总体积计入该目录全部文件，包括未关联 raw 残留。
 - `ARCHIVE_DIR`：离线归档根目录，默认 `archives`；相对路径会锚定到 `DATABASE_PATH` 父目录，绝对路径可指向独立归档卷。总体积计入该目录全部数据集归档、临时文件与残留。
 - `XRAY_RUNTIME_DIR`：Xray runtime 状态与配置目录，默认相对进程工作目录的 `.codex/xray-forward`；总体积会计入实际解析目录。
+- `OBSERVABILITY_ENABLED`：性能观测开关，默认 `true`；关闭不会影响代理、P1 terminal ACK 或 `/health`。
+- `METRICS_BIND`：默认 `127.0.0.1:9091`，容器私网用 `0.0.0.0:9091`；`METRICS_TOKEN_FILE` 为两个 exporter 的抓取 Token 文件，非 loopback 必须配置。
+- `OBSERVABILITY_READ_TOKEN_FILE`：三个 hotpath 报告的独立只读 Token 文件，与抓取 Token 分离。
+- `GRAFANA_PUBLIC_URL`：凭据、query 和 fragment 均为空的 HTTPS 基址；机器查询由 Grafana Viewer Token 鉴权。
+- 旧性能配置与 SQLite 已退役。升级前停旧 writer、验证归档并移出应用挂载；详细步骤见[观测部署与回滚](../ops/observability/README.md)。
 - `PUBLIC_ORIGIN`：用于生成 `og:image` / `twitter:image` 等对外绝对 URL 的公开入口基址；推荐显式配置为最终对外域名。
 - `PROXY_RAW_MAX_BYTES`：单次请求/响应原文采集上限；默认 `0=unlimited`（支持显式配置正整数上限）。
 - `PROXY_RAW_COMPRESSION`：raw 冷压缩 codec；默认 `gzip`，可设为 `none` 关闭冷压缩。

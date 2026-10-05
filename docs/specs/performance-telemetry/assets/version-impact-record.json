@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Replace performance APIs/configuration and retire performance state",
+    "release_unit_description": "External observability replacement",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "major",
+      "reasoning": "Old APIs become 410, old configuration and task performance field removed; schema-v1 history retired offline",
+      "assessed_at": "2026-10-02T00:00:00Z",
+      "evidence": [
+        "docs/adr/0025-external-performance-observability.md"
+      ]
+    },
+    "current": {
+      "impact": "major",
+      "scope_drift": {
+        "detected": false,
+        "description": "none"
+      },
+      "reasoning": "Approved replacement scope",
+      "reassessed_at": "2026-10-02T00:00:00Z",
+      "evidence": [
+        "docs/specs/performance-telemetry/SPEC.md"
+      ]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "Validation pending",
+      "verified_at": null,
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "breaking",
+      "supported_consumer_range": "new major consumers; one-major static 410 for legacy performance APIs",
+      "evidence": [
+        "docs/specs/performance-telemetry/SPEC.md"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Schema-v1 performance database retirement; business state unchanged",
+      "source_program_compatibility_range": "immediately preceding major v3; no direct major skips",
+      "evidence": [
+        "docs/specs/performance-telemetry/persistent-state-migration.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "external-observability"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

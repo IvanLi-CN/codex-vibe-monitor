@@ -27,3 +27,7 @@
 
 - `./SPEC.md`
 - `./HISTORY.md`
+
+## Observability compatibility
+
+The external observability integration preserves strict nullable TTFT business samples and separate TTFB/response duration. Live WebSocket forwarding is retired by mainline; historical persisted TTFT remains readable. The touched legacy Spec now uses canonical requirement and verification identifiers; this structural synchronization changes no timing behavior or UI render inputs.

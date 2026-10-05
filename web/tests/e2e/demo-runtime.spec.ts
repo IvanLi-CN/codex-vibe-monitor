@@ -128,7 +128,13 @@ test.describe("Web Demo runtime", () => {
     await expect(backlog.locator(".recharts-surface")).toHaveCount(2);
     await expect(page.getByText("缺测留空，不补零", { exact: true })).toHaveCount(0);
     await expect(page.getByText("空积压显示 0 条、逾期未知", { exact: true })).toHaveCount(0);
-    await expect(page.getByText("92.0%", { exact: true })).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "性能指标（性能库）", exact: true }),
+    ).toHaveCount(0);
+    await expect(page.getByTestId("task-observability-link").getByRole("link")).toHaveAttribute(
+      "href",
+      /\/d\/cvm-runtime\?.*var-task_key=retention_archive/,
+    );
   });
 
   test("keeps an external key creation flow inside the local memory model", async ({ page }) => {

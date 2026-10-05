@@ -280,7 +280,9 @@ pub(crate) struct PendingQueueAccountingSnapshot {
 
 #[derive(Debug, Default)]
 pub(crate) struct PendingQueueAccounting {
+    observability: crate::observability::MetricsSink,
     pending_depth: AtomicUsize,
+    observed_p1_depth: AtomicUsize,
     pending_bytes: AtomicUsize,
     p1_ack_sequence: AtomicU64,
     p1_ack_duration_ms: AtomicU64,
@@ -302,280 +304,7 @@ pub(crate) struct PendingQueueAccounting {
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
 }
 
-impl PendingQueueAccounting {
-    pub(crate) fn enqueue(&self, bytes: usize) {
-        self.add(&self.pending_bytes, bytes, "enqueue", "pending_bytes");
-        self.add(&self.pending_depth, 1, "enqueue", "pending_depth");
-    }
-
-    pub(crate) fn rollback_enqueue(&self, bytes: usize) {
-        self.subtract(
-            &self.pending_depth,
-            1,
-            "sender_failure_rollback",
-            "pending_depth",
-        );
-        self.subtract(
-            &self.pending_bytes,
-            bytes,
-            "sender_failure_rollback",
-            "pending_bytes",
-        );
-    }
-
-    pub(crate) fn replace_batch(
-        &self,
-        admitted_depth: usize,
-        retained_depth: usize,
-        admitted_bytes: usize,
-        retained_bytes: usize,
-    ) {
-        self.replace_for(
-            "batch_replacement",
-            admitted_depth,
-            retained_depth,
-            admitted_bytes,
-            retained_bytes,
-        );
-    }
-
-    pub(crate) fn transfer_p1_to_p2(&self, bytes: usize) {
-        self.add(
-            &self.transfer_bytes,
-            bytes,
-            "p1_to_p2_transfer",
-            "transfer_bytes",
-        );
-    }
-
-    pub(crate) fn record_p1_ack_duration(&self, duration_ms: u64) {
-        self.p1_ack_duration_ms
-            .store(duration_ms, Ordering::Relaxed);
-        self.p1_ack_sequence.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn record_write_batch(&self, rows: usize, bytes: usize, duration_ms: u64) {
-        self.write_batch_count.fetch_add(1, Ordering::Relaxed);
-        self.write_rows
-            .fetch_add(rows.min(u64::MAX as usize) as u64, Ordering::Relaxed);
-        self.write_bytes
-            .fetch_add(bytes.min(u64::MAX as usize) as u64, Ordering::Relaxed);
-        self.write_duration_ms.store(duration_ms, Ordering::Relaxed);
-    }
-
-    pub(crate) fn retry_deferred(&self) {
-        self.retry_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn retry_p1_deferred(&self) {
-        self.retry_deferred();
-        self.p1_retry_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn retry_p2_deferred(&self) {
-        self.retry_deferred();
-        self.p2_retry_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn p2_attempted(&self) {
-        self.p2_flush_attempt_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn p2_pressure_deferred(&self) {
-        self.p2_pressure_defer_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn p2_lock_retried(&self) {
-        self.p2_lock_retry_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    fn update_p2_schedule(&self, schedule: &P2ScheduleState) {
-        self.p2_next_attempt_in_ms
-            .store(schedule.next_attempt_in_ms(), Ordering::Relaxed);
-        self.p2_deferred_age_ms
-            .store(schedule.deferred_age_ms(), Ordering::Relaxed);
-        if let Ok(mut wake_reason) = self.p2_wake_reason.lock() {
-            *wake_reason = schedule
-                .wake_reason
-                .map(|reason| reason.as_str().to_string());
-        }
-    }
-
-    pub(crate) fn complete(
-        &self,
-        submitted_depth: usize,
-        retained_depth: usize,
-        submitted_bytes: usize,
-        retained_bytes: usize,
-    ) {
-        self.replace_for(
-            "completion",
-            submitted_depth,
-            retained_depth,
-            submitted_bytes,
-            retained_bytes,
-        );
-    }
-
-    pub(crate) fn release(&self, depth: usize, bytes: usize) {
-        self.subtract(&self.pending_depth, depth, "release", "pending_depth");
-        self.subtract(&self.pending_bytes, bytes, "release", "pending_bytes");
-    }
-
-    fn clear_after_shutdown(&self) -> (usize, usize) {
-        let pending_depth = self.pending_depth.swap(0, Ordering::SeqCst);
-        let pending_bytes = self.pending_bytes.swap(0, Ordering::SeqCst);
-        (pending_depth, pending_bytes)
-    }
-
-    pub(crate) fn snapshot(&self) -> PendingQueueAccountingSnapshot {
-        let last_invariant_violation = self
-            .last_invariant_violation
-            .lock()
-            .ok()
-            .and_then(|violation| violation.clone());
-        let invariant_violation_count = self.invariant_violation_count.load(Ordering::Relaxed);
-        let degraded_reason = last_invariant_violation.as_ref().map(|violation| {
-            format!(
-                "{} {} invariant: expected {}, actual {}",
-                violation.operation,
-                violation.counter,
-                violation.expected_value,
-                violation.actual_value
-            )
-        });
-        PendingQueueAccountingSnapshot {
-            state: if invariant_violation_count == 0 {
-                "healthy".to_string()
-            } else {
-                "degraded".to_string()
-            },
-            pending_depth: self.pending_depth.load(Ordering::Relaxed),
-            pending_bytes: self.pending_bytes.load(Ordering::Relaxed),
-            p1_ack_sequence: self.p1_ack_sequence.load(Ordering::Relaxed),
-            p1_ack_duration_ms: self.p1_ack_duration_ms.load(Ordering::Relaxed),
-            transfer_bytes: self.transfer_bytes.load(Ordering::Relaxed),
-            retry_count: self.retry_count.load(Ordering::Relaxed),
-            p1_retry_count: self.p1_retry_count.load(Ordering::Relaxed),
-            p2_retry_count: self.p2_retry_count.load(Ordering::Relaxed),
-            p2_flush_attempt_count: self.p2_flush_attempt_count.load(Ordering::Relaxed),
-            p2_pressure_defer_count: self.p2_pressure_defer_count.load(Ordering::Relaxed),
-            p2_lock_retry_count: self.p2_lock_retry_count.load(Ordering::Relaxed),
-            p2_next_attempt_in_ms: self.p2_next_attempt_in_ms.load(Ordering::Relaxed),
-            p2_deferred_age_ms: self.p2_deferred_age_ms.load(Ordering::Relaxed),
-            write_batch_count: self.write_batch_count.load(Ordering::Relaxed),
-            write_rows: self.write_rows.load(Ordering::Relaxed),
-            write_bytes: self.write_bytes.load(Ordering::Relaxed),
-            write_duration_ms: self.write_duration_ms.load(Ordering::Relaxed),
-            p2_wake_reason: self
-                .p2_wake_reason
-                .lock()
-                .ok()
-                .and_then(|value| value.clone()),
-            invariant_violation_count,
-            degraded_reason,
-            last_invariant_violation,
-        }
-    }
-
-    fn replace_for(
-        &self,
-        operation: &'static str,
-        old_depth: usize,
-        new_depth: usize,
-        old_bytes: usize,
-        new_bytes: usize,
-    ) {
-        self.subtract(&self.pending_depth, old_depth, operation, "pending_depth");
-        self.add(&self.pending_depth, new_depth, operation, "pending_depth");
-        self.subtract(&self.pending_bytes, old_bytes, operation, "pending_bytes");
-        self.add(&self.pending_bytes, new_bytes, operation, "pending_bytes");
-    }
-
-    fn add(
-        &self,
-        counter: &AtomicUsize,
-        amount: usize,
-        operation: &'static str,
-        counter_name: &'static str,
-    ) {
-        if amount == 0 {
-            return;
-        }
-        let previous = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_add(amount))
-            })
-            .expect("accounting update always returns a value");
-        if previous.checked_add(amount).is_none() {
-            self.record_invariant(operation, counter_name, amount, previous);
-        }
-    }
-
-    fn subtract(
-        &self,
-        counter: &AtomicUsize,
-        amount: usize,
-        operation: &'static str,
-        counter_name: &'static str,
-    ) {
-        if amount == 0 {
-            return;
-        }
-        let previous = counter
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-                Some(current.saturating_sub(amount))
-            })
-            .expect("accounting update always returns a value");
-        if previous < amount {
-            self.record_invariant(operation, counter_name, amount, previous);
-        }
-    }
-
-    fn record_invariant(
-        &self,
-        operation: &'static str,
-        counter: &'static str,
-        expected_value: usize,
-        actual_value: usize,
-    ) {
-        let pending_depth = self.pending_depth.load(Ordering::Relaxed);
-        let pending_bytes = self.pending_bytes.load(Ordering::Relaxed);
-        let (expected_bytes, actual_bytes) = if counter == "pending_bytes" {
-            (expected_value, actual_value)
-        } else {
-            (pending_bytes, pending_bytes)
-        };
-        let violation = PendingQueueInvariantViolation {
-            operation: operation.to_string(),
-            counter: counter.to_string(),
-            expected_value,
-            actual_value,
-            expected_bytes,
-            actual_bytes,
-            pending_depth,
-            pending_bytes,
-        };
-        let invariant_violation_count = self
-            .invariant_violation_count
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        if let Ok(mut last) = self.last_invariant_violation.lock() {
-            *last = Some(violation.clone());
-        }
-        warn!(
-            accounting_invariant = true,
-            operation,
-            counter,
-            expected_value,
-            actual_value,
-            pending_depth,
-            pending_bytes,
-            invariant_violation_count,
-            "sqlite pending queue accounting invariant violated"
-        );
-    }
-}
+mod queue_accounting;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum FlushReason {
@@ -623,6 +352,7 @@ pub(crate) struct BatchedInvocationDerivedWrites {
 
 #[derive(Debug, Clone)]
 pub(crate) struct BatchedTerminalInvocationWrite {
+    pub(crate) enqueued_at: Option<Instant>,
     pub(crate) record: ProxyCaptureRecord,
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
@@ -936,11 +666,13 @@ impl PendingBatch {
     }
 
     fn push_accounted(&mut self, write: SqliteBatchWrite, accounting: &PendingQueueAccounting) {
+        let p1_before = self.terminal_invocations.len() + usize::from(is_p1_terminal_write(&write));
         let accounted_depth_before = self.logical_rows().saturating_add(1);
         let accounted_before = self
             .estimated_memory_bytes()
             .saturating_add(write.estimated_memory_bytes());
         self.push(write);
+        accounting.observe_p1_replace(p1_before, self.terminal_invocations.len());
         accounting.replace_batch(
             accounted_depth_before,
             self.logical_rows(),
@@ -1357,6 +1089,9 @@ pub(crate) struct SqliteBatchWriter {
 }
 
 impl SqliteBatchWriter {
+    pub(crate) fn bind_observability(&self, metrics: Arc<ObservabilityRuntime>) {
+        self.accounting.observability.bind(metrics);
+    }
     pub(crate) fn spawn(
         pool: Pool<Sqlite>,
         shutdown: CancellationToken,
@@ -1546,6 +1281,7 @@ impl SqliteBatchWriter {
                 Ok(mut guard) => {
                     guard.push(write);
                     self.accounting.enqueue(estimated_bytes);
+                    self.accounting.observe_p1_replace(0, usize::from(is_p1));
                     return true;
                 }
                 Err(err) => {
@@ -1561,6 +1297,7 @@ impl SqliteBatchWriter {
         }
 
         self.accounting.enqueue(estimated_bytes);
+        self.accounting.observe_p1_replace(0, usize::from(is_p1));
         if is_p1 {
             self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1571,6 +1308,7 @@ impl SqliteBatchWriter {
                     decrement_queued_p1_count(&self.queued_p1_count);
                 }
                 self.accounting.rollback_enqueue(estimated_bytes);
+                self.accounting.observe_p1_replace(usize::from(is_p1), 0);
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     error = %err,
@@ -1585,8 +1323,9 @@ impl SqliteBatchWriter {
 
     pub(crate) fn enqueue_terminal(
         &self,
-        terminal: BatchedTerminalInvocationWrite,
+        mut terminal: BatchedTerminalInvocationWrite,
     ) -> TerminalEnqueueOutcome {
+        terminal.enqueued_at = Some(Instant::now());
         self.terminal_journal.pending.register(
             &terminal.record.invoke_id,
             &terminal.record.occurred_at,
@@ -1704,6 +1443,7 @@ impl SqliteBatchWriter {
         let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
         self.accounting.enqueue(estimated_bytes);
+        self.accounting.observe_p1_replace(0, usize::from(is_p1));
         if is_p1 {
             self.queued_p1_count.fetch_add(1, Ordering::SeqCst);
         }
@@ -1711,6 +1451,7 @@ impl SqliteBatchWriter {
             Ok(()) => true,
             Err(mpsc::error::TrySendError::Full(write)) => {
                 self.accounting.rollback_enqueue(estimated_bytes);
+                self.accounting.observe_p1_replace(usize::from(is_p1), 0);
                 let deferred = matches!(durability_mode, TerminalJournalDurabilityMode::Journal)
                     && self
                         .terminal_journal
@@ -1738,6 +1479,7 @@ impl SqliteBatchWriter {
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 self.accounting.rollback_enqueue(estimated_bytes);
+                self.accounting.observe_p1_replace(usize::from(is_p1), 0);
                 if is_p1 {
                     decrement_queued_p1_count(&self.queued_p1_count);
                 }
@@ -1789,6 +1531,10 @@ impl SqliteBatchWriter {
             return true;
         }
         false
+    }
+
+    pub(crate) fn observed_queue_depths(&self) -> (usize, usize) {
+        self.accounting.observed_queue_depths()
     }
 
     pub(crate) fn accounting_snapshot(&self) -> PendingQueueAccountingSnapshot {
@@ -1987,6 +1733,7 @@ impl SqliteBatchWriter {
             &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
+            None,
         )
         .await
         .expect("flush pending sqlite batch writes");
@@ -2001,6 +1748,7 @@ impl SqliteBatchWriter {
                 &summary_delta_hub,
                 &terminal_projection_hub,
                 &dashboard_reconcile_gate,
+                None,
             )
             .await
             .expect("flush deferred pending sqlite batch writes");
@@ -2021,6 +1769,7 @@ impl SqliteBatchWriter {
             .unwrap_or_default();
 
         if !writes.is_empty() {
+            let submitted_p1_count = writes.iter().filter(|w| is_p1_terminal_write(w)).count();
             let submitted_count = writes.len();
             let submitted_bytes = writes
                 .iter()
@@ -2040,6 +1789,7 @@ impl SqliteBatchWriter {
                 &self.summary_delta_hub,
                 &self.terminal_projection_hub,
                 &self.dashboard_reconcile_gate,
+                None,
             )
             .await
             .expect("flush buffered sqlite batch writes for test");
@@ -2074,6 +1824,7 @@ impl SqliteBatchWriter {
                     (retained_count, retained_bytes)
                 })
                 .unwrap_or_default();
+            self.accounting.observe_p1_replace(submitted_p1_count, 0);
             self.accounting
                 .complete(submitted_count, retained.0, submitted_bytes, retained.1);
         }
@@ -2206,6 +1957,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let failed = retained.failed;
                             if retained.failed && !retained.batch.terminal_invocations.is_empty() {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
+                                accounting.observe_p1_retry();
                                 let delay = p1_retry.failed(transaction_sequence);
                                 warn!(
                                     write_class = "p1_terminal",
@@ -2236,6 +1988,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 {
                                     transaction_sequence = transaction_sequence.saturating_add(1);
                                     p2_schedule.failed(transaction_sequence);
+                                    accounting.observe_p2_retry(retained.p2_lock_failure);
                                     if retained.p2_lock_failure {
                                         accounting.p2_lock_retried();
                                     }
@@ -2248,7 +2001,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                             accounting.update_p2_schedule(&p2_schedule);
                             let p2_deferred = retained.p2_defer.is_some();
                             let mut retained_batch = retained.batch;
+                            let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                             retained_batch.merge_all(pending.take());
+                            accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                             pending = retained_batch;
                             if failed {
                                 result = Err(format!(
@@ -2325,7 +2080,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 continue;
                             }
                             let flush_batch = take_next_bounded_batch(&mut pending);
-                            let flush_rows = flush_batch.logical_rows();
+                            let flush_p1_rows = flush_batch.terminal_invocations.len();
+                        let flush_rows = flush_batch.logical_rows();
                             let flush_bytes = flush_batch.estimated_memory_bytes();
                             let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
                             let retained = match timeout_at(
@@ -2360,6 +2116,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                     {
                                         warn!(error = %err, "shutdown system-task quarantine failed after flush timeout");
                                     }
+                                    accounting.observe_p1_replace(flush_p1_rows, 0);
                                     accounting.release(flush_rows, flush_bytes);
                                     result = Err(format!(
                                         "sqlite batch writer shutdown flush exceeded deadline with {flush_rows} rows"
@@ -2377,7 +2134,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                             let p2_deferred = p2_defer_reason.is_some();
                             let p2_retryable_failure = retained.p2_retryable_failure;
                             let mut retained_batch = retained.batch;
+                            let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                             retained_batch.merge_all(pending.take());
+                            accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                             let merged_rows = retained_batch.logical_rows();
                             let merged_bytes = retained_batch.estimated_memory_bytes();
                             accounting.replace_batch(
@@ -2389,6 +2148,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             if failed {
                                 let retry_delay = if !retained_batch.terminal_invocations.is_empty() {
                                     transaction_sequence = transaction_sequence.saturating_add(1);
+                                    accounting.observe_p1_retry();
                                     Some(p1_retry.failed(transaction_sequence))
                                 } else if p2_retryable_failure {
                                     transaction_sequence = transaction_sequence.saturating_add(1);
@@ -2407,6 +2167,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 result = Err(format!(
                                     "sqlite batch writer retained {logical_rows} logical rows after shutdown flush"
                                 ));
+                                accounting.observe_p1_replace(retained_batch.terminal_invocations.len(), 0);
                                 accounting.release(merged_rows, merged_bytes);
                                 break;
                             }
@@ -2525,6 +2286,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 {
                     if retained.failed && !retained.batch.terminal_invocations.is_empty() {
                         transaction_sequence = transaction_sequence.saturating_add(1);
+                        accounting.observe_p1_retry();
                         let delay = p1_retry.failed(transaction_sequence);
                         warn!(
                             write_class = "p1_terminal",
@@ -2554,6 +2316,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             && retained.batch.terminal_invocations.is_empty() => {
                             transaction_sequence = transaction_sequence.saturating_add(1);
                             let delay = p2_schedule.failed(transaction_sequence);
+                            accounting.observe_p2_retry(retained.p2_lock_failure);
                             if retained.p2_lock_failure {
                                 accounting.p2_lock_retried();
                             }
@@ -2573,7 +2336,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pending.merge_p2(retained.batch);
                     } else {
                         let mut retained_batch = retained.batch;
+                        let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                         retained_batch.merge_all(pending.take());
+                        accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                         pending = retained_batch;
                     }
                     accounting.update_p2_schedule(&p2_schedule);
@@ -2628,6 +2393,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                             break;
                         }
                         let flush_batch = take_next_bounded_batch(&mut pending);
+                        let flush_p1_rows = flush_batch.terminal_invocations.len();
                         let flush_rows = flush_batch.logical_rows();
                         let flush_bytes = flush_batch.estimated_memory_bytes();
                         let shutdown_quarantine = shutdown_recovery_batch(&flush_batch);
@@ -2663,7 +2429,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 {
                                     warn!(error = %err, "receiver shutdown system-task quarantine failed after flush timeout");
                                 }
-                                accounting.release(flush_rows, flush_bytes);
+                                accounting.observe_p1_replace(flush_p1_rows, 0);
+                                    accounting.release(flush_rows, flush_bytes);
                                 warn!(
                                     flush_rows,
                                     "sqlite batch writer receiver shutdown flush exceeded deadline"
@@ -2679,7 +2446,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let p2_deferred = p2_defer_reason.is_some();
                         let p2_retryable_failure = retained.p2_retryable_failure;
                         let mut retained_batch = retained.batch;
+                        let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                         retained_batch.merge_all(pending.take());
+                        accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                         let merged_rows = retained_batch.logical_rows();
                         let merged_bytes = retained_batch.estimated_memory_bytes();
                         accounting.replace_batch(
@@ -2691,6 +2460,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                         if retained.failed {
                             let retry_delay = if !retained_batch.terminal_invocations.is_empty() {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
+                                accounting.observe_p1_retry();
                                 Some(p1_retry.failed(transaction_sequence))
                             } else if p2_retryable_failure {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
@@ -2706,7 +2476,8 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 sleep(delay).await;
                                 continue;
                             }
-                            accounting.release(merged_rows, merged_bytes);
+                            accounting.observe_p1_replace(retained_batch.terminal_invocations.len(), 0);
+                                accounting.release(merged_rows, merged_bytes);
                             warn!(
                                 retained_rows = retained_batch.logical_rows(),
                                 retained_bytes = retained_batch.estimated_memory_bytes(),
@@ -2814,6 +2585,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                     {
                         if retained.failed && !retained.batch.terminal_invocations.is_empty() {
                             transaction_sequence = transaction_sequence.saturating_add(1);
+                            accounting.observe_p1_retry();
                             let delay = p1_retry.failed(transaction_sequence);
                             warn!(
                                 write_class = "p1_terminal",
@@ -2843,6 +2615,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                                 && retained.batch.terminal_invocations.is_empty() => {
                                 transaction_sequence = transaction_sequence.saturating_add(1);
                                 p2_schedule.failed(transaction_sequence);
+                                accounting.observe_p2_retry(retained.p2_lock_failure);
                                 if retained.p2_lock_failure {
                                     accounting.p2_lock_retried();
                                 }
@@ -2857,7 +2630,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                             pending.merge_p2(retained.batch);
                         } else {
                             let mut retained_batch = retained.batch;
+                            let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                             retained_batch.merge_all(pending.take());
+                            accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                             pending = retained_batch;
                         }
                     } else {
@@ -2911,6 +2686,7 @@ pub(crate) async fn run_sqlite_batch_writer(
                 {
                     if retained.failed && !retained.batch.terminal_invocations.is_empty() {
                         transaction_sequence = transaction_sequence.saturating_add(1);
+                        accounting.observe_p1_retry();
                         let delay = p1_retry.failed(transaction_sequence);
                         warn!(
                             write_class = "p1_terminal",
@@ -2943,7 +2719,9 @@ pub(crate) async fn run_sqlite_batch_writer(
                         pending.merge_p2(retained.batch);
                     } else {
                         let mut retained_batch = retained.batch;
+                        let merge_p1_before = retained_batch.terminal_invocations.len() + pending.terminal_invocations.len();
                         retained_batch.merge_all(pending.take());
+                        accounting.observe_p1_replace(merge_p1_before, retained_batch.terminal_invocations.len());
                         pending = retained_batch;
                     }
                     accounting.update_p2_schedule(&p2_schedule);
@@ -3011,7 +2789,9 @@ fn drain_terminal_journal_deferred_writes(
             decrement_queued_p1_count(queued_p1_count);
             let write = SqliteBatchWrite::TerminalInvocation(terminal);
             accounting.enqueue(write.estimated_memory_bytes());
+            accounting.observe_p1_replace(0, 1);
             accounting.retry_p1_deferred();
+            accounting.observe_p1_retry();
             pending.push_accounted(write, accounting);
         }
         for finish in
@@ -3020,6 +2800,7 @@ fn drain_terminal_journal_deferred_writes(
             let write = SqliteBatchWrite::SystemTaskFinish(finish);
             accounting.enqueue(write.estimated_memory_bytes());
             accounting.retry_p2_deferred();
+            accounting.observe_p2_retry(false);
             pending.push_accounted(write, accounting);
         }
     }
@@ -3084,8 +2865,23 @@ async fn flush_pending_batch_accounted(
         .keys()
         .copied()
         .collect::<Vec<_>>();
+    let submitted_p1_depth = batch.terminal_invocations.len();
     let submitted_depth = batch.logical_rows();
     let submitted_bytes = batch.estimated_memory_bytes();
+    if let Some(m) = accounting.observability.get() {
+        m.duration(
+            "cvm_sqlite_queue_wait_duration_seconds",
+            &[(
+                "class",
+                if batch.terminal_invocations.is_empty() {
+                    "p2_derived"
+                } else {
+                    "p1_terminal"
+                },
+            )],
+            batch.age(),
+        );
+    }
     let flush_started = Instant::now();
     let result = flush_pending_batch(
         accounting,
@@ -3158,6 +2954,12 @@ async fn flush_pending_batch_accounted(
         .filter(|_| !discard_non_retryable_p2)
         .map(|retained| retained.batch.logical_rows())
         .unwrap_or_default();
+    let retained_p1_depth = result
+        .as_ref()
+        .filter(|_| !discard_non_retryable_p2)
+        .map(|r| r.batch.terminal_invocations.len())
+        .unwrap_or_default();
+    accounting.observe_p1_replace(submitted_p1_depth, retained_p1_depth);
     accounting.complete(
         submitted_depth,
         retained_depth,
@@ -3323,6 +3125,7 @@ fn release_shutdown_pending_batch(
 ) -> Result<()> {
     let quarantine_error =
         quarantine_shutdown_batch(terminal_journal, database_path, batch, reason).err();
+    accounting.observe_p1_replace(batch.terminal_invocations.len(), 0);
     accounting.release(batch.logical_rows(), batch.estimated_memory_bytes());
     quarantine_error.map_or(Ok(()), Err)
 }
@@ -3381,6 +3184,7 @@ pub(crate) async fn flush_pending_batch(
             summary_delta_hub,
             terminal_projection_hub,
             dashboard_reconcile_gate,
+            accounting.observability.get(),
         )
         .await;
         let mut poison_record_count = 0_usize;
@@ -3401,6 +3205,7 @@ pub(crate) async fn flush_pending_batch(
                         summary_delta_hub,
                         terminal_projection_hub,
                         dashboard_reconcile_gate,
+                        accounting.observability.get(),
                     )
                     .await
                     {
@@ -3443,11 +3248,12 @@ pub(crate) async fn flush_pending_batch(
             }
             result => result,
         };
-        accounting.record_p1_ack_duration(
-            lock_wait_ms.saturating_add(execute_started.elapsed().as_millis() as u64),
-        );
         match p1_result {
             Ok(deferred) => {
+                accounting.record_p1_ack_duration(
+                    lock_wait_ms.saturating_add(execute_started.elapsed().as_millis() as u64),
+                );
+
                 debug!(
                     write_class = permit.write_class(),
                     transaction_id,
@@ -3593,6 +3399,7 @@ pub(crate) async fn flush_pending_batch(
             summary_delta_hub,
             terminal_projection_hub,
             dashboard_reconcile_gate,
+            accounting.observability.get(),
         )
         .await
         {
@@ -3630,6 +3437,7 @@ pub(crate) async fn flush_pending_batch(
         summary_delta_hub,
         terminal_projection_hub,
         dashboard_reconcile_gate,
+        accounting.observability.get(),
     )
     .await
     {
@@ -3864,14 +3672,31 @@ pub(crate) async fn flush_pending_batch_inner(
     summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
+    observability: Option<&ObservabilityRuntime>,
 ) -> Result<PendingBatch> {
+    crate::observability::observed_future(
+        observability.is_some_and(|m| m.enabled),
+        "sqlite_batch_flush",
+        async move {
     let mut deferred_batch = PendingBatch::default();
     let mut prompt_cache_keys_touched = HashSet::new();
     let mut active_prompt_cache_key_releases = Vec::new();
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
-        let mut terminal_tx = pool.begin().await?;
+        let pool_started = Instant::now();
+        let connection_result = pool.acquire().await;
+        if let Some(m) = observability {
+            m.duration(
+                "cvm_sqlite_pool_acquire_duration_seconds",
+                &[],
+                pool_started.elapsed(),
+            );
+        }
+        let mut connection = connection_result?;
+        let execute_started = Instant::now();
+        let execute_result: Result<()> = async {
+        let mut terminal_tx = connection.begin().await?;
         for terminal in batch.terminal_invocations.values() {
             let persisted = if terminal.raw_capture {
                 let capture_started = terminal.capture_started.unwrap_or_else(Instant::now);
@@ -3982,6 +3807,48 @@ pub(crate) async fn flush_pending_batch_inner(
             mark_prompt_cache_conversation_stats_stale_on_connection(terminal_tx.as_mut()).await?;
         }
         terminal_tx.commit().await?;
+        Ok(())
+        }.await;
+        if let Some(m) = observability {
+            let outcome = if execute_result.is_ok() {
+                "success"
+            } else {
+                "error"
+            };
+            m.duration(
+                "cvm_sqlite_batch_execute_duration_seconds",
+                &[("class", "p1_terminal"), ("outcome", outcome)],
+                execute_started.elapsed(),
+            );
+            m.counter(
+                "cvm_sqlite_batches_total",
+                &[("class", "p1_terminal"), ("outcome", outcome)],
+                1,
+            );
+        }
+        execute_result?;
+        drop(connection);
+        if let Some(m) = observability {
+            m.counter(
+                "cvm_sqlite_written_rows_total",
+                &[],
+                batch.terminal_invocations.len() as u64,
+            );
+            m.counter(
+                "cvm_sqlite_written_bytes_total",
+                &[],
+                batch.terminal_estimated_bytes as u64,
+            );
+            for terminal in batch.terminal_invocations.values() {
+                if let Some(enqueued) = terminal.enqueued_at {
+                    m.duration(
+                        "cvm_terminal_enqueue_to_commit_duration_seconds",
+                        &[],
+                        enqueued.elapsed(),
+                    );
+                }
+            }
+        }
     }
 
     // The batch's coalescing key is invocation identity, while Summary's correctness proof is
@@ -4139,7 +4006,20 @@ pub(crate) async fn flush_pending_batch_inner(
             false
         }
     };
-    let mut tx = pool.begin().await?;
+    let pool_started = Instant::now();
+    let connection_result = pool.acquire().await;
+    if let Some(m) = observability {
+        m.duration(
+            "cvm_sqlite_pool_acquire_duration_seconds",
+            &[],
+            pool_started.elapsed(),
+        );
+    }
+    let mut connection = connection_result?;
+    let execute_started = Instant::now();
+    let mut terminal_overlay_keys = Vec::new();
+    let execute_result: Result<()> = async {
+    let mut tx = connection.begin().await?;
 
     for progress in batch.attempt_progress.values() {
         sqlx::query(
@@ -4182,7 +4062,6 @@ pub(crate) async fn flush_pending_batch_inner(
         .await?;
     }
 
-    let mut terminal_overlay_keys = Vec::new();
     if !batch.invocation_derived.is_empty() {
         let target_invocation_id = batch
             .invocation_derived
@@ -4270,6 +4149,39 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     tx.commit().await?;
+    Ok(())
+    }.await;
+    if let Some(m) = observability {
+        let outcome = if execute_result.is_ok() {
+            "success"
+        } else {
+            "error"
+        };
+        m.duration(
+            "cvm_sqlite_batch_execute_duration_seconds",
+            &[("class", "p2_derived"), ("outcome", outcome)],
+            execute_started.elapsed(),
+        );
+        m.counter(
+            "cvm_sqlite_batches_total",
+            &[("class", "p2_derived"), ("outcome", outcome)],
+            1,
+        );
+    }
+    execute_result?;
+    drop(connection);
+    if let Some(m) = observability {
+        m.counter(
+            "cvm_sqlite_written_rows_total",
+            &[],
+            batch.logical_rows() as u64,
+        );
+        m.counter(
+            "cvm_sqlite_written_bytes_total",
+            &[],
+            batch.estimated_memory_bytes() as u64,
+        );
+    }
 
     if let Some(store) = maintenance_store {
         for finish in batch.system_task_finishes.values() {
@@ -4317,6 +4229,8 @@ pub(crate) async fn flush_pending_batch_inner(
         invalidate_prompt_cache_conversations_cache(cache).await;
     }
     Ok(deferred_batch)
+        },
+    ).await
 }
 
 pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
@@ -4831,6 +4745,7 @@ mod tests {
     ) -> BatchedTerminalInvocationWrite {
         let request_info = RequestCaptureInfo::default();
         BatchedTerminalInvocationWrite {
+            enqueued_at: None,
             record: build_running_proxy_capture_record(
                 invoke_id,
                 "2026-07-01 10:00:00",
@@ -4873,6 +4788,7 @@ mod tests {
         let mut batch = PendingBatch::default();
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -4897,6 +4813,7 @@ mod tests {
             &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
+            None,
         )
         .await
         .expect("flush terminal P1 batch");
@@ -4924,6 +4841,7 @@ mod tests {
             &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
+            None,
         )
         .await
         .expect("flush coordinated P2 backfill wake");
@@ -4946,6 +4864,7 @@ mod tests {
         );
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: Some(1),
@@ -4992,6 +4911,7 @@ mod tests {
             &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
+            None,
         )
         .await
         .expect("commit terminal and acknowledge its Summary delta");
@@ -5066,6 +4986,7 @@ mod tests {
         );
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 capture_started: None,
                 raw_capture: false,
                 // Terminal journal replay uses the reserved post-restart marker rather than an
@@ -5093,6 +5014,7 @@ mod tests {
             &summary_delta_hub,
             &terminal_projection_hub,
             &dashboard_reconcile_gate,
+            None,
         )
         .await
         .expect("commit terminal journal replay and acknowledge Summary recovery delta");
@@ -5132,6 +5054,7 @@ mod tests {
             Some(pricing_catalog),
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -5246,6 +5169,7 @@ mod tests {
             &summary_delta_hub,
             &projection_hub,
             &reconcile_gate,
+            None,
         )
         .await
         .expect_err("poison record aborts the complete P1 transaction");
@@ -5278,13 +5202,32 @@ mod tests {
         pool.close().await;
 
         let accounting = PendingQueueAccounting::default();
+        accounting
+            .observability
+            .bind(crate::observability::ObservabilityRuntime::new(true));
         let write = SqliteBatchWrite::TerminalInvocation(terminal_write_for_coalescing(
             "failed-p1-accounting",
             Some(9),
         ));
         accounting.enqueue(write.estimated_memory_bytes());
+        accounting.observe_p1_replace(0, 1);
         let mut batch = PendingBatch::default();
         batch.push_accounted(write, &accounting);
+        // A duplicate terminal and a separate P2 row must retain their true classes.
+        let duplicate = SqliteBatchWrite::TerminalInvocation(terminal_write_for_coalescing(
+            "failed-p1-accounting",
+            Some(9),
+        ));
+        accounting.enqueue(duplicate.estimated_memory_bytes());
+        accounting.observe_p1_replace(0, 1);
+        batch.push_accounted(duplicate, &accounting);
+        let derived = SqliteBatchWrite::AccountSelectedTouch(BatchedAccountSelectedTouch {
+            account_id: 77,
+            selected_at: "2026-07-01T10:00:00Z".to_string(),
+        });
+        accounting.enqueue(derived.estimated_memory_bytes());
+        batch.push_accounted(derived, &accounting);
+        assert_eq!(accounting.observed_queue_depths(), (1, 1));
         let submitted_bytes = batch.estimated_memory_bytes();
 
         let retained = flush_pending_batch_accounted(
@@ -5311,6 +5254,7 @@ mod tests {
         assert_eq!(snapshot.pending_bytes, submitted_bytes);
         assert_eq!(snapshot.retry_count, 0);
         assert_eq!(snapshot.state, "healthy");
+        assert_eq!(accounting.observed_queue_depths(), (1, 1));
 
         let retried = flush_pending_batch_accounted(
             &accounting,
@@ -5330,6 +5274,7 @@ mod tests {
         .expect("failed retained batch should remain available after retry");
         assert!(retried.failed);
         assert_eq!(accounting.snapshot().retry_count, 1);
+        assert_eq!(accounting.observed_queue_depths(), (1, 1));
     }
 
     #[tokio::test]
@@ -5887,6 +5832,7 @@ mod tests {
             &pool,
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -5991,6 +5937,7 @@ mod tests {
         writer.set_terminal_runtime_store(runtime_store.clone());
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -6097,6 +6044,7 @@ mod tests {
         );
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 record: crate::tests::test_proxy_capture_record(
                     "flush-now-coordinator-p2",
                     "2026-08-10 12:00:00",
@@ -6170,6 +6118,7 @@ mod tests {
             "2026-07-29T00:00:00Z",
         );
         assert!(journal.defer_write(BatchedTerminalInvocationWrite {
+            enqueued_at: None,
             record,
             capture_started: None,
             raw_capture: true,
@@ -6250,6 +6199,7 @@ mod tests {
         );
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
