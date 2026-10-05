@@ -114,7 +114,7 @@ fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transi
         ),
     )
     .await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let response_status = response.status();
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read timeout broken-alt response body");
@@ -123,6 +123,15 @@ fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transi
         let error = response_payload["error"]
             .as_str()
             .expect("transit route error should be present");
+        assert_eq!(
+            response_status,
+            StatusCode::BAD_GATEWAY,
+            "timeout fixture response: {response_payload}"
+        );
+        assert!(
+            error.contains("no alternate upstream route is available after timeout"),
+            "unexpected timeout terminal reason: {error}"
+        );
         assert!(!error.contains("has no bound forward proxy nodes"));
 
         shared_upstream_handle.abort();
