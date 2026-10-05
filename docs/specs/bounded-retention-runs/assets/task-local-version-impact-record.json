@@ -54,7 +54,7 @@
   "compatibility_evidence": {
     "public_api": {
       "change": "compatible optional fields",
-      "supported_consumer_range": "Existing Major-3 task response consumers; original task fields retained",
+      "supported_consumer_range": "Existing Major-4 task response consumers; original task fields retained",
       "impact": "patch",
       "evidence": [
         "Existing fields/status retained; absent new fields normalize as unknown"
@@ -64,7 +64,7 @@
       "applicable": true,
       "impact": "patch",
       "state_description": "Existing monthly gzip SQLite and existing V2 Snapshot/manifests/raw ownership; optional maintenance JSON fields",
-      "source_program_compatibility_range": "Supported same-Minor v3.1.0 readers verified by exact source equivalence and current roundtrip; earlier-Minor v3.0.0 and earlier-Major v2.85/v2.86 reader fingerprints remain historical. Candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
+      "source_program_compatibility_range": "Supported same-Minor v4.0.0 readers verified by exact source equivalence and current roundtrip; earlier-Major v3.0/v3.1 and v2.85/v2.86 reader fingerprints remain historical. Candidate upgrades declared v2.71.45/v2.80.2 fixtures in the stateful profile.",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
