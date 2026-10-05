@@ -26,6 +26,7 @@ async fn websocket_upgrade_is_rejected_before_auth_routing_and_persistence() {
                     .expect("valid test connect info socket address"),
             )),
             None,
+            None,
             OriginalUri("/v1/responses".parse().expect("valid URI")),
             method,
             headers,
@@ -51,6 +52,32 @@ async fn websocket_upgrade_is_rejected_before_auth_routing_and_persistence() {
             })
         );
     }
+
+    let response = proxy_openai_v1_with_connect_info(
+        State(state.clone()),
+        Ok(ConnectInfo(
+            "127.0.0.1:0"
+                .parse()
+                .expect("valid test connect info socket address"),
+        )),
+        None,
+        Some(Extension(hyper::ext::Protocol::from_static("websocket"))),
+        OriginalUri("/v1/realtime".parse().expect("valid URI")),
+        Method::CONNECT,
+        HeaderMap::new(),
+        Body::from("request body must not be consumed"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read HTTP/2 WebSocket retirement response body");
+    assert_eq!(
+        body.as_ref(),
+        br#"{"error":"WebSocket proxy support has been removed","code":"websocket_proxy_removed"}"#
+    );
 
     let invocation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
         .fetch_one(&state.pool)

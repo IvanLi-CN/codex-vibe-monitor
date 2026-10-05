@@ -37,12 +37,13 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     State(state): State<Arc<AppState>>,
     connect_info: Result<ConnectInfo<SocketAddr>, axum::extract::rejection::ExtensionRejection>,
     downstream_transport: Option<Extension<DownstreamTransportObserver>>,
+    http2_protocol: Option<Extension<hyper::ext::Protocol>>,
     OriginalUri(original_uri): OriginalUri,
     method: Method,
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if is_websocket_upgrade_request(&headers) {
+    if is_websocket_upgrade_request(&headers, http2_protocol.as_ref()) {
         info!(
             method = %method,
             uri_path = %original_uri.path(),
@@ -73,7 +74,10 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     .await
 }
 
-fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
+fn is_websocket_upgrade_request(
+    headers: &HeaderMap,
+    http2_protocol: Option<&Extension<hyper::ext::Protocol>>,
+) -> bool {
     headers
         .get_all(header::UPGRADE)
         .iter()
@@ -83,6 +87,8 @@ fn is_websocket_upgrade_request(headers: &HeaderMap) -> bool {
                 .split(',')
                 .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
         })
+        || http2_protocol
+            .is_some_and(|Extension(protocol)| protocol.as_str().eq_ignore_ascii_case("websocket"))
 }
 
 fn proxy_uri_path_for_log(uri: &Uri) -> &str {
