@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: cvm-performance
+    orgId: 1
+    folder: CVM Performance
+    type: file
+    disableDeletion: true
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/dashboards

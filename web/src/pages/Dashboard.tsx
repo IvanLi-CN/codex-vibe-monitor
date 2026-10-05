@@ -19,6 +19,7 @@ import { useDashboardWorkingConversations } from "../hooks/useDashboardWorkingCo
 import { usePromptCacheConversationRoute } from "../hooks/usePromptCacheConversationRoute";
 import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useTranslation } from "../i18n";
+import { usePageObservation } from "../lib/browserObservability";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
 import {
   type DashboardWorkingConversationInvocationSelection,
@@ -82,6 +83,7 @@ export default function DashboardPage() {
     true,
     includeUpstreamAccountActivity,
   );
+  usePageObservation("dashboard", overviewSnapshotRuntime.bundle);
   useEffect(() => {
     if (
       selectedInvocation != null &&

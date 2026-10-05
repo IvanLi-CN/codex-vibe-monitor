@@ -292,10 +292,9 @@ impl SubscriptionTopic {
                         "maintenance database unavailable"
                     )));
                 };
-                let Some(mut detail) = store.detail(task_key).await.map_err(ApiError::from)? else {
+                let Some(detail) = store.detail(task_key).await.map_err(ApiError::from)? else {
                     return Err(ApiError::bad_request(anyhow!("managed task not found")));
                 };
-                detail.performance = state.performance_telemetry.task_run_summary(task_key).await;
                 Ok(serde_json::to_value(detail)?)
             }
             Self::QuotaCurrent => {

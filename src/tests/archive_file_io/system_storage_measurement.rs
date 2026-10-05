@@ -94,7 +94,6 @@ async fn system_storage_matches_gnu_du_for_configured_union_and_file_identity_de
 
     let mut config = test_config();
     config.database_path = database.clone();
-    config.performance_database_path = performance_db.clone();
     config.proxy_raw_dir = raw_alias;
     config.archive_dir = archive.clone();
     config.xray_runtime_dir = xray.clone();
@@ -108,18 +107,14 @@ async fn system_storage_matches_gnu_du_for_configured_union_and_file_identity_de
     assert_eq!(snapshot.state, SystemStorageState::Ready);
     assert!(snapshot.sampled_at.is_some());
 
-    let mut oracle_paths = vec![
-        data,
-        raw,
-        archive,
-        xray,
-        performance_db.clone(),
-        maintenance_db.clone(),
-    ];
-    for database in [&performance_db, &maintenance_db] {
-        for suffix in ["-wal", "-shm", "-journal"] {
-            oracle_paths.push(PathBuf::from(format!("{}{suffix}", database.display())));
-        }
+    let mut oracle_paths = vec![data, raw, archive, xray, maintenance_db.clone()];
+    // Retired external performance files and their sidecars are outside the
+    // configured project storage union, just like unrelated sibling files.
+    for suffix in ["-wal", "-shm", "-journal"] {
+        oracle_paths.push(PathBuf::from(format!(
+            "{}{suffix}",
+            maintenance_db.display()
+        )));
     }
     let output = Command::new("du")
         .args(["-s", "-c", "-B1"])
@@ -190,7 +185,6 @@ async fn system_storage_retains_last_good_value_and_marks_stale_after_failure() 
     fs::write(data.join("payload.bin"), vec![1_u8; 8192]).expect("write payload");
     let mut config = test_config();
     config.database_path = data.join("main.sqlite");
-    config.performance_database_path = fixture.path().join("performance.sqlite");
     config.proxy_raw_dir = fixture.path().join("missing-raw");
     config.archive_dir = fixture.path().join("missing-archive");
     config.xray_runtime_dir = fixture.path().join("missing-xray");
@@ -259,7 +253,6 @@ async fn system_storage_shutdown_cancels_worker_and_keeps_single_flight_permit_u
     }
     let mut config = test_config();
     config.database_path = data.join("main.sqlite");
-    config.performance_database_path = fixture.path().join("performance.sqlite");
     config.proxy_raw_dir = fixture.path().join("missing-raw");
     config.archive_dir = fixture.path().join("missing-archive");
     config.xray_runtime_dir = fixture.path().join("missing-xray");

@@ -430,8 +430,6 @@ pub(crate) struct ManagedTaskDetail {
     pub(crate) progress: Option<TaskProgress>,
     pub(crate) recent_runs: Vec<TaskRun>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) performance: Option<ManagedTaskPerformance>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) retention_backlog_trend: Option<Vec<RetentionBacklogTrendPoint>>,
     pub(crate) workload_trend: TaskWorkloadTrend,
 }
@@ -464,19 +462,6 @@ pub(crate) struct RetentionBacklogObservation {
     pub(crate) retention_days: i64,
     pub(crate) cutoff: String,
     pub(crate) source_max_invocation_id: Option<i64>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ManagedTaskPerformance {
-    pub(crate) run_count: u64,
-    pub(crate) success_count: u64,
-    pub(crate) failure_count: u64,
-    pub(crate) average_duration_ms: Option<f64>,
-    pub(crate) latest_duration_ms: Option<f64>,
-    pub(crate) observed_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) coverage: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -3638,7 +3623,6 @@ impl MaintenanceStore {
             task,
             progress,
             recent_runs,
-            performance: None,
             retention_backlog_trend,
             workload_trend,
         }))

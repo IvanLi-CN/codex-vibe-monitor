@@ -1,0 +1,18 @@
+groups:
+  - name: cvm-performance
+    interval: 15s
+    rules:
+      - record: cvm:http_request_rate:5m
+        expr: sum by (service, environment, instance) (rate(cvm_http_requests_total[5m]))
+      - record: cvm:http_header_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (service, environment, instance, le) (rate(cvm_http_header_duration_seconds_bucket[5m])))
+      - record: cvm:http_body_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (service, environment, instance, le) (rate(cvm_http_body_duration_seconds_bucket[5m])))
+      - record: cvm:cpu_cores:5m
+        expr: sum by (service, environment, instance) (rate(cvm_process_cpu_seconds_total[5m]))
+      - record: cvm:sqlite_wait_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (service, environment, instance, class, le) (rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket[5m])))
+      - record: cvm:hotpath_sql_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (service, environment, instance, query) (rate(hotpath_sql_duration_seconds[5m])))
+      - record: cvm:hotpath_function_p95_seconds:5m
+        expr: histogram_quantile(0.95, sum by (service, environment, instance, function) (rate(hotpath_function_duration_seconds[5m])))

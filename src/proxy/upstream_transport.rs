@@ -139,6 +139,7 @@ pub(crate) struct UpstreamTrafficReporter {
     occurred_at: String,
     upstream_account_id: Option<i64>,
     upstream_base_url_host: Option<String>,
+    endpoint: &'static str,
 }
 
 impl UpstreamTrafficReporter {
@@ -148,6 +149,7 @@ impl UpstreamTrafficReporter {
         occurred_at: impl Into<String>,
         upstream_account_id: Option<i64>,
         upstream_base_url_host: Option<&str>,
+        endpoint: &str,
     ) -> Self {
         Self {
             state,
@@ -155,10 +157,23 @@ impl UpstreamTrafficReporter {
             occurred_at: occurred_at.into(),
             upstream_account_id,
             upstream_base_url_host: upstream_base_url_host.map(str::to_string),
+            endpoint: crate::observability::endpoint_from_path(endpoint),
         }
     }
 
     pub(crate) fn record_delta(&self, delta: UpstreamSocketByteTotals, observed_at: DateTime<Utc>) {
+        for (direction, value) in [
+            ("upload", delta.upload_bytes),
+            ("download", delta.download_bytes),
+        ] {
+            if value > 0 {
+                self.state.observability.counter(
+                    "cvm_proxy_transfer_bytes_total",
+                    &[("endpoint", self.endpoint), ("direction", direction)],
+                    value as u64,
+                );
+            }
+        }
         let mut recorded = false;
         if delta.upload_bytes > 0 {
             self.state
@@ -749,66 +764,119 @@ pub(crate) async fn send_counted_upstream_http_request(
     forward_proxy_url: Option<&Url>,
     reporter: Option<UpstreamTrafficReporter>,
 ) -> Result<CountedHttpResponse, CountedHttpRequestError> {
-    let meter = UpstreamSocketByteMeter::default();
-    let mut report_guard = UpstreamTransportReportGuard::new(meter.clone(), reporter.clone());
-    let stream = connect_via_counted_transport(target_url, forward_proxy_url, meter.clone())
-        .await
-        .map_err(|err| {
+    crate::observability::observed_future(
+        reporter
+            .as_ref()
+            .is_some_and(|reporter| reporter.state.observability.enabled),
+        "send_counted_upstream_http_request",
+        async move {
+            let mut attempt = reporter.as_ref().map(|reporter| {
+                crate::observability::UpstreamAttempt::new(
+                    reporter.state.observability.clone(),
+                    target_url.path(),
+                )
+            });
+            let meter = UpstreamSocketByteMeter::default();
+            let mut report_guard =
+                UpstreamTransportReportGuard::new(meter.clone(), reporter.clone());
+            let connect_span = reporter.as_ref().map(|reporter| {
+                crate::observability::ObservationSpan::new(
+                    reporter.state.observability.clone(),
+                    "cvm_proxy_phase_duration_seconds",
+                    vec![
+                        (
+                            "endpoint",
+                            crate::observability::endpoint_from_path(target_url.path()),
+                        ),
+                        ("phase", "transport_connect"),
+                    ],
+                )
+            });
+            let stream =
+                connect_via_counted_transport(target_url, forward_proxy_url, meter.clone())
+                    .await
+                    .map_err(|err| {
+                        report_guard.record_now();
+                        report_guard.disarm();
+                        CountedHttpRequestError {
+                            message: format!("failed to connect upstream transport: {err}"),
+                            socket_totals: meter.snapshot(),
+                        }
+                    })?;
+            drop(connect_span);
+            let head_span = reporter.as_ref().map(|reporter| {
+                crate::observability::ObservationSpan::new(
+                    reporter.state.observability.clone(),
+                    "cvm_proxy_phase_duration_seconds",
+                    vec![
+                        (
+                            "endpoint",
+                            crate::observability::endpoint_from_path(target_url.path()),
+                        ),
+                        ("phase", "transport_head"),
+                    ],
+                )
+            });
+            let (mut sender, connection) = http1::Builder::new()
+                .handshake(TokioIo::new(stream))
+                .await
+                .map_err(|err| {
+                    report_guard.record_now();
+                    report_guard.disarm();
+                    CountedHttpRequestError {
+                        message: format!("failed to establish upstream HTTP/1 connection: {err}"),
+                        socket_totals: meter.snapshot(),
+                    }
+                })?;
+            tokio::spawn(async move {
+                if let Err(err) = connection.await {
+                    debug!(error = %err, "counted upstream HTTP connection closed with error");
+                }
+            });
+
+            let request =
+                build_http1_request(method, target_url, headers, body).map_err(|message| {
+                    report_guard.record_now();
+                    report_guard.disarm();
+                    CountedHttpRequestError {
+                        message,
+                        socket_totals: meter.snapshot(),
+                    }
+                })?;
+            let response = sender.send_request(request).await.map_err(|err| {
+                report_guard.record_now();
+                report_guard.disarm();
+                CountedHttpRequestError {
+                    message: format!("failed to send upstream HTTP request: {err}"),
+                    socket_totals: meter.snapshot(),
+                }
+            })?;
+
+            drop(head_span);
+            if let Some(attempt) = attempt.as_mut() {
+                attempt.outcome = if response.status().is_success() {
+                    "success"
+                } else {
+                    "rejected"
+                };
+            }
+            let initial_snapshot = meter.snapshot();
             report_guard.record_now();
             report_guard.disarm();
-            CountedHttpRequestError {
-                message: format!("failed to connect upstream transport: {err}"),
-                socket_totals: meter.snapshot(),
-            }
-        })?;
-    let (mut sender, connection) = http1::Builder::new()
-        .handshake(TokioIo::new(stream))
-        .await
-        .map_err(|err| {
-            report_guard.record_now();
-            report_guard.disarm();
-            CountedHttpRequestError {
-                message: format!("failed to establish upstream HTTP/1 connection: {err}"),
-                socket_totals: meter.snapshot(),
-            }
-        })?;
-    tokio::spawn(async move {
-        if let Err(err) = connection.await {
-            debug!(error = %err, "counted upstream HTTP connection closed with error");
-        }
-    });
-
-    let request = build_http1_request(method, target_url, headers, body).map_err(|message| {
-        report_guard.record_now();
-        report_guard.disarm();
-        CountedHttpRequestError {
-            message,
-            socket_totals: meter.snapshot(),
-        }
-    })?;
-    let response = sender.send_request(request).await.map_err(|err| {
-        report_guard.record_now();
-        report_guard.disarm();
-        CountedHttpRequestError {
-            message: format!("failed to send upstream HTTP request: {err}"),
-            socket_totals: meter.snapshot(),
-        }
-    })?;
-
-    let initial_snapshot = meter.snapshot();
-    report_guard.record_now();
-    report_guard.disarm();
-    let (parts, body) = response.into_parts();
-    let tracked_body = Body::from_stream(TrackedIncomingBody::new(
-        body,
-        meter.clone(),
-        reporter,
-        initial_snapshot,
-    ));
-    Ok(CountedHttpResponse {
-        response: Response::from_parts(parts, tracked_body),
-        socket_meter: meter,
-    })
+            let (parts, body) = response.into_parts();
+            let tracked_body = Body::from_stream(TrackedIncomingBody::new(
+                body,
+                meter.clone(),
+                reporter,
+                initial_snapshot,
+            ));
+            Ok(CountedHttpResponse {
+                response: Response::from_parts(parts, tracked_body),
+                socket_meter: meter,
+            })
+        },
+    )
+    .await
 }
 
 async fn resolve_socks5_local_target_host(

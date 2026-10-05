@@ -22,6 +22,9 @@ cd "$repo_root"
 files=()
 
 for file in "${candidate_files[@]}"; do
+  # Preserve the pinned third-party snapshot and its upstream hash manifest.
+  # Its two Rust patches are formatted by cargo fmt using the crate's edition.
+  case "$file" in vendor/hotpath/*) continue ;; esac
   # Deleted paths are still present in Git's staged-file list, but cannot be formatted.
   case "$file" in
     /*|..|../*|*/..|*/../*) continue ;;

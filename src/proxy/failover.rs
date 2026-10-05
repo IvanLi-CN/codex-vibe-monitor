@@ -39,55 +39,8 @@ pub(crate) fn notify_pool_no_available_wait_hook(state: &AppState) {
 #[cfg(not(test))]
 pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
-pub(crate) fn no_candidate_next_eligible_delay(
-    audit: &PoolRoutingNoCandidateAudit,
-) -> Option<Duration> {
-    const MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY: Duration = Duration::from_millis(25);
-
-    audit
-        .next_eligible_at
-        .as_deref()
-        .and_then(parse_to_utc_datetime)
-        .map(|eligible_at| {
-            (eligible_at - Utc::now())
-                .to_std()
-                .unwrap_or(Duration::ZERO)
-                .max(MIN_STALE_NEXT_ELIGIBLE_RESELECT_DELAY)
-        })
-}
-
-pub(crate) fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
-    let text = value.to_str().ok()?.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    if let Ok(seconds) = text.parse::<u64>() {
-        return Some(Duration::from_secs(seconds).min(Duration::from_secs(
-            MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
-        )));
-    }
-
-    let retry_at = httpdate::parse_http_date(text).ok()?;
-    let delay = retry_at.duration_since(std::time::SystemTime::now()).ok()?;
-    Some(delay.min(Duration::from_secs(
-        MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS,
-    )))
-}
-
-pub(crate) async fn canonical_pool_attempt_proxy_binding_key(
-    state: &AppState,
-    selected_proxy_key: &str,
-) -> Option<String> {
-    let manager = state.forward_proxy.lock().await;
-    manager.canonicalize_bound_proxy_key(selected_proxy_key, None)
-}
-
-pub(crate) fn normalize_pool_attempt_group_name(group_name: Option<String>) -> Option<String> {
-    group_name
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
+mod retry_metadata;
+pub(crate) use retry_metadata::*;
 
 async fn record_pool_request_prepare_failure_attempt(
     state: &AppState,
@@ -2243,6 +2196,24 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 codex_imagegen_retest_claimed,
             ) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
+                    if attempt_count > 0 {
+                        let reason = match last_error.as_ref().map(|error| error.status) {
+                            Some(StatusCode::TOO_MANY_REQUESTS) => "rate_limit",
+                            Some(StatusCode::SERVICE_UNAVAILABLE) => "overload",
+                            _ => "route_failover",
+                        };
+                        state.observability.counter(
+                            "cvm_proxy_retries_total",
+                            &[
+                                (
+                                    "endpoint",
+                                    crate::observability::endpoint_from_path(original_uri.path()),
+                                ),
+                                ("reason", reason),
+                            ],
+                            1,
+                        );
+                    }
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at =
@@ -2512,6 +2483,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             trace.occurred_at.as_str(),
                             Some(account.account_id),
                             account.upstream_base_url.host_str(),
+                            original_uri.path(),
                         )
                     });
                     match timeout(
@@ -3217,6 +3189,24 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         } else {
                             false
                         };
+                    if attempt_count > 0 {
+                        let reason = match last_error.as_ref().map(|error| error.status) {
+                            Some(StatusCode::TOO_MANY_REQUESTS) => "rate_limit",
+                            Some(StatusCode::SERVICE_UNAVAILABLE) => "overload",
+                            _ => "route_failover",
+                        };
+                        state.observability.counter(
+                            "cvm_proxy_retries_total",
+                            &[
+                                (
+                                    "endpoint",
+                                    crate::observability::endpoint_from_path(original_uri.path()),
+                                ),
+                                ("reason", reason),
+                            ],
+                            1,
+                        );
+                    }
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
                     attempt_started_at =
@@ -3359,6 +3349,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 trace.occurred_at.as_str(),
                                 Some(account.account_id),
                                 account.upstream_base_url.host_str(),
+                                original_uri.path(),
                             )
                         });
                         let oauth_response = oauth_bridge::send_counted_oauth_upstream_request(

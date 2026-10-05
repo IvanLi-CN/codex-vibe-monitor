@@ -7,45 +7,11 @@ use super::*;
 type ViaPoolResponseFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Response, ProxyErrorResponse>> + Send + 'a>>;
 
-fn plain_proxy_error(status: StatusCode, message: impl Into<String>) -> ProxyErrorResponse {
-    let message = message.into();
-    ProxyErrorResponse {
-        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
-        status,
-        message,
-        cvm_id: None,
-        code: None,
-        blocked_binding: None,
-    }
-}
-
-pub(crate) fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
-    let authorization = headers.get(header::AUTHORIZATION)?.to_str().ok()?.trim();
-    let (scheme, token) = authorization.split_once(' ')?;
-    if !scheme.eq_ignore_ascii_case("bearer") {
-        return None;
-    }
-    let normalized = token.trim();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized.to_string())
-    }
-}
-
-pub(crate) fn pool_route_response_status_is_success(status: StatusCode) -> bool {
-    status.is_success() || status.is_redirection()
-}
-
-pub(crate) async fn request_matches_pool_route(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> Result<bool> {
-    let Some(api_key) = extract_bearer_token(headers) else {
-        return Ok(false);
-    };
-    pool_api_key_matches(state, &api_key).await
-}
+mod auth;
+use auth::plain_proxy_error;
+pub(crate) use auth::{
+    extract_bearer_token, pool_route_response_status_is_success, request_matches_pool_route,
+};
 
 #[cfg(test)]
 #[derive(Debug, Default, Deserialize)]
@@ -3580,6 +3546,21 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
         }
         let request_header_bytes_approx = http_visible_header_bytes_approx(&outbound_headers);
 
+        if attempt > 0 && live_reporter.is_some() {
+            state.observability.counter(
+                "cvm_proxy_retries_total",
+                &[
+                    (
+                        "endpoint",
+                        crate::observability::endpoint_from_path(
+                            capture_target.map(|target| target.endpoint()).unwrap_or(""),
+                        ),
+                    ),
+                    ("reason", "rate_limit"),
+                ],
+                1,
+            );
+        }
         let connect_started = Instant::now();
         let response = match timeout(
             handshake_timeout,

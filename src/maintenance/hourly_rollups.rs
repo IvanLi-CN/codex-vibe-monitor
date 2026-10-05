@@ -3574,15 +3574,23 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
             get(fetch_prompt_cache_materialization_status)
                 .patch(update_prompt_cache_materialization_control),
         )
-        .route("/api/system/performance", get(fetch_performance_metrics))
+        .route("/api/system/observability", get(observability_capabilities))
+        .route(
+            "/api/system/observability/hotpath/{report}",
+            get(hotpath_report),
+        )
+        .route(
+            "/api/system/performance",
+            axum::routing::any(observability::performance_retired),
+        )
         .route(
             "/api/system/performance/health",
-            get(fetch_performance_health),
+            axum::routing::any(observability::performance_retired),
         )
         .route(
             "/api/system/performance/browser",
-            post(ingest_browser_performance)
-                .layer(DefaultBodyLimit::max(TELEMETRY_BROWSER_MAX_BYTES)),
+            axum::routing::any(observability::performance_retired)
+                .layer(DefaultBodyLimit::max(BROWSER_MAX_BYTES)),
         )
 }
 
@@ -3763,6 +3771,10 @@ pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 }
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
+    build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state))
+}
+
+fn build_app_router_without_browser(state: Arc<AppState>) -> Router {
     build_proxy_routes(build_event_routes(build_external_routes(
         build_pool_routes(build_system_routes(build_stats_routes(
             build_invocation_routes(crate::api::build_settings_routes(build_health_routes(
@@ -3833,10 +3845,6 @@ fn apply_static_cache_control<B>(path: &str, response: &mut axum::http::Response
     );
 }
 
-fn http_request_trace_path(request: &Request<Body>) -> &str {
-    request.uri().path()
-}
-
 pub(crate) async fn render_spa_index_response(
     state: Arc<AppState>,
     headers: &HeaderMap,
@@ -3867,22 +3875,7 @@ pub(crate) async fn spawn_http_server(
     state: Arc<AppState>,
 ) -> Result<(SocketAddr, JoinHandle<()>)> {
     let cors_layer = build_cors_layer(&state.config);
-    let mut router = build_app_router(state.clone())
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            performance_http_middleware,
-        ))
-        .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
-                tracing::info_span!(
-                    "request",
-                    method = %request.method(),
-                    uri_path = %http_request_trace_path(request),
-                    version = ?request.version()
-                )
-            }),
-        )
-        .layer(cors_layer);
+    let mut router = build_app_router_without_browser(state.clone());
 
     // Optionally attach headers in the future; standard EventSource cannot read headers
 
@@ -3920,7 +3913,7 @@ pub(crate) async fn spawn_http_server(
             router = router
                 .route_service("/", spa_index_service)
                 .route_service("/index.html", spa_index_html_service)
-                .fallback_service(spa_service);
+                .route_service("/{*path}", spa_service);
         } else {
             warn!(
                 path = %index_file.display(),
@@ -3930,6 +3923,24 @@ pub(crate) async fn spawn_http_server(
     }
 
     router = router.merge(build_public_blog_runtime_router(state.clone()));
+    // Profile matched templates once. Unmatched SPA paths may contain arbitrary user data;
+    // browser ingestion is excluded from both profiler and application request metrics.
+    if state.observability.enabled {
+        router = router.route_layer(hotpath::AxumLayer::new());
+    }
+    router = router.merge(browser_ingest_router(state.clone()));
+    router = router
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            observability_http_middleware,
+        ))
+        .layer(TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
+            tracing::info_span!("request", method = %request.method(), uri_path = %observability::http_request_trace_path(request), version = ?request.version())
+        }))
+        .layer(cors_layer)
+        .layer(axum::middleware::from_fn(
+            observability::retired_performance_preflight,
+        ));
 
     let listener = TcpListener::bind(&state.config.http_bind).await?;
     let addr = listener.local_addr()?;
@@ -3953,16 +3964,6 @@ pub(crate) async fn spawn_http_server(
 mod social_preview_tests {
     use super::*;
     use axum::http::{HeaderValue, header};
-
-    #[test]
-    fn http_request_trace_path_excludes_query_parameters() {
-        let request = Request::builder()
-            .uri("/v1/responses?api_key=secret-value")
-            .body(Body::empty())
-            .expect("build request with sensitive query");
-
-        assert_eq!(http_request_trace_path(&request), "/v1/responses");
-    }
 
     #[test]
     fn inject_absolute_social_preview_urls_rewrites_both_meta_tags() {

@@ -425,6 +425,23 @@ jobs:
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
+      - name: Export exact image symbols (linux/amd64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        shell: bash
+        env:
+          SYMBOL_IMAGE: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-amd64
+          SYMBOL_REVISION: ${{ needs.release-meta.outputs.target_sha }}
+        run: bash .github/scripts/export-image-symbols.sh "$SYMBOL_IMAGE" "$SYMBOL_REVISION" observability-symbols
+
+      - name: Upload exact image symbols (linux/amd64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cvm-symbols-${{ needs.release-meta.outputs.target_sha }}-amd64
+          path: observability-symbols/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Push candidate image (linux/amd64)
         shell: bash
         env:
@@ -498,6 +515,24 @@ jobs:
           SMOKE_PLATFORM: ${{ env.PLATFORM_ARM64 }}
           SMOKE_TIMEOUT_SECS: "120"
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
+
+      - name: Export exact image symbols (linux/arm64)
+        if: ${{ hashFiles('target/scripts/export-observability-symbols.py') != '' }}
+        shell: bash
+        working-directory: target
+        env:
+          SYMBOL_IMAGE: ${{ env.REGISTRY }}/${{ needs.release-meta.outputs.image_name_lower }}:smoke-${{ needs.release-meta.outputs.candidate_suffix }}-arm64
+          SYMBOL_REVISION: ${{ needs.release-meta.outputs.target_sha }}
+        run: bash .github/scripts/export-image-symbols.sh "$SYMBOL_IMAGE" "$SYMBOL_REVISION" observability-symbols
+
+      - name: Upload exact image symbols (linux/arm64)
+        if: ${{ hashFiles('target/scripts/export-observability-symbols.py') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cvm-symbols-${{ needs.release-meta.outputs.target_sha }}-arm64
+          path: target/observability-symbols/
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Push candidate image (linux/arm64)
         shell: bash

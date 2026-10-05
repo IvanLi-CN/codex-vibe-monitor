@@ -403,12 +403,19 @@ pub(crate) async fn warm_dashboard_runtime_projection(state: &AppState) {
 pub(crate) async fn reconcile_dashboard_runtime_projection_once(
     state: &AppState,
 ) -> Result<DashboardProjectionCapture, ApiError> {
-    capture_dashboard_activity_live_snapshot_from_persistence(
-        &state.pool,
-        state.proxy_runtime_invocations.as_ref(),
-        state.dashboard_network_speed_cache.as_ref(),
-        false,
-        "reconcile",
+    crate::observability::observed_future(
+        state.observability.enabled,
+        "dashboard_projection_reconcile",
+        async {
+            capture_dashboard_activity_live_snapshot_from_persistence(
+                &state.pool,
+                state.proxy_runtime_invocations.as_ref(),
+                state.dashboard_network_speed_cache.as_ref(),
+                false,
+                "reconcile",
+            )
+            .await
+        },
     )
     .await
 }
@@ -457,7 +464,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                     state
                         .proxy_runtime_invocations
                         .record_reconcile_deferred(reason);
-                    state.performance_telemetry.record_counter(
+                    state.observability.record_counter(
                         "projection.reconcile_defer_count",
                         reason,
                         1,
@@ -491,12 +498,12 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                     if state.shutdown.is_cancelled() {
                         return;
                     }
-                    state.performance_telemetry.record_counter(
+                    state.observability.record_counter(
                         "projection.reconcile_count",
                         "dashboard",
                         1,
                     );
-                    state.performance_telemetry.record_duration_ms(
+                    state.observability.record_duration_ms(
                         "projection.reconcile_duration_ms",
                         "dashboard",
                         reconcile_started.elapsed().as_secs_f64() * 1000.0,
@@ -536,12 +543,12 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                     observation.finish_with_status("success");
                 }
                 Err(err) => {
-                    state.performance_telemetry.record_counter(
+                    state.observability.record_counter(
                         "projection.reconcile_failure_count",
                         "dashboard",
                         1,
                     );
-                    state.performance_telemetry.record_duration_ms(
+                    state.observability.record_duration_ms(
                         "projection.reconcile_duration_ms",
                         "dashboard",
                         reconcile_started.elapsed().as_secs_f64() * 1000.0,
@@ -562,7 +569,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                         state
                             .proxy_runtime_invocations
                             .record_reconcile_deferred("writer_pressure");
-                        state.performance_telemetry.record_counter(
+                        state.observability.record_counter(
                             "projection.reconcile_defer_count",
                             "writer_pressure",
                             1,
@@ -977,7 +984,7 @@ pub(crate) fn ensure_dashboard_activity_live_snapshot_producer(state: &AppState)
     let dashboard_network_speed_cache = state.dashboard_network_speed_cache.clone();
     let subscription_hub = state.subscription_hub.clone();
     let broadcaster = state.broadcaster.clone();
-    let telemetry = state.performance_telemetry.clone();
+    let telemetry = state.observability.clone();
     let shutdown = state.shutdown.clone();
     tokio::spawn(async move {
         let mut delivered_seq = latest_seq.load(Ordering::Acquire).saturating_sub(1);
