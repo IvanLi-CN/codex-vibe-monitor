@@ -71,6 +71,7 @@
 - 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
 - Web 验证包括旧 API 字段兼容、Demo 真实零/未知值、全量 unit/typecheck/lint/build、六个吞吐状态及 SystemWorkspace Storybook、任务页桌面/移动交互 E2E。视觉确认不代替功能或容量验收。
 - Prompt 会话事件过滤的既有单测等待实际筛选内容完成渲染后检查原断言；单靠两次 Promise flush 不代表异步事件请求已完成。此测试同步修正不改变产品逻辑、超时或 retention 的验收口径。主线整合后的后端输入使用逐文件摘要证明，文档或 Web 测试提交不得冒充重新编译的后端提交。
+- Prompt 统计代次与重启回归在让行检查时读取已提交 staging，确定性地停在首个 256 行页；独立异步观察者可能在负载下晚于数页提交，不能保证该测试所需的精确边界。原聚合、代次、恢复和页游标断言保持不变。
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选全部验证、实测和视觉门禁完成后启动。
 
 ## Visual Evidence
