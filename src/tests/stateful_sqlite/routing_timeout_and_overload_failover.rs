@@ -23,15 +23,39 @@ where
 #[test]
 fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transit() {
     run_timeout_future_with_large_stack(async move {
-        let (shared_upstream_base, shared_upstream_handle) =
-            spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+        // This fixture must time out even when the runner stalls. Competing short
+        // sleeps can make the response win after both timers have become ready.
+        let upstream = Router::new().route(
+            "/v1/responses",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(http_header::CONTENT_TYPE, "application/json")
+                    .body(Body::from_stream(stream::pending::<
+                        Result<Bytes, Infallible>,
+                    >()))
+                    .expect("build pending upstream response")
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind pending upstream");
+        let shared_upstream_base = format!(
+            "http://{}",
+            listener.local_addr().expect("pending upstream address")
+        );
+        let shared_upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, upstream)
+                .await
+                .expect("serve pending upstream");
+        });
         let mut config = test_config();
         config.openai_upstream_base_url =
             Url::parse("https://api.openai.com/").expect("valid upstream base url");
         config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
         let state = test_state_from_config(config, true).await;
         seed_pool_routing_api_key(&state, "pool-live-key").await;
-        insert_test_pool_api_key_account_with_options(
+        let initial_account_id = insert_test_pool_api_key_account_with_options(
             &state,
             "Shared Route A",
             "route-shared-a-broken-alt",
@@ -66,6 +90,14 @@ fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transi
         .await;
         set_test_account_group_name(&state.pool, broken_alternate_id, Some("broken-alt-group"))
             .await;
+        let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "sticky-timeout-broken-alt-group",
+            initial_account_id,
+            &sticky_seen_at,
+        )
+        .await;
 
         let response = proxy_openai_v1(
         State(state.clone()),

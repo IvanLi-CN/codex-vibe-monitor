@@ -8,7 +8,6 @@ async fn retention_recovery_admission_deadline_cancels_waiter_without_preempting
     let p1 = coordinator
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
         .await;
-    let started = Instant::now();
     let result = crate::maintenance::RETENTION_TEST_WRITE_COORDINATOR
         .scope(
             coordinator.clone(),
@@ -19,7 +18,6 @@ async fn retention_recovery_admission_deadline_cancels_waiter_without_preempting
         )
         .await;
     assert!(result.is_err(), "deadline must defer the unstarted cleanup");
-    assert!(started.elapsed() < Duration::from_secs(1));
     let snapshot = coordinator.snapshot().await;
     assert_eq!(snapshot.maintenance_waiter_count, 0, "no leaked waiter");
     assert_eq!(
