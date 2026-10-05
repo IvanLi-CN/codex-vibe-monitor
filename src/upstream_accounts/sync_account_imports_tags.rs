@@ -182,6 +182,7 @@ pub(crate) async fn cleanup_non_system_tags(pool: &Pool<Sqlite>) -> Result<()> {
             )
         )
         WHERE json_valid(tag_ids_json)
+          AND json_type(tag_ids_json) = 'array'
           AND EXISTS (
               SELECT 1
               FROM json_each(pool_oauth_login_sessions.tag_ids_json)

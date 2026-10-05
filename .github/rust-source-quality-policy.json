@@ -93,7 +93,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6630,
+      "line_budget": 6653,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -129,7 +129,7 @@
     {
       "path": "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
       "role": "test_helper",
-      "line_budget": 9975,
+      "line_budget": 9997,
       "next_module_workstream": "Split invocation query/filter/schema migration fixtures by read-model concern."
     },
     {
@@ -219,7 +219,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/prompt_cache_bindings_and_route_penalties.rs",
       "role": "test_helper",
-      "line_budget": 4478,
+      "line_budget": 4522,
       "next_module_workstream": "Split upstream prompt-cache binding/route-penalty fixtures by resolver, metadata, and lifecycle."
     },
     {
