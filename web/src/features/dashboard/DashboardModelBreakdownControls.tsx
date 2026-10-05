@@ -145,25 +145,34 @@ export function ModelBreakdownMetricSortButton({
   sort,
   onSort,
   className,
+  ariaLabel,
 }: {
   label: string;
   column: Exclude<DashboardModelBreakdownSort["column"], "model">;
   sort: DashboardModelBreakdownSort;
   onSort: (nextSort: DashboardModelBreakdownSort) => void;
   className?: string;
+  ariaLabel?: string;
 }) {
   const { t } = useTranslation();
   const active = sort.column === column;
   const direction = active ? sort.direction : "desc";
+  const accessibleLabel = ariaLabel ?? label;
   return (
     <button
       type="button"
       className={cn(
-        "inline-flex max-w-full items-center justify-end gap-1 whitespace-nowrap text-right hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+        "inline-flex min-w-0 max-w-full items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-right hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary",
         className,
       )}
-      aria-label={t("dashboard.modelBreakdown.sort.metricAria", { metric: label, direction })}
-      title={t("dashboard.modelBreakdown.sort.metricAria", { metric: label, direction })}
+      aria-label={t("dashboard.modelBreakdown.sort.metricAria", {
+        metric: accessibleLabel,
+        direction,
+      })}
+      title={t("dashboard.modelBreakdown.sort.metricAria", {
+        metric: accessibleLabel,
+        direction,
+      })}
       onClick={() =>
         onSort({
           column,
@@ -172,7 +181,7 @@ export function ModelBreakdownMetricSortButton({
       }
       data-testid={`dashboard-model-breakdown-sort-${column}`}
     >
-      <span className="leading-4">{label}</span>
+      <span className="min-w-0 truncate leading-4">{label}</span>
       <ModelBreakdownSortIndicator active={active} direction={direction} />
     </button>
   );
@@ -184,12 +193,14 @@ export function ModelBreakdownMetricHeader({
   sort,
   onSort,
   className,
+  ariaLabel,
 }: {
   label: string;
   column: Exclude<DashboardModelBreakdownSort["column"], "model">;
   sort: DashboardModelBreakdownSort;
   onSort: (nextSort: DashboardModelBreakdownSort) => void;
   className?: string;
+  ariaLabel?: string;
 }) {
   const active = sort.column === column;
   const direction = active ? sort.direction : "desc";
@@ -197,12 +208,18 @@ export function ModelBreakdownMetricHeader({
     <th
       scope="col"
       className={cn(
-        "border-l border-base-300/35 whitespace-nowrap px-1.5 py-2 text-right font-semibold",
+        "min-w-0 border-l border-base-300/35 px-1.5 py-2 text-right font-semibold whitespace-nowrap",
         className,
       )}
       aria-sort={active ? (direction === "asc" ? "ascending" : "descending") : "none"}
     >
-      <ModelBreakdownMetricSortButton label={label} column={column} sort={sort} onSort={onSort} />
+      <ModelBreakdownMetricSortButton
+        label={label}
+        column={column}
+        sort={sort}
+        onSort={onSort}
+        ariaLabel={ariaLabel}
+      />
     </th>
   );
 }

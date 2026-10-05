@@ -620,6 +620,7 @@ export function TodayStatsOverview({
           cacheRead: "缓存读取",
           cacheHitTokens: "缓存读取",
           cacheHitRate: "缓存命中率",
+          cacheHitRateCompact: "命中率",
           output: "输出",
           model: "模型",
           input: "输入",
@@ -629,6 +630,7 @@ export function TodayStatsOverview({
           tokenUnavailable: "Token 分项未提供",
           unknownModel: "未标识模型",
           reasoningEffort: "思考等级",
+          tokenUnit: "Token",
         }
       : {
           total: "Total",
@@ -636,6 +638,7 @@ export function TodayStatsOverview({
           cacheRead: "Cache read",
           cacheHitTokens: "Cache read",
           cacheHitRate: "Cache hit rate",
+          cacheHitRateCompact: "Hit rate",
           output: "Output",
           model: "Model",
           input: "Input",
@@ -645,21 +648,17 @@ export function TodayStatsOverview({
           tokenUnavailable: "Token breakdown unavailable",
           unknownModel: "Unidentified model",
           reasoningEffort: "Reasoning effort",
+          tokenUnit: "tokens",
         };
-  const formatBreakdownNumber = (value: number) => new Intl.NumberFormat(localeTag).format(value);
-  const formatBreakdownRatio = (value: number | null) =>
-    value == null
-      ? RATE_UNAVAILABLE_PLACEHOLDER
-      : new Intl.NumberFormat(localeTag, { style: "percent", maximumFractionDigits: 1 }).format(
-          value,
-        );
-  const formatBreakdownCurrency = (value: number) =>
-    new Intl.NumberFormat(localeTag, {
-      style: "currency",
-      currency: "USD",
+  const buildBreakdownNumberSpec = (value: number) =>
+    buildAdaptiveNumberTextSpec(value, localeTag, 0);
+  const buildBreakdownRatioSpec = (value: number | null) =>
+    buildAdaptivePercentTextSpec(value, localeTag, { maximumFractionDigits: 1 });
+  const buildBreakdownCurrencySpec = (value: number | null) =>
+    buildAdaptiveCurrencyTextSpec(value, localeTag, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 4,
-    }).format(value);
+    });
 
   const content = (
     <>
@@ -974,9 +973,9 @@ export function TodayStatsOverview({
                 <UsageBreakdownTooltip
                   title={usageDetailsLabel}
                   breakdown={stats.usageBreakdown}
-                  formatNumber={formatBreakdownNumber}
-                  formatRatio={formatBreakdownRatio}
-                  formatCurrency={formatBreakdownCurrency}
+                  buildNumberSpec={buildBreakdownNumberSpec}
+                  buildRatioSpec={buildBreakdownRatioSpec}
+                  buildCurrencySpec={buildBreakdownCurrencySpec}
                   labels={usageBreakdownLabels}
                 />
               ) : undefined
@@ -1019,9 +1018,9 @@ export function TodayStatsOverview({
                 <UsageBreakdownTooltip
                   title={usageDetailsLabel}
                   breakdown={stats.usageBreakdown}
-                  formatNumber={formatBreakdownNumber}
-                  formatRatio={formatBreakdownRatio}
-                  formatCurrency={formatBreakdownCurrency}
+                  buildNumberSpec={buildBreakdownNumberSpec}
+                  buildRatioSpec={buildBreakdownRatioSpec}
+                  buildCurrencySpec={buildBreakdownCurrencySpec}
                   labels={usageBreakdownLabels}
                 />
               ) : undefined

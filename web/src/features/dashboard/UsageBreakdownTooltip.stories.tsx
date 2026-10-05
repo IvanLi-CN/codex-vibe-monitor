@@ -2,6 +2,11 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { UsageBreakdown } from "../../lib/api";
+import {
+  buildAdaptiveCurrencyTextSpec,
+  buildAdaptiveNumberTextSpec,
+  buildAdaptivePercentTextSpec,
+} from "../shared/adaptiveMetricValueSpec";
 import { UsageBreakdownTooltip } from "./UsageBreakdownTooltip";
 
 const labels = {
@@ -10,9 +15,11 @@ const labels = {
   cacheWrite: "Cache write",
   cacheRead: "Cache read",
   cacheHitRate: "Cache hit rate",
+  cacheHitRateCompact: "Hit rate",
   output: "Output",
   unknownModel: "Unidentified model",
   reasoningEffort: "Reasoning effort",
+  tokenUnit: "tokens",
 };
 
 const exactBreakdown: UsageBreakdown = {
@@ -114,23 +121,80 @@ const missingCostBreakdown: UsageBreakdown = {
   models: exactBreakdown.models.map(({ costs: _costs, ...model }) => model),
 };
 
-function formatNumber(value: number) {
-  return new Intl.NumberFormat("en-US").format(value);
+const longValueBreakdown: UsageBreakdown = {
+  cacheWriteTokens: 105_769_103_036,
+  cacheReadTokens: 306_688_912,
+  outputTokens: 11_896_568_147,
+  costs: {
+    input: 85_755.9564,
+    cacheWrite: 103_355.4234,
+    cacheRead: 120.2888,
+    output: 11_896.568,
+    reasoning: 17.4928,
+    unknown: 0,
+  },
+  models: [
+    {
+      model: "gpt-5.6",
+      reasoningEffort: "max",
+      cacheWriteTokens: 34_724_382,
+      cacheReadTokens: 12_873_216,
+      outputTokens: 5_054_843_182,
+      costs: {
+        input: 34_724.382,
+        cacheWrite: 12_873.216,
+        cacheRead: 5_054.8432,
+        output: 2_527.4216,
+        reasoning: 742.19,
+        unknown: 0,
+      },
+    },
+    {
+      model: "gpt-6-luna",
+      reasoningEffort: "medium",
+      cacheWriteTokens: 37_212_246,
+      cacheReadTokens: 944_699_008,
+      outputTokens: 3_608_133,
+      costs: {
+        input: 37_212.246,
+        cacheWrite: 944_699.008,
+        cacheRead: 3_608.133,
+        output: 1_804.0665,
+        reasoning: 380.25,
+        unknown: 0,
+      },
+    },
+    {
+      model: "gpt-6.1-sol",
+      reasoningEffort: "none",
+      cacheWriteTokens: 33_232_552,
+      cacheReadTokens: 918_523_776,
+      outputTokens: 3_163_948,
+      costs: {
+        input: 33_232.552,
+        cacheWrite: 918_523.776,
+        cacheRead: 3_163.948,
+        output: 1_581.974,
+        reasoning: 310.12,
+        unknown: 0,
+      },
+    },
+  ],
+};
+
+function buildNumberSpec(value: number) {
+  return buildAdaptiveNumberTextSpec(value, "en-US", 0);
 }
 
-function formatCurrency(value: number) {
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency: "USD",
+function buildRatioSpec(value: number | null) {
+  return buildAdaptivePercentTextSpec(value, "en-US", { maximumFractionDigits: 1 });
+}
+
+function buildCurrencySpec(value: number | null) {
+  return buildAdaptiveCurrencyTextSpec(value, "en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
-  }).format(value);
-}
-
-function formatRatio(value: number | null) {
-  return value == null
-    ? "—"
-    : new Intl.NumberFormat("en-US", { style: "percent", maximumFractionDigits: 1 }).format(value);
+  });
 }
 
 const meta = {
@@ -142,7 +206,7 @@ const meta = {
   },
   decorators: [
     (Story) => (
-      <I18nProvider>
+      <I18nProvider initialLocale="en" persistLocale={false}>
         <Story />
       </I18nProvider>
     ),
@@ -150,15 +214,15 @@ const meta = {
   args: {
     title: "Usage details",
     breakdown: exactBreakdown,
-    formatNumber,
-    formatRatio,
-    formatCurrency,
+    buildNumberSpec,
+    buildRatioSpec,
+    buildCurrencySpec,
     labels,
   },
   render: (args) => (
     <div
       data-visual-evidence-surface="dashboard-usage-breakdown-tooltip"
-      className="min-h-screen bg-base-200 px-[18px] py-6 text-base-content sm:px-6"
+      className="w-[692px] max-w-full bg-base-200 px-[18px] py-6 text-base-content sm:px-6"
     >
       <div
         data-visual-evidence-target="dashboard-usage-breakdown-table"
@@ -254,12 +318,7 @@ export const Mobile390: Story = {
   tags: ["test"],
   ...ExactCosts,
   args: {
-    breakdown: {
-      ...exactBreakdown,
-      models: exactBreakdown.models
-        .filter((model) => model.model !== "gpt-5.6-luna-2026-07-27")
-        .map((model) => (model.model === "gpt-6-sol" ? { ...model, model: "gpt-6-luna" } : model)),
-    },
+    breakdown: longValueBreakdown,
   },
   globals: {
     viewport: { value: "mobile390", isRotated: false },
@@ -318,15 +377,23 @@ export const Mobile390: Story = {
     ).toBeLessThanOrEqual(1);
     await expect(mobileList.scrollWidth).toBeLessThanOrEqual(mobileList.clientWidth);
     await expect(canvas.getByTestId("usage-breakdown-table-scroll-region")).toHaveClass("hidden");
+    const compactValue = mobileList.querySelector<HTMLElement>(
+      '[data-adaptive-metric-visible="true"][data-compact="true"]',
+    );
+    if (!compactValue) throw new Error("missing compact mobile usage value");
+    await expect(compactValue).not.toHaveAttribute("title");
+    await userEvent.click(compactValue);
+    await expect(canvasElement.ownerDocument.body.textContent).toContain("105,769,103,036 tokens");
   },
 };
 
 export const ConstrainedOverlay: Story = {
   ...ExactCosts,
+  args: { breakdown: longValueBreakdown },
   render: (args) => (
     <div
       data-visual-evidence-surface="dashboard-usage-breakdown-constrained-overlay"
-      className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6"
+      className="w-[692px] max-w-full bg-base-200 px-4 py-6 text-base-content sm:px-6"
     >
       <div
         data-visual-evidence-target="dashboard-usage-breakdown-constrained-table"
@@ -355,5 +422,22 @@ export const ConstrainedOverlay: Story = {
       Number.parseFloat(getComputedStyle(tableRegion.querySelector("table")!).fontSize),
     ).toBeGreaterThanOrEqual(12);
     await expect(tableRegion.scrollWidth).toBeLessThanOrEqual(tableRegion.clientWidth);
+    for (const header of tableRegion.querySelectorAll<HTMLTableCellElement>("thead th")) {
+      await expect(header.scrollWidth).toBeLessThanOrEqual(header.clientWidth);
+    }
+    for (const headerButton of tableRegion.querySelectorAll<HTMLButtonElement>("thead button")) {
+      await expect(headerButton.scrollWidth).toBeLessThanOrEqual(headerButton.clientWidth);
+      await expect(getComputedStyle(headerButton).whiteSpace).toBe("nowrap");
+    }
+    for (const headerLabel of tableRegion.querySelectorAll<HTMLElement>("thead th > span")) {
+      await expect(getComputedStyle(headerLabel).whiteSpace).toBe("nowrap");
+    }
+    const compactValue = tableRegion.querySelector<HTMLElement>(
+      '[data-adaptive-metric-visible="true"][data-compact="true"]',
+    );
+    if (!compactValue) throw new Error("missing compact desktop usage value");
+    await expect(compactValue).not.toHaveAttribute("title");
+    await userEvent.click(compactValue);
+    await expect(canvasElement.ownerDocument.body.textContent).toContain("105,769,103,036 tokens");
   },
 };

@@ -292,6 +292,38 @@ describe("AdaptiveMetricValue", () => {
     expect(getMetric().dataset.compact).toBe("true");
   });
 
+  it("uses the project tooltip and suppresses the native title when requested", () => {
+    const spec = buildAdaptiveNumberTextSpec(30_030_779, "en-US", 0, {
+      presentation: "account-stat-card",
+    });
+    metricContainerWidth = 76;
+    metricMeasureWidths = new Map([
+      ["30.0M", 60],
+      ["30.031M", 80],
+      ["30.03M", 72],
+      ["30M", 48],
+      ["30,030,779", 180],
+    ]);
+
+    render(
+      <AdaptiveDisplayValue
+        spec={spec}
+        data-testid="adaptive-metric"
+        compactTooltipContent="30,030,779 tokens"
+        showNativeTitle={false}
+      />,
+    );
+
+    expect(getVisibleMetricText()).toBe("30.0M");
+    expect(getMetric().getAttribute("title")).toBeNull();
+
+    act(() => {
+      getMetric().click();
+    });
+
+    expect(document.body.textContent).toContain("30,030,779 tokens");
+  });
+
   it("keeps the short-scale compact suffix for zh overflow fallback", () => {
     metricContainerWidth = 100;
     metricMeasureWidths = new Map([
