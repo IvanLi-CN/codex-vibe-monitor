@@ -10,7 +10,7 @@
     "description": "Existing canonical monthly gzip SQLite, manifests, V2 Summary proof, raw links and immutable maintenance run JSON",
     "storage_implementation": "Existing SQLite tables and canonical gzip SQLite files",
     "source_compatibility_range": {
-      "from_program_versions": "Supported same-Minor v3.0.0 reader sources plus declared retention fixture upgrades v2.71.45/v2.80.2 and development baseline162253ad; earlier-Major v2.85/v2.86 source fingerprints retained as historical",
+      "from_program_versions": "Supported same-Minor v3.1.0 reader sources plus declared retention fixture upgrades v2.71.45/v2.80.2 and development baseline162253ad; earlier-Minor v3.0.0 and earlier-Major v2.85/v2.86 source fingerprints retained as historical",
       "to_program_version": "Current PR candidate, version assigned after merge",
       "direct_major_skips_supported": false
     }
