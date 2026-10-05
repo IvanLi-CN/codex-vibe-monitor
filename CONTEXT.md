@@ -8,6 +8,53 @@ This context freezes the project-specific terms used in invocation observability
 One logical unit of proxy-observed work counted once regardless of upstream retries. Its queue, upstream work, and terminal outcome share one invocation identity. Legacy WebSocket turns remain valid historical invocations, but WebSocket is no longer a live client-facing transport.
 _Avoid_: 上游尝试, 重试次数
 
+**提示缓存键（Prompt Cache Key）**:
+The normalized request key used to attribute invocations to a prompt-cache conversation. It is distinct from the service-assigned Conversation ID.
+_Avoid_: 对话 ID, 调用 ID
+
+**提示缓存对话（Prompt-cache Conversation）**:
+The retained grouping of invocations attributed to one Prompt Cache Key. Its identity and invocation statistics share a lifecycle governed by retained invocation records.
+_Avoid_: 上游会话, 上游账号, 展示分组
+
+**对话 ID（Conversation ID）**:
+The service-assigned identity of a retained Prompt-cache Conversation. It supplies the common prefix of that conversation's Invocation IDs.
+_Avoid_: Prompt Cache Key, 哈希展示值, 调用 ID
+
+**近期活跃对话（Recently Active Conversation）**:
+A Prompt-cache Conversation with at least one Invocation starting within the preceding 48 hours. This activity window is used to estimate allocation cache capacity and is distinct from having an invocation currently in progress.
+_Avoid_: 在途对话, 正在调用的对话
+
+**调用 ID（Invocation ID）**:
+The identity of one Invocation, shared by all of its Upstream Attempts. It combines an allocation prefix with an Invocation Sequence.
+_Avoid_: 上游尝试 ID, 对话 ID
+
+**调用序号（Invocation Sequence）**:
+The ordered value used within a conversation or an unbound allocation prefix to distinguish Invocation IDs. Skipped or reserved values do not represent completed invocations and must not be counted as usage.
+_Avoid_: 调用数, 已完成调用数
+
+**预占号段（Reserved Invocation Range）**:
+A contiguous set of Invocation Sequences durably claimed before they may be issued. Reservation does not mean an Invocation has occurred, and unused values may be skipped after a restart.
+_Avoid_: 已发出的调用, 调用计数
+
+**预占上限（Reserved Invocation Ceiling）**:
+The durable upper boundary of Invocation Sequences claimed for an allocation prefix, including issued sequences and outstanding reservations. It is distinct from the last issued sequence and the number of invocations.
+_Avoid_: 最近调用序号, 调用数
+
+**备用号段（Standby Invocation Range）**:
+A Reserved Invocation Range confirmed for use after the current range is consumed. A refill that has not committed is not a standby range.
+_Avoid_: 待提交号段, 当前可发号段
+
+**退号（Reservation Return）**:
+Releasing the never-issued trailing sequences of a Reserved Invocation Range so future allocation may claim them again. It does not release an issued Invocation ID, including one whose invocation was cancelled.
+_Avoid_: 已发 ID 复用, 调用回滚
+
+**无对话调用（Unbound Invocation）**:
+An Invocation with no Prompt Cache Key and therefore no Prompt-cache Conversation attribution. It still has an Invocation ID and may use any eligible upstream account.
+_Avoid_: 无账号调用, 匿名调用
+
+**小时调用前缀（Hourly Invocation Prefix）**:
+The identity shared by Unbound Invocations starting within one UTC hour. An invocation retains its assigned prefix when it continues across an hour boundary.
+_Avoid_: 对话 ID, 每次调用随机前缀
 **传输拒绝（Transport Rejection）**:
 A client request rejected at the transport boundary before it enters account routing, upstream selection, invocation persistence, or retry handling. A retired transport produces an observable protocol error and structured telemetry, but does not create a synthetic invocation.
 _Avoid_: 失败调用, 上游失败, 合成调用

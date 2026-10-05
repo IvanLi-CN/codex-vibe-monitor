@@ -306,6 +306,7 @@ MOCK_SCRIPT="$REMOTE_RUN/.codex-performance-mock.py"
 LOADGEN_SCRIPT="$REMOTE_RUN/.codex-performance-loadgen.py"
 CONTROL_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-control-loadgen.py"
 CHECKPOINT_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/prompt-cache-checkpoint-loadgen.py"
+RANGE_LOADGEN_SCRIPT="$REMOTE_WORKSPACE/scripts/invocation-range-acceptance.py"
 BASE_COMPOSE_FILE="$REMOTE_RUN/.codex-performance.compose.base.yaml"
 OLD_READER_OVERRIDE="$REMOTE_RUN/.codex-old-reader.compose.yaml"
 DATA_DIR="$REMOTE_RUN/data"
@@ -323,6 +324,9 @@ APP_RUST_LOG=warn
 if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]]; then
   APP_RUST_LOG=info
 fi
+if [[ "$SCENARIO" = "long-wait" || "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]]; then
+  APP_RUST_LOG="$APP_RUST_LOG,codex_vibe_monitor::prompt_cache_conversations::invocation_ranges=debug"
+fi
 
 mkdir -p "$DATA_DIR" "$LOG_DIR"
 chmod 0777 "$DATA_DIR"
@@ -336,7 +340,7 @@ from datetime import datetime, timezone
 
 scenario_sources = [
     pathlib.Path(os.environ["REMOTE_WORKSPACE"]) / "scripts" / name
-    for name in ("shared-testbox-performance-acceptance", "prompt-cache-control-loadgen.py", "prompt-cache-checkpoint-loadgen.py")
+    for name in ("shared-testbox-performance-acceptance", "prompt-cache-control-loadgen.py", "prompt-cache-checkpoint-loadgen.py", "invocation-range-acceptance.py")
 ]
 scenario_digest = hashlib.sha256(b"".join(path.read_bytes() for path in scenario_sources)).hexdigest()
 metadata = {
@@ -382,7 +386,7 @@ cleanup_remote() {
     stats_pid=""
   fi
   if [ -f "$COMPOSE_FILE" ]; then
-    if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkpoint" ]] && [ -d "$LOG_DIR" ]; then
+    if [ -d "$LOG_DIR" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs --no-color app \
         > "$LOG_DIR/app-on-exit.log" 2>/dev/null || true
     fi
@@ -499,6 +503,7 @@ import os
 import queue
 import socket
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -902,6 +907,39 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         }
         for sequence, (scenario, key_mode, prompt_cache_key) in enumerate(slow_modes)
     ]
+    # Measure long upstream waits on admitted identities. Fresh-key pressure
+    # remains in every third fast request below; a permitted cold refusal must
+    # not prevent the long-wait fixture from reaching the mock upstream.
+    warmed_keys = set()
+    warmup_refusals = 0
+    for spec in slow_specs:
+        key = spec['prompt_cache_key']
+        if key in warmed_keys:
+            continue
+        for attempt in range(1, 6):
+            result = long_wait_proxy_once({
+                **spec,
+                'scenario': 'fast',
+                'key_mode': 'different' if key is not None else 'none',
+            }, 15)
+            if result['status'] == 200 and result['terminal'] is not None:
+                warmed_keys.add(key)
+                break
+            if (
+                result['status'] == 503
+                and result['invoke_id'] is None
+                and result['body'] == '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}'
+                and attempt < 5
+            ):
+                warmup_refusals += 1
+                continue
+            raise SystemExit(f'long-wait fixture admission failed: {result}')
+    print(json.dumps({
+        'phase': 'long-wait-fixture-ready',
+        'round': round_index,
+        'owners': len(warmed_keys),
+        'cold_refusals': warmup_refusals,
+    }), flush=True)
     started_at = time.perf_counter()
     slow_pool = ThreadPoolExecutor(max_workers=8)
     slow_futures = [slow_pool.submit(long_wait_proxy_once, spec, 195) for spec in slow_specs]
@@ -942,15 +980,31 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
     slow_pool.shutdown(wait=True)
     cancel_thread.join(timeout=10)
 
+    # C3 permits a cold owner's empty-range/admission wait to fail closed at
+    # 100 ms. Keep these visible and include their full response latency in
+    # the allocation percentile; cached owners must still succeed.
+    cold_rejections = [
+        item for item in fast_results
+        if item['key_mode'] == 'different'
+        and item['status'] == 503
+        and item['invoke_id'] is None
+        and item['body'] in (
+            '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}',
+            '{"error":"failed to allocate proxy invoke id: invocation cache admission timed out after 100ms"}',
+        )
+    ]
+    cold_rejected_sequences = {item['sequence'] for item in cold_rejections}
     fast_bad = [
         item for item in fast_results
         if item['status'] != 200 or item['terminal'] is None
+        if item['sequence'] not in cold_rejected_sequences
     ]
     fast_parse_ms = [
         item['terminal']['request_parse_ms']
         for item in fast_results
         if item['terminal'] and isinstance(item['terminal']['request_parse_ms'], (int, float))
     ]
+    fast_parse_ms.extend(item['response_ms'] for item in cold_rejections)
     fast_confirm_ms = [
         item['terminal']['confirm_ms']
         for item in fast_results
@@ -1013,6 +1067,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         'fast_submitted': len(fast_results),
         'fast_bad_count': len(fast_bad),
         'fast_bad_examples': fast_bad[:3],
+        'cold_rejection_count': len(cold_rejections),
+        'cold_rejection_examples': cold_rejections[:3],
         'allocation_parse_p99_ms': percentile(fast_parse_ms, 0.99),
         'terminal_confirm_p99_ms': percentile(fast_confirm_ms, 0.99),
         'slow_success_ok': success_ok,
@@ -1037,6 +1093,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
 
 def run_long_wait(duration_seconds, rounds, request_rate):
     seed()
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'install'], check=True)
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'probe'], check=True)
     for round_index in range(1, rounds + 1):
         run_long_wait_round(round_index, duration_seconds, request_rate)
     print(json.dumps({
@@ -1344,6 +1402,7 @@ services:
       - "$LOADGEN_SCRIPT:/work/loadgen.py:ro"
       - "$CONTROL_LOADGEN_SCRIPT:/work/prompt-cache-control-loadgen.py:ro"
       - "$CHECKPOINT_LOADGEN_SCRIPT:/work/prompt-cache-checkpoint-loadgen.py:ro"
+      - "$RANGE_LOADGEN_SCRIPT:/work/invocation-range-acceptance.py:ro"
       - "$DATA_DIR:/work/data"
 YAML
 
@@ -1416,6 +1475,9 @@ if [[ "$SCENARIO" = "prompt-cache-control" || "$SCENARIO" = "prompt-cache-checkp
     ) &
     stats_pid=$!
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+    if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py install </dev/null >> "$LOAD_LOG"
+    fi
     if [ "$SCENARIO" = "prompt-cache-checkpoint" ]; then
       docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py seed-history "$round_index" </dev/null >> "$LOAD_LOG"
       if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ] && [ "$round_index" -eq 1 ]; then
@@ -1437,10 +1499,12 @@ services:
     image: "$COMPAT_IMAGE_TAG"
 YAML
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" stop app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py reader-snapshot </dev/null >> "$LOAD_LOG"
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" up -d app
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py wait-health </dev/null
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-checkpoint-loadgen.py compatibility-read "$round_index" </dev/null >> "$LOAD_LOG"
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" -f "$OLD_READER_OVERRIDE" stop app
+        docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py reader-compare </dev/null >> "$LOAD_LOG"
       fi
     else
       legacy_enabled=0
@@ -1458,6 +1522,9 @@ YAML
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
         docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py candidate-observe "$round_index" "$((DURATION_SECONDS * 3 / 5))" </dev/null >> "$LOAD_LOG"
       fi
+    fi
+    if [ "$PROMPT_CACHE_CONTROL_MODE" = "candidate" ]; then
+      docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py verify </dev/null >> "$LOAD_LOG"
     fi
     docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$LOG_DIR/app-$SCENARIO-round-$round_index.log" || true
     stop_prompt_cache_log_reader
@@ -1512,6 +1579,14 @@ elif [ "$SCENARIO" = "sustained" ] || [ "$SCENARIO" = "overhead" ] || [ "$SCENAR
   if [ "$load_status" -ne 0 ]; then
     echo "sustained workload failed with status $load_status" >&2
     exit "$load_status"
+  fi
+  if [ "$SCENARIO" = "long-wait" ]; then
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py snapshot </dev/null >> "$LOAD_LOG"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" kill -s SIGKILL app
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" start app
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/prompt-cache-control-loadgen.py wait-health </dev/null
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py recover </dev/null >> "$LOAD_LOG"
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/invocation-range-acceptance.py verify </dev/null >> "$LOAD_LOG"
   fi
   printf '== wait for telemetry flush ==\n'
   sleep 70

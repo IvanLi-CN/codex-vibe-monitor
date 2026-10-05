@@ -124,7 +124,6 @@ None
 
 ## Visual Evidence
 
-
 - source_type: ui_demo
   target_program: mock-only Codex Vibe Monitor Web Demo
   capture_scope: page

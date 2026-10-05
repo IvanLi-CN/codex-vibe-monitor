@@ -1,5 +1,8 @@
 use super::*;
 
+mod invocation_identity;
+pub(crate) use invocation_identity::PoolInvocationCleanupGuard;
+
 const WEBSOCKET_PROXY_REMOVED_MESSAGE: &str = "WebSocket proxy support has been removed";
 const WEBSOCKET_PROXY_REMOVED_CODE: &str = "websocket_proxy_removed";
 const WEBSOCKET_PROXY_REMOVED_BODY: &str =
@@ -142,7 +145,7 @@ pub(crate) async fn proxy_openai_v1_common(
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            let invoke_id = match allocate_proxy_invoke_id(
+            let invoke_id = match allocate_proxy_invoke_id_without_active_lease(
                 &state,
                 header_prompt_cache_key.as_deref(),
             )
@@ -1572,77 +1575,6 @@ impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
             .await
             {
                 warn!(error = %err, "failed to recover dropped pool early-phase orphan");
-            }
-        });
-    }
-}
-
-pub(crate) struct PoolInvocationCleanupGuard {
-    state: Arc<AppState>,
-    selector: InvocationRecoverySelector,
-    recovery_trigger: &'static str,
-    prompt_cache_key: Option<String>,
-    armed: bool,
-}
-
-impl std::fmt::Debug for PoolInvocationCleanupGuard {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PoolInvocationCleanupGuard")
-            .field("selector", &self.selector)
-            .field("recovery_trigger", &self.recovery_trigger)
-            .field(
-                "prompt_cache_key",
-                &self.prompt_cache_key.as_ref().map(|_| "<redacted>"),
-            )
-            .field("armed", &self.armed)
-            .finish()
-    }
-}
-
-impl PoolInvocationCleanupGuard {
-    pub(crate) fn new(
-        state: Arc<AppState>,
-        selector: InvocationRecoverySelector,
-        recovery_trigger: &'static str,
-        prompt_cache_key: Option<&str>,
-    ) -> Self {
-        Self {
-            state,
-            selector,
-            recovery_trigger,
-            prompt_cache_key: prompt_cache_key
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(ToOwned::to_owned),
-            armed: true,
-        }
-    }
-
-    pub(crate) fn disarm(&mut self) {
-        self.armed = false;
-    }
-}
-
-impl Drop for PoolInvocationCleanupGuard {
-    fn drop(&mut self) {
-        if !self.armed {
-            return;
-        }
-
-        let state = self.state.clone();
-        let selector = self.selector.clone();
-        let recovery_trigger = self.recovery_trigger;
-        let prompt_cache_key = self.prompt_cache_key.take();
-        tokio::spawn(async move {
-            if let Err(err) = recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
-                state.as_ref(),
-                selector,
-                recovery_trigger,
-                prompt_cache_key,
-            )
-            .await
-            {
-                warn!(error = %err, recovery_trigger, "failed to recover dropped pool invocation orphan");
             }
         });
     }

@@ -112,6 +112,15 @@ def seed_history(round_index, legacy_enabled):
     seed_account()
     connection = open_db(BUSINESS_DB, timeout=10)
     connection.execute('BEGIN IMMEDIATE')
+    # Fixture-only commit observation survives publication deleting short-lived
+    # staging rows between two samples. Rolled-back pages leave no audit event.
+    connection.execute('CREATE TABLE control_staging_commits (id INTEGER PRIMARY KEY, cursor_id INTEGER NOT NULL)')
+    for operation in ('INSERT', 'UPDATE'):
+        connection.execute(
+            f'CREATE TRIGGER control_stage_{operation.lower()} AFTER {operation} '
+            'ON prompt_cache_conversation_stats_refresh_staging WHEN NEW.cursor_id>0 BEGIN '
+            'INSERT INTO control_staging_commits (cursor_id) VALUES (NEW.cursor_id); END'
+        )
     now = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds')
     rows = []
     sequence = 0
@@ -188,6 +197,9 @@ def snapshot():
             'SELECT COUNT(*),COALESCE(MAX(cursor_id),0) '
             'FROM prompt_cache_conversation_stats_refresh_staging'
         ).fetchone()
+        staging_commit_count = 0
+        if business.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='control_staging_commits'").fetchone():
+            staging_commit_count = business.execute('SELECT COALESCE(MAX(id),0) FROM control_staging_commits').fetchone()[0]
         key_count = business.execute(
             'SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key LIKE ?',
             (f'acceptance-r%-key-%',),
@@ -245,6 +257,7 @@ def snapshot():
         'queue_count': queue_count,
         'staging_count': staging[0],
         'staging_max_cursor': staging[1],
+        'staging_commit_count': staging_commit_count,
         'history_key_count': key_count,
         'large_key_request_count': target[0] if target else 0,
         'latest_run_status': latest[0] if latest else None,
@@ -333,6 +346,28 @@ def proxy_once(sequence, prompt_cache_key):
         'terminal_ms': (time.perf_counter() - response_finished) * 1000 if terminal else None,
         'terminal': terminal,
     }
+
+
+def admit_fixture_owner(round_index, prompt_cache_key):
+    """Prepare a committed range before measuring hot allocation under SQL pressure."""
+    for attempt in range(1, 6):
+        result = proxy_once(f'fixture-r{round_index}-{attempt}', prompt_cache_key)
+        print(json.dumps({
+            'phase': 'fixture-owner-admission', 'round': round_index,
+            'attempt': attempt, **result,
+        }), flush=True)
+        if result['status'] == 200 and result['terminal'] is not None:
+            return result
+        expected_cold_refusal = (
+            result['status'] == 503 and result['invoke_id'] is None
+            and result['body'] in (
+                '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}',
+                '{"error":"failed to allocate proxy invoke id: invocation cache admission timed out after 100ms"}',
+            )
+        )
+        if not expected_cold_refusal:
+            break
+    raise SystemExit(f'fixture owner admission failed in round {round_index}')
 
 
 def percentile(values, fraction):
@@ -461,11 +496,69 @@ def observe_progress(probe, state, elapsed_seconds):
                     probe['deadline_failures'].append(name)
     if not state.get('snapshot_error'):
         probe['durable_seen'] |= progress_cursor(state) != tuple(probe['baseline_cursor'])
-        probe['staging_seen'] |= state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
+        probe['staging_seen'] |= (
+            state.get('staging_max_cursor', 0) > probe['baseline_staging_cursor']
+            or state.get('staging_commit_count', 0) > probe['baseline_staging_commit_count']
+        )
+
+
+def wait_for_fixture_pressure_idle(round_index, deadline):
+    """Refresh cached pressure inside the caller's existing probe budget."""
+    started_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    last_observation = None
+    requested_snapshot = None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        status, body, _ = request('GET', '/api/system/status', timeout=min(5, remaining))
+        if status != 200:
+            raise SystemExit(f'priority fixture pressure status unavailable: {status}')
+        snapshot = json.loads(body)
+        refreshed_at = snapshot['refreshedAt']
+        refreshed_epoch = datetime.datetime.fromisoformat(
+            refreshed_at.replace('Z', '+00:00'),
+        ).timestamp()
+        runtime = snapshot['runtimePressureHealth']
+        pressure = runtime['databasePressure']
+        coordinator = runtime['proxySqliteWriteCoordinator']
+        pending = runtime['writerAccounting']['pendingDepth']
+        signature = (pressure['pressureCooldownRemainingMs'],
+                     coordinator['activeWriteClass'], coordinator['p2WaiterCount'], pending)
+        if (refreshed_epoch >= started_utc and not signature[0]
+                and signature[1] is None and not signature[2] and not signature[3]):
+            return True
+        observation = (refreshed_at, signature)
+        if observation != last_observation:
+            print(json.dumps({'phase': 'priority-fixture-pressure-wait',
+                              'round': round_index, 'pressure': signature,
+                              'refreshed_at': refreshed_at}), flush=True)
+            last_observation = observation
+        # GET serves a 60-second cache, as long as the entire probe budget.
+        # Request one refresh per observed snapshot through the existing task
+        # API; never extend the deadline or queue duplicate refreshes for it.
+        remaining = deadline - time.monotonic()
+        if requested_snapshot != refreshed_at and remaining > 0:
+            status, _, _ = request(
+                'POST', '/api/system/managed-tasks/system_status_snapshot/run',
+                timeout=min(5, remaining),
+            )
+            if status not in (200, 409):
+                raise SystemExit(f'priority fixture pressure refresh unavailable: {status}')
+            print(json.dumps({'phase': 'priority-fixture-pressure-refresh',
+                              'round': round_index, 'refreshed_at': refreshed_at,
+                              'status': status}), flush=True)
+            requested_snapshot = refreshed_at
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.2, remaining))
+    return False
 
 
 def priority_yield_probe(round_index):
     """Queue an interactive writer behind an admitted, unfinished SQL step."""
+    control(False)
+    admit_fixture_owner(round_index, f'priority-probe-r{round_index}')
     started = time.monotonic()
     started_utc = datetime.datetime.now(datetime.timezone.utc).timestamp()
     deadline = started + 60
@@ -474,6 +567,11 @@ def priority_yield_probe(round_index):
     while time.monotonic() < deadline and len(calls) < 3:
         attempts += 1
         control(False)
+        # History seeding may overlap startup rollup/P2 work. Do not hold the
+        # synthetic writer lock while those tasks drain their existing SQL;
+        # otherwise the probe itself perpetuates cooldown before P2 admission.
+        if not wait_for_fixture_pressure_idle(round_index, deadline):
+            break
         connection = open_db(BUSINESS_DB, timeout=0.5)
         try:
             connection.execute('BEGIN IMMEDIATE')
@@ -535,6 +633,8 @@ def priority_yield_probe(round_index):
 
 
 def candidate_input(round_index, duration_seconds, request_rate):
+    control(False)
+    admit_fixture_owner(round_index, f'acceptance-r{round_index}-key-000')
     start = time.monotonic()
     deadline = start + duration_seconds
     pause_at = start + min(60, max(5, duration_seconds // 2))
@@ -561,6 +661,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
     progress_probe = {
         'baseline_cursor': baseline_cursor,
         'baseline_staging_cursor': baseline_staging_cursor,
+        'baseline_staging_commit_count': first_state.get('staging_commit_count', 0),
         'eligible_since': None,
         'durable_seen': False,
         'staging_seen': False,
@@ -637,7 +738,10 @@ def candidate_input(round_index, duration_seconds, request_rate):
                     first_progress = second
                 if (
                     first_staging_progress is None
-                    and state.get('staging_max_cursor', 0) > baseline_staging_cursor
+                    and (
+                        state.get('staging_max_cursor', 0) > baseline_staging_cursor
+                        or state.get('staging_commit_count', 0) > progress_probe['baseline_staging_commit_count']
+                    )
                 ):
                     first_staging_progress = second
                 if (
@@ -696,6 +800,7 @@ def candidate_input(round_index, duration_seconds, request_rate):
         'submitted': sequence,
         'achieved_request_rate_per_second': round(sequence / duration_seconds, 3),
         'completed': len(results),
+        'target_fixture_calls': 1,
         'priority_probe_calls': len(priority_probe['samples']),
         'bad_count': len(bad),
         'bad_examples': bad[:3],
@@ -778,6 +883,7 @@ def baseline_probe(round_index, duration_seconds):
 
 def maintenance_lock_probe(round_index):
     control(True, 'managed')
+    admit_fixture_owner(round_index, f'lock-probe-r{round_index}')
     lock_connection = open_db(MAINTENANCE_DB, timeout=10)
     lock_connection.execute('BEGIN IMMEDIATE')
     lock_started = time.monotonic()
@@ -911,7 +1017,7 @@ def candidate_observe(round_index, duration_seconds):
     final = snapshot()
     status, body, _ = request('GET', '/api/system/prompt-cache/materialization')
     api_status = json.loads(body) if status == 200 else {}
-    expected_target_count = 1024 + input_summary['completed']
+    expected_target_count = 1024 + input_summary['target_fixture_calls'] + input_summary['completed']
     target_count_ok = final['large_key_request_count'] >= expected_target_count
     all_keys_ok = final['history_key_count'] == 400
     summary = {

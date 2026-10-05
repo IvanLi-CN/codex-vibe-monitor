@@ -19,10 +19,13 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::*;
+
+mod invocation_identity;
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
 };
+pub(crate) use invocation_identity::TrackedTerminalJournal;
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
 pub(crate) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
@@ -1339,7 +1342,7 @@ pub(crate) struct SqliteBatchWriter {
         Arc<std::sync::Mutex<Option<Arc<Mutex<DashboardActivitySnapshotCacheState>>>>>,
     summary_delta_hub: Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
-    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: Arc<TrackedTerminalJournal>,
     database_path: std::path::PathBuf,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
     #[cfg(test)]
@@ -1386,7 +1389,7 @@ impl SqliteBatchWriter {
         if let Some(journal) = terminal_journal.as_mut() {
             journal.queue_replay_for_dispatch(SQLITE_BATCH_MAX_ROWS);
         }
-        let terminal_journal = Arc::new(std::sync::Mutex::new(terminal_journal));
+        let terminal_journal = Arc::new(TrackedTerminalJournal::new(terminal_journal));
         queued_p1_count.store(replay_writes, Ordering::SeqCst);
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let journal_sync_shutdown = shutdown.child_token();
@@ -1472,7 +1475,7 @@ impl SqliteBatchWriter {
             dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
             summary_delta_hub: Arc::new(std::sync::Mutex::new(None)),
             terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
-            terminal_journal: Arc::new(std::sync::Mutex::new(None)),
+            terminal_journal: Arc::new(TrackedTerminalJournal::new(None)),
             database_path: std::path::PathBuf::from("test-sqlite-batch-writer.db"),
             dashboard_reconcile_gate: Arc::new(Mutex::new(())),
             prompt_cache_conversation_cache: Some(prompt_cache_conversation_cache),
@@ -1584,6 +1587,11 @@ impl SqliteBatchWriter {
         &self,
         terminal: BatchedTerminalInvocationWrite,
     ) -> TerminalEnqueueOutcome {
+        self.terminal_journal.pending.register(
+            &terminal.record.invoke_id,
+            &terminal.record.occurred_at,
+            terminal.raw_capture,
+        );
         #[cfg(test)]
         if self.buffered_writes.is_some() {
             let enqueued = self.enqueue(SqliteBatchWrite::TerminalInvocation(terminal));
@@ -2035,6 +2043,21 @@ impl SqliteBatchWriter {
             )
             .await
             .expect("flush buffered sqlite batch writes for test");
+            for terminal in batch.terminal_invocations.values() {
+                if let Some(cache) = &self.prompt_cache_conversation_cache {
+                    cache
+                        .lock()
+                        .await
+                        .identity_cache
+                        .range_manager
+                        .reconcile_persistence(&terminal.record.invoke_id);
+                }
+                self.terminal_journal.acknowledge(
+                    &terminal.record.invoke_id,
+                    &terminal.record.occurred_at,
+                    terminal.raw_capture,
+                );
+            }
             let deferred_writes = deferred.into_writes();
             let retained_count = deferred_writes.len();
             let retained_bytes = deferred_writes
@@ -2073,7 +2096,7 @@ pub(crate) async fn run_sqlite_batch_writer(
     summary_delta_hub: Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: Arc<Mutex<()>>,
-    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: Arc<TrackedTerminalJournal>,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
 ) {
@@ -2934,7 +2957,7 @@ pub(crate) async fn run_sqlite_batch_writer(
 
 #[cfg(not(test))]
 async fn run_terminal_journal_sync(
-    terminal_journal: Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: Arc<TrackedTerminalJournal>,
     shutdown: CancellationToken,
 ) {
     let mut ticker = interval(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL);
@@ -2970,7 +2993,7 @@ async fn run_terminal_journal_sync(
 }
 
 fn drain_terminal_journal_deferred_writes(
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
     pending: &mut PendingBatch,
     accounting: &PendingQueueAccounting,
     max_writes: usize,
@@ -3053,7 +3076,7 @@ async fn flush_pending_batch_accounted(
     summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
 ) -> Option<RetainedBatch> {
     let was_retained_retry = batch.retained_for_retry;
     let submitted_system_task_ids = batch
@@ -3186,7 +3209,7 @@ fn cleanup_discarded_p2_runtime_overlays(
 }
 
 fn quarantine_system_task_batch(
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
     batch: &PendingBatch,
     error: &anyhow::Error,
 ) -> Result<usize> {
@@ -3222,7 +3245,7 @@ fn shutdown_recovery_batch(batch: &PendingBatch) -> Option<PendingBatch> {
 }
 
 fn quarantine_shutdown_batch(
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
     database_path: &std::path::Path,
     batch: &PendingBatch,
     error: &str,
@@ -3293,7 +3316,7 @@ fn quarantine_shutdown_batch(
 
 fn release_shutdown_pending_batch(
     accounting: &PendingQueueAccounting,
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
     database_path: &std::path::Path,
     batch: &PendingBatch,
     reason: &str,
@@ -3322,7 +3345,7 @@ pub(crate) async fn flush_pending_batch(
     summary_delta_hub: &Arc<std::sync::Mutex<Option<Arc<SubscriptionHub>>>>,
     terminal_projection_hub: &Arc<std::sync::Mutex<Option<Arc<TerminalProjectionHub>>>>,
     dashboard_reconcile_gate: &Arc<Mutex<()>>,
-    terminal_journal: &Arc<std::sync::Mutex<Option<TerminalJournal>>>,
+    terminal_journal: &Arc<TrackedTerminalJournal>,
 ) -> Option<RetainedBatch> {
     if batch.is_empty() {
         return None;
@@ -3436,16 +3459,22 @@ pub(crate) async fn flush_pending_batch(
                     "proxy sqlite coordinated P1 batch committed"
                 );
                 accounting.transfer_p1_to_p2(deferred.estimated_memory_bytes());
-                if let Ok(mut journal) = terminal_journal.lock()
-                    && let Some(journal) = journal.as_mut()
-                {
-                    for terminal in p1_batch.terminal_invocations.values() {
-                        journal.acknowledge(
-                            &terminal.record.invoke_id,
-                            &terminal.record.occurred_at,
-                            terminal.raw_capture,
-                        );
+                for terminal in p1_batch.terminal_invocations.values() {
+                    if let Some(cache) = prompt_cache_conversation_cache {
+                        cache
+                            .lock()
+                            .await
+                            .identity_cache
+                            .range_manager
+                            .reconcile_persistence(&terminal.record.invoke_id);
                     }
+                    // Pending namespace protection covers the await above; only
+                    // release it after the old in-memory reference is reconciled.
+                    terminal_journal.acknowledge(
+                        &terminal.record.invoke_id,
+                        &terminal.record.occurred_at,
+                        terminal.raw_capture,
+                    );
                 }
                 batch.merge_p2(deferred);
             }
@@ -5270,7 +5299,7 @@ mod tests {
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(Mutex::new(())),
-            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(TrackedTerminalJournal::new(None)),
         )
         .await
         .expect("failed P1 flush should retain its batch");
@@ -5295,7 +5324,7 @@ mod tests {
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(std::sync::Mutex::new(None)),
             &Arc::new(Mutex::new(())),
-            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(TrackedTerminalJournal::new(None)),
         )
         .await
         .expect("failed retained batch should remain available after retry");
@@ -6148,7 +6177,7 @@ mod tests {
             terminal_projection_event_ids: Vec::new(),
             startup_backfill_tasks: Vec::new(),
         }));
-        let journal = Arc::new(std::sync::Mutex::new(Some(journal)));
+        let journal = Arc::new(TrackedTerminalJournal::new(Some(journal)));
         let mut pending = PendingBatch::default();
 
         let accounting = PendingQueueAccounting::default();
