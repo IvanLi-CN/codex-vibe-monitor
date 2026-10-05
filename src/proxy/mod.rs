@@ -33,11 +33,6 @@ mod usage_merge;
     reason = "Usage persistence adapters preserve established database call contracts."
 )]
 mod usage_persistence;
-#[expect(
-    clippy::too_many_arguments,
-    reason = "WebSocket preparation adapters preserve established call-site contracts."
-)]
-mod websocket;
 
 pub(crate) use dispatch::*;
 pub(crate) use failover::*;
@@ -51,4 +46,3 @@ pub(crate) use stream_gate::*;
 pub(crate) use upstream_transport::*;
 pub(crate) use usage_merge::*;
 pub(crate) use usage_persistence::*;
-pub(crate) use websocket::*;

@@ -626,18 +626,31 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
 }
 
 #[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_preserves_streaming_response() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    seed_pool_routing_api_key(&state, "pool-stream-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Streaming upstream",
+        "upstream-stream-key",
+        None,
+        None,
+        Some(&upstream_base),
+    )
+    .await;
+    let headers = HeaderMap::from_iter([(
+        http_header::AUTHORIZATION,
+        HeaderValue::from_static("Bearer pool-stream-key"),
+    )]);
 
     let response = proxy_openai_v1(
         State(state),
         OriginalUri("/v1/stream".parse().expect("valid uri")),
         Method::GET,
-        HeaderMap::new(),
+        headers,
         Body::empty(),
     )
     .await;

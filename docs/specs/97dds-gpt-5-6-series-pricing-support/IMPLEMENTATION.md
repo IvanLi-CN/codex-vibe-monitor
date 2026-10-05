@@ -6,6 +6,13 @@
 - Canonical spec: `docs/specs/97dds-gpt-5-6-series-pricing-support/SPEC.md`
 - The model-generation/family presentation contract is owned by `z9h7v-invocation-log-observability` and is now implemented with stable Sol/Luna glyphs and colors across generations. Targeted unit/Storybook coverage and production build pass; canonical visual evidence awaits owner confirmation. Pricing, discovery, capability checks, persisted usage, and historical cost remain unchanged.
 
+## Retirement overlay
+
+WebSocket-specific checklist and validation entries in this file are historical
+evidence from before ADR 0020. They do not define a current live transport
+contract. The retirement keeps HTTP pricing/usage behavior and historical
+WebSocket reads, while removing new WebSocket usage refresh writes.
+
 ## Delivery Checklist
 
 - [x] Create the active topic spec and index entry.

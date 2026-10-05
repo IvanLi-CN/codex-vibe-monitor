@@ -21,7 +21,6 @@ use tracing::{debug, warn};
 use super::*;
 
 mod invocation_identity;
-use crate::proxy::{websocket_terminal_payload, websocket_usage_is_strictly_richer};
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
@@ -834,19 +833,6 @@ impl PendingBatch {
                     std::collections::btree_map::Entry::Occupied(mut entry) => {
                         let old_bytes = entry.get().estimated_memory_bytes();
                         let existing = entry.get();
-                        let websocket_refresh =
-                            websocket_terminal_payload(existing.record.payload.as_deref())
-                                && websocket_terminal_payload(terminal.record.payload.as_deref());
-                        let incoming_is_richer = websocket_refresh
-                            && websocket_usage_is_strictly_richer(
-                                &existing.record.usage,
-                                &terminal.record.usage,
-                            );
-                        let terminal = if websocket_refresh && !incoming_is_richer {
-                            existing.clone()
-                        } else {
-                            terminal
-                        };
                         let preserved_sequence = terminal
                             .dashboard_terminal_sequence
                             .or(existing.dashboard_terminal_sequence);
@@ -4347,9 +4333,6 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[path = "sqlite_batch_writer_tests/websocket_usage_coalescing.rs"]
-    mod websocket_usage_coalescing;
 
     #[test]
     fn p1_retry_backoff_is_bounded_and_new_work_does_not_reset_deadline() {

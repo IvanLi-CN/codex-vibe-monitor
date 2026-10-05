@@ -20,8 +20,6 @@ const apiMocks = vi.hoisted(() => ({
         mergeUpstreamEnabled: boolean;
         fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
         upstream429MaxRetries: number;
-        websocketEnabled: boolean;
-        upstreamWebsocketDefaultEnabled: boolean;
         requestBodyLoggingEnabled: boolean;
         responseBodyLoggingEnabled: boolean;
         encryptedSessionOwnerRoutingEnabled: boolean;
@@ -72,8 +70,6 @@ function createSettingsPayload(overrides: Partial<SettingsPayload> = {}): Settin
       mergeUpstreamEnabled: false,
       fastModeRewriteMode: "disabled",
       upstream429MaxRetries: 3,
-      websocketEnabled: false,
-      upstreamWebsocketDefaultEnabled: false,
       requestBodyLoggingEnabled: true,
       responseBodyLoggingEnabled: true,
       encryptedSessionOwnerRoutingEnabled: false,
@@ -258,8 +254,6 @@ beforeEach(() => {
     mergeUpstreamEnabled: payload.hijackEnabled ? payload.mergeUpstreamEnabled : false,
     fastModeRewriteMode: payload.fastModeRewriteMode ?? "disabled",
     upstream429MaxRetries: payload.upstream429MaxRetries,
-    websocketEnabled: payload.websocketEnabled,
-    upstreamWebsocketDefaultEnabled: payload.upstreamWebsocketDefaultEnabled,
     requestBodyLoggingEnabled: payload.requestBodyLoggingEnabled,
     responseBodyLoggingEnabled: payload.responseBodyLoggingEnabled,
     encryptedSessionOwnerRoutingEnabled: payload.encryptedSessionOwnerRoutingEnabled,

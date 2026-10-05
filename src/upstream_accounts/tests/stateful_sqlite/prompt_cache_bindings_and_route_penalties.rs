@@ -3645,10 +3645,12 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
         "#,
     )
     .bind(&created.login_id)
-    .bind(serde_json::to_string(&vec![custom_tag_id, system_tag_id]).expect("encode tag ids"))
+    .bind(format!(
+        "[{custom_tag_id},{{\"kind\":\"object\"}},[\"nested\",{{\"ok\":true}}],true,false,null,\"keep\",{system_tag_id}]"
+    ))
     .execute(&state.pool)
     .await
-    .expect("seed legacy session tag ids");
+    .expect("seed non-scalar JSON tag values");
 
     cleanup_non_system_tags(&state.pool)
         .await
@@ -3698,7 +3700,52 @@ async fn cleanup_non_system_tags_removes_custom_tags_links_and_session_reference
         .await
         .expect("load cleaned login session")
         .expect("cleaned login session should exist");
-    assert_eq!(stored.tag_ids_json, None);
+    assert_eq!(
+        stored.tag_ids_json,
+        Some(format!(
+            r#"[{{"kind":"object"}},["nested",{{"ok":true}}],true,false,null,"keep",{system_tag_id}]"#
+        ))
+    );
+
+    let scalar_custom_tag_id =
+        insert_legacy_custom_tag(&state.pool, "cleanup-scalar", &test_tag_routing_rule()).await;
+    sqlx::query("UPDATE pool_oauth_login_sessions SET tag_ids_json = ?2 WHERE login_id = ?1")
+        .bind(&created.login_id)
+        .bind(scalar_custom_tag_id.to_string())
+        .execute(&state.pool)
+        .await
+        .expect("seed scalar custom tag root");
+    cleanup_non_system_tags(&state.pool)
+        .await
+        .expect("preserve scalar custom tag root");
+    let scalar_root = load_login_session_by_login_id(&state.pool, &created.login_id)
+        .await
+        .expect("load scalar-root login session")
+        .expect("scalar-root login session should exist");
+    assert_eq!(
+        scalar_root.tag_ids_json,
+        Some(scalar_custom_tag_id.to_string())
+    );
+
+    let object_custom_tag_id =
+        insert_legacy_custom_tag(&state.pool, "cleanup-object", &test_tag_routing_rule()).await;
+    sqlx::query("UPDATE pool_oauth_login_sessions SET tag_ids_json = ?2 WHERE login_id = ?1")
+        .bind(&created.login_id)
+        .bind(format!(r#"{{"retired":{object_custom_tag_id}}}"#))
+        .execute(&state.pool)
+        .await
+        .expect("seed object custom tag root");
+    cleanup_non_system_tags(&state.pool)
+        .await
+        .expect("preserve object custom tag root");
+    let object_root = load_login_session_by_login_id(&state.pool, &created.login_id)
+        .await
+        .expect("load object-root login session")
+        .expect("object-root login session should exist");
+    assert_eq!(
+        object_root.tag_ids_json,
+        Some(format!(r#"{{"retired":{object_custom_tag_id}}}"#))
+    );
 }
 
 #[tokio::test]

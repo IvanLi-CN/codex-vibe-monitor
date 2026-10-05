@@ -7,8 +7,8 @@
   - 当前开放 5 分钟桶的上传/下载累计。
   - invocation 级连接字节追踪、终态清理与 Dashboard live stream 心跳预算。
 - 代理热路径在以下时机写入缓存：
-  - 上游 HTTP / WebSocket socket 实际写入时记录上传字节，并同时写入 global、host、account 三个维度。
-  - 上游 HTTP / WebSocket socket 实际读取时记录下载字节，并同时写入 global、host、account 三个维度。
+  - 上游 HTTP socket 实际写入时记录上传字节，并同时写入 global、host、account 三个维度。
+  - 上游 HTTP socket 实际读取时记录下载字节，并同时写入 global、host、account 三个维度。
   - transport future 终态或 drop 时做最终 flush，避免 timeout / early close 吃掉最后一段真实字节。
 - pool attempt 持久化新增 `upstream_base_url_host`；direct 路径继续从 invocation payload 中读取 `upstreamBaseUrlHost`。
 - 新增 `upstream_socket_network_minute`，按 `(bucket_start_epoch, source, upstream_base_url_host, upstream_account_id)` 持久化真实 socket 分钟累计。
@@ -30,7 +30,7 @@
   - 只要存在 `dashboard.network-recent.current` 订阅者，服务端由 `SubscriptionHub` 按 topic 共享 1 秒 cadence 推送 live payload，用于推进 recent 窗口右边界；前端不再通过 `refresh()` 维持 steady-state。
   - 共享 cadence 由 topic 订阅 lease 计数驱动，多条 SSE 连接订阅同一 topic 时只保留一个 server-push task，避免连接数放大 payload build / broadcast。
 - `src/oauth_bridge.rs` 新增 counted OAuth transport path，避免 OAuth HTTP 请求继续走 reqwest body 近似值。
-- `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，`src/proxy/websocket.rs` 复用同一套 meter / reporter，统一 direct、pool、OAuth 与 WebSocket 的真实网速事实源。
+- `src/proxy/upstream_transport.rs` 提供 counted HTTP transport，统一 direct、pool 与 OAuth 的真实网速事实源。
 
 ## 前端
 
@@ -81,7 +81,7 @@
   - global/host/account runtime bucket 记账。
   - socket minute rollup 的 direct 写入、cursor seed 与 pool retry host split。
   - Dashboard 无 scope timeseries 改读 socket minute 5 分钟聚合。
-  - counted HTTP、OAuth timeout / retry、WebSocket usage 持久化的真实字节计数。
+  - counted HTTP、OAuth timeout / retry、HTTP usage 持久化的真实字节计数。
 - 后端新增 recent 面板定向单测覆盖：
   - 300 秒 recent 窗口保留与上一完整秒快照语义。
   - 进程启动不足 5 分钟时 recent 前导空档的 `isAvailable=false` 语义。

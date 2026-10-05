@@ -107,8 +107,6 @@ const DEFAULT_PROXY_SETTINGS: ProxySettings = {
   mergeUpstreamEnabled: true,
   fastModeRewriteMode: "disabled",
   upstream429MaxRetries: 3,
-  websocketEnabled: true,
-  upstreamWebsocketDefaultEnabled: true,
   requestBodyLoggingEnabled: true,
   responseBodyLoggingEnabled: true,
   encryptedSessionOwnerRoutingEnabled: false,
@@ -629,8 +627,6 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: boolean;
           fastModeRewriteMode?: "disabled" | "fill_missing" | "force_priority";
           upstream429MaxRetries: number;
-          websocketEnabled: boolean;
-          upstreamWebsocketDefaultEnabled: boolean;
           requestBodyLoggingEnabled: boolean;
           responseBodyLoggingEnabled: boolean;
           encryptedSessionOwnerRoutingEnabled: boolean;
@@ -640,9 +636,6 @@ function StorybookSettingsMock({
           mergeUpstreamEnabled: settingsRef.current.proxy.mergeUpstreamEnabled,
           fastModeRewriteMode: settingsRef.current.proxy.fastModeRewriteMode,
           upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
-          websocketEnabled: settingsRef.current.proxy.websocketEnabled,
-          upstreamWebsocketDefaultEnabled:
-            settingsRef.current.proxy.upstreamWebsocketDefaultEnabled,
           requestBodyLoggingEnabled: settingsRef.current.proxy.requestBodyLoggingEnabled,
           responseBodyLoggingEnabled: settingsRef.current.proxy.responseBodyLoggingEnabled,
           encryptedSessionOwnerRoutingEnabled:
@@ -662,8 +655,6 @@ function StorybookSettingsMock({
             0,
             Math.min(5, Math.trunc(body.upstream429MaxRetries || 0)),
           ),
-          websocketEnabled: body.websocketEnabled === true,
-          upstreamWebsocketDefaultEnabled: body.upstreamWebsocketDefaultEnabled === true,
           requestBodyLoggingEnabled: body.requestBodyLoggingEnabled !== false,
           responseBodyLoggingEnabled: body.responseBodyLoggingEnabled !== false,
           encryptedSessionOwnerRoutingEnabled: body.encryptedSessionOwnerRoutingEnabled === true,

@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Remove the unused downstream and upstream OpenAI-compatible WebSocket proxy transport while retaining legacy schema columns and historical WebSocket records.",
+    "release_unit_description": "WebSocket proxy retirement governed by ADR 0020.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "contract_classification": {
+    "public_api": {
+      "planned_impact": "major",
+      "reasoning": "The downstream WebSocket transport, Settings fields, environment variables, and related API/UI configuration surfaces are removed. Existing HTTP consumers remain unchanged.",
+      "evidence": [
+        "docs/adr/0020-retire-downstream-websocket-proxy.md"
+      ]
+    },
+    "persistent_state": {
+      "planned_impact": "minor",
+      "reasoning": "The migration disables live WebSocket state and removes only the exact retired system tag, while retaining legacy columns and historical invocation/archive transport values for read compatibility.",
+      "evidence": [
+        "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
+      ]
+    }
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "major",
+      "reasoning": "The release unit is major because public API removal is the highest planned impact; the durable-state migration is separately classified as minor.",
+      "assessed_at": "2026-09-28T03:46:36Z",
+      "evidence": [
+        "public_api=major",
+        "persistent_state=minor",
+        "docs/adr/0020-retire-downstream-websocket-proxy.md"
+      ]
+    },
+    "current": {
+      "impact": "major",
+      "scope_drift": {
+        "detected": false,
+        "description": "The current design matches the confirmed retirement boundary: live WebSocket support is removed, while legacy columns and historical records remain readable."
+      },
+      "reasoning": "The implementation applies the confirmed retirement boundary: live WebSocket proxy support and its public configuration surfaces are removed, while retained legacy columns and historical records remain readable. The public contract remains major and persistent state remains minor.",
+      "reassessed_at": "2026-09-28T03:46:36Z",
+      "evidence": [
+        "docs/adr/0020-retire-downstream-websocket-proxy.md",
+        "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
+      ]
+    },
+    "verified": {
+      "impact": "major",
+      "reasoning": "Current-head validation confirms the planned major public API retirement and the separately minor forward-only persistent-state migration; no scope drift was found.",
+      "verified_at": "2026-10-05T06:10:13Z",
+      "evidence": [
+        "501 websocket_proxy_removed rejection regression",
+        "stateful SQLite migration idempotency and rollback regressions",
+        "historical WebSocket read/filter/serialization regression",
+        "cargo test retire_websocket_proxy_migration -- --nocapture: 2 passed",
+        "cargo test cleanup_non_system_tags_removes_custom_tags_links_and_session_references -- --nocapture: 1 passed",
+        "CI PR 37270300535 (runtime candidate 06b2876fdb8dd3fb5a7417e8aa6229686a6dc159 on base 324f9988cdc8794754f982ca97e8f474cb344778; documentation-only evidence follow-up accf88f247de4d6a56c98240e7101d77b823bdea): all required checks passed, including HTTP/2 Extended CONNECT retirement coverage",
+        "Evidence-only follow-up commits do not change the runtime candidate, retired transport contract, or compatibility classification"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "breaking",
+      "supported_consumer_range": "Existing HTTP consumers within the current Major; clients using the retired WebSocket proxy or its settings must migrate to a separately supported transport.",
+      "evidence": [
+        "501 websocket_proxy_removed rejection contract",
+        "docs/adr/0020-retire-downstream-websocket-proxy.md"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Legacy WebSocket settings, the retired system tag, and historical invocation/archive transport values.",
+      "source_program_compatibility_range": "Supported pre-retirement 0.2.x state; candidate retains the columns and historical read path, while program rollback does not automatically reverse the retirement migration.",
+      "evidence": [
+        "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/w5s2x-openai-websocket-proxy/assets/persistent-state-migration-record.json"
+    ],
+    "maximum_planned_impact": "major",
+    "maximum_verified_impact": "major",
+    "calculation_evidence": [
+      "public_api=major",
+      "persistent_state=minor",
+      "release unit=max(public_api,persistent_state)=major",
+      "verified public_api=major",
+      "verified persistent_state=minor",
+      "verified release unit=max(public_api,persistent_state)=major"
+    ]
+  }
+}

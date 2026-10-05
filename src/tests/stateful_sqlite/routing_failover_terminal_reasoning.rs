@@ -1644,8 +1644,6 @@ async fn capture_target_pool_standalone_search_keeps_structured_record_when_raw_
             merge_upstream_enabled: true,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: None,
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: Some(false),
             response_body_logging_enabled: Some(false),
             encrypted_session_owner_routing_enabled: None,

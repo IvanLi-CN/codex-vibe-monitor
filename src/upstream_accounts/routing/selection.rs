@@ -1687,10 +1687,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             .await?,
         ));
     }
-    // WebSocket resolution shares this selector but keeps its pre-existing retry
-    // and concurrency semantics; priority handoff admission is HTTP-only.
-    let priority_handoff_enabled =
-        priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime");
+    let priority_handoff_enabled = priority_handoff_admission_enabled();
     let mut priority_handoff_deferred_for_sticky = false;
     let mut priority_handoff_deferred_any = false;
     let mut sticky_handoff_deferred_admission: Option<PoolRoutingHandoffAdmission> = None;
@@ -1702,20 +1699,19 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         && resolved_candidates.first().is_some_and(|winner| {
             fresh_assignment_is_priority_attraction(winner, &resolved_candidates)
         });
-    let request_driven_recovery_target_index =
-        if priority_handoff_admission_enabled() && !endpoint.eq_ignore_ascii_case("/v1/realtime") {
-            request_driven_recovery_target_index(
-                &resolved_candidates,
-                &routing_runtime,
-                requested_model,
-                now,
-                sticky_source_rule.as_ref(),
-                sticky_fallback_handoff_enabled,
-                fresh_assignment_handoff_enabled,
-            )
-        } else {
-            None
-        };
+    let request_driven_recovery_target_index = if priority_handoff_admission_enabled() {
+        request_driven_recovery_target_index(
+            &resolved_candidates,
+            &routing_runtime,
+            requested_model,
+            now,
+            sticky_source_rule.as_ref(),
+            sticky_fallback_handoff_enabled,
+            fresh_assignment_handoff_enabled,
+        )
+    } else {
+        None
+    };
     let request_driven_recovery_target_id =
         request_driven_recovery_target_index.and_then(|index| {
             resolved_candidates
@@ -1825,7 +1821,6 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 && account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
                 && account.routing_source == PoolRoutingSelectionSource::FreshAssignment
                 && requested_model.is_some()
-                && !endpoint.eq_ignore_ascii_case("/v1/realtime")
                 && let Some(audit) = selection_audit.as_mut()
             {
                 let (phase, verification_success_count) =

@@ -21,8 +21,9 @@ as a permanent blacklist.
 
 ## Consequences
 
-- New HTTP and WebSocket proxy invocation IDs are exactly ten characters from the existing custom
-  alphabet.
+- New HTTP proxy invocation IDs are exactly ten characters from the existing custom alphabet.
+  Historical WebSocket invocation IDs remain readable as legacy data and are never allocated by
+  the retired live path.
 - Existing invocation rows are read as historical input during backfill; their IDs are not rewritten.
 - Conversation identity allocation can fail explicitly on bounded candidate collisions or sequence
   exhaustion, and those failures are observable through structured logs.

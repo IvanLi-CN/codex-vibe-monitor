@@ -5,7 +5,7 @@
 ## Context and Scope
 
 - Context: Proxy request identifiers must remain compact while preserving conversation-level ordering and recoverability across process restarts.
-- In scope: Backend HTTP and WebSocket proxy allocation, the prompt-cache conversation master, SQLite migration/backfill, delayed statistics, retention, and diagnostics.
+- In scope: Backend HTTP proxy allocation, historical WebSocket invocation identity reads, the prompt-cache conversation master, SQLite migration/backfill, delayed statistics, retention, and diagnostics.
 - Out of scope: Public API response fields, Dashboard/UI consumers, and frontend identifier presentation.
 
 ## Terms and Interfaces

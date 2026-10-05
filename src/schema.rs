@@ -16,6 +16,7 @@ const INVOCATION_ROLLUP_TOKEN_COMPONENT_RECONCILIATION_DATASET: &str =
 const INVOCATION_RAW_CODEC_MIGRATION_NAME: &str = "backfill_raw_codecs_v1";
 const LEGACY_RAW_BLOB_LINK_SEED_MIGRATION_NAME: &str = "seed_existing_raw_blob_links_v1";
 const SCHEMA_REFRESH_MIGRATIONS_TABLE: &str = "schema_refresh_migrations";
+const RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME: &str = "retire_openai_websocket_proxy_v1";
 const PROMPT_CACHE_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
     "prompt_cache_expression_indexes_v1";
 const INVOKE_ID_FILTER_EXPRESSION_INDEX_REFRESH_MIGRATION_NAME: &str =
@@ -121,6 +122,112 @@ async fn record_schema_refresh_completion_in_transaction(
     .execute(tx.as_mut())
     .await
     .with_context(|| format!("failed to record schema refresh completion for {migration_name}"))?;
+    Ok(())
+}
+
+pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result<()> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .context("failed to begin WebSocket proxy retirement migration")?;
+
+    let settings_rows = sqlx::query(
+        r#"
+        UPDATE proxy_model_settings
+        SET openai_proxy_websocket_enabled = 0,
+            openai_proxy_upstream_websocket_default_enabled = 0,
+            websocket_settings_migrated = 1,
+            updated_at = datetime('now')
+        WHERE id = 1
+          AND (
+              openai_proxy_websocket_enabled <> 0
+              OR openai_proxy_upstream_websocket_default_enabled <> 0
+              OR websocket_settings_migrated <> 1
+          )
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await
+    .context("failed to retire persisted WebSocket proxy settings")?
+    .rows_affected();
+
+    let oauth_session_links = sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET tag_ids_json = (
+            SELECT CASE
+                WHEN COUNT(*) = 0 THEN NULL
+                ELSE json_group_array(
+                    CASE
+                        WHEN json_each.type IN ('object', 'array') THEN json(json_each.value)
+                        WHEN json_each.type IN ('true', 'false') THEN json(json_each.type)
+                        ELSE json_each.value
+                    END
+                )
+            END
+            FROM json_each(pool_oauth_login_sessions.tag_ids_json)
+            WHERE json_each.type != 'integer'
+               OR json_each.value NOT IN (
+                SELECT id FROM pool_tags
+                WHERE system_key = 'unsupported_transport:websocket'
+            )
+        )
+        WHERE json_valid(tag_ids_json)
+          AND json_type(tag_ids_json) = 'array'
+          AND EXISTS (
+              SELECT 1
+              FROM json_each(pool_oauth_login_sessions.tag_ids_json)
+              WHERE json_each.type = 'integer'
+                AND json_each.value IN (
+                  SELECT id FROM pool_tags
+                  WHERE system_key = 'unsupported_transport:websocket'
+              )
+          )
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await
+    .context("failed to remove WebSocket capability tag from OAuth sessions")?
+    .rows_affected();
+
+    let tag_links = sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_tags
+        WHERE tag_id IN (
+            SELECT id FROM pool_tags
+            WHERE system_key = 'unsupported_transport:websocket'
+        )
+        "#,
+    )
+    .execute(tx.as_mut())
+    .await
+    .context("failed to remove WebSocket capability tag associations")?
+    .rows_affected();
+
+    let tags =
+        sqlx::query("DELETE FROM pool_tags WHERE system_key = 'unsupported_transport:websocket'")
+            .execute(tx.as_mut())
+            .await
+            .context("failed to remove WebSocket capability tag")?
+            .rows_affected();
+
+    record_schema_refresh_completion_in_transaction(
+        &mut tx,
+        RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME,
+    )
+    .await?;
+    tx.commit()
+        .await
+        .context("failed to commit WebSocket proxy retirement migration")?;
+
+    info!(
+        migration = RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME,
+        settings_rows,
+        oauth_session_links,
+        tag_links,
+        tags,
+        "retired downstream WebSocket proxy state"
+    );
     Ok(())
 }
 
@@ -4997,8 +5104,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
     .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
     .bind(i64::from(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES))
-    .bind(DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED as i64)
-    .bind(DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED as i64)
+    .bind(0_i64)
+    .bind(0_i64)
     .bind(1_i64)
     .bind(1_i64)
     .bind(DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED as i64)
@@ -5922,6 +6029,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     seed_default_pricing_catalog(pool).await?;
     ensure_long_term_stats_schema(pool).await?;
     ensure_upstream_accounts_schema(pool).await?;
+    retire_openai_websocket_proxy(pool).await?;
     ensure_long_term_projection_account_trigger(pool).await?;
     ensure_summary_coverage_revision_schema(pool).await?;
 

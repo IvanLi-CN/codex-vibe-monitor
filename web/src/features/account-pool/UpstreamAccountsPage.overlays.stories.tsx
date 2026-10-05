@@ -892,13 +892,11 @@ export const DetailDrawerReadOnlySystemTags: Story = {
       }),
     ).not.toBeInTheDocument();
     await expect(within(dialog).getByText(/不支持 gpt-5\.5/i)).toBeInTheDocument();
-    await expect(within(dialog).getByText(/不支持 WS/i)).toBeInTheDocument();
 
     window.dispatchEvent(new CustomEvent(UPSTREAM_ACCOUNTS_CHANGED_EVENT));
 
     await waitFor(() => {
       expect(within(dialog).getByText(/不支持 gpt-5\.5/i)).toBeInTheDocument();
-      expect(within(dialog).getByText(/不支持 WS/i)).toBeInTheDocument();
     });
   },
 };

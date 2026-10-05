@@ -4,19 +4,19 @@
 
 ## Related ADRs
 
-- None
+None
 
 ## 背景 / 问题陈述
 
 - 项目曾把请求读取、解析、连接和 HTTP 首字节耗时的累计值作为 owner-facing “首字用时”，该值是网络阶段指标，不是模型首个 Token 的产生时间。
-- HTTP SSE 与 WebSocket 缺少统一的首个模型输出识别器，调用、归档、统计与界面因此无法提供真正的 TTFT。
-- 本规范以 `Wei-Shaw/sub2api@43d4bae2464387817560a1aeb0b023cd0c9b22ee` 的产品定义为参考，并消除其 HTTP/WS 实现口径分叉。
+- HTTP SSE 缺少统一的首个模型输出识别器，调用、归档、统计与界面因此无法提供真正的 TTFT；历史 WebSocket 值只作为已持久化数据读取。
+- 本规范以 `Wei-Shaw/sub2api@43d4bae2464387817560a1aeb0b023cd0c9b22ee` 的产品定义为参考，并将当前 live contract 收口为 HTTP。
 
 ## 目标 / 非目标
 
 ### Goals
 
-- 建立 HTTP SSE、Responses Compact、Chat Completions 与 WebSocket turn 共用的 TTFT 数据合同。
+- 建立 HTTP SSE、Responses Compact 与 Chat Completions 共用的 TTFT 数据合同。
 - 新调用实时采集、持久化并聚合 `firstTokenMs`，owner-facing 界面统一显示 `TTFT`。
 - 调用记录主信息与网络摘要统一显示 `TTFT` 与 `响应耗时`；后者仅使用 `tUpstreamStreamMs`，不以总耗时或 TTFB 替代。
 - 保留 HTTP TTFB 作为独立网络诊断指标，并明确标记为 `TTFB / 上游首字节`。
@@ -31,7 +31,7 @@
 
 ### In scope
 
-- HTTP 与 WebSocket 首 Token 识别和计时。
+- HTTP 首 Token 识别和计时。
 - invocation、archive、分钟/小时 read-model、API、SSE live snapshot 与前端展示。
 - Dashboard、账号卡、趋势、统计、调用记录、调用详情与模型性能。
 
@@ -44,13 +44,13 @@
 
 ### MUST
 
-- HTTP 计时起点是请求进入代理的最早稳定时刻；WebSocket 计时起点是每个下游 `response.create` turn。
+- HTTP 计时起点是请求进入代理的最早稳定时刻；历史 WebSocket TTFT 只读取已持久化值。
 - 计时终点是首个非空模型输出 delta 到达代理的时刻。有效输出包括 reasoning、文本内容与工具参数增量。
 - `response.created`、`response.in_progress`、item 元数据、keepalive、失败事件、完成事件和空 delta 不得终止计时。
 - 仅流式请求产生 TTFT。图片、非流式、历史无样本和首 Token 前失败的调用返回 `null`。
 - 首 Token 已观测后发生失败、中断或客户端断开的调用仍保留 invocation 样本并进入聚合。
 - `0ms` 是合法 TTFT；缺失必须用 `null` 表示，不得使用零值哨兵。
-- HTTP 与 WebSocket 必须复用同一识别器，对同一事件负载得出相同结论。
+- HTTP 必须复用同一识别器，对同一事件负载得出相同结论。
 - 旧 `firstResponseByteTotal*` 可兼容读取，但不得继续参与 TTFT UI 或 TTFT 聚合。
 - `响应耗时` 是上游流开始持续输出到该上游流结束的 `tUpstreamStreamMs`；缺失值显示为 `—`，不得从 `tTotalMs` 反推。`tTotalMs` 只属于阶段耗时诊断。
 - Dashboard 紧凑调用行可以用 section 级本地时钟暂估请求用时、首字节后暂估 TTFT 和首 Token 后暂估响应耗时，但这些值只用于实时过渡显示，不写回、不进入聚合，也不得替代严格 `firstTokenMs`/`tUpstreamStreamMs`；服务器锚点追平或终态到达时直接采用后端值，终态无有效 token 的 TTFT 保持缺失。
@@ -70,7 +70,6 @@
 ### Core flows
 
 - HTTP 流式请求从代理入口开始计时；解析上游 SSE 时忽略协议与生命周期事件，首个有效 delta 设置 `firstTokenMs`，随后只转发、不覆盖该值。
-- WebSocket 每次下游 `response.create` 建立独立 turn 计时状态；上游首个有效 delta 设置该 turn 的 `firstTokenMs`，终态生成独立 invocation。
 - 聚合只消费持久化的非空 `first_token_ms`；分钟、小时、账号、模型和 timeseries 使用相同样本资格。
 
 ### Edge cases / errors
@@ -97,7 +96,7 @@
 
 - Given lifecycle/metadata SSE events followed by a delayed non-empty reasoning, text or tool delta, When the stream is captured, Then TTFT equals request-start-to-delta and does not equal HTTP TTFB.
 - Given a frame split across chunks or multiple frames in one chunk, When the parser consumes it, Then the first valid delta is recognized exactly once.
-- Given a WebSocket connection with multiple `response.create` turns, When each turn completes, Then each invocation has an independently measured TTFT.
+- Given a historical WebSocket invocation, When its TTFT is read, Then the persisted value remains available without creating a new sample.
 - Given non-streaming, image, historical or tokenless failure records, When APIs and UI render them, Then TTFT is `null`/`—` and no TTFB fallback occurs.
 
 ## 验收清单（Acceptance checklist）
@@ -124,8 +123,6 @@
 - `cargo fmt --check`, targeted Rust tests, `cargo check`, frontend Vitest, Storybook build/test and Web Demo build pass.
 
 ## Visual Evidence
-
-PR: include
 
 - source_type: ui_demo
   target_program: mock-only Codex Vibe Monitor Web Demo
