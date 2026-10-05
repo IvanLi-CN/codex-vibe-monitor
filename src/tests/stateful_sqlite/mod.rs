@@ -100,6 +100,7 @@ mod account_activity_v2_progress_handler;
 mod gpt6_usage_integrity;
 mod invocation_query_filters_and_schema_migrations;
 mod models_dev_sync_memory;
+mod network_traffic_projection;
 mod oauth_route_body_rewrite_and_timeout;
 mod observability_retirement;
 #[expect(

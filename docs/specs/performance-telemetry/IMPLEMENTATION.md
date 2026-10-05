@@ -53,7 +53,8 @@ Agent VM 分配遇到 Incus agents project 实例数量上限，未取得有效�
 ## Current coverage
 
 主线新增的 HTTP 流量投影回归使用扩展后的 reporter 构造合同，明确传入合成路由 `/`；
-该路径归并到固定 endpoint 家族，不改变业务网络计数或测试断言。
+该路径归并到固定 endpoint 家族，不改变业务网络计数或测试断言。回归保留在 stateful
+SQLite 资源桶的独立 `network_traffic_projection` 模块，避免继续扩张已达到行数上限的混合 harness。
 
 `src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与
 30 秒文件/内存采样、完整 HTTP/body 生命周期、只读报告与有界浏览器接入。
