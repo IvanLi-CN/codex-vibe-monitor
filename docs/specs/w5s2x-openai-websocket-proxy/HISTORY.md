@@ -13,6 +13,7 @@
 - 早期 runtime candidate 的 required CI run `37222753000` 全绿；后续 review repair 继续补齐迁移 forward-repair、历史 fixture、Specs 索引和 active streaming regression 覆盖。
 - 最终 runtime candidate `abe361ba9bee399e6c09696a21f5f10f553a017c` 的 required CI run `37226138705` 全绿，覆盖 Rust source quality/Clippy、三类 backend profile、Web、Storybook、E2E、docs/tooling 和 smoke/build artifacts；后续 release heads 仅刷新 evidence、HISTORY 和 Specs index metadata。
 - Runtime candidate `3de9c53c68c0af1f6421b3f53ccdfba30914805f` on base `324f9988cdc8794754f982ca97e8f474cb344778` passed required CI PR run `37267059013`; the follow-up head only refreshes evidence and restores the canonical Specs index while retaining the retired WebSocket entry removal.
+- Runtime candidate `06b2876fdb8dd3fb5a7417e8aa6229686a6dc159` adds early rejection for HTTP/2 Extended CONNECT requests carrying `:protocol = websocket`, with a regression covering the same exact `501 websocket_proxy_removed` envelope; required CI PR run `37269645818` passed on final metadata head `bc6464cc5741ba50c122aaea501784a58e456039`.
 
 ## 2026-07-07
 

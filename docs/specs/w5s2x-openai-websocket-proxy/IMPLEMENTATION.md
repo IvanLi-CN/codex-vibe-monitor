@@ -32,7 +32,7 @@
 
 ## Current implementation
 
-- `src/proxy/request_entry.rs` performs header-only upgrade detection and returns the fixed `501` JSON envelope before invoking the shared HTTP proxy entrypoint.
+- `src/proxy/request_entry.rs` detects HTTP/1 `Upgrade: websocket` and HTTP/2 Extended CONNECT `:protocol = websocket` before invoking the shared HTTP proxy entrypoint, returning the fixed `501` JSON envelope for either form.
 - The Axum WebSocket feature, relay/dialer module, direct tungstenite dependencies, WebSocket settings initialization, capability tag ensure/learning, and WebSocket-only usage refresh/persistence paths are removed.
 - The SQLite migration retains the three legacy settings columns, clears the exact retired system tag and associations in one `BEGIN IMMEDIATE` transaction even when its completion marker already exists, preserves non-scalar JSON values while removing retired integer tag IDs, records the named migration marker, and logs only affected-row counts.
 - Legacy tag cleanup now removes only non-system integer session references, so existing system-tag JSON survives long enough for the retirement migration to remove only the exact retired WebSocket tag.
@@ -47,12 +47,12 @@
 - The repository Rust source-quality policy check passes after synchronizing the explicit inventory, suppression counts, and budgets for the retired surface.
 - Web unit tests pass: `1779 passed / 6 skipped`; typecheck, lint, and production build pass. The Storybook suite passes with `200/200` tests and `48` intentional skips.
 - Backend resource profiles: lightweight `1239/1239` and stateful-sqlite `1397/1397` pass. The required Archive/File I/O CI check also passes; a prior local timing variance in baseline system-storage concurrent-deletion coverage is not used as release evidence.
-- CI PR run `37267059013` passed for runtime candidate `3de9c53c68c0af1f6421b3f53ccdfba30914805f` on base `324f9988cdc8794754f982ca97e8f474cb344778`, including Rust source quality, all backend profiles, Web, Storybook, E2E, docs, tooling, policy, smoke, and build artifacts.
+- CI PR run `37269645818` passed for runtime candidate `06b2876fdb8dd3fb5a7417e8aa6229686a6dc159` on base `324f9988cdc8794754f982ca97e8f474cb344778`, with final metadata head `bc6464cc5741ba50c122aaea501784a58e456039`; it includes Rust source quality/Clippy, all backend profiles, Web, Storybook, E2E, docs, tooling, policy, smoke, and build artifacts.
 - `bun run lint:docs` and `git diff --check` pass. UI evidence covers the Settings page without WebSocket controls, the Records historical transport filter, and the historical transport chip. The chip visibly renders `WebSocket（历史）` rather than the retired `WS` abbreviation.
 
 ## Retirement regression coverage
 
-- `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers return the exact raw `501` JSON body without a CVM header or Invocation/Attempt rows. Because the rejection returns before the shared proxy handler, no upstream connection or retry path can run; the structured rejection log contains only method and URI path.
+- `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers plus HTTP/2 Extended CONNECT `:protocol = websocket` return the exact raw `501` JSON body without a CVM header or Invocation/Attempt rows. Because the rejection returns before the shared proxy handler, no upstream connection or retry path can run; the structured rejection log contains only method and URI path.
 - `proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing` verifies legacy WebSocket request fields are ignored and omitted from responses.
 - `retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state` verifies legacy columns, exact integer tag cleanup, unrelated-tag preservation, OAuth session JSON cleanup, malformed/non-integer value preservation, and the completion marker.
 - The retirement migration and non-system tag cleanup regressions also preserve JSON object/array/boolean values instead of re-encoding them as strings or integers.
