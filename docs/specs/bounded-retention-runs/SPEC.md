@@ -210,7 +210,7 @@
 - [Task operations state outside the main database](../../adr/0023-task-operations-state-outside-main-database.md)
 - [Retention core and conversation derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
 - [Retention catch-up independent of inspection schedules](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
-- [Retention task-local batches and monthly archive targets](../../adr/0029-retention-task-local-batches-and-monthly-archive-targets.md)
+- [Retention task-local batches and monthly archive targets](../../adr/0031-retention-task-local-batches-and-monthly-archive-targets.md)
 
 ## References
 

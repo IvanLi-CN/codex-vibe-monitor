@@ -89,4 +89,4 @@
 
 - [长期需求](SPEC.md)
 - [历史与此前容量限制](HISTORY.md)
-- [ADR 0029](../../adr/0029-retention-task-local-batches-and-monthly-archive-targets.md)
+- [ADR 0031](../../adr/0031-retention-task-local-batches-and-monthly-archive-targets.md)
