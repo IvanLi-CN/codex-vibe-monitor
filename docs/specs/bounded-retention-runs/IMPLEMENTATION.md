@@ -78,7 +78,7 @@
 
 同路径基线不存在，比较为 current-only；主人明确确认「截图准确，接受此布局」。此确认只证明布局和模拟状态，不能替代容量实测。旧 retention-task / retention-catchup-trend 图片保留为历史，排除于本轮 Task Evidence Set。
 
-同步 main 的工作量图表后，吞吐的 Demo 数值按相同运行样本重新计算。上述图片及确认仍是此前布局证据；当前渲染输入的比较与确认必须在 PR 交付前刷新。
+截图使用同一模拟运行的 898 invocation、1000 attempt 和 48 秒耗时，分别展示 18.71/20.83 rows/s 与 53.9/50.0 倍到达速率。工作量图表与吞吐卡片使用一致样本；这些数值只用于可重复的界面验证。
 
 ![Desktop task batch throughput](assets/retention-monthly-throughput-desktop.png)
 
