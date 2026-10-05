@@ -1,9 +1,7 @@
 {
   "method": "Exact source hashes for the supported same-Minor format readers, plus candidate monthly roundtrip and unchanged main-schema regression; this is not a claim that historical full binaries were executed.",
   "supportedSameMinorVersions": [
-    "v2.86.0",
-    "v2.86.1",
-    "v2.86.2"
+    "v3.0.0"
   ],
   "sourceFacts": {
     "src/maintenance/archive/manifest.rs": {
@@ -16,7 +14,8 @@
         "v2.85.4": "8014e17db860b6aaf04d8be8a55e03c390c0f8bc68c4e66bd37c0ec56c1fa5a9",
         "v2.86.0": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610",
         "v2.86.1": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610",
-        "v2.86.2": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610"
+        "v2.86.2": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610",
+        "v3.0.0": "204c5377b9adefd65e149a41ae9dd9816958d0df86a1465d86252b7d5d834610"
       }
     },
     "decode_summary_archive_snapshot_v2_payload": {
@@ -30,7 +29,8 @@
         "v2.85.4": "7adfb3a14e37114e6267978529af3ad1dae0fca675b99533f6afe24a8209e24a",
         "v2.86.0": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845",
         "v2.86.1": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845",
-        "v2.86.2": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845"
+        "v2.86.2": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845",
+        "v3.0.0": "3d109e6e2691f26459a9aa69697dd743fbf3725e6b8106d607f99504f8247845"
       }
     },
     "summary_archive_snapshot_has_proof_tx": {
@@ -44,7 +44,8 @@
         "v2.85.4": "a75e33beb277a3213352ca0af3bae4911ff118920f7673bde2eacbc3f5dfdb89",
         "v2.86.0": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5",
         "v2.86.1": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5",
-        "v2.86.2": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5"
+        "v2.86.2": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5",
+        "v3.0.0": "3a6e157fe6a2052cf704e8c336e72a19845df49d06af81f00826f7e3a6d6e6b5"
       }
     },
     "summary_archive_snapshot_has_final_proof_read_only": {
@@ -58,7 +59,8 @@
         "v2.85.4": "8bece953976f71f1f2b491f975842f5735e33d50025f574fe066601082c7422c",
         "v2.86.0": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e",
         "v2.86.1": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e",
-        "v2.86.2": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e"
+        "v2.86.2": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e",
+        "v3.0.0": "fb4f4184acb1aab3b86d3493e761adfc1fc9dfac62a3dd39dd2b15b3a5a3930e"
       }
     },
     "encode_summary_archive_snapshot_v2_payload": {
@@ -72,7 +74,8 @@
         "v2.85.4": "c3ea7486e854b8ba82d3f92282ec55cda894444d58d492228fdf7bf38e19a20b",
         "v2.86.0": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727",
         "v2.86.1": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727",
-        "v2.86.2": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727"
+        "v2.86.2": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727",
+        "v3.0.0": "395e42e38c5d15dc16d4a8630049a39ee5e139fe01bd2af3f026a00f9d0c8727"
       }
     },
     "build_invocation_archive_rows_chunk_query": {
@@ -86,7 +89,8 @@
         "v2.85.4": "69f5b0c94d83d3bd1adf18e4862fa7193f1b2a98c84d42976aa028fb22150fe4",
         "v2.86.0": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6",
         "v2.86.1": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6",
-        "v2.86.2": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6"
+        "v2.86.2": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6",
+        "v3.0.0": "3a89e8c2670af3438e7b44f7234c1fe283a9f8e43b4699996468339a6bb830b6"
       }
     }
   },
@@ -135,13 +139,26 @@
         "src/summary_source_change.rs"
       ],
       "method": "Whole manifest source and the five named codec/proof/query functions match current candidate byte-for-byte; exact source verification only, not historical binary execution."
+    },
+    "v3.0.0": {
+      "commit": "75de1168a960763be810ae320bd5709283c07f74",
+      "verifiedPaths": [
+        "src/maintenance/archive/manifest.rs",
+        "src/maintenance/hourly_rollups.rs",
+        "src/maintenance/retention.rs",
+        "src/summary_source_change.rs"
+      ],
+      "method": "Whole manifest source and the five named codec/proof/query functions match current candidate byte-for-byte; exact source verification only, not historical binary execution."
     }
   },
-  "historicalEarlierMinorReaderSources": [
+  "historicalEarlierMajorReaderSources": [
     "v2.85.0",
     "v2.85.1",
     "v2.85.2",
     "v2.85.3",
-    "v2.85.4"
+    "v2.85.4",
+    "v2.86.0",
+    "v2.86.1",
+    "v2.86.2"
   ]
 }
