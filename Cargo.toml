@@ -49,9 +49,29 @@ rustls = { version = "0.23", default-features = false, features = ["std", "ring"
 rustls-pki-types = "1"
 webpki-roots = "1"
 
+metrics = "=0.24.6"
+metrics-exporter-prometheus = { version = "=0.18.3", default-features = false }
+# Process resources come from our bounded sampler; avoid the SDK's 250ms CPU/thread scan.
+hotpath = { version = "=0.28.0", default-features = false, features = ["axum-0-8", "sqlx", "tokio"] }
+http-body = "1"
+pin-project-lite = "0.2"
+
+[features]
+default = ["hotpath"]
+hotpath = ["hotpath/hotpath", "hotpath/hotpath-prometheus"]
+
+[patch.crates-io]
+# Keep complete SQL observation without repeatedly normalizing identical statements.
+hotpath = { path = "vendor/hotpath" }
+
+[profile.release]
+debug = "line-tables-only"
+strip = false
+
 [dev-dependencies]
 filetime = "0.2"
 libsqlite3-sys = "=0.30.1"
+regex-lite = "=0.1.9"
 
 [profile.test]
 debug = 0

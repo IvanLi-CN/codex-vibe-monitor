@@ -133,6 +133,23 @@ jobs:
           SMOKE_PLATFORM: linux/amd64
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
+      - name: Export exact image symbols (linux/amd64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        shell: bash
+        env:
+          SYMBOL_IMAGE: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
+          SYMBOL_REVISION: ${{ needs.candidate-meta.outputs.target_sha }}
+        run: bash .github/scripts/export-image-symbols.sh "$SYMBOL_IMAGE" "$SYMBOL_REVISION" observability-symbols
+
+      - name: Upload exact image symbols (linux/amd64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cvm-symbols-${{ needs.candidate-meta.outputs.target_sha }}-amd64
+          path: observability-symbols/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Push candidate image (linux/amd64)
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-amd64
@@ -192,6 +209,23 @@ jobs:
           SMOKE_TIMEOUT_SECS: "120"
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
 
+      - name: Export exact image symbols (linux/arm64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        shell: bash
+        env:
+          SYMBOL_IMAGE: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:smoke-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
+          SYMBOL_REVISION: ${{ needs.candidate-meta.outputs.target_sha }}
+        run: bash .github/scripts/export-image-symbols.sh "$SYMBOL_IMAGE" "$SYMBOL_REVISION" observability-symbols
+
+      - name: Upload exact image symbols (linux/arm64)
+        if: ${{ hashFiles('scripts/export-observability-symbols.py') != '' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cvm-symbols-${{ needs.candidate-meta.outputs.target_sha }}-arm64
+          path: observability-symbols/
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Push candidate image (linux/arm64)
         env:
           IMAGE_REF: ${{ env.REGISTRY }}/${{ needs.candidate-meta.outputs.image_name }}:candidate-${{ needs.candidate-meta.outputs.candidate_suffix }}-arm64
@@ -241,7 +275,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target-clippy
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
@@ -249,7 +283,7 @@ jobs:
         if: ${{ steps.cargo-clippy-cache.outputs.cache-hit == 'true' }}
         run: |
           # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
-          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
@@ -268,7 +302,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: target-clippy
-          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-clippy-v2-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
 
       - name: Save Cargo registry
         if: ${{ always() && steps.cargo-registry-cache.outputs.cache-hit != 'true' }}
@@ -649,7 +683,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
           restore-keys: |
             ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-
 
@@ -657,7 +691,7 @@ jobs:
         if: ${{ steps.cargo-test-cache.outputs.cache-hit == 'true' }}
         run: |
           # The source-key cache proves these inputs are unchanged; checkout mtimes otherwise force Cargo to rebuild them.
-          find src -type f -name '*.rs' -exec touch -d '@1' {} +
+          find src vendor/hotpath -type f -name '*.rs' -exec touch -d '@1' {} +
           touch -d '@1' Cargo.toml Cargo.lock rust-toolchain.toml
           for input in build.rs .cargo/config.toml; do
             if [ -f "$input" ]; then touch -d '@1' "$input"; fi
@@ -695,7 +729,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: target
-          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'build.rs', '.cargo/config.toml') }}
+          key: ${{ runner.os }}-cargo-test-v4-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}-${{ hashFiles('Cargo.toml', 'src/**/*.rs', 'vendor/hotpath/**', 'build.rs', '.cargo/config.toml') }}
 
   backend-tests-lightweight:
     needs: backend-test-archive

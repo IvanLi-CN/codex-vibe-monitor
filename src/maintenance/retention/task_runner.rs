@@ -5,6 +5,19 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     cancel: &CancellationToken,
     trigger: &'static str,
 ) -> bool {
+    crate::observability::observed_future(
+        state.observability.enabled,
+        "retention_maintenance",
+        run_data_retention_maintenance_best_effort_impl(state, cancel, trigger),
+    )
+    .await
+}
+
+async fn run_data_retention_maintenance_best_effort_impl(
+    state: &Arc<AppState>,
+    cancel: &CancellationToken,
+    trigger: &'static str,
+) -> bool {
     if crate::maintenance_store::legacy_worker_should_skip("retention_archive").await {
         debug!(
             trigger,
@@ -37,37 +50,37 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
     .await
     {
         Ok(summary) => {
-            state.performance_telemetry.record_duration_ms(
+            state.observability.record_duration_ms(
                 "maintenance.run_duration_ms",
                 "maintenance",
                 started_at.elapsed().as_secs_f64() * 1000.0,
             );
-            state.performance_telemetry.record_counter(
+            state.observability.record_counter(
                 "maintenance.processed_rows",
                 "maintenance",
                 summary.processed_row_count(),
             );
-            state.performance_telemetry.record_gauge(
+            state.observability.record_gauge(
                 "maintenance.raw_bytes_before",
                 "maintenance",
                 summary.raw_bytes_before as f64,
             );
-            state.performance_telemetry.record_gauge(
+            state.observability.record_gauge(
                 "maintenance.raw_bytes_after",
                 "maintenance",
                 summary.raw_bytes_after as f64,
             );
-            state.performance_telemetry.record_counter(
+            state.observability.record_counter(
                 "maintenance.compressed_file_count",
                 "maintenance",
                 summary.raw_files_compressed as u64,
             );
-            state.performance_telemetry.record_counter(
+            state.observability.record_counter(
                 "maintenance.removed_file_count",
                 "maintenance",
                 (summary.raw_files_removed + summary.orphan_raw_files_removed) as u64,
             );
-            state.performance_telemetry.record_counter(
+            state.observability.record_counter(
                 "maintenance.archived_rows",
                 "maintenance",
                 (summary.invocation_rows_archived
@@ -181,7 +194,7 @@ pub(crate) async fn run_data_retention_maintenance_best_effort(
             touched_anything
         }
         Err(err) => {
-            state.performance_telemetry.record_duration_ms(
+            state.observability.record_duration_ms(
                 "maintenance.run_duration_ms",
                 "maintenance",
                 started_at.elapsed().as_secs_f64() * 1000.0,

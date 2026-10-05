@@ -264,11 +264,7 @@ fn storage_roots_with_maintenance_path(
             required: false,
         },
     ]);
-    for database in [
-        database_path,
-        absolute(&config.performance_database_path),
-        maintenance_database_path,
-    ] {
+    for database in [database_path, maintenance_database_path] {
         for path in database_file_and_sidecars(database) {
             roots.push(StorageRoot {
                 path,

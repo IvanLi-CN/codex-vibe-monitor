@@ -1,0 +1,142 @@
+[package]
+name = "hotpath"
+version = "0.28.0"
+edition = "2021"
+repository = "https://github.com/pawurb/hotpath-rs"
+description = "One profiler for CPU, time, memory, SQL, and async code - quickly find and debug performance bottlenecks."
+readme = "../../README.md"
+license = "MIT"
+categories = ["development-tools"]
+
+[[bin]]
+name = "hotpath"
+path = "bin/hotpath/main.rs"
+
+[[bin]]
+name = "hotpath-utils"
+path = "bin/hotpath-utils/main.rs"
+required-features = ["utils"]
+
+[[bin]]
+name = "hotpath-samply"
+path = "bin/hotpath-samply/main.rs"
+
+[features]
+default = ["threads"]
+# JSON report types (`hotpath::json`) + formatting helpers, usable without profiling
+json = ["dep:serde", "dep:serde_json", "dep:time", "time/serde-well-known"]
+hotpath = [
+  "hotpath-macros/hotpath",
+  "dep:hotpath-drain",
+  "dep:arc-swap",
+  "dep:cfg-if",
+  "dep:crossbeam-channel",
+  "dep:hdrhistogram",
+  "dep:quanta",
+  "dep:regex-lite",
+  "json",
+  "dep:tiny_http",
+  "dep:futures-core",
+  "dep:pin-project-lite",
+  "dep:libc",
+]
+hotpath-meta = ["dep:hotpath-meta", "hotpath-meta/hotpath-meta", "hotpath-meta/crossbeam", "hotpath-drain?/hotpath-meta"]
+hotpath-alloc-meta = ["dep:hotpath-meta", "hotpath-meta/hotpath-meta", "hotpath-meta/crossbeam", "hotpath-meta/hotpath-alloc-meta", "hotpath-macros/hotpath-alloc-meta", "hotpath-drain?/hotpath-alloc-meta"]
+hotpath-cloud-meta = ["hotpath-meta/hotpath-cloud-meta"]
+hotpath-mcp-meta = ["hotpath-meta/hotpath-mcp-meta", "hotpath-meta/axum-0-8"]
+hotpath-prometheus-meta = ["hotpath-meta/hotpath-prometheus-meta"]
+hotpath-alloc = ["hotpath-macros/hotpath-alloc"]
+hotpath-cloud = ["dep:ureq", "ureq/rustls", "ureq/json"]
+utils = ["json", "dep:eyre", "dep:clap", "dep:ureq", "ureq/json", "ureq/rustls", "ureq/gzip"]
+# `hotpath cloud ...` subcommands of the `hotpath` binary: the hotpath.rs read API client
+# `serde_json/preserve_order` keeps the server's key order when `--pretty` re-indents a body
+cloud = ["json", "dep:eyre", "dep:clap", "dep:ureq", "ureq/json", "ureq/rustls", "serde_json/preserve_order"]
+tui = ["json", "dep:eyre", "dep:clap", "dep:reqwest", "reqwest/json", "reqwest/rustls", "dep:crossterm", "dep:ratatui", "dep:crossbeam-channel", "dep:tokio", "tokio/rt", "tokio/rt-multi-thread", "crossbeam", "dep:futures-util"]
+demo = ["hotpath", "hotpath-prometheus", "sqlx", "dep:sqlx", "diesel", "diesel/sqlite", "dep:libsqlite3-sys", "reqwest-0-13", "axum-0-8"]
+tokio = ["dep:tokio", "tokio/sync", "tokio/time"]
+futures = ["dep:futures-channel", "dep:futures-sink"]
+async-channel = ["dep:async-channel"]
+crossbeam = ["dep:crossbeam-channel"]
+parking_lot = ["dep:parking_lot"]
+async-lock = ["dep:async-lock"]
+flume = ["dep:flume"]
+sqlx = ["dep:tracing", "dep:tracing-subscriber"]
+toasty = ["dep:tracing", "dep:tracing-subscriber"]
+diesel = ["dep:diesel"]
+"reqwest-0-12" = ["dep:reqwest-012", "dep:reqwest-middleware-04", "reqwest-middleware-04/multipart", "reqwest-middleware-04/json", "dep:async-trait", "dep:http"]
+"reqwest-0-13" = ["dep:reqwest", "dep:reqwest-middleware-05", "reqwest-middleware-05/multipart", "reqwest-middleware-05/json", "reqwest-middleware-05/query", "reqwest-middleware-05/form", "dep:async-trait", "dep:http"]
+"ureq-3" = ["dep:ureq"]
+"axum-0-8" = ["dep:axum", "axum/matched-path", "dep:tower-layer", "dep:tower-service", "dep:pin-project-lite"]
+threads = []
+dev = ["dep:time", "time/formatting", "time/local-offset"]
+hotpath-cpu = ["hotpath-macros/hotpath-cpu", "dep:object", "dep:rustc-demangle", "dep:flate2"]
+hotpath-mcp = ["hotpath", "dep:rmcp", "dep:tokio", "tokio/rt", "tokio/net", "dep:axum", "axum/http1", "axum/tokio", "dep:tokio-util", "dep:schemars"]
+hotpath-prometheus = ["hotpath", "dep:prost"]
+
+[dependencies]
+arc-swap = { version = "1.7", optional = true }
+cfg-if = { version = "1.0", optional = true }
+clap = { version = "4", features = ["derive"], optional = true }
+crossbeam-channel = { version = "0.5", optional = true }
+flume = { version = "0.12.0", optional = true }
+parking_lot = { version = "0.12", optional = true }
+async-lock = { version = "3", optional = true }
+crossterm = { version = "0.29", optional = true }
+eyre = { version = "0.6", optional = true }
+hdrhistogram = { version = "7", default-features = false, optional = true }
+hotpath-macros = { workspace = true }
+hotpath-drain = { workspace = true, optional = true }
+ratatui = { version = "0.30", optional = true }
+regex-lite = { version = "0.1", optional = true }
+serde = { version = "1.0.184", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tiny_http = { version = "0.12", optional = true }
+tokio = { version = "1.47", features = ["rt"], optional = true }
+ureq = { version = "3", default-features = false, optional = true }
+reqwest ={ version = "0.13", default-features = false, optional = true }
+reqwest-012 = { package = "reqwest", version = "0.12", default-features = false, optional = true }
+reqwest-middleware-04 = { package = "reqwest-middleware", version = "0.4", optional = true }
+reqwest-middleware-05 = { package = "reqwest-middleware", version = "0.5", optional = true }
+async-trait = { version = "0.1", optional = true }
+http = { version = "1", optional = true }
+futures-channel = { version = "0.3.32", features = ["sink"], optional = true }
+async-channel = { version = "2", optional = true }
+futures-core = { version = "0.3.32", optional = true }
+futures-sink = { version = "0.3.32", optional = true }
+futures-util = { version = "0.3.32", default-features = false, features = ["sink"], optional = true }
+pin-project-lite = { version = "0.2.12", optional = true }
+libc = { version = "0.2.172", optional = true }
+time = { version = "0.3.37", features = ["macros"], optional = true }
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry"], optional = true }
+sqlx = { version = "0.9", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
+diesel = { version = "2.3", default-features = false, optional = true }
+libsqlite3-sys = { version = "0.30", features = ["bundled"], optional = true }
+prost = { version = "0.14", optional = true }
+rmcp = { version = "1.4", features = ["server", "transport-streamable-http-server", "transport-streamable-http-server-session"], optional = true }
+schemars = { version = "1", optional = true }
+axum = { version = "0.8", default-features = false, optional = true }
+tower-layer = { version = "0.3", optional = true }
+tower-service = { version = "0.3", optional = true }
+tokio-util = { version = "0.7", optional = true }
+hotpath-meta = { workspace = true, optional = true }
+object = { version = "0.36", default-features = false, features = ["read", "std"], optional = true }
+rustc-demangle = { version = "0.1.24", optional = true }
+flate2 = { version = "1", optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+quanta = { version = "0.12", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tokio_unstable)'] }
+
+[package.metadata.docs.rs]
+features = ["hotpath", "hotpath-alloc"]
+
+[dev-dependencies]
+tokio = { version = "1.47", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+futures-util = { version = "0.3.32", default-features = false, features = ["sink"] }
+prost = "0.14"
+serde_json = "1.0"
+ureq = { version = "3", features = ["json"] }
+mockito = "1.7"

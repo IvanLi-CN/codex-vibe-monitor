@@ -114,6 +114,24 @@ async function mockRecordsPageApis(page: Page) {
     const requestUrl = new URL(route.request().url());
     const { pathname } = requestUrl;
 
+    if (pathname === "/api/system/observability" && route.request().method() === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          enabled: false,
+          state: "disabled",
+          grafanaPublicUrl: null,
+          grafanaConnectivity: "unknown",
+          hotpath: false,
+          dashboards: [],
+          datasourceUid: "cvm-prometheus",
+          variables: ["task_key"],
+        }),
+      });
+      return;
+    }
+
     if (pathname === "/api/invocations") {
       await route.fulfill({
         status: 200,

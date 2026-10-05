@@ -1,0 +1,608 @@
+{
+  "uid": "cvm-proxy",
+  "title": "CVM \u00b7 Proxy",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "timezone": "utc",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "refresh": "15s",
+  "tags": [
+    "cvm",
+    "performance"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up, service)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "environment",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\"},environment)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\",environment=~\"$environment\"},instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "task_key",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(cvm_task_runs_total, task_key)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Scrape availability",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Sampler age (CPU/memory/files)",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cvm_observability_sampler_last_success_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Invocations",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Upstream attempts",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 8,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_proxy_upstream_attempts_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Retries",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_proxy_retries_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "TTFB p95",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 16,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_proxy_ttfb_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "TTFT p95",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_proxy_ttft_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "TTFT observed samples",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 24,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(cvm_proxy_ttft_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Stream p95",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_proxy_stream_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Phases p95",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 32,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95,sum by (le,phase)(rate(cvm_proxy_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Body outcomes",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_http_body_ends_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Transfer bytes",
+      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "gridPos": {
+        "x": 12,
+        "y": 40,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_proxy_transfer_bytes_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
+          "range": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "noValue": "Unknown",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ],
+  "links": []
+}

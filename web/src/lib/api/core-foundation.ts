@@ -2890,21 +2890,10 @@ export interface ManagedTaskRun {
   details?: ManagedTaskRunDetails | null;
 }
 
-export interface ManagedTaskPerformance {
-  runCount: number;
-  successCount: number;
-  failureCount: number;
-  averageDurationMs?: number | null;
-  latestDurationMs?: number | null;
-  observedAt?: string | null;
-  coverage?: number | null;
-}
-
 export interface ManagedTaskDetail {
   task: ManagedTask;
   progress?: ManagedTaskProgress | null;
   recentRuns: ManagedTaskRun[];
-  performance?: ManagedTaskPerformance | null;
   retentionBacklogTrend?: RetentionBacklogTrendPoint[] | null;
   workloadTrend?: TaskWorkloadTrend | null;
 }
@@ -5881,24 +5870,6 @@ function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
   };
 }
 
-function normalizeManagedTaskPerformance(raw: unknown): ManagedTaskPerformance | null {
-  const payload = asRecord(raw);
-  const runCount = normalizeFiniteNumber(payload?.runCount);
-  const successCount = normalizeFiniteNumber(payload?.successCount);
-  const failureCount = normalizeFiniteNumber(payload?.failureCount);
-  if (runCount == null || successCount == null || failureCount == null) return null;
-  const record = payload ?? {};
-  return {
-    runCount,
-    successCount,
-    failureCount,
-    averageDurationMs: normalizeFiniteNumber(record.averageDurationMs),
-    latestDurationMs: normalizeFiniteNumber(record.latestDurationMs),
-    observedAt: typeof record.observedAt === "string" ? record.observedAt : undefined,
-    coverage: normalizeFiniteNumber(record.coverage),
-  };
-}
-
 function normalizeManagedTaskDetail(raw: unknown): ManagedTaskDetail {
   const payload = asRecord(raw);
   const task = normalizeManagedTask(payload?.task);
@@ -5932,7 +5903,6 @@ function normalizeManagedTaskDetail(raw: unknown): ManagedTaskDetail {
     task,
     progress: normalizeManagedTaskProgress(payload?.progress),
     recentRuns: runs,
-    performance: normalizeManagedTaskPerformance(payload?.performance),
     retentionBacklogTrend,
     workloadTrend: normalizeTaskWorkloadTrend(payload?.workloadTrend),
   };
@@ -6058,94 +6028,36 @@ export async function updatePromptCacheMaterializationControl(
   return normalizePromptCacheMaterializationStatus(response);
 }
 
-export type PerformanceRange = "6h" | "24h" | "7d" | "30d" | "13mo";
-export type PerformanceSection =
-  | "overview"
-  | "storage"
-  | "projection"
-  | "maintenance"
-  | "process"
-  | "browser";
-
-export interface PerformancePoint {
-  bucketStart: number;
-  sampleCount: number;
-  expectedCount: number;
-  sum: number;
-  min?: number;
-  max?: number;
-  last?: number;
-  weightedAverage?: number;
-  histogram?: number[];
-}
-
-export interface PerformanceSeries {
-  metricId: string;
-  section: PerformanceSection;
-  dimension: string;
-  kind: "counter" | "duration" | "gauge";
-  unit: "milliseconds" | "bytes" | "percent" | "count";
-  points: PerformancePoint[];
-}
-
-export interface PerformanceMetricsResponse {
-  from: string;
-  to: string;
-  stepSeconds: number;
-  coverage: number;
-  epochs: string[];
-  series: PerformanceSeries[];
-}
-
-export interface PerformanceTelemetryHealth {
-  state: "starting" | "healthy" | "degraded" | "disabled" | "unavailable" | string;
+export interface ObservabilityCapabilities {
   enabled: boolean;
-  path: string;
-  epoch: string;
-  queueDepth: number;
-  queueCapacity: number;
-  droppedSamples: number;
-  flushFailureCount: number;
-  lastSuccessfulFlush?: string | null;
-  lastError?: string | null;
+  state: "enabled" | "disabled" | "degraded";
+  grafanaPublicUrl: string | null;
+  grafanaConnectivity: "unknown";
+  hotpath: boolean;
+  dashboards: string[];
+  datasourceUid: string;
+  variables: string[];
 }
-
-export interface BrowserPerformanceEvent {
+export interface BrowserObservation {
   page: "dashboard" | "records" | "system";
   device: "mobile" | "desktop";
-  metric:
-    | "data_ready_ms"
-    | "update_to_paint_ms"
-    | "long_task_ms"
-    | "long_task_count"
-    | "api_request_duration_ms"
-    | "api_request_count"
-    | "sse_duration_ms"
-    | "sse_disconnect_count"
-    | "unsupported_count"
-    | "visibility_hidden_count";
-  value: number;
+  kind:
+    | "data_ready"
+    | "update_to_paint"
+    | "long_task"
+    | "api_request"
+    | "sse"
+    | "unsupported"
+    | "hidden"
+    | "dropped";
+  valueSeconds: number;
+  outcome?: "normal" | "error" | "unknown";
 }
-
-export async function fetchPerformanceMetrics(params?: {
-  range?: PerformanceRange;
-  section?: PerformanceSection;
-}): Promise<PerformanceMetricsResponse> {
-  const query = new URLSearchParams();
-  if (params?.range) query.set("range", params.range);
-  if (params?.section) query.set("section", params.section);
-  const suffix = query.toString() ? `?${query.toString()}` : "";
-  return fetchJson<PerformanceMetricsResponse>(`/api/system/performance${suffix}`);
+export async function fetchObservabilityCapabilities(): Promise<ObservabilityCapabilities> {
+  return fetchJson<ObservabilityCapabilities>("/api/system/observability");
 }
-
-export async function fetchPerformanceHealth(): Promise<PerformanceTelemetryHealth> {
-  return fetchJson<PerformanceTelemetryHealth>("/api/system/performance/health");
-}
-
-export async function postBrowserPerformanceTelemetry(
-  events: BrowserPerformanceEvent[],
-): Promise<void> {
-  await fetchJson<void>("/api/system/performance/browser", {
+export async function postBrowserObservations(events: BrowserObservation[]): Promise<void> {
+  await fetchJson<void>("/api/system/observability/browser", {
     method: "POST",
     body: JSON.stringify({ events }),
     keepalive: true,

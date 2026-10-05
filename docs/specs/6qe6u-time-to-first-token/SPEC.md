@@ -6,7 +6,7 @@
 
 None
 
-## 背景 / 问题陈述
+## Context and Scope
 
 - 项目曾把请求读取、解析、连接和 HTTP 首字节耗时的累计值作为 owner-facing “首字用时”，该值是网络阶段指标，不是模型首个 Token 的产生时间。
 - HTTP SSE 缺少统一的首个模型输出识别器，调用、归档、统计与界面因此无法提供真正的 TTFT；历史 WebSocket 值只作为已持久化数据读取。
@@ -40,30 +40,30 @@ None
 - 历史记录回填与旧兼容字段删除。
 - 非流式响应的首个完整响应体计时。
 
-## 需求（Requirements）
+## Requirements
 
 ### MUST
 
-- HTTP 计时起点是请求进入代理的最早稳定时刻；历史 WebSocket TTFT 只读取已持久化值。
-- 计时终点是首个非空模型输出 delta 到达代理的时刻。有效输出包括 reasoning、文本内容与工具参数增量。
-- `response.created`、`response.in_progress`、item 元数据、keepalive、失败事件、完成事件和空 delta 不得终止计时。
-- 仅流式请求产生 TTFT。图片、非流式、历史无样本和首 Token 前失败的调用返回 `null`。
-- 首 Token 已观测后发生失败、中断或客户端断开的调用仍保留 invocation 样本并进入聚合。
-- `0ms` 是合法 TTFT；缺失必须用 `null` 表示，不得使用零值哨兵。
-- HTTP 必须复用同一识别器，对同一事件负载得出相同结论。
-- 旧 `firstResponseByteTotal*` 可兼容读取，但不得继续参与 TTFT UI 或 TTFT 聚合。
-- `响应耗时` 是上游流开始持续输出到该上游流结束的 `tUpstreamStreamMs`；缺失值显示为 `—`，不得从 `tTotalMs` 反推。`tTotalMs` 只属于阶段耗时诊断。
-- Dashboard 紧凑调用行可以用 section 级本地时钟暂估请求用时、首字节后暂估 TTFT 和首 Token 后暂估响应耗时，但这些值只用于实时过渡显示，不写回、不进入聚合，也不得替代严格 `firstTokenMs`/`tUpstreamStreamMs`；服务器锚点追平或终态到达时直接采用后端值，终态无有效 token 的 TTFT 保持缺失。
-- 调用记录的网络摘要只消费 `avgFirstTokenMs` / `p95FirstTokenMs` 与 `avgResponseDurationMs` / `p95ResponseDurationMs`；`avgTtfbMs`、`avgTotalMs` 等旧摘要字段仅供兼容读取，不得作为该页面主指标。
+- REQ-TTFT-001: HTTP 计时起点是请求进入代理的最早稳定时刻；历史 WebSocket TTFT 只读取已持久化值。
+- REQ-TTFT-002: 计时终点是首个非空模型输出 delta 到达代理的时刻。有效输出包括 reasoning、文本内容与工具参数增量。
+- REQ-TTFT-003: `response.created`、`response.in_progress`、item 元数据、keepalive、失败事件、完成事件和空 delta 不得终止计时。
+- REQ-TTFT-004: 仅流式请求产生 TTFT。图片、非流式、历史无样本和首 Token 前失败的调用返回 `null`。
+- REQ-TTFT-005: 首 Token 已观测后发生失败、中断或客户端断开的调用仍保留 invocation 样本并进入聚合。
+- REQ-TTFT-006: `0ms` 是合法 TTFT；缺失必须用 `null` 表示，不得使用零值哨兵。
+- REQ-TTFT-007: HTTP 必须复用同一识别器，对同一事件负载得出相同结论。
+- REQ-TTFT-008: 旧 `firstResponseByteTotal*` 可兼容读取，但不得继续参与 TTFT UI 或 TTFT 聚合。
+- REQ-TTFT-009: `响应耗时` 是上游流开始持续输出到该上游流结束的 `tUpstreamStreamMs`；缺失值显示为 `—`，不得从 `tTotalMs` 反推。`tTotalMs` 只属于阶段耗时诊断。
+- REQ-TTFT-010: Dashboard 紧凑调用行可以用 section 级本地时钟暂估请求用时、首字节后暂估 TTFT 和首 Token 后暂估响应耗时，但这些值只用于实时过渡显示，不写回、不进入聚合，也不得替代严格 `firstTokenMs`/`tUpstreamStreamMs`；服务器锚点追平或终态到达时直接采用后端值，终态无有效 token 的 TTFT 保持缺失。
+- REQ-TTFT-011: 调用记录的网络摘要只消费 `avgFirstTokenMs` / `p95FirstTokenMs` 与 `avgResponseDurationMs` / `p95ResponseDurationMs`；`avgTtfbMs`、`avgTotalMs` 等旧摘要字段仅供兼容读取，不得作为该页面主指标。
 
 ### SHOULD
 
-- SSE 分帧解析应支持跨 chunk 帧、单 chunk 多帧、注释行与 `[DONE]`。
-- live snapshot 在首 Token 首次观测时最多更新一次，终态持久化保持相同值。
+- REQ-TTFT-012: SSE 分帧解析应支持跨 chunk 帧、单 chunk 多帧、注释行与 `[DONE]`。
+- REQ-TTFT-013: live snapshot 在首 Token 首次观测时最多更新一次，终态持久化保持相同值。
 
 ### COULD
 
-- 后续版本可在兼容窗口结束后删除旧 `firstResponseByteTotal*` 字段。
+- REQ-TTFT-014: 后续版本可在兼容窗口结束后删除旧 `firstResponseByteTotal*` 字段。
 
 ## 功能与行为规格（Functional/Behavior Spec）
 
@@ -92,25 +92,20 @@ None
 | `tUpstreamTtfbMs`                                               | JSON field    | external      | Existing       | invocation diagnostics | attempt detail            | TTFB only; never TTFT fallback                  |
 | `tUpstreamStreamMs`                                             | JSON field    | external      | Existing       | invocation record      | primary response duration | response duration only; never derive from total |
 
-## 验收标准（Acceptance Criteria）
+## Verification
 
-- Given lifecycle/metadata SSE events followed by a delayed non-empty reasoning, text or tool delta, When the stream is captured, Then TTFT equals request-start-to-delta and does not equal HTTP TTFB.
-- Given a frame split across chunks or multiple frames in one chunk, When the parser consumes it, Then the first valid delta is recognized exactly once.
-- Given a historical WebSocket invocation, When its TTFT is read, Then the persisted value remains available without creating a new sample.
-- Given non-streaming, image, historical or tokenless failure records, When APIs and UI render them, Then TTFT is `null`/`—` and no TTFB fallback occurs.
-
-## 验收清单（Acceptance checklist）
-
-- [x] 核心路径的长期行为已被明确描述。
-- [x] 关键边界与错误场景已被覆盖。
-- [x] 接口与兼容边界已写清楚。
-- [x] 验收条件可用于实现与 review 对齐。
+- VER-TTFT-001: Given lifecycle/metadata SSE events followed by a delayed non-empty reasoning, text or tool delta, When the HTTP stream is captured, Then TTFT equals request-start-to-delta, uses the shared recognizer and does not equal HTTP TTFB. covers: REQ-TTFT-001, REQ-TTFT-002, REQ-TTFT-003, REQ-TTFT-007
+- VER-TTFT-002: Given a frame split across chunks, multiple frames in one chunk, comments or `[DONE]`, When the parser consumes them, Then the first valid delta is recognized exactly once and live/terminal values agree. covers: REQ-TTFT-012, REQ-TTFT-013
+- VER-TTFT-003: Given a historical WebSocket invocation, When its TTFT is read, Then the persisted value remains available without creating a new sample. covers: REQ-TTFT-001
+- VER-TTFT-004: Given non-streaming, image, historical or tokenless failure records, When APIs and UI render them, Then TTFT is `null`/`—`, measured zero remains valid and no TTFB fallback occurs; a failure after the first Token retains that sample. covers: REQ-TTFT-004, REQ-TTFT-005, REQ-TTFT-006, REQ-TTFT-008
+- VER-TTFT-005: Given primary record rows, network summaries and live Dashboard transitions, When timing is displayed, Then response duration uses `tUpstreamStreamMs`, summaries use the strict TTFT/response-duration fields, local estimates never enter persistence/aggregation and terminal missing values remain missing. covers: REQ-TTFT-009, REQ-TTFT-010, REQ-TTFT-011
+- VER-TTFT-006: Given the retained compatibility window, When old `firstResponseByteTotal*` fields are read, Then they remain outside TTFT UI/aggregation; later deletion remains optional after the compatibility window. covers: REQ-TTFT-008, REQ-TTFT-014
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
 ### Testing
 
-- Rust unit/integration tests cover SSE chunking, empty/lifecycle events, HTTP/WS parity and terminal states.
+- Rust unit/integration tests cover SSE chunking, empty/lifecycle events, HTTP recognition, historical WebSocket reads and terminal states.
 - Frontend tests cover nullable TTFT, aggregates and explicit TTFB diagnostics.
 
 ### UI / Storybook
@@ -149,10 +144,6 @@ None
   scenario: mobile records keep the same TTFT and response-duration summary while an in-progress row clearly has no sample
 
   ![移动记录页 TTFT 与响应耗时](./assets/ttft-response-duration-mobile.jpg)
-
-## Related PRs
-
-- None
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 

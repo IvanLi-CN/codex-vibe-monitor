@@ -32,6 +32,7 @@ import {
   type InvocationSuggestionField,
   type InvocationSuggestionsResponse,
 } from "../lib/api";
+import { usePageObservation } from "../lib/browserObservability";
 import { textInputAutocompleteOffProps } from "../lib/form-autocomplete";
 import {
   buildInvocationSuggestionsQuery,
@@ -169,6 +170,7 @@ export default function RecordsPage() {
     setPageSize,
     setSort,
   } = useInvocationRecords();
+  usePageObservation("records", records);
   const [autoExpandInvokeId, setAutoExpandInvokeId] = useState<string | null>(null);
   const [focusedAttemptId, setFocusedAttemptId] = useState<string | null>(null);
 

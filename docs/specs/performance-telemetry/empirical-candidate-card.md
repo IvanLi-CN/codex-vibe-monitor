@@ -1,5 +1,10 @@
 # 性能遥测经验性验收卡
 
+这份卡片是已退役 SQLite 性能系统的历史证据，仅适用于下述旧候选版本，不能用于
+外部观测系统的验收或 Ready 判断。当前合同见 [SPEC](SPEC.md) 与
+[部署验收入口](../../../ops/observability/README.md)；新工具使用 `--candidate`、
+`--samply`、`--seconds` 和 `--rate`，不再接受下文的旧场景参数。
+
 ## 候选镜像
 
 当前候选使用 Linux 镜像

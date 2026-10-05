@@ -1164,6 +1164,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     capture_started: Instant,
     mut record: ProxyCaptureRecord,
 ) -> Result<()> {
+    crate::observability::observed_future(state.observability.enabled,"persist_and_broadcast_proxy_capture",async move {
     let enqueue_started = Instant::now();
     if !record.timings.t_total_ms.is_finite() || record.timings.t_total_ms <= 0.0 {
         record.timings.t_total_ms = elapsed_ms(capture_started);
@@ -1189,6 +1190,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         .await;
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
     let delta = &projection.dashboard;
+    if !delta.duplicate {state.observability.proxy_terminal(&record,inserted_record.endpoint.as_deref());}
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
     debug!(
         invoke_id = %invoke_id,
@@ -1202,6 +1204,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         state
             .sqlite_batch_writer
             .enqueue_terminal(BatchedTerminalInvocationWrite {
+                enqueued_at: None,
                 record,
                 capture_started: Some(capture_started),
                 raw_capture: true,
@@ -1268,6 +1271,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         schedule_proxy_capture_follow_up_after_terminal_enqueue(state, &invoke_id, "raw_terminal");
     }
     Ok(())
+
+    }).await
 }
 
 pub(crate) async fn persist_proxy_capture_record(

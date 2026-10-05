@@ -46,10 +46,11 @@ services:
 | ------------------------------------------------------ | ---------------------------------------- | -------------------------------------------- |
 | `HTTP_BIND`                                            | 服务监听地址                             | 容器部署或网关拓扑不同的时候                 |
 | `DATABASE_PATH`                                        | SQLite 主库路径                          | 想把数据库放在持久化卷时                     |
-| `PERFORMANCE_DATABASE_PATH`                            | 独立性能指标 SQLite 路径                 | 想把指标文件与主库分开管理时                 |
 | `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径                 | 想把后台任务状态与主库分开管理时             |
 | `PROXY_RAW_DIR`                                        | 代理 request/response payload 目录       | 想把原始 payload 放到独立持久化卷时          |
-| `PERFORMANCE_TELEMETRY_ENABLED`                        | 性能指标采集开关，默认 `true`            | 压测 A/B 或指标库故障时关闭观测              |
+| `OBSERVABILITY_ENABLED`                                | 性能观测开关，默认 `true`                | A/B 或故障时关闭观测                         |
+| `METRICS_BIND`、`METRICS_TOKEN_FILE`                   | 私网抓取监听和 Token 文件                | 非 loopback 必须配置，不发布公网端口         |
+| `OBSERVABILITY_READ_TOKEN_FILE`、`GRAFANA_PUBLIC_URL`  | 独立诊断 Token 与 Grafana HTTPS 入口     | 启用 Agent 归因和外部图表时                  |
 | `PUBLIC_ORIGIN`                                        | 对外公开入口基址，用于社交预览等绝对 URL | 有稳定域名、要给 README / 分享卡片正确出图时 |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定首次初始化默认值         | 想让新库第一次启动时默认打开该开关时         |

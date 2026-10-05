@@ -1,4 +1,5 @@
 import { createEventSource } from "./api";
+import { observeSseLifecycle } from "./observation-events";
 
 declare global {
   interface Window {
@@ -405,7 +406,10 @@ function stopConnectionWatchdog() {
   connectingSince = null;
 }
 
+let endSseObservation: (() => void) | null = null;
 function destroyEventSource() {
+  endSseObservation?.();
+  endSseObservation = null;
   if (!eventSource) return;
   eventSource.removeEventListener("message", handleMessage as EventListener);
   eventSource.removeEventListener("error", handleError);
@@ -616,6 +620,7 @@ function ensureEventSource() {
     lastConnectionStartedAt: connectingSince,
   });
   eventSource = createEventSource(request.path);
+  endSseObservation = observeSseLifecycle(eventSource);
   eventSource.addEventListener("message", handleMessage as EventListener);
   eventSource.addEventListener("error", handleError);
   eventSource.addEventListener("open", handleOpen);

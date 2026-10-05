@@ -4,6 +4,7 @@ import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
+import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
@@ -150,7 +151,7 @@ export default function SystemTaskDetailPage() {
     );
   }
 
-  const { task, progress, recentRuns, performance } = detail;
+  const { task, progress, recentRuns } = detail;
   const nextCatchupAt = progress?.nextCatchupAt ?? task.nextCatchupAt;
   const save = async (payload: {
     enabled?: boolean;
@@ -491,31 +492,7 @@ export default function SystemTaskDetailPage() {
             )}
           </CardContent>
         </Card>
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">性能指标（性能库）</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
-            {[
-              ["运行次数", performance?.runCount ?? "未知"],
-              ["成功次数", performance?.successCount ?? "未知"],
-              ["失败次数", performance?.failureCount ?? "未知"],
-              ["平均用时", formatDuration(performance?.averageDurationMs)],
-              ["最近用时", formatDuration(performance?.latestDurationMs)],
-              [
-                "覆盖率",
-                performance?.coverage == null
-                  ? "未知"
-                  : `${(performance.coverage * 100).toFixed(1)}%`,
-              ],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-md border border-base-300/60 p-3">
-                <div className="text-xs text-base-content/60">{label}</div>
-                <div className="mt-1 font-semibold">{value}</div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
+        <ObservabilityTaskLink taskKey={task.taskKey} />
       </div>
     </section>
   );

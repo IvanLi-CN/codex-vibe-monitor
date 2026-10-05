@@ -171,12 +171,28 @@ _Avoid_: 总耗时, TTFT, 代理处理耗时
 
 ## Performance Observation
 
-**性能时间桶（Performance Bucket）**:
-A bounded aggregate of one registered metric and its permitted low-cardinality dimensions over a UTC interval. Its resolution and coverage are part of its meaning.
-_Avoid_: 调用明细, 原始事件, 完整请求链路
+**性能观测（Performance Observation）**:
+Runtime signals about the application's request stages, resource pressure, background work, live publication, and browser experience. These signals describe operating behavior rather than authoritative invocation or task records.
+_Avoid_: 业务记录, 调用明细, 完整请求链路
+
+**指标历史（Metric History）**:
+The time-series history of the project's Performance Observations. Its measurements, sampling quality, and retained interval determine which operating trends it can prove.
+_Avoid_: 性能时间桶, 调用历史, 精确业务统计
+
+**代码诊断（Code Diagnosis）**:
+The attribution of observed operating cost to the project's functions, statement shapes, route templates, and contended locks. Elapsed time includes waiting and is distinct from CPU execution time.
+_Avoid_: CPU Profile, 完整请求 trace, 业务结果
+
+**CPU Profile**:
+A bounded capture of the running application's sampled CPU call stacks over a stated interval. It provides evidence of CPU execution, not database or lock waiting time.
+_Avoid_: 耗时直方图, 指标历史, SQL 等待时间
+
+**业务记录（Business Record）**:
+An authoritative invocation or task record, including its identity, outcomes, usage, costs, and execution history. It remains distinct from sampled or aggregated Performance Observations.
+_Avoid_: 指标历史, 性能样本, CPU Profile
 
 **观测覆盖率（Observation Coverage）**:
-The proportion of expected samples or observation time actually represented by a performance bucket. Missing collection is unknown, not a measured zero.
+The evidence of which expected observations or observation intervals are represented in Metric History or Code Diagnosis, with the denominator stated when known. Missing collection is unknown, not a measured zero, and browser samples do not establish coverage of every visitor.
 _Avoid_: 成功率, 采样值为零, 无流量
 
 ## Runtime Read Models
@@ -1205,13 +1221,13 @@ The newly introduced task configuration, progress, run history, and bounded diag
 _Avoid_: 业务事实, 原始请求载荷, 性能时间桶
 
 **维护库（Maintenance Database）**:
-The separate local SQLite database for Operational Task Data, distinct from both the Business Main Facts store and the Performance Telemetry Database. Task controls, progress snapshots, run history, and bounded error summaries are written here asynchronously on a best-effort basis; unavailability never falls back to the main database.
+The separate local SQLite database for Operational Task Data, distinct from the Business Main Facts store and externally stored Metric History. Task controls, progress snapshots, run history, and bounded error summaries are written here asynchronously on a best-effort basis; unavailability never falls back to the main database.
 _Avoid_: 主库旁路表, 性能时间桶, 任务执行前置依赖
 
 The configurable path is `MAINTENANCE_DATABASE_PATH`. When omitted, the service derives a sibling file by appending `.maintenance.sqlite` to the main database stem: `codex.sqlite` becomes `codex.maintenance.sqlite`; this is a suffix, not a hidden filename beginning with `.`.
 
 **性能指标库（Performance Telemetry Database）**:
-The existing separate SQLite database for bounded, low-cardinality aggregate performance metrics. It records task overhead, throughput, database waits, pressure, latency distributions, failures, and deferrals, but does not become the source for task configuration, progress, or run history.
+The retired separate SQLite store for aggregate Performance Observations. This term remains for offline archive and rollback contracts; the running application does not configure, open, or write it. Prometheus stores current Metric History, while the Maintenance Database retains task configuration, progress, and run history.
 _Avoid_: 任务状态库, 运行明细库, 账号级指标
 
 **运维观测降级（Operational Observability Degradation）**:

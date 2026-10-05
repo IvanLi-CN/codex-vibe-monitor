@@ -404,6 +404,7 @@ pub(crate) struct SystemTaskRunHandle {
     pub(crate) trigger_kind: String,
     pub(crate) started_at: Instant,
     pub(crate) observation: Option<crate::TaskExecutionObservation>,
+    pub(crate) observed_terminal: Arc<AtomicBool>,
 }
 
 #[derive(Debug, FromRow)]
@@ -1543,6 +1544,7 @@ pub(crate) async fn begin_system_task_run(
         trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
         observation: None,
+        observed_terminal: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -1572,6 +1574,7 @@ pub(crate) async fn begin_system_task_run_nonblocking(
         trigger_kind: trigger_kind.clone(),
         started_at: Instant::now(),
         observation: None,
+        observed_terminal: Arc::new(AtomicBool::new(false)),
     })
 }
 
@@ -1705,6 +1708,19 @@ pub(crate) async fn finish_system_task_run_reliably(
     summary: Option<String>,
     detail: Option<String>,
 ) -> bool {
+    if status != SystemTaskStatus::Running
+        && !handle.observed_terminal.swap(true, Ordering::Relaxed)
+    {
+        state.observability.task_completed(
+            handle.task_kind.as_str(),
+            match status {
+                SystemTaskStatus::Success => "success",
+                SystemTaskStatus::Failed => "error",
+                _ => "skipped",
+            },
+            handle.started_at.elapsed(),
+        );
+    }
     if let Some(observation) = handle.observation.as_ref() {
         observation.finish_with_status(status.as_str());
     }
@@ -2212,20 +2228,16 @@ pub(crate) async fn get_managed_task(
 }
 
 pub(crate) async fn get_managed_task_with_store(
-    state: Arc<AppState>,
+    _state: Arc<AppState>,
     task_key: String,
     store: &crate::maintenance_store::MaintenanceStore,
 ) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
-    let mut detail = store
+    let detail = store
         .detail(&task_key)
         .await
         .map_err(ApiError::from)?
         .map(Json)
         .ok_or_else(|| ApiError::bad_request(anyhow!("managed task not found")))?;
-    detail.0.performance = state
-        .performance_telemetry
-        .task_run_summary(&task_key)
-        .await;
     Ok(Json(detail.0))
 }
 

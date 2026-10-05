@@ -480,15 +480,6 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
       },
     },
   ],
-  performance: {
-    runCount: 24,
-    successCount: 22,
-    failureCount: 1,
-    averageDurationMs: STORYBOOK_LATEST_RUN_DURATION,
-    latestDurationMs: STORYBOOK_LATEST_RUN_DURATION,
-    observedAt: STORYBOOK_LATEST_RUN_END,
-    coverage: 0.92,
-  },
   retentionBacklogTrend: STORYBOOK_RETENTION_BACKLOG_TREND,
   workloadTrend: STORYBOOK_RETENTION_FIXTURE.trend,
 };
@@ -646,15 +637,6 @@ function retentionTaskDetailForState(
       stages: null,
     };
     detail.recentRuns = [];
-    detail.performance = {
-      runCount: 0,
-      successCount: 0,
-      failureCount: 0,
-      averageDurationMs: null,
-      latestDurationMs: null,
-      observedAt: null,
-      coverage: null,
-    };
   } else {
     detail.progress = {
       total: null,
@@ -678,15 +660,6 @@ function retentionTaskDetailForState(
       coreCompletion: null,
       details: null,
     });
-    detail.performance = {
-      runCount: detail.performance?.runCount ?? 0,
-      successCount: detail.performance?.successCount ?? 0,
-      failureCount: detail.performance?.failureCount ?? 0,
-      averageDurationMs: null,
-      latestDurationMs: null,
-      observedAt: null,
-      coverage: null,
-    };
   }
   return detail;
 }
@@ -892,14 +865,6 @@ function storybookManagedTaskDetail(
     task: { ...task, ...override },
     progress: null,
     recentRuns: [],
-    performance: {
-      runCount: 4,
-      successCount: 4,
-      failureCount: 0,
-      averageDurationMs: 1_840,
-      latestDurationMs: 1_760,
-      observedAt: STORYBOOK_MANAGED_TASK_RUNTIME.observedAt,
-    },
   };
 }
 
@@ -1233,6 +1198,19 @@ function buildSystemWorkspaceRequestHandler(
         status,
         headers: { "Content-Type": "application/json" },
       });
+    if (url.pathname === "/api/system/observability" && method === "GET") {
+      return jsonResponse({
+        enabled: true,
+        state: "enabled",
+        grafanaPublicUrl: "https://grafana.example.invalid",
+        grafanaConnectivity: "unknown",
+        hotpath: true,
+        dashboards: ["cvm-overview", "cvm-proxy", "cvm-sqlite", "cvm-runtime", "cvm-web"],
+        datasourceUid: "cvm-prometheus",
+        variables: ["service", "environment", "instance", "task_key"],
+      });
+    }
+
     const parseBody = <T,>(fallback: T): T => {
       if (typeof init?.body !== "string" || !init.body) return fallback;
       try {
@@ -2568,8 +2546,10 @@ export const RetentionTaskDetail: Story = {
     await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("待归档数量")).toBeVisible();
     await expect(canvas.getByText("最长逾期", { exact: true })).toBeVisible();
-    await expect(canvas.getByText("prompt_cache")).toBeVisible();
-    await expect(canvas.getByText("92.0%")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: /运行时与任务/ })).toHaveAttribute(
+      "href",
+      expect.stringContaining("var-task_key=retention_archive"),
+    );
   },
 };
 

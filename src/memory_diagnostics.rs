@@ -37,10 +37,19 @@ pub(crate) struct ProcessMemorySnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeMemoryPressureSnapshot {
     pub(crate) process: ProcessMemorySnapshot,
+    pub(crate) process_sample_status: ProcessMemorySampleStatus,
     pub(crate) managed_bytes: u64,
     pub(crate) unattributed_anon_bytes: u64,
     pub(crate) pressure_level: String,
     pub(crate) malloc_arena_max: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcessMemorySampleStatus {
+    Pending,
+    Available,
+    Failed,
+    Unsupported,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -156,15 +165,23 @@ impl MemoryDiagnosticsRuntime {
     }
 
     pub(crate) fn runtime_pressure_snapshot(&self) -> RuntimeMemoryPressureSnapshot {
-        let process = self
-            .last_sample
-            .lock()
-            .ok()
-            .and_then(|sample| *sample)
-            .unwrap_or_default();
+        let sample = self.last_sample.lock().map(|sample| *sample);
+        // Keep the cached value and its status under the same lock. Unsupported
+        // platforms and a pending sample must not look like a failed Linux read.
+        let process_sample_status = if !cfg!(target_os = "linux") {
+            ProcessMemorySampleStatus::Unsupported
+        } else {
+            match &sample {
+                Ok(Some(process)) if process.rss_bytes > 0 => ProcessMemorySampleStatus::Available,
+                Ok(None) => ProcessMemorySampleStatus::Pending,
+                _ => ProcessMemorySampleStatus::Failed,
+            }
+        };
+        let process = sample.ok().flatten().unwrap_or_default();
         let managed_bytes = self.sampled_managed_bytes.load(Ordering::Relaxed);
         RuntimeMemoryPressureSnapshot {
             process,
+            process_sample_status,
             managed_bytes,
             unattributed_anon_bytes: process.rss_anon_bytes.saturating_sub(managed_bytes),
             pressure_level: memory_pressure_level(process, managed_bytes as usize).to_string(),
@@ -534,6 +551,42 @@ fn capture_allocator_diagnostic() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cached_process_memory_status_distinguishes_pending_failed_and_available() {
+        let runtime = MemoryDiagnosticsRuntime::new();
+        for (sample, status) in [
+            (None, ProcessMemorySampleStatus::Pending),
+            (
+                Some(ProcessMemorySnapshot::default()),
+                ProcessMemorySampleStatus::Failed,
+            ),
+            (
+                Some(ProcessMemorySnapshot {
+                    rss_bytes: 4096,
+                    ..Default::default()
+                }),
+                ProcessMemorySampleStatus::Available,
+            ),
+        ] {
+            *runtime.last_sample.lock().expect("sample lock") = sample;
+            let snapshot = runtime.runtime_pressure_snapshot();
+            assert_eq!(snapshot.process_sample_status, status);
+            assert_eq!(snapshot.process, sample.unwrap_or_default());
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn cached_process_memory_status_is_unsupported_off_linux() {
+        assert_eq!(
+            MemoryDiagnosticsRuntime::new()
+                .runtime_pressure_snapshot()
+                .process_sample_status,
+            ProcessMemorySampleStatus::Unsupported
+        );
+    }
 
     #[test]
     fn parses_linux_memory_values_without_allocating_business_state() {
