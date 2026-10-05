@@ -2,7 +2,6 @@ use super::*;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 use tokio_util::sync::CancellationToken;
@@ -37,6 +36,7 @@ impl Drop for StorageFixture {
 #[tokio::test]
 async fn system_storage_matches_gnu_du_for_configured_union_and_file_identity_deduplication() {
     use std::os::unix::fs::symlink;
+    use std::process::Command;
 
     let fixture = StorageFixture::new();
     let data = fixture.path().join("data");

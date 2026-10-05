@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 39 explicit file entries: 21
+The policy MUST keep the current inventory as 38 explicit file entries: 20
 production candidates above 2,500 lines and 18 test/helper candidates above
 3,000 lines. The immutable preparation baseline retains its original candidate
 counts for checker compatibility. Each current entry MUST record its exact
@@ -94,7 +94,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 39 entries have
+The current inventory retains no cohesive-module exceptions: all 38 entries have
 specific next module workstreams. The schema and fixture harness retain the
 exception form for a future entry only when its reason is explicit and
 cohesive, never as an escape hatch for an unselected or growing file.
@@ -197,6 +197,22 @@ suppression baseline remains 119. Binding behavior, transaction ordering,
 sticky-route mutation semantics, owner routing, API payloads, and test resource
 classification remain unchanged.
 
+The prompt-cache timeseries extraction separates the parent into explicit
+aggregation, materialization, minute-projection, parallel-work, and query
+modules, with restart recovery nested under minute projection. The parent keeps
+the HTTP extractor and compatibility wrappers; the child modules keep existing
+crate-visible call paths through direct module imports and the narrow required
+re-exports. After rustfmt, the parent is 146 physical lines, while
+`aggregation.rs`, `materialization.rs`, `minute_projection.rs`,
+`parallel_work.rs`, `queries.rs`, and `recovery.rs` are 842, 487, 1,830, 288,
+1,382, and 148 lines respectively. All selected production paths are below
+the 2,500-line target, so the parent is removed from the policy inventory. The
+current inventory is 20 production and 18 test/helper entries (38 total); the
+immutable preparation baseline remains 32 and 23 and the suppression baseline
+remains 119. Query routing, aggregation semantics, minute projection fences,
+materializer overlays, parallel-work responses, and test resource buckets
+remain behaviorally unchanged.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such
@@ -234,7 +250,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 21 production and 18 test/helper entries, with
+Pass condition: the policy has 20 production and 18 test/helper entries, with
 exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
