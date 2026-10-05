@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 39 large-file entries explicit.
+  its 38 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -350,3 +350,18 @@ candidates (39 entries total); the immutable preparation baseline remains 32
 and 23 and the suppression baseline remains 119. Binding behavior, transaction
 ordering, sticky-route mutation semantics, owner routing, API payloads, and
 test resource classification remain unchanged.
+
+The prompt-cache timeseries extraction separates the parent into explicit
+aggregation, materialization, minute-projection, parallel-work, and query
+modules, with restart recovery nested under minute projection. The parent
+retains the HTTP extractor and compatibility wrappers; child modules use direct
+cross-module imports and narrow crate-visible re-exports. After rustfmt, the
+parent is 146 physical lines, while the six production files
+`aggregation.rs`, `materialization.rs`, `minute_projection.rs`,
+`parallel_work.rs`, `queries.rs`, and `recovery.rs` are 842, 487, 1,830, 288,
+1,382, and 148 lines. All are below the 2,500-line target, so the parent is
+removed from the policy inventory, leaving 20 production and 18 test/helper
+candidates (38 total). The immutable preparation baseline remains 32 and 23,
+and the suppression baseline remains 119. Query routing, aggregation
+semantics, minute projection fences, materializer overlays, parallel-work
+responses, and test resource buckets remain unchanged.
