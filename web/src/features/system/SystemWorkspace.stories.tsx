@@ -1200,6 +1200,19 @@ function buildSystemWorkspaceRequestHandler(
         status,
         headers: { "Content-Type": "application/json" },
       });
+    if (url.pathname === "/api/system/observability" && method === "GET") {
+      return jsonResponse({
+        enabled: true,
+        state: "enabled",
+        grafanaPublicUrl: "https://grafana.example.invalid",
+        grafanaConnectivity: "unknown",
+        hotpath: true,
+        dashboards: ["cvm-overview", "cvm-proxy", "cvm-sqlite", "cvm-runtime", "cvm-web"],
+        datasourceUid: "cvm-prometheus",
+        variables: ["service", "environment", "instance", "task_key"],
+      });
+    }
+
     const parseBody = <T,>(fallback: T): T => {
       if (typeof init?.body !== "string" || !init.body) return fallback;
       try {
@@ -2535,8 +2548,10 @@ export const RetentionTaskDetail: Story = {
     await userEvent.click(canvas.getByRole("tab", { name: "时间" }));
     await expect(canvas.getByText("待归档数量")).toBeVisible();
     await expect(canvas.getByText("最长逾期", { exact: true })).toBeVisible();
-    await expect(canvas.getByText("prompt_cache")).toBeVisible();
-    await expect(canvas.getByText("92.0%")).toBeVisible();
+    await expect(canvas.getByRole("link", { name: /运行时与任务/ })).toHaveAttribute(
+      "href",
+      expect.stringContaining("var-task_key=retention_archive"),
+    );
   },
 };
 
