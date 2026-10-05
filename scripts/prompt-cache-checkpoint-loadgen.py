@@ -236,6 +236,9 @@ def sample(round_index, phase, started):
 
 
 def run_input(round_index, duration_seconds, request_rate, mode):
+    if mode == 'candidate':
+        base.control(False)
+        base.admit_fixture_owner(round_index, f'checkpoint-online-r{round_index}')
     started = time.monotonic()
     started_epoch = time.time()
     deadline = started + duration_seconds

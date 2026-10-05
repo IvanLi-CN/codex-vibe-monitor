@@ -1,5 +1,9 @@
 # 独立性能遥测历史
 
+- 同步主线 `83436dd4` 的 invocation range、pending terminal identity 和新 ADR。
+  入队观测时间与业务登记同时保留；主线长等待/恢复/旧读取验收迁入独立业务 harness，
+  不恢复旧性能 SQLite 或自研图表。同步改变业务热路径，要求新候选完整验证与审查。
+
 - Hosted run `37300494717` attempt 2 exposed import-time CLI parsing in `client.py`,
   making all CPU diagnostic counter snapshots `unknown`. Guard the dispatch with
   `__main__` and cover the real import path in a subprocess regression. This repairs

@@ -719,7 +719,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                 }
             };
             let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-            let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+            let mut pool_invocation_cleanup_guard = Some({
                 PoolInvocationCleanupGuard::new(
                     state.clone(),
                     InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
@@ -1019,7 +1019,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             }
         };
     let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-    let mut pool_invocation_cleanup_guard = pool_route_active.then(|| {
+    let mut pool_invocation_cleanup_guard = Some({
         PoolInvocationCleanupGuard::new(
             state.clone(),
             InvocationRecoverySelector::new(invoke_id.clone(), occurred_at.clone()),
@@ -2132,20 +2132,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         observation.activate_reset_monitor();
     }
 
+    let stream_invocation_cleanup_guard = Some(PoolInvocationCleanupGuard::new(
+        state_for_task.clone(),
+        InvocationRecoverySelector::new(invoke_id_for_task.clone(), occurred_at_for_task.clone()),
+        "stream_invocation_drop_guard",
+        prompt_cache_key_for_task.as_deref(),
+    ));
     tokio::spawn(async move {
         let mut reservation_guard = reservation_guard_for_task;
         let _live_pool_attempt_activity_lease_for_task = live_pool_attempt_activity_lease_for_task;
-        let mut stream_invocation_cleanup_guard = pool_account_for_task.as_ref().map(|_| {
-            PoolInvocationCleanupGuard::new(
-                state_for_task.clone(),
-                InvocationRecoverySelector::new(
-                    invoke_id_for_task.clone(),
-                    occurred_at_for_task.clone(),
-                ),
-                "stream_invocation_drop_guard",
-                prompt_cache_key_for_task.as_deref(),
-            )
-        });
+        let mut stream_invocation_cleanup_guard = stream_invocation_cleanup_guard;
         let upstream_response_content_length = upstream_response.content_length();
         let mut stream = upstream_response.into_bytes_stream();
         let ttfb_started = Instant::now();

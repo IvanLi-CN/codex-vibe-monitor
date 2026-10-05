@@ -10,7 +10,7 @@
 
 ## Terms and Interfaces
 
-- `conversation_id`: A six-character identifier generated from the existing 31-character proxy alphabet.
+- `conversation_id`: A six-character NanoID generated from the existing 31-character proxy alphabet.
 - `invoke_id`: A ten-character identifier consisting of a six-character prefix and a four-character ordered sequence.
 - `prompt-cache conversation master`: The durable `prompt_cache_conversations` row keyed by one normalized `prompt_cache_key`.
 - Interface: `src/prompt_cache_conversations.rs` and the proxy capture/runtime persistence paths.
@@ -27,14 +27,15 @@
 
 - The system MUST persist one prompt-cache conversation master per normalized prompt-cache key, including its conversation ID, aggregate invocation counts, token totals, cost totals, and first/last invocation timestamps.
 - The master conversation ID MUST be checked against existing master IDs before insertion, with bounded candidate retries and an explicit failure after exhaustion.
-- A newly generated conversation prefix MUST exclude process-issued unbound prefixes as well as existing conversation masters and invocation prefixes.
+- Conversation ID creation MUST serialize candidate generation, collision checks, and insertion within the instance. It MUST use NanoID with the existing alphabet and at most five candidate attempts.
+- A newly generated prefix MUST exclude existing conversation masters, unreleased hourly prefix rows, retained invocation prefixes, and known active or pending invocation identities. Released prefixes MUST NOT remain in a permanent process-issued blacklist.
 
 ### REQ-PII-003
 
-- The allocator MUST keep normal next-sequence state in memory, recover it from the master row and retained invocation IDs after a cache miss, and avoid a database uniqueness confirmation for every invocation.
+- The allocator MUST keep normal next-sequence state in memory and recover it from the appropriate durable owner and known retained or pending invocation IDs after a cache miss. Issuance from committed ranges, including unbound issuance, MUST perform no database reads, writes, or database write-admission waits; durable range reservation follows `REQ-PII-008` and `REQ-PII-010`.
 - A concurrent prompt-key creation race MUST recover the already persisted master row instead of creating a duplicate identity.
-- Allocation MUST serialize only the normalized prompt-cache key that is being reserved; unrelated keys MUST NOT wait on the identity cache while identity or sequence SQL is in flight. Active prompt-cache references MUST be registered before an allocation wait and released on failure or cancellation.
-- Unbound prefix initialization MUST use a separate process-local namespace lock; hot suffix allocation MUST use only its short-lived per-cache lock.
+- Issuance MUST serialize the normalized prompt-cache key being allocated, while prefix creation has its own serial namespace. Unrelated keys MUST NOT wait on the global identity cache while identity or sequence SQL is in flight. Active prompt-cache references MUST be registered before an allocation wait and released on failure or cancellation.
+- Conversation and unbound prefix creation MUST share one process-local serialized namespace. Hot suffix allocation MUST use only short-lived owner memory serialization and MUST NOT wait for unrelated prefix-creation SQL.
 
 ### REQ-PII-004
 
@@ -48,6 +49,7 @@
 ### REQ-PII-005
 
 - Allocation, cache recovery, migration/backfill, delayed statistics refresh, retention release, sequence exhaustion, and bounded allocation errors MUST emit diagnostic logs without logging raw prompt-cache keys. Materialization logs MUST include phase, cursor, scanned/updated counts, batch size and duration, and pressure defer/failure state.
+- Range diagnostics MUST distinguish reservation, committed publication, recovery, return, skipped or unconfirmed ranges, refill failure, and exhaustion. Fields MUST identify the owner type, conversation or hourly prefix, UTC hour where applicable, cache generation, range bounds, attempted return count, elapsed time, and outcome without raw prompt-cache keys. Hourly diagnostics MUST distinguish rollover, pending-reference protection, and release. Capacity diagnostics MUST distinguish asynchronous database seed, memory-only resizing, capped activity estimates, target versus occupancy, saturation, and admission timeout. Hot allocation diagnostics MUST NOT require synchronous persistence.
 
 ### REQ-PII-006
 
@@ -63,6 +65,31 @@
 - The synchronous live Prompt working-set update trigger MUST run only for source columns that can affect its key, scope, displayed status, activity timestamps, counts, tokens, or cost. A terminal write that updates only persistence timing MUST NOT recompute this projection.
 - Inserts, deletes, and relevant source updates MUST retain the existing live-window and old/new-key reconciliation semantics, including updates assigning an unchanged value.
 - Existing databases MUST receive the corrected trigger definitions through a transaction that also records a durable completion marker. Interrupted installation MUST roll back and remain retryable; repeated startup MUST preserve projection rows, historical data, control state, and materialization checkpoints without rebuilding rows solely to update trigger dependencies.
+
+### REQ-PII-008
+
+- The conversation master MUST persist the Reserved Invocation Ceiling in `last_invoke_sequence`. The range manager MUST own its updates; aggregate statistics MUST NOT overwrite it from stale snapshots. Upgrade and recovery MUST preserve a floor covering previously issued sequences. Invocation counts and usage MUST remain independent of reservations and skipped sequences.
+- Each reservation MUST grant 64 consecutive sequences, except a smaller final range at the existing suffix limit. No range may be issued before its durable reservation commits. Restart MUST begin above the durable ceiling and skip unused reservations that were not returned; issued sequences MUST NOT be reused or returned on cancellation.
+- A single manager MUST coordinate refill across conversations. With no standby range or in-flight refill, fewer than 32 remaining current-range sequences MUST trigger refill; other conversations with fewer than 48 remaining MUST be eligible to join. Exactly 32 MUST NOT actively trigger, and exactly 48 MUST NOT join. Each conversation MUST hold at most one standby range and have at most one refill in flight.
+- Empty-range allocation MAY wait for its shared refill batch for a total of at most 100 ms. Timeout or failure MUST return HTTP 503 without a per-invocation database reservation; a request timeout MUST NOT cancel the shared batch. Sequence exhaustion MUST fail without wrapping or increasing ID length.
+- Before evicting an idle entry, the manager MUST attempt to return only its never-issued contiguous reservation tail, including an unused standby range, within a total 100 ms budget covering coordination, database admission, connection acquisition, execution, and commit. It MUST freeze the entry's allocation and refill, then conditionally lower the matching master's expected ceiling to the entry's allocation floor. A floor with no locally issued sequence MUST remain at the boundary before that entry's first reservation.
+- Busy, timeout, update-condition mismatch, or failure MUST emit a warning and discard the entry's memory reservations without return retries. Unconfirmed ranges MUST NOT be reused from memory; subsequent recovery MUST use committed database state. Cancellation or rollback MUST be verified before allowing an old return operation to race a replacement entry, and stale callbacks MUST NOT mutate a new cache generation.
+- Eviction and retention MUST protect active invocations, allocations, and refills. Successful return and lifecycle release MUST preserve the existing ID-release semantics without a permanent blacklist or per-conversation files.
+
+### REQ-PII-009
+
+- Allocation cache capacity MUST start at 128 immediately. A single asynchronous seed MUST read at most the 4096 most recent conversation identities and activity timestamps within the preceding 48 hours using the existing covering time index. It MUST NOT block readiness, perform a full-table count, or fall back to a full-table scan if the index is unavailable.
+- Capacity target MUST be `min(4096, max(128, N))`, where `N` is the recent-activity estimate. A separate in-memory activity index MUST retain at most the 4096 most recently active identities and their last activity times. Live invocations MUST update it in memory, and seed merging MUST preserve newer live timestamps. Allocation-cache eviction MUST NOT erase that activity history; activity history MUST NOT reserve prefixes or prevent retention release.
+- Hourly resizing MUST use only the memory activity index and the rolling 48-hour cutoff. It MUST NOT query SQLite or retry the startup seed. Failed seed reads MUST warn and retain the current memory-derived target, initially 128. Capacity estimation MUST NOT wait for delayed statistics materialization or pre-reserve ranges for seeded identities.
+- Shrink MUST retire only eligible idle entries through the bounded return policy. When all entries at the target are protected, temporary growth MAY continue up to 4096. At 4096, uncached-conversation admission MUST wait at most 100 ms for a slot, then return HTTP 503 if none is available. Slot admission MUST be atomic before identity loading or range reservation, and existing cached conversations MUST retain their memory allocation path without a SQL fallback.
+
+### REQ-PII-010
+
+- The business SQLite database MUST persist unbound hourly reservation authority in `hourly_invoke_prefixes`, with `utc_hour` as the Unix-hour primary key, a unique six-character NanoID `prefix`, `last_invoke_sequence` as the reserved ceiling from -1 through 923520, and creation/update timestamps. Conversation reservation authority MUST remain in the existing master table; no conversation mapping table or fragmented reservation files may be introduced.
+- Current-hour initialization MUST create or recover one row on demand under the shared prefix namespace. A same-hour restart MUST recover the same prefix and reserve above its durable ceiling. A single manager MUST coordinate both owner types using the 64-sequence policy, thresholds, standby/refill limits, committed publication, and bounded empty-range wait in `REQ-PII-008`. Hourly owners MUST NOT consume conversation-cache admission slots.
+- New unbound invocations after a UTC hour boundary MUST use the new hour's owner; already allocated invocations MUST retain their IDs. Ended-hour cleanup MUST wait until active invocations, pending terminal or journal persistence, range operations, and invocation rows retained by the existing lifecycle are gone. Release MUST remove the hourly row and memory namespace reservation without a permanent blacklist. Stale operations MUST NOT mutate a replacement owner.
+- The additive schema operation MUST be idempotent, have an immutable completion marker, and remain separately observable from on-demand recovery and historical statistics materialization. Conversation recovery MUST preserve the maximum durable or known retained/pending issued-sequence floor before new reservations. Journal recovery MUST register pending identities before namespace creation or release can race them. Historical invocation IDs MUST NOT be rewritten or used to infer unreliable legacy hour ownership.
+- Supported upgrade recovery MUST handle interruption before schema completion, after range commit but before publication, and during lifecycle release. Program rollback MUST NOT automatically down-migrate reservation state; recovery MUST use a forward-repair program that respects committed ceilings and hourly ownership. Earlier writers unaware of this reservation contract are outside the migrated state's supported writer range.
 
 ## Verification
 
@@ -80,9 +107,9 @@
 
 ### VER-PII-003
 
-- Method: Source inspection plus allocator recovery test after clearing the process cache.
+- Method: Source inspection, allocator recovery after clearing the process cache, closed-pool/held-admission hot issuance, and concurrent entrypoint wait-budget regressions.
 - covers: `REQ-PII-003`
-- Pass condition: The next sequence is recovered from persisted invocation history and no per-invocation existence query is present in the normal allocation path.
+- Pass condition: Cache recovery preserves the issued-sequence floor, and issuance from a committed range performs no database read, write, or database write-admission wait, including under unrelated SQLite contention. Prefix creation and cold recovery remain serialized without holding the global cache mutex across SQL.
 
 ### VER-PII-004
 
@@ -108,6 +135,24 @@
 - covers: `REQ-PII-004`, `REQ-PII-006`
 - Pass condition: The candidate publishes each completed rebuild key exactly once, resumes the first unfinished key from committed staging, advances only a continuous prefix in the final-page transaction, services a changed key behind the prefix through queue drain without rescanning other completed keys, preserves queue-drain cursor independence, reports actual visited/published work and null/zero ETA at the correct phases, reaches an exact empty-queue/empty-staging complete state, and stays within the existing online p99 bounds.
 
+### VER-PII-008
+
+- Method: Concurrent allocator and stateful SQLite upgrade, reservation, interrupted-commit, restart, cancellation, and conditional-return regressions, with tracing and database-operation observation.
+- covers: `REQ-PII-001`, `REQ-PII-002`, `REQ-PII-003`, `REQ-PII-005`, `REQ-PII-008`
+- Pass condition: Issued IDs remain unique and ordered within each conversation; thresholds distinguish 31/32 and 47/48; eligible conversations share refill commits with only one standby and refill per conversation; failed commits never publish ranges; interruption and restart never reuse an issued sequence; successful eviction returns only the unused tail; busy, timeout, mismatch, and stale-generation paths preserve issuance safety and emit diagnostics; cancellation leaves issued sequences spent; final partial ranges never wrap; and aggregate refresh cannot overwrite reservation authority.
+
+### VER-PII-009
+
+- Method: Controlled-clock activity/cache regressions, delayed startup-seed merging, SQLite query-plan and bounded-row checks, concurrent admission and saturation tests, and allocator latency checks under database contention.
+- covers: `REQ-PII-003`, `REQ-PII-005`, `REQ-PII-009`
+- Pass condition: Readiness begins at 128; the indexed seed reads at most 4096 rows and preserves newer live activity; hourly resizing performs no database operation; 48-hour expiry and capped estimates produce bounded targets without losing activity on cache eviction; protected entries survive shrink; temporary growth never exceeds 4096; a saturated uncached request waits at most 100 ms then fails explicitly; and existing cached issuance remains unaffected by saturation or a busy database.
+
+### VER-PII-010
+
+- Method: Stateful SQLite migration/reentry, mixed-owner concurrent allocation, collision, crash/restart, hour-boundary and retained/pending-reference regressions, plus database-operation observation and a Linux service-process replay.
+- covers: `REQ-PII-001`, `REQ-PII-002`, `REQ-PII-003`, `REQ-PII-005`, `REQ-PII-008`, `REQ-PII-010`
+- Pass condition: Hourly and conversation owners share batched committed ranges; both hot paths issue without database work; same-hour restart preserves the prefix and skips outstanding reservations; prefix candidates exclude both durable owner types and retained/pending IDs; rollover preserves active IDs; cleanup cannot release pending owners and eventually releases eligible ones; upgrade/reentry preserves known sequence floors and historical IDs; interruption or stale operations cannot reuse issued IDs; and the final range remains bounded without wrapping.
+
 ## Related ADRs
 
 - [`../../adr/0020-proxy-invocation-identity.md`](../../adr/0020-proxy-invocation-identity.md)
@@ -116,6 +161,8 @@
 - [`../../adr/0023-task-operations-state-outside-main-database.md`](../../adr/0023-task-operations-state-outside-main-database.md)
 - [`../../adr/0027-prompt-cache-materialization-step-boundaries.md`](../../adr/0027-prompt-cache-materialization-step-boundaries.md)
 - [`../../adr/0028-prompt-cache-continuous-statistics-checkpoints.md`](../../adr/0028-prompt-cache-continuous-statistics-checkpoints.md)
+- [`../../adr/0029-conversation-invocation-range-reservations.md`](../../adr/0029-conversation-invocation-range-reservations.md)
+- [`../../adr/0030-durable-hourly-invocation-prefixes.md`](../../adr/0030-durable-hourly-invocation-prefixes.md)
 
 ## Visual Evidence
 

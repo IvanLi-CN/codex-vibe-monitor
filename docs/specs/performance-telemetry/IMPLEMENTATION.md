@@ -35,6 +35,12 @@ Agent VM 分配因 CPU/RAM 容量不足被拒；当前轻量工具回归与 mock
 
 ## Current candidate freshness
 
+主线 `83436dd4` 合入 invocation range 与终态身份登记；合并保留入队时间和
+pending identity 两条路径，并把主线长等待预热、cold refusal、range/recovery 与
+older-reader 验收转移到独立业务 harness。旧性能库测试入口仍保持退役后的 runtime
+适配器。此业务热路径变化要求新候选的完整 Actions 和六条正式审查；Web render
+inputs 未变，已确认的四张入口截图仍适用。
+
 候选 `9d06607c62c982ac8981ff1beaedc626df74f01e` 的 [Actions run 37266146248 attempt 4](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/37266146248/attempts/4)
 全部 20 个 job 通过，四项经验性场景和六个稳定窗口通过：CPU/请求增幅 2.42%，
 p95 变化 −0.34%。合同摘要为 `79e3689408855ab7c224994ac927bd0f4ea9602b1c943dcc974e2ed1dc5fc647`，

@@ -808,6 +808,26 @@ impl TerminalJournal {
         }
     }
 
+    pub(crate) fn pending_identity_keys(&self) -> Vec<(String, String, bool)> {
+        self.pending_by_key
+            .keys()
+            .chain(self.shutdown_recovery_pending.keys())
+            .cloned()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    pub(crate) fn identity_pending(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        raw_capture: bool,
+    ) -> bool {
+        let key = (invoke_id.to_owned(), occurred_at.to_owned(), raw_capture);
+        self.pending_by_key.contains_key(&key) || self.shutdown_recovery_pending.contains_key(&key)
+    }
+
     pub(crate) fn acknowledge(&mut self, invoke_id: &str, occurred_at: &str, raw_capture: bool) {
         let key = (invoke_id.to_string(), occurred_at.to_string(), raw_capture);
         let recovery_pending = self.shutdown_recovery_pending.contains_key(&key);

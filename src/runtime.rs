@@ -350,6 +350,12 @@ pub(crate) async fn run() -> Result<()> {
 
     let prompt_cache_conversation_cache =
         Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    prompt_cache_conversation_cache
+        .lock()
+        .await
+        .identity_cache
+        .range_manager
+        .start_sizing(&pool, shutdown.clone());
     let proxy_runtime_invocations =
         Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
     let dashboard_network_speed_cache =

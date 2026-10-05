@@ -3,6 +3,45 @@ use sqlx::Row;
 use tokio::time::{Duration, sleep};
 
 #[tokio::test]
+async fn prompt_cache_conversation_parallel_entrypoints_share_one_wait_budget() {
+    let state = test_state_with_openai_base(Url::parse("https://api.openai.com/").unwrap()).await;
+    let blocker = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let started = Instant::now();
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..8 {
+        let state = state.clone();
+        tasks.spawn(async move {
+            allocate_proxy_invoke_id_with_active_lease(&state, Some("shared-wait-budget")).await
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        assert!(
+            result
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("timed out")
+        );
+    }
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "requests must share initialization instead of serializing 100ms waits"
+    );
+    assert!(
+        !state
+            .prompt_cache_conversation_cache
+            .lock()
+            .await
+            .identity_cache
+            .active_prompt_cache_keys
+            .contains_key("shared-wait-budget")
+    );
+    drop(blocker);
+}
+
+#[tokio::test]
 async fn ensure_schema_adds_idempotent_success_attempt_route_lookup_index() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -65,16 +104,9 @@ async fn prompt_cache_conversation_allocator_releases_lease_after_failure() {
     )
     .await;
     let prompt_cache_key = "failed-allocator-lease";
-    {
-        let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        cache.identity_cache.conversations.insert(
-            prompt_cache_key.to_string(),
-            PromptCacheConversationIdentity {
-                conversation_id: "ABCDEF".to_string(),
-                next_sequence: PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY,
-            },
-        );
-    }
+    sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invoke_sequence) VALUES ('ABCDEF',?1,?2)")
+        .bind(prompt_cache_key).bind(i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY) - 1)
+        .execute(&state.pool).await.unwrap();
 
     let error = allocate_proxy_invoke_id_with_active_lease(&state, Some(prompt_cache_key))
         .await

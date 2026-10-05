@@ -16,6 +16,7 @@ import socket
 
 import sqlite3
 
+import subprocess
 import sys
 
 import threading
@@ -362,6 +363,39 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         }
         for sequence, (scenario, key_mode, prompt_cache_key) in enumerate(slow_modes)
     ]
+    # Measure long upstream waits on admitted identities. Fresh-key pressure
+    # remains in every third fast request below; a permitted cold refusal must
+    # not prevent the long-wait fixture from reaching the mock upstream.
+    warmed_keys = set()
+    warmup_refusals = 0
+    for spec in slow_specs:
+        key = spec['prompt_cache_key']
+        if key in warmed_keys:
+            continue
+        for attempt in range(1, 6):
+            result = long_wait_proxy_once({
+                **spec,
+                'scenario': 'fast',
+                'key_mode': 'different' if key is not None else 'none',
+            }, 15)
+            if result['status'] == 200 and result['terminal'] is not None:
+                warmed_keys.add(key)
+                break
+            if (
+                result['status'] == 503
+                and result['invoke_id'] is None
+                and result['body'] == '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}'
+                and attempt < 5
+            ):
+                warmup_refusals += 1
+                continue
+            raise SystemExit(f'long-wait fixture admission failed: {result}')
+    print(json.dumps({
+        'phase': 'long-wait-fixture-ready',
+        'round': round_index,
+        'owners': len(warmed_keys),
+        'cold_refusals': warmup_refusals,
+    }), flush=True)
     started_at = time.perf_counter()
     slow_pool = ThreadPoolExecutor(max_workers=8)
     slow_futures = [slow_pool.submit(long_wait_proxy_once, spec, 195) for spec in slow_specs]
@@ -402,15 +436,31 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
     slow_pool.shutdown(wait=True)
     cancel_thread.join(timeout=10)
 
+    # C3 permits a cold owner's empty-range/admission wait to fail closed at
+    # 100 ms. Keep these visible and include their full response latency in
+    # the allocation percentile; cached owners must still succeed.
+    cold_rejections = [
+        item for item in fast_results
+        if item['key_mode'] == 'different'
+        and item['status'] == 503
+        and item['invoke_id'] is None
+        and item['body'] in (
+            '{"error":"failed to allocate proxy invoke id: invocation range allocation timed out after 100ms"}',
+            '{"error":"failed to allocate proxy invoke id: invocation cache admission timed out after 100ms"}',
+        )
+    ]
+    cold_rejected_sequences = {item['sequence'] for item in cold_rejections}
     fast_bad = [
         item for item in fast_results
         if item['status'] != 200 or item['terminal'] is None
+        if item['sequence'] not in cold_rejected_sequences
     ]
     fast_parse_ms = [
         item['terminal']['request_parse_ms']
         for item in fast_results
         if item['terminal'] and isinstance(item['terminal']['request_parse_ms'], (int, float))
     ]
+    fast_parse_ms.extend(item['response_ms'] for item in cold_rejections)
     fast_confirm_ms = [
         item['terminal']['confirm_ms']
         for item in fast_results
@@ -473,6 +523,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
         'fast_submitted': len(fast_results),
         'fast_bad_count': len(fast_bad),
         'fast_bad_examples': fast_bad[:3],
+        'cold_rejection_count': len(cold_rejections),
+        'cold_rejection_examples': cold_rejections[:3],
         'allocation_parse_p99_ms': percentile(fast_parse_ms, 0.99),
         'terminal_confirm_p99_ms': percentile(fast_confirm_ms, 0.99),
         'slow_success_ok': success_ok,
@@ -497,6 +549,8 @@ def run_long_wait_round(round_index, duration_seconds, request_rate):
 
 def run_long_wait(duration_seconds, rounds, request_rate):
     seed()
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'install'], check=True)
+    subprocess.run(['python', '/work/invocation-range-acceptance.py', 'probe'], check=True)
     for round_index in range(1, rounds + 1):
         run_long_wait_round(round_index, duration_seconds, request_rate)
     print(json.dumps({

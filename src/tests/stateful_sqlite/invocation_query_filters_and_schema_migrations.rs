@@ -1633,15 +1633,15 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
         .await
         .expect("persist allocated conversation invocation");
     }
-    {
-        let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        cache.identity_cache.conversations.clear();
-    }
+    clear_prompt_cache_conversation_identity_cache(&state.prompt_cache_conversation_cache).await;
     let recovered = allocate_proxy_invoke_id(&state, Some("allocator-key"))
         .await
         .expect("recover conversation invoke sequence from database");
     assert_eq!(&recovered[..6], &first[..6]);
-    assert_eq!(&recovered[6..], "AAAC");
+    assert_eq!(
+        &recovered[6..],
+        encode_prompt_cache_conversation_sequence(64).unwrap()
+    );
 
     let unbound_first = allocate_proxy_invoke_id(&state, None)
         .await
@@ -1688,15 +1688,23 @@ async fn prompt_cache_conversation_allocator_keeps_sequences_in_memory() {
     .await
     .expect("insert orphan prompt-cache conversation without refreshed stats");
     assert_eq!(
-        cleanup_orphan_prompt_cache_conversations(&state.pool, true)
-            .await
-            .expect("count releasable prompt-cache conversation"),
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            true,
+            &state.prompt_cache_conversation_cache
+        )
+        .await
+        .expect("count releasable prompt-cache conversation"),
         2
     );
     assert_eq!(
-        cleanup_orphan_prompt_cache_conversations(&state.pool, false)
-            .await
-            .expect("release orphan prompt-cache conversation"),
+        cleanup_orphan_prompt_cache_conversations_with_cache(
+            &state.pool,
+            false,
+            &state.prompt_cache_conversation_cache
+        )
+        .await
+        .expect("release orphan prompt-cache conversation"),
         2
     );
     let row_count: i64 = sqlx::query_scalar(
@@ -1983,7 +1991,7 @@ async fn prompt_cache_conversation_stats_refresh_is_deferred_after_terminal_batc
     .fetch_one(&state.pool)
     .await
     .expect("load prompt-cache conversation sequence high-water mark");
-    assert_eq!(last_invoke_sequence, 1);
+    assert_eq!(last_invoke_sequence, 63);
 
     clear_prompt_cache_conversation_identity_cache(&state.prompt_cache_conversation_cache).await;
     let next_invoke_id = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
@@ -2015,7 +2023,15 @@ async fn prompt_cache_conversation_allocator_recovers_same_key_database_race() {
         &second[PROMPT_CACHE_CONVERSATION_ID_LENGTH..],
     ];
     suffixes.sort_unstable();
-    assert_eq!(suffixes, ["AAAA", "AAAB"]);
+    assert_eq!(
+        suffixes,
+        [
+            "AAAA",
+            encode_prompt_cache_conversation_sequence(64)
+                .unwrap()
+                .as_str()
+        ]
+    );
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key = 'concurrent-allocator-key'",
@@ -2028,13 +2044,11 @@ async fn prompt_cache_conversation_allocator_recovers_same_key_database_race() {
 }
 
 #[tokio::test]
-async fn prompt_cache_conversation_allocator_recovers_after_cross_state_cleanup() {
+async fn prompt_cache_conversation_allocator_reinitializes_after_instance_cleanup() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let cleanup_state =
-        test_state_from_existing_pool(state.pool.clone(), test_config(), true).await;
     let prompt_cache_key = "cross-state-cleanup-key";
     let first = allocate_proxy_invoke_id(&state, Some(prompt_cache_key))
         .await
@@ -2051,10 +2065,10 @@ async fn prompt_cache_conversation_allocator_recovers_after_cross_state_cleanup(
         cleanup_orphan_prompt_cache_conversations_with_cache(
             &state.pool,
             false,
-            &cleanup_state.prompt_cache_conversation_cache,
+            &state.prompt_cache_conversation_cache,
         )
         .await
-        .expect("remove prompt-cache identity from another state"),
+        .expect("release identity through its instance allocation manager"),
         1
     );
 
@@ -2086,16 +2100,9 @@ async fn prompt_cache_conversation_allocator_rejects_sequence_exhaustion() {
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    {
-        let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        cache.identity_cache.conversations.insert(
-            "exhausted-allocator-key".to_string(),
-            PromptCacheConversationIdentity {
-                conversation_id: "ABCDEF".to_string(),
-                next_sequence: PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY,
-            },
-        );
-    }
+    sqlx::query("INSERT INTO prompt_cache_conversations (conversation_id,prompt_cache_key,last_invoke_sequence) VALUES ('ABCDEF','exhausted-allocator-key',?1)")
+        .bind(i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY) - 1)
+        .execute(&state.pool).await.unwrap();
 
     let error = allocate_proxy_invoke_id(&state, Some("exhausted-allocator-key"))
         .await
