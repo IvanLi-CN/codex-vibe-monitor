@@ -125,7 +125,42 @@ async fn record_schema_refresh_completion_in_transaction(
     Ok(())
 }
 
+async fn websocket_retirement_state_is_clean(pool: &Pool<Sqlite>) -> Result<bool> {
+    let settings_clean = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM proxy_model_settings
+            WHERE id = 1
+              AND openai_proxy_websocket_enabled = 0
+              AND openai_proxy_upstream_websocket_default_enabled = 0
+              AND websocket_settings_migrated = 1
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    if !settings_clean {
+        return Ok(false);
+    }
+
+    let retired_tag_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM pool_tags WHERE system_key = 'unsupported_transport:websocket')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    Ok(!retired_tag_present)
+}
+
 pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result<()> {
+    if schema_refresh_completed(pool, RETIRE_OPENAI_WEBSOCKET_PROXY_MIGRATION_NAME).await?
+        && websocket_retirement_state_is_clean(pool).await?
+    {
+        return Ok(());
+    }
+
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
         .await
@@ -172,6 +207,7 @@ pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result
             )
         )
         WHERE json_valid(tag_ids_json)
+          AND json_type(tag_ids_json) = 'array'
           AND EXISTS (
               SELECT 1
               FROM json_each(pool_oauth_login_sessions.tag_ids_json)

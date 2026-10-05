@@ -51,7 +51,7 @@
 
 ## Retirement regression coverage
 
-- `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers return the exact raw `501` JSON body without invoke, attempt, upstream connection, retry, or CVM headers.
+- `websocket_upgrade_is_rejected_before_auth_routing_and_persistence` verifies ordinary, comma-separated, and repeated Upgrade headers return the exact raw `501` JSON body without a CVM header or Invocation/Attempt rows. Because the rejection returns before the shared proxy handler, no upstream connection or retry path can run; the structured rejection log contains only method and URI path.
 - `proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_missing` verifies legacy WebSocket request fields are ignored and omitted from responses.
 - `retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_state` verifies legacy columns, exact integer tag cleanup, unrelated-tag preservation, OAuth session JSON cleanup, malformed/non-integer value preservation, and the completion marker.
 - The retirement migration and non-system tag cleanup regressions also preserve JSON object/array values instead of re-encoding them as strings.

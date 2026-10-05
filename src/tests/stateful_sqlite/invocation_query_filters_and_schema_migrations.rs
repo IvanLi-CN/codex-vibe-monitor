@@ -140,6 +140,46 @@ async fn seed_websocket_retirement_state(pool: &SqlitePool) -> (i64, i64) {
     .execute(pool)
     .await
     .expect("seed non-scalar JSON tag values");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy scalar tag root', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-scalar', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-scalar-session")
+    .bind(websocket_tag_id.to_string())
+    .bind("state-retire-websocket-scalar")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed scalar JSON tag root");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_oauth_login_sessions (
+            login_id, account_id, display_name, is_mother, note, tag_ids_json,
+            state, pkce_verifier, redirect_uri, status, auth_url, expires_at,
+            created_at, updated_at
+        ) VALUES (
+            ?1, 4242, 'Legacy object tag root', 0, NULL, ?2,
+            ?3, 'pkce-retire-websocket-object', 'https://example.com/callback', 'pending',
+            'https://example.com/auth', ?4, ?4, ?4
+        )
+        "#,
+    )
+    .bind("retire-websocket-object-session")
+    .bind(format!(r#"{{"retired":{websocket_tag_id}}}"#))
+    .bind("state-retire-websocket-object")
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(pool)
+    .await
+    .expect("seed object JSON tag root");
     (websocket_tag_id, unrelated_tag_id)
 }
 
@@ -222,6 +262,23 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     assert_eq!(
         json_value_session_tags,
         r#"[{"kind":"object"},["nested",{"ok":true}],null,"keep"]"#
+    );
+    let scalar_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-scalar-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load scalar JSON tag root after retirement");
+    assert_eq!(scalar_session_tags, websocket_tag_id.to_string());
+    let object_session_tags: String = sqlx::query_scalar(
+        "SELECT tag_ids_json FROM pool_oauth_login_sessions WHERE login_id = 'retire-websocket-object-session'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load object JSON tag root after retirement");
+    assert_eq!(
+        object_session_tags,
+        format!(r#"{{"retired":{websocket_tag_id}}}"#)
     );
     let marker_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM schema_refresh_migrations WHERE migration_name = 'retire_openai_websocket_proxy_v1'",
