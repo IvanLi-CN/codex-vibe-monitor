@@ -3169,8 +3169,11 @@ describe("PromptCacheConversationTable", () => {
         infoType: "routing",
       }),
     );
-    expect(document.body.textContent).toContain("手工绑定已更新");
-    expect(document.body.textContent).not.toContain("策略更新");
+    await vi.waitFor(async () => {
+      await flushInteractive();
+      expect(document.body.textContent).toContain("手工绑定已更新");
+      expect(document.body.textContent).not.toContain("策略更新");
+    });
   });
 
   it("restores the SSE event head after clearing a routing model filter", async () => {
