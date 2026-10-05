@@ -125,7 +125,7 @@ async fn record_schema_refresh_completion_in_transaction(
     Ok(())
 }
 
-async fn websocket_retirement_state_is_clean(pool: &Pool<Sqlite>) -> Result<bool> {
+pub(crate) async fn websocket_retirement_state_is_clean(pool: &Pool<Sqlite>) -> Result<bool> {
     let settings_clean = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT EXISTS(
@@ -151,7 +151,31 @@ async fn websocket_retirement_state_is_clean(pool: &Pool<Sqlite>) -> Result<bool
     .fetch_one(pool)
     .await?
         != 0;
-    Ok(!retired_tag_present)
+    if retired_tag_present {
+        return Ok(false);
+    }
+
+    let orphaned_session_tag_reference = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM pool_oauth_login_sessions AS session
+            JOIN json_each(session.tag_ids_json) AS session_tag
+            WHERE json_valid(session.tag_ids_json)
+              AND json_type(session.tag_ids_json) = 'array'
+              AND session_tag.type = 'integer'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM pool_tags
+                  WHERE id = session_tag.value
+              )
+        )
+        "#,
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    Ok(!orphaned_session_tag_reference)
 }
 
 pub(crate) async fn retire_openai_websocket_proxy(pool: &Pool<Sqlite>) -> Result<()> {

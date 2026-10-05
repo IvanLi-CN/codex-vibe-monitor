@@ -288,6 +288,28 @@ async fn retire_websocket_proxy_migration_is_idempotent_and_preserves_unrelated_
     .expect("count WebSocket retirement markers");
     assert_eq!(marker_count, 1);
 
+    // A completed marker must not make the fast path hide a stale session reference
+    // after the retired tag row has already been removed.
+    sqlx::query(
+        "UPDATE pool_oauth_login_sessions SET tag_ids_json = ?1 WHERE login_id = 'retire-websocket-session'",
+    )
+    .bind(format!("[{websocket_tag_id}]"))
+    .execute(&pool)
+    .await
+    .expect("reintroduce stale OAuth session tag reference");
+    assert!(
+        !crate::schema::websocket_retirement_state_is_clean(&pool)
+            .await
+            .expect("check stale OAuth session tag reference")
+    );
+    sqlx::query(
+        "UPDATE pool_oauth_login_sessions SET tag_ids_json = ?1 WHERE login_id = 'retire-websocket-session'",
+    )
+    .bind(format!("[{unrelated_tag_id}]"))
+    .execute(&pool)
+    .await
+    .expect("restore OAuth session tag selection");
+
     let reintroduced_tag_id: i64 = sqlx::query_scalar(
         r#"
         INSERT INTO pool_tags (name, system_key, protected, created_at, updated_at)
