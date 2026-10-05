@@ -40,7 +40,6 @@ use axum::response::sse::{Event, KeepAlive};
 use axum::{
     Router,
     body::{Body, Bytes, HttpBody},
-    extract::ws::{Message as AxumWsMessage, WebSocket, WebSocketUpgrade},
     extract::{
         ConnectInfo, DefaultBodyLimit, Extension, OriginalUri, Path as AxumPath, Query, State,
     },
@@ -63,7 +62,7 @@ use flate2::{
     Compression, Decompress, FlushDecompress,
     write::{GzDecoder as WriteGzipDecoder, GzEncoder},
 };
-use futures_util::{FutureExt, SinkExt, StreamExt, TryStreamExt, future::Shared, stream};
+use futures_util::{FutureExt, StreamExt, TryStreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
 use rand::Rng;
 use regex::Regex;
@@ -87,7 +86,6 @@ use tokio::{
 };
 use tokio_rustls::TlsConnector;
 use tokio_stream::wrappers::{BroadcastStream, ReceiverStream};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, client_async_tls_with_config};
 use tokio_util::io::{ReaderStream, StreamReader};
 use tokio_util::sync::CancellationToken;
 use tower::{ServiceExt, service_fn};
@@ -97,9 +95,6 @@ use tower_http::{
     trace::TraceLayer,
 };
 use tracing::{debug, error, info, warn};
-use tungstenite::{
-    Message as TungsteniteMessage, client::IntoClientRequest, http::Request as TungsteniteRequest,
-};
 mod api;
 mod app_state;
 mod config;
@@ -188,8 +183,6 @@ const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
 const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
-const DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED: bool = false;
-const DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED: bool = false;
 const DEFAULT_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED: bool = false;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
 const CVM_INVOKE_ID_HEADER: &str = "x-cvm-invoke-id";
@@ -269,9 +262,6 @@ const ENV_MAX_PARALLEL_POLLS: &str = "MAX_PARALLEL_POLLS";
 const LEGACY_ENV_MAX_PARALLEL_POLLS: &str = "XY_MAX_PARALLEL_POLLS";
 const ENV_SHARED_CONNECTION_PARALLELISM: &str = "SHARED_CONNECTION_PARALLELISM";
 const LEGACY_ENV_SHARED_CONNECTION_PARALLELISM: &str = "XY_SHARED_CONNECTION_PARALLELISM";
-const ENV_OPENAI_PROXY_WEBSOCKET_ENABLED: &str = "OPENAI_PROXY_WEBSOCKET_ENABLED";
-const ENV_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED: &str =
-    "OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED";
 const ENV_OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED: &str =
     "OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED";
 const ENV_HTTP_BIND: &str = "HTTP_BIND";

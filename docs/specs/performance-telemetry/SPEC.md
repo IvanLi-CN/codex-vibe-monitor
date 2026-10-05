@@ -46,7 +46,7 @@
 ## Verification
 
 - VER-001: 77 项映射具有唯一动作，9 项退役、1 项合并，单位、标签、buckets、reset、采样与缺测符合合同。 covers: REQ-003, REQ-003A, REQ-004
-- VER-002: 竞争、池超时、队列积压、慢 SQL、重试、重复终态、SSE/WS/body 取消可区分且不重复计数。 covers: REQ-010, REQ-011
+- VER-002: 竞争、池超时、队列积压、慢 SQL、重试、重复终态、HTTP/SSE/body 取消可区分且不重复计数；已退役的 WebSocket upgrade 返回 501，不产生 invocation、upstream attempt 或 stream 样本。 covers: REQ-010, REQ-011
 - VER-003: 监控组件停机不改变业务与 ACK，采样不扫描数据，独立测试 recorder 不串数据；SQL 归一化缓存有界、保持原始脱敏与完整执行计数；hotpath 不启用默认每 250 ms 的 CPU/线程扫描，进程资源由应用采样器提供。 covers: REQ-002, REQ-006
 - VER-004: 浏览器来源、限额、同源拒绝、丢弃与 unsupported 正确；入口与任务深链接正确且旧图表移除。 covers: REQ-008, REQ-009
 - VER-005: HTTPS 机器查询、只读权限、凭据隔离、报告限额与降级可观察；报告适配使用依赖的实际序列化模型并覆盖应用实际的组合长启动 SQL，SQL 文本保持整份报告的 1 MiB 边界；hotpath SQL 标签包含 UTF-8 与截断唯一性后缀后符合 Prometheus 标签值上限，抓取不因长启动 SQL 失败；故障只记录报告类型与错误类别，图表和规则可重建。 covers: REQ-007, REQ-012, REQ-013
@@ -56,11 +56,12 @@
 
 ## Related ADRs
 
+- [ADR 0020: Retire downstream WebSocket proxy support](../../adr/0020-retire-downstream-websocket-proxy.md)
 - [ADR 0025: External Performance Observability](../../adr/0025-external-performance-observability.md)
 
 ## Visual Evidence
 
-Mock-only `ui_demo` evidence uses the current implementation, including the retained retention backlog trend and Grafana task link. The owner confirmed these four refreshed images after mainline synchronization. The desktop viewport is 1280×900; the mobile viewport is 393×852, matching the demo source dimensions through viewport emulation. Evidence paths are current-only against the implementation baseline. Page whitespace normalization required no trimming.
+Mock-only `ui_demo` evidence uses the current implementation, including the retained retention backlog trend and Grafana task link. The owner confirmed the complete current image set after the latest mainline workload-header alignment; the task image includes the aligned trend heading and Grafana deep link. The desktop viewport is 1280×900; the mobile viewport is 393×852, matching the demo source dimensions through viewport emulation. Evidence paths are current-only against the implementation baseline. Page whitespace normalization required no trimming.
 
 ![Grafana entry](assets/observability-entry-desktop.png)
 ![Mobile Grafana entry](assets/observability-entry-mobile.png)

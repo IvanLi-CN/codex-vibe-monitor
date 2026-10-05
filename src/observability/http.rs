@@ -4,6 +4,10 @@ use metrics::Recorder;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+pub(crate) fn http_request_trace_path(request: &Request<Body>) -> &str {
+    request.uri().path()
+}
+
 pub(crate) async fn retired_performance_preflight(
     request: Request<Body>,
     next: axum::middleware::Next,
@@ -190,6 +194,16 @@ pub(crate) async fn observability_http_middleware(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn http_request_trace_path_excludes_query_parameters() {
+        let request = Request::builder()
+            .uri("/v1/responses?api_key=secret-value")
+            .body(Body::empty())
+            .expect("build request with sensitive query");
+
+        assert_eq!(http_request_trace_path(&request), "/v1/responses");
+    }
 
     fn assert_sample(rendered: &str, name: &str, labels: &[&str], value: &str) {
         let matched = rendered

@@ -42,9 +42,12 @@ pub(crate) use operation_log::{
     PromptCacheConversationOperationRoutingContext, PromptCacheConversationOperationRoutingScope,
     append_runtime_sticky_target_cleared_event_executor, load_sticky_account_id,
 };
+#[cfg(test)]
+pub(crate) use routing_policy::promote_prompt_cache_group_binding_to_upstream_account;
+#[cfg(test)]
+pub(crate) use routing_policy::upsert_prompt_cache_encrypted_session_owner;
 pub(crate) use routing_policy::{
     PromptCacheConversationBindingConstraint, PromptCacheEncryptedSessionOwnerRow,
-    binding_constraint_accepts_upstream_account_id,
     confirm_prompt_cache_encrypted_session_owner_success, ensure_group_binding_target,
     ensure_upstream_account_binding_target, load_prompt_cache_conversation_routing_override,
     load_prompt_cache_encrypted_session_owner_row,
@@ -54,11 +57,6 @@ pub(crate) use routing_policy::{
 use routing_policy::{
     delete_prompt_cache_encrypted_session_owner_executor,
     load_prompt_cache_encrypted_session_owner_row_if_enabled,
-};
-#[cfg(test)]
-pub(crate) use routing_policy::{
-    promote_prompt_cache_group_binding_to_upstream_account,
-    upsert_prompt_cache_encrypted_session_owner,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

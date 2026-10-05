@@ -1546,7 +1546,7 @@ function invocations() {
                 : 1,
           poolDistinctAccountCount: isNoCandidate ? 0 : effectiveStatus === "http_502" ? 2 : 1,
           poolAttemptTerminalReason: isFailure ? failureKind : "completed",
-          transport: effectiveStatus === "running" ? "websocket" : "http",
+          transport: "http",
           tUpstreamConnectMs: ttfb == null ? null : Math.max(24, Math.round(ttfb * 0.24)),
           tUpstreamTtfbMs: ttfb,
           firstTokenMs:

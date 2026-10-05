@@ -58,7 +58,7 @@
 - `网速` 图必须使用固定 5 分钟桶，同图展示上传/下载两条平滑半透明面积，保留 tooltip、图例与单位格式化。
 - `今日 / 24 小时` 必须显示当前未收口 5 分钟桶，且末桶由内存 current-bucket cache 驱动；`昨日` 只展示闭合历史桶。
 - pool invocation 跨 host 重试时，每个 attempt 的上传/下载都必须累计到全局与对应 host；不能按 invocation 去重。
-- HTTP 与 WebSocket 都必须走同一套连接级字节计数；OAuth 路径不能退回 reqwest body 近似值。
+- HTTP 必须走连接级字节计数；OAuth 路径不能退回 reqwest body 近似值。历史 WebSocket 网络数据只保留已有读模型。
 - host 归一化固定为 lowercase；缺失 host 写入 `__unknown__`，仍参与全局汇总。
 - 工作台顶部总速率胶囊必须直接读取 `networkRealtimeRate`；`networkLiveBucket` 继续表示当前开放 5 分钟桶；账号卡不得继续显示上传/下载速率。
 - 当前 5 分钟桶与上一完整 1 秒实时快照必须以内存缓存为主；socket minute rollup 不做历史回填，初次 materialize 时只从当前 live table 尾部开始累计。
@@ -83,7 +83,7 @@
 
 ### Core flows
 
-- 代理与上游建立 HTTP / WebSocket 连接后，socket 实际写入字节立即进入 global、host、account 三个实时窗口与当前 5 分钟开放桶。
+- 代理与上游建立 HTTP 连接后，socket 实际写入字节立即进入 global、host、account 三个实时窗口与当前 5 分钟开放桶。
 - 代理从上游 socket 实际读到字节后，立即写入下载字节并触发 Dashboard live snapshot 刷新预算。
 - Dashboard 活动总览在 `today / yesterday` 选择 `网速` 时，顶部七卡保持原样，仅图表区域切换为网速面积图。
 - `24 小时` 选择 `网速` 时，用同款面积图替代现有 heatmap；切回其它指标时恢复 heatmap。
@@ -132,7 +132,7 @@
 - Given `今日` 或 `24 小时` 选择 `网速`，When 当前开放 5 分钟桶仍在接收流量，Then 图表末桶会持续更新。
 - Given `昨日` 选择 `网速`，When 图表渲染完成，Then 不包含实时开放桶，只显示闭合历史 5 分钟桶。
 - Given 同一 pool invocation 跨多个 host 重试，When 查询 host minute rollup 并查看 Dashboard 总览，Then 每个 host attempt 的上传/下载都会被分别记账，而图表和总速率反映其全量累计。
-- Given OAuth HTTP 请求或 `/v1/responses` WebSocket 在握手后超时或提前关闭，When 查看 live bucket 与分钟汇总，Then 已经发生的 socket 读写字节仍会被记账，不会因为 transport future 被取消而掉成 `0 B/s`。
+- Given OAuth HTTP 请求在上游建立后超时或提前关闭，When 查看 live bucket 与分钟汇总，Then 已经发生的 socket 读写字节仍会被记账，不会因为 transport future 被取消而掉成 `0 B/s`。
 - Given owner 把鼠标移到工作区顶部网速胶囊，When 当前 viewport 为桌面宽度，Then recent 诊断面板立即出现；When owner 点击胶囊，Then 面板保持固定打开，直到再次点击、外点或 `Esc`。
 - Given owner 把鼠标移到工作区顶部网速胶囊，When 浏览器判定 hover title，Then 胶囊与子元素不得提供网速 `title`，不会出现浏览器原生 tooltip。
 - Given recent 面板已有 pushed payload，When 面板渲染，Then 右上角必须分两行显示最近可用样本的 `上行：<speed>` 与 `下行：<speed>`。
@@ -145,7 +145,7 @@
 
 ### Testing
 
-- Backend tests: runtime speed cache 的 global/host/account 秒桶、开放桶、lazy seed、pool retry host split、minute materializer、OAuth HTTP / WebSocket 的连接级字节计数。
+- Backend tests: runtime speed cache 的 global/host/account 秒桶、开放桶、lazy seed、pool retry host split、minute materializer、OAuth HTTP 的连接级字节计数；历史 WebSocket 数据只验证读取兼容。
 - Frontend tests: SSE live merge、无 steady-state 轮询、网速 metric 可见性、24 小时 heatmap -> network chart 切换、顶部总速率胶囊、账号卡速率删除、recent 面板 stale 遮罩与头部摘要。
 - Backend tests: recent 300 秒窗口保留、上一完整 1 秒语义、启动不足 5 分钟时的 `isAvailable=false` 前导空档、recent endpoint/topic payload 组装。
 - Frontend tests: recent 面板桌面 hover/click 固定、再次点击或 `Esc` 关闭、窄屏 dialog/sheet 打开、前导空档无提示、stale 遮罩、无前端 refresh。
@@ -207,6 +207,10 @@
   scenario: `full dashboard page real-socket network graph plus upstream account live pill`
   evidence_note: `验证整页状态下活动总览网速图与上游账号顶部总速率胶囊同时使用非零真实 socket live 数据，且账号卡头部未重新出现单账号上传/下载速率。`
   ![Dashboard unified real-socket network evidence](./assets/dashboard-host-truth-unified-page.png)
+
+## Related ADRs
+
+None
 
 ## 参考（References）
 

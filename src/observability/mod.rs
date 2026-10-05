@@ -19,7 +19,9 @@ mod sampler;
 mod hotpath_sql_normalization;
 pub(crate) use browser::{BROWSER_MAX_BYTES, browser_ingest_router};
 pub(crate) use config::{ObservabilityConfig, prepare_hotpath};
-pub(crate) use http::{observability_http_middleware, retired_performance_preflight};
+pub(crate) use http::{
+    http_request_trace_path, observability_http_middleware, retired_performance_preflight,
+};
 pub(crate) use reports::{hotpath_report, observability_capabilities};
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) use sampler::record_cpu_sample;
@@ -396,60 +398,6 @@ pub(crate) fn endpoint_from_path(path: &str) -> &'static str {
         "/v1/responses" => "responses",
         "/v1/chat/completions" => "chat_completions",
         _ => "other",
-    }
-}
-
-pub(crate) struct WebsocketLifetime {
-    metrics: Arc<ObservabilityRuntime>,
-    endpoint: &'static str,
-    started: Instant,
-    finished: bool,
-}
-impl WebsocketLifetime {
-    pub(crate) fn new(metrics: Arc<ObservabilityRuntime>, path: &str) -> Self {
-        if metrics.enabled {
-            metrics
-                .recorder
-                .register_gauge(&Key::from_name("cvm_http_inflight"), &METADATA)
-                .increment(1.0);
-        }
-        Self {
-            metrics,
-            endpoint: endpoint_from_path(path),
-            started: Instant::now(),
-            finished: false,
-        }
-    }
-    pub(crate) fn finish(&mut self, outcome: &'static str) {
-        if self.finished {
-            return;
-        }
-        self.finished = true;
-        self.metrics.duration(
-            "cvm_proxy_stream_duration_seconds",
-            &[("endpoint", self.endpoint)],
-            self.started.elapsed(),
-        );
-        self.metrics.counter(
-            "cvm_proxy_stream_ends_total",
-            &[
-                ("endpoint", self.endpoint),
-                ("transport", "websocket"),
-                ("outcome", outcome),
-            ],
-            1,
-        );
-        if self.metrics.enabled {
-            self.metrics
-                .recorder
-                .register_gauge(&Key::from_name("cvm_http_inflight"), &METADATA)
-                .decrement(1.0);
-        }
-    }
-}
-impl Drop for WebsocketLifetime {
-    fn drop(&mut self) {
-        self.finish("cancelled");
     }
 }
 

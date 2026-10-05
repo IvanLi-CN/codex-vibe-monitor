@@ -5,8 +5,16 @@ This context freezes the project-specific terms used in invocation observability
 ## Invocation Identity
 
 **对外调用（Invocation）**:
-One logical request or WebSocket turn handled by the proxy and counted once regardless of upstream retries. Its queue, upstream work, and terminal outcome share one invocation identity.
+One logical unit of proxy-observed work counted once regardless of upstream retries. Its queue, upstream work, and terminal outcome share one invocation identity. Legacy WebSocket turns remain valid historical invocations, but WebSocket is no longer a live client-facing transport.
 _Avoid_: 上游尝试, 重试次数
+
+**传输拒绝（Transport Rejection）**:
+A client request rejected at the transport boundary before it enters account routing, upstream selection, invocation persistence, or retry handling. A retired transport produces an observable protocol error and structured telemetry, but does not create a synthetic invocation.
+_Avoid_: 失败调用, 上游失败, 合成调用
+
+**遗留状态（Legacy State）**:
+Persisted configuration, tags, or historical records retained for migration safety, auditability, or read compatibility after the corresponding live capability has been removed. Legacy state is not a source of runtime capability truth.
+_Avoid_: 当前能力开关, 活跃配置, 运行时路由依据
 
 **上游尝试（Upstream Attempt）**:
 One attempt to send an invocation to an upstream route or account. An invocation may contain several upstream attempts, so attempt counts do not equal invocation counts.
@@ -862,7 +870,7 @@ An automatic, non-forced attempt to move one sticky conversation from its curren
 _Avoid_: 故障切换, 强制绑定, 立即换号
 
 **HTTP 优先级迁移范围（HTTP Handoff Scope）**:
-The transport boundary in which the handoff admission gate applies: HTTP pool requests only. WebSocket routing, retry, and session-completion behavior remain unchanged.
+The live client-facing transport boundary in which the handoff admission gate applies: HTTP pool requests only. Legacy WebSocket invocations remain readable historical data and are not a routing or retry path.
 _Avoid_: WebSocket 同步改造, 跨传输隐式复用, 长会话迁移锁
 
 **延期优先级迁移（Deferred Priority Handoff）**:

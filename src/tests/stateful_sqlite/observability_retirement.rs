@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 #[tokio::test]
 async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
@@ -234,4 +235,110 @@ async fn browser_ingestion_mixed_rejections_consume_global_budget() {
     state.shutdown.cancel();
     server.await.expect("join global browser quota HTTP server");
     state.pool.close().await;
+}
+
+#[tokio::test]
+async fn websocket_upgrade_is_rejected_before_auth_routing_and_persistence() {
+    let mut state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9/").expect("valid unreachable upstream base url"),
+    )
+    .await;
+    let metrics = ObservabilityRuntime::new(true);
+    Arc::get_mut(&mut state)
+        .expect("retirement fixture is exclusive before requests")
+        .observability = metrics.clone();
+
+    for (method, upgrade_values) in [
+        (Method::GET, vec!["websocket"]),
+        (Method::POST, vec!["keep-alive, WebSocket"]),
+        (Method::GET, vec!["h2c", "websocket"]),
+    ] {
+        let mut headers = HeaderMap::new();
+        for upgrade_value in upgrade_values {
+            headers.append(header::UPGRADE, HeaderValue::from_static(upgrade_value));
+        }
+
+        let response = proxy_openai_v1_with_connect_info(
+            State(state.clone()),
+            Ok(ConnectInfo(
+                "127.0.0.1:0"
+                    .parse()
+                    .expect("valid test connect info socket address"),
+            )),
+            None,
+            None,
+            OriginalUri("/v1/responses".parse().expect("valid URI")),
+            method,
+            headers,
+            Body::from("request body must not be consumed"),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read WebSocket retirement response body");
+        assert_eq!(
+            body.as_ref(),
+            br#"{"error":"WebSocket proxy support has been removed","code":"websocket_proxy_removed"}"#
+        );
+        let payload: Value = serde_json::from_slice(&body).expect("decode response JSON");
+        assert_eq!(
+            payload,
+            json!({
+                "error": "WebSocket proxy support has been removed",
+                "code": "websocket_proxy_removed"
+            })
+        );
+    }
+
+    let response = proxy_openai_v1_with_connect_info(
+        State(state.clone()),
+        Ok(ConnectInfo(
+            "127.0.0.1:0"
+                .parse()
+                .expect("valid test connect info socket address"),
+        )),
+        None,
+        Some(Extension(hyper::ext::Protocol::from_static("websocket"))),
+        OriginalUri("/v1/realtime".parse().expect("valid URI")),
+        Method::CONNECT,
+        HeaderMap::new(),
+        Body::from("request body must not be consumed"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read HTTP/2 WebSocket retirement response body");
+    assert_eq!(
+        body.as_ref(),
+        br#"{"error":"WebSocket proxy support has been removed","code":"websocket_proxy_removed"}"#
+    );
+
+    let invocation_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("count invocations");
+    assert_eq!(invocation_count, 0);
+    let attempt_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count upstream attempts");
+    assert_eq!(attempt_count, 0);
+    let exported = metrics.render();
+    for fabricated_signal in [
+        "cvm_proxy_invocations_total",
+        "cvm_proxy_upstream_attempts_total",
+        "cvm_proxy_stream_duration_seconds_count",
+    ] {
+        assert!(
+            !exported.contains(fabricated_signal),
+            "rejected WebSocket upgrades must not create {fabricated_signal}"
+        );
+    }
 }

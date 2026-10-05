@@ -1671,7 +1671,7 @@ async fn model_route_reservation_preserves_an_explicit_empty_model() {
 }
 
 #[test]
-fn websocket_terminal_reservation_key_reuses_the_active_pool_route_key() {
+fn terminal_reservation_key_reuses_the_active_pool_route_key() {
     assert_eq!(
         pool_routing_reservation_key_for_invoke_id("pool-ws-42-turn-3").as_deref(),
         Some("pool-route-42")
@@ -7034,7 +7034,7 @@ async fn resolver_proactively_hands_off_fallback_sticky_to_higher_priority_accou
     clippy::await_holding_lock,
     reason = "The process-global priority handoff mirror must be isolated from concurrent stateful tests."
 )]
-async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
+async fn resolver_preserves_priority_handoff_for_realtime_http_endpoint() {
     let _priority_handoff_guard = crate::upstream_accounts::priority_handoff_test_guard();
     let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
     let target_account_id = insert_test_pool_api_key_account_with_options(
@@ -7077,7 +7077,7 @@ async fn resolver_bypasses_busy_priority_handoff_for_fresh_assignment() {
         None,
         None,
         None,
-        "/v1/responses",
+        "/v1/realtime",
         crate::ImageIntent::Unknown,
         false,
         None,

@@ -125,7 +125,7 @@ reconcile family 的每次操作只有一个 outcome；reason 的不存在状态
 | 新观测质量        | `cvm_observability_sampler_last_success_timestamp_seconds{source}`；`cvm_observability_sampler_errors_total{source}`；浏览器 dropped/rejected/accepted 与观察能力，reason 为固定枚举                                                                                                                                                                                                |
 | 代码诊断          | 锁定版本的 `hotpath_*` 函数/SQL/路由/锁能力，native Histogram 和样本数；不在 SDK 再复制一套相同函数/SQL聚合器                                                                                                                                                                                                                                                                       |
 
-`endpoint`、`phase`、`outcome`、`reason` 是接口家族/阶段/结果的固定枚举，不能使用完整 URL、模型或账号。body lifetime 与 proxy stream lifetime 的不同起点必须显示，不能互相替代。WS/SSE 的结果和业务 terminal 不等于普通 HTTP response status；相关异常/取消另计。
+`endpoint`、`phase`、`outcome`、`reason` 是接口家族/阶段/结果的固定枚举，不能使用完整 URL、模型或账号。body lifetime 与 proxy stream lifetime 的不同起点必须显示，不能互相替代。SSE 的结果和业务 terminal 不等于普通 HTTP response status；相关异常/取消另计。已退役的 WS upgrade 仅为普通 HTTP 501 拒绝，不创建代理 stream 样本。
 
 TTFB、TTFT 和请求/响应阶段遵循 [现有领域口径](../../CONTEXT.md#invocation-timing)。没有首个有效 model delta 的 invocation 不生成零 TTFT；missing/取消/无输出由计数说明。phase 之间可能重叠，不能简单相减得到 CPU overhead。
 

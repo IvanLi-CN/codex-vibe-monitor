@@ -1167,8 +1167,6 @@ pub(crate) struct ProxyModelSettings {
     pub(crate) hijack_enabled: bool,
     pub(crate) merge_upstream_enabled: bool,
     pub(crate) upstream_429_max_retries: u8,
-    pub(crate) websocket_enabled: bool,
-    pub(crate) upstream_websocket_default_enabled: bool,
     pub(crate) request_body_logging_enabled: bool,
     pub(crate) response_body_logging_enabled: bool,
     pub(crate) encrypted_session_owner_routing_enabled: bool,
@@ -1191,9 +1189,6 @@ impl Default for ProxyModelSettings {
             hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
-            websocket_enabled: DEFAULT_OPENAI_PROXY_WEBSOCKET_ENABLED,
-            upstream_websocket_default_enabled:
-                DEFAULT_OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED,
             request_body_logging_enabled: true,
             response_body_logging_enabled: true,
             encrypted_session_owner_routing_enabled:
@@ -1216,8 +1211,6 @@ impl ProxyModelSettings {
             upstream_429_max_retries: normalize_proxy_upstream_429_max_retries(
                 self.upstream_429_max_retries,
             ),
-            websocket_enabled: self.websocket_enabled,
-            upstream_websocket_default_enabled: self.upstream_websocket_default_enabled,
             request_body_logging_enabled: self.request_body_logging_enabled,
             response_body_logging_enabled: self.response_body_logging_enabled,
             encrypted_session_owner_routing_enabled: self.encrypted_session_owner_routing_enabled,
@@ -1231,8 +1224,6 @@ pub(crate) struct ProxyModelSettingsRow {
     pub(crate) hijack_enabled: i64,
     pub(crate) merge_upstream_enabled: i64,
     pub(crate) upstream_429_max_retries: Option<i64>,
-    pub(crate) openai_proxy_websocket_enabled: Option<i64>,
-    pub(crate) openai_proxy_upstream_websocket_default_enabled: Option<i64>,
     pub(crate) request_body_logging_enabled: Option<i64>,
     pub(crate) response_body_logging_enabled: Option<i64>,
     pub(crate) encrypted_session_owner_routing_enabled: Option<i64>,
@@ -1247,11 +1238,6 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
             upstream_429_max_retries: decode_proxy_upstream_429_max_retries(
                 value.upstream_429_max_retries,
             ),
-            websocket_enabled: value.openai_proxy_websocket_enabled.unwrap_or(0) != 0,
-            upstream_websocket_default_enabled: value
-                .openai_proxy_upstream_websocket_default_enabled
-                .unwrap_or(0)
-                != 0,
             request_body_logging_enabled: value.request_body_logging_enabled.unwrap_or(1) != 0,
             response_body_logging_enabled: value.response_body_logging_enabled.unwrap_or(1) != 0,
             encrypted_session_owner_routing_enabled: value
@@ -1276,10 +1262,6 @@ pub(crate) struct ProxyModelSettingsUpdateRequest {
     #[serde(default)]
     pub(crate) upstream_429_max_retries: Option<u8>,
     #[serde(default)]
-    pub(crate) websocket_enabled: Option<bool>,
-    #[serde(default)]
-    pub(crate) upstream_websocket_default_enabled: Option<bool>,
-    #[serde(default)]
     pub(crate) request_body_logging_enabled: Option<bool>,
     #[serde(default)]
     pub(crate) response_body_logging_enabled: Option<bool>,
@@ -1296,8 +1278,6 @@ pub(crate) struct ProxyModelSettingsResponse {
     pub(crate) merge_upstream_enabled: bool,
     pub(crate) fast_mode_rewrite_mode: String,
     pub(crate) upstream_429_max_retries: u8,
-    pub(crate) websocket_enabled: bool,
-    pub(crate) upstream_websocket_default_enabled: bool,
     pub(crate) request_body_logging_enabled: bool,
     pub(crate) response_body_logging_enabled: bool,
     pub(crate) encrypted_session_owner_routing_enabled: bool,
@@ -1325,8 +1305,6 @@ impl ProxyModelSettingsResponse {
             merge_upstream_enabled: value.merge_upstream_enabled,
             fast_mode_rewrite_mode: "disabled".to_string(),
             upstream_429_max_retries: value.upstream_429_max_retries,
-            websocket_enabled: value.websocket_enabled,
-            upstream_websocket_default_enabled: value.upstream_websocket_default_enabled,
             request_body_logging_enabled: value.request_body_logging_enabled,
             response_body_logging_enabled: value.response_body_logging_enabled,
             encrypted_session_owner_routing_enabled: value.encrypted_session_owner_routing_enabled,

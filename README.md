@@ -12,7 +12,7 @@
 
 Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作台**。
 
-它把 **`/v1/*` HTTP / WebSocket 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档** 收在同一个项目里。目标不是只做一个总览 dashboard，而是提供一套能 **看得到、查得到、调得动** 的运营与排障入口。
+它把 **`/v1/*` HTTP 流量接入、调用留证、实时 SSE、历史统计、请求排障、上游账号池、forward proxy 配置、价格目录维护、SQLite 持久化与归档** 收在同一个项目里。历史 WebSocket 调用仍可在记录与统计读模型中查询，但当前 `/v1/*` 不再提供 WebSocket 代理。目标不是只做一个总览 dashboard，而是提供一套能 **看得到、查得到、调得动** 的运营与排障入口。
 
 ![Codex Vibe Monitor social preview](docs/readme-assets/social-preview/codex-vibe-monitor-social-preview.png)
 
@@ -40,7 +40,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 
 ### 延迟术语
 
-- `TTFT`（Time To First Token）：流式请求从进入代理的最早稳定时刻开始；WebSocket 从每个下游 `response.create` turn 开始，到首个非空 reasoning、文本或工具参数 delta 到达为止。前导、元数据、keepalive、失败事件和空 delta 不计入。
+- `TTFT`（Time To First Token）：HTTP 流式请求从进入代理的最早稳定时刻开始，到首个非空 reasoning、文本或工具参数 delta 到达为止。前导、元数据、keepalive、失败事件和空 delta 不计入；历史 WebSocket 记录保留既有已持久化值，不再产生新样本。
 - `响应耗时`：记录主视图和网络摘要中的流传输时长，取 `tUpstreamStreamMs`，从上游开始持续输出到该上游流结束；它与 TTFT 并列展示，不包含请求读取、解析、连接或持久化阶段。
 - `TTFB`（Time To First Byte）：发起上游 HTTP 请求后，到收到上游首个响应字节为止。它是网络诊断指标，界面标为 `TTFB / 上游首字节`，不得作为 TTFT fallback。
 - `总响应时间`：从请求进入代理到该 invocation 终态持久化前的完整代理处理时间；它既不是 TTFT，也不是响应耗时或 TTFB，只在阶段耗时诊断中展示。
@@ -49,7 +49,7 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 ### 1. OpenAI 兼容代理入口
 
 - 统一承接 `/v1/*` 请求并记录调用证据
-- 支持 `/v1/*` WebSocket upgrade，按账号池路由到上游 `ws/wss` endpoint 并透明转发帧
+- 当前 `/v1/*` 只承接 HTTP 请求；历史 WebSocket invocation 仍可查询，并统一标记为 `WebSocket（历史）`
 - 支持把代理流量写入 SQLite，保留后续统计与排障所需字段
 - OAuth inline adapter 当前覆盖常用路由，包括：
   - `/v1/models`
@@ -276,8 +276,6 @@ bun run worktree:setup -- --force
 | `GRAFANA_PUBLIC_URL`                                   | Grafana 公网 HTTPS 基址；未配置时应用显示配置缺失                                                                                   |
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
-| `OPENAI_PROXY_WEBSOCKET_ENABLED`                       | 是否允许下游连接 `/v1/*` WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准                                           |
-| `OPENAI_PROXY_UPSTREAM_WEBSOCKET_DEFAULT_ENABLED`      | 是否默认允许本服务连接上游 WebSocket 的首次初始化默认值，默认关闭；之后以设置页全局开关为准，带系统标签 `不支持 WS` 的账号仍走 HTTP |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定的首次初始化默认值，默认关闭；仅在数据库中的该设置尚未初始化时生效，之后以设置页全局开关为准                        |
 | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定所需密钥                                                                                              |
 | `RETENTION_ENABLED`                                    | 是否启用后台保留任务                                                                                                                |

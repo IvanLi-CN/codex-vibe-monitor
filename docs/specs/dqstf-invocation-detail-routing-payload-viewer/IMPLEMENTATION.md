@@ -32,7 +32,7 @@
 - failover 在所有真实 attempt 都失败并返回最终错误时补写调用级终态，避免账号请求记录只剩 attempt metrics 而缺少调用级记录。
 - mock-only Web Demo 现在为 `demo-invocation-9002` 补齐 `/api/invocations/:id/workflow-detail`、`/request-body` 和 `/response-body` 路由级夹具；Dashboard 可直接从分享路由回放真实 attempt 卡片，并稳定复现“请求体未存档但不再卡 loading”的 owner-facing 证据面。
 - 本地生成的终态错误响应改为复用共享 envelope，同时驱动 HTTP 下游返回与 `ProxyCaptureRecord` 持久化；`systemFinalFailure.responseBody` 对 503/429/同类本地裁定现在回放真实 JSON body，不再落 `"{}"` / `missing_body` 假空体。
-- pre-dispatch pool 失败、budget terminal、websocket pre-upstream owner-guard 等本地终态不再前向写入 `pool_upstream_request_attempts`；真实出站调用的 attempt 主路径保持不变。
+- pre-dispatch pool 失败、budget terminal 等本地终态不再前向写入 `pool_upstream_request_attempts`；真实出站调用的 attempt 主路径保持不变。
 - `StructuredPayloadViewer` 使用 `react-json-view-lite@2.5.0`，识别 JSON、严格 NDJSON 与 SSE transcript；纯文本自动换行。
 - 超过 `1 MiB` 的 payload 默认显示原文，用户显式触发后才进行结构化解析。
 - drawer section、错误文本、原文与 structured inspector 补齐 width/overflow contract；树视图使用有界双向滚动。
@@ -44,7 +44,6 @@
 - `cargo check`: passed。
 - `cargo test failover_preserves_assigned_account_when_sticky_owner_is_preflight_blocked -- --nocapture`: passed。
 - `cargo test capture_target_pool_route_timeout_surfaces_blocked_policy_terminal -- --nocapture`: passed。
-- `cargo test websocket_prepare_rate_limited_owner_returns_owner_unavailable -- --nocapture`: passed。
 - `cd web && bun run test -- src/demo/handlers.test.ts`: 1 file passed，10 tests passed。
 - `cd web && bun run test -- src/features/invocations/InvocationWorkflowDetailPanel.test.tsx`: 1 file passed，6 tests passed。
 - `cd web && bun run test src/features/dashboard/DashboardInvocationDetailDrawer.test.tsx`: 1 file passed，9 tests passed。

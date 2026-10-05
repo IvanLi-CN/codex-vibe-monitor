@@ -225,36 +225,6 @@ async fn coordinator_recorders_are_isolated_and_retired_bindings_can_be_replaced
 }
 
 #[test]
-fn websocket_terminal_dispositions_are_exported_once_and_drop_is_cancelled() {
-    let metrics = ObservabilityRuntime::new(true);
-    for (failure, kind, expected) in [
-        (None, None, "success"),
-        (Some("upstream disconnected"), None, "error"),
-        (
-            Some("downstream closed"),
-            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED),
-            "cancelled",
-        ),
-    ] {
-        let outcome = websocket_terminal_outcome(failure, kind);
-        assert_eq!(outcome, expected);
-        let mut lifetime = observability::WebsocketLifetime::new(metrics.clone(), "/v1/responses");
-        lifetime.finish(outcome);
-        lifetime.finish("unknown");
-    }
-    drop(observability::WebsocketLifetime::new(
-        metrics.clone(),
-        "/v1/responses",
-    ));
-    let text = metrics.render();
-    for (outcome, count) in [("success", 1), ("error", 1), ("cancelled", 2)] {
-        assert!(text.contains(&format!("cvm_proxy_stream_ends_total{{endpoint=\"responses\",transport=\"websocket\",outcome=\"{outcome}\"}} {count}")));
-    }
-    assert!(!text.contains("outcome=\"unknown\""));
-    assert!(text.contains("cvm_http_inflight 0"));
-}
-
-#[test]
 fn proxy_unknown_phase_sentinels_are_missing_but_optional_zero_ttft_is_a_sample() {
     let metrics = ObservabilityRuntime::new(true);
     let mut record = test_proxy_capture_record("zero-timing", "2026-10-03 00:00:00");

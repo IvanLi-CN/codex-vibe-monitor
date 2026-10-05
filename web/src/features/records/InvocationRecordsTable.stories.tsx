@@ -616,7 +616,7 @@ export const TransportBadgeMixed: Story = {
     docs: {
       description: {
         story:
-          "Mixed transport records for verifying that the WebSocket badge appears immediately after the model name in the records table while non-WS rows stay unchanged.",
+          "Mixed transport records for verifying that historical WebSocket rows remain visibly labeled while non-WebSocket rows stay unchanged.",
       },
     },
   },
@@ -624,9 +624,7 @@ export const TransportBadgeMixed: Story = {
     const badges = canvasElement.querySelectorAll('[data-testid="invocation-transport-badge"]');
     expect(badges.length).toBeGreaterThanOrEqual(1);
     expect(
-      Array.from(badges).every(
-        (badge) => badge.querySelector('[aria-hidden="true"]')?.textContent === "WS",
-      ),
+      Array.from(badges).every((badge) => badge.textContent?.trim() === "WebSocket（历史）"),
     ).toBe(true);
   },
 };

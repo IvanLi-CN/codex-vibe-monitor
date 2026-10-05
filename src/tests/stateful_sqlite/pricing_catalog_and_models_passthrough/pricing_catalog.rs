@@ -1063,8 +1063,6 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
             merge_upstream_enabled: legacy_proxy.merge_upstream_enabled,
             fast_mode_rewrite_mode: None,
             upstream_429_max_retries: None,
-            websocket_enabled: None,
-            upstream_websocket_default_enabled: None,
             request_body_logging_enabled: None,
             response_body_logging_enabled: None,
             encrypted_session_owner_routing_enabled: None,

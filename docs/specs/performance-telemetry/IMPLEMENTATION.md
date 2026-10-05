@@ -23,23 +23,40 @@ build ID、样本数及产物哈希。驱动清理仅使用本次创建返回的
 随后同步主线 `8f9133dd` 的时间序列模块拆分；该次同步未改变 Web render inputs，
 已确认的四张截图仍适用。预算合同与验收场景摘要均保持原值。
 Agent VM 分配因 CPU/RAM 容量不足被拒；当前轻量工具回归与 mock 检查在本机完成，
-全量工程门禁及性能实验交由本次自动 Actions。尚未取得当前候选的验收结果。
+全量工程门禁及性能实验交由本次自动 Actions。历史候选与当前工作树的证据分开绑定。
 主线同步后的四张 mock 入口、移动、未配置与任务时间趋势截图已直接展示并获确认，
-规范化未裁剪；桌面 CSS viewport 1280×900，移动 393×852。任务页保留两个时间
-趋势图与固定 Grafana 深链接，不再出现旧性能库摘要。
+规范化未裁剪；桌面 CSS viewport 1280×900，移动 393×852。任务页保留业务运行
+趋势与固定 Grafana 深链接，不再出现旧性能库摘要。
+
+## Current candidate freshness
+
+候选 `9d06607c62c982ac8981ff1beaedc626df74f01e` 的 [Actions run 37266146248 attempt 4](https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/37266146248/attempts/4)
+全部 20 个 job 通过，四项经验性场景和六个稳定窗口通过：CPU/请求增幅 2.42%，
+p95 变化 −0.34%。合同摘要为 `79e3689408855ab7c224994ac927bd0f4ea9602b1c943dcc974e2ed1dc5fc647`，
+场景摘要为 `8217b5a3ea4252551e07391a48e570141d2e2047c1f5a520d282fcd016528f8d`。
+attempt 1 的环境压力 unavailable 保留；attempt 2/3 在测量前因部分重跑缺少对应镜像
+artifact 失败。完整 attempt 4 通过仅证明该 SHA 达标，不解释历史不稳定窗口的根因。
+
+随后同步主线 `75de1168a960763be810ae320bd5709283c07f74`：保留 WebSocket 退役、
+查询参数脱敏的请求日志与任务工作量标题对齐，删除孤立的 WS 观测和 usage-refresh
+残留，保留 HTTP/SSE 计时、终态去重和 Grafana 链接。补充退役 upgrade 不产生代理
+样本的回归。该合并改变运行时和任务 render inputs，旧 SHA 的通过卡与任务截图均
+不能证明新候选就绪；任务截图已刷新、直接展示并获主人确认；仍需新的完整 Actions 和六条正式审查。
+Agent VM 分配遇到 Incus agents project 实例数量上限，未取得有效租约；全量工程
+验证交由 GitHub Actions，不改用本机 Docker 或共享性能环境。
 
 ## Current coverage
 
 `src/observability/` 提供每实例 recorder、显式 classic buckets、5 秒 CPU 与
 30 秒文件/内存采样、完整 HTTP/body 生命周期、只读报告与有界浏览器接入。
 资源采样节拍固定为六次 CPU 采样，持续运行不会因累计 tick 溢出提前采样。
-自有 Hyper/WS 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
+自有 Hyper HTTP/SSE 传输、终态去重、SQLite coordinator/pool/queue/execute/ACK、
 任务和投影使用实际事件。hotpath 在启动线程之前配置，最终 router 只安装一次
 layer，SQLx tracing 独立于日志过滤；函数默认 10% 抽样，SQL/选定锁完整记录。
 `.env` 和 `.env.local` 在同步入口统一读取，先于 hotpath/Tokio 线程启动；
 全局 SQLite 仲裁器弱引用当前 recorder，拒绝绑定另一个尚活跃的 runtime，
 permit 持有所属 recorder 至释放，结束的 runtime 不会被全局对象永久保留。
-WebSocket 准备和转发返回实际 success/error/cancelled 终态，不统一记为 unknown。
+当前主线已退役 WebSocket 转发：upgrade 返回 501，历史业务记录保留；拒绝不产生 invocation、upstream attempt 或 stream 样本。
 hotpath 关闭默认 `threads` feature，避免 SDK 每 250 ms 的 CPU/线程扫描；
 进程 CPU、内存和线程数仍由应用资源采样器按锁定节拍提供，按需 CPU 调用栈使用 samply。
 SDK 内部事件队列每 250 ms 排空，减少空队列的周期唤醒；事件在来源处计时，
@@ -124,7 +141,7 @@ backend-test 镜像保留 Prometheus 配置，供标签长度回归编译时读�
 已对齐包含任务执行模块拆分的新主线。四张 mock UI 证据已展示、确认并落盘；
 对齐主线后两个 Storybook 文件的 61 项用例通过，相关 E2E 在构建后的 mock demo 上 10 项全部通过。
 77 项映射、9 项退役与 1 项合并的注册表一致性已加入自动回归。
-WebSocket 终态补全回归启用独立 recorder，验证更丰富、更少及无关的重复终态均不重计 invocation。
+历史 WebSocket 终态补全回归随主线转发路径退役；当前以 upgrade 拒绝不产生代理样本的独立 recorder 回归验证边界。
 请求体超时夹具在实际 body 读取时启动延迟，避免 admission 期间提前入队；
 启动健康检查在计时外构造无代理本地客户端，隔离宿主代理环境与客户端冷启动。
 这两项定向回归已通过，包含归一化缓存补丁的完整三分桶与 Rust 静态门禁也已通过。

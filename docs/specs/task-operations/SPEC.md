@@ -111,6 +111,7 @@
 ### REQ-TASK-OPS-013 — Tabs 与完整空图表
 
 - 所有任务详情 MUST 保留“运行趋势”图表区域，默认“次数”Tab 展示最近最多 100 次运行。Retention 详情在同一区域增加“时间”Tab，展示最近 7 天归档积压；该 Tab 的待归档数量与最长逾期图继续使用独立单位、共用时间轴，并遵循 Retention 主题的小时观测契约。Tabs MUST 复用项目共用分段控件并保持单行，不因命名调整增加独立的运行小时筛选模式。
+- “运行趋势”标题与视图 Tabs MUST 位于同一标题行并两端对齐：标题靠图表区域左端，Tabs 靠右端，二者垂直居中。宽屏与窄屏均不得把 Tabs 换到标题下一行；标题行及 Tabs 内的标签不得换行或造成横向溢出。
 - 加载中、全空、指标不支持、接口字段缺失和读取失败时，选中 Tab MUST 仍渲染固定高度的图面、坐标轴、网格、单位或未知单位标记、图例及图内状态提示。可以使用明确的参考刻度，不能把参考刻度或占位数据当作实测零；不得只剩“暂无观测数据”等文本或隐藏整张图。
 - Tab 切换 MUST 保持图表区域高度稳定，容器按两个 Tab 中图面数量较多的响应式布局预留高度；未选中的 Tab 不挂载图表画布，预留区域不显示数据。图面窄屏固定 280px 高、宽屏至少 300px 高；摘要在窄屏采用双列布局。最多 100 个样本均可查看，窄屏默认聚焦最近 20 次，宽屏默认显示 100 次，并可切换 20、50、100 次。Tab 支持键盘选择，图面在窄屏适配可用宽度。Tooltip 须支持指针、键盘与触屏查看运行身份、时间、状态、三项原始值、单位、观测性质和跳过或失败原因。
 - 运行图中跨越确认跳过且没有该项数值的样本，MUST 使用不带面积填充的虚线连接两侧有效边界，并保留跳过位置；首尾跳过无两侧端点时只保留状态标记。虚线不形成实测样本，也不用于估计。不得在图表内展示设计规则或实现说明。
@@ -185,7 +186,7 @@
 
 - Method: frontend fixtures plus controlled desktop/mobile Demo or Storybook rendering for P=1,000/D=100/C=60, missing each series, one valid sample, real zeros, all-empty/loading/error states, skipped segments at the beginning/middle/end, failure with commits, incompatible scope and mixed-unit tasks.
 - covers: `REQ-TASK-OPS-012`, `REQ-TASK-OPS-013`
-- Pass condition: original boundaries are 1,000/100/60 with no additive total of 1,160; all three legends remain; absent series do not erase present series; incompatible units use separate axes; skipped bridges are dashed and unfilled, missing observations remain gaps; both Tabs render real chart frames in empty states; keyboard and touch access work without horizontal scrolling. Retention hourly gaps retain the separate no-connection rule.
+- Pass condition: original boundaries are 1,000/100/60 with no additive total of 1,160; all three legends remain; absent series do not erase present series; incompatible units use separate axes; skipped bridges are dashed and unfilled, missing observations remain gaps; both Tabs render real chart frames in empty states; the heading and shared segmented Tabs stay on one vertically centered row, aligned to the left and right edges respectively, in desktop and mobile layouts without wrapping or horizontal overflow; keyboard and touch access work without horizontal scrolling. Retention hourly gaps retain the separate no-connection rule.
 
 ### VER-TASK-OPS-011
 

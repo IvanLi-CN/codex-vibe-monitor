@@ -874,8 +874,6 @@ const STORYBOOK_SETTINGS: SettingsPayload = {
     mergeUpstreamEnabled: true,
     fastModeRewriteMode: "disabled",
     upstream429MaxRetries: 3,
-    websocketEnabled: true,
-    upstreamWebsocketDefaultEnabled: true,
     requestBodyLoggingEnabled: true,
     responseBodyLoggingEnabled: true,
     encryptedSessionOwnerRoutingEnabled: false,

@@ -86,7 +86,6 @@ Accounts also track read-only system signals alongside editable policy:
 - observed Responses image-tool capability
 - observed Codex `image_gen` namespace capability
 - observed API-key standalone search endpoint capability
-- transport capability badges such as `unsupported_transport:websocket`
 
 ## Resolution
 
@@ -158,7 +157,6 @@ An explicit proxy list is a hard constraint. Runtime must select only from the c
 System tags are not an editable routing authoring surface. Their current contract is:
 
 - `unsupported_model:<model>` appends `<model>` to `systemDeniedModels`
-- `unsupported_transport:websocket` remains a read-only transport signal for display and filtering
 - future system tags may add internal signals, but they must remain operator read-only
 
 `availableModels` follows root -> group -> account -> conversation inheritance semantics:
@@ -369,7 +367,7 @@ Legacy `unsupported_model:gpt-5.5` handling is treated as one instance of the ge
 - Splitting text reasoning and image generation across two upstreams in the same Responses request is not introduced.
 - OAuth/API key credential behavior is unchanged apart from rejecting manual `tagIds`.
 - Global reverse-proxy `/v1/*` settings are unchanged.
-- OAuth upstream requests, WebSocket routes, and conversation-level request compression overrides are not introduced.
+- OAuth upstream requests and conversation-level request compression overrides are not introduced.
 
 ## Visual Evidence
 
@@ -642,6 +640,10 @@ The upstream area has two explicit account domains backed by the same account ta
 Account roster and maintenance-event APIs accept `kind=oauth_codex|api_key_codex`. The filter is applied before metrics, totals, pagination, group summaries, and event filtering. Omitting `kind` preserves the legacy mixed response for compatibility. API-key group writes are rejected server-side; UI hiding is not the enforcement boundary.
 
 Startup schema maintenance automatically migrates every legacy API-key record in one SQLite transaction. It retains an existing non-empty account proxy binding first; otherwise it copies a non-empty legacy group proxy binding; otherwise it writes the explicit direct binding. The migration clears API-key `group_name` and `is_mother`, detaches transit accounts from legacy group-only strategies, and writes an audit event. It preserves OAuth members, group metadata, account IDs, encrypted credentials, and tags. Create and update APIs reject an explicit empty proxy binding; UI creation defaults to direct and cannot submit without at least one binding.
+
+## Related ADRs
+
+None
 
 ## Domain Acceptance
 

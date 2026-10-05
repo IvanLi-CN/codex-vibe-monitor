@@ -135,6 +135,15 @@ function formatOptionalText(value: string | null | undefined) {
   return normalized ? normalized : FALLBACK_CELL;
 }
 
+function formatTransportMetric(value: string | null | undefined, t: Translator) {
+  const normalized = value?.trim();
+  if (!normalized) return FALLBACK_CELL;
+  if (normalized.toLowerCase() === "websocket") {
+    return t("records.filters.transport.websocket");
+  }
+  return normalized;
+}
+
 function formatNoCandidateReason(code: string, isZh: boolean) {
   const labels: Record<string, [string, string]> = {
     modelConcurrencyLimit: ["模型并发容量已满", "Model concurrency capacity is full"],
@@ -966,7 +975,7 @@ function buildAttemptMetricActions(
     formatOptionalText(readString(responseSummary?.responseContentEncoding));
   const requestTier = formatOptionalText(readString(requestSummary?.requestedServiceTier));
   const requestReasoning = formatReasoningEffort(readString(requestSummary?.reasoningEffort));
-  const requestTransport = formatOptionalText(readString(requestSummary?.transport));
+  const requestTransport = formatTransportMetric(readString(requestSummary?.transport), t);
   const requestEndpoint = resolveEndpointMetricDisplay({
     endpoint: readString(requestSummary?.endpoint),
     status: attempt.status,
@@ -1088,7 +1097,7 @@ function buildGenericMetricActions(
     const requestModel = formatOptionalText(readString(routeRequest.requestModel));
     const requestTier = formatOptionalText(readString(routeRequest.requestedServiceTier));
     const requestReasoning = formatReasoningEffort(readString(routeRequest.reasoningEffort));
-    const requestTransport = formatOptionalText(readString(routeRequest.transport));
+    const requestTransport = formatTransportMetric(readString(routeRequest.transport), t);
     const requestEndpoint = resolveEndpointMetricDisplay({
       endpoint: readString(routeRequest.endpoint),
       status: entry.status,
@@ -1687,6 +1696,7 @@ function AttemptDetail({
   responseBodyState: PayloadFetchState<ApiInvocationResponseBodyResponse>;
   hideNonShortIds?: boolean;
 }) {
+  const { t } = useTranslation();
   const attempt = entry.attempt;
   if (!attempt) return null;
   const labels = buildPayloadViewerLabels(isZh);
@@ -1858,6 +1868,7 @@ function AttemptDetail({
         key: "transport",
         label: isZh ? "传输" : "Transport",
         monospace: false,
+        formatter: (value) => formatTransportMetric(typeof value === "string" ? value : null, t),
       },
     ]),
     ...buildStructuredItems(imageToolRewrite, localeTag, isZh, [
@@ -2562,6 +2573,7 @@ function GenericDetail({
   activeSection: GenericSection;
   requestBodyState: PayloadFetchState<ApiInvocationRequestBodyResponse>;
 }) {
+  const { t } = useTranslation();
   const labels = buildPayloadViewerLabels(isZh);
   const detailContent = stringifyStructuredValue(entry.detail ?? undefined);
   const bodyText = entry.responseBody?.bodyText?.trim() ?? "";
@@ -2612,6 +2624,7 @@ function GenericDetail({
         key: "transport",
         label: isZh ? "传输" : "Transport",
         monospace: false,
+        formatter: (value) => formatTransportMetric(typeof value === "string" ? value : null, t),
       },
       { key: "promptCacheKey", label: "Prompt Cache Key" },
       { key: "stickyKey", label: "Sticky Key" },

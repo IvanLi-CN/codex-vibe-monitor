@@ -103,13 +103,6 @@ const compactDefaultTags: AccountTagSummary[] = [
     systemKey: "unsupported_model:gpt-5.6-sol",
     protected: true,
   },
-  {
-    id: 6,
-    name: "不支持 WS",
-    routingRule: defaultEffectiveRoutingRule,
-    systemKey: "unsupported_transport:websocket",
-    protected: true,
-  },
 ];
 
 function buildRequestBuckets(
@@ -220,7 +213,6 @@ const storyTagMap = {
   prodApac: compactDefaultTags[2],
   stickyPool: compactDefaultTags[3],
   unsupportedModelGpt55: compactDefaultTags[4],
-  unsupportedWebsocket: compactDefaultTags[5],
   priority: {
     id: 20,
     name: "priority-route",
@@ -1913,7 +1905,7 @@ export function createStore({
                 }
               : tagFilterStory || readOnlySystemTagsStory
                 ? {
-                    tags: [compactDefaultTags[4], compactDefaultTags[5]],
+                    tags: [compactDefaultTags[4]],
                   }
                 : undefined),
   });

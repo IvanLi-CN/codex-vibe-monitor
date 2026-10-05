@@ -77,19 +77,19 @@ flowchart TB
 
 新增 `src/observability/`，职责限于生命周期、固定指标、HTTP body 生命周期、浏览器上报和轻量资源采样。使用 `metrics`、`metrics-exporter-prometheus`，显式建立 Counter、Gauge、Histogram；不开发持久化队列、时间桶、rollup、存储 schema、图表或历史查询引擎。运行时持有观测句柄，测试实例使用独立 recorder；不能让并行 AppState 测试污染全局指标。
 
-| 现有位置                                                                                                                                                                | 接入或退役动作                                                                             |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [runtime.rs](../../src/runtime.rs)、[app_state.rs](../../src/app_state.rs)                                                                                              | 替换旧 PerformanceTelemetryRuntime 和 field；管理 SDK、采样器与 exporter 生命周期          |
-| [hourly_rollups.rs](../../src/maintenance/hourly_rollups.rs) 的最终 router 装配                                                                                         | 移除旧 middleware；安装完整请求观测和一次 hotpath Axum layer；避免遗漏后装配路由或重复计数 |
-| [request_entry.rs](../../src/proxy/request_entry.rs)、[dispatch.rs](../../src/proxy/dispatch.rs)                                                                        | 观测准入、阶段、attempt、重试与最终结果；保留已有业务阶段口径                              |
-| [upstream_transport.rs](../../src/proxy/upstream_transport.rs)                                                                                                          | 在自有 Hyper 路径接入连接、响应与传输观测；reqwest adapter 不能代替该接入                  |
-| [http_stream_tracking.rs](../../src/http_stream_tracking.rs)、[raw_capture.rs](../../src/proxy/raw_capture.rs)                                                          | 跟踪响应 body 完成、失败、取消及规范终态去重，覆盖 HTTP stream、SSE 和相关 WS 路径         |
-| [sqlite_batch_writer.rs](../../src/sqlite_batch_writer.rs)                                                                                                              | 区分队列等待、批次准入、执行/ACK；复用真实 pending accounting，记录 source event           |
-| [proxy_sqlite_write_coordinator.rs](../../src/proxy_sqlite_write_coordinator.rs)、[db_pressure.rs](../../src/db_pressure.rs)                                            | 每次实际准入记录等待/占用；busy、locked、pool timeout 和 defer 在来源处累计一次            |
-| [dashboard_live_projection.rs](../../src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs)、[subscriptions.rs](../../src/api/slices/subscriptions.rs) | 将投影、发布、reconcile、订阅和发送信号迁入 SDK；合并重复 publish 计时                     |
-| [retention.rs](../../src/maintenance/retention.rs)、runtime 的 task dispatcher                                                                                          | 迁移维护积压、执行结果、处理量；保留实际任务执行记录                                       |
-| [system_routes_and_tasks.rs](../../src/api/slices/system_routes_and_tasks.rs)、[maintenance_store.rs](../../src/maintenance_store.rs)                                   | 移除旧库派生 performance summary；任务页面提供 Grafana task_key 深链接                     |
-| [App.tsx](../../web/src/App.tsx)、[导航](../../web/src/features/app-shell/navigation.ts)、[浏览器采集器](../../web/src/lib/browserPerformanceTelemetry.tsx)             | 删除旧性能页及旧 collector；接入新上报协议与外部 Grafana 入口                              |
+| 现有位置                                                                                                                                                                | 接入或退役动作                                                                                                               |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| [runtime.rs](../../src/runtime.rs)、[app_state.rs](../../src/app_state.rs)                                                                                              | 替换旧 PerformanceTelemetryRuntime 和 field；管理 SDK、采样器与 exporter 生命周期                                            |
+| [hourly_rollups.rs](../../src/maintenance/hourly_rollups.rs) 的最终 router 装配                                                                                         | 移除旧 middleware；安装完整请求观测和一次 hotpath Axum layer；避免遗漏后装配路由或重复计数                                   |
+| [request_entry.rs](../../src/proxy/request_entry.rs)、[dispatch.rs](../../src/proxy/dispatch.rs)                                                                        | 观测准入、阶段、attempt、重试与最终结果；保留已有业务阶段口径                                                                |
+| [upstream_transport.rs](../../src/proxy/upstream_transport.rs)                                                                                                          | 在自有 Hyper 路径接入连接、响应与传输观测；reqwest adapter 不能代替该接入                                                    |
+| [http_stream_tracking.rs](../../src/http_stream_tracking.rs)、[raw_capture.rs](../../src/proxy/raw_capture.rs)                                                          | 跟踪响应 body 完成、失败、取消及规范终态去重，覆盖 HTTP stream 与 SSE；已退役 WS upgrade 仅返回 HTTP 501，不创建代理生命周期 |
+| [sqlite_batch_writer.rs](../../src/sqlite_batch_writer.rs)                                                                                                              | 区分队列等待、批次准入、执行/ACK；复用真实 pending accounting，记录 source event                                             |
+| [proxy_sqlite_write_coordinator.rs](../../src/proxy_sqlite_write_coordinator.rs)、[db_pressure.rs](../../src/db_pressure.rs)                                            | 每次实际准入记录等待/占用；busy、locked、pool timeout 和 defer 在来源处累计一次                                              |
+| [dashboard_live_projection.rs](../../src/api/slices/error_distribution_and_sse/dashboard_live_projection.rs)、[subscriptions.rs](../../src/api/slices/subscriptions.rs) | 将投影、发布、reconcile、订阅和发送信号迁入 SDK；合并重复 publish 计时                                                       |
+| [retention.rs](../../src/maintenance/retention.rs)、runtime 的 task dispatcher                                                                                          | 迁移维护积压、执行结果、处理量；保留实际任务执行记录                                                                         |
+| [system_routes_and_tasks.rs](../../src/api/slices/system_routes_and_tasks.rs)、[maintenance_store.rs](../../src/maintenance_store.rs)                                   | 移除旧库派生 performance summary；任务页面提供 Grafana task_key 深链接                                                       |
+| [App.tsx](../../web/src/App.tsx)、[导航](../../web/src/features/app-shell/navigation.ts)、[浏览器采集器](../../web/src/lib/browserPerformanceTelemetry.tsx)             | 删除旧性能页及旧 collector；接入新上报协议与外部 Grafana 入口                                                                |
 
 原生产镜像运行 Rust 二进制和已构建前端，不新增 Node/Vite 服务。集成以主线 Axum 0.8 为基线。hotpath 的 `axum-0-8`、SQLx 和 Prometheus 能力与锁定依赖一并验证。
 
@@ -217,17 +217,17 @@ profile 位于监控目录的项目隔离子目录，manifest 记录 UTC 起止�
 
 ## 验收与实施交接
 
-| 验收面          | 可证实的完成标准                                                                                                                      |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| 指标迁移        | 77 个旧 ID 均有唯一动作；单位、Counter reset、Histogram 样本和所有固定分类经过验证                                                    |
-| 请求路径        | 自有 Hyper、代理 retry、HTTP/SSE/WS 与 body cancellation 覆盖；一次 invocation 的终态不重复累计，inflight 不在 head 时提前减          |
-| 数据库排查      | 注入 coordinator 竞争、pool timeout、queue backlog、busy/locked 和慢 SQL，能区分准入/池/队列/执行原因                                 |
-| 代码与 CPU 归因 | SQLx tracing 不被日志过滤；热点函数/锁可读；运行实例的已知 CPU 热点通过限时 attach 解析为函数名                                       |
-| 浏览器          | data-ready/paint/SSE 生命周期与实际页面一致；限制、拒绝/丢弃和 unsupported 不伪装零覆盖                                               |
-| 外部与失败隔离  | 公网 gcx/curl 在无 SSH 情况下查询成功；坏 Token/写入被拒；监控停机不阻塞业务/ACK/任务                                                 |
-| 图表与协议      | app classic 与 hotpath native 的分位数查询正确，正式 UID/变量/规则可重新 provision，缺数据显示 unknown/stale                          |
-| 退役与迁移      | 无旧库创建/读取/写入、无旧 writer/rollup；absent/custom-path/WAL/corrupt/unknown/中断/重复执行/回滚均有证据                           |
-| 性能与容量      | 同一候选版本观测开/关、相同非饱和负载 A/B，默认 CPU 每完成请求与 p95 延迟增加均不超过 5%；内存与系列有界，profile/Prometheus 容量验证 |
+| 验收面          | 可证实的完成标准                                                                                                                                                                 |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 指标迁移        | 77 个旧 ID 均有唯一动作；单位、Counter reset、Histogram 样本和所有固定分类经过验证                                                                                               |
+| 请求路径        | 自有 Hyper、代理 retry、HTTP/SSE 与 body cancellation 覆盖；退役 WS upgrade 不创建 invocation/attempt/stream 样本；一次 invocation 的终态不重复累计，inflight 不在 head 时提前减 |
+| 数据库排查      | 注入 coordinator 竞争、pool timeout、queue backlog、busy/locked 和慢 SQL，能区分准入/池/队列/执行原因                                                                            |
+| 代码与 CPU 归因 | SQLx tracing 不被日志过滤；热点函数/锁可读；运行实例的已知 CPU 热点通过限时 attach 解析为函数名                                                                                  |
+| 浏览器          | data-ready/paint/SSE 生命周期与实际页面一致；限制、拒绝/丢弃和 unsupported 不伪装零覆盖                                                                                          |
+| 外部与失败隔离  | 公网 gcx/curl 在无 SSH 情况下查询成功；坏 Token/写入被拒；监控停机不阻塞业务/ACK/任务                                                                                            |
+| 图表与协议      | app classic 与 hotpath native 的分位数查询正确，正式 UID/变量/规则可重新 provision，缺数据显示 unknown/stale                                                                     |
+| 退役与迁移      | 无旧库创建/读取/写入、无旧 writer/rollup；absent/custom-path/WAL/corrupt/unknown/中断/重复执行/回滚均有证据                                                                      |
+| 性能与容量      | 同一候选版本观测开/关、相同非饱和负载 A/B，默认 CPU 每完成请求与 p95 延迟增加均不超过 5%；内存与系列有界，profile/Prometheus 容量验证                                            |
 
 性能比较必须由 GitHub Actions 的 GitHub-hosted runner 完成：生产镜像构建与测量拆为不同 job，测量 job 只使用当前 Candidate 的预构建镜像，串行运行三对交替窗口。固定 offered load、完成数、SSE 订阅与基线，每窗口 60 秒预热、300 秒测量；两组重复窗口 CV 各不超过 5% 后，才比较 CPU 每完成请求与 p95 的 5% 增幅预算。保留 runner 环境、原始样本、资源观察和绑定 run/attempt 的七字段证据卡，失败也上传白名单产物并阻断 PR 门禁。
 
