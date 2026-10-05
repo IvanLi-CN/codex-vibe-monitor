@@ -8,8 +8,8 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
 - `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 39 current explicit file
-  budgets (21 production and 18 test/helper), and 119 standalone suppression
+  `edb6d8624b1713619c32caa050e397f0aded79b4`, 38 current explicit file
+  budgets (20 production and 18 test/helper), and 119 standalone suppression
   declarations. The immutable preparation production/test-helper counts remain
   32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
@@ -324,12 +324,27 @@ and 23 and the suppression baseline remains 119. Binding behavior, transaction
 ordering, sticky-route mutation semantics, owner routing, API payloads, and
 test resource classification remain unchanged.
 
+The prompt-cache timeseries extraction separates the parent into explicit
+aggregation, materialization, minute-projection, parallel-work, and query
+modules, with restart recovery nested under minute projection. The parent
+retains the HTTP extractor and compatibility wrappers; child modules use direct
+cross-module imports and only the required crate-visible re-exports. After
+rustfmt, the parent is 146 physical lines, while the six production files
+`aggregation.rs`, `materialization.rs`, `minute_projection.rs`,
+`parallel_work.rs`, `queries.rs`, and `recovery.rs` are 842, 487, 1,830, 288,
+1,382, and 148 lines. All are below the 2,500-line target, so the parent is
+removed from the policy inventory. The current inventory is 20 production and
+18 test/helper candidates (38 entries total); the immutable preparation
+baseline remains 32 and 23 and the suppression baseline remains 119. Query
+routing, aggregation semantics, minute projection fences, materializer
+overlays, parallel-work responses, and test resource buckets remain unchanged.
+
 ## Inventory Contract
 
-The policy has 21 `production` entries above the 2,500-line destination target
+The policy has 20 `production` entries above the 2,500-line destination target
 and 18 `test_helper` entries above the 3,000-line destination target. Each
 `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 39 paths; a long path absent from the inventory is
+The checker only reads those 38 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
