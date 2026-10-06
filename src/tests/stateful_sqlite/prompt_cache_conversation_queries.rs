@@ -441,6 +441,121 @@ async fn prompt_cache_conversations_expose_persisted_master_statistics() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_hide_statistics_beyond_snapshot_row_boundary() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let snapshot_second = Utc
+        .timestamp_opt(Utc::now().timestamp() - 300, 0)
+        .single()
+        .expect("snapshot second should be valid");
+    let requested_snapshot_at = snapshot_second + ChronoDuration::milliseconds(123);
+    let key = "pck-snapshot-statistics";
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+        total_tokens: i64,
+    ) -> i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .bind(format_utc_iso_millis(created_at))
+        .execute(pool)
+        .await
+        .expect("insert snapshot statistics invocation")
+        .last_insert_rowid()
+    }
+
+    let first_id = insert_row(
+        &state.pool,
+        "snapshot-statistics-before",
+        snapshot_second,
+        snapshot_second - ChronoDuration::seconds(1),
+        key,
+        "success",
+        10,
+    )
+    .await;
+    let second_id = insert_row(
+        &state.pool,
+        "snapshot-statistics-after",
+        snapshot_second,
+        requested_snapshot_at + ChronoDuration::milliseconds(200),
+        key,
+        "failed",
+        20,
+    )
+    .await;
+    assert!(second_id > first_id);
+
+    ensure_prompt_cache_conversation_row(&state.pool, key)
+        .await
+        .expect("create snapshot-statistics conversation identity");
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some(format_utc_iso_precise(requested_snapshot_at)),
+            detail: None,
+            recent_invocation_limit: None,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        }),
+    )
+    .await
+    .expect("snapshot statistics response should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == key)
+        .unwrap_or_else(|| {
+            panic!(
+                "snapshot-statistics conversation should be included; total_matched={:?}, keys={:?}",
+                response.total_matched,
+                response
+                    .conversations
+                    .iter()
+                    .map(|conversation| conversation.prompt_cache_key.as_str())
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert_eq!(conversation.request_count, 1);
+    assert_eq!(conversation.total_tokens, 10);
+    assert_eq!(conversation.success_count, None);
+    assert_eq!(conversation.failure_count, None);
+    assert_eq!(conversation.first_invocation_at, None);
+    assert_eq!(conversation.last_invocation_at, None);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_include_recent_invocation_previews_with_limit_and_proxy_scope()
 {
     let state = test_state_with_openai_base(

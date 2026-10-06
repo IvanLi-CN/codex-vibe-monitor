@@ -1,6 +1,12 @@
 use super::*;
 use sqlx::Executor;
 
+fn invocation_prompt_cache_key_expr_sql(alias: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({alias}.payload) THEN TRIM(CAST(json_extract({alias}.payload, '$.promptCacheKey') AS TEXT)) END"
+    )
+}
+
 pub(crate) async fn query_prompt_cache_conversation_statistics<'e, E>(
     executor: E,
     selected_keys: &[String],
@@ -12,20 +18,23 @@ where
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT prompt_cache_key, conversation_id, success_count, failure_count, \
-                input_tokens, output_tokens, cache_input_tokens, reported_cache_write_tokens, \
-                reasoning_tokens, cost_input, cost_cache_write, cost_cache_read, cost_output, \
-                cost_reasoning, first_invocation_at, last_invocation_at \
-         FROM prompt_cache_conversations WHERE prompt_cache_key IN (",
-    );
+    let invocation_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT c.prompt_cache_key, c.conversation_id, c.success_count, c.failure_count, \
+                c.input_tokens, c.output_tokens, c.cache_input_tokens, c.reported_cache_write_tokens, \
+                c.reasoning_tokens, c.cost_input, c.cost_cache_write, c.cost_cache_read, c.cost_output, \
+                c.cost_reasoning, c.first_invocation_at, c.last_invocation_at, \
+                (SELECT MAX(i.id) FROM codex_invocations AS i \
+                 WHERE {invocation_prompt_cache_key_expr} = c.prompt_cache_key) AS last_invocation_id \
+         FROM prompt_cache_conversations AS c WHERE c.prompt_cache_key IN (",
+    ));
     {
         let mut separated = query.separated(", ");
         for key in selected_keys {
             separated.push_bind(key);
         }
     }
-    query.push(") ORDER BY prompt_cache_key ASC");
+    query.push(") ORDER BY c.prompt_cache_key ASC");
 
     query
         .build_query_as::<PromptCacheConversationStatisticsRow>()

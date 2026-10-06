@@ -44,11 +44,7 @@ pub(crate) fn push_snapshot_invocation_visibility_clause(
                 .push(") AND ");
         }
         if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
-            let boundary_occurred_at = parse_to_utc_datetime(&snapshot_upper_bound)
-                .map(|upper_bound| {
-                    db_occurred_at_lower_bound(upper_bound - ChronoDuration::seconds(1))
-                })
-                .unwrap_or_else(|| snapshot_upper_bound.clone());
+            let boundary_occurred_at = snapshot_boundary_occurred_at(&snapshot_upper_bound);
             query
                 .push("((")
                 .push(occurred_at_expr)
@@ -72,6 +68,30 @@ pub(crate) fn push_snapshot_invocation_visibility_clause(
                 .push(")");
         }
         query.push(")");
+    }
+}
+
+fn snapshot_boundary_occurred_at(snapshot_upper_bound: &str) -> String {
+    parse_to_utc_datetime(snapshot_upper_bound)
+        .map(|upper_bound| db_occurred_at_lower_bound(upper_bound - ChronoDuration::seconds(1)))
+        .unwrap_or_else(|| snapshot_upper_bound.to_string())
+}
+
+fn prompt_cache_conversation_statistics_visible_at_snapshot(
+    statistics: &PromptCacheConversationStatisticsRow,
+    snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
+) -> bool {
+    let Some(last_invocation_at) = statistics.last_invocation_at.as_deref() else {
+        return false;
+    };
+    if let Some(row_id_ceiling) = snapshot.snapshot_boundary_row_id_ceiling {
+        let boundary_occurred_at = snapshot_boundary_occurred_at(snapshot.snapshot_upper_bound);
+        statistics
+            .last_invocation_id
+            .is_some_and(|last_invocation_id| last_invocation_id <= row_id_ceiling)
+            && last_invocation_at <= boundary_occurred_at.as_str()
+    } else {
+        last_invocation_at < snapshot.snapshot_upper_bound
     }
 }
 
@@ -492,14 +512,11 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
             let statistics = conversation_statistics_by_key.get(&row.prompt_cache_key);
             let statistics_visible = statistics.is_some_and(|statistics| {
                 statistics.last_invocation_at.is_some()
-                    && match snapshot {
-                        None => true,
-                        Some(snapshot) => statistics.last_invocation_at.as_deref().is_some_and(
-                            |last_invocation_at| {
-                                last_invocation_at <= snapshot.snapshot_upper_bound
-                            },
-                        ),
-                    }
+                    && snapshot.is_none_or(|snapshot| {
+                        prompt_cache_conversation_statistics_visible_at_snapshot(
+                            statistics, snapshot,
+                        )
+                    })
             });
             let visible_statistics = statistics_visible.then_some(statistics).flatten();
             PromptCacheConversationResponse {

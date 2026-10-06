@@ -1679,6 +1679,7 @@ pub(crate) struct PromptCacheConversationStatisticsRow {
     pub(crate) cost_reasoning: f64,
     pub(crate) first_invocation_at: Option<String>,
     pub(crate) last_invocation_at: Option<String>,
+    pub(crate) last_invocation_id: Option<i64>,
 }
 
 #[derive(Debug, FromRow)]
