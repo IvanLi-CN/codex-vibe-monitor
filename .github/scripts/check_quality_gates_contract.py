@@ -140,7 +140,7 @@ def require_observability_diagnostic_contract(workflow: dict[str, Any]) -> None:
     require(job.get("name") == "Observability CPU Diagnosis"
             and job.get("needs") == "observability-performance-image"
             and job.get("runs-on") == RUNNER_X64 and job.get("timeout-minutes") == 70
-            and job.get("if") == "github.event.pull_request.number == 1071",
+            and job.get("if") == "github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079",
             "diagnosis must be the bounded PR-only separate hosted VM experiment")
     require_job_and_steps_fail_closed(job, "ci-pr.yml.jobs.observability-diagnostics")
     performance = job_config(workflow, "observability-performance", "ci-pr.yml")

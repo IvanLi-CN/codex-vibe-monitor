@@ -11,7 +11,10 @@
 11.77%，超过 5% 稳定性上限；该数值不是已接受的 CPU 开销百分比。先前同合同
 候选 `36d8c612` 通过，仅作为历史比较。普通修复批次停在七批，根因尚未确定。
 
-经授权增加独立 GitHub-hosted VM 的 `Observability CPU Diagnosis`，仅用于本 PR。
+独立 GitHub-hosted VM 的 `Observability CPU Diagnosis` 仅用于明确列名的 PR
+#1071 和 #1079。#1079 的同合同候选 CPU/请求开销为 8.50%，超过 5% 门槛；
+主线历史证据为 3.02%。现有采样发生在 A/B 之前，不能归因测量窗口内的差异，
+因此临时复用该作业补齐窗口计数和 CPU profile；根因未定，不开启普通修复批次。
 入口在 `scripts/observability-diagnostics/`，不修改预算验收脚本、场景摘要来源或
 阈值；消费同一不可变镜像，复用合成初始化、60 秒预热与六个交替 300 秒窗口。
 每秒记录绑定原容器和 PID start ticks 的 user/system CPU、throttle、context switch、
