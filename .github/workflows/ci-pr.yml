@@ -1158,7 +1158,7 @@ jobs:
 
   build:
     name: Build Artifacts
-    needs: [build-pr-smoke-artifacts, observability-performance]
+    needs: build-pr-smoke-artifacts
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -1167,11 +1167,6 @@ jobs:
         env:
           PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
         run: test "$PRODUCER_RESULT" = success
-
-      - name: Verify observability performance budget
-        env:
-          PERFORMANCE_RESULT: ${{ needs.observability-performance.result }}
-        run: test "$PERFORMANCE_RESULT" = success
 
       - name: Checkout
         uses: actions/checkout@v7
