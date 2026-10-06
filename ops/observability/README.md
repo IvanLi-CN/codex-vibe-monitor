@@ -2,6 +2,7 @@
 
 应用只在内存累计指标，Prometheus 抓取并保留历史，Grafana 提供图表和告警。
 本目录是部署合同；101 的域名、镜像 digest、卷容量、认证与 perf 权限由上线任务验证。
+集成、Compose 部署、鉴权边界和排障顺序见[canonical solution](../../docs/solutions/performance/prometheus-grafana-compose-integration.md)。
 
 ## 本地 Grafana 预览
 
