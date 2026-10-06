@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+compose_project="cvm-grafana-preview"
+sync_name="cvm-grafana-preview"
+remote_source="/workspace/worktrees/$sync_name/src"
+compose_file="$remote_source/ops/observability/preview/compose.yml"
+port_name="cvm-grafana-preview"
+default_guest_port="3101"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/cvm-grafana-preview <command> [options]
+
+Commands:
+  up [--port PORT]  Sync the repository and start the isolated preview stack.
+  status            Show the Agent VM lease and preview container status.
+  url               Print the current Grafana preview URL.
+  logs [SERVICE]    Show the last preview logs; SERVICE is optional.
+  down              Stop the preview stack and remove its port mapping.
+
+The preview uses synthetic metrics and never connects to a production service.
+The Agent VM lease is intentionally left active after `down` for other work.
+EOF
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || {
+    printf 'required command not found: %s\n' "$1" >&2
+    exit 1
+  }
+}
+
+status_json() {
+  agent-vm status
+}
+
+mapping_field() {
+  local field="$1"
+  python3 -c '
+import json
+import sys
+
+field = sys.argv[1]
+data = json.load(sys.stdin)
+ports = data.get("result", {}).get("ports", [])
+for port in ports:
+    if port.get("port_name") == "cvm-grafana-preview":
+        value = port.get(field)
+        if value is not None:
+            print(value)
+        break
+' "$field"
+}
+
+print_url() {
+  local host_port
+  host_port="$(status_json | mapping_field host_port)"
+  [ -n "$host_port" ] || {
+    printf 'preview port mapping is not active; run %s up\n' "$0" >&2
+    exit 1
+  }
+  printf 'http://192.168.31.19:%s/d/cvm-overview?orgId=1&from=now-15m&to=now\n' "$host_port"
+}
+
+parse_port() {
+  local requested="${GRAFANA_PREVIEW_PORT:-$default_guest_port}"
+  local explicit=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --port)
+        [ "$#" -ge 2 ] || { printf '%s requires a value\n' "$1" >&2; exit 2; }
+        requested="$2"
+        explicit=1
+        shift 2
+        ;;
+      *)
+        printf 'unknown option: %s\n' "$1" >&2
+        exit 2
+        ;;
+    esac
+  done
+  [[ "$requested" =~ ^[0-9]+$ ]] && [ "$requested" -ge 1024 ] && [ "$requested" -le 65535 ] || {
+    printf 'preview port must be an integer from 1024 to 65535\n' >&2
+    exit 2
+  }
+
+  local existing=""
+  existing="$(status_json 2>/dev/null | mapping_field vm_port || true)"
+  if [ -n "$existing" ] && [ "$existing" != "$requested" ]; then
+    if [ "$explicit" -eq 1 ]; then
+      printf 'preview mapping already uses guest port %s; run down before changing it\n' "$existing" >&2
+      exit 1
+    fi
+    requested="$existing"
+  fi
+  printf '%s\n' "$requested"
+}
+
+compose() {
+  local command="$1"
+  shift
+  agent-vm exec -- sh -lc "cd '$remote_source' && GRAFANA_PREVIEW_PORT='$guest_port' GRAFANA_PREVIEW_URL='http://127.0.0.1:$guest_port' docker compose -p '$compose_project' -f '$compose_file' $command"
+}
+
+up() {
+  guest_port="$(parse_port "$@")"
+  agent-vm acquire >/dev/null
+  agent-vm sync --name "$sync_name" >/dev/null
+  local existing=""
+  existing="$(status_json | mapping_field vm_port)"
+  if [ -z "$existing" ]; then
+    agent-vm port add "$port_name" --guest-port "$guest_port" --protocol tcp >/dev/null
+  fi
+  compose 'up -d --force-recreate --remove-orphans --wait'
+  printf 'Grafana preview is ready:\n'
+  print_url
+  printf 'Synthetic data source: environment=synthetic-preview\n'
+}
+
+status() {
+  status_json
+  guest_port="$(status_json | mapping_field vm_port || true)"
+  if [ -n "$guest_port" ]; then
+    compose 'ps'
+  fi
+}
+
+logs() {
+  guest_port="$(status_json | mapping_field vm_port)"
+  local service="${1:-}"
+  if [ -n "$service" ]; then
+    [[ "$service" =~ ^[a-z-]+$ ]] || { printf 'invalid service name\n' >&2; exit 2; }
+    compose "logs --tail=100 '$service'"
+  else
+    compose 'logs --tail=100'
+  fi
+}
+
+down() {
+  guest_port="$(status_json | mapping_field vm_port)"
+  compose 'down --remove-orphans'
+  agent-vm port remove "$port_name" >/dev/null 2>&1 || true
+  printf 'Grafana preview stopped; the Agent VM lease remains active.\n'
+}
+
+require_command agent-vm
+require_command python3
+
+command="${1:-help}"
+shift || true
+case "$command" in
+  up)
+    up "$@"
+    ;;
+  status)
+    status
+    ;;
+  url)
+    print_url
+    ;;
+  logs)
+    logs "$@"
+    ;;
+  down)
+    [ "$#" -eq 0 ] || { printf 'down does not accept options\n' >&2; exit 2; }
+    down
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    printf 'unknown command: %s\n\n' "$command" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
