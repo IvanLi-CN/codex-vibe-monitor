@@ -4995,7 +4995,7 @@ export function PromptCacheConversationTable({
   }, [now, stats]);
 
   const orderedConversations = useMemo(() => {
-    if (!stats || stats.selectionMode !== "count") return stats?.conversations ?? [];
+    if (stats?.selectionMode !== "count") return stats?.conversations ?? [];
     return [...stats.conversations].sort((left, right) => {
       const leftEpoch = parseEpoch(left.firstInvocationAt ?? left.createdAt);
       const rightEpoch = parseEpoch(right.firstInvocationAt ?? right.createdAt);
