@@ -51,6 +51,38 @@ done
 python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-root "$baseline_repo" --profile final
 bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 
+observability_artifact_repo="$tmp_dir/observability-artifact-repo"
+mkdir -p "$observability_artifact_repo"
+cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
+python3 - "$observability_artifact_repo/.github/workflows/ci-pr.yml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """      - name: Upload performance candidate image
+        uses: actions/upload-artifact@v7
+        with:
+          name: observability-image-${{ github.run_id }}
+"""
+replacement = needle.replace(
+    "observability-image-${{ github.run_id }}",
+    "observability-image-${{ github.run_id }}-${{ github.run_attempt }}",
+    1,
+)
+if text.count(needle) != 1:
+    raise SystemExit("expected one run-scoped observability image upload")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$observability_artifact_repo" --profile final >/dev/null 2>"$tmp_dir/observability-artifact.log"; then
+  echo "expected attempt-scoped observability image artifact fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
+
 continue_error_repo="$tmp_dir/continue-error-repo"
 copy_repo_snapshot "$repo_root" "$continue_error_repo"
 

@@ -11,6 +11,73 @@ pub(super) fn prompt_cache_materialization_failed_outcome(
         .unwrap_or_default()
 }
 
+pub(super) async fn save_prompt_cache_materialization_progress(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    update: StartupBackfillProgressUpdate<'_>,
+    expected_wake_generation: u64,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status,
+            suspension_reason,
+            next_probe_at,
+            wake_generation
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10, 0)
+        ON CONFLICT(task_name) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            next_run_after = CASE
+                WHEN startup_backfill_progress.wake_generation > ?11
+                    THEN NULL
+                ELSE excluded.next_run_after
+            END,
+            zero_update_streak = excluded.zero_update_streak,
+            last_finished_at = excluded.last_finished_at,
+            last_scanned = excluded.last_scanned,
+            last_updated = excluded.last_updated,
+            last_status = excluded.last_status,
+            suspension_reason = CASE
+                WHEN startup_backfill_progress.wake_generation > ?11
+                    THEN NULL
+                ELSE excluded.suspension_reason
+            END,
+            next_probe_at = CASE
+                WHEN startup_backfill_progress.wake_generation > ?11
+                    THEN NULL
+                ELSE excluded.next_probe_at
+            END
+        "#,
+    )
+    .bind(task_name)
+    .bind(update.cursor_id)
+    .bind(update.next_run_after)
+    .bind(i64::from(update.zero_update_streak))
+    .bind(format_utc_iso(Utc::now()))
+    .bind(update.scanned as i64)
+    .bind(update.updated as i64)
+    .bind(update.status)
+    .bind(update.suspension_reason)
+    .bind(if update.suspension_reason.is_some() {
+        Some(update.next_run_after)
+    } else {
+        None
+    })
+    .bind(i64::try_from(expected_wake_generation).unwrap_or(i64::MAX))
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(super) async fn persist_prompt_cache_materialization_defer(
     state: &Arc<AppState>,
     task: StartupBackfillTask,
@@ -22,9 +89,11 @@ pub(super) async fn persist_prompt_cache_materialization_defer(
     let retry_at =
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
     let retry_after = format_utc_iso(retry_at);
-    save_startup_backfill_progress(
+    save_startup_backfill_progress_for_task(
         &state.pool,
+        task,
         task_name,
+        progress.wake_generation,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
             scanned: run.scanned,
@@ -109,10 +178,7 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     if !snapshot.enabled {
         return Ok(0);
     }
-    if scheduler
-        .next_due_for(task)
-        .is_some_and(|deadline| deadline > Utc::now())
-    {
+    if scheduler.has_future_pressure_deadline(task, Utc::now()) {
         return Ok(0);
     }
 
@@ -139,13 +205,19 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
         transaction.commit().await?;
         return Ok(0);
     }
+    if scheduler.has_pending_wake(task) {
+        transaction.commit().await?;
+        return Ok(0);
+    }
     if let Some(next_run_after) = next_run_after.as_deref()
         && parse_to_utc_datetime(next_run_after).is_some_and(|deadline| deadline > Utc::now())
     {
         let deadline = parse_to_utc_datetime(next_run_after).expect("validated retry deadline");
-        transaction.commit().await?;
-        scheduler.record_next_due(task, deadline);
-        return Ok(0);
+        if scheduler.has_future_pressure_deadline(task, Utc::now()) {
+            transaction.commit().await?;
+            scheduler.record_next_due(task, deadline);
+            return Ok(0);
+        }
     }
     let changed = sqlx::query(
         "UPDATE startup_backfill_progress
@@ -179,6 +251,15 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     } else {
         Ok(0)
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn wake_prompt_cache_materialization_for_test(
+    store: &crate::maintenance_store::MaintenanceStore,
+    wake_reason: &'static str,
+) -> Result<u64> {
+    let scheduler = StartupBackfillScheduler::default();
+    wake_prompt_cache_materialization_with_scheduler(store, wake_reason, &scheduler).await
 }
 
 #[cfg(test)]
