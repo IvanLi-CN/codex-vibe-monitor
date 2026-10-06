@@ -2869,6 +2869,7 @@ export interface RetentionArchiveBatchMetrics {
   filePrepareMs?: number | null;
   lockWaitMs?: number | null;
   elapsedMs?: number | null;
+  timeoutCount?: number | null;
   smallBatchReason?: string | null;
 }
 
@@ -5866,6 +5867,7 @@ function normalizeArchiveBatch(raw: unknown): RetentionArchiveBatchMetrics | nul
     filePrepareMs: nonNegative(batch.filePrepareMs),
     lockWaitMs: nonNegative(batch.lockWaitMs),
     elapsedMs: nonNegative(batch.elapsedMs),
+    timeoutCount: Number.isInteger(batch.timeoutCount) ? nonNegative(batch.timeoutCount) : null,
     smallBatchReason: typeof batch.smallBatchReason === "string" ? batch.smallBatchReason : null,
   };
 }

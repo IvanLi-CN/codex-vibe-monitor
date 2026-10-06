@@ -16,7 +16,9 @@ pub(crate) use archive_identity::{
 };
 pub(crate) use batch_plan::archive_file_can_start;
 #[cfg(test)]
-pub(crate) use batch_plan::archive_sqlite_size_from_header;
+pub(crate) use batch_plan::{
+    BatchObservation, archive_sqlite_size_from_header, retention_test_with_batch_metrics,
+};
 pub(crate) use batch_plan::{
     RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
 };

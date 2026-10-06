@@ -22,6 +22,8 @@
 
 普通任务将旧 preparing/published prepared 行隔离为现有 `quarantined`，不解析其 source IDs 作为正常归档输入。既有 manifest、completed archive 和 cleanup 事实保留；历史恢复工具仍可读取旧状态。主库不增加表、列或状态枚举值。
 
+仍被 manifest 引用的旧隔离记录不会自动删除，既有 recovery health 因此可能持续为 degraded；这是保留隔离事实的诊断，不能据此断言当前归档停滞。新任务不依赖该健康标签准入。区分历史隔离与当前故障的健康展示属于后续优化，本轮不隐藏告警或放宽文件/raw 保护。
+
 准入等待受本轮剩余超时约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一约束，避免归档未开始时等待超过整轮兜底时间。没有旧 prepared 行时不提交空隔离事务。
 
 每轮通过 task-local 保存首次实际准入拒绝原因，供不可变运行结果使用；后续阶段成功提交不会擦除该原因，下一轮也不会继承历史恢复或共享写状态的原因。后台槽占用保留 `background_busy`，不能误报为 SQLite 压力。
@@ -45,7 +47,9 @@
 
 ## 观测与 API
 
-维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple 和 smallBatchReason。
+维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason。
+
+批次 timeoutCount 只计该选定数据集/月批次尚未全部提交且整轮执行期限已到的停止；每批最多一次，按 dataset 汇总即可得到其次数。已完成批次的迟后收尾、未过期的准入延期及非超时错误不计入。invocation 身份读取也在批次观测范围内。兼容的整轮 timeoutCount 继续表示该轮是否触发兜底期限，budgetExhausted 仍独立报告；旧批次缺少新字段时归一化为未知，不补零。轻量回归用零期限和无期限的确定性上下文验证归属及序列化，不测 CPU 性能。
 
 服务速率使用本数据集实际提交行数除以整轮 elapsed，包含其他阶段、准入和收尾，避免只用压缩的短时速度。到达速率在独占连接上以真实 SQLite progress handler 的 2 秒预算读取最近 24 小时行数；不可观测则为未知，真实零到达时倍率未知。运行结果一经持久化，后台统计刷新不改写它。
 

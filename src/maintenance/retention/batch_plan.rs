@@ -22,6 +22,7 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) file_prepare_ms: u64,
     pub(crate) lock_wait_ms: u64,
     pub(crate) elapsed_ms: u64,
+    pub(crate) timeout_count: u64,
     pub(crate) committed_rows_per_second: Option<f64>,
     pub(crate) arrival_rows_per_second: Option<f64>,
     pub(crate) service_rate_multiple: Option<f64>,
@@ -49,6 +50,7 @@ impl BatchObservation {
                 file_prepare_ms: 0,
                 lock_wait_ms: 0,
                 elapsed_ms: 0,
+                timeout_count: 0,
                 committed_rows_per_second: None,
                 arrival_rows_per_second: None,
                 service_rate_multiple: None,
@@ -71,10 +73,28 @@ impl BatchObservation {
 
 impl Drop for BatchObservation {
     fn drop(&mut self) {
+        // Attribute the run deadline only to an unfinished selected batch. A batch
+        // committed before settlement is not a timeout merely because Drop is late.
+        self.metrics.timeout_count = u64::from(
+            self.metrics.committed_rows < self.metrics.batch_rows && retention_run_budget_expired(),
+        );
         self.metrics.elapsed_ms = self.started.elapsed().as_millis() as u64;
         let _ =
             TASK_BATCH_METRICS.try_with(|metrics| metrics.borrow_mut().push(self.metrics.clone()));
     }
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_batch_metrics<F: std::future::Future>(
+    work: F,
+) -> (F::Output, Vec<RetentionBatchMetrics>) {
+    TASK_BATCH_METRICS
+        .scope(RefCell::new(Vec::new()), async {
+            let output = work.await;
+            let metrics = TASK_BATCH_METRICS.with(|metrics| metrics.borrow().clone());
+            (output, metrics)
+        })
+        .await
 }
 
 pub(super) fn collect_run_metrics(summary: &mut RetentionRunSummary) {

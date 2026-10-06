@@ -42,11 +42,23 @@ describe("retention throughput optional contract", () => {
                         dataset: "codex_invocations",
                         monthKey: "2026-09",
                         committedRows: 0,
+                        timeoutCount: 0,
                         arrivalRowsPerSecond: 0,
                         committedRowsPerSecond: "bad",
                         serviceRateMultiple: -1,
                       },
                       { dataset: 12, monthKey: "2026-09" },
+                      {
+                        dataset: "pool_upstream_request_attempts",
+                        monthKey: "2026-09",
+                        timeoutCount: 1,
+                      },
+                      { dataset: "codex_invocations", monthKey: "2026-08" },
+                      {
+                        dataset: "codex_invocations",
+                        monthKey: "2026-07",
+                        timeoutCount: -1,
+                      },
                     ],
                   },
                 },
@@ -58,13 +70,20 @@ describe("retention throughput optional contract", () => {
     );
     const detail = await fetchManagedTask("retention_archive");
     expect(detail.recentRuns[0].details).toBeUndefined();
-    expect(detail.recentRuns[1].details?.archiveBatches).toHaveLength(1);
+    expect(detail.recentRuns[1].details?.archiveBatches).toHaveLength(4);
     expect(detail.recentRuns[1].details?.archiveBatches?.[0]).toMatchObject({
       committedRows: 0,
+      timeoutCount: 0,
       arrivalRowsPerSecond: 0,
       committedRowsPerSecond: null,
       serviceRateMultiple: null,
     });
+    expect(detail.recentRuns[1].details?.archiveBatches?.[1]).toMatchObject({
+      dataset: "pool_upstream_request_attempts",
+      timeoutCount: 1,
+    });
+    expect(detail.recentRuns[1].details?.archiveBatches?.[2].timeoutCount).toBeNull();
+    expect(detail.recentRuns[1].details?.archiveBatches?.[3].timeoutCount).toBeNull();
   });
 });
 

@@ -546,6 +546,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
             if ids.is_empty() || retention_run_budget_expired() {
                 break;
             }
+            let mut batch_observation =
+                batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
             let mut source_connection = pool.acquire().await?;
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
@@ -578,8 +580,6 @@ pub(super) async fn archive_old_invocations_with_source_max(
             if retention_run_budget_expired() {
                 break;
             }
-            let mut batch_observation =
-                batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
             let prepare_started = Instant::now();
             let mut snapshot_pages = Vec::new();
             let archive_future = archive_rows_into_task_month_batch(
