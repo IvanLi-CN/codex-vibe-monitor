@@ -50,6 +50,14 @@ def pressure():
 PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
 
 
+def measurement_cpu_layout(affinity):
+    """Reserve one runner CPU for the app and the rest for test services."""
+    cpus = sorted({int(cpu) for cpu in affinity})
+    if len(cpus) < 2 or any(cpu < 0 for cpu in cpus):
+        raise ValueError("performance acceptance requires at least two runner CPUs for isolation")
+    return {"app": str(cpus[0]), "auxiliary": ",".join(str(cpu) for cpu in cpus[1:])}
+
+
 def pressure_eligible(raw):
     if not isinstance(raw, dict) or set(raw) != set(PRESSURE_LIMITS):
         raise ValueError("missing pressure resources")
@@ -218,10 +226,16 @@ def observe_resources(root, window):
 def verify_measurement_evidence(root):
     """Admit only six complete windows with independently readable quiet samples."""
     try:
+        run_config = json.loads((root / "run-config.json").read_text())
+        runner_context = json.loads((root / "runner-context.json").read_text())
         windows = json.loads((root / "measurement-windows.json").read_text())
         raw = [json.loads(line) for line in (root / "resource-observer.jsonl").read_text().splitlines()]
         admissions = [json.loads(line) for line in (root / "environment-admission.jsonl").read_text().splitlines()]
         loads = json.loads((root / "ab-samples.json").read_text())
+        cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"])
+        assert run_config["appCpuQuota"] == 1
+        assert run_config["appCpuSet"] == cpu_layout["app"]
+        assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
         expected = {f"{index}-{mode}" for index in range(3) for mode in ("false", "true")}
         assert len(windows) == 6 and {row["windowId"] for row in windows} == expected
         assert {row["windowId"] for row in raw} == expected
