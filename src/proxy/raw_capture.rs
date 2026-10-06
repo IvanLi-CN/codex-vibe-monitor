@@ -2118,6 +2118,9 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
 
         if candidates.is_empty() {
             last_seen_id = last_seen_id.max(snapshot_max_id);
+            committed_cursor_id = last_seen_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
             break;
         }
 
