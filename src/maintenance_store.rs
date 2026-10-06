@@ -3972,10 +3972,10 @@ impl MaintenanceStore {
             capabilities.discovered.supported,
             capabilities.processed.supported,
         ];
-        let coverage = if samples.is_empty() {
-            "no recorded attempts"
-        } else if !coverage_gaps.is_empty() {
+        let coverage = if !coverage_gaps.is_empty() {
             "incomplete: recorder coverage gap"
+        } else if samples.is_empty() {
+            "no recorded attempts"
         } else if !supported_metrics.iter().any(|supported| *supported) {
             "not applicable"
         } else if samples.iter().any(|sample| {
@@ -5397,6 +5397,13 @@ mod tests {
         assert_eq!(trend.coverage, "incomplete: recorder coverage gap");
         assert_eq!(trend.coverage_gaps.len(), 1);
         assert_eq!(trend.coverage_gaps[0].id, "coverage-gap-global");
+        let empty_trend = store
+            .workload_window("summary_snapshot", 1)
+            .await
+            .expect("read empty workload window")
+            .expect("summary task exists");
+        assert!(empty_trend.samples.is_empty());
+        assert_eq!(empty_trend.coverage, "incomplete: recorder coverage gap");
     }
 
     #[tokio::test]
