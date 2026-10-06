@@ -62,10 +62,7 @@ impl Drop for TaskExecutionLease {
 }
 
 pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecutionLease> {
-    let canonical_task_key = task_key
-        .strip_prefix("startup_backfill.")
-        .map(|_| "startup_backfill")
-        .unwrap_or(task_key);
+    let canonical_task_key = canonical_task_execution_key(task_key);
     #[cfg(test)]
     {
         Some(TaskExecutionLease {
@@ -82,6 +79,14 @@ pub(crate) fn try_acquire_task_execution(task_key: &str) -> Option<TaskExecution
         Some(TaskExecutionLease {
             task_key: canonical_task_key.to_string(),
         })
+    }
+}
+
+fn canonical_task_execution_key(task_key: &str) -> &str {
+    if task_key == "prompt_cache_materialization" || task_key.starts_with("startup_backfill.") {
+        "startup_backfill"
+    } else {
+        task_key
     }
 }
 
@@ -4248,10 +4253,30 @@ mod tests {
 
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
-        TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary, cron_day_matches,
-        ensure_schema, ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail,
-        seed_tasks, task_enabled_by_default, task_measurement_capabilities, validate_cron_expr,
+        TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary,
+        canonical_task_execution_key, cron_day_matches, ensure_schema, ensure_task_colors,
+        floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
+        task_measurement_capabilities, validate_cron_expr,
     };
+
+    #[test]
+    fn prompt_cache_materialization_shares_startup_backfill_execution_lease() {
+        assert_eq!(
+            canonical_task_execution_key("prompt_cache_materialization"),
+            "startup_backfill"
+        );
+        assert_eq!(
+            canonical_task_execution_key(
+                "startup_backfill.prompt_cache_conversations_materialization"
+            ),
+            "startup_backfill"
+        );
+        assert_eq!(
+            canonical_task_execution_key("summary_snapshot"),
+            "summary_snapshot"
+        );
+    }
+
     #[tokio::test]
     async fn schema_repair_preserves_duplicate_active_run_history() {
         let pool = SqlitePool::connect("sqlite::memory:")

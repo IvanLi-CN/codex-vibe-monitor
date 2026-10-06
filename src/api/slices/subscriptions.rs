@@ -6296,13 +6296,25 @@ impl SubscriptionHub {
             (payload, None, Some(build))
         } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
             let after_revision = timeline_baseline.as_ref().map(|(_, revision)| *revision);
-            let event_payload = build_managed_task_timeline_topic_payload(after_revision).await?;
+            let event_payload =
+                match build_managed_task_timeline_topic_payload(after_revision).await {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.clear_managed_task_refresh_schedule(&topic_key).await;
+                        return Err(error);
+                    }
+                };
             let payload = if let Some((previous, _)) = &timeline_baseline {
+                let snapshot_payload =
+                    match merge_managed_task_timeline_payload(previous, &event_payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            self.clear_managed_task_refresh_schedule(&topic_key).await;
+                            return Err(error);
+                        }
+                    };
                 BuiltSubscriptionTopicPayload::JsonDelta {
-                    snapshot_payload: merge_managed_task_timeline_payload(
-                        previous,
-                        &event_payload,
-                    )?,
+                    snapshot_payload,
                     event_payload,
                 }
             } else {
@@ -6533,6 +6545,17 @@ impl SubscriptionHub {
                         .unwrap_or_default()
                         == expected
                 });
+            if coalesce_managed_task_refresh && !managed_refresh_is_current {
+                // A newer task observation dirtied this topic while the bounded build was in
+                // flight. Keep the last-good frame intact; the outer serial loop will rebuild
+                // against the newer generation instead of briefly broadcasting stale data.
+                if let Some(existing) = guard.topics.get_mut(&topic_key) {
+                    existing.dirty = true;
+                    existing.refresh_scheduled = false;
+                    return Ok(Some(existing.clone()));
+                }
+                return Ok(None);
+            }
             if !matches!(
                 &built_payload,
                 BuiltSubscriptionTopicPayload::JsonDelta { .. }
@@ -8066,6 +8089,13 @@ impl SubscriptionHub {
             return !cached.refresh_scheduled;
         }
         true
+    }
+
+    async fn clear_managed_task_refresh_schedule(&self, topic_key: &str) {
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(topic_key) {
+            cached.refresh_scheduled = false;
+        }
     }
 
     async fn mark_prompt_cache_topic_dirty_and_schedule_reconcile(
@@ -21049,6 +21079,42 @@ mod tests {
                 .copied();
             assert_eq!(generation, Some(2));
         }
+    }
+
+    #[tokio::test]
+    async fn failed_managed_task_timeline_refresh_releases_coalescing_latch() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ManagedTaskTimeline;
+        let topic_key = topic.cache_key().expect("managed task timeline key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
+        cached.dirty = true;
+        cached.snapshot_payload = json!({"watermark": 1});
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        let result = hub.refresh_topic_if_active(state, topic, true).await;
+        assert!(
+            result.is_err(),
+            "malformed cached timeline must fail closed"
+        );
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached managed task timeline topic");
+        assert!(cached.dirty, "failed refresh must retain the last-good gap");
+        assert!(
+            !cached.refresh_scheduled,
+            "failed refresh must release the retry latch"
+        );
     }
 
     #[test]
