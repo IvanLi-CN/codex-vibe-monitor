@@ -3724,7 +3724,9 @@ impl MaintenanceStore {
                 attempted_at: row.started_at,
                 actual_started_at: row.actual_started_at,
                 finished_at: row.actual_finished_at.or(row.finished_at),
-                duration_ms: row.actual_duration_ms.or(row.duration_ms),
+                // Legacy duration_ms may include dispatcher wait; only the observer-owned
+                // field proves the actual execution interval.
+                duration_ms: row.actual_duration_ms,
                 result: row.status.clone(),
                 status: row.status,
                 reason: row.error_detail,
@@ -3890,7 +3892,8 @@ impl MaintenanceStore {
                     attempted_at: run.started_at,
                     actual_started_at: run.actual_started_at,
                     finished_at: run.actual_finished_at.or(run.finished_at),
-                    duration_ms: run.actual_duration_ms.or(run.duration_ms),
+                    // Do not relabel a legacy queue-inclusive duration as actual work time.
+                    duration_ms: run.actual_duration_ms,
                     status: run.status,
                     reason: run.error_detail,
                     sequence: 0,
@@ -5755,6 +5758,15 @@ mod tests {
         .execute(&pool)
         .await
         .expect("seed latest execution summary");
+        sqlx::query(
+            "INSERT INTO managed_task_runs
+             (task_key,trigger_kind,started_at,finished_at,duration_ms,status,error_detail)
+             VALUES('upstream_account_maintenance','interval','2026-10-03T00:00:00.000Z',
+                    '2026-10-03T00:00:07.000Z',777,'failed','legacy duration')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed legacy duration-only execution");
         let store = MaintenanceStore::from_pool(pool);
 
         let tasks = store.list_tasks().await.expect("list decorated tasks");
@@ -5804,6 +5816,26 @@ mod tests {
         assert_eq!(
             status_without_run.execution_observation,
             "no recorded attempts"
+        );
+        let legacy = tasks
+            .iter()
+            .find(|task| task.task_key == "upstream_account_maintenance")
+            .and_then(|task| task.last_execution.as_ref())
+            .expect("legacy execution summary");
+        assert_eq!(legacy.duration_ms, None);
+        let legacy_detail = store
+            .detail("upstream_account_maintenance")
+            .await
+            .expect("load legacy workload detail")
+            .expect("legacy task detail");
+        assert_eq!(
+            legacy_detail
+                .workload_trend
+                .samples
+                .iter()
+                .find(|sample| sample.managed_run_id.is_some())
+                .and_then(|sample| sample.duration_ms),
+            None
         );
     }
 
