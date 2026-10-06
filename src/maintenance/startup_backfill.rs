@@ -11,6 +11,8 @@ pub(crate) use progress::load_startup_backfill_progress_from_pool;
 #[cfg(test)]
 pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_control_for_test;
 #[cfg(test)]
+pub(crate) use prompt_cache_control::wake_prompt_cache_materialization_for_test;
+#[cfg(test)]
 use prompt_cache_control::{
     apply_prompt_cache_control_schedule, wake_prompt_cache_materialization_with_scheduler,
 };
@@ -18,6 +20,7 @@ use prompt_cache_control::{
     coordinator_for_prompt_cache_run, persist_prompt_cache_materialization_defer,
     prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
     prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
     set_prompt_cache_materialization_enabled_with_store,
@@ -182,6 +185,13 @@ impl StartupBackfillScheduler {
         self.record_next_due(task, retry_at);
     }
 
+    fn defer_for_background_busy(&self, task: StartupBackfillTask, retry_at: DateTime<Utc>) {
+        if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
+            tasks.remove(&task);
+        }
+        self.record_next_due(task, retry_at);
+    }
+
     fn take_pressure_deferred_tasks(&self, now: DateTime<Utc>) -> Vec<StartupBackfillTask> {
         self.take_pressure_deferred_tasks_matching(now, None)
     }
@@ -229,7 +239,14 @@ impl StartupBackfillScheduler {
         }
 
         if deferred {
-            self.pressure_defer_count.fetch_add(1, Ordering::Relaxed);
+            let pressure_deferred = self
+                .pressure_deferred_tasks
+                .lock()
+                .map(|tasks| tasks.contains(&task))
+                .unwrap_or(true);
+            if pressure_deferred {
+                self.pressure_defer_count.fetch_add(1, Ordering::Relaxed);
+            }
             let has_active_failure = self
                 .failed_tasks
                 .lock()
@@ -320,6 +337,25 @@ impl StartupBackfillScheduler {
             .and_then(|next_due| next_due.get(&task).cloned())
     }
 
+    fn has_pending_wake(&self, task: StartupBackfillTask) -> bool {
+        self.woken_tasks
+            .lock()
+            .map(|tasks| tasks.contains(&task))
+            .unwrap_or(true)
+    }
+
+    fn has_future_pressure_deadline(&self, task: StartupBackfillTask, now: DateTime<Utc>) -> bool {
+        let pressure_deferred = self
+            .pressure_deferred_tasks
+            .lock()
+            .map(|tasks| tasks.contains(&task))
+            .unwrap_or(true);
+        pressure_deferred
+            && self
+                .next_due_for(task)
+                .is_some_and(|deadline| deadline > now)
+    }
+
     async fn wait_for_wake(&self, observed_generation: u64) {
         loop {
             let notified = self.notify.notified();
@@ -336,6 +372,19 @@ static STARTUP_BACKFILL_SCHEDULER: Lazy<StartupBackfillScheduler> =
 
 pub(crate) fn startup_backfill_health_snapshot() -> StartupBackfillHealthSnapshot {
     STARTUP_BACKFILL_SCHEDULER.health_snapshot()
+}
+
+#[cfg(test)]
+pub(crate) fn record_startup_backfill_task_outcome_for_test(
+    task: StartupBackfillTask,
+    outcome: StartupBackfillTaskRunOutcome,
+) {
+    STARTUP_BACKFILL_SCHEDULER.record_task_result(task, outcome.failed, outcome.deferred);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_startup_backfill_task_scheduler_for_test(task: StartupBackfillTask) {
+    STARTUP_BACKFILL_SCHEDULER.clear_pending(task);
 }
 
 fn startup_backfill_wait_duration(next_due: Option<DateTime<Utc>>) -> Duration {
@@ -451,15 +500,16 @@ fn startup_backfill_pressure_defer_outcome(
     reason: crate::db_pressure::DbPressureDenyReason,
 ) -> StartupBackfillTaskRunOutcome {
     let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-    startup_backfill_pressure_defer_outcome_at(task, reason, retry_at)
+    startup_backfill_pressure_defer_outcome_at(&STARTUP_BACKFILL_SCHEDULER, task, reason, retry_at)
 }
 
 fn startup_backfill_pressure_defer_outcome_at(
+    scheduler: &StartupBackfillScheduler,
     task: StartupBackfillTask,
     reason: crate::db_pressure::DbPressureDenyReason,
     retry_at: DateTime<Utc>,
 ) -> StartupBackfillTaskRunOutcome {
-    STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+    scheduler.defer_for_pressure(task, retry_at);
     info!(
         task = task.log_label(),
         reason = %reason,
@@ -475,6 +525,70 @@ fn startup_backfill_pressure_defer_outcome_at(
         deferred: true,
         completed: true,
         next_due: retry_at,
+    }
+}
+
+fn startup_backfill_coordinator_defer_outcome(
+    scheduler: &StartupBackfillScheduler,
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillTaskRunOutcome {
+    let reason = crate::db_pressure::DbPressureDenyReason::BackgroundBusy;
+    let retry_at = startup_backfill_pressure_retry_at(gate, reason);
+    scheduler.defer_for_background_busy(task, retry_at);
+    info!(
+        task = task.log_label(),
+        reason = %reason,
+        defer_kind = "coordinator_priority",
+        next_eligibility = %retry_at,
+        wake_reason = "coordinator_defer",
+        "startup backfill task deferred until the coordinator admits background work"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
+fn startup_backfill_coordinator_defer_outcome_at(
+    scheduler: &StartupBackfillScheduler,
+    task: StartupBackfillTask,
+    reason: crate::db_pressure::DbPressureDenyReason,
+    retry_at: DateTime<Utc>,
+) -> StartupBackfillTaskRunOutcome {
+    scheduler.defer_for_background_busy(task, retry_at);
+    info!(
+        task = task.log_label(),
+        reason = %reason,
+        defer_kind = "coordinator_priority",
+        next_eligibility = %retry_at,
+        wake_reason = "coordinator_defer",
+        "startup backfill task yielded for coordinator priority"
+    );
+    StartupBackfillTaskRunOutcome {
+        actionable: false,
+        failed: false,
+        deferred: true,
+        completed: true,
+        next_due: retry_at,
+    }
+}
+
+fn startup_backfill_defer_outcome_at(
+    scheduler: &StartupBackfillScheduler,
+    task: StartupBackfillTask,
+    reason: crate::db_pressure::DbPressureDenyReason,
+    retry_at: DateTime<Utc>,
+) -> StartupBackfillTaskRunOutcome {
+    if task == StartupBackfillTask::PromptCacheConversationsMaterialization
+        && reason == crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+    {
+        startup_backfill_coordinator_defer_outcome_at(scheduler, task, reason, retry_at)
+    } else {
+        startup_backfill_pressure_defer_outcome_at(scheduler, task, reason, retry_at)
     }
 }
 
@@ -494,9 +608,11 @@ async fn persist_startup_backfill_pressure_defer(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
         .await;
-    save_startup_backfill_progress(
+    save_startup_backfill_progress_for_task(
         &state.pool,
+        task,
         task_name,
+        progress.wake_generation,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
             scanned: progress.last_scanned,
@@ -511,8 +627,11 @@ async fn persist_startup_backfill_pressure_defer(
     .inspect_err(|err| {
         record_startup_backfill_pressure_error(gate, err);
     })?;
-    Ok(startup_backfill_pressure_defer_outcome_at(
-        task, reason, retry_at,
+    Ok(startup_backfill_defer_outcome_at(
+        &STARTUP_BACKFILL_SCHEDULER,
+        task,
+        reason,
+        retry_at,
     ))
 }
 
@@ -529,9 +648,11 @@ async fn persist_startup_backfill_archive_lock_defer(
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
         .await;
-    save_startup_backfill_progress(
+    save_startup_backfill_progress_for_task(
         &state.pool,
+        task,
         task_name,
+        progress.wake_generation,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
             scanned: progress.last_scanned,
@@ -1266,6 +1387,28 @@ pub(crate) async fn save_startup_backfill_progress_to_pool(
     Ok(())
 }
 
+async fn save_startup_backfill_progress_for_task(
+    pool: &Pool<Sqlite>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    expected_wake_generation: u64,
+    update: StartupBackfillProgressUpdate<'_>,
+) -> Result<()> {
+    if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+        let Some(progress_pool) = startup_backfill_progress_pool(pool) else {
+            return Ok(());
+        };
+        return save_prompt_cache_materialization_progress(
+            progress_pool,
+            task_name,
+            update,
+            expected_wake_generation,
+        )
+        .await;
+    }
+    save_startup_backfill_progress(pool, task_name, update).await
+}
+
 pub(crate) async fn wake_startup_backfill_tasks(
     pool: &Pool<Sqlite>,
     tasks: &[StartupBackfillTask],
@@ -1981,6 +2124,38 @@ async fn run_startup_backfill_task_if_due_outcome(
     observation_parent_task_key: Option<&'static str>,
     managed_run_id: Option<i64>,
 ) -> Result<(StartupBackfillTaskRunOutcome, Option<String>)> {
+    let prompt_cache_store = crate::maintenance_store::global().map(|store| store.as_ref());
+    run_startup_backfill_task_if_due_outcome_with_store(
+        state,
+        task,
+        gate,
+        prompt_cache_store,
+        observation_parent_task_key,
+        managed_run_id,
+    )
+    .await
+}
+
+#[cfg(test)]
+pub(crate) async fn run_startup_backfill_task_if_due_with_store_for_test(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    store: &crate::maintenance_store::MaintenanceStore,
+) -> Result<StartupBackfillTaskRunOutcome> {
+    run_startup_backfill_task_if_due_outcome_with_store(state, task, gate, Some(store), None, None)
+        .await
+        .map(|(outcome, _)| outcome)
+}
+
+async fn run_startup_backfill_task_if_due_outcome_with_store(
+    state: &Arc<AppState>,
+    task: StartupBackfillTask,
+    gate: &crate::db_pressure::DbPressureGate,
+    prompt_cache_store: Option<&crate::maintenance_store::MaintenanceStore>,
+    observation_parent_task_key: Option<&'static str>,
+    managed_run_id: Option<i64>,
+) -> Result<(StartupBackfillTaskRunOutcome, Option<String>)> {
     if !startup_backfill_task_enabled(state.as_ref(), task) {
         debug!(
             task = task.log_label(),
@@ -2002,7 +2177,7 @@ async fn run_startup_backfill_task_if_due_outcome(
         if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
             let retry_at =
                 Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
-            let Some(store) = crate::maintenance_store::global() else {
+            let Some(store) = prompt_cache_store else {
                 STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
                 warn!(
                     task = task.log_label(),
@@ -2121,11 +2296,19 @@ async fn run_startup_backfill_task_if_due_outcome(
             Some(permit) => permit,
             None => {
                 return Ok((
-                    startup_backfill_pressure_defer_outcome(
-                        task,
-                        gate,
-                        crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
-                    ),
+                    if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+                        startup_backfill_coordinator_defer_outcome(
+                            &STARTUP_BACKFILL_SCHEDULER,
+                            task,
+                            gate,
+                        )
+                    } else {
+                        startup_backfill_pressure_defer_outcome(
+                            task,
+                            gate,
+                            crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
+                        )
+                    },
                     None,
                 ));
             }
@@ -2186,11 +2369,7 @@ async fn run_startup_backfill_task_if_due_outcome(
     if prompt_cache_materialization_control.is_some() {
         let Some(permit) = coordinator_for_prompt_cache_run() else {
             return Ok((
-                startup_backfill_pressure_defer_outcome(
-                    task,
-                    gate,
-                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy,
-                ),
+                startup_backfill_coordinator_defer_outcome(&STARTUP_BACKFILL_SCHEDULER, task, gate),
                 None,
             ));
         };
@@ -2406,9 +2585,11 @@ async fn run_startup_backfill_task_if_due_outcome(
                 run.next_cursor_id.max(progress.cursor_id)
             };
             let next_run_after = startup_backfill_next_run_after(&run, zero_update_streak);
-            save_startup_backfill_progress(
+            save_startup_backfill_progress_for_task(
                 &state.pool,
+                task,
                 &task_name,
+                progress.wake_generation,
                 StartupBackfillProgressUpdate {
                     cursor_id: next_cursor_id,
                     scanned: run.scanned,
@@ -2577,9 +2758,11 @@ pub(crate) async fn persist_startup_backfill_task_failure(
     let retry_after = format_utc_iso(
         Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
     );
-    save_startup_backfill_progress(
+    save_startup_backfill_progress_for_task(
         &state.pool,
+        task,
         task_name,
+        progress.wake_generation,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
             scanned: progress.last_scanned,

@@ -1,4 +1,5 @@
-import { useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Tooltip } from "../../components/ui/tooltip";
 import { cn } from "../../lib/utils";
 import { AnimatedDigits } from "./AnimatedDigits";
 import {
@@ -11,10 +12,12 @@ import {
 const ADAPTIVE_METRIC_COMPACT_GUTTER_PX = 12;
 const ADAPTIVE_METRIC_UPGRADE_HEADROOM_PX = 6;
 
-interface AdaptiveDisplayValueProps {
+export interface AdaptiveDisplayValueProps {
   spec: AdaptiveDisplayValueSpec;
   className?: string;
   title?: string;
+  compactTooltipContent?: ReactNode;
+  showNativeTitle?: boolean;
   animateDigits?: boolean;
   availableWidthPx?: number;
   maxWidthCh?: number;
@@ -152,6 +155,8 @@ export function AdaptiveDisplayValue({
   spec,
   className,
   title,
+  compactTooltipContent,
+  showNativeTitle = true,
   animateDigits = false,
   availableWidthPx,
   maxWidthCh,
@@ -168,6 +173,25 @@ export function AdaptiveDisplayValue({
     !selectedCandidate?.compact;
   const resolvedTitle =
     title ?? (selectedCandidate?.value !== spec.fullValue ? spec.fullValue : undefined);
+  const visibleMetric = (
+    <span
+      data-adaptive-metric-visible="true"
+      data-compact={selectedCandidate?.compact ? "true" : "false"}
+      data-compact-precision={selectedCandidate?.precisionLabel ?? "full"}
+      data-candidate-key={selectedCandidate?.key ?? "full"}
+      data-testid={dataTestId}
+      title={showNativeTitle ? resolvedTitle : undefined}
+      className={cn("block max-w-full overflow-hidden whitespace-nowrap", className)}
+    >
+      {shouldAnimateDigits ? (
+        <AnimatedDigits value={selectedCandidate?.value ?? spec.fullValue} />
+      ) : (
+        (selectedCandidate?.value ?? spec.fullValue)
+      )}
+    </span>
+  );
+  const shouldShowCompactTooltip =
+    compactTooltipContent != null && selectedCandidate?.value !== spec.fullValue;
 
   return (
     <span
@@ -191,21 +215,13 @@ export function AdaptiveDisplayValue({
           {candidate.value}
         </span>
       ))}
-      <span
-        data-adaptive-metric-visible="true"
-        data-compact={selectedCandidate?.compact ? "true" : "false"}
-        data-compact-precision={selectedCandidate?.precisionLabel ?? "full"}
-        data-candidate-key={selectedCandidate?.key ?? "full"}
-        data-testid={dataTestId}
-        title={resolvedTitle}
-        className={cn("block max-w-full overflow-hidden whitespace-nowrap", className)}
-      >
-        {shouldAnimateDigits ? (
-          <AnimatedDigits value={selectedCandidate?.value ?? spec.fullValue} />
-        ) : (
-          (selectedCandidate?.value ?? spec.fullValue)
-        )}
-      </span>
+      {shouldShowCompactTooltip ? (
+        <Tooltip clickToOpen content={compactTooltipContent} className="block max-w-full">
+          {visibleMetric}
+        </Tooltip>
+      ) : (
+        visibleMetric
+      )}
     </span>
   );
 }

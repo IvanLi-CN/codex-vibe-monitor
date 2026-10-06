@@ -98,6 +98,7 @@
 | -     | Proxy invocation identity and prompt-cache conversation master            | active    | `proxy-invocation-identity/SPEC.md`                        | `proxy-invocation-identity/IMPLEMENTATION.md`                        | topic anchor: proxy / conversation identity / SQLite              |
 | -     | Public Project Metrics API                                                | active    | `public-blog-runtime-api/SPEC.md`                          | `public-blog-runtime-api/IMPLEMENTATION.md`                          | topic anchor: public API / project metrics / cache                |
 | -     | 有预算、可恢复的 Retention 运行与任务观测                                 | active    | `bounded-retention-runs/SPEC.md`                           | `bounded-retention-runs/IMPLEMENTATION.md`                           | topic anchor: retention / bounded runs / task observation         |
+| -     | Dashboard 用量明细自适应数值显示                                          | active    | `usage-breakdown-adaptive-values/SPEC.md`                  | `usage-breakdown-adaptive-values/IMPLEMENTATION.md`                  | topic anchor: dashboard / usage breakdown / adaptive metrics      |
 
 ## Archived Sources
 

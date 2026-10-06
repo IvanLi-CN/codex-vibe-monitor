@@ -3296,6 +3296,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
           cacheRead: "缓存读取",
           cacheHitTokens: "缓存读取",
           cacheHitRate: "缓存命中率",
+          cacheHitRateCompact: "命中率",
           output: "输出",
           model: "模型",
           input: "输入",
@@ -3305,6 +3306,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
           tokenUnavailable: "Token 分项未提供",
           unknownModel: "未标识模型",
           reasoningEffort: "思考等级",
+          tokenUnit: "Token",
         }
       : {
           total: "Total",
@@ -3312,6 +3314,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
           cacheRead: "Cache read",
           cacheHitTokens: "Cache read",
           cacheHitRate: "Cache hit rate",
+          cacheHitRateCompact: "Hit rate",
           output: "Output",
           model: "Model",
           input: "Input",
@@ -3321,12 +3324,17 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
           tokenUnavailable: "Token breakdown unavailable",
           unknownModel: "Unidentified model",
           reasoningEffort: "Reasoning effort",
+          tokenUnit: "tokens",
         };
-  const formatBreakdownNumber = (value: number) => formatAccountNumberValue(value, localeTag, 0);
-  const formatBreakdownRatio = (value: number | null) =>
-    value == null ? FALLBACK_CELL : formatAccountPercentValue(value, localeTag);
-  const formatBreakdownCurrency = (value: number) =>
-    formatAccountCurrencyValue(value, localeTag, 4);
+  const buildBreakdownNumberSpec = (value: number) =>
+    buildAdaptiveNumberTextSpec(value, localeTag, 0);
+  const buildBreakdownRatioSpec = (value: number | null) =>
+    buildAdaptivePercentTextSpec(value, localeTag, { maximumFractionDigits: 1 });
+  const buildBreakdownCurrencySpec = (value: number | null) =>
+    buildAdaptiveCurrencyTextSpec(value, localeTag, {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 4,
+    });
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
     const currentFirstByteMs = finiteNumber(account.currentFirstTokenAvgMs);
     const firstByteMs = finiteNumber(account.firstTokenAvgMs);
@@ -3811,9 +3819,9 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
               <UsageBreakdownTooltip
                 title={usageDetailsLabel}
                 breakdown={account.usageBreakdown}
-                formatNumber={formatBreakdownNumber}
-                formatRatio={formatBreakdownRatio}
-                formatCurrency={formatBreakdownCurrency}
+                buildNumberSpec={buildBreakdownNumberSpec}
+                buildRatioSpec={buildBreakdownRatioSpec}
+                buildCurrencySpec={buildBreakdownCurrencySpec}
                 labels={usageBreakdownLabels}
               />
             }
@@ -3835,9 +3843,9 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
               <UsageBreakdownTooltip
                 title={usageDetailsLabel}
                 breakdown={account.usageBreakdown}
-                formatNumber={formatBreakdownNumber}
-                formatRatio={formatBreakdownRatio}
-                formatCurrency={formatBreakdownCurrency}
+                buildNumberSpec={buildBreakdownNumberSpec}
+                buildRatioSpec={buildBreakdownRatioSpec}
+                buildCurrencySpec={buildBreakdownCurrencySpec}
                 labels={usageBreakdownLabels}
               />
             }

@@ -1,9 +1,10 @@
 /** @vitest-environment jsdom */
-import { act } from "react";
+import { act, type ComponentProps } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { I18nProvider } from "../../i18n";
 import type { UsageBreakdown } from "../../lib/api";
+import { buildAdaptiveTextSpec } from "../shared/adaptiveMetricValueSpec";
 import {
   DASHBOARD_MODEL_BREAKDOWN_MODE_STORAGE_KEY,
   DASHBOARD_MODEL_BREAKDOWN_SORT_STORAGE_KEY_PREFIX,
@@ -16,10 +17,16 @@ const labels = {
   cacheWrite: "Cache write",
   cacheRead: "Cache read",
   cacheHitRate: "Cache hit rate",
+  cacheHitRateCompact: "Hit rate",
   output: "Output",
   unknownModel: "Unidentified model",
   reasoningEffort: "Reasoning effort",
+  tokenUnit: "tokens",
 };
+
+function fullValueSpec(value: string) {
+  return buildAdaptiveTextSpec(value, [{ key: "full", value, priority: 0 }]);
+}
 
 function exactBreakdown(): UsageBreakdown {
   return {
@@ -38,7 +45,15 @@ function exactBreakdown(): UsageBreakdown {
   };
 }
 
-function renderTooltip(breakdown: UsageBreakdown) {
+function renderTooltip(
+  breakdown: UsageBreakdown,
+  overrides: Partial<
+    Pick<
+      ComponentProps<typeof UsageBreakdownTooltip>,
+      "buildNumberSpec" | "buildRatioSpec" | "buildCurrencySpec"
+    >
+  > = {},
+) {
   const host = document.createElement("div");
   document.body.appendChild(host);
   const root = createRoot(host);
@@ -48,9 +63,15 @@ function renderTooltip(breakdown: UsageBreakdown) {
         <UsageBreakdownTooltip
           title="Usage details"
           breakdown={breakdown}
-          formatNumber={(value) => `T${value}`}
-          formatRatio={(value) => (value == null ? "—" : `${(value * 100).toFixed(1)}%`)}
-          formatCurrency={(value) => `$${value.toFixed(2)}`}
+          buildNumberSpec={overrides.buildNumberSpec ?? ((value) => fullValueSpec(`T${value}`))}
+          buildRatioSpec={
+            overrides.buildRatioSpec ??
+            ((value) => fullValueSpec(value == null ? "—" : `${(value * 100).toFixed(1)}%`))
+          }
+          buildCurrencySpec={
+            overrides.buildCurrencySpec ??
+            ((value) => fullValueSpec(value == null ? "—" : `$${value.toFixed(2)}`))
+          }
           labels={labels}
         />
       </I18nProvider>,
@@ -62,7 +83,11 @@ function renderTooltip(breakdown: UsageBreakdown) {
 function totalRowCells(host: HTMLElement) {
   const row = host.querySelector("tbody tr");
   if (!row) throw new Error("missing total row");
-  return Array.from(row.querySelectorAll("td")).map((cell) => cell.textContent);
+  return Array.from(row.querySelectorAll("td")).map((cell) =>
+    Array.from(cell.querySelectorAll('[data-adaptive-metric-visible="true"]'))
+      .map((metric) => metric.textContent)
+      .join(""),
+  );
 }
 
 afterEach(() => {
@@ -81,12 +106,39 @@ beforeEach(() => {
 });
 
 describe("UsageBreakdownTooltip", () => {
+  it("shows the exact token unit in the project tooltip without a generic label", () => {
+    const fullTokenValue = "105,769,103,036";
+    const { host, root } = renderTooltip(exactBreakdown(), {
+      buildNumberSpec: () =>
+        buildAdaptiveTextSpec(fullTokenValue, [
+          { key: "compact", value: "106B", priority: 0 },
+          { key: "full", value: fullTokenValue, priority: 1 },
+        ]),
+    });
+    const compactMetric = host.querySelector<HTMLElement>(
+      '[data-adaptive-metric-visible="true"][data-compact="true"]',
+    );
+    expect(compactMetric).not.toBeNull();
+
+    act(() => compactMetric?.click());
+
+    expect(document.body.textContent).toContain(`${fullTokenValue} tokens`);
+    expect(document.body.textContent).not.toContain("Full value");
+
+    act(() => root.unmount());
+  });
+
   it("pairs cache and output Token buckets with their reconciled cost totals", () => {
     const { host, root } = renderTooltip(exactBreakdown());
 
     expect(
       Array.from(host.querySelectorAll("thead th")).map((header) => header.textContent),
-    ).toEqual(["Model", "Cache write", "Cache read", "Cache hit rate", "Output", "Total"]);
+    ).toEqual(["Model", "Cache write", "Cache read", "Hit rate", "Output", "Total"]);
+    expect(
+      host
+        .querySelector('[data-testid="dashboard-model-breakdown-sort-cache-hit-rate"]')
+        ?.getAttribute("aria-label"),
+    ).toContain("Cache hit rate");
     expect(host.querySelector("select")).toBeNull();
     expect(
       host.querySelector('[data-testid="dashboard-model-breakdown-sort-cache-write"]'),
@@ -123,7 +175,7 @@ describe("UsageBreakdownTooltip", () => {
     const cacheHitRateValue = cacheHitRateCell?.querySelector("span span:not([aria-hidden])");
     expect(cacheHitRateValue?.classList.contains("text-base-content")).toBe(true);
     expect(cacheHitRateValue?.classList.contains("text-base-content/80")).toBe(false);
-    const placeholder = cacheHitRateCell?.querySelector('[aria-hidden="true"]');
+    const placeholder = cacheHitRateCell?.querySelector("span.h-3");
     expect(placeholder?.classList.contains("h-3")).toBe(true);
     expect(placeholder?.classList.contains("sm:h-4")).toBe(true);
 

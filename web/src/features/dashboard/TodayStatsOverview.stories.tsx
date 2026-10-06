@@ -487,7 +487,7 @@ export const UsageBreakdownDetails: Story = {
         within(tooltip)
           .getAllByRole("columnheader")
           .map((header) => header.textContent),
-      ).toEqual(["模型", "缓存写入", "缓存读取", "缓存命中率", "输出", "总计"]);
+      ).toEqual(["模型", "缓存写入", "缓存读取", "命中率", "输出", "总计"]);
       expect(tooltip).toHaveTextContent("23.3%");
       expect(
         tooltip.querySelectorAll('[data-model-context-display="model-badge"]').length,
