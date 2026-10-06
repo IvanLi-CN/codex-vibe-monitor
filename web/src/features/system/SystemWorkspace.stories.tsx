@@ -1693,12 +1693,23 @@ function TaskPageSseFixture({
         });
       }
     }, 100);
-    const disconnectTimer = reconnecting
-      ? window.setTimeout(() => getStorybookPageSseController()?.emitError(), 750)
-      : null;
+    let disconnectTimer: number | null = null;
+    let disconnectRetryTimer: number | null = null;
+    if (reconnecting) {
+      const emitDisconnectWhenConnected = () => {
+        const controller = getStorybookPageSseController();
+        if (!controller || controller.activeEventSourceCount() === 0) {
+          disconnectRetryTimer = window.setTimeout(emitDisconnectWhenConnected, 50);
+          return;
+        }
+        controller.emitError();
+      };
+      disconnectTimer = window.setTimeout(emitDisconnectWhenConnected, 750);
+    }
     return () => {
       window.clearTimeout(snapshotTimer);
       if (disconnectTimer != null) window.clearTimeout(disconnectTimer);
+      if (disconnectRetryTimer != null) window.clearTimeout(disconnectRetryTimer);
     };
   }, [reconnecting]);
 

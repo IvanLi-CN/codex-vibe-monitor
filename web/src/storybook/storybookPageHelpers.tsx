@@ -38,6 +38,7 @@ function ensureStorybookPageSseController() {
         eventSource.dispatchEvent(event);
       });
     },
+    activeEventSourceCount: () => storybookPageEventSources.size,
     reset: () => {
       Array.from(storybookPageEventSources).forEach((eventSource) => {
         eventSource.close();
