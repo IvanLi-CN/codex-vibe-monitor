@@ -1,4 +1,113 @@
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET: Duration;
+}
+
+async fn quota_compaction_candidates(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+    candidate_limit: usize,
+) -> Result<Option<Vec<TimestampedArchiveCandidate>>> {
+    let query_sql = r#"
+        WITH ranked AS (
+            SELECT
+                id,
+                captured_at AS timestamp_value,
+                ROW_NUMBER() OVER (
+                    PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
+                    ORDER BY captured_at DESC, id DESC
+                ) AS row_num
+            FROM codex_quota_snapshots
+            WHERE captured_at < ?1
+        )
+        SELECT id, timestamp_value
+        FROM ranked
+        WHERE row_num > 1
+        ORDER BY timestamp_value ASC, id ASC
+        LIMIT ?2
+    "#;
+    let Some(remaining) = super::super::retention::retention_run_remaining_budget() else {
+        return Ok(Some(
+            sqlx::query_as::<_, TimestampedArchiveCandidate>(query_sql)
+                .bind(cutoff)
+                .bind(candidate_limit as i64)
+                .fetch_all(pool)
+                .await?,
+        ));
+    };
+    if remaining.is_zero() {
+        return Ok(None);
+    }
+    let deadline = Instant::now() + remaining;
+    let shutdown = super::super::retention::retention_run_shutdown_token();
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let options = pool
+        .connect_options()
+        .as_ref()
+        .clone()
+        .busy_timeout(remaining);
+    let mut connection =
+        match tokio::time::timeout(remaining, SqliteConnection::connect_with(&options)).await {
+            Ok(connection) => connection?,
+            Err(_) => return Ok(None),
+        };
+    let lock_budget_ms = deadline
+        .saturating_duration_since(Instant::now())
+        .as_millis();
+    sqlx::query(&format!("PRAGMA busy_timeout={lock_budget_ms}"))
+        .execute(&mut connection)
+        .await?;
+    {
+        let interrupted = interrupted.clone();
+        #[cfg(test)]
+        let test_probe = super::super::retention::RETENTION_TEST_SQLITE_MAINTENANCE_PROBE
+            .try_with(Arc::clone)
+            .ok();
+        let mut handle = connection.lock_handle().await?;
+        handle.set_progress_handler(1_000, move || {
+            #[cfg(test)]
+            let test_cancelled = test_probe.as_ref().is_some_and(|probe| {
+                probe.progress_callbacks.fetch_add(1, Ordering::AcqRel);
+                true
+            });
+            #[cfg(not(test))]
+            let test_cancelled = false;
+            let keep_running = Instant::now() < deadline
+                && !test_cancelled
+                && shutdown.as_ref().is_none_or(|token| !token.is_cancelled());
+            if !keep_running {
+                interrupted.store(true, Ordering::Release);
+            }
+            keep_running
+        });
+    }
+    // The ranking query may scan more rows than its LIMIT. Await actual SQLite
+    // interruption and close the dedicated handle; never return live work to the pool.
+    let result = sqlx::query_as::<_, TimestampedArchiveCandidate>(query_sql)
+        .bind(cutoff)
+        .bind(candidate_limit as i64)
+        .fetch_all(&mut connection)
+        .await;
+    let cleanup = connection.lock_handle().await.map(|mut handle| {
+        handle.remove_progress_handler();
+    });
+    let closed = connection.close().await;
+    #[cfg(test)]
+    let _ = super::super::retention::RETENTION_TEST_SQLITE_MAINTENANCE_PROBE.try_with(|probe| {
+        probe
+            .connection_closed
+            .store(closed.is_ok(), Ordering::Release);
+    });
+    cleanup?;
+    closed?;
+    if interrupted.load(Ordering::Acquire) || Instant::now() >= deadline {
+        return Ok(None);
+    }
+    Ok(Some(result?))
+}
 
 pub(crate) async fn compact_old_quota_snapshots(
     pool: &Pool<Sqlite>,
@@ -57,30 +166,10 @@ pub(crate) async fn compact_old_quota_snapshots(
             break;
         }
         let candidate_limit = super::super::retention::batch_plan::archive_candidate_limit(config);
-        let candidates = sqlx::query_as::<_, TimestampedArchiveCandidate>(
-            r#"
-            WITH ranked AS (
-                SELECT
-                    id,
-                    captured_at AS timestamp_value,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY strftime('%Y-%m-%d', datetime(captured_at, '+8 hours'))
-                        ORDER BY captured_at DESC, id DESC
-                    ) AS row_num
-                FROM codex_quota_snapshots
-                WHERE captured_at < ?1
-            )
-            SELECT id, timestamp_value
-            FROM ranked
-            WHERE row_num > 1
-            ORDER BY timestamp_value ASC, id ASC
-            LIMIT ?2
-            "#,
-        )
-        .bind(&cutoff)
-        .bind(candidate_limit as i64)
-        .fetch_all(pool)
-        .await?;
+        let Some(candidates) = quota_compaction_candidates(pool, &cutoff, candidate_limit).await?
+        else {
+            break;
+        };
 
         if candidates.is_empty() {
             break;
@@ -94,6 +183,9 @@ pub(crate) async fn compact_old_quota_snapshots(
         }
 
         for (month_key, group) in by_month {
+            if super::super::retention::retention_run_budget_expired() {
+                break;
+            }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let sizes =
                 super::super::retention::archive_source_row_sizes(pool, spec, &candidate_ids)
@@ -132,10 +224,24 @@ pub(crate) async fn compact_old_quota_snapshots(
                 );
             }
             drop(connection);
+            let archive_future =
+                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
+            let remaining = super::super::retention::retention_run_remaining_budget();
+            #[cfg(test)]
+            let remaining = RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET
+                .try_with(|budget| *budget)
+                .ok()
+                .or(remaining);
+            let archive_result = if let Some(remaining) = remaining {
+                match tokio::time::timeout(remaining, archive_future).await {
+                    Ok(result) => result,
+                    Err(_) => return Ok((rows_archived, archive_batches)),
+                }
+            } else {
+                archive_future.await
+            };
             let Some(mut archive_outcome) =
-                super::super::retention::retention_prepared_batch_or_deferred(
-                    archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await,
-                )?
+                super::super::retention::retention_prepared_batch_or_deferred(archive_result)?
             else {
                 return Ok((rows_archived, archive_batches));
             };
@@ -150,6 +256,9 @@ pub(crate) async fn compact_old_quota_snapshots(
             )?;
             let prepare_elapsed = prepare_started.elapsed();
             observation.file_prepared(prepare_elapsed);
+            if super::super::retention::retention_run_budget_expired() {
+                return Ok((rows_archived, archive_batches));
+            }
             let _archive_lock = super::super::retention::retention_archive_file_lock(Path::new(
                 &archive_outcome.file_path,
             ))?;

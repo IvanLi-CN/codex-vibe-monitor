@@ -720,6 +720,10 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         .flatten()
 }
 
+pub(super) fn retention_run_shutdown_token() -> Option<CancellationToken> {
+    RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
+}
+
 #[cfg(test)]
 pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
     budget: Duration,

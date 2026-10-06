@@ -2,6 +2,114 @@ use super::*;
 use crate::maintenance::{RETENTION_TEST_DB_PRESSURE_GATE, RETENTION_TEST_WRITE_COORDINATOR};
 
 #[tokio::test]
+async fn retention_quota_candidate_cancellation_closes_connection_and_preserves_source() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("quota-query-cancel").await;
+    let captured_at = utc_naive_from_shanghai_local_days_ago(40, 8, 0, 0);
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<256)
+         INSERT INTO codex_quota_snapshots(captured_at) SELECT ?1 FROM n",
+    )
+    .bind(&captured_at)
+    .execute(&pool)
+    .await
+    .expect("quota ranking fixture");
+    let probe = Arc::new(crate::maintenance::RetentionSqliteMaintenanceTestProbe::default());
+    let result = crate::maintenance::RETENTION_TEST_SQLITE_MAINTENANCE_PROBE
+        .scope(
+            probe.clone(),
+            crate::maintenance::retention_test_with_work_budget(
+                Duration::from_secs(60),
+                crate::maintenance::compact_old_quota_snapshots(&pool, &config, false),
+            ),
+        )
+        .await
+        .expect("candidate cancellation is a safe stop");
+    assert_eq!(result, (0, 0));
+    assert_eq!(probe.progress_callbacks.load(Ordering::Acquire), 1);
+    assert!(probe.connection_closed.load(Ordering::Acquire));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_quota_snapshots")
+            .fetch_one(&pool)
+            .await
+            .expect("unmodified quota source"),
+        256,
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("independent writer");
+    sqlx::query("PRAGMA busy_timeout=0")
+        .execute(&mut writer)
+        .await
+        .expect("nonblocking probe");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut writer)
+        .await
+        .expect("query connection released");
+    sqlx::query("UPDATE codex_quota_snapshots SET used_amount=1")
+        .execute(&mut writer)
+        .await
+        .expect("source remains writable");
+    sqlx::query("COMMIT")
+        .execute(&mut writer)
+        .await
+        .expect("no lingering read transaction");
+    writer.close().await.expect("close probe writer");
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_quota_prepare_timeout_discards_work_and_reselects_live_source() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("quota-prepare-timeout").await;
+    let early = utc_naive_from_shanghai_local_days_ago(40, 8, 0, 0);
+    let late = utc_naive_from_shanghai_local_days_ago(40, 23, 0, 0);
+    seed_quota_snapshot(&pool, &early).await;
+    seed_quota_snapshot(&pool, &late).await;
+    RETENTION_TEST_WRITE_COORDINATOR.scope(
+        crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            Arc::new(crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30))),
+            async {
+    // Force the preparation timeout independently of CPU speed. The injected pause
+    // guarantees pending work; no elapsed-time threshold is an assertion.
+    let result = crate::maintenance::RETENTION_TEST_QUOTA_ARCHIVE_PREPARE_BUDGET
+        .scope(
+            Duration::ZERO,
+            RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
+                Duration::from_secs(60),
+                crate::maintenance::compact_old_quota_snapshots(&pool, &config, false),
+            ),
+        )
+        .await
+        .expect("prepare timeout preserves source");
+    assert_eq!(result, (0, 0));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_quota_snapshots")
+            .fetch_one(&pool).await.expect("source after timeout"),
+        2,
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archive_batches WHERE dataset='codex_quota_snapshots'")
+            .fetch_one(&pool).await.expect("no committed quota manifest"),
+        0,
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    let next = crate::maintenance::compact_old_quota_snapshots(&pool, &config, false)
+        .await.expect("fresh live-row selection");
+    assert_eq!(next, (1, 1));
+    let remaining: Vec<String> = sqlx::query_scalar("SELECT captured_at FROM codex_quota_snapshots")
+        .fetch_all(&pool).await.expect("daily representative remains");
+    assert_eq!(remaining, vec![late]);
+    assert_no_task_work_files(&config.archive_dir);
+            },
+        ),
+    ).await;
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_admission_reason_is_current_and_cleared_next_run() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-defer-reason").await;
