@@ -410,7 +410,9 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             if staged.rows_affected() != 1 {
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
-                continue;
+                return Err(anyhow::anyhow!(
+                    "archive public-id backfill replacement staging conflict; retry batch"
+                ));
             }
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let current_state = sqlx::query_as::<_, (Option<String>, Option<String>)>(

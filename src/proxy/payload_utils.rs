@@ -728,7 +728,15 @@ pub(crate) async fn backfill_failure_classification_from_cursor(
                 .bind(next_payload)
                 .bind(row.id)
                 .execute(&mut *tx)
-                .await?
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error.into(),
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?
                 .rows_affected();
                 summary.updated += affected;
                 if affected > 0 {
@@ -768,7 +776,15 @@ pub(crate) async fn backfill_failure_classification_from_cursor(
             .bind(resolved.is_actionable as i64)
             .bind(row.id)
             .execute(&mut *tx)
-            .await?
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?
             .rows_affected();
             summary.updated += affected;
             if affected > 0 {
