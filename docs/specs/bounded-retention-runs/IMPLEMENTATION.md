@@ -96,6 +96,8 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 - 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受剩余期限及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
 
+- 池连接归还由 SQLx 异步执行。写许可申请前在无许可状态下确认池可用并完成空闲连接归还，避免单连接池或刚提交微批次误报池满；随后仍不持连接排队、获准后只非阻塞取连接。确定性回归按 pool-ready 通知安排 P1 取走连接，验证反向等待不存在以及 readiness 竞争时释放许可延期。
+
 ## Visual Evidence
 
 本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。

@@ -4,8 +4,8 @@ use super::*;
 async fn retention_exhausted_pool_wait_is_cancellable_without_holding_writer_admission() {
     use crate::maintenance::{
         RETENTION_TEST_DB_PRESSURE_GATE, RETENTION_TEST_WRITE_COORDINATOR,
-        acquire_retention_pool_connection, acquire_retention_write_connection,
-        retention_test_with_shutdown, retention_test_with_work_budget,
+        acquire_retention_write_connection, retention_test_with_shutdown,
+        retention_test_with_work_budget,
     };
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -21,7 +21,7 @@ async fn retention_exhausted_pool_wait_is_cancellable_without_holding_writer_adm
             Duration::from_secs(60),
             retention_test_with_shutdown(
                 shutdown.clone(),
-                acquire_retention_pool_connection(&pool, "pool_exhaustion_test"),
+                acquire_retention_write_connection(&pool, "pool_exhaustion_test"),
             ),
         ),
     ));
@@ -92,53 +92,75 @@ async fn retention_exhausted_pool_wait_is_cancellable_without_holding_writer_adm
 #[tokio::test]
 async fn retention_write_connection_never_waits_while_holding_the_other_resource() {
     use crate::maintenance::{
-        RETENTION_TEST_WRITE_COORDINATOR, acquire_retention_write_connection,
-        retention_test_with_shutdown, retention_test_with_work_budget,
+        RETENTION_TEST_WRITE_CONNECTION_POOL_READY, RETENTION_TEST_WRITE_COORDINATOR,
+        acquire_retention_write_connection, retention_test_with_shutdown,
+        retention_test_with_work_budget,
     };
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect("sqlite::memory:")
         .await
         .expect("single-connection pool");
-    let mut held = pool.acquire().await.expect("exhaust pool");
     let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
-    let result = RETENTION_TEST_WRITE_COORDINATOR
-        .scope(
-            coordinator.clone(),
-            retention_test_with_work_budget(
-                Duration::from_secs(60),
-                acquire_retention_write_connection(&pool, "pool_write_defer_test"),
-            ),
-        )
-        .await
-        .expect("pool exhaustion is admission deferral");
-    assert!(result.is_none());
-    assert_eq!(coordinator.snapshot().await.active_write_class, None);
-    assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 0);
-    held.return_to_pool().await;
-    drop(held);
-
     let p1 = coordinator
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
         .await;
     let shutdown = CancellationToken::new();
-    let mut waiting = Box::pin(RETENTION_TEST_WRITE_COORDINATOR.scope(
+    let ready = Arc::new(Notify::new());
+    let waiting = RETENTION_TEST_WRITE_COORDINATOR.scope(
         coordinator.clone(),
-        retention_test_with_shutdown(
-            shutdown.clone(),
-            acquire_retention_write_connection(&pool, "coordinator_write_wait_test"),
+        RETENTION_TEST_WRITE_CONNECTION_POOL_READY.scope(
+            ready.clone(),
+            retention_test_with_shutdown(
+                shutdown.clone(),
+                acquire_retention_write_connection(&pool, "coordinator_write_wait_test"),
+            ),
         ),
-    ));
-    assert!(futures_util::poll!(waiting.as_mut()).is_pending());
-    assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
-    // P1 owns the writer permit and can still acquire the sole connection. A
-    // retention waiter must not introduce the reverse connection/permit cycle.
-    let foreground_connection = pool.acquire().await.expect("P1 may acquire the pool");
-    shutdown.cancel();
-    assert!(waiting.await.expect("cancel coordinator wait").is_none());
+    );
+    let foreground = async {
+        ready.notified().await;
+        assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 1);
+        // P1 owns admission and can acquire the sole connection: no reverse
+        // connection/permit cycle. Synchronize on a phase, not CPU speed.
+        let connection = pool.acquire().await.expect("P1 may acquire the pool");
+        shutdown.cancel();
+        drop(connection);
+    };
+    let (result, ()) = tokio::join!(waiting, foreground);
+    assert!(result.expect("cancel coordinator wait").is_none());
     assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 0);
-    drop(foreground_connection);
     drop(p1);
+
+    // A foreground owner may take the connection after readiness was observed.
+    // Once admission becomes free, retention must release it without waiting.
+    let p1 = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let ready = Arc::new(Notify::new());
+    let waiting = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_WRITE_CONNECTION_POOL_READY.scope(
+            ready.clone(),
+            retention_test_with_work_budget(
+                Duration::from_secs(60),
+                acquire_retention_write_connection(&pool, "pool_readiness_race_test"),
+            ),
+        ),
+    );
+    let foreground = async {
+        ready.notified().await;
+        let connection = pool
+            .acquire()
+            .await
+            .expect("foreground wins readiness race");
+        drop(p1);
+        connection
+    };
+    let (result, held) = tokio::join!(waiting, foreground);
+    assert!(result.expect("readiness race is safe deferral").is_none());
+    assert_eq!(coordinator.snapshot().await.active_write_class, None);
+    assert_eq!(coordinator.snapshot().await.maintenance_waiter_count, 0);
+    drop(held);
     pool.close().await;
 }
 
