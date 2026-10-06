@@ -1455,17 +1455,32 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
 async fn recent_runs_for_workload_compatibility(
     pool: &Pool<Sqlite>,
     task_key: &str,
+    window: Option<(&str, &str)>,
 ) -> Result<Vec<TaskWorkloadLegacyRun>> {
-    Ok(sqlx::query_as::<_, TaskWorkloadLegacyRun>(
-        "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
-         FROM managed_task_runs
-         WHERE task_key=? AND status NOT IN ('requested','queued')
-           AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
-         ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",
-    )
-    .bind(task_key)
-    .fetch_all(pool)
-    .await?)
+    let mut query = if window.is_some() {
+        sqlx::query_as::<_, TaskWorkloadLegacyRun>(
+            "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
+             FROM managed_task_runs
+             WHERE task_key=? AND status NOT IN ('requested','queued')
+               AND started_at>=? AND started_at<=?
+               AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
+             ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",
+        )
+        .bind(task_key)
+    } else {
+        sqlx::query_as::<_, TaskWorkloadLegacyRun>(
+            "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
+             FROM managed_task_runs
+             WHERE task_key=? AND status NOT IN ('requested','queued')
+               AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
+             ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",
+        )
+        .bind(task_key)
+    };
+    if let Some((window_start, window_end)) = window {
+        query = query.bind(window_start).bind(window_end);
+    }
+    Ok(query.fetch_all(pool).await?)
 }
 
 pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
@@ -3791,25 +3806,58 @@ impl MaintenanceStore {
         window_hours: Option<i64>,
     ) -> Result<TaskWorkloadTrend> {
         let task_key = &task.task_key;
-        let stored_running = sqlx::query_as::<_, StoredTaskWorkloadRun>(
-            "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
-             FROM managed_task_work_runs
-             WHERE task_key=? AND status='running'
-             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 1",
-        )
-        .bind(task_key)
-        .fetch_optional(&self.pool)
-        .await?;
-        let stored_recent = sqlx::query_as::<_, StoredTaskWorkloadRun>(
-            "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
-             FROM managed_task_work_runs
-             WHERE task_key=? AND status<>'running'
-             ORDER BY attempted_at DESC,execution_uid DESC LIMIT ?",
-        )
-        .bind(task_key)
-        .bind(limit.saturating_add(1) as i64)
-        .fetch_all(&self.pool)
-        .await?;
+        let window_end = Utc::now();
+        let window_start = window_end - ChronoDuration::hours(window_hours.unwrap_or(24));
+        let window_start_text = format_utc_iso_millis(window_start);
+        let window_end_text = format_utc_iso_millis(window_end);
+        let stored_running = if window_hours.is_some() {
+            sqlx::query_as::<_, StoredTaskWorkloadRun>(
+                "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+                 FROM managed_task_work_runs
+                 WHERE task_key=? AND status='running' AND attempted_at>=? AND attempted_at<=?
+                 ORDER BY attempted_at DESC,execution_uid DESC LIMIT 1",
+            )
+            .bind(task_key)
+            .bind(&window_start_text)
+            .bind(&window_end_text)
+            .fetch_optional(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, StoredTaskWorkloadRun>(
+                "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+                 FROM managed_task_work_runs
+                 WHERE task_key=? AND status='running'
+                 ORDER BY attempted_at DESC,execution_uid DESC LIMIT 1",
+            )
+            .bind(task_key)
+            .fetch_optional(&self.pool)
+            .await?
+        };
+        let stored_recent = if window_hours.is_some() {
+            sqlx::query_as::<_, StoredTaskWorkloadRun>(
+                "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+                 FROM managed_task_work_runs
+                 WHERE task_key=? AND status<>'running' AND attempted_at>=? AND attempted_at<=?
+                 ORDER BY attempted_at DESC,execution_uid DESC LIMIT ?",
+            )
+            .bind(task_key)
+            .bind(&window_start_text)
+            .bind(&window_end_text)
+            .bind(limit.saturating_add(1) as i64)
+            .fetch_all(&self.pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, StoredTaskWorkloadRun>(
+                "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
+                 FROM managed_task_work_runs
+                 WHERE task_key=? AND status<>'running'
+                 ORDER BY attempted_at DESC,execution_uid DESC LIMIT ?",
+            )
+            .bind(task_key)
+            .bind(limit.saturating_add(1) as i64)
+            .fetch_all(&self.pool)
+            .await?
+        };
         let stored = stored_running.into_iter().chain(stored_recent);
         let mut samples = stored
             .map(|row| restore_stored_task_workload_sample(task_key, row))
@@ -3818,7 +3866,15 @@ impl MaintenanceStore {
             .iter()
             .map(|sample| sample.sample_id.clone())
             .collect::<std::collections::HashSet<_>>();
-        for run in recent_runs_for_workload_compatibility(&self.pool, task_key).await? {
+        for run in recent_runs_for_workload_compatibility(
+            &self.pool,
+            task_key,
+            window_hours
+                .is_some()
+                .then_some((&window_start_text, &window_end_text)),
+        )
+        .await?
+        {
             let execution_uid = run
                 .execution_uid
                 .clone()
@@ -3855,14 +3911,11 @@ impl MaintenanceStore {
                 *existing = active;
             }
         }
-        let window_end = Utc::now();
-        let window_start = window_end - ChronoDuration::hours(window_hours.unwrap_or(24));
-        let window_start_text = format_utc_iso_millis(window_start);
-        let window_end_text = format_utc_iso_millis(window_end);
         if window_hours.is_some() {
             samples.retain(|sample| {
-                crate::stats::parse_to_utc_datetime(&sample.attempted_at)
-                    .is_some_and(|attempted_at| attempted_at >= window_start)
+                crate::stats::parse_to_utc_datetime(&sample.attempted_at).is_some_and(
+                    |attempted_at| attempted_at >= window_start && attempted_at <= window_end,
+                )
             });
         }
         samples.sort_by(|left, right| {
@@ -5264,7 +5317,7 @@ mod tests {
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
         let now = Utc::now();
-        for (index, age) in [(0, 26_i64), (1, 2_i64), (2, 1_i64)] {
+        for (index, age) in [(0, 26_i64), (1, 2_i64), (2, 1_i64), (3, -2_i64)] {
             let mut sample = workload_fixture_sample(
                 index,
                 now - ChronoDuration::hours(age),
