@@ -2284,7 +2284,17 @@ async fn run_startup_backfill_task_if_due_outcome(
     };
     let outcome = match task_result {
         Ok((run, detail)) => {
+            if task == StartupBackfillTask::PoolUpstreamNodeHealthArchives {
+                workload_observation.set_discovered_work(
+                    i64::try_from(run.scanned).unwrap_or(i64::MAX),
+                    format_utc_iso_millis(Utc::now()),
+                    "run-window".to_string(),
+                );
+            }
             workload_observation.set_processed_work(i64::try_from(run.updated).unwrap_or(i64::MAX));
+            if observation_parent_task_key == Some("prompt_cache_materialization") {
+                observation.set_processed_work(i64::try_from(run.updated).unwrap_or(i64::MAX));
+            }
             if run.deferred {
                 drop(write_permit.take());
                 if run.defer_reason == Some("operator_disabled") {

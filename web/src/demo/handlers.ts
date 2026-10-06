@@ -5,6 +5,7 @@ import type {
   LongTermMetrics,
   ManagedTaskDetail,
   ModelRoutingTimelineRecord,
+  TaskExecutionSummary,
   TaskWorkloadMetric,
   TaskWorkloadSample,
 } from "../lib/api";
@@ -2741,6 +2742,8 @@ export function managedTasks() {
     scheduleEditable?: boolean;
     scheduleCapabilityReason?: string | null;
     executionClass?: string | null;
+    lastExecution?: TaskExecutionSummary | null;
+    executionObservation?: string;
   };
   const tasks: Array<[string, string, string, string, boolean]> = [
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
@@ -2991,12 +2994,37 @@ export function managedTasks() {
       .sort()
       .map((taskKey, index) => [taskKey, Math.round((index * 137.507_764) % 360)]),
   );
-  return combinedTasks.map((task) => {
+  return combinedTasks.map((task, index) => {
     const hue = stableHueByTask.get(task.taskKey) ?? 0;
+    const latestRun = managedTaskRuns.get(task.taskKey)?.[0];
+    const fallbackStartedAt = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
+    const fallbackFinishedAt = new Date(Date.parse(fallbackStartedAt) + 31_000).toISOString();
+    const run = latestRun ?? {
+      id: index + 1,
+      startedAt: fallbackStartedAt,
+      finishedAt: fallbackFinishedAt,
+      durationMs: 31_000,
+      triggerKind: task.isManual ? "manual" : task.triggerMode,
+      status: "success",
+      errorDetail: null,
+    };
     return {
       ...task,
       displayColorLight: `hsl(${hue} 72% 43%)`,
       displayColorDark: `hsl(${hue} 76% 66%)`,
+      lastExecution: {
+        executionUid: `demo-execution-${task.taskKey}`,
+        runId: run.id,
+        triggerKind: run.triggerKind ?? (task.isManual ? "manual" : task.triggerMode),
+        attemptedAt: run.startedAt,
+        actualStartedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        durationMs: run.durationMs,
+        status: run.status,
+        result: run.status,
+        reason: run.errorDetail,
+      },
+      executionObservation: "observed",
     };
   });
 }
@@ -4791,6 +4819,28 @@ export async function handleDemoRequest(request: Request) {
     return json(demoTaskOperationsRuntime());
   if (pathname === "/api/system/managed-tasks/timeline" && request.method === "GET")
     return json(demoTaskOperationsTimeline());
+  const managedTaskWorkloadMatch = pathname.match(
+    /^\/api\/system\/managed-tasks\/([^/]+)\/workload$/,
+  );
+  if (managedTaskWorkloadMatch && request.method === "GET") {
+    const taskKey = decodeURIComponent(managedTaskWorkloadMatch[1]);
+    const detail = managedTaskDetail(taskKey);
+    if (!detail) return json({ error: "not found" }, { status: 404 });
+    const windowHours = Number(url.searchParams.get("windowHours") ?? 24);
+    const limit = Number(url.searchParams.get("limit") ?? 200);
+    if (windowHours !== 24 || !Number.isInteger(limit) || limit < 1 || limit > 200) {
+      return json({ error: "invalid workload window" }, { status: 400 });
+    }
+    const trend = detail.workloadTrend;
+    if (!trend) return json({ error: "workload unavailable" }, { status: 503 });
+    const samples = trend.samples.slice(-limit);
+    return json({
+      ...trend,
+      samples,
+      sampleLimit: limit,
+      truncated: trend.truncated === true || samples.length < trend.samples.length,
+    });
+  }
   const managedTaskMatch = pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
   if (managedTaskMatch && request.method === "GET") {
     const detail = managedTaskDetail(decodeURIComponent(managedTaskMatch[1]));

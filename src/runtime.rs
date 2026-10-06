@@ -1819,7 +1819,13 @@ async fn run_managed_task_once(
             Ok("正向代理订阅刷新完成".to_string())
         }
         "summary_snapshot" => {
+            let (journal_before, _) = state.subscription_hub.summary_delta_journal_counts().await;
             crate::api::refresh_summary_snapshots(state.as_ref()).await?;
+            let (journal_after, _) = state.subscription_hub.summary_delta_journal_counts().await;
+            let contribution_count =
+                i64::try_from(journal_after.saturating_sub(journal_before)).unwrap_or(i64::MAX);
+            crate::record_managed_task_discovered_work(&["summary_snapshot"], contribution_count);
+            crate::record_managed_task_processed_work(&["summary_snapshot"], contribution_count);
             Ok("汇总快照刷新完成".to_string())
         }
         "summary_coverage_recovery" => {
@@ -1846,16 +1852,33 @@ async fn run_managed_task_once(
             Ok("系统状态快照刷新完成".to_string())
         }
         "invocation_timeline_snapshot" => {
-            cleanup_timeline_snapshot_rows_once(&state.pool)
+            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
                 .await
                 .map_err(|_| anyhow!("调用时间线快照清理失败"))?;
+            crate::record_managed_task_discovered_work(
+                &["invocation_timeline_snapshot"],
+                i64::try_from(cleanup.deleted_rows).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["invocation_timeline_snapshot"],
+                i64::try_from(cleanup.deleted_rows).unwrap_or(i64::MAX),
+            );
             Ok("调用时间线快照清理完成".to_string())
         }
         "dashboard_runtime_projection_reconcile" => {
             let result = reconcile_dashboard_runtime_projection_once(state.as_ref())
                 .await
                 .map_err(|_| anyhow!("仪表盘运行投影校对失败"))?;
-            let _ = result;
+            let reconciled_records =
+                i64::try_from(result.snapshot.accounts.len()).unwrap_or(i64::MAX);
+            crate::record_managed_task_discovered_work(
+                &["dashboard_runtime_projection_reconcile"],
+                reconciled_records,
+            );
+            crate::record_managed_task_processed_work(
+                &["dashboard_runtime_projection_reconcile"],
+                reconciled_records,
+            );
             Ok("仪表盘运行投影校对完成".to_string())
         }
         "long_term_projection" => {
@@ -1900,11 +1923,19 @@ async fn run_managed_task_once(
             Ok("Prompt 缓存物化完成".to_string())
         }
         "startup_hourly_rollup_bootstrap" => {
-            bootstrap_hourly_rollups_for_runtime_startup(
+            let work_count = bootstrap_hourly_rollups_for_runtime_startup_with_work(
                 &state.pool,
                 Some(state.config.invocation_max_days),
             )
             .await?;
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(work_count).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(work_count).unwrap_or(i64::MAX),
+            );
             Ok("启动时小时汇总补齐完成".to_string())
         }
         "raw_compression" => {
@@ -2350,7 +2381,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 biased;
                 _ = cancel.cancelled() => None,
                 _ = coordinator.wait_for_p2_preemption() => None,
-                result = bootstrap_hourly_rollups_for_runtime_startup(
+                result = bootstrap_hourly_rollups_for_runtime_startup_with_work(
                     &state.pool,
                     Some(state.config.invocation_max_days),
                 ) => Some(result),
@@ -2384,11 +2415,11 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     _ = tokio::time::sleep(retry_after) => continue,
                 }
             };
-            if let Err(err) = hourly_rollups {
+            if let Err(err) = hourly_rollups.as_ref() {
                 drop(write_permit);
                 drop(pressure_permit);
                 drop(rollup_guard);
-                pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+                pressure_gate.record_error("startup_hourly_rollup_bootstrap", err);
                 finish_runtime_startup_hourly_rollup_bootstrap_task(
                     state.as_ref(),
                     &cancel,
@@ -2404,6 +2435,17 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                     "background startup hourly rollup bootstrap failed; keeping existing rollups"
                 );
                 return;
+            }
+            if let Ok(work_count) = hourly_rollups.as_ref()
+                && let Some(observation) = task_run.observation.as_ref()
+            {
+                let work_count = i64::try_from(*work_count).unwrap_or(i64::MAX);
+                observation.set_discovered_work(
+                    work_count,
+                    format_utc_iso_millis(Utc::now()),
+                    "run-window".to_string(),
+                );
+                observation.set_processed_work(work_count);
             }
             let hourly_rollups_elapsed_ms = hourly_rollups_started_at.elapsed().as_millis() as u64;
             info!(

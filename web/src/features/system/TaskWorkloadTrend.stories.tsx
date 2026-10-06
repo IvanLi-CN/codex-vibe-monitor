@@ -49,6 +49,29 @@ const emptyTrend: WorkloadTrend = {
   clearanceEstimateReason: "insufficient_samples",
 };
 
+const unsupportedCapabilities: TaskMeasurementCapabilities = {
+  pending: { supported: false, unit: null, scope: null },
+  discovered: { supported: false, unit: null, scope: null },
+  processed: { supported: false, unit: null, scope: null },
+};
+
+const successfulCounterlessTrend: WorkloadTrend = {
+  ...emptyTrend,
+  coverage: "not applicable",
+  samples: [
+    {
+      ...samples[samples.length - 1],
+      taskKey: "dashboard_runtime_projection_reconcile",
+      sampleId: "counterless-success",
+      executionUid: "counterless-success",
+      status: "success",
+      pending: null,
+      discovered: null,
+      processed: null,
+    },
+  ],
+};
+
 const recoveryCapabilities: TaskMeasurementCapabilities = {
   pending: { supported: false, unit: null, scope: null },
   discovered: { supported: false, unit: null, scope: null },
@@ -233,6 +256,19 @@ export const Empty: Story = {
   tags: ["test"],
   play: async ({ canvasElement }) => {
     await expectEmptyChart(canvasElement, "暂无运行样本");
+  },
+};
+
+export const SuccessfulCounterlessRun: Story = {
+  args: {
+    taskKey: "dashboard_runtime_projection_reconcile",
+    capabilities: unsupportedCapabilities,
+    trend: successfulCounterlessTrend,
+    state: "ready",
+  },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    await expectEmptyChart(canvasElement, "该任务不提供工作量计数");
   },
 };
 

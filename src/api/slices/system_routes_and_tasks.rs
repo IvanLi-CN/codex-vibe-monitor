@@ -2215,6 +2215,44 @@ pub(crate) async fn get_managed_task_timeline(
     Ok(Json(page))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ManagedTaskWorkloadQuery {
+    pub(crate) window_hours: Option<i64>,
+    pub(crate) limit: Option<usize>,
+}
+
+pub(crate) async fn get_managed_task_workload(
+    AxumPath(task_key): AxumPath<String>,
+    Query(query): Query<ManagedTaskWorkloadQuery>,
+) -> Result<Json<crate::maintenance_store::TaskWorkloadTrend>, (StatusCode, String)> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "maintenance database unavailable".to_string(),
+        ));
+    };
+    if query.window_hours.unwrap_or(24) != 24 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "workload windowHours must be exactly 24".to_string(),
+        ));
+    }
+    let limit = query.limit.unwrap_or(200);
+    if !(1..=200).contains(&limit) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "workload limit must be between 1 and 200".to_string(),
+        ));
+    }
+    let trend = store
+        .workload_window(&task_key, limit)
+        .await
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "managed task not found".to_string()))?;
+    Ok(Json(trend))
+}
+
 pub(crate) async fn get_managed_task(
     State(state): State<Arc<AppState>>,
     AxumPath(task_key): AxumPath<String>,

@@ -237,6 +237,7 @@ export type {
   TagRoutingRule,
   TagSummary,
   TaskAdmissionWait,
+  TaskExecutionSummary,
   TaskMeasurementCapabilities,
   TaskMetricCapability,
   TaskRuntimeSnapshot,

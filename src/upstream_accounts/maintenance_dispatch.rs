@@ -62,6 +62,10 @@ async fn run_upstream_account_maintenance_once_inner(state: Arc<AppState>) -> Re
         state.config.upstream_accounts_refresh_lead_time,
         now,
     );
+    crate::record_managed_task_discovered_work(
+        &["upstream_account_maintenance"],
+        i64::try_from(dispatch_plans.len()).unwrap_or(i64::MAX),
+    );
 
     let mut queued = 0usize;
     let mut deduped = 0usize;
@@ -93,6 +97,11 @@ async fn run_upstream_account_maintenance_once_inner(state: Arc<AppState>) -> Re
             }
         }
     }
+
+    crate::record_managed_task_processed_work(
+        &["upstream_account_maintenance"],
+        i64::try_from(queued).unwrap_or(i64::MAX),
+    );
 
     info!(
         candidates = queued + deduped + failed,

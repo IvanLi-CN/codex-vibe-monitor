@@ -1408,6 +1408,17 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
         .terminal_projection_hub
         .timeseries_coverage_invalidation_pending();
     if pending.is_empty() && coverage_invalidation_generation.is_none() {
+        if let Some(managed_run_id) = managed_run_id
+            && let Some(observation) =
+                crate::TaskExecutionObservation::for_managed_run(managed_run_id)
+        {
+            observation.set_discovered_work(
+                0,
+                format_utc_iso_millis(Utc::now()),
+                "run-window".to_string(),
+            );
+            observation.set_processed_work(0);
+        }
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
     }
     let memory_baseline = state.memory_diagnostics.begin_operation(state).await;
@@ -1446,6 +1457,7 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
             TimeseriesMinuteProjectionCoverageInvalidationStats::default()
         };
 
+        let candidate_key_count = grouped.len();
         let mut grouped = grouped.into_iter().collect::<Vec<_>>();
         grouped.sort_by_key(|(key, _)| {
             (
@@ -1474,6 +1486,16 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
         }
         if !work_batch.is_empty() {
             work_batches.push(work_batch);
+        }
+        observation.get_or_insert_with(|| {
+            begin_timeseries_minute_projection_observation(trigger, managed_run_id)
+        });
+        if let Some(observation) = observation.as_ref() {
+            observation.set_discovered_work(
+                i64::try_from(candidate_key_count).unwrap_or(i64::MAX),
+                format_utc_iso_millis(Utc::now()),
+                "run-window".to_string(),
+            );
         }
         let mut written_key_count = 0usize;
         let mut exact_fallback_minute_count = 0usize;
@@ -1612,6 +1634,9 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
         state
             .terminal_projection_hub
             .mark_timeseries_deltas_flushed(&flushed_event_ids);
+        if let Some(observation) = observation.as_ref() {
+            observation.set_processed_work(i64::try_from(written_key_count).unwrap_or(i64::MAX));
+        }
         debug!(
             route = "timeseries_projection",
             builder = "minute_projection_v2",

@@ -22,8 +22,14 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         return Ok(());
     }
 
+    crate::record_managed_task_discovered_work(
+        &["forward_proxy_subscription_refresh"],
+        i64::try_from(subscription_urls.len()).unwrap_or(i64::MAX),
+    );
+
     let mut subscription_proxy_urls = Vec::new();
     let mut fetched_any_subscription = false;
+    let mut fetched_subscription_count = 0usize;
     for subscription_url in &subscription_urls {
         if state.shutdown.is_cancelled() {
             info!("stopping forward proxy subscription refresh because shutdown is in progress");
@@ -43,6 +49,7 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         match fetch_result {
             Ok(urls) => {
                 fetched_any_subscription = true;
+                fetched_subscription_count = fetched_subscription_count.saturating_add(1);
                 subscription_proxy_urls.extend(urls);
             }
             Err(err) => {
@@ -93,6 +100,10 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
             .collect::<Vec<_>>()
     };
     sync_forward_proxy_routes(state.as_ref()).await?;
+    crate::record_managed_task_processed_work(
+        &["forward_proxy_subscription_refresh"],
+        i64::try_from(fetched_subscription_count).unwrap_or(i64::MAX),
+    );
     if !added_subscription_endpoints.is_empty() {
         spawn_forward_proxy_bootstrap_probe_round(
             state.clone(),

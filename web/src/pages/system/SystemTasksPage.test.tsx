@@ -13,6 +13,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchManagedTasks: vi.fn(),
   fetchManagedTaskRuntime: vi.fn(),
   fetchManagedTaskTimeline: vi.fn(),
+  fetchManagedTaskWorkload: vi.fn(),
 }));
 const streamMocks = vi.hoisted(() => ({
   useSubscriptionTopic: vi.fn(),
@@ -24,12 +25,14 @@ const streamMocks = vi.hoisted(() => ({
   timelineData: null as unknown,
   runtimeRefresh: vi.fn(),
   timelineRefresh: vi.fn(),
+  catalogRefresh: vi.fn(),
 }));
 vi.mock("../../lib/api", async () => ({
   ...(await vi.importActual<typeof import("../../lib/api")>("../../lib/api")),
   fetchManagedTasks: apiMocks.fetchManagedTasks,
   fetchManagedTaskRuntime: apiMocks.fetchManagedTaskRuntime,
   fetchManagedTaskTimeline: apiMocks.fetchManagedTaskTimeline,
+  fetchManagedTaskWorkload: apiMocks.fetchManagedTaskWorkload,
 }));
 vi.mock("../../hooks/useSubscriptionTopic", () => ({
   useSubscriptionTopic: streamMocks.useSubscriptionTopic,
@@ -121,6 +124,12 @@ describe("SystemTasksPage", () => {
       admissionWaitsAvailable: true,
     };
     apiMocks.fetchManagedTaskRuntime.mockResolvedValue(runtimeFixture);
+    apiMocks.fetchManagedTaskWorkload.mockResolvedValue({
+      revision: 0,
+      coverage: "no recorded attempts",
+      samples: [],
+      clearanceEstimateReason: "insufficient_samples",
+    });
     streamMocks.runtimeData = runtimeFixture;
     const timelineFixture = {
       observedAt: "2026-10-01T00:00:02.000Z",
@@ -159,6 +168,15 @@ describe("SystemTasksPage", () => {
           error: null,
           isLoading: false,
           refresh: streamMocks.timelineRefresh,
+        };
+      }
+      if (descriptor?.topic === "system.managed-tasks.catalog") {
+        return {
+          data: null,
+          lastReceivedAt: null,
+          error: null,
+          isLoading: true,
+          refresh: streamMocks.catalogRefresh,
         };
       }
       return {
@@ -205,9 +223,11 @@ describe("SystemTasksPage", () => {
     apiMocks.fetchManagedTasks.mockReset();
     apiMocks.fetchManagedTaskRuntime.mockReset();
     apiMocks.fetchManagedTaskTimeline.mockReset();
+    apiMocks.fetchManagedTaskWorkload.mockReset();
     streamMocks.useSubscriptionTopic.mockReset();
     streamMocks.useSseStatus.mockReset();
     streamMocks.requestImmediateReconnect.mockReset();
+    streamMocks.catalogRefresh.mockReset();
   });
 
   it("loads the managed task directory", async () => {
@@ -219,6 +239,9 @@ describe("SystemTasksPage", () => {
     });
     expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
       topic: "system.managed-tasks.timeline",
+    });
+    expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
+      topic: "system.managed-tasks.catalog",
     });
     expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
     expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();

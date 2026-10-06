@@ -2683,6 +2683,21 @@ export interface ManagedTask {
   scheduleCapabilityReason?: string | null;
   executionClass?: string | null;
   measurementCapabilities?: TaskMeasurementCapabilities;
+  lastExecution?: TaskExecutionSummary | null;
+  executionObservation?: string;
+}
+
+export interface TaskExecutionSummary {
+  executionUid?: string | null;
+  runId: number;
+  triggerKind: string;
+  attemptedAt: string;
+  actualStartedAt?: string | null;
+  finishedAt?: string | null;
+  durationMs?: number | null;
+  status: string;
+  result: string;
+  reason?: string | null;
 }
 
 export interface TaskMetricCapability {
@@ -2715,6 +2730,7 @@ export interface TaskWorkloadSample {
   attemptedAt: string;
   actualStartedAt?: string | null;
   finishedAt?: string | null;
+  durationMs?: number | null;
   status: string;
   reason?: string | null;
   sequence: number;
@@ -2733,6 +2749,12 @@ export interface TaskWorkloadCoverageGap {
 
 export interface TaskWorkloadTrend {
   revision: number;
+  windowStart?: string;
+  windowEnd?: string;
+  observedAt?: string;
+  sampleLimit?: number;
+  truncated?: boolean;
+  capabilities?: TaskMeasurementCapabilities;
   coverage: string;
   samples: TaskWorkloadSample[];
   coverageGaps?: TaskWorkloadCoverageGap[];
@@ -5653,6 +5675,28 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
   const pendingCapability = readCapability(capabilities?.pending);
   const discoveredCapability = readCapability(capabilities?.discovered);
   const processedCapability = readCapability(capabilities?.processed);
+  const execution = asRecord(payload.lastExecution);
+  const lastExecution: TaskExecutionSummary | null =
+    execution &&
+    typeof execution.runId === "number" &&
+    typeof execution.triggerKind === "string" &&
+    typeof execution.attemptedAt === "string" &&
+    typeof execution.status === "string" &&
+    typeof execution.result === "string"
+      ? {
+          executionUid: typeof execution.executionUid === "string" ? execution.executionUid : null,
+          runId: execution.runId,
+          triggerKind: execution.triggerKind,
+          attemptedAt: execution.attemptedAt,
+          actualStartedAt:
+            typeof execution.actualStartedAt === "string" ? execution.actualStartedAt : null,
+          finishedAt: typeof execution.finishedAt === "string" ? execution.finishedAt : null,
+          durationMs: normalizeFiniteNumber(execution.durationMs),
+          status: execution.status,
+          result: execution.result,
+          reason: typeof execution.reason === "string" ? execution.reason : null,
+        }
+      : null;
   return {
     taskKey: payload.taskKey,
     title: payload.title,
@@ -5694,6 +5738,9 @@ function normalizeManagedTask(raw: unknown): ManagedTask | null {
           ? null
           : undefined,
     executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
+    lastExecution,
+    executionObservation:
+      typeof payload.executionObservation === "string" ? payload.executionObservation : undefined,
     measurementCapabilities:
       pendingCapability && discoveredCapability && processedCapability
         ? {
@@ -5749,6 +5796,7 @@ function normalizeTaskWorkloadSample(raw: unknown): TaskWorkloadSample | null {
     attemptedAt: payload.attemptedAt,
     actualStartedAt: typeof payload.actualStartedAt === "string" ? payload.actualStartedAt : null,
     finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    durationMs: normalizeFiniteNumber(payload.durationMs),
     status: payload.status,
     reason: typeof payload.reason === "string" ? payload.reason : null,
     sequence,
@@ -5764,6 +5812,27 @@ function normalizeTaskWorkloadTrend(raw: unknown): TaskWorkloadTrend | null {
   if (!payload || !Array.isArray(payload.samples)) return null;
   return {
     revision: normalizeFiniteNumber(payload.revision) ?? 0,
+    windowStart: typeof payload.windowStart === "string" ? payload.windowStart : undefined,
+    windowEnd: typeof payload.windowEnd === "string" ? payload.windowEnd : undefined,
+    observedAt: typeof payload.observedAt === "string" ? payload.observedAt : undefined,
+    sampleLimit: normalizeFiniteNumber(payload.sampleLimit) ?? undefined,
+    truncated: payload.truncated === true,
+    capabilities: (() => {
+      const capability = asRecord(payload.capabilities);
+      const read = (value: unknown): TaskMetricCapability | null => {
+        const item = asRecord(value);
+        if (!item || typeof item.supported !== "boolean") return null;
+        return {
+          supported: item.supported,
+          unit: typeof item.unit === "string" ? item.unit : null,
+          scope: typeof item.scope === "string" ? item.scope : null,
+        };
+      };
+      const pending = read(capability?.pending);
+      const discovered = read(capability?.discovered);
+      const processed = read(capability?.processed);
+      return pending && discovered && processed ? { pending, discovered, processed } : undefined;
+    })(),
     coverage: typeof payload.coverage === "string" ? payload.coverage : "unknown",
     samples: payload.samples
       .map(normalizeTaskWorkloadSample)
@@ -6093,6 +6162,22 @@ export async function fetchManagedTasks(): Promise<ManagedTask[]> {
   return Array.isArray(response)
     ? response.map(normalizeManagedTask).filter((task): task is ManagedTask => task != null)
     : [];
+}
+
+export async function fetchManagedTaskWorkload(
+  taskKey: string,
+  query: { windowHours?: number; limit?: number } = {},
+): Promise<TaskWorkloadTrend> {
+  const params = new URLSearchParams({
+    windowHours: String(query.windowHours ?? 24),
+    limit: String(query.limit ?? 200),
+  });
+  const response = await fetchJson<unknown>(
+    `/api/system/managed-tasks/${encodeURIComponent(taskKey)}/workload?${params.toString()}`,
+  );
+  const trend = normalizeTaskWorkloadTrend(response);
+  if (!trend) throw new Error("Invalid managed task workload response");
+  return trend;
 }
 
 export async function fetchManagedTaskRuntime(): Promise<TaskRuntimeSnapshot> {

@@ -281,6 +281,10 @@ impl SubscriptionTopic {
                 let (backend, frontend) = detect_versions(state.config.static_dir.as_deref());
                 Ok(serde_json::to_value(VersionResponse { backend, frontend })?)
             }
+            Self::ManagedTaskCatalog => {
+                let Json(tasks) = list_managed_tasks(State(state)).await?;
+                Ok(serde_json::to_value(tasks)?)
+            }
             Self::ManagedTaskRuntime => {
                 let Json(snapshot) = get_managed_task_runtime(State(state)).await?;
                 Ok(serde_json::to_value(snapshot)?)
@@ -296,6 +300,25 @@ impl SubscriptionTopic {
                     return Err(ApiError::bad_request(anyhow!("managed task not found")));
                 };
                 Ok(serde_json::to_value(detail)?)
+            }
+            Self::ManagedTaskWorkload {
+                task_key,
+                window_hours: _,
+                limit,
+            } => {
+                let Some(store) = crate::maintenance_store::global() else {
+                    return Err(ApiError::unavailable(anyhow!(
+                        "maintenance database unavailable"
+                    )));
+                };
+                let Some(trend) = store
+                    .workload_window(task_key, *limit)
+                    .await
+                    .map_err(ApiError::from)?
+                else {
+                    return Err(ApiError::bad_request(anyhow!("managed task not found")));
+                };
+                Ok(serde_json::to_value(trend)?)
             }
             Self::QuotaCurrent => {
                 let Json(snapshot) = latest_quota_snapshot(State(state)).await?;

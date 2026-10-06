@@ -4,8 +4,8 @@
 
 ## Context and Scope
 
-- Context: 任务运维页面需要同时表达真实当前执行、等待执行、最近 12 小时执行区间、任务让行状态、worker 的实际调度策略、最近 100 次运行的工作量趋势和可安全修改的运行配置。
-- In scope: 维护任务目录、运行与等待观测、执行时间线、任务标识色、任务让行时间线、集中任务能力目录、计划覆盖控制、详情工作量趋势及条件性进度估计、详情页和响应式筛选交互。
+- Context: 任务运维页面需要同时表达真实当前执行、等待执行、最近 12 小时执行区间、任务让行状态、worker 的实际调度策略、详情最近 100 次运行的工作量趋势、目录最近执行摘要与最近 24 小时工作量背景，以及可安全修改的运行配置。
+- In scope: 维护任务目录、目录最近执行摘要与懒加载工作量背景、可靠工作量采集补齐、运行与等待观测、执行时间线、任务标识色、任务让行时间线、集中任务能力目录、计划覆盖控制、详情工作量趋势及条件性进度估计、详情页和响应式筛选交互。
 - Out of scope: 跨任务优先级队列、多实例聚合、任务业务数据归属和生产周期调整。
 
 ## Terms and Interfaces
@@ -13,8 +13,8 @@
 - `运行快照`: 进程内有界登记器提供的当前执行实例；维护库只保存历史记录。
 - `生效计划`: worker 默认规则与维护库自定义覆盖合并后的可展示策略，包含来源、触发机制和编辑能力。
 - 待执行请求、准入延后任务、任务执行区间、任务标识色和任务让行状态采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
-- 任务待处理量、本次发现量、本次处理量、任务计量范围和固定清理存量采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。页面图例统一使用“待处理量 / 本次发现 / 本次处理”。
-- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark pages of at most 500 segments and `afterRevision` incremental updates; an expired cursor returns `resetRequired` so the client can resynchronize. Existing task list/detail interfaces and control `PATCH` retain their prior fields and behavior.
+- 任务工作量趋势、任务待处理量、本次发现量、本次处理量、任务计量范围和固定清理存量采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。页面图例统一使用“待处理量 / 本次发现 / 本次处理”。
+- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors and bounded latest-run summaries. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark pages of at most 500 segments and `afterRevision` incremental updates; an expired cursor returns `resetRequired` so the client can resynchronize. `GET /api/system/managed-tasks/{task_key}/workload?windowHours=24&limit=200` reads the task-scoped workload window with limit validation and shared HTTP/SSE semantics. `system.managed-tasks.catalog/v1` and `system.managed-tasks.workload/v1` publish the list and visible-row revisions. Existing task detail interfaces and control `PATCH` retain their prior fields and behavior.
 
 ## Requirements
 
@@ -126,6 +126,48 @@
 - 固定清理存量可以使用已确认的存量剩余量和持续处理速度估算。持续补充的积压还须有准确且可比较的积压观测或新增速率，以确认净消化速度；“本次发现”不能作为跨轮新增速率。净消化不为正时显示“积压未下降，暂无法估算清零”，不输出有限 ETA。
 - 过期、缺测覆盖不足、单位或资格策略变化、估计条件不成立时 MUST 说明暂无法估算。准确观测为零时显示“已清空”；估计中的零与待办未知不得伪装为已清空。任务停用时不得沿用此前速率预测任务继续处理。
 
+### REQ-TASK-OPS-015 — 目录最近执行摘要
+
+- 每个目录条目 MUST 展示最近一次有证据的运行尝试的触发时间、实际执行用时和结果，包括失败、部分完成、取消、中断、确认跳过及运行中状态，不得只选最近成功运行。摘要 MUST 独立于背景图的 24 小时窗口及懒加载状态，窗口外的最近运行仍须可见。
+- 最近触发时间 MUST 来自权威运行尝试记录；已入队但没有运行尝试的请求和常规计划检查不得冒充一次实际运行。请求时间与实际开始时间均已知时，详情须保留二者的区别。
+- 执行用时 MUST 使用实际执行边界的用时，排除入队等待；旧记录无法证明实际用时、确认跳过没有实际执行时 MUST 保持未知。当前运行用时使用有效运行观测并在本地推进；失联后遵守既有冻结与未知状态规则。
+- 摘要 MUST 使用有界的目录批量读取与既有运行修订信号更新，不得为了展示摘要逐项加载完整任务详情。当前与持久记录须通过稳定身份去重；观测不可用、历史未知与尚无已记录运行须分别说明。
+
+### REQ-TASK-OPS-016 — 目录 24 小时工作量背景
+
+- 每个任务目录条目的行背景 MUST 使用待处理量、本次发现、本次处理的工作量计数，遵守 `REQ-TASK-OPS-010` 和 `REQ-TASK-OPS-012` 的原始数值、单位、范围、覆盖性质及重叠面积规则。执行用时属于摘要与点详情，不得替换背景图纵轴；触发次数不得作为缺失工作量的替代值。
+- 横轴 MUST 固定为滚动最近 24 小时，并将各次尝试放在真实尝试时间位置。每任务最多显示最后 200 个运行身份，包含当前尝试、确认跳过及没有数值的已记录尝试；先去重再限制数量。超过 200 个时较早区域留空，保留完整 24 小时域，不将最后 200 点拉伸铺满整行。
+- 被数量上限省略的早期区域 MUST 与无运行、功能启用前无计量和采集缺口可区分；不得把显示截断解释为零工作量或没有触发。单个有效样本和真实零值须可辨认，缺失指标不补零，不跨采集缺口或单位／范围变化连接面积。
+- 面积颜色 MUST 表示工作量指标；目录 Dot 继续表示任务身份，结果采用独立文字或标记。不同单位不得合成同一数量轴或通过任意缩放相加，点详情须注明单位与范围，跨任务数量不得暗示同一尺度。
+- 背景 MUST 保持目录文字、链接和筛选可用，不降低文字对比度，不因加载改变行高或引入窄屏横向滚动。点详情须支持指针、键盘与触屏查看时间、触发来源、结果、三项原始值、单位、观测性质及有界原因。
+
+### REQ-TASK-OPS-017 — 目录工作量数据与保留
+
+- 维护库 MUST 保留每任务最近至少 200 个已记录终态工作量样本及当前尝试，采集独立于页面打开并继续采用有界异步观测。初始化和日常清理不得再提前删除第 101 至 200 个样本。
+- 目录背景读取 MUST 按任务与 24 小时窗口有界选择最近尝试，提供稳定身份、观测时间、修订、指标能力、覆盖及截断信息。全任务时间线中的前 200 个区间或详情最近 100 个样本不得冒充该任务最近 24 小时的最后 200 次尝试。
+- 新目录窗口 MUST 与详情最近 100 次运行顺序视图分别表达。详情仍保留 20／50／100 控件，现有字段与顺序含义保持兼容；目录不得将详情运行序号直接作为固定时间轴。
+- 已被旧保留策略删除的计数和升级前未采集的历史 MUST 保持未知，不从当前业务存量或混合旧计数重建。维护库不可用不得回退为主库同步补写或页面请求期间的业务扫描。
+
+### REQ-TASK-OPS-018 — 背景图懒加载与刷新
+
+- 背景的历史获取和图表挂载 MUST 在目录行进入可见范围后按需执行。未显示、被筛掉或尚未进入可见范围的行不得预先读取完整历史、挂载画布或订阅完整任务详情；不得只延迟绘图而提前读取全部任务历史。
+- 请求和订阅 MUST 有界，重复进入可见范围复用仍有效的缓存，同一任务相同窗口的并发读取去重；离开可见范围或卸载后不得继续无意义的逐行刷新。
+- 可见背景及最近执行摘要 MUST 沿用已有运行边界、计量修订和 SSE 重连信号及时更新，不引入逐行固定周期 HTTP 轮询。恢复前台后校准时间窗、观测与缓存；缓存过期、失联和请求失败不得伪装为新鲜空结果。
+- 前端时间推进不得要求每秒重新读取目录或完整背景历史；懒加载错误须限于对应背景，已知摘要、目录筛选与跳转继续可用。
+
+### REQ-TASK-OPS-019 — 工作量空值原因与成功记录
+
+- 目录与详情 MUST 明确区分指标不适用、支持但尚无观测、窗口内无运行、旧历史未知、采集覆盖缺失与读取失败。不得将这些情况统一解释为没有成功运行，已知成功结果也不得因工作量缺失而消失。
+- 某些指标不适用时 MUST 继续绘制其他有证据的指标；全部指标不适用时明确说明该任务不提供工作量计数，保留已知运行摘要与尝试详情，不伪造零值或面积。详情继续遵守 `REQ-TASK-OPS-013` 的固定图面契约。
+- 支持项中已记录的有效计数丢失、真实零被当作未知或执行入口漏采 MUST 在真实采集与读取链路修复，不能仅更改空值文案。失败后的已提交成果须保留；没有确认完成边界的缺值不得因状态为成功或失败而自动补零。
+
+### REQ-TASK-OPS-020 — 逐任务补齐可靠计量
+
+- 系统 MUST 逐项核对当前未提供工作量指标的纳管任务，并为有真实工作项、能在现有执行边界可靠统计的指标补齐能力声明及采集。先复用已有结果、循环累计和提交回调；无法成立的指标继续明确标为不适用。
+- 每个新增指标 MUST 定义单位、资格范围、观测边界、成功完成边界以及手动／定时／事件／启动入口的一致含义。入队计划不是已完成账号同步，下载不是已应用订阅，扫描不是符合条件的发现，提交前累计不是已完成处理；混合单位的父任务不得直接累加子任务数量。
+- 补齐 MUST 不增加只为图表服务的业务全量 COUNT、文件遍历或历史重建，不改变任务预算、生产调度、准入或启停行为。部分提交后失败、重试和父子共享身份须保留确认成果并去重。
+- 正常完成并有充分观测证明本次没有成功处理项时 MUST 记录真实零；没有完成观测、提交前失败、采集中断或未确认结束时仍保持未知。采集与声明须同时覆盖实际入口，不得把能力开关改为支持却持续不记录相应事实。
+
 ## Verification
 
 ### VER-TASK-OPS-001
@@ -193,6 +235,30 @@
 - Method: fixed-cohort, replenished-backlog and partial-scan fixtures with changing eligibility policies, duplicate retry counts, stopped tasks, zero or negative net drain, missing samples and long intervals between successful runs.
 - covers: `REQ-TASK-OPS-014`
 - Pass condition: no blanket empty Stat row; bounded discovery never establishes overall completion; cohort completion excludes later arrivals and duplicates; ETA uses wall-clock drain and includes waits; stale/unsupported/no-drain/stopped cases do not report finite clearance time; only an accurate zero confirms cleared backlog.
+
+### VER-TASK-OPS-012
+
+- Method: latest-run API and catalog fixtures for old runs, queued requests, real execution with waiting, every terminal outcome, in-progress runtime overlays, history-write delay, disconnect and unavailable observation.
+- covers: `REQ-TASK-OPS-015`
+- Pass condition: all rows show the latest known attempt rather than the latest success; summaries remain visible outside 24 hours and before chart loading; durations exclude waiting and unknowns remain unknown; reading summaries is bounded and never loads every full detail.
+
+### VER-TASK-OPS-013
+
+- Method: task-scoped window/store fixtures and controlled desktop/mobile rendering for 0, 1, 199, 200 and 201 attempts, irregular intervals, window boundaries, running/terminal identity overlap, zeros, skips, coverage gaps, incompatible units and previous 100-sample history.
+- covers: `REQ-TASK-OPS-016`, `REQ-TASK-OPS-017`
+- Pass condition: at most the latest 200 unique task attempts are returned and positioned within a fixed 24-hour domain; earlier omitted space is preserved and identified; initialization and cleanup preserve the latest 200 terminal samples; valid raw counts render without additive stacking or fabricated zeros; detail recent-100 behavior remains compatible and lost historical measurements are not reconstructed.
+
+### VER-TASK-OPS-014
+
+- Method: viewport/request/subscription fixtures for initial offscreen rows, filtering, scroll exit/re-entry, duplicate reads, foreground recovery, SSE revisions, stale cache, loading and per-row request failures; controlled responsive light/dark evidence.
+- covers: `REQ-TASK-OPS-018`
+- Pass condition: only visible backgrounds fetch and mount, caching and bounded concurrency work, offscreen work stops, visible data refreshes through revisions without per-row polling, text and links remain usable, and loading does not change row height or introduce horizontal overflow.
+
+### VER-TASK-OPS-015
+
+- Method: actual supported/unsupported capability and collector fixtures for successful counterless attempts, observed zero, partial commit followed by failure, no eligible work, cancelled observation, malformed/legacy samples and every relevant trigger path; task-specific work-item and unit checks.
+- covers: `REQ-TASK-OPS-019`, `REQ-TASK-OPS-020`
+- Pass condition: unsupported, unobserved, no-run, legacy-unknown, gap and error states are distinct; known outcomes remain visible; supported observations survive persistence and rendering; reliable per-task collectors reuse real work boundaries, preserve committed work once, record zero only with proof, and do not introduce chart-only scans or fabricate mixed-unit counts.
 
 ## Related ADRs
 
@@ -269,6 +335,27 @@
   - ![Retention backlog, mobile light](./assets/task-workload-trend-mobile-light-393x852.png)
   - ![Pending hidden, remaining series rescaled, mobile light](./assets/task-workload-trend-mobile-light-candidates-393x852.png)
   - ![Running task without observed counters, mobile light](./assets/task-workload-trend-mobile-running-unknown-393x852.png)
+
+### Task Catalog Workload Background — Desktop and Mobile
+
+- source_type: `storybook_canvas`
+- story_id_or_title: `System/SystemWorkspace/Tasks`
+- target_program: `mock-only`
+- capture_scope: `browser-viewport` for desktop, `element` for row and mobile
+- viewport_strategy: `storybook-viewport`
+- requested_viewport: `1440x900` and `393x852`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- sensitive_exclusion: `N/A`
+- comparison_base: `2e4733e0344975ac9a8a1689d7d2d7cab8ddfedf`
+- comparison: `current-only`; the locked baseline contains no catalog-background image at these exact paths
+- owner_confirmation: confirmed in chat on 2026-10-06 ("看起来没问题了，允许提交视觉证据。")
+- submission_gate: `approved`
+- state: 37-task catalog with visible-row lazy-loaded P/D/C background, corrected area closure, and workload detail inspection
+- images:
+  - ![Task catalog workload background, desktop](./assets/task-catalog-workload-background-desktop.png)
+  - ![Task catalog workload background, row](./assets/task-catalog-workload-background-row.png)
+  - ![Task catalog workload background, mobile](./assets/task-catalog-workload-background-mobile-393x852.png)
 
 ## References
 

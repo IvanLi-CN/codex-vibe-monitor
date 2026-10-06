@@ -1,4 +1,9 @@
-import type { ManagedTaskDetail, TaskRuntimeSnapshot, TaskTimelinePage } from "../lib/api";
+import type {
+  ManagedTaskDetail,
+  TaskRuntimeSnapshot,
+  TaskTimelinePage,
+  TaskWorkloadTrend,
+} from "../lib/api";
 import type { SubscriptionTopicDescriptor } from "../lib/sse";
 import { handleDemoRequest } from "./handlers";
 
@@ -69,6 +74,19 @@ export async function resolveDemoTopicPayload(
         requestUrl,
         "/api/system/managed-tasks/runtime",
       ) as Promise<TaskRuntimeSnapshot>;
+    case "system.managed-tasks.catalog":
+      return requestTopicPayload(requestUrl, "/api/system/managed-tasks");
+    case "system.managed-tasks.workload": {
+      const taskKey = descriptor.params?.taskKey;
+      if (typeof taskKey !== "string" || taskKey.trim().length === 0) {
+        throw new Error("managed task workload topic is missing taskKey");
+      }
+      const search = topicSearchParams(descriptor);
+      return requestTopicPayload(
+        requestUrl,
+        `/api/system/managed-tasks/${encodeURIComponent(taskKey)}/workload?${search.toString()}`,
+      ) as Promise<TaskWorkloadTrend>;
+    }
     case "system.managed-tasks.detail": {
       const taskKey = descriptor.params?.taskKey;
       if (typeof taskKey !== "string" || taskKey.trim().length === 0) {

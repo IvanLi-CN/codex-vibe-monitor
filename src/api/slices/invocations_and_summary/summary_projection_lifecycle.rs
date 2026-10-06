@@ -613,7 +613,11 @@ impl SummaryCoverageRecoverySupervisor {
             );
         }
 
-        let backfill = if summary_coverage_recovery_requires_second_v2_turn(&priority_backfill) {
+        let priority_candidate_count = priority_backfill.candidate_count;
+        let priority_materialized_archive_batches = priority_backfill.materialized_archive_batches;
+        let needs_second_v2_turn =
+            summary_coverage_recovery_requires_second_v2_turn(&priority_backfill);
+        let backfill = if needs_second_v2_turn {
             #[cfg(test)]
             note_summary_coverage_v2_window();
             backfill_summary_archive_snapshots_v2_window(
@@ -628,6 +632,28 @@ impl SummaryCoverageRecoverySupervisor {
             );
             priority_backfill
         };
+        crate::record_managed_task_discovered_work(
+            &["summary_coverage_recovery"],
+            i64::try_from(
+                priority_candidate_count.saturating_add(if needs_second_v2_turn {
+                    backfill.candidate_count
+                } else {
+                    0
+                }),
+            )
+            .unwrap_or(i64::MAX),
+        );
+        crate::record_managed_task_processed_work(
+            &["summary_coverage_recovery"],
+            i64::try_from(priority_materialized_archive_batches.saturating_add(
+                if needs_second_v2_turn {
+                    backfill.materialized_archive_batches
+                } else {
+                    0
+                },
+            ))
+            .unwrap_or(i64::MAX),
+        );
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,

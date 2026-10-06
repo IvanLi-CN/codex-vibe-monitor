@@ -270,6 +270,26 @@ pub(crate) struct ManagedTask {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[sqlx(skip)]
     pub(crate) measurement_capabilities: Option<TaskMeasurementCapabilities>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[sqlx(skip)]
+    pub(crate) last_execution: Option<TaskExecutionSummary>,
+    #[sqlx(skip)]
+    pub(crate) execution_observation: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TaskExecutionSummary {
+    pub(crate) execution_uid: Option<String>,
+    pub(crate) run_id: i64,
+    pub(crate) trigger_kind: String,
+    pub(crate) attempted_at: String,
+    pub(crate) actual_started_at: Option<String>,
+    pub(crate) finished_at: Option<String>,
+    pub(crate) duration_ms: Option<i64>,
+    pub(crate) status: String,
+    pub(crate) result: String,
+    pub(crate) reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -310,6 +330,8 @@ pub(crate) struct TaskWorkloadSample {
     pub(crate) attempted_at: String,
     pub(crate) actual_started_at: Option<String>,
     pub(crate) finished_at: Option<String>,
+    #[serde(default)]
+    pub(crate) duration_ms: Option<i64>,
     pub(crate) status: String,
     pub(crate) reason: Option<String>,
     pub(crate) sequence: u64,
@@ -332,6 +354,12 @@ pub(crate) struct TaskWorkloadCoverageGap {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TaskWorkloadTrend {
     pub(crate) revision: i64,
+    pub(crate) window_start: String,
+    pub(crate) window_end: String,
+    pub(crate) observed_at: String,
+    pub(crate) sample_limit: usize,
+    pub(crate) truncated: bool,
+    pub(crate) capabilities: TaskMeasurementCapabilities,
     pub(crate) coverage: String,
     pub(crate) samples: Vec<TaskWorkloadSample>,
     pub(crate) coverage_gaps: Vec<TaskWorkloadCoverageGap>,
@@ -501,6 +529,21 @@ struct TaskRunRow {
     details: Option<String>,
 }
 
+#[derive(Debug, FromRow)]
+struct LatestExecutionRow {
+    id: i64,
+    execution_uid: Option<String>,
+    trigger_kind: String,
+    started_at: String,
+    actual_started_at: Option<String>,
+    finished_at: Option<String>,
+    actual_finished_at: Option<String>,
+    duration_ms: Option<i64>,
+    actual_duration_ms: Option<i64>,
+    status: String,
+    error_detail: Option<String>,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct TaskWorkloadLegacyRun {
     id: i64,
@@ -509,6 +552,8 @@ struct TaskWorkloadLegacyRun {
     actual_started_at: Option<String>,
     finished_at: Option<String>,
     actual_finished_at: Option<String>,
+    duration_ms: Option<i64>,
+    actual_duration_ms: Option<i64>,
     status: String,
     error_detail: Option<String>,
     execution_uid: Option<String>,
@@ -539,6 +584,7 @@ fn restore_stored_task_workload_sample(
             attempted_at: row.attempted_at.clone(),
             actual_started_at: None,
             finished_at: None,
+            duration_ms: None,
             status: row.status.clone(),
             reason: Some("工作量记录损坏，计量未知".to_string()),
             sequence: 0,
@@ -1338,14 +1384,32 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
         _ => None,
     };
     if let Some(unit) = backfill_unit {
+        let discovered_supported =
+            task_key == "startup_backfill.pool_upstream_node_health_archives";
         return TaskMeasurementCapabilities {
             pending: metric_capability(false, None, None),
-            discovered: metric_capability(false, None, None),
+            discovered: metric_capability(
+                discovered_supported,
+                discovered_supported.then_some(unit),
+                discovered_supported.then_some(task_key),
+            ),
             processed: metric_capability(true, Some(unit), Some(task_key)),
         };
     }
 
     let processed_unit = match task_key {
+        "upstream_account_maintenance" => Some("maintenance plans"),
+        "invocation_timeline_snapshot" => Some("timeline records"),
+        "summary_coverage_recovery" => Some("coverage proofs"),
+        "timeseries_minute_projection" => Some("minute projection keys"),
+        "raw_payload_metrics_inventory" => Some("inventory paths"),
+        "prompt_cache_materialization" => Some("conversation sessions"),
+        "forward_proxy_subscription_refresh" => Some("subscription sources"),
+        "startup_hourly_rollup_bootstrap" => Some("summary buckets"),
+        "summary_snapshot" => Some("live terminal contributions"),
+        "dashboard_runtime_projection_reconcile" => Some("reconciled runtime records"),
+        "long_term_projection" => Some("terminal events"),
+        "startup_backfill.pool_upstream_node_health_archives" => Some("archive batches"),
         "pool_orphan_recovery" => Some("pool attempts"),
         "raw_compression" => Some("raw payload files"),
         "archive_upstream_activity_manifest" => Some("archive batches"),
@@ -1355,9 +1419,27 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
         _ => None,
     };
     if let Some(unit) = processed_unit {
+        let discovered_supported = matches!(
+            task_key,
+            "upstream_account_maintenance"
+                | "invocation_timeline_snapshot"
+                | "summary_coverage_recovery"
+                | "timeseries_minute_projection"
+                | "raw_payload_metrics_inventory"
+                | "forward_proxy_subscription_refresh"
+                | "startup_hourly_rollup_bootstrap"
+                | "summary_snapshot"
+                | "dashboard_runtime_projection_reconcile"
+                | "long_term_projection"
+                | "startup_backfill.pool_upstream_node_health_archives"
+        );
         return TaskMeasurementCapabilities {
             pending: metric_capability(false, None, None),
-            discovered: metric_capability(false, None, None),
+            discovered: metric_capability(
+                discovered_supported,
+                discovered_supported.then_some(unit),
+                discovered_supported.then_some(task_key),
+            ),
             processed: metric_capability(true, Some(unit), Some(task_key)),
         };
     }
@@ -1374,11 +1456,11 @@ async fn recent_runs_for_workload_compatibility(
     task_key: &str,
 ) -> Result<Vec<TaskWorkloadLegacyRun>> {
     Ok(sqlx::query_as::<_, TaskWorkloadLegacyRun>(
-        "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,status,error_detail,execution_uid
+        "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
          FROM managed_task_runs
          WHERE task_key=? AND status NOT IN ('requested','queued')
            AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
-         ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 100",
+         ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",
     )
     .bind(task_key)
     .fetch_all(pool)
@@ -2102,7 +2184,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
            SELECT rowid FROM (
              SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
              FROM managed_task_work_runs WHERE status <> 'running'
-           ) WHERE sample_rank > 100
+           ) WHERE sample_rank > 200
          )",
     )
     .execute(pool)
@@ -2388,6 +2470,7 @@ impl MaintenanceStore {
                 attempted_at: attempted_at.clone(),
                 actual_started_at: None,
                 finished_at: None,
+                duration_ms: None,
                 status: "unknown".to_string(),
                 reason: None,
                 sequence: 0,
@@ -3244,7 +3327,7 @@ impl MaintenanceStore {
                SELECT rowid FROM (
                  SELECT rowid, ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY attempted_at DESC, execution_uid DESC) AS sample_rank
                  FROM managed_task_work_runs WHERE status <> 'running'
-               ) WHERE sample_rank > 100
+               ) WHERE sample_rank > 200
              )",
         )
         .execute(&self.pool)
@@ -3596,11 +3679,77 @@ impl MaintenanceStore {
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
         let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks ORDER BY task_key")
             .fetch_all(&self.pool).await?;
-        Ok(tasks
+        let runtime_snapshot = crate::task_runtime_observation::task_runtime_snapshot().ok();
+        let mut decorated = tasks
             .into_iter()
             .map(decorate_effective_schedule)
             .map(decorate_task)
-            .collect())
+            .collect::<Vec<_>>();
+        for task in &mut decorated {
+            task.last_execution = self.latest_execution(&task.task_key).await?;
+            if let (Some(summary), Some(snapshot)) =
+                (task.last_execution.as_mut(), runtime_snapshot.as_ref())
+                && summary.status == "running"
+                && let Some(active) = snapshot
+                    .active_runs
+                    .iter()
+                    .find(|active| active.task_key == task.task_key)
+            {
+                summary.actual_started_at = Some(active.started_at.clone());
+                summary.duration_ms = Some(active.elapsed_ms.min(i64::MAX as u64) as i64);
+            }
+            task.execution_observation = if task.last_execution.is_some() {
+                "observed".to_string()
+            } else {
+                "no recorded attempts".to_string()
+            };
+        }
+        Ok(decorated)
+    }
+
+    async fn latest_execution(&self, task_key: &str) -> Result<Option<TaskExecutionSummary>> {
+        let row = sqlx::query_as::<_, LatestExecutionRow>(
+            "SELECT id,execution_uid,trigger_kind,started_at,actual_started_at,finished_at,
+                    actual_finished_at,duration_ms,actual_duration_ms,status,error_detail
+             FROM managed_task_runs
+             WHERE task_key=? AND status NOT IN ('requested','queued')
+             ORDER BY started_at DESC,id DESC LIMIT 1",
+        )
+        .bind(task_key)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|row| TaskExecutionSummary {
+            execution_uid: row.execution_uid,
+            run_id: row.id,
+            trigger_kind: row.trigger_kind,
+            attempted_at: row.started_at,
+            actual_started_at: row.actual_started_at,
+            finished_at: row.actual_finished_at.or(row.finished_at),
+            duration_ms: row.actual_duration_ms.or(row.duration_ms),
+            result: row.status.clone(),
+            status: row.status,
+            reason: row.error_detail,
+        }))
+    }
+
+    pub(crate) async fn workload_window(
+        &self,
+        task_key: &str,
+        limit: usize,
+    ) -> Result<Option<TaskWorkloadTrend>> {
+        let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks WHERE task_key=?")
+            .bind(task_key)
+            .fetch_optional(&self.pool)
+            .await?
+            .map(decorate_effective_schedule)
+            .map(decorate_task);
+        let Some(task) = task else {
+            return Ok(None);
+        };
+        Ok(Some(
+            self.workload_trend(&task, limit.clamp(1, 200), Some(24))
+                .await?,
+        ))
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
@@ -3618,7 +3767,7 @@ impl MaintenanceStore {
         } else {
             None
         };
-        let workload_trend = self.workload_trend(&task).await?;
+        let workload_trend = self.workload_trend(&task, 100, None).await?;
         Ok(Some(ManagedTaskDetail {
             task,
             progress,
@@ -3628,7 +3777,12 @@ impl MaintenanceStore {
         }))
     }
 
-    async fn workload_trend(&self, task: &ManagedTask) -> Result<TaskWorkloadTrend> {
+    async fn workload_trend(
+        &self,
+        task: &ManagedTask,
+        limit: usize,
+        window_hours: Option<i64>,
+    ) -> Result<TaskWorkloadTrend> {
         let task_key = &task.task_key;
         let stored_running = sqlx::query_as::<_, StoredTaskWorkloadRun>(
             "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
@@ -3643,9 +3797,10 @@ impl MaintenanceStore {
             "SELECT execution_uid,managed_run_id,attempted_at,sequence,status,sample_json
              FROM managed_task_work_runs
              WHERE task_key=? AND status<>'running'
-             ORDER BY attempted_at DESC,execution_uid DESC LIMIT 100",
+             ORDER BY attempted_at DESC,execution_uid DESC LIMIT ?",
         )
         .bind(task_key)
+        .bind(limit.saturating_add(1) as i64)
         .fetch_all(&self.pool)
         .await?;
         let stored = stored_running.into_iter().chain(stored_recent);
@@ -3669,12 +3824,10 @@ impl MaintenanceStore {
                     managed_run_id: Some(run.id),
                     task_key: task_key.to_string(),
                     trigger_kind: run.trigger_kind,
-                    attempted_at: run
-                        .actual_started_at
-                        .clone()
-                        .unwrap_or_else(|| run.started_at.clone()),
+                    attempted_at: run.started_at,
                     actual_started_at: run.actual_started_at,
                     finished_at: run.actual_finished_at.or(run.finished_at),
+                    duration_ms: run.actual_duration_ms.or(run.duration_ms),
                     status: run.status,
                     reason: run.error_detail,
                     sequence: 0,
@@ -3695,13 +3848,24 @@ impl MaintenanceStore {
                 *existing = active;
             }
         }
+        let window_end = Utc::now();
+        let window_start = window_end - ChronoDuration::hours(window_hours.unwrap_or(24));
+        let window_start_text = format_utc_iso_millis(window_start);
+        let window_end_text = format_utc_iso_millis(window_end);
+        if window_hours.is_some() {
+            samples.retain(|sample| {
+                crate::stats::parse_to_utc_datetime(&sample.attempted_at)
+                    .is_some_and(|attempted_at| attempted_at >= window_start)
+            });
+        }
         samples.sort_by(|left, right| {
             (right.status == "running")
                 .cmp(&(left.status == "running"))
                 .then_with(|| right.attempted_at.cmp(&left.attempted_at))
                 .then_with(|| right.sample_id.cmp(&left.sample_id))
         });
-        samples.truncate(100);
+        let truncated = samples.len() > limit;
+        samples.truncate(limit);
         samples.sort_by(|left, right| {
             left.attempted_at
                 .cmp(&right.attempted_at)
@@ -3713,9 +3877,10 @@ impl MaintenanceStore {
             .unwrap_or_else(|| format_utc_iso_millis(Utc::now() - ChronoDuration::hours(24)));
         let mut coverage_gaps = sqlx::query_as::<_, TaskWorkloadCoverageGapRow>(
             "SELECT segment_id,started_at,finished_at,reason FROM task_timeline_segments
-             WHERE kind='coverage_gap' AND last_observed_at>=?
+             WHERE task_key=? AND kind='coverage_gap' AND last_observed_at>=?
              ORDER BY started_at DESC LIMIT 100",
         )
+        .bind(task_key)
         .bind(coverage_floor)
         .fetch_all(&self.pool)
         .await?
@@ -3777,6 +3942,12 @@ impl MaintenanceStore {
         let revision = self.timeline_revision().await?;
         Ok(TaskWorkloadTrend {
             revision,
+            window_start: window_start_text,
+            window_end: window_end_text,
+            observed_at: format_utc_iso_millis(window_end),
+            sample_limit: limit,
+            truncated,
+            capabilities,
             coverage: coverage.to_string(),
             samples,
             coverage_gaps,
@@ -4604,7 +4775,7 @@ mod tests {
             Some("conversation sessions")
         );
         assert!(
-            !task_measurement_capabilities("startup_backfill.pool_upstream_node_health_archives")
+            task_measurement_capabilities("startup_backfill.pool_upstream_node_health_archives")
                 .processed
                 .supported
         );
@@ -4645,6 +4816,7 @@ mod tests {
             attempted_at: observed_at.clone(),
             actual_started_at,
             finished_at,
+            duration_ms: None,
             status: status.to_string(),
             reason: None,
             sequence: 1,
@@ -4902,7 +5074,7 @@ mod tests {
         .expect("seed persisted task settings");
 
         let start = Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap();
-        for index in 0..105 {
+        for index in 0..205 {
             let attempted = start + ChronoDuration::seconds(index as i64);
             let sample = workload_fixture_sample(
                 index,
@@ -5012,7 +5184,7 @@ mod tests {
         .fetch_one(&pool)
         .await
         .expect("count protected workload samples");
-        assert_eq!(counts, (100, 102));
+        assert_eq!(counts, (200, 102));
 
         let store = MaintenanceStore::from_pool(pool);
         let detail = store
@@ -5033,7 +5205,7 @@ mod tests {
         );
         assert_eq!(
             trend.samples.last().map(|sample| sample.sample_id.as_str()),
-            Some("execution-104:retention_archive")
+            Some("execution-204:retention_archive")
         );
 
         store
@@ -5071,6 +5243,98 @@ mod tests {
             malformed.reason.as_deref(),
             Some("服务重启时发现工作量记录损坏，计数未知")
         );
+    }
+
+    #[tokio::test]
+    async fn workload_window_filters_old_samples_and_reports_limit_metadata() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect workload window fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed maintenance tasks");
+        let now = Utc::now();
+        for (index, age) in [(0, 26_i64), (1, 2_i64), (2, 1_i64)] {
+            let mut sample = workload_fixture_sample(
+                index,
+                now - ChronoDuration::hours(age),
+                Some(20 - index as i64),
+                Some(index as i64),
+                "success",
+                (
+                    Some(format_utc_iso_millis(now - ChronoDuration::hours(age))),
+                    Some(format_utc_iso_millis(
+                        now - ChronoDuration::hours(age) + ChronoDuration::seconds(1),
+                    )),
+                ),
+                "run-window",
+            );
+            sample.discovered = sample.pending.clone().map(|mut metric| {
+                metric.coverage = "window".to_string();
+                metric
+            });
+            sqlx::query(
+                "INSERT INTO managed_task_work_runs
+                 (execution_uid,task_key,managed_run_id,attempted_at,sequence,status,sample_json,updated_at)
+                 VALUES(?,?,?,?,?,?,?,?)",
+            )
+            .bind(&sample.execution_uid)
+            .bind(&sample.task_key)
+            .bind(sample.managed_run_id)
+            .bind(&sample.attempted_at)
+            .bind(sample.sequence as i64)
+            .bind(&sample.status)
+            .bind(serde_json::to_string(&sample).unwrap())
+            .bind(&sample.attempted_at)
+            .execute(&pool)
+            .await
+            .expect("seed workload window sample");
+        }
+        let gap_at = format_utc_iso_millis(now - ChronoDuration::hours(1));
+        sqlx::query(
+            "INSERT INTO task_timeline_segments
+             (segment_id,session_id,kind,task_key,title,started_at,last_observed_at,finished_at,
+              duration_ms,status,trigger_kind,execution_class,reason,retry_at,active_child_task_key,
+              active_child_title,managed_run_id,revision)
+             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .bind("coverage-gap-other-task")
+        .bind("coverage-gap-session")
+        .bind("coverage_gap")
+        .bind("long_term_projection")
+        .bind("长期统计投影")
+        .bind(&gap_at)
+        .bind(&gap_at)
+        .bind(Option::<String>::None)
+        .bind(Option::<i64>::None)
+        .bind("unknown")
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Some("other task gap"))
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(Option::<i64>::None)
+        .bind(1_i64)
+        .execute(&pool)
+        .await
+        .expect("seed unrelated coverage gap");
+
+        let store = MaintenanceStore::from_pool(pool);
+        let trend = store
+            .workload_window("retention_archive", 1)
+            .await
+            .expect("read workload window")
+            .expect("retention task exists");
+        assert_eq!(trend.sample_limit, 1);
+        assert!(trend.truncated);
+        assert_eq!(trend.samples.len(), 1);
+        assert_eq!(trend.samples[0].execution_uid, "execution-2");
+        assert!(trend.samples[0].attempted_at >= trend.window_start);
+        assert_eq!(trend.window_end, trend.observed_at);
+        assert_eq!(trend.coverage, "recorded");
+        assert!(trend.coverage_gaps.is_empty());
     }
 
     #[tokio::test]
@@ -5411,6 +5675,17 @@ mod tests {
             .await
             .expect("create maintenance schema");
         seed_tasks(&pool).await.expect("seed maintenance tasks");
+        sqlx::query(
+            "INSERT INTO managed_task_runs
+             (task_key,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,
+              duration_ms,actual_duration_ms,status,error_detail)
+             VALUES('retention_archive','manual','2026-10-03T00:00:00.000Z',
+                    '2026-10-03T00:00:05.000Z','2026-10-03T00:00:07.000Z',
+                    '2026-10-03T00:00:06.000Z',777,2,'failed','committed failure')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed latest execution summary");
         let store = MaintenanceStore::from_pool(pool);
 
         let tasks = store.list_tasks().await.expect("list decorated tasks");
@@ -5436,6 +5711,31 @@ mod tests {
         assert_eq!(child.trigger_kinds, vec!["event", "interval"]);
         assert!(!child.schedule_editable);
         assert!(child.schedule_capability_reason.is_some());
+        let retention = tasks
+            .iter()
+            .find(|task| task.task_key == "retention_archive")
+            .expect("retention task");
+        let latest = retention
+            .last_execution
+            .as_ref()
+            .expect("latest execution summary");
+        assert_eq!(latest.attempted_at, "2026-10-03T00:00:00.000Z");
+        assert_eq!(
+            latest.actual_started_at.as_deref(),
+            Some("2026-10-03T00:00:05.000Z")
+        );
+        assert_eq!(latest.duration_ms, Some(2));
+        assert_eq!(latest.result, "failed");
+        assert_eq!(latest.reason.as_deref(), Some("committed failure"));
+        let status_without_run = tasks
+            .iter()
+            .find(|task| task.task_key == "system_status_snapshot")
+            .expect("system status task");
+        assert!(status_without_run.last_execution.is_none());
+        assert_eq!(
+            status_without_run.execution_observation,
+            "no recorded attempts"
+        );
     }
 
     #[tokio::test]

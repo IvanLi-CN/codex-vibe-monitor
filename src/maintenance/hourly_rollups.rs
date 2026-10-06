@@ -38,10 +38,20 @@ async fn sync_hourly_rollups_from_live_tables_with_scope(
     invocation_live_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
+    sync_hourly_rollups_from_live_tables_with_scope_and_work(pool, invocation_live_days, scope)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn sync_hourly_rollups_from_live_tables_with_scope_and_work(
+    pool: &Pool<Sqlite>,
+    invocation_live_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<u64> {
     let mut attempt = 1_u32;
     loop {
         match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days, scope).await {
-            Ok(()) => return Ok(()),
+            Ok(work_count) => return Ok(work_count),
             Err(err)
                 if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
                     && crate::is_sqlite_lock_error(&err) =>
@@ -72,18 +82,21 @@ async fn sync_hourly_rollups_from_live_tables_once(
     pool: &Pool<Sqlite>,
     invocation_live_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
-) -> Result<()> {
+) -> Result<u64> {
+    let mut work_count = 0_u64;
     if scope == HourlyRollupRefreshScope::Full {
         repair_active_account_activity_v2_coverage(pool).await?;
     }
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
+        work_count = work_count.saturating_add(updated);
         if updated == 0 {
             break;
         }
     }
     loop {
         let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
+        work_count = work_count.saturating_add(updated);
         if updated == 0 {
             break;
         }
@@ -91,6 +104,7 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
+        work_count = work_count.saturating_add(updated);
         if updated == 0 {
             break;
         }
@@ -98,17 +112,19 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
+        work_count = work_count.saturating_add(updated);
         if updated == 0 {
             break;
         }
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
+    work_count = work_count.saturating_add(repaired_activity_v2_rows);
     wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
     }
-    Ok(())
+    Ok(work_count)
 }
 
 pub(crate) async fn wake_account_activity_v2_coverage_repair(
@@ -3183,11 +3199,33 @@ pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup(
     .await
 }
 
+pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup_with_work(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+) -> Result<u64> {
+    bootstrap_hourly_rollups_with_scope_and_work(
+        pool,
+        invocation_full_detail_days,
+        runtime_startup_hourly_rollup_refresh_scope(),
+    )
+    .await
+}
+
 async fn bootstrap_hourly_rollups_with_scope(
     pool: &Pool<Sqlite>,
     invocation_full_detail_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
+    bootstrap_hourly_rollups_with_scope_and_work(pool, invocation_full_detail_days, scope)
+        .await
+        .map(|_| ())
+}
+
+async fn bootstrap_hourly_rollups_with_scope_and_work(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<u64> {
     let usage_breakdown_started_at = Instant::now();
     repair_live_invocation_usage_breakdown_rollups(pool).await?;
     info!(
@@ -3197,8 +3235,12 @@ async fn bootstrap_hourly_rollups_with_scope(
     );
 
     let live_sync_started_at = Instant::now();
-    sync_hourly_rollups_from_live_tables_with_scope(pool, invocation_full_detail_days, scope)
-        .await?;
+    let work_count = sync_hourly_rollups_from_live_tables_with_scope_and_work(
+        pool,
+        invocation_full_detail_days,
+        scope,
+    )
+    .await?;
     info!(
         rollup_bootstrap_step = "live_rollup_sync",
         elapsed_ms = live_sync_started_at.elapsed().as_millis() as u64,
@@ -3247,7 +3289,7 @@ async fn bootstrap_hourly_rollups_with_scope(
             "hourly rollup bootstrap step completed"
         );
     }
-    Ok(())
+    Ok(work_count)
 }
 
 fn runtime_startup_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
@@ -3560,6 +3602,10 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
         .route(
             "/api/system/managed-tasks/timeline",
             get(get_managed_task_timeline),
+        )
+        .route(
+            "/api/system/managed-tasks/{task_key}/workload",
+            get(get_managed_task_workload),
         )
         .route(
             "/api/system/managed-tasks/{task_key}",
