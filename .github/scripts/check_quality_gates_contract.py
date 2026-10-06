@@ -118,6 +118,35 @@ def require_observability_performance_contract(workflow: dict[str, Any], build_j
     for name, job in [("observability-performance", performance_job), ("observability-performance-image", image_job)]:
         require(job.get("runs-on") == RUNNER_X64, f"{name} must use the fixed GitHub-hosted runner")
         require_job_and_steps_fail_closed(job, f"ci-pr.yml.jobs.{name}")
+    image_upload = uses_step_config(
+        image_job,
+        "Upload performance candidate image",
+        "actions/upload-artifact@v7",
+        "ci-pr.yml.jobs.observability-performance-image",
+    )
+    image_upload_with = require_mapping(
+        image_upload.get("with"),
+        "ci-pr.yml observability performance image upload",
+    )
+    require(
+        image_upload_with.get("name") == "observability-image-${{ github.run_id }}"
+        and image_upload_with.get("overwrite") is True,
+        "observability performance image artifact must be run-scoped and replace the prior attempt",
+    )
+    image_download = uses_step_config(
+        performance_job,
+        "Download performance candidate image",
+        "actions/download-artifact@v7",
+        "ci-pr.yml.jobs.observability-performance",
+    )
+    image_download_with = require_mapping(
+        image_download.get("with"),
+        "ci-pr.yml observability performance image download",
+    )
+    require(
+        image_download_with.get("name") == "observability-image-${{ github.run_id }}",
+        "observability performance must download the run-scoped image artifact",
+    )
     acceptance = step_config(performance_job, "Run candidate-bound runtime and performance acceptance", "ci-pr.yml.jobs.observability-performance")
     require("--environment github-actions --suite full --seconds 300 --rate 5" in str(acceptance.get("run", "")), "performance gate must use the full fixed Actions acceptance contract")
     guard = step_config(build_job, "Verify observability performance budget", "ci-pr.yml.jobs.build")
