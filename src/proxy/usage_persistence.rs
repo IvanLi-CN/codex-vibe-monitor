@@ -359,6 +359,9 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
     let started_at = Instant::now();
     let mut summary = PoolAttemptPublicIdBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
@@ -381,28 +384,46 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
         .bind(last_seen_id)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(&mut *conn)
-        .await?;
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
 
         if rows.is_empty() {
             break;
         }
 
-        if let Some(last) = rows.last() {
-            last_seen_id = *last;
-        }
-        summary.scanned += rows.len() as u64;
-
         for row_id in rows {
-            if assign_pool_upstream_request_attempt_public_id_if_missing(conn, row_id).await? {
+            last_seen_id = row_id;
+            summary.scanned += 1;
+            let updated = assign_pool_upstream_request_attempt_public_id_if_missing(conn, row_id)
+                .await
+                .map_err(|error| {
+                    anyhow::Error::new(crate::BackfillPartialFailure {
+                        source: error,
+                        next_cursor_id: committed_cursor_id,
+                        scanned: committed_scanned,
+                        updated: committed_updated,
+                    })
+                })?;
+            if updated {
                 summary.updated += 1;
                 push_backfill_sample(&mut samples, format!("id={row_id}"));
             }
+            committed_cursor_id = row_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
         }
     }
 
     Ok(BackfillBatchOutcome {
         summary,
-        next_cursor_id: last_seen_id,
+        next_cursor_id: committed_cursor_id,
         hit_budget,
         samples,
     })

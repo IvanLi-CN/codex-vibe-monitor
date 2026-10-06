@@ -1,6 +1,36 @@
 use super::*;
 use crate::maintenance_store::TaskWorkloadSample;
 
+#[tokio::test]
+async fn managed_raw_payload_inventory_refreshes_without_pending_reset() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream URL"),
+    )
+    .await;
+    sqlx::query(
+        "UPDATE system_raw_payload_metrics SET inventory_state = 'preparing', inventory_cursor = 0, link_inventory_cursor = 0, inventory_recheck_cursor = '', inventory_recheck_active = 0 WHERE singleton = 1",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("seed inventory preparing state");
+
+    let summary = crate::runtime::managed_task_dispatch_tests::run_managed_task_once_for_test(
+        &state,
+        "raw_payload_metrics_inventory",
+    )
+    .await
+    .expect("managed inventory task should refresh its snapshot");
+
+    assert_eq!(summary, "原始载荷指标盘点已推进");
+    let inventory_state: String = sqlx::query_scalar(
+        "SELECT inventory_state FROM system_raw_payload_metrics WHERE singleton = 1",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("read refreshed inventory state");
+    assert_eq!(inventory_state, "ready");
+}
+
 async fn coverage_repair_fixture() -> (Arc<AppState>, i64) {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream URL"),

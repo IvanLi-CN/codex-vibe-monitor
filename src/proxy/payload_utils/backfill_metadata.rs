@@ -275,6 +275,9 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
     let started_at = Instant::now();
     let mut summary = ProxyRequestedServiceTierBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
@@ -305,7 +308,15 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         .bind(last_seen_id)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
-        .await?;
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
 
         if candidates.is_empty() {
             break;
@@ -314,6 +325,8 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
+            committed_cursor_id = candidate.id;
+            committed_scanned = summary.scanned;
 
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
@@ -376,15 +389,24 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
             .bind(candidate.id)
             .bind(SOURCE_PROXY)
             .execute(pool)
-            .await?
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?
             .rows_affected();
             summary.updated += affected;
+            committed_updated = summary.updated;
         }
     }
 
     Ok(BackfillBatchOutcome {
         summary,
-        next_cursor_id: last_seen_id,
+        next_cursor_id: committed_cursor_id,
         hit_budget,
         samples,
     })
@@ -416,6 +438,9 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
     let started_at = Instant::now();
     let mut summary = ProxyReasoningEffortBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
@@ -446,7 +471,15 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         .bind(last_seen_id)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
-        .await?;
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
 
         if candidates.is_empty() {
             break;
@@ -455,6 +488,8 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
+            committed_cursor_id = candidate.id;
+            committed_scanned = summary.scanned;
 
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
@@ -518,15 +553,24 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
             .bind(candidate.id)
             .bind(SOURCE_PROXY)
             .execute(pool)
-            .await?
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error.into(),
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?
             .rows_affected();
             summary.updated += affected;
+            committed_updated = summary.updated;
         }
     }
 
     Ok(BackfillBatchOutcome {
         summary,
-        next_cursor_id: last_seen_id,
+        next_cursor_id: committed_cursor_id,
         hit_budget,
         samples,
     })

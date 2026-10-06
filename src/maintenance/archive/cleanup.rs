@@ -1502,6 +1502,7 @@ async fn promote_verified_summary_snapshot_page_sets(
             .await
             .context("record promoted Summary Snapshot V2 outcome")?;
             promoted += 1;
+            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
         }
         drop(admission);
     }

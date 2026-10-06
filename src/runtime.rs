@@ -2012,6 +2012,7 @@ async fn run_managed_task_once(
         "raw_payload_metrics_inventory" => {
             let reset =
                 resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await?;
+            refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
             Ok(if reset {
                 "原始载荷指标盘点已推进".to_string()
             } else {
@@ -3036,8 +3037,18 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
 }
 
 #[cfg(test)]
-mod managed_task_dispatch_tests {
+pub(crate) mod managed_task_dispatch_tests {
+    use std::sync::Arc;
+
     use super::managed_startup_backfill_task;
+    use crate::AppState;
+
+    pub(crate) async fn run_managed_task_once_for_test(
+        state: &Arc<AppState>,
+        task_key: &str,
+    ) -> anyhow::Result<String> {
+        super::run_managed_task_once(state, task_key, 0).await
+    }
 
     #[test]
     fn all_registered_startup_backfill_children_resolve_for_run_now() {

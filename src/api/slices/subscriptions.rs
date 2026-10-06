@@ -4297,7 +4297,21 @@ impl SubscriptionHub {
             .iter()
             .filter(|delta| {
                 !remaining.contains(&summary_delta_workload_identity(delta))
-                    && projection.contains_persisted_live_terminal_delta(delta)
+                    && (projection.contains_persisted_live_terminal_delta(delta)
+                        || delta.persisted_row_id.is_some_and(|row_id| {
+                            projection.contains_global_rollup_covered_live_terminal_identity(
+                                row_id,
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ) || projection.contains_global_all_time_covered_live_terminal_identity(
+                                row_id,
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ) && projection.global_rollup_covers_live_terminal_identity(
+                                row_id,
+                                &delta.occurred_at,
+                            )
+                        }))
             })
             .count()
     }
