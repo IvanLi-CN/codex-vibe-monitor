@@ -1053,6 +1053,26 @@ pub(crate) struct BackfillBatchOutcome<T> {
     pub(crate) samples: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct BackfillPartialFailure {
+    pub(crate) source: anyhow::Error,
+    pub(crate) next_cursor_id: i64,
+    pub(crate) scanned: u64,
+    pub(crate) updated: u64,
+}
+
+impl std::fmt::Display for BackfillPartialFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for BackfillPartialFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.root_cause())
+    }
+}
+
 pub(crate) fn startup_backfill_query_limit(scanned: u64, scan_limit: Option<u64>) -> i64 {
     let remaining = scan_limit
         .map(|limit| limit.saturating_sub(scanned))
@@ -1541,6 +1561,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
 pub(crate) struct StartupBackfillMaintenancePass {
     pub(crate) ran_actionable_task: bool,
     pub(crate) had_failure: bool,
+    pub(crate) deferred: bool,
     pub(crate) detail: Option<String>,
 }
 
@@ -1949,6 +1970,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                     return StartupBackfillMaintenancePass {
                         ran_actionable_task,
                         had_failure,
+                        deferred: had_deferred_task,
                         detail,
                     };
                 }
@@ -2078,6 +2100,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     StartupBackfillMaintenancePass {
         ran_actionable_task,
         had_failure,
+        deferred: had_deferred_task,
         detail,
     }
 }
@@ -2394,6 +2417,18 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     let _child_observation_guard = TaskObservationChildGuard(observation.clone());
 
     let started_at = Instant::now();
+    let prompt_cache_completed_before =
+        if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                &state.pool,
+            )
+            .await
+            .ok()
+            .and_then(|progress| progress.completed_keys)
+            .unwrap_or_default()
+        } else {
+            0
+        };
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     // Most backfills combine bounded SQL batches with file reads/decompression. If an interactive
     // writer arrives while one of those P2 tasks is active, cancel the in-flight future so its
@@ -2451,19 +2486,53 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     };
     // Network/business work has finished. Do not hold online write admission
     // while waiting for a control update or maintenance-database checkpoint.
-    let _result_guard = match prompt_cache_materialization_control.as_ref() {
+    let result_guard = match prompt_cache_materialization_control.as_ref() {
         Some((control, generation)) => {
             drop(write_permit.take());
-            let Some(guard) = control.lock_current_generation(*generation).await else {
-                return Ok((prompt_cache_stale_result_outcome(), None));
-            };
-            Some(guard)
+            control.lock_current_generation(*generation).await
         }
         None => None,
     };
+    if prompt_cache_materialization_control.is_some() && result_guard.is_none() {
+        let committed_work = if let Ok((run, _)) = task_result.as_ref() {
+            run.updated
+        } else {
+            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                &state.pool,
+            )
+            .await
+            .ok()
+            .and_then(|progress| progress.completed_keys)
+            .unwrap_or_default()
+            .saturating_sub(prompt_cache_completed_before)
+            .try_into()
+            .unwrap_or_default()
+        };
+        let committed_work = i64::try_from(committed_work).unwrap_or(i64::MAX);
+        workload_observation.set_processed_work(committed_work);
+        if observation_parent_task_key == Some("prompt_cache_materialization") {
+            observation.set_processed_work(committed_work);
+        }
+        if managed_run_id.is_none() {
+            observation.finish_with_status_and_reason("skipped", Some("stats_generation_changed"));
+        }
+        workload_observation
+            .finish_with_status_and_reason("skipped", Some("stats_generation_changed"));
+        return Ok((prompt_cache_stale_result_outcome(), None));
+    }
     let outcome = match task_result {
         Ok((run, detail)) => {
+            if task == StartupBackfillTask::PoolUpstreamNodeHealthArchives {
+                workload_observation.set_discovered_work(
+                    i64::try_from(run.scanned).unwrap_or(i64::MAX),
+                    format_utc_iso_millis(Utc::now()),
+                    "run-window".to_string(),
+                );
+            }
             workload_observation.set_processed_work(i64::try_from(run.updated).unwrap_or(i64::MAX));
+            if observation_parent_task_key == Some("prompt_cache_materialization") {
+                observation.set_processed_work(i64::try_from(run.updated).unwrap_or(i64::MAX));
+            }
             if run.deferred {
                 drop(write_permit.take());
                 if run.defer_reason == Some("operator_disabled") {
@@ -2632,8 +2701,50 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             (outcome, None)
         }
         Err(err) => {
+            let partial_progress = err.downcast_ref::<BackfillPartialFailure>();
+            let mut failure_progress = progress.clone();
+            if let Some(partial) = partial_progress {
+                failure_progress.cursor_id = partial.next_cursor_id.max(progress.cursor_id);
+                failure_progress.last_scanned = partial.scanned;
+                failure_progress.last_updated = partial.updated;
+            }
+            // A bounded backfill may have committed earlier micro-batches before a later
+            // source/read failure. Preserve that committed delta in the child workload sample
+            // before persisting the failed scheduler state.
+            let startup_committed_delta = i64::try_from(
+                failure_progress
+                    .last_updated
+                    .saturating_sub(progress.last_updated),
+            )
+            .unwrap_or(i64::MAX);
+            let prompt_cache_committed_delta = if task
+                == StartupBackfillTask::PromptCacheConversationsMaterialization
+            {
+                crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                    &state.pool,
+                )
+                .await
+                .ok()
+                .and_then(|progress| progress.completed_keys)
+                .unwrap_or_default()
+                .saturating_sub(prompt_cache_completed_before)
+            } else {
+                0
+            };
+            let committed_delta = partial_progress
+                .map(|partial| i64::try_from(partial.updated).unwrap_or(i64::MAX))
+                .unwrap_or_else(|| startup_committed_delta.max(prompt_cache_committed_delta));
+            workload_observation.set_processed_work(committed_delta);
+            if observation_parent_task_key == Some("prompt_cache_materialization") {
+                observation.set_processed_work(committed_delta);
+            }
             let next_due = match persist_startup_backfill_task_failure(
-                state, task, &task_name, &progress, started_at, &err,
+                state,
+                task,
+                &task_name,
+                &failure_progress,
+                started_at,
+                &err,
             )
             .await
             {
@@ -2708,8 +2819,8 @@ pub(crate) async fn persist_startup_backfill_task_failure(
         progress.wake_generation,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
-            scanned: 0,
-            updated: 0,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
             zero_update_streak: progress.zero_update_streak,
             next_run_after: &retry_after,
             status: STARTUP_BACKFILL_STATUS_FAILED,
@@ -3202,17 +3313,33 @@ async fn run_startup_backfill_task_with_pressure(
             let cache_summary =
                 backfill_pool_upstream_node_health_archives(&state.pool, Some(1), max_elapsed)
                     .await?;
-            let hourly_summary = backfill_pool_upstream_node_health_hourly_archives(
+            let hourly_summary = match backfill_pool_upstream_node_health_hourly_archives(
                 &state.pool,
                 Some(1),
                 max_elapsed,
             )
-            .await?;
+            .await
+            {
+                Ok(summary) => summary,
+                Err(error) => {
+                    let (scanned, updated) = error
+                        .downcast_ref::<BackfillPartialFailure>()
+                        .map(|partial| (partial.scanned, partial.updated))
+                        .unwrap_or_default();
+                    return Err(anyhow::Error::new(BackfillPartialFailure {
+                        source: error,
+                        next_cursor_id: cursor_id,
+                        scanned: cache_summary.scanned_batches + scanned,
+                        updated: cache_summary.materialized_batches + updated,
+                    }));
+                }
+            };
             Ok((
                 StartupBackfillRunState {
                     next_cursor_id: cursor_id,
                     scanned: cache_summary.scanned_batches + hourly_summary.scanned_batches,
-                    updated: cache_summary.cached_rows + hourly_summary.materialized_rows,
+                    updated: cache_summary.materialized_batches
+                        + hourly_summary.materialized_batches,
                     hit_scan_limit: cache_summary.hit_budget || hourly_summary.hit_budget,
                     retry_soon: false,
                     force_idle: cache_summary.pending_batches == 0

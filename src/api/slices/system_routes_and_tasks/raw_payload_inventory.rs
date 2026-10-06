@@ -241,6 +241,8 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
             ))
         })
         .collect::<Vec<_>>();
+    let discovered_path_count = paths.len().saturating_add(recheck_changes.len());
+    let mut modified_paths = HashSet::new();
     let mut deltas = (0_i64, 0_i64, 0_i64, 0_i64, 0_i64, 0_i64);
     let mut tx = state.pool.begin().await?;
     for (path, (byte_size, request_seen, response_seen)) in paths {
@@ -258,8 +260,12 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         deltas.3 += delta.3;
         deltas.4 += delta.4;
         deltas.5 += delta.5;
+        if delta.0 != 0 || delta.2 != 0 || delta.4 != 0 {
+            modified_paths.insert(path);
+        }
     }
     for (path, byte_size, delta, current_present) in recheck_changes {
+        modified_paths.insert(path.clone());
         sqlx::query(
             "UPDATE system_raw_payload_inventory_paths SET byte_size = ?2 WHERE raw_path = ?1",
         )
@@ -366,6 +372,14 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
         return Ok(0);
     }
     tx.commit().await?;
+    crate::record_managed_task_discovered_work_delta(
+        &["raw_payload_metrics_inventory"],
+        i64::try_from(discovered_path_count).unwrap_or(i64::MAX),
+    );
+    crate::record_managed_task_processed_work(
+        &["raw_payload_metrics_inventory"],
+        i64::try_from(modified_paths.len()).unwrap_or(i64::MAX),
+    );
     let next_raw_bytes = if deltas.1 >= 0 {
         snapshot.raw_bytes.saturating_add(deltas.1) as u64
     } else {
@@ -629,18 +643,20 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 "processing",
             );
             let mut terminal_status = "success";
-            if let Err(error) =
-                crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
-            {
+            let inventory_result =
+                crate::with_managed_task_observation(observation.clone(), async {
+                    crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref())
+                        .await?;
+                    refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await;
+            if let Err(error) = inventory_result {
                 terminal_status = "failed";
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory reset resume failed");
             }
-            if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
-                terminal_status = "failed";
-                set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
-                warn!(error = %error, "system raw metrics inventory batch failed");
-            } else {
+            if terminal_status == "success" {
                 let circuit_snapshot = state.raw_capture_circuit.snapshot();
                 if circuit_snapshot.inventory_state == "ready"
                     || circuit_snapshot.spool_inventory_overflow

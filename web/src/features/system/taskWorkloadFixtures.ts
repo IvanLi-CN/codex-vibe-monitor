@@ -178,6 +178,7 @@ export function buildRetentionWorkloadFixture({
       attemptedAt,
       actualStartedAt: isSkipped ? null : new Date(attemptedAtMs + 4_000).toISOString(),
       finishedAt: isSkipped ? null : new Date(attemptedAtMs + 52_000).toISOString(),
+      durationMs: isSkipped ? null : 48_000,
       status: isSkipped ? "skipped" : failed ? "failed" : "success",
       reason: isSkipped
         ? "资源准入确认跳过"

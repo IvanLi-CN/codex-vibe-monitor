@@ -264,10 +264,14 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
     let started_at = Instant::now();
     let mut summary = PoolAttemptPublicIdArchiveBackfillSummary::default();
     let mut last_seen_batch_id = start_after_batch_id;
+    let mut committed_cursor_id = start_after_batch_id;
+    let mut committed_scanned_batches = 0_u64;
+    let mut committed_updated_rows = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
-    loop {
+    let result = async {
+        loop {
         if startup_backfill_budget_reached(
             started_at,
             summary.scanned_batches,
@@ -310,6 +314,8 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             else {
                 last_seen_batch_id = batch.id;
                 summary.scanned_batches += 1;
+                committed_cursor_id = batch.id;
+                committed_scanned_batches = summary.scanned_batches;
                 hit_budget = true;
                 push_backfill_sample(
                     &mut samples,
@@ -404,7 +410,9 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             if staged.rows_affected() != 1 {
                 let _ = fs::remove_file(&work_path);
                 let _ = fs::remove_file(&temp_gzip_path);
-                continue;
+                return Err(anyhow::anyhow!(
+                    "archive public-id backfill replacement staging conflict; retry batch"
+                ));
             }
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
             let current_state = sqlx::query_as::<_, (Option<String>, Option<String>)>(
@@ -503,6 +511,9 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
                     "archive public-id backfill commit outcome is unknown; recovery will reconcile: {error}"
                 ));
             }
+            committed_cursor_id = batch.id;
+            committed_scanned_batches = summary.scanned_batches;
+            committed_updated_rows = summary.updated_rows;
             let _ = fs::remove_file(&backup_path);
             let _ = sqlx::query(
                 "UPDATE archive_batches SET replacement_staged_path = NULL
@@ -513,13 +524,23 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             .execute(pool)
             .await;
         }
-    }
+        }
 
-    Ok(BackfillBatchOutcome {
-        summary,
-        next_cursor_id: last_seen_batch_id,
-        hit_budget,
-        samples,
+        Ok(BackfillBatchOutcome {
+            summary,
+            next_cursor_id: committed_cursor_id,
+            hit_budget,
+            samples,
+        })
+    }
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: committed_cursor_id,
+            scanned: committed_scanned_batches,
+            updated: committed_updated_rows,
+        })
     })
 }
 

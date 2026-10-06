@@ -794,6 +794,7 @@ mod tests {
             attempted_at: "2026-10-03T00:00:00.000Z".to_string(),
             actual_started_at: Some("2026-10-03T00:00:00.001Z".to_string()),
             finished_at: None,
+            duration_ms: None,
             status: "running".to_string(),
             reason: None,
             sequence: 1,

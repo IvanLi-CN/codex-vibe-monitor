@@ -20,7 +20,8 @@ pub(crate) use parallel_work::{
 };
 
 pub(crate) use minute_projection::{
-    flush_timeseries_minute_projection_managed, spawn_timeseries_minute_projection_supervisor,
+    TimeseriesMinuteProjectionFlushOutcome, flush_timeseries_minute_projection_managed,
+    spawn_timeseries_minute_projection_supervisor,
 };
 
 #[cfg(test)]
@@ -30,10 +31,9 @@ pub(crate) use aggregation::{
 };
 #[cfg(test)]
 pub(crate) use minute_projection::{
-    TimeseriesMinuteProjectionFlushOutcome, TimeseriesMinuteProjectionWarmOutcome,
-    TimeseriesMinuteProjectionWriteAdmissionOutcome, load_timeseries_minute_projection_records,
-    load_timeseries_minute_projection_v2, store_timeseries_minute_projection_records,
-    store_timeseries_minute_projection_v2_for_test,
+    TimeseriesMinuteProjectionWarmOutcome, TimeseriesMinuteProjectionWriteAdmissionOutcome,
+    load_timeseries_minute_projection_records, load_timeseries_minute_projection_v2,
+    store_timeseries_minute_projection_records, store_timeseries_minute_projection_v2_for_test,
     timeseries_minute_projection_has_uncovered_terminal_delta,
     timeseries_minute_projection_pressure_deferred,
     timeseries_minute_projection_v2_snapshot_is_current,

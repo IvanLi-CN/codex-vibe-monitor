@@ -489,12 +489,27 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                 "processing",
             );
             let reconcile_started = Instant::now();
-            let reconcile_result = tokio::select! {
-                _ = state.shutdown.cancelled() => return,
-                result = reconcile_dashboard_runtime_projection_once(state.as_ref()) => result,
-            };
+            let reconcile_result = crate::with_managed_task_observation(
+                observation.clone(),
+                async {
+                    tokio::select! {
+                        _ = state.shutdown.cancelled() => None,
+                        result = reconcile_dashboard_runtime_projection_once(state.as_ref()) => Some(result),
+                    }
+                },
+            )
+            .await;
             match reconcile_result {
-                Ok(capture) => {
+                Some(Ok(capture)) => {
+                    let reconciled_records = i64::from(capture.changed);
+                    crate::record_managed_task_discovered_work(
+                        &["dashboard_runtime_projection_reconcile"],
+                        reconciled_records,
+                    );
+                    crate::record_managed_task_processed_work(
+                        &["dashboard_runtime_projection_reconcile"],
+                        reconciled_records,
+                    );
                     if state.shutdown.is_cancelled() {
                         return;
                     }
@@ -542,7 +557,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                     }
                     observation.finish_with_status("success");
                 }
-                Err(err) => {
+                Some(Err(err)) => {
                     state.observability.record_counter(
                         "projection.reconcile_failure_count",
                         "dashboard",
@@ -584,6 +599,7 @@ pub(crate) fn spawn_dashboard_runtime_projection_reconcile(
                         pressure_error, "failed to reconcile dashboard runtime projection baseline"
                     );
                 }
+                None => return,
             }
         }
     }))

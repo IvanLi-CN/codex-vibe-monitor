@@ -7,6 +7,7 @@
 job，继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact
 producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
+当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。
 历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及
 50 倍吞吐、24 小时固定存量归零和在线延迟目标留待专项 Actions 验证。
 

@@ -953,6 +953,8 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         }
     }
     if tokens.is_empty() {
+        crate::record_managed_task_discovered_work(&["invocation_timeline_snapshot"], 0);
+        crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
         return Ok(TimelineSnapshotCleanupResult::default());
     }
     pause_before_timeline_cleanup_active_tokens().await;
@@ -964,10 +966,19 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         snapshots.retain(|_, snapshot| snapshot.expires_at > now);
         snapshots.keys().cloned().collect::<HashSet<_>>()
     };
+    let eligible_token_count = tokens
+        .iter()
+        .filter(|token| !active_tokens.contains(*token))
+        .count();
+    crate::record_managed_task_discovered_work(
+        &["invocation_timeline_snapshot"],
+        i64::try_from(eligible_token_count).unwrap_or(i64::MAX),
+    );
     let mut result = TimelineSnapshotCleanupResult {
         scanned_tokens: tokens.len(),
         ..Default::default()
     };
+    crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
     for token in tokens {
         if active_tokens.contains(&token) {
             continue;
@@ -983,6 +994,7 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             result.deleted_rows = result
                 .deleted_rows
                 .saturating_add(delete_result.rows_affected());
+            crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 1);
         }
         acknowledge_timeline_snapshot_release(&token);
     }
@@ -1021,9 +1033,15 @@ pub(crate) fn spawn_invocation_timeline_snapshot_maintenance(state: Arc<AppState
                 "processing",
             );
             let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool);
-            let cleanup_result = tokio::select! {
-                _ = state.shutdown.cancelled() => return,
-                result = cleanup => result,
+            let cleanup_result = crate::with_managed_task_observation(observation.clone(), async {
+                tokio::select! {
+                    _ = state.shutdown.cancelled() => None,
+                    result = cleanup => Some(result),
+                }
+            })
+            .await;
+            let Some(cleanup_result) = cleanup_result else {
+                return;
             };
             observation.finish_with_status(if cleanup_result.is_ok() {
                 "success"

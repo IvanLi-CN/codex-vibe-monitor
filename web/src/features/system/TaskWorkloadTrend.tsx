@@ -165,15 +165,33 @@ function workloadHint(
   state: TaskWorkloadTrendProps["state"],
   error: string | null | undefined,
   trend: TaskWorkloadTrendData | null | undefined,
+  capabilities?: TaskMeasurementCapabilities,
 ): string | null {
   if (state === "loading") return "加载中";
   if (state === "error") return `读取失败：${error ?? "未知错误"}`;
   if (!trend) return "暂无运行计量";
+  const effectiveCapabilities = capabilities ?? trend.capabilities;
+  const supportedSeries = WORKLOAD_SERIES.filter(
+    (series) => effectiveCapabilities?.[series]?.supported !== false,
+  );
+  if (supportedSeries.length === 0 || trend.coverage === "not applicable") {
+    return "该任务不提供工作量计数";
+  }
   if (trend.samples.length === 0) return "暂无运行样本";
+  if (trend.coverage.includes("recorder coverage gap")) {
+    return "观测有缺口，计量暂不可用";
+  }
+  if (trend.coverage.includes("no observed counters")) {
+    return "本次运行尚未观测计量";
+  }
   if (
-    !trend.samples.some((sample) => WORKLOAD_SERIES.some((series) => sample[series]?.value != null))
+    !trend.samples.some((sample) =>
+      supportedSeries.some(
+        (series) => sample[series]?.value != null && sample[series]?.coverage !== "unknown",
+      ),
+    )
   ) {
-    return "暂无计数";
+    return trend.coverage === "some metrics unknown" ? "部分计量未知" : "暂无计量观测";
   }
   return null;
 }
@@ -650,14 +668,15 @@ export function TaskWorkloadTrend({
   );
   const [hiddenSeries, setHiddenSeries] = useState<Set<WorkloadSeriesKey>>(() => new Set());
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const effectiveCapabilities = capabilities ?? trend?.capabilities;
   const visibleSamples = useMemo(
     () =>
       selectWorkloadRunWindow(trend?.samples ?? [], trend?.coverageGaps ?? [], runWindow, taskKey),
     [runWindow, taskKey, trend?.coverageGaps, trend?.samples],
   );
   const models = useMemo(
-    () => buildWorkloadChartModels(visibleSamples, capabilities),
-    [capabilities, visibleSamples],
+    () => buildWorkloadChartModels(visibleSamples, effectiveCapabilities),
+    [effectiveCapabilities, visibleSamples],
   );
   const hasVisibleCoverageGap = visibleSamples.some((sample) =>
     sample.sampleId.startsWith("coverage-gap:"),
@@ -667,7 +686,7 @@ export function TaskWorkloadTrend({
   const axis = chartBaseTokens(themeMode);
   const isRetention = taskKey === "retention_archive";
   const backlogPoints = retentionTrend ?? [];
-  const runHint = workloadHint(state, error, trend);
+  const runHint = workloadHint(state, error, trend, effectiveCapabilities);
   const runPanelHeight =
     (isCompactViewport ? 72 : 32) +
     models.length * (chartHeight + 12) +
@@ -715,7 +734,7 @@ export function TaskWorkloadTrend({
     <fieldset className="flex flex-wrap gap-x-4 gap-y-2">
       <legend className="sr-only">运行计量图例</legend>
       {WORKLOAD_SERIES.map((series) => {
-        const hasCapability = capabilities?.[series]?.supported;
+        const hasCapability = effectiveCapabilities?.[series]?.supported;
         const hasSamples = visibleSamples.some((sample) => sample[series] != null);
         const hasObservation = visibleSamples.some((sample) => sample[series]?.value != null);
         const availability =
@@ -866,7 +885,7 @@ export function TaskWorkloadTrend({
                   hint={runHint}
                   height={chartHeight}
                   compact={isCompactViewport}
-                  capabilities={capabilities}
+                  capabilities={effectiveCapabilities}
                   failureColor={statusColors.failure}
                 />
               ))

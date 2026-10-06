@@ -1687,9 +1687,15 @@ const LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES: usize =
     (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2) / 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LongTermProjectionFlushOutcome {
+pub(crate) enum LongTermProjectionFlushOutcome {
     Completed,
     DeferredByPressure { retry_at: Option<Instant> },
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct LongTermProjectionWorkStats {
+    loaded_row_count: u64,
+    terminal_event_count: u64,
 }
 
 #[derive(Debug)]
@@ -3355,7 +3361,10 @@ async fn flush_long_term_projection_unlocked(
         flush_long_term_projection_inner(state, trigger)
     })
     .await;
-    let load_row_count = result.as_ref().copied().unwrap_or_default();
+    let load_row_count = result
+        .as_ref()
+        .map(|stats| stats.loaded_row_count)
+        .unwrap_or_default();
     state
         .memory_diagnostics
         .observe_operation(
@@ -3403,10 +3412,10 @@ pub(crate) async fn run_long_term_projection_once(state: &AppState) -> Result<()
         .map(|_| ())
 }
 
-pub(crate) async fn run_long_term_projection_once_managed(state: &AppState) -> Result<()> {
-    flush_long_term_projection_unlocked(state, "managed_task")
-        .await
-        .map(|_| ())
+pub(crate) async fn run_long_term_projection_once_managed(
+    state: &AppState,
+) -> Result<LongTermProjectionFlushOutcome> {
+    flush_long_term_projection_unlocked(state, "managed_task").await
 }
 
 async fn run_long_term_projection_flush_with_retry<T, Operation, OperationFuture>(
@@ -3455,13 +3464,16 @@ where
     operation().await
 }
 
-async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static str) -> Result<u64> {
+async fn flush_long_term_projection_inner(
+    state: &AppState,
+    trigger: &'static str,
+) -> Result<LongTermProjectionWorkStats> {
     // The initial refresher and P2 share date backups for crash recovery, but never their live
     // replacement window. Defer P2 while the refresher owns this process-wide maintenance lock;
     // a later terminal wake or ticker retries the bounded work.
     let _refresh_guard = match LONG_TERM_REFRESH_LOCK.try_lock() {
         Ok(guard) => guard,
-        Err(_) => return Ok(0),
+        Err(_) => return Ok(LongTermProjectionWorkStats::default()),
     };
     let control = LongTermProjectionWriteControl::background(
         &state.shutdown,
@@ -3491,7 +3503,7 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         // The dedicated refresher owns the first full materialization. Running it from this
         // P2 cursor worker bypasses pressure admission and can hold a competing writer lock.
         control.check()?;
-        return Ok(0);
+        return Ok(LongTermProjectionWorkStats::default());
     } else if rollups_exist
         && (cursor == 0
             || matches!(
@@ -3605,8 +3617,16 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
                 .await?;
                 if outcome == LongTermProjectionIncrementalOutcome::RebuildRequired {
                     defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
-                    return Ok(0);
+                    return Ok(LongTermProjectionWorkStats::default());
                 }
+                crate::record_managed_task_discovered_work(
+                    &["long_term_projection"],
+                    i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+                );
+                crate::record_managed_task_processed_work(
+                    &["long_term_projection"],
+                    i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+                );
                 cursor = direct_cursor;
                 hourly.clear();
                 daily.clear();
@@ -3636,8 +3656,16 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
             .await?;
             if outcome == LongTermProjectionIncrementalOutcome::RebuildRequired {
                 defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
-                return Ok(0);
+                return Ok(LongTermProjectionWorkStats::default());
             }
+            crate::record_managed_task_discovered_work(
+                &["long_term_projection"],
+                i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["long_term_projection"],
+                i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+            );
             cursor = direct_cursor;
         }
         if let Some(event) = repair_event {
@@ -3878,22 +3906,29 @@ async fn flush_long_term_projection_inner(state: &AppState, trigger: &'static st
         "long-term projection flush completed"
     );
     drop(runtime);
-    Ok(loaded_row_count.saturating_add(event_count as u64))
+    if event_count == 0 {
+        crate::record_managed_task_discovered_work(&["long_term_projection"], 0);
+        crate::record_managed_task_processed_work(&["long_term_projection"], 0);
+    }
+    Ok(LongTermProjectionWorkStats {
+        loaded_row_count,
+        terminal_event_count: event_count as u64,
+    })
 }
 
 async fn advance_long_term_projection_maintenance(
     state: &AppState,
     control: &LongTermProjectionWriteControl<'_>,
-) -> Result<u64> {
+) -> Result<LongTermProjectionWorkStats> {
     // Maintenance is intentionally a single durable continuation step. Each helper makes at
     // most one 512-row transaction and re-checks cancellation and database pressure before it
     // starts. Letting a deadline exhaust every backlog would recreate the writer starvation
     // this worker is intended to avoid.
     if finish_long_term_projection_publication_cleanup(&state.pool, control).await? {
-        return Ok(0);
+        return Ok(LongTermProjectionWorkStats::default());
     }
     if migrate_long_term_projection_legacy_interval_state(&state.pool, control).await? {
-        return Ok(0);
+        return Ok(LongTermProjectionWorkStats::default());
     }
     let (hourly, intervals) = prune_long_term_projection_hourly_retention_with_control(
         &state.pool,
@@ -3901,7 +3936,10 @@ async fn advance_long_term_projection_maintenance(
         control,
     )
     .await?;
-    Ok(hourly.saturating_add(intervals))
+    Ok(LongTermProjectionWorkStats {
+        loaded_row_count: hourly.saturating_add(intervals),
+        terminal_event_count: 0,
+    })
 }
 
 async fn long_term_rollups_exist(pool: &Pool<Sqlite>) -> Result<bool> {

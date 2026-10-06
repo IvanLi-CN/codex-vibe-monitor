@@ -21,13 +21,13 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24013,
+      "line_budget": 24385,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
       "path": "src/long_term_stats.rs",
       "role": "production",
-      "line_budget": 18941,
+      "line_budget": 18972,
       "next_module_workstream": "Split long-term statistics projection, archive compatibility, rollups, and refresh lifecycle."
     },
     {
@@ -45,19 +45,19 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 4463,
+      "line_budget": 4592,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
       "path": "src/maintenance/retention.rs",
       "role": "production",
-      "line_budget": 11867,
+      "line_budget": 11875,
       "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3670,
+      "line_budget": 3708,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {

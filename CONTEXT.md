@@ -1140,6 +1140,10 @@ _Avoid_: 任意后台线程, 单次 SQL, 页面刷新
 One execution of a Managed Task with a trigger, start and finish timestamps, terminal status, duration, summary, and bounded error detail. A Task Run is an operational record, not a business invocation.
 _Avoid_: 对外调用, 上游尝试, 日志行
 
+**任务工作量趋势（Task Workload Trend）**:
+The observed pending population, discovered candidates, and committed work across Task Runs, with task-specific units and measurement coverage. A Task Run can succeed without supporting or supplying these measurements.
+_Avoid_: 执行成功率, 触发次数, 执行用时趋势
+
 **任务待处理量（Task Pending Population）**:
 The complete population awaiting a task's work at a recorded observation point, with an explicit unit and eligibility scope. A bounded scan or candidate window describes only part of this population and does not establish its total.
 _Avoid_: 本页候选数即总量, 扫描上限即积压, 未知即零

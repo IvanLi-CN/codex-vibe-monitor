@@ -743,6 +743,8 @@ pub(crate) struct SubscriptionHub {
     // rolling Projection refresh. It still needs one owner so a cadence tick cannot duplicate a
     // page already being reduced by the recovery worker.
     summary_coverage_recovery: tokio::sync::Mutex<()>,
+    // Prevent concurrent catalog/workload owners from duplicating an initial SQLite build.
+    managed_task_refresh_serial: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -803,6 +805,7 @@ struct SubscriptionHubState {
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
     runtime_topic_recovery_running: bool,
+    managed_task_refresh_generations: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -3568,10 +3571,16 @@ pub(crate) struct PreparedTopicFrame {
 enum SubscriptionTopic {
     AppVersion,
     QuotaCurrent,
+    ManagedTaskCatalog,
     ManagedTaskRuntime,
     ManagedTaskTimeline,
     ManagedTaskDetail {
         task_key: String,
+    },
+    ManagedTaskWorkload {
+        task_key: String,
+        window_hours: i64,
+        limit: usize,
     },
     DashboardActivityCurrent {
         range: String,
@@ -3867,6 +3876,7 @@ impl SubscriptionHub {
             state: Mutex::new(SubscriptionHubState::default()),
             summary_projection_refresh: tokio::sync::Mutex::new(()),
             summary_coverage_recovery: tokio::sync::Mutex::new(()),
+            managed_task_refresh_serial: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -4230,6 +4240,80 @@ impl SubscriptionHub {
                 .saturating_add(state.summary_delta_journal.replayed_entries.len()),
             state.summary_delta_journal.gap_proofs.len(),
         )
+    }
+
+    pub(crate) async fn summary_delta_journal_unabsorbed_identities(&self) -> HashSet<String> {
+        let state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| summary_delta_workload_identity(&entry.delta))
+            .chain(
+                state
+                    .summary_delta_journal
+                    .replayed_entries
+                    .iter()
+                    .map(summary_delta_workload_identity),
+            )
+            .collect()
+    }
+
+    pub(crate) async fn summary_delta_journal_unabsorbed_deltas(
+        &self,
+    ) -> Vec<DashboardActivityTerminalDelta> {
+        let state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| entry.delta.clone())
+            .chain(state.summary_delta_journal.replayed_entries.iter().cloned())
+            .collect()
+    }
+
+    pub(crate) async fn summary_delta_journal_absorbed_deltas_count(
+        &self,
+        before: &[DashboardActivityTerminalDelta],
+    ) -> usize {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return 0;
+        };
+        let remaining = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| summary_delta_workload_identity(&entry.delta))
+            .chain(
+                state
+                    .summary_delta_journal
+                    .replayed_entries
+                    .iter()
+                    .map(summary_delta_workload_identity),
+            )
+            .collect::<HashSet<_>>();
+        before
+            .iter()
+            .filter(|delta| {
+                !remaining.contains(&summary_delta_workload_identity(delta))
+                    && (projection.contains_persisted_live_terminal_delta(delta)
+                        || delta.persisted_row_id.is_some_and(|row_id| {
+                            projection.contains_global_rollup_covered_live_terminal_identity(
+                                row_id,
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ) || projection.contains_global_all_time_covered_live_terminal_identity(
+                                row_id,
+                                &delta.invoke_id,
+                                &delta.occurred_at,
+                            ) && projection.global_rollup_covers_live_terminal_identity(
+                                row_id,
+                                &delta.occurred_at,
+                            )
+                        }))
+            })
+            .count()
     }
 
     pub(crate) async fn summary_source_change_cursor(&self) -> u64 {
@@ -6121,6 +6205,49 @@ impl SubscriptionHub {
         require_active_owner: bool,
         expected_upstream_account_attempt_refresh_generation: Option<u64>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
+        let coalesce_managed_task_refresh = is_managed_task_refresh_topic(&topic);
+        let topic_key = topic.cache_key()?;
+        let mut result = self
+            .refresh_topic_inner_once(
+                state.clone(),
+                topic.clone(),
+                emit_live,
+                require_active_owner,
+                expected_upstream_account_attempt_refresh_generation,
+            )
+            .await?;
+        while coalesce_managed_task_refresh && result.is_some() {
+            let needs_followup = {
+                let guard = self.state.lock().await;
+                guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|cached| cached.dirty && !cached.refresh_scheduled)
+            };
+            if !needs_followup {
+                break;
+            }
+            result = self
+                .refresh_topic_inner_once(
+                    state.clone(),
+                    topic.clone(),
+                    emit_live,
+                    require_active_owner,
+                    expected_upstream_account_attempt_refresh_generation,
+                )
+                .await?;
+        }
+        Ok(result)
+    }
+
+    async fn refresh_topic_inner_once(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        require_active_owner: bool,
+        expected_upstream_account_attempt_refresh_generation: Option<u64>,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
@@ -6135,37 +6262,66 @@ impl SubscriptionHub {
             &topic,
             SubscriptionTopic::ParallelWorkCurrent { range, .. } if range != "yesterday"
         );
+        let coalesce_managed_task_refresh = is_managed_task_refresh_topic(&topic);
+        let _managed_task_refresh_serial = if coalesce_managed_task_refresh {
+            Some(self.managed_task_refresh_serial.lock().await)
+        } else {
+            None
+        };
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
         // state or replace the retained last-good frame.
-        let (refresh_generation, refresh_had_cached_topic) = if require_active_owner {
-            let guard = self.state.lock().await;
-            if guard
-                .active_subscribers
-                .get(&topic_key)
-                .copied()
-                .unwrap_or_default()
-                == 0
-            {
-                return Ok(None);
-            }
-            if let Some(expected_generation) = expected_upstream_account_attempt_refresh_generation
-                && !guard.topics.get(&topic_key).is_some_and(|cached| {
-                    cached.upstream_account_attempt_refresh_generation == expected_generation
-                })
-            {
-                // A disconnect/reconnect can invalidate the dedicated refresh after its worker
-                // acquired the lease but before it begins the database build.
-                return Ok(None);
-            }
-            guard
-                .topics
-                .get(&topic_key)
-                .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
-                .unwrap_or((Some(guard.runtime_topic_recovery_generation), false))
-        } else {
-            (None, false)
-        };
+        let ((refresh_generation, refresh_had_cached_topic), managed_task_refresh_generation) =
+            if require_active_owner {
+                let mut guard = self.state.lock().await;
+                if guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                {
+                    return Ok(None);
+                }
+                if let Some(expected_generation) =
+                    expected_upstream_account_attempt_refresh_generation
+                    && !guard.topics.get(&topic_key).is_some_and(|cached| {
+                        cached.upstream_account_attempt_refresh_generation == expected_generation
+                    })
+                {
+                    // A disconnect/reconnect can invalidate the dedicated refresh after its worker
+                    // acquired the lease but before it begins the database build.
+                    return Ok(None);
+                }
+                let managed_task_refresh_generation = coalesce_managed_task_refresh.then(|| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                });
+                if coalesce_managed_task_refresh
+                    && let Some(cached) = guard.topics.get_mut(&topic_key)
+                {
+                    if cached.refresh_scheduled {
+                        return Ok(Some(cached.clone()));
+                    }
+                    if !cached.dirty {
+                        return Ok(Some(cached.clone()));
+                    }
+                    cached.refresh_scheduled = true;
+                }
+                (
+                    guard
+                        .topics
+                        .get(&topic_key)
+                        .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
+                        .unwrap_or((Some(guard.runtime_topic_recovery_generation), false)),
+                    managed_task_refresh_generation,
+                )
+            } else {
+                ((None, false), None)
+            };
         let timeline_baseline =
             if emit_live && matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
                 self.state
@@ -6197,13 +6353,25 @@ impl SubscriptionHub {
             (payload, None, Some(build))
         } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
             let after_revision = timeline_baseline.as_ref().map(|(_, revision)| *revision);
-            let event_payload = build_managed_task_timeline_topic_payload(after_revision).await?;
+            let event_payload =
+                match build_managed_task_timeline_topic_payload(after_revision).await {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.clear_managed_task_refresh_schedule(&topic_key).await;
+                        return Err(error);
+                    }
+                };
             let payload = if let Some((previous, _)) = &timeline_baseline {
+                let snapshot_payload =
+                    match merge_managed_task_timeline_payload(previous, &event_payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            self.clear_managed_task_refresh_schedule(&topic_key).await;
+                            return Err(error);
+                        }
+                    };
                 BuiltSubscriptionTopicPayload::JsonDelta {
-                    snapshot_payload: merge_managed_task_timeline_payload(
-                        previous,
-                        &event_payload,
-                    )?,
+                    snapshot_payload,
                     event_payload,
                 }
             } else {
@@ -6211,7 +6379,19 @@ impl SubscriptionHub {
             };
             (payload, None, None)
         } else {
-            (topic.build_cached_payload(state.clone()).await?, None, None)
+            let payload = match topic.build_cached_payload(state.clone()).await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    if coalesce_managed_task_refresh {
+                        let mut guard = self.state.lock().await;
+                        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                            cached.refresh_scheduled = false;
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            (payload, None, None)
         };
         self.dashboard_topology_counters.record_materialization(
             topic.name(),
@@ -6255,6 +6435,11 @@ impl SubscriptionHub {
                         cached.dirty = true;
                         cached.refresh_scheduled = false;
                         cached.latest_live_snapshot = None;
+                    }
+                    if coalesce_managed_task_refresh
+                        && let Some(cached) = guard.topics.get_mut(&topic_key)
+                    {
+                        cached.refresh_scheduled = false;
                     }
                     return Ok(None);
                 }
@@ -6408,13 +6593,35 @@ impl SubscriptionHub {
             let current_slice = guard.dashboard_current_slice.clone();
             let network_slice = guard.dashboard_network_slice.clone();
             let terminal_slice = guard.dashboard_terminal_slice.clone();
+            let managed_refresh_is_current =
+                managed_task_refresh_generation.is_none_or(|expected| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == expected
+                });
+            if coalesce_managed_task_refresh && !managed_refresh_is_current {
+                // A newer task observation dirtied this topic while the bounded build was in
+                // flight. Keep the last-good frame intact; the outer serial loop will rebuild
+                // against the newer generation instead of briefly broadcasting stale data.
+                if let Some(existing) = guard.topics.get_mut(&topic_key) {
+                    existing.dirty = true;
+                    existing.refresh_scheduled = false;
+                    return Ok(Some(existing.clone()));
+                }
+                return Ok(None);
+            }
             if !matches!(
                 &built_payload,
                 BuiltSubscriptionTopicPayload::JsonDelta { .. }
             ) && deferred_working_replay.is_empty()
                 && let Some(existing) = guard.topics.get_mut(&topic_key)
             {
-                if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
+                if managed_refresh_is_current
+                    && existing.snapshot_frame.payload_bytes.as_ref()
+                        == serialized_payload.as_slice()
                     && existing.dirty
                     && existing.dashboard_materializer.is_some()
                     && refreshed_dashboard_materializer.is_some()
@@ -6445,7 +6652,9 @@ impl SubscriptionHub {
                     }
                     return Ok(Some(existing.clone()));
                 }
-                if reuse_unchanged_cached_topic(existing, &serialized_payload).is_some() {
+                if managed_refresh_is_current
+                    && reuse_unchanged_cached_topic(existing, &serialized_payload).is_some()
+                {
                     self.dashboard_topology_counters
                         .record_frame_reused(topic.name());
                     if let Some(build) = &prompt_cache_build {
@@ -6508,6 +6717,15 @@ impl SubscriptionHub {
             let schedule_initial_hydration =
                 !deferred_working_hydration_keys.is_empty() && !had_key_hydration_scheduled;
             let schedule_initial_reconcile = deferred_working_reconcile && !had_reconcile_scheduled;
+            let managed_task_refresh_needs_followup =
+                managed_task_refresh_generation.is_some_and(|expected| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        != expected
+                });
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -6543,7 +6761,7 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.upstream_account_attempt_refresh_generation),
-                dirty: deferred_working_reconcile,
+                dirty: deferred_working_reconcile || managed_task_refresh_needs_followup,
                 runtime_topic_recovery_generation: guard
                     .topics
                     .get(&topic_key)
@@ -7730,6 +7948,16 @@ impl SubscriptionHub {
     }
 }
 
+fn summary_delta_workload_identity(delta: &DashboardActivityTerminalDelta) -> String {
+    format!(
+        "{}\0{}\0{}\0{}",
+        delta.persisted_row_id.unwrap_or_default(),
+        delta.invoke_id,
+        delta.occurred_at,
+        delta.terminal_sequence,
+    )
+}
+
 fn buffer_parallel_work_prebaseline_mutations(
     state: &mut SubscriptionHubState,
     topic_key: &str,
@@ -7874,6 +8102,17 @@ impl Default for SubscriptionHub {
     }
 }
 
+fn is_managed_task_refresh_topic(topic: &SubscriptionTopic) -> bool {
+    matches!(
+        topic,
+        SubscriptionTopic::ManagedTaskCatalog
+            | SubscriptionTopic::ManagedTaskRuntime
+            | SubscriptionTopic::ManagedTaskTimeline
+            | SubscriptionTopic::ManagedTaskDetail { .. }
+            | SubscriptionTopic::ManagedTaskWorkload { .. }
+    )
+}
+
 impl SubscriptionHub {
     async fn mark_topic_dirty(&self, topic: &SubscriptionTopic) {
         let Ok(topic_key) = topic.cache_key() else {
@@ -7888,6 +8127,31 @@ impl SubscriptionHub {
             cached.conversation_overview_refresh_pending = false;
             cached.invalidate_upstream_account_attempt_refresh();
             cached.latest_live_snapshot = None;
+        }
+    }
+
+    async fn mark_managed_task_topic_dirty(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let generation = guard
+            .managed_task_refresh_generations
+            .entry(topic_key.clone())
+            .or_default();
+        *generation = generation.saturating_add(1);
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.dirty = true;
+            cached.latest_live_snapshot = None;
+            return !cached.refresh_scheduled;
+        }
+        true
+    }
+
+    async fn clear_managed_task_refresh_schedule(&self, topic_key: &str) {
+        let mut guard = self.state.lock().await;
+        if let Some(cached) = guard.topics.get_mut(topic_key) {
+            cached.refresh_scheduled = false;
         }
     }
 
@@ -11594,6 +11858,36 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
     });
 }
 
+fn schedule_managed_task_topic_refresh_retry(
+    hub: Arc<SubscriptionHub>,
+    state: Arc<AppState>,
+    topic: SubscriptionTopic,
+    delay: Duration,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(delay).await;
+        if !hub.mark_managed_task_topic_dirty(&topic).await {
+            return;
+        }
+        if let Err(error) = hub
+            .refresh_topic_if_active(state.clone(), topic.clone(), true)
+            .await
+        {
+            warn!(
+                topic = topic.name(),
+                ?error,
+                "managed task SSE topic retry failed"
+            );
+            schedule_managed_task_topic_refresh_retry(
+                hub,
+                state,
+                topic,
+                std::cmp::min(delay.saturating_mul(2), Duration::from_secs(30)),
+            );
+        }
+    });
+}
+
 fn runtime_mutation_batch_has_sequence_gap(
     last_sequence: &mut u64,
     batch: &[SequencedRuntimeMutation],
@@ -11625,9 +11919,11 @@ pub(crate) async fn topic_sse_stream(
         .filter(|topic| {
             matches!(
                 topic,
-                SubscriptionTopic::ManagedTaskRuntime
+                SubscriptionTopic::ManagedTaskCatalog
+                    | SubscriptionTopic::ManagedTaskRuntime
                     | SubscriptionTopic::ManagedTaskTimeline
                     | SubscriptionTopic::ManagedTaskDetail { .. }
+                    | SubscriptionTopic::ManagedTaskWorkload { .. }
             )
         })
         .cloned()
@@ -11723,22 +12019,46 @@ pub(crate) async fn topic_sse_stream(
                         for topic in selected_task_topics.iter().filter(|topic| {
                             managed_task_change_matches_topic(&change, topic)
                         }) {
+                            if !dashboard_topology_hub
+                                .mark_managed_task_topic_dirty(topic)
+                                .await
+                            {
+                                continue;
+                            }
                             if let Err(error) = dashboard_topology_hub
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
                             {
-                                warn!(topic = topic.name(), ?error, "managed task SSE topic refresh failed");
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic refresh failed; scheduling retry");
+                                schedule_managed_task_topic_refresh_retry(
+                                    dashboard_topology_hub.clone(),
+                                    state.clone(),
+                                    topic.clone(),
+                                    Duration::from_secs(1),
+                                );
                             }
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "managed task SSE topic change receiver lagged");
                         for topic in &selected_task_topics {
+                            if !dashboard_topology_hub
+                                .mark_managed_task_topic_dirty(topic)
+                                .await
+                            {
+                                continue;
+                            }
                             if let Err(error) = dashboard_topology_hub
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
                             {
-                                warn!(topic = topic.name(), ?error, "managed task SSE topic recovery failed");
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic recovery failed; scheduling retry");
+                                schedule_managed_task_topic_refresh_retry(
+                                    dashboard_topology_hub.clone(),
+                                    state.clone(),
+                                    topic.clone(),
+                                    Duration::from_secs(1),
+                                );
                             }
                         }
                     }
@@ -11818,9 +12138,11 @@ impl SubscriptionTopic {
             }
             Self::AppVersion
             | Self::QuotaCurrent
+            | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
             | Self::ManagedTaskDetail { .. }
+            | Self::ManagedTaskWorkload { .. }
             | Self::InvocationWindow { .. }
             | Self::InvocationHistoryWindow { .. }
             | Self::InvocationHistoryOverview { .. }
@@ -11913,9 +12235,11 @@ impl SubscriptionTopic {
             | Self::SummaryCurrent { .. }
             | Self::AppVersion
             | Self::QuotaCurrent
+            | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
-            | Self::ManagedTaskTimeline => Vec::new(),
-            Self::ManagedTaskDetail { .. } => Vec::new(),
+            | Self::ManagedTaskTimeline
+            | Self::ManagedTaskDetail { .. }
+            | Self::ManagedTaskWorkload { .. } => Vec::new(),
             Self::PromptCacheWindow { .. } => vec![
                 RuntimeTopicDependency::PromptCacheProjection,
                 RuntimeTopicDependency::PromptCacheWindow,
@@ -11964,11 +12288,31 @@ impl SubscriptionTopic {
         match topic {
             "app.version" => Ok(Self::AppVersion),
             "quota.current" => Ok(Self::QuotaCurrent),
+            "system.managed-tasks.catalog" => Ok(Self::ManagedTaskCatalog),
             "system.managed-tasks.runtime" => Ok(Self::ManagedTaskRuntime),
             "system.managed-tasks.timeline" => Ok(Self::ManagedTaskTimeline),
             "system.managed-tasks.detail" => Ok(Self::ManagedTaskDetail {
                 task_key: parse_required_text_param(params, "taskKey")?,
             }),
+            "system.managed-tasks.workload" => {
+                let window_hours = parse_i64_param(params, "windowHours", Some(24))?;
+                if window_hours != 24 {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "workload windowHours must be exactly 24"
+                    )));
+                }
+                let limit = parse_i64_param(params, "limit", Some(200))?;
+                if !(1..=200).contains(&limit) {
+                    return Err(ApiError::bad_request(anyhow!(
+                        "workload limit must be between 1 and 200"
+                    )));
+                }
+                Ok(Self::ManagedTaskWorkload {
+                    task_key: parse_required_text_param(params, "taskKey")?,
+                    window_hours,
+                    limit: limit as usize,
+                })
+            }
             "dashboard.activity.current" => Ok(Self::DashboardActivityCurrent {
                 range: param_or_default(params, "range", "today"),
                 time_zone: param_or_default(params, "timeZone", SUBSCRIPTION_DEFAULT_TIME_ZONE),
@@ -12141,13 +12485,27 @@ impl SubscriptionTopic {
                 topic: self.name().to_string(),
                 params: BTreeMap::new(),
             },
-            Self::ManagedTaskRuntime | Self::ManagedTaskTimeline => SubscriptionTopicDescriptor {
-                topic: self.name().to_string(),
-                params: BTreeMap::new(),
-            },
+            Self::ManagedTaskCatalog | Self::ManagedTaskRuntime | Self::ManagedTaskTimeline => {
+                SubscriptionTopicDescriptor {
+                    topic: self.name().to_string(),
+                    params: BTreeMap::new(),
+                }
+            }
             Self::ManagedTaskDetail { task_key } => SubscriptionTopicDescriptor {
                 topic: self.name().to_string(),
                 params: btree_map_from_pairs([("taskKey", task_key.clone())]),
+            },
+            Self::ManagedTaskWorkload {
+                task_key,
+                window_hours,
+                limit,
+            } => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: btree_map_from_pairs([
+                    ("taskKey", task_key.clone()),
+                    ("windowHours", window_hours.to_string()),
+                    ("limit", limit.to_string()),
+                ]),
             },
             Self::DashboardActivityCurrent {
                 range,
@@ -12411,9 +12769,11 @@ impl SubscriptionTopic {
         match self {
             Self::AppVersion => "app.version",
             Self::QuotaCurrent => "quota.current",
+            Self::ManagedTaskCatalog => "system.managed-tasks.catalog",
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime",
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline",
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail",
+            Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
             Self::DashboardNetworkTimeseriesWindow { .. } => "dashboard.network-timeseries.window",
             Self::DashboardNetworkRecentCurrent => "dashboard.network-recent.current",
@@ -12445,9 +12805,11 @@ impl SubscriptionTopic {
         match self {
             Self::AppVersion => "app.version/v1".to_string(),
             Self::QuotaCurrent => "quota.current/v1".to_string(),
+            Self::ManagedTaskCatalog => "system.managed-tasks.catalog/v1".to_string(),
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail/v1".to_string(),
+            Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
             Self::DashboardNetworkTimeseriesWindow { .. } => {
                 "dashboard.network-timeseries.window/v1".to_string()
@@ -12515,9 +12877,11 @@ impl SubscriptionTopic {
                     | Self::ForwardProxyLive => true,
                     Self::AppVersion
                     | Self::QuotaCurrent
+                    | Self::ManagedTaskCatalog
                     | Self::ManagedTaskRuntime
                     | Self::ManagedTaskTimeline
                     | Self::ManagedTaskDetail { .. }
+                    | Self::ManagedTaskWorkload { .. }
                     | Self::PromptCacheConversationBindingCurrent { .. }
                     | Self::PromptCacheConversationOperationsWindow { .. }
                     | Self::PromptCacheWindow { .. }
@@ -12808,17 +13172,28 @@ fn managed_task_change_matches_topic(
 ) -> bool {
     match change {
         crate::task_timeline::TaskObservationChange::Runtime => {
-            matches!(topic, SubscriptionTopic::ManagedTaskRuntime)
+            matches!(
+                topic,
+                SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskRuntime
+            )
         }
         crate::task_timeline::TaskObservationChange::Timeline => {
-            matches!(topic, SubscriptionTopic::ManagedTaskTimeline)
+            matches!(
+                topic,
+                SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskTimeline
+            )
         }
-        crate::task_timeline::TaskObservationChange::Workload(task_key) => matches!(
-            topic,
+        crate::task_timeline::TaskObservationChange::Workload(task_key) => match topic {
+            SubscriptionTopic::ManagedTaskCatalog => true,
             SubscriptionTopic::ManagedTaskDetail {
-                task_key: subscribed_task_key
-            } if subscribed_task_key == task_key
-        ),
+                task_key: subscribed_task_key,
+            }
+            | SubscriptionTopic::ManagedTaskWorkload {
+                task_key: subscribed_task_key,
+                ..
+            } => subscribed_task_key == task_key,
+            _ => false,
+        },
     }
 }
 
@@ -20610,6 +20985,10 @@ mod tests {
                 "system.managed-tasks.timeline",
                 "system.managed-tasks.timeline/v1",
             ),
+            (
+                "system.managed-tasks.catalog",
+                "system.managed-tasks.catalog/v1",
+            ),
         ];
         for (name, epoch) in cases {
             let descriptor = SubscriptionTopicDescriptor {
@@ -20642,29 +21021,157 @@ mod tests {
             })
             .is_err()
         );
+
+        let workload_descriptor = SubscriptionTopicDescriptor {
+            topic: "system.managed-tasks.workload".to_string(),
+            params: btree_map_from_pairs([
+                ("taskKey", "retention_archive".to_string()),
+                ("windowHours", "24".to_string()),
+                ("limit", "200".to_string()),
+            ]),
+        };
+        let workload = SubscriptionTopic::from_descriptor(&workload_descriptor)
+            .expect("managed task workload topic should parse");
+        assert_eq!(workload.descriptor(), workload_descriptor);
+        assert_eq!(workload.schema_epoch(), "system.managed-tasks.workload/v1");
+        assert_eq!(workload.class(), SubscriptionTopicClass::BoundedColdHydrate);
+        assert!(workload.runtime_topic_dependencies().is_empty());
+        for params in [
+            btree_map_from_pairs([
+                ("taskKey", "retention_archive".to_string()),
+                ("windowHours", "23".to_string()),
+                ("limit", "200".to_string()),
+            ]),
+            btree_map_from_pairs([
+                ("taskKey", "retention_archive".to_string()),
+                ("windowHours", "24".to_string()),
+                ("limit", "201".to_string()),
+            ]),
+            btree_map_from_pairs([
+                ("windowHours", "24".to_string()),
+                ("limit", "200".to_string()),
+            ]),
+        ] {
+            assert!(
+                SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                    topic: "system.managed-tasks.workload".to_string(),
+                    params,
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]
     fn managed_task_observation_changes_refresh_only_the_matching_sse_topic() {
         let runtime = SubscriptionTopic::ManagedTaskRuntime;
         let timeline = SubscriptionTopic::ManagedTaskTimeline;
+        let catalog = SubscriptionTopic::ManagedTaskCatalog;
         let detail = SubscriptionTopic::ManagedTaskDetail {
             task_key: "retention_archive".to_string(),
+        };
+        let workload = SubscriptionTopic::ManagedTaskWorkload {
+            task_key: "retention_archive".to_string(),
+            window_hours: 24,
+            limit: 200,
         };
         use crate::task_timeline::TaskObservationChange::{Runtime, Timeline};
 
         assert!(managed_task_change_matches_topic(&Runtime, &runtime));
         assert!(!managed_task_change_matches_topic(&Runtime, &timeline));
+        assert!(managed_task_change_matches_topic(&Runtime, &catalog));
         assert!(!managed_task_change_matches_topic(&Timeline, &runtime));
         assert!(managed_task_change_matches_topic(&Timeline, &timeline));
+        assert!(managed_task_change_matches_topic(&Timeline, &catalog));
         assert!(managed_task_change_matches_topic(
             &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
             &detail,
+        ));
+        assert!(managed_task_change_matches_topic(
+            &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
+            &catalog,
+        ));
+        assert!(managed_task_change_matches_topic(
+            &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
+            &workload,
         ));
         assert!(!managed_task_change_matches_topic(
             &crate::task_timeline::TaskObservationChange::Workload("another_task".to_string()),
             &detail,
         ));
+        assert!(!managed_task_change_matches_topic(
+            &crate::task_timeline::TaskObservationChange::Workload("another_task".to_string()),
+            &workload,
+        ));
+    }
+
+    #[tokio::test]
+    async fn managed_task_refresh_generation_covers_every_task_topic() {
+        let hub = SubscriptionHub::new();
+        let topics = [
+            SubscriptionTopic::ManagedTaskCatalog,
+            SubscriptionTopic::ManagedTaskRuntime,
+            SubscriptionTopic::ManagedTaskTimeline,
+            SubscriptionTopic::ManagedTaskDetail {
+                task_key: "retention_archive".to_string(),
+            },
+            SubscriptionTopic::ManagedTaskWorkload {
+                task_key: "retention_archive".to_string(),
+                window_hours: 24,
+                limit: 200,
+            },
+        ];
+
+        for topic in topics {
+            assert!(is_managed_task_refresh_topic(&topic));
+            assert!(hub.mark_managed_task_topic_dirty(&topic).await);
+            assert!(hub.mark_managed_task_topic_dirty(&topic).await);
+            let topic_key = topic.cache_key().expect("managed task topic key");
+            let generation = hub
+                .state
+                .lock()
+                .await
+                .managed_task_refresh_generations
+                .get(&topic_key)
+                .copied();
+            assert_eq!(generation, Some(2));
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_managed_task_timeline_refresh_releases_coalescing_latch() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::ManagedTaskTimeline;
+        let topic_key = topic.cache_key().expect("managed task timeline key");
+        let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
+        cached.dirty = true;
+        cached.snapshot_payload = json!({"watermark": 1});
+        {
+            let mut guard = hub.state.lock().await;
+            guard.topics.insert(topic_key.clone(), cached);
+            guard.active_subscribers.insert(topic_key.clone(), 1);
+        }
+
+        let result = hub.refresh_topic_if_active(state, topic, true).await;
+        assert!(
+            result.is_err(),
+            "malformed cached timeline must fail closed"
+        );
+
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached managed task timeline topic");
+        assert!(cached.dirty, "failed refresh must retain the last-good gap");
+        assert!(
+            !cached.refresh_scheduled,
+            "failed refresh must release the retry latch"
+        );
     }
 
     #[test]

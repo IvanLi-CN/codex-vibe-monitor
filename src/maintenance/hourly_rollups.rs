@@ -38,10 +38,20 @@ async fn sync_hourly_rollups_from_live_tables_with_scope(
     invocation_live_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
+    sync_hourly_rollups_from_live_tables_with_scope_and_work(pool, invocation_live_days, scope)
+        .await
+        .map(|_| ())
+}
+
+pub(crate) async fn sync_hourly_rollups_from_live_tables_with_scope_and_work(
+    pool: &Pool<Sqlite>,
+    invocation_live_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<u64> {
     let mut attempt = 1_u32;
     loop {
         match sync_hourly_rollups_from_live_tables_once(pool, invocation_live_days, scope).await {
-            Ok(()) => return Ok(()),
+            Ok(work_count) => return Ok(work_count),
             Err(err)
                 if attempt < LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS
                     && crate::is_sqlite_lock_error(&err) =>
@@ -72,18 +82,41 @@ async fn sync_hourly_rollups_from_live_tables_once(
     pool: &Pool<Sqlite>,
     invocation_live_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
-) -> Result<()> {
+) -> Result<u64> {
+    let mut work_count = 0_u64;
     if scope == HourlyRollupRefreshScope::Full {
         repair_active_account_activity_v2_coverage(pool).await?;
     }
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
+        work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
     }
     loop {
         let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
+        work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
@@ -91,6 +124,17 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
+        work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
@@ -98,17 +142,43 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
+        work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
+    work_count = work_count.saturating_add(repaired_activity_v2_rows);
+    if repaired_activity_v2_rows > 0 {
+        crate::record_managed_task_discovered_work(
+            &["startup_hourly_rollup_bootstrap"],
+            i64::try_from(repaired_activity_v2_rows).unwrap_or(i64::MAX),
+        );
+        crate::record_managed_task_processed_work(
+            &["startup_hourly_rollup_bootstrap"],
+            i64::try_from(repaired_activity_v2_rows).unwrap_or(i64::MAX),
+        );
+    }
+    if work_count == 0 {
+        crate::record_managed_task_discovered_work(&["startup_hourly_rollup_bootstrap"], 0);
+        crate::record_managed_task_processed_work(&["startup_hourly_rollup_bootstrap"], 0);
+    }
     wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))
             .await?;
     }
-    Ok(())
+    Ok(work_count)
 }
 
 pub(crate) async fn wake_account_activity_v2_coverage_repair(
@@ -2744,139 +2814,161 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<PoolUpstreamNodeHealthArchiveBackfillSummary> {
-    let started_at = Instant::now();
-    let mut replay_started_any_pending_batch = false;
+    let mut committed_scanned_batches = 0_u64;
+    let mut committed_materialized_batches = 0_u64;
+    let result = async {
+        let started_at = Instant::now();
+        let mut replay_started_any_pending_batch = false;
 
-    let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
-    for archive_file in archive_files {
-        let archive_path = PathBuf::from(&archive_file.file_path);
-        if archive_path.parent().is_none_or(|parent| !parent.exists()) || !archive_path.is_file() {
-            summary.scanned_batches += 1;
-            continue;
-        }
-        let _archive_lock = retention_archive_file_lock(&archive_path)?;
-        let Some(expected_sha256) = archive_file.sha256.as_deref() else {
-            summary.scanned_batches += 1;
-            continue;
-        };
-        if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
-            summary.scanned_batches += 1;
-            continue;
-        }
-        let mut tx = pool.begin().await?;
-        if !archive_batch_has_completed_manifest_sha_tx(
-            tx.as_mut(),
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            // Keep a source without immutable manifest proof pending and untouched. Marking it
-            // replayed would only create repeated work while still failing strict readers.
-            tx.commit().await?;
-            continue;
-        }
-        if hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            tx.commit().await?;
-            continue;
-        }
-        if pool_upstream_node_health_archive_has_stale_replay_marker_tx(
-            tx.as_mut(),
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            // The archive may have removed rows that were previously eligible for the cache.
-            // Replace both cache layers from the new source before accepting SHA B.
-            reset_replaced_pool_upstream_node_health_archive_state_tx(
+        let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
+        for archive_file in archive_files {
+            let archive_path = PathBuf::from(&archive_file.file_path);
+            if archive_path.parent().is_none_or(|parent| !parent.exists())
+                || !archive_path.is_file()
+            {
+                summary.scanned_batches += 1;
+                committed_scanned_batches = summary.scanned_batches;
+                continue;
+            }
+            let _archive_lock = retention_archive_file_lock(&archive_path)?;
+            let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+                summary.scanned_batches += 1;
+                committed_scanned_batches = summary.scanned_batches;
+                continue;
+            };
+            if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+                summary.scanned_batches += 1;
+                committed_scanned_batches = summary.scanned_batches;
+                continue;
+            }
+            let mut tx = pool.begin().await?;
+            if !archive_batch_has_completed_manifest_sha_tx(
                 tx.as_mut(),
-                archive_file.id,
+                "pool_upstream_request_attempts",
                 &archive_file.file_path,
             )
-            .await?;
-        }
-
-        if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
-            || (replay_started_any_pending_batch
-                && historical_rollup_elapsed_budget_reached(started_at, max_elapsed))
-        {
-            summary.hit_budget = true;
-            tx.commit().await?;
-            break;
-        }
-
-        summary.scanned_batches += 1;
-        let replay_cursor = load_hourly_rollup_archive_progress_tx(
-            tx.as_mut(),
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?;
-
-        replay_started_any_pending_batch = true;
-        let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        let archive_pool = open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
-        {
-            let mut archive_conn = archive_pool.acquire().await?;
-            ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
-                .await?;
-        }
-        let (replay_outcome, cached_rows) =
-            replay_pool_upstream_node_health_archive_rows_tx_with_budget(
+            .await?
+            {
+                // Keep a source without immutable manifest proof pending and untouched. Marking it
+                // replayed would only create repeated work while still failing strict readers.
+                tx.commit().await?;
+                continue;
+            }
+            if hourly_rollup_archive_replayed_tx(
                 tx.as_mut(),
-                &archive_pool,
+                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
                 &archive_file.file_path,
-                replay_cursor,
-                started_at,
-                max_elapsed,
             )
-            .await?;
-        archive_pool.close().await;
-        summary.cached_rows += cached_rows;
-        if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
-            if replay_outcome.cursor_id > replay_cursor {
-                save_hourly_rollup_archive_progress_tx(
+            .await?
+            {
+                tx.commit().await?;
+                continue;
+            }
+            if pool_upstream_node_health_archive_has_stale_replay_marker_tx(
+                tx.as_mut(),
+                &archive_file.file_path,
+            )
+            .await?
+            {
+                // The archive may have removed rows that were previously eligible for the cache.
+                // Replace both cache layers from the new source before accepting SHA B.
+                reset_replaced_pool_upstream_node_health_archive_state_tx(
                     tx.as_mut(),
-                    "pool_upstream_request_attempts",
+                    archive_file.id,
                     &archive_file.file_path,
-                    replay_outcome.cursor_id,
                 )
                 .await?;
             }
+
+            if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
+                || (replay_started_any_pending_batch
+                    && historical_rollup_elapsed_budget_reached(started_at, max_elapsed))
+            {
+                summary.hit_budget = true;
+                tx.commit().await?;
+                break;
+            }
+
+            summary.scanned_batches += 1;
+            let replay_cursor = load_hourly_rollup_archive_progress_tx(
+                tx.as_mut(),
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?;
+
+            replay_started_any_pending_batch = true;
+            let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
+            let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+            let archive_pool =
+                open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
+            {
+                let mut archive_conn = archive_pool.acquire().await?;
+                ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
+                    .await?;
+            }
+            let (replay_outcome, cached_rows) =
+                replay_pool_upstream_node_health_archive_rows_tx_with_budget(
+                    tx.as_mut(),
+                    &archive_pool,
+                    &archive_file.file_path,
+                    replay_cursor,
+                    started_at,
+                    max_elapsed,
+                )
+                .await?;
+            archive_pool.close().await;
+            summary.cached_rows += cached_rows;
+            if replay_outcome.outcome == HistoricalRollupArchiveReplayOutcome::HitBudget {
+                if replay_outcome.cursor_id > replay_cursor {
+                    save_hourly_rollup_archive_progress_tx(
+                        tx.as_mut(),
+                        "pool_upstream_request_attempts",
+                        &archive_file.file_path,
+                        replay_outcome.cursor_id,
+                    )
+                    .await?;
+                }
+                tx.commit().await?;
+                std::mem::forget(temp_cleanup);
+                committed_scanned_batches = summary.scanned_batches;
+                summary.hit_budget = true;
+                break;
+            }
+            drop(temp_cleanup);
+            delete_hourly_rollup_archive_progress_tx(
+                tx.as_mut(),
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?;
+            mark_hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?;
             tx.commit().await?;
-            std::mem::forget(temp_cleanup);
-            summary.hit_budget = true;
-            break;
+            summary.materialized_batches += 1;
+            committed_scanned_batches = summary.scanned_batches;
+            committed_materialized_batches = summary.materialized_batches;
         }
-        drop(temp_cleanup);
-        delete_hourly_rollup_archive_progress_tx(
-            tx.as_mut(),
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?;
-        mark_hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?;
-        tx.commit().await?;
-        summary.materialized_batches += 1;
+
+        summary.pending_batches = pending_pool_upstream_node_health_archive_batches(pool).await?;
+
+        Ok::<PoolUpstreamNodeHealthArchiveBackfillSummary, anyhow::Error>(summary)
     }
-
-    summary.pending_batches = pending_pool_upstream_node_health_archive_batches(pool).await?;
-
-    Ok(summary)
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: 0,
+            scanned: committed_scanned_batches,
+            updated: committed_materialized_batches,
+        })
+    })
 }
 
 pub(crate) async fn backfill_pool_upstream_node_health_archives(
@@ -2901,75 +2993,90 @@ pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives_for_files
     max_archive_batches: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<PoolUpstreamNodeHealthHourlyArchiveBackfillSummary> {
-    let started_at = Instant::now();
-    let mut summary = PoolUpstreamNodeHealthHourlyArchiveBackfillSummary::default();
+    let mut committed_scanned_batches = 0_u64;
+    let mut committed_materialized_batches = 0_u64;
+    let result = async {
+        let started_at = Instant::now();
+        let mut summary = PoolUpstreamNodeHealthHourlyArchiveBackfillSummary::default();
 
-    for archive_file in archive_files {
-        if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
-            || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
-        {
-            summary.hit_budget = true;
-            break;
-        }
+        for archive_file in archive_files {
+            if max_archive_batches.is_some_and(|limit| summary.materialized_batches >= limit)
+                || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+            {
+                summary.hit_budget = true;
+                break;
+            }
 
-        summary.scanned_batches += 1;
-        let mut tx = pool.begin().await?;
-        if !archive_batch_has_completed_manifest_sha_tx(
-            tx.as_mut(),
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            tx.commit().await?;
-            continue;
-        }
-        if hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            tx.commit().await?;
-            continue;
-        }
-
-        if !hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?
-        {
-            tx.commit().await?;
-            continue;
-        }
-
-        let materialized_rows =
-            refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+            summary.scanned_batches += 1;
+            let mut tx = pool.begin().await?;
+            if !archive_batch_has_completed_manifest_sha_tx(
                 tx.as_mut(),
-                archive_file.id,
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?
+            {
+                tx.commit().await?;
+                continue;
+            }
+            if hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?
+            {
+                tx.commit().await?;
+                continue;
+            }
+
+            if !hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
+                &archive_file.file_path,
+            )
+            .await?
+            {
+                tx.commit().await?;
+                continue;
+            }
+
+            let materialized_rows =
+                refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+                    tx.as_mut(),
+                    archive_file.id,
+                    &archive_file.file_path,
+                )
+                .await?;
+            mark_hourly_rollup_archive_replayed_tx(
+                tx.as_mut(),
+                POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
+                "pool_upstream_request_attempts",
                 &archive_file.file_path,
             )
             .await?;
-        mark_hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-            "pool_upstream_request_attempts",
-            &archive_file.file_path,
-        )
-        .await?;
-        tx.commit().await?;
-        summary.materialized_batches += 1;
-        summary.materialized_rows += materialized_rows;
-    }
+            tx.commit().await?;
+            summary.materialized_batches += 1;
+            summary.materialized_rows += materialized_rows;
+            committed_scanned_batches = summary.scanned_batches;
+            committed_materialized_batches = summary.materialized_batches;
+        }
 
-    summary.pending_batches =
-        pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;
-    Ok(summary)
+        summary.pending_batches =
+            pending_pool_upstream_node_health_hourly_archive_batches(pool).await?;
+        Ok::<PoolUpstreamNodeHealthHourlyArchiveBackfillSummary, anyhow::Error>(summary)
+    }
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: 0,
+            scanned: committed_scanned_batches,
+            updated: committed_materialized_batches,
+        })
+    })
 }
 
 pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives(
@@ -3183,11 +3290,33 @@ pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup(
     .await
 }
 
+pub(crate) async fn bootstrap_hourly_rollups_for_runtime_startup_with_work(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+) -> Result<u64> {
+    bootstrap_hourly_rollups_with_scope_and_work(
+        pool,
+        invocation_full_detail_days,
+        runtime_startup_hourly_rollup_refresh_scope(),
+    )
+    .await
+}
+
 async fn bootstrap_hourly_rollups_with_scope(
     pool: &Pool<Sqlite>,
     invocation_full_detail_days: Option<u64>,
     scope: HourlyRollupRefreshScope,
 ) -> Result<()> {
+    bootstrap_hourly_rollups_with_scope_and_work(pool, invocation_full_detail_days, scope)
+        .await
+        .map(|_| ())
+}
+
+async fn bootstrap_hourly_rollups_with_scope_and_work(
+    pool: &Pool<Sqlite>,
+    invocation_full_detail_days: Option<u64>,
+    scope: HourlyRollupRefreshScope,
+) -> Result<u64> {
     let usage_breakdown_started_at = Instant::now();
     repair_live_invocation_usage_breakdown_rollups(pool).await?;
     info!(
@@ -3197,8 +3326,12 @@ async fn bootstrap_hourly_rollups_with_scope(
     );
 
     let live_sync_started_at = Instant::now();
-    sync_hourly_rollups_from_live_tables_with_scope(pool, invocation_full_detail_days, scope)
-        .await?;
+    let work_count = sync_hourly_rollups_from_live_tables_with_scope_and_work(
+        pool,
+        invocation_full_detail_days,
+        scope,
+    )
+    .await?;
     info!(
         rollup_bootstrap_step = "live_rollup_sync",
         elapsed_ms = live_sync_started_at.elapsed().as_millis() as u64,
@@ -3247,7 +3380,7 @@ async fn bootstrap_hourly_rollups_with_scope(
             "hourly rollup bootstrap step completed"
         );
     }
-    Ok(())
+    Ok(work_count)
 }
 
 fn runtime_startup_hourly_rollup_refresh_scope() -> HourlyRollupRefreshScope {
@@ -3560,6 +3693,10 @@ pub(crate) fn build_system_routes(router: Router<Arc<AppState>>) -> Router<Arc<A
         .route(
             "/api/system/managed-tasks/timeline",
             get(get_managed_task_timeline),
+        )
+        .route(
+            "/api/system/managed-tasks/{task_key}/workload",
+            get(get_managed_task_workload),
         )
         .route(
             "/api/system/managed-tasks/{task_key}",

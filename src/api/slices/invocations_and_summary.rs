@@ -103,8 +103,9 @@ pub(crate) use invocation_workflow_detail::{
 };
 
 pub(crate) use summary_projection_lifecycle::{
-    SummaryCoverageRecoverySupervisor, hydrate_summary_snapshots_with_deadline,
-    refresh_summary_snapshots, spawn_summary_coverage_recovery_maintenance,
+    SummaryCoverageRecoveryNextTurn, SummaryCoverageRecoverySupervisor,
+    hydrate_summary_snapshots_with_deadline, refresh_summary_snapshots,
+    spawn_summary_coverage_recovery_maintenance,
 };
 
 #[cfg(test)]
@@ -114,8 +115,7 @@ pub(crate) use summary_projection_lifecycle::{
 
 #[cfg(test)]
 pub(crate) use summary_projection_lifecycle::{
-    SummaryCoverageRecoveryNextTurn, SummaryLiveTailReconciliationCheckpoint,
-    load_summary_live_tail_reconciliation_checkpoint,
+    SummaryLiveTailReconciliationCheckpoint, load_summary_live_tail_reconciliation_checkpoint,
     note_summary_projection_boundary_archive_hydration,
     note_summary_projection_historical_identity_hydration,
     renew_summary_projection_freshness_if_generation_matches,
@@ -16450,6 +16450,12 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
         let mut last_refresh_attempt = None;
         let mut retry_not_before = None;
         let mut dirty = false;
+        // The journal is a retained overlay rather than a per-refresh queue. Keep a local
+        // identity set so a successful refresh counts each accepted terminal contribution once.
+        let mut counted_summary_snapshot_contributions = state
+            .subscription_hub
+            .summary_delta_journal_unabsorbed_identities()
+            .await;
         loop {
             let trigger_refresh = tokio::select! {
                 _ = state.shutdown.cancelled() => return,
@@ -16509,13 +16515,41 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 "processing",
             );
             last_refresh_attempt = Some(Instant::now());
-            let refresh_result = tokio::select! {
-                biased;
-                _ = state.shutdown.cancelled() => return,
-                result = refresh_summary_snapshots(state.as_ref()) => result,
+            let journal_before = state
+                .subscription_hub
+                .summary_delta_journal_unabsorbed_identities()
+                .await;
+            let refresh_result = crate::with_managed_task_observation(observation.clone(), async {
+                tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => None,
+                    result = refresh_summary_snapshots(state.as_ref()) => Some(result),
+                }
+            })
+            .await;
+            let Some(refresh_result) = refresh_result else {
+                return;
             };
             let status = match refresh_result {
                 Ok(()) => {
+                    let journal_after = state
+                        .subscription_hub
+                        .summary_delta_journal_unabsorbed_identities()
+                        .await;
+                    let contribution_count = journal_before
+                        .difference(&counted_summary_snapshot_contributions)
+                        .count();
+                    counted_summary_snapshot_contributions
+                        .retain(|identity| journal_after.contains(identity));
+                    counted_summary_snapshot_contributions.extend(journal_before);
+                    crate::record_managed_task_discovered_work(
+                        &["summary_snapshot"],
+                        i64::try_from(contribution_count).unwrap_or(i64::MAX),
+                    );
+                    crate::record_managed_task_processed_work(
+                        &["summary_snapshot"],
+                        i64::try_from(contribution_count).unwrap_or(i64::MAX),
+                    );
                     dirty = false;
                     retry_not_before = None;
                     "success"

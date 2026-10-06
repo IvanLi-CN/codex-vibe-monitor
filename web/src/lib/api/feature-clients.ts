@@ -93,6 +93,7 @@ export {
   fetchManagedTaskRuntime,
   fetchManagedTasks,
   fetchManagedTaskTimeline,
+  fetchManagedTaskWorkload,
   fetchModelRoutingLive,
   fetchModelsDevSyncMemory,
   fetchOauthLoginSession,

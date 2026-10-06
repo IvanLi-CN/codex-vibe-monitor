@@ -27,12 +27,15 @@
 
 ## Current Delivery Facts
 
+- The owner selected workload counts, rather than execution duration, for task-catalog row backgrounds and approved expanding reliable task-specific measurement coverage. The current candidate implements recent-run summaries, a rolling 24-hour window capped at 200 attempts per task, bounded visible-row loading, and the agreed collectors while preserving the detail contract's recent-100 run-order view. Already removed measurements remain historical unknowns; canonical visual assets remain owner-gated until the mock-only candidate screenshots are confirmed.
+
 - The accepted implementation includes process-local runtime observation, separate live dispatcher and admission wait lists, stable persisted task colors, a restart-safe execution/deferral timeline, bounded revision-based reads, and durable task workload samples, alongside the 37-entry capability catalog, safe schedule editing, reset-to-default semantics, combined filters, and responsive detail views.
 - The catalog computes default policy metadata without writing schedule overrides. Existing unsupported overrides remain readable and require an explicit reset; `enabled` is preserved when overrides are cleared.
 - Legacy run-history request timestamps and durations retain their previous meanings; the implementation does not infer actual execution start times from them.
 - The owner confirmed the mock-only desktop/mobile timeline and SSE connection-state evidence on 2026-10-02. Canonical assets are stored in `docs/specs/task-operations/assets/`; the mobile capture keeps the 12-hour chart compact without row labels.
 - The owner confirmed all six workload-chart rectification screenshots on 2026-10-04. The accepted Storybook evidence replaces the earlier workload images and covers shared single-row Tabs, Retention's time view, mobile chart space, hidden-pending rescaling, and a running task without counters.
 - The owner confirmed six header-alignment screenshots on 2026-10-05 and authorized Spec and PR reuse. They replace the prior canonical images and demonstrate the heading and view Tabs sharing one row with opposite-edge alignment on desktop and mobile.
+- The owner confirmed the catalog background screenshots on 2026-10-06 and authorized visual-evidence submission. The final assets show the P/D/C background spanning each task row on desktop and mobile; a follow-up rendering correction closes filled areas at observed endpoints, removing the false diagonal edge caused by fixed chart-boundary closure.
 - PR #1074's reconnect Storybook fixture allows 750 ms before the simulated disconnect while preserving its connection-state assertions and timer cleanup. The test-only correction passed current-head CI at `62354bb8`; it does not change production SSE behavior or the accepted workload-chart evidence.
 
 ## Related Changes

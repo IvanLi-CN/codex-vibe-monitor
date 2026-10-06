@@ -20,6 +20,7 @@ import type {
   TaskTimelineCoverage,
   TaskTimelinePage,
   TaskTimelineSegment,
+  TaskWorkloadTrend,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
 import { getCurrentSseStatus, getTopicDescriptorKey } from "../../lib/sse";
@@ -392,6 +393,36 @@ const STORYBOOK_RETENTION_FIXTURE = buildRetentionWorkloadFixture({
 const STORYBOOK_RETENTION_BACKLOG_TREND = STORYBOOK_RETENTION_FIXTURE.backlog;
 const STORYBOOK_WORKLOAD_SAMPLES = STORYBOOK_RETENTION_FIXTURE.samples;
 const STORYBOOK_LATEST_WORKLOAD_RUN = STORYBOOK_WORKLOAD_SAMPLES.at(-1);
+const STORYBOOK_CATALOG_EMPTY_WORKLOAD: TaskWorkloadTrend = {
+  revision: 1,
+  coverage: "no recorded attempts",
+  samples: [],
+  clearanceEstimateReason: "insufficient_samples",
+};
+const STORYBOOK_CATALOG_WORKLOAD_TRENDS = new Map<string, TaskWorkloadTrend>([
+  ["retention_archive", STORYBOOK_RETENTION_FIXTURE.trend],
+  [
+    "upstream_account_maintenance",
+    buildRetentionWorkloadFixture({
+      taskKey: "upstream_account_maintenance",
+      nowMs: STORYBOOK_TASK_NOW,
+      sampleCount: 18,
+      intervalMs: 80 * 60_000,
+      finalPending: 148,
+    }).trend,
+  ],
+  [
+    "forward_proxy_subscription_refresh",
+    buildRetentionWorkloadFixture({
+      taskKey: "forward_proxy_subscription_refresh",
+      nowMs: STORYBOOK_TASK_NOW,
+      sampleCount: 12,
+      intervalMs: 2 * 60 * 60_000,
+      finalPending: 7,
+    }).trend,
+  ],
+  ["summary_snapshot", STORYBOOK_CATALOG_EMPTY_WORKLOAD],
+]);
 const STORYBOOK_LATEST_RUN_START =
   STORYBOOK_LATEST_WORKLOAD_RUN?.actualStartedAt ?? new Date(STORYBOOK_TASK_NOW).toISOString();
 const STORYBOOK_LATEST_RUN_END =
@@ -1300,6 +1331,19 @@ function buildSystemWorkspaceRequestHandler(
       return jsonResponse(clone(STORYBOOK_TASK_TIMELINE));
     }
 
+    const managedTaskWorkloadMatch = url.pathname.match(
+      /^\/api\/system\/managed-tasks\/([^/]+)\/workload$/,
+    );
+    if (managedTaskWorkloadMatch && method === "GET") {
+      const taskKey = managedTaskWorkloadMatch[1];
+      if (taskKey === "pool_orphan_recovery") {
+        return jsonResponse({ message: "storybook workload request failed" }, 503);
+      }
+      return jsonResponse(
+        clone(STORYBOOK_CATALOG_WORKLOAD_TRENDS.get(taskKey) ?? STORYBOOK_CATALOG_EMPTY_WORKLOAD),
+      );
+    }
+
     const managedTaskDetailMatch = url.pathname.match(/^\/api\/system\/managed-tasks\/([^/]+)$/);
     if (managedTaskDetailMatch && method === "GET") {
       return jsonResponse(
@@ -1664,6 +1708,12 @@ function TaskPageSseFixture({ children }: { children: ReactNode }) {
       const controller = getStorybookPageSseController();
       if (!controller) return;
       for (const [descriptor, schemaEpoch, payload, cursor] of [
+        [
+          { topic: "system.managed-tasks.catalog" },
+          "system.managed-tasks.catalog/v1",
+          STORYBOOK_MANAGED_TASKS,
+          1,
+        ],
         [
           { topic: "system.managed-tasks.runtime" },
           "system.managed-tasks.runtime/v1",
@@ -2439,6 +2489,24 @@ export const Tasks: Story = {
     await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(1440);
     await expect(canvas.findByRole("heading", { name: "任务运维" })).resolves.toBeVisible();
     await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
+    await expect(canvas.findAllByText("最近一次执行")).resolves.toHaveLength(37);
+    const retentionSparkline = await canvas.findByTestId(
+      "task-workload-sparkline-retention_archive",
+    );
+    retentionSparkline.scrollIntoView({ block: "center" });
+    await waitFor(() => expect(retentionSparkline.querySelector("svg")).not.toBeNull());
+    const workloadAreas = [...retentionSparkline.querySelectorAll("path[fill]")].filter((path) =>
+      ["#42a5f5", "#a66cff", "#28c98b"].includes(path.getAttribute("fill") ?? ""),
+    );
+    expect(workloadAreas.length).toBeGreaterThan(0);
+    expect(
+      workloadAreas.every((path) => !path.getAttribute("d")?.includes("L 320,48 L 0,48 Z")),
+    ).toBe(true);
+    const retentionRow = retentionSparkline.parentElement;
+    expect(retentionRow).not.toBeNull();
+    await expect(
+      within(retentionRow as HTMLElement).findByRole("button", { name: "查看运行计量" }),
+    ).resolves.toBeVisible();
     await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
     await expect(canvas.findByTestId("task-timeline")).resolves.toBeVisible();
     await expect(canvas.findByText("最近 12 小时")).resolves.toBeVisible();

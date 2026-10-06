@@ -5,6 +5,7 @@ import { SelectField } from "../../components/ui/select-field";
 import { ListBodyState } from "../../features/shared/ListBodyState";
 import { managedTaskColor } from "../../features/system/managedTaskColor";
 import { TaskTimelineChart } from "../../features/system/TaskTimelineChart";
+import { TaskWorkloadSparkline } from "../../features/system/TaskWorkloadSparkline";
 import useSseStatus from "../../hooks/useSseStatus";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
@@ -46,6 +47,32 @@ function formatUtc(value: string): string {
     hour12: false,
     timeZone: "Asia/Shanghai",
   }).format(new Date(timestamp));
+}
+
+function formatTaskDuration(durationMs: number | null | undefined): string {
+  if (durationMs == null || !Number.isFinite(durationMs)) return "—";
+  if (durationMs < 1_000) return `${Math.max(0, Math.round(durationMs))} 毫秒`;
+  return formatElapsed(durationMs);
+}
+
+function taskResultLabel(status: string): string {
+  switch (status) {
+    case "success":
+      return "成功";
+    case "partial":
+      return "部分完成";
+    case "failed":
+      return "失败";
+    case "cancelled":
+    case "interrupted":
+      return "已中断";
+    case "skipped":
+      return "确认跳过";
+    case "running":
+      return "运行中";
+    default:
+      return status || "未知";
+  }
 }
 
 function triggerMatches(task: ManagedTask, trigger: string): boolean {
@@ -209,6 +236,9 @@ export default function SystemTasksPage(): JSX.Element {
   const runtimeTopic = useSubscriptionTopic<TaskRuntimeSnapshot>({
     topic: "system.managed-tasks.runtime",
   });
+  const catalogTopic = useSubscriptionTopic<ManagedTask[]>({
+    topic: "system.managed-tasks.catalog",
+  });
   const timelineTopic = useSubscriptionTopic<TaskTimelinePage>({
     topic: "system.managed-tasks.timeline",
   });
@@ -216,6 +246,7 @@ export default function SystemTasksPage(): JSX.Element {
   const sseStatus = useSseStatus();
   const connectionLostAt = useRef<number | null>(null);
   const timelineWatermark = useRef<number | null>(null);
+  const catalogEpoch = useRef(0);
 
   useEffect(() => {
     if (runtime) {
@@ -265,16 +296,25 @@ export default function SystemTasksPage(): JSX.Element {
   }, [sseStatus.phase, sseStatus.downtimeMs]);
 
   useEffect(() => {
+    if (!catalogTopic.data) return;
+    catalogEpoch.current += 1;
+    setTasks(catalogTopic.data);
+    setError(null);
+    setLoading(false);
+  }, [catalogTopic.data]);
+
+  useEffect(() => {
     let active = true;
+    const requestEpoch = catalogEpoch.current;
     void fetchManagedTasks()
       .then((catalog) => {
-        if (active) {
+        if (active && catalogEpoch.current === requestEpoch) {
           setTasks(catalog);
           setError(null);
         }
       })
       .catch((reason: unknown) => {
-        if (!active) return;
+        if (!active || catalogEpoch.current !== requestEpoch) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       })
       .finally(() => {
@@ -282,12 +322,17 @@ export default function SystemTasksPage(): JSX.Element {
       });
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        const refreshEpoch = ++catalogEpoch.current;
         void fetchManagedTasks()
-          .then(setTasks)
-          .catch((reason: unknown) =>
-            setError(reason instanceof Error ? reason.message : String(reason)),
-          );
+          .then((catalog) => {
+            if (catalogEpoch.current === refreshEpoch) setTasks(catalog);
+          })
+          .catch((reason: unknown) => {
+            if (catalogEpoch.current !== refreshEpoch) return;
+            setError(reason instanceof Error ? reason.message : String(reason));
+          });
         runtimeTopic.refresh();
+        catalogTopic.refresh();
         timelineTopic.refresh();
       }
     };
@@ -298,7 +343,7 @@ export default function SystemTasksPage(): JSX.Element {
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(clockTimer);
     };
-  }, [runtimeTopic.refresh, timelineTopic.refresh]);
+  }, [catalogTopic.refresh, runtimeTopic.refresh, timelineTopic.refresh]);
 
   const taskByKey = useMemo(() => new Map(tasks.map((task) => [task.taskKey, task])), [tasks]);
   const filteredTasks = useMemo(
@@ -592,43 +637,78 @@ export default function SystemTasksPage(): JSX.Element {
           ) : null}
           <div className="divide-y divide-base-300/60 overflow-hidden rounded-md border border-base-300/70">
             {filteredTasks.map((task) => (
-              <Link
+              <div
                 key={task.taskKey}
-                to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
-                className="grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)_minmax(0,1.35fr)_auto] md:items-center"
+                className="relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center"
               >
-                <div className="min-w-0">
+                <TaskWorkloadSparkline task={task} dark={dark} mode="background" />
+                <div className="relative z-10 min-w-0">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="flex min-w-0 items-center gap-2">
+                    <Link
+                      to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
+                      className="flex min-w-0 items-center gap-2 hover:text-primary"
+                    >
                       <TaskDot task={task} dark={dark} />
                       <span className="break-words font-semibold">{task.title}</span>
-                    </span>
+                    </Link>
                     <span
                       className={`text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
                     >
                       {task.enabled ? "已启用" : "已停用"}
                     </span>
                   </div>
-                  <div className="mt-1 break-all pl-4 text-xs text-base-content/55">
+                  <Link
+                    to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
+                    className="mt-1 block break-all pl-4 text-xs text-base-content/55 hover:text-primary"
+                  >
                     {task.taskKey}
-                  </div>
+                  </Link>
                 </div>
-                <div className="text-sm">
+                <div className="relative z-10 text-sm">
                   <div className="text-xs text-base-content/55">触发方式</div>
                   <div className="mt-1">{managedTaskTriggerLabel(task)}</div>
                 </div>
-                <div className="text-sm">
+                <div className="relative z-10 text-sm">
                   <div className="text-xs text-base-content/55">生效计划</div>
                   <div className="mt-1">{task.effectivePolicy ?? "未知"}</div>
                   <div className="mt-1 text-xs text-base-content/55">
                     来源：{task.policySource ?? "未知"}
                   </div>
                 </div>
-                <div className="text-sm md:text-right">
+                <div className="relative z-10 text-sm">
+                  <div className="text-xs text-base-content/55">最近一次执行</div>
+                  {task.lastExecution ? (
+                    <>
+                      <div className="mt-1 font-medium">
+                        {formatUtc(task.lastExecution.attemptedAt)} ·{" "}
+                        {taskResultLabel(task.lastExecution.result)}
+                      </div>
+                      <div className="mt-1 text-xs text-base-content/55">
+                        用时 {formatTaskDuration(task.lastExecution.durationMs)} · 来源{" "}
+                        {task.lastExecution.triggerKind}
+                      </div>
+                      {task.lastExecution.reason ? (
+                        <div
+                          className="mt-1 line-clamp-1 text-xs text-base-content/55"
+                          title={task.lastExecution.reason}
+                        >
+                          {task.lastExecution.reason}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="mt-1 text-sm text-base-content/55">
+                      {task.executionObservation === "no recorded attempts"
+                        ? "尚无运行记录"
+                        : "观测未知"}
+                    </div>
+                  )}
+                </div>
+                <div className="relative z-10 text-sm md:text-right">
                   <div className="text-xs text-base-content/55">级别</div>
                   <div className="mt-1">{managedTaskExecutionClassLabel(task.executionClass)}</div>
                 </div>
-              </Link>
+              </div>
             ))}
           </div>
         </section>

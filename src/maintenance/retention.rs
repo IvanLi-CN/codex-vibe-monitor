@@ -10237,6 +10237,14 @@ async fn reset_retention_raw_payload_metrics_inventory_batch(
     let candidate_limit = retention_candidate_limit(&state.config, "raw_metrics_inventory_reset");
     let execute_started = Instant::now();
     let outcome = reset_system_raw_payload_metrics_inventory_batch(state, candidate_limit).await?;
+    crate::record_managed_task_discovered_work_delta(
+        &["raw_payload_metrics_inventory"],
+        i64::try_from(outcome.removed_path_count).unwrap_or(i64::MAX),
+    );
+    crate::record_managed_task_processed_work(
+        &["raw_payload_metrics_inventory"],
+        i64::try_from(outcome.removed_path_count).unwrap_or(i64::MAX),
+    );
     retention_record_commit!(
         "raw_metrics_inventory_reset",
         admission.admission_mode(),

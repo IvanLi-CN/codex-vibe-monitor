@@ -169,6 +169,7 @@ fn new_workload_sample(
         attempted_at: started_at.clone(),
         actual_started_at: Some(started_at.clone()),
         finished_at: None,
+        duration_ms: None,
         status: "running".to_string(),
         reason: None,
         sequence: 0,
@@ -211,9 +212,46 @@ pub(crate) async fn with_managed_task_observation<F: Future>(
 }
 
 pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64) {
+    if count < 0 {
+        return;
+    }
     let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
         if task_keys.contains(&observation.inner.task_key.as_str()) {
-            observation.add_processed_work(count);
+            if count == 0 {
+                observation.set_processed_work_if_unset();
+            } else {
+                observation.add_processed_work(count);
+            }
+        }
+    });
+}
+
+pub(crate) fn record_managed_task_discovered_work(task_keys: &[&str], count: i64) {
+    if count < 0 {
+        return;
+    }
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if task_keys.contains(&observation.inner.task_key.as_str()) {
+            if count == 0 {
+                observation.set_discovered_work_if_unset();
+            } else {
+                observation.set_discovered_work(
+                    count,
+                    format_utc_iso_millis(Utc::now()),
+                    "run-window".to_string(),
+                );
+            }
+        }
+    });
+}
+
+pub(crate) fn record_managed_task_discovered_work_delta(task_keys: &[&str], count: i64) {
+    if count < 0 {
+        return;
+    }
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if task_keys.contains(&observation.inner.task_key.as_str()) {
+            observation.add_discovered_work(count);
         }
     });
 }
@@ -393,6 +431,7 @@ impl TaskExecutionObservation {
             execution_uid: self.inner.execution_uid.clone(),
             task_key: task_key.to_string(),
             finalized: false,
+            started_clock: Instant::now(),
         }
     }
 
@@ -502,8 +541,68 @@ impl TaskExecutionObservation {
         );
     }
 
+    pub(crate) fn set_processed_work_if_unset(&self) {
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            false,
+            |sample| {
+                if let Some(metric) = sample_metric(sample, "processed")
+                    && metric.value.is_none()
+                {
+                    metric.value = Some(0);
+                    metric.range = "run-window".to_string();
+                    metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                    metric.coverage = "window".to_string();
+                }
+            },
+        );
+    }
+
+    pub(crate) fn set_discovered_work_if_unset(&self) {
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            false,
+            |sample| {
+                if let Some(metric) = sample_metric(sample, "discovered")
+                    && metric.value.is_none()
+                {
+                    metric.value = Some(0);
+                    metric.range = "run-window".to_string();
+                    metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                    metric.coverage = "window".to_string();
+                    refresh_subset_relation(sample);
+                }
+            },
+        );
+    }
+
     pub(crate) fn add_processed_work(&self, count: i64) {
         self.add_work("processed", count);
+    }
+
+    pub(crate) fn add_discovered_work(&self, count: i64) {
+        if count == 0 {
+            update_workload_sample(
+                &self.inner.execution_uid,
+                &self.inner.task_key,
+                false,
+                |sample| {
+                    if let Some(metric) = sample_metric(sample, "discovered")
+                        && metric.value.is_none()
+                    {
+                        metric.value = Some(0);
+                        metric.range = "run-window".to_string();
+                        metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                        metric.coverage = "window".to_string();
+                    }
+                    refresh_subset_relation(sample);
+                },
+            );
+            return;
+        }
+        self.add_work("discovered", count);
     }
 
     fn add_work(&self, key: &str, count: i64) {
@@ -569,7 +668,15 @@ impl TaskExecutionObservation {
             &self.inner.task_key,
             true,
             |sample| {
-                sample.finished_at = Some(format_utc_iso_millis(Utc::now()));
+                let finished_at = format_utc_iso_millis(Utc::now());
+                sample.finished_at = Some(finished_at);
+                sample.duration_ms = Some(
+                    self.inner
+                        .started_clock
+                        .elapsed()
+                        .as_millis()
+                        .min(i64::MAX as u128) as i64,
+                );
                 sample.status = status.to_string();
                 let has_metric_observation =
                     [&sample.pending, &sample.discovered, &sample.processed]
@@ -578,6 +685,8 @@ impl TaskExecutionObservation {
                         .any(|metric| metric.value.is_some());
                 if status == "skipped" && !has_metric_observation {
                     sample.actual_started_at = None;
+                    sample.finished_at = None;
+                    sample.duration_ms = None;
                 }
                 if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
                     sample.reason = Some(reason.to_string());
@@ -596,9 +705,20 @@ pub(crate) struct TaskWorkloadObservation {
     execution_uid: String,
     task_key: String,
     finalized: bool,
+    started_clock: Instant,
 }
 
 impl TaskWorkloadObservation {
+    pub(crate) fn set_discovered_work(&mut self, value: i64, observed_at: String, range: String) {
+        set_child_discovered_work(
+            &self.execution_uid,
+            &self.task_key,
+            value,
+            observed_at,
+            range,
+        );
+    }
+
     pub(crate) fn set_processed_work(&mut self, count: i64) {
         set_child_processed_work(&self.execution_uid, &self.task_key, count);
     }
@@ -626,6 +746,12 @@ impl TaskWorkloadObservation {
         self.finalized = true;
         update_workload_sample(&self.execution_uid, &self.task_key, true, |sample| {
             sample.finished_at = Some(format_utc_iso_millis(Utc::now()));
+            sample.duration_ms = Some(
+                self.started_clock
+                    .elapsed()
+                    .as_millis()
+                    .min(i64::MAX as u128) as i64,
+            );
             sample.status = status.to_string();
             let processed_count = sample.processed.as_ref().and_then(|metric| metric.value);
             if let Some(metric) = sample_metric(sample, "processed") {
@@ -645,6 +771,8 @@ impl TaskWorkloadObservation {
                 .any(|metric| metric.value.is_some());
             if status == "skipped" && !has_metric_observation {
                 sample.actual_started_at = None;
+                sample.finished_at = None;
+                sample.duration_ms = None;
             }
             if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
                 sample.reason = Some(reason.to_string());
@@ -665,6 +793,28 @@ fn set_child_processed_work(execution_uid: &str, task_key: &str, count: i64) {
             metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
             metric.coverage = "window".to_string();
         }
+    });
+}
+
+fn set_child_discovered_work(
+    execution_uid: &str,
+    task_key: &str,
+    count: i64,
+    observed_at: String,
+    range: String,
+) {
+    update_workload_sample(execution_uid, task_key, false, |sample| {
+        for key in ["discovered", "processed"] {
+            if let Some(metric) = sample_metric(sample, key) {
+                metric.range = range.clone();
+            }
+        }
+        if let Some(metric) = sample_metric(sample, "discovered") {
+            metric.value = Some(count.max(0));
+            metric.observed_at = Some(observed_at.clone());
+            metric.coverage = "window".to_string();
+        }
+        refresh_subset_relation(sample);
     });
 }
 
@@ -1147,7 +1297,8 @@ mod tests {
         assert_eq!(sample.status, "skipped");
         assert!(sample.actual_started_at.is_none());
         assert_eq!(sample.reason.as_deref(), Some("background_busy"));
-        assert!(sample.finished_at.is_some());
+        assert!(sample.finished_at.is_none());
+        assert!(sample.duration_ms.is_none());
     }
 
     #[test]

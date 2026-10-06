@@ -151,6 +151,7 @@ pub(crate) struct SummaryCoverageRecoverySupervisor;
 pub(crate) enum SummaryCoverageRecoveryNextTurn {
     Immediate,
     Idle,
+    Deferred,
 }
 
 #[derive(Debug)]
@@ -164,7 +165,9 @@ pub(crate) fn summary_coverage_recovery_next_turn_delay(
 ) -> Duration {
     match next_turn {
         SummaryCoverageRecoveryNextTurn::Immediate => Duration::ZERO,
-        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+        SummaryCoverageRecoveryNextTurn::Idle | SummaryCoverageRecoveryNextTurn::Deferred => {
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
+        }
     }
 }
 
@@ -432,8 +435,10 @@ impl SummaryCoverageRecoverySupervisor {
                     reason = %reason,
                     "summary historical coverage recovery deferred before durable progress access"
                 );
+                crate::record_managed_task_discovered_work(&["summary_coverage_recovery"], 0);
+                crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 0);
                 return Ok(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Idle,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                     reservation: None,
                 });
             }
@@ -450,6 +455,10 @@ impl SummaryCoverageRecoverySupervisor {
             SUMMARY_HISTORICAL_COVERAGE_BACKFILL_BUDGET,
         )
         .await?;
+        crate::record_managed_task_discovered_work(
+            &["summary_coverage_recovery"],
+            i64::try_from(priority_backfill.candidate_count).unwrap_or(i64::MAX),
+        );
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -613,7 +622,9 @@ impl SummaryCoverageRecoverySupervisor {
             );
         }
 
-        let backfill = if summary_coverage_recovery_requires_second_v2_turn(&priority_backfill) {
+        let needs_second_v2_turn =
+            summary_coverage_recovery_requires_second_v2_turn(&priority_backfill);
+        let backfill = if needs_second_v2_turn {
             #[cfg(test)]
             note_summary_coverage_v2_window();
             backfill_summary_archive_snapshots_v2_window(
@@ -628,6 +639,12 @@ impl SummaryCoverageRecoverySupervisor {
             );
             priority_backfill
         };
+        if needs_second_v2_turn {
+            crate::record_managed_task_discovered_work(
+                &["summary_coverage_recovery"],
+                i64::try_from(backfill.candidate_count).unwrap_or(i64::MAX),
+            );
+        }
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -754,13 +771,22 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            let initial_result = tokio::select! {
-                biased;
-                _ = state.shutdown.cancelled() => return,
-                result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
-                    state.as_ref(),
-                    startup_priority,
-                ) => result,
+            let initial_result = crate::with_managed_task_observation(
+                observation.clone(),
+                async {
+                    tokio::select! {
+                        biased;
+                        _ = state.shutdown.cancelled() => None,
+                        result = SummaryCoverageRecoverySupervisor::run_with_startup_priority_reservation(
+                            state.as_ref(),
+                            startup_priority,
+                        ) => Some(result),
+                    }
+                },
+            )
+            .await;
+            let Some(initial_result) = initial_result else {
+                return;
             };
             observation.finish_with_status(if initial_result.is_ok() {
                 "success"
@@ -798,13 +824,19 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
                 crate::maintenance_store::task_execution_class("summary_coverage_recovery"),
                 "processing",
             );
-            let result = tokio::select! {
-                biased;
-                _ = state.shutdown.cancelled() => return,
-                result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
-                    state.as_ref(),
-                    None,
-                ) => result,
+            let result = crate::with_managed_task_observation(observation.clone(), async {
+                tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => None,
+                    result = SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                        state.as_ref(),
+                        None,
+                    ) => Some(result),
+                }
+            })
+            .await;
+            let Some(result) = result else {
+                return;
             };
             observation.finish_with_status(if result.is_ok() { "success" } else { "skipped" });
             next_turn = match result {
