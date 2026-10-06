@@ -7,7 +7,6 @@ export interface StorybookPageSseController {
   emit: (payload: StorybookPageSsePayload) => void;
   emitOpen: () => void;
   emitError: () => void;
-  activeEventSourceCount: () => number;
   reset: () => void;
 }
 

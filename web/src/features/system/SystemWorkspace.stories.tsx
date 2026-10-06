@@ -22,7 +22,7 @@ import type {
   TaskTimelineSegment,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
-import { getTopicDescriptorKey } from "../../lib/sse";
+import { getCurrentSseStatus, getTopicDescriptorKey } from "../../lib/sse";
 import SystemLayout from "../../pages/system/SystemLayout";
 import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
@@ -1658,13 +1658,7 @@ function renderWorkspace(initialEntry: string) {
   );
 }
 
-function TaskPageSseFixture({
-  children,
-  reconnecting = false,
-}: {
-  children: ReactNode;
-  reconnecting?: boolean;
-}) {
+function TaskPageSseFixture({ children }: { children: ReactNode }) {
   useEffect(() => {
     const snapshotTimer = window.setTimeout(() => {
       const controller = getStorybookPageSseController();
@@ -1693,35 +1687,16 @@ function TaskPageSseFixture({
         });
       }
     }, 100);
-    let disconnectTimer: number | null = null;
-    let disconnectRetryTimer: number | null = null;
-    if (reconnecting) {
-      const emitDisconnectWhenConnected = () => {
-        const controller = getStorybookPageSseController();
-        if (!controller || controller.activeEventSourceCount() === 0) {
-          disconnectRetryTimer = window.setTimeout(emitDisconnectWhenConnected, 50);
-          return;
-        }
-        controller.emitError();
-      };
-      disconnectTimer = window.setTimeout(emitDisconnectWhenConnected, 750);
-    }
     return () => {
       window.clearTimeout(snapshotTimer);
-      if (disconnectTimer != null) window.clearTimeout(disconnectTimer);
-      if (disconnectRetryTimer != null) window.clearTimeout(disconnectRetryTimer);
     };
-  }, [reconnecting]);
+  }, []);
 
   return <>{children}</>;
 }
 
-function renderTaskWorkspace(reconnecting = false) {
-  return (
-    <TaskPageSseFixture reconnecting={reconnecting}>
-      {renderWorkspace("/system/tasks")}
-    </TaskPageSseFixture>
-  );
+function renderTaskWorkspace() {
+  return <TaskPageSseFixture>{renderWorkspace("/system/tasks")}</TaskPageSseFixture>;
 }
 
 export const Status: Story = {
@@ -2500,7 +2475,7 @@ export const TasksDark: Story = {
 };
 
 export const TasksSseReconnecting: Story = {
-  render: () => renderTaskWorkspace(true),
+  render: () => renderTaskWorkspace(),
   tags: ["test"],
   globals: {
     themeMode: "light",
@@ -2509,6 +2484,10 @@ export const TasksSseReconnecting: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
+    await waitFor(() => expect(getCurrentSseStatus().phase).toBe("connected"));
+    const controller = getStorybookPageSseController();
+    expect(controller).not.toBeNull();
+    controller?.emitError();
     await expect(canvas.findByRole("alert")).resolves.toHaveTextContent("实时数据断开，正在重连");
     await expect(canvas.findByTestId("task-timeline-now")).resolves.toBeVisible();
   },
