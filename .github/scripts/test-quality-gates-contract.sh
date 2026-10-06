@@ -893,7 +893,7 @@ if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" --repo-r
   exit 1
 fi
 
-grep -q "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
+grep -q "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer" "$tmp_dir/smoke-producer.log"
 
 e2e_producer_repo="$tmp_dir/e2e-producer-repo"
 copy_repo_snapshot "$baseline_repo" "$e2e_producer_repo"

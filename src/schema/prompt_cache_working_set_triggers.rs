@@ -26,6 +26,7 @@ pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
         new_live_window_condition = new_live_window_condition,
         refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+            "NEW.id",
         ),
     );
     let prompt_cache_update_trigger_sql = format!(
@@ -44,9 +45,11 @@ pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
         new_live_window_condition = new_live_window_condition,
         refresh_old_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+            "NEW.id",
         ),
         refresh_new_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("NEW"),
+            "NEW.id",
         ),
     );
     let prompt_cache_delete_trigger_sql = format!(
@@ -61,6 +64,7 @@ pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
         old_live_window_condition = old_live_window_condition,
         refresh_sql = prompt_cache_working_set_live_refresh_sql_for_key(
             &invocation_in_progress_live_prompt_cache_key_expr("OLD"),
+            "OLD.id",
         ),
     );
     let mut tx = pool
@@ -92,11 +96,19 @@ pub(super) async fn rebuild_prompt_cache_working_set_live_triggers(
     }
     // Timing-only terminal follow-ups must not scan the same live key twice. Record the
     // narrower trigger installation with its DDL so interrupted upgrades retry atomically.
-    record_schema_refresh_completion_in_transaction(
-        &mut tx,
-        PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+    let legacy_migration_completed: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations WHERE migration_name=?1)",
     )
+    .bind(PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME)
+    .fetch_one(tx.as_mut())
     .await?;
+    if !legacy_migration_completed {
+        record_schema_refresh_completion_in_transaction(
+            &mut tx,
+            PROMPT_CACHE_WORKING_SET_TRIGGER_REFRESH_MIGRATION_NAME,
+        )
+        .await?;
+    }
     tx.commit()
         .await
         .context("failed to commit prompt cache working set trigger refresh")?;

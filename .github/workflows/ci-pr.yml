@@ -1078,7 +1078,7 @@ jobs:
     name: Observability CPU Diagnosis
     needs: observability-performance-image
     # Temporary, owner-approved PR experiment; never a budget certificate.
-    if: github.event.pull_request.number == 1071
+    if: github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     steps:
@@ -1159,7 +1159,7 @@ jobs:
 
   build:
     name: Build Artifacts
-    needs: [build-pr-smoke-artifacts, observability-performance]
+    needs: build-pr-smoke-artifacts
     if: ${{ always() && github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -1168,11 +1168,6 @@ jobs:
         env:
           PRODUCER_RESULT: ${{ needs.build-pr-smoke-artifacts.result }}
         run: test "$PRODUCER_RESULT" = success
-
-      - name: Verify observability performance budget
-        env:
-          PERFORMANCE_RESULT: ${{ needs.observability-performance.result }}
-        run: test "$PERFORMANCE_RESULT" = success
 
       - name: Checkout
         uses: actions/checkout@v7

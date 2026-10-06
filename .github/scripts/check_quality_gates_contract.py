@@ -110,7 +110,7 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
     )
 
 
-def require_observability_performance_contract(workflow: dict[str, Any], build_job: dict[str, Any]) -> None:
+def require_observability_performance_contract(workflow: dict[str, Any]) -> None:
     performance_job = job_config(workflow, "observability-performance", "ci-pr.yml")
     image_job = job_config(workflow, "observability-performance-image", "ci-pr.yml")
     require(performance_job.get("name") == "Observability Performance Budget" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
@@ -149,9 +149,6 @@ def require_observability_performance_contract(workflow: dict[str, Any], build_j
     )
     acceptance = step_config(performance_job, "Run candidate-bound runtime and performance acceptance", "ci-pr.yml.jobs.observability-performance")
     require("--environment github-actions --suite full --seconds 300 --rate 5" in str(acceptance.get("run", "")), "performance gate must use the full fixed Actions acceptance contract")
-    guard = step_config(build_job, "Verify observability performance budget", "ci-pr.yml.jobs.build")
-    require_no_if(guard, "Build Artifacts performance result assertion")
-    require(guard.get("env", {}).get("PERFORMANCE_RESULT") == "${{ needs.observability-performance.result }}" and guard.get("run") == 'test "$PERFORMANCE_RESULT" = success', "Build Artifacts must fail when performance acceptance is not successful")
     upload = step_config(performance_job, "Upload performance acceptance evidence", "ci-pr.yml.jobs.observability-performance")
     require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
     evidence = str(upload.get("with", {}).get("path", "")).splitlines()
@@ -195,7 +192,7 @@ def require_observability_diagnostic_contract(workflow: dict[str, Any]) -> None:
     require(job.get("name") == "Observability CPU Diagnosis"
             and job.get("needs") == "observability-performance-image"
             and job.get("runs-on") == RUNNER_X64 and job.get("timeout-minutes") == 70
-            and job.get("if") == "github.event.pull_request.number == 1071",
+            and job.get("if") == "github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079",
             "diagnosis must be the bounded PR-only separate hosted VM experiment")
     require_job_and_steps_fail_closed(job, "ci-pr.yml.jobs.observability-diagnostics")
     performance = job_config(workflow, "observability-performance", "ci-pr.yml")
@@ -929,11 +926,11 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")
     performance_declared = "Observability Performance Budget" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ())
     require(
-        build_job.get("needs") == (["build-pr-smoke-artifacts", "observability-performance"] if performance_declared else "build-pr-smoke-artifacts"),
-        "ci-pr.yml.jobs.build.needs must use the PR smoke artifact producer",
+        build_job.get("needs") == "build-pr-smoke-artifacts",
+        "ci-pr.yml.jobs.build must depend only on the PR smoke artifact producer",
     )
     if performance_declared:
-        require_observability_performance_contract(workflow, build_job)
+        require_observability_performance_contract(workflow)
     if "Observability CPU Diagnosis" in contract.expected_pr_auxiliary_workflows.get(workflow_name, ()):
         require_observability_diagnostic_contract(workflow)
     require_exact_if(

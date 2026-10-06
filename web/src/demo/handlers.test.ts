@@ -605,8 +605,20 @@ describe("demo MSW handlers", () => {
     };
     expect(detail.recentRuns[0]).toMatchObject({
       completion: "partial",
-      coreCompletion: "completed",
-      details: { promptCacheStats: { state: "unavailable", pending: 3 } },
+      processedCount: 898,
+      updatedCount: 898,
+      coreCompletion: "partial",
+      details: {
+        timeoutCount: 0,
+        archiveBatches: expect.arrayContaining([
+          expect.objectContaining({
+            dataset: "codex_invocations",
+            batchRows: 898,
+            committedRows: 898,
+          }),
+        ]),
+        promptCacheStats: { state: "unavailable", pending: 3 },
+      },
     });
   });
 

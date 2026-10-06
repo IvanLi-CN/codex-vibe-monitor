@@ -105,6 +105,110 @@ async fn prompt_working_set_business_mutations_match_full_rebuild() {
     }
 }
 
+#[tokio::test]
+async fn prompt_working_set_large_history_refresh_reads_only_recent_and_live_source_rows() {
+    let pool = working_set_pool().await;
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<10000)
+         INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response)
+         SELECT 'history-'||i,datetime('now','+8 hours','-1 day'),'proxy','success',7,0.07,
+             '{\"promptCacheKey\":\"large-working-key\"}','{}' FROM n",
+    )
+    .execute(&pool)
+    .await
+    .expect("large terminal history");
+    let instructions = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let mut connection = pool
+        .acquire()
+        .await
+        .expect("instrumented source connection");
+    {
+        let counter = instructions.clone();
+        let mut handle = connection.lock_handle().await.expect("SQLite handle");
+        handle.set_progress_handler(1_000, move || {
+            counter.fetch_add(1_000, std::sync::atomic::Ordering::Relaxed) < 100_000
+        });
+    }
+    let result = sqlx::query(
+        "INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response)
+         VALUES('new-live',datetime('now','+8 hours'),'proxy','success',7,0.07,
+             '{\"promptCacheKey\":\"large-working-key\"}','{}')",
+    )
+    .execute(&mut *connection)
+    .await;
+    connection
+        .lock_handle()
+        .await
+        .expect("remove diagnostic handler")
+        .remove_progress_handler();
+    result.expect("online refresh must not evaluate every historical payload");
+    drop(connection);
+    for mutation in [
+        "INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,payload,raw_response) VALUES('old-running',datetime('now','+8 hours','-1 day'),'proxy',' running ','{\"promptCacheKey\":\"large-working-key\"}','{}')",
+        "INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,payload,raw_response) VALUES('old-pending',datetime('now','+8 hours','-1 day'),'xy','pending','{\"promptCacheKey\":\"large-working-key\"}','{}')",
+        "UPDATE codex_invocations SET id=id+100000,payload='{\"promptCacheKey\":\" moved-key \"}' WHERE invoke_id='old-running'",
+        "UPDATE codex_invocations SET failure_class='service_failure' WHERE invoke_id='old-running'",
+        "UPDATE codex_invocations SET status='failed',error_message='failed',occurred_at=datetime('now','+8 hours','-1 day') WHERE invoke_id='new-live'",
+        "DELETE FROM codex_invocations WHERE invoke_id='old-pending'",
+    ] {
+        sqlx::query(mutation)
+            .execute(&pool)
+            .await
+            .expect("source mutation");
+        let incremental = projection_snapshot(&pool).await;
+        crate::schema::rebuild_prompt_cache_working_set_live_table(&pool)
+            .await
+            .expect("exact source reference");
+        assert_eq!(incremental, projection_snapshot(&pool).await, "{mutation}");
+    }
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn prompt_working_set_installed_marker_does_not_hide_obsolete_trigger_definition() {
+    let pool = working_set_pool().await;
+    seed_live_capture(&pool, "working-set-definition-upgrade").await;
+    let before = projection_snapshot(&pool).await;
+    sqlx::query("UPDATE schema_refresh_migrations SET completed_at='2020-01-01 00:00:00' WHERE migration_name=?1")
+        .bind(REFRESH_MARKER).execute(&pool).await.expect("immutable deployed completion fact");
+    sqlx::query("DROP TRIGGER trg_codex_invocations_prompt_cache_working_set_update")
+        .execute(&pool)
+        .await
+        .expect("simulate incomplete prior definition");
+    sqlx::query(
+        "CREATE TRIGGER trg_codex_invocations_prompt_cache_working_set_update
+         AFTER UPDATE ON codex_invocations BEGIN SELECT 1; END",
+    )
+    .execute(&pool)
+    .await
+    .expect("obsolete definition with retained marker");
+    sqlx::query(
+        "CREATE TRIGGER reject_definition_row_rebuild BEFORE DELETE ON prompt_cache_working_set_live
+         BEGIN SELECT RAISE(ABORT,'definition upgrade must not rebuild rows'); END",
+    ).execute(&pool).await.expect("preserve existing facts");
+    ensure_schema(&pool)
+        .await
+        .expect("repair definition despite installed marker");
+    let sql: String = sqlx::query_scalar(
+        "SELECT sql FROM sqlite_master WHERE name='trg_codex_invocations_prompt_cache_working_set_update'",
+    ).fetch_one(&pool).await.expect("installed definition");
+    assert!(sql.contains("SELECT invocation_id FROM invocation_in_progress_live"));
+    assert!(sql.contains("UNION SELECT NEW.id"));
+    assert_eq!(projection_snapshot(&pool).await, before);
+    ensure_schema(&pool).await.expect("repeat definition check");
+    assert_eq!(projection_snapshot(&pool).await, before);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT completed_at FROM schema_refresh_migrations WHERE migration_name=?1"
+        )
+        .bind(REFRESH_MARKER)
+        .fetch_one(&pool)
+        .await
+        .expect("preserved completion fact"),
+        "2020-01-01 00:00:00"
+    );
+}
+
 async fn install_legacy_update_trigger(pool: &SqlitePool) -> String {
     let mut legacy: String = sqlx::query_scalar(
         "SELECT sql FROM sqlite_schema WHERE name = \

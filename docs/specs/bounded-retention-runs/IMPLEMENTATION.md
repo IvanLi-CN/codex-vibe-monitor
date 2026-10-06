@@ -1,203 +1,119 @@
-# 有预算、可恢复的 Retention：实现映射与具体方案
+# Retention：实现映射与验证
 
 ## Current Status
 
-- Implementation: REQ-BRR-001..015 的基础实现已随 v2.82.0 发布；REQ-BRR-016..021 已形成当前候选实现，容量实测已取得三次候选 source cohort 归零和三次基线 partial 对照；主人已授权本 PR 先发布积极改善，完整常态负载/严格延迟验收留给独立后续 PR。删除安全、迁移、兼容和当前候选审查继续作为硬门禁。
-- Lifecycle: active。
-- 当前候选基于 `origin/main@6228352d362e9a836fcdbb6271ff7bdb3bab72aa`，位于 `th/retention-catchup-observability`；前三次容量测量的生产源码为 `1b15332d`。最终审查修复另覆盖未知积压追赶、恢复默认巡检和 observer 后台压力准入；交付候选补跑实测并绑定最终 PR head。
-- 原交付的 shared-testbox 三个资源 profile、旧状态前向修复与 Demo 视觉确认已完成。旧百万行试验验证 Prompt 统计分页收敛，不是 retention 端到端吞吐或 24 小时追赶达标证据。
+本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
-## 调查证据与限制
+代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 
-只读调查对象为 2026-10-01 的生产 v2.80.2，以及与该版本相关源码一致的本地 `a4270dac42d6996497ececdd69bbc07ba50ec45c`。
+## 任务内批次与月度目标
 
-| 观察                   | 证据                                                                                                                               | 含义                                                             |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| 最新手动运行           | run 88730，03:11:10.555Z 开始，记录耗时 1040.643 秒；invocation 归档 4 行、上游尝试归档 6 行、触及 archive 批次 8、移除 raw 文件 6 | 有实际成果，页面摘要未展示全部计数；约 17 分钟不能由产出数量解释 |
-| 同步统计刷新           | 两次会话聚合 SQL 分别约 192.196 秒、97.167 秒；对应 archive 微批次事务约 193.4 秒、97.5 秒                                         | 聚合直接延长归档写事务                                           |
-| 孤儿候选搜索           | 会话孤儿 SQL 约 714.057 秒，返回 0 行                                                                                              | LIMIT 400 未限制寻找符合条件记录的扫描成本                       |
-| 主要耗时               | 上述三条 SQL 合计约 1003.42 秒，为本轮耗时约 96.4%                                                                                 | 优先处理这两条会话派生链路有直接证据                             |
-| 页面总量、进度、检查点 | 详情接口 `progress: null`；retention 没有发布进度记录                                                                              | 显示空值并非积压为零                                             |
-| 页面性能显示 0         | 原始 6h/24h maintenance 指标可查到当轮 1 次成功及耗时，任务摘要却是 0                                                              | 24h/1h 查询遗漏当前小时桶，另有空桶覆盖最新耗时问题              |
-| 默认计划显示空值       | registry 没有 interval 值；实际 legacy worker 使用默认 3600 秒及恢复资格                                                           | 页面未展示有效默认计划，不能据此判断任务未调度                   |
-| 启动失败显示 0ms       | legacy 路径在执行失败之后才创建运行计时                                                                                            | 旧记录不能恢复原始耗时，只能显示未知证据                         |
+每轮按数据集选取最多 1000 条符合保留策略的 live 候选，按月份分组，结合实际 payload 字节、现有 gzip 文件大小、可用磁盘和 60 秒设计预算决定是否开始文件批次。正常目标为数百到数千条；尾部、管理员配置或 payload 上限造成不足 512 条时记录原因。规划拒绝不通过缩成单条伪装成果。
 
-调查时观测到约 122.8 万条过期 invocation 积压，归档恢复状态 degraded，且有 SQLite busy/locked 和维护写准入等待。未取得生产 SQLite `EXPLAIN QUERY PLAN`，因此不把具体全表扫描或缺索引结论当作已验证事实。为何本轮只归档 4 条的完整停止原因尚无足够阶段日志；方案补充阶段结果，不能靠推测填补。
+既有月度文件的空间预检读取 gzip 内前 100 字节 SQLite 文件头，用有效页数和页大小计算完整大小，覆盖超过 4 GiB 的文件；页数为零、版本计数不一致或 gzip 长度低 32 位不匹配时拒绝文件准备，不退回可能回绕的 ISIZE。空间同时预留工作副本和 SQLite 临时空间，不增加完整解压扫描。SQLite 头的有效性规则沿用[官方文件格式](https://sqlite.org/fileformat.html#in_header_database_size)。
 
-## 已收敛的需求
+同一 dataset/month 继续使用 `archives/<dataset>/<year>/<dataset>-YYYY-MM.sqlite.gz`。迟到记录写入相同路径。月份决定目标文件，不要求任务完成整个月份的全部积压。下一轮重新选择剩余 live rows，不读取上一轮临时文件、累计值或候选游标。
 
-范围是 retention 及其共享会话慢链路和观测；保持精确引用和 archive 证明。采用每轮 60 秒工作预算、每个 Prompt SQL 页 2 秒预算、可恢复检查点；归档总量以运行开始时的过期 invocation 积压为口径。统计刷新走既有队列，孤儿清理有独立游标；运行报告 completed/partial/deferred，并保留 fatal failed。统计未收敛时沿用精确读契约，显示暂不可用、阶段和积压。
+同月较早记录追加时，manifest 合并覆盖范围并保留已有与本批期限中较晚的有效期限，防止整个月度文件提前清理；缺失期限仍沿用既有赋值语义。
 
-## 积压治理与小时观测
+当前任务创建带 PID/唯一序号的临时 SQLite 副本，批量写入已选记录，一次校验内容和身份、一次压缩、一次原子替换目标文件。临时 SQLite、journal/WAL/SHM 和压缩中间文件有任务内清理 guard。工作文件的内核锁识别实际活跃所有者，不依赖可复用或跨容器命名空间的 PID；创建及废弃清理使用短暂、非阻塞的目录锁，文件准备期间只保留工作文件锁。清理只接受规范目标下三个数字组成的任务文件名，在磁盘预检之前丢弃已无内核所有者的临时文件及孤立 sidecar；不读取其中数据，不续作它们。
 
-### 线上事实与诊断边界
+文件发布后按现有 manifest、摘要及 Verified Archive 证明转换源记录。独立源连接不回收到连接池；归档 ATTACH 的文件 URI 显式使用磁盘模式，避免共享内存源把目标文件也建到内存。主库写入每次最多 64 条；全部内容证明在事务外准备，短事务复核源身份、证明元数据和 raw 引用后提交。已提交微批次保留其完整事实；失败后未提交源行仍为 live，下一轮重新选择。小时物化进度的前缀复核使用有界存在性检查，避免持有 writer permit 时 COUNT 百万行；运行详情只保存阶段错误与指纹，不输出源错误中的路径或敏感内容。已发布文件中的 live 副本按身份重新覆盖，不能作为已删除源行的证明替代品。旧目标的恢复备份只保护文件替换异常，不用作下一轮数据 staging。
 
-2026-10-02 的只读 API 调查显示，下列连续运行确实有归档提交，但没有形成可接受的存量消化速度。时间使用 UTC，数量为各轮起点观测，不是同一原子快照中的净变化证明。
+普通任务将旧 preparing/published prepared 行隔离为现有 `quarantined`，不解析其 source IDs 作为正常归档输入。既有 manifest、completed archive 和 cleanup 事实保留；历史恢复工具仍可读取旧状态。主库不增加表、列或状态枚举值。
 
-| 运行起点            |   耗时 | 本轮 invocation 成果 | 起点待归档量 | 停止观测                              |
-| ------------------- | -----: | -------------------: | -----------: | ------------------------------------- |
-| 2026-10-01 23:30:50 | 12.9 s |                    4 |    1,257,051 | partial，预算未耗尽，wait reason 为空 |
-| 2026-10-02 00:30:50 | 61.7 s |                    4 |    1,257,047 | partial，工作预算耗尽                 |
-| 2026-10-02 01:30:50 |  4.4 s |                    3 |    1,257,043 | partial，预算未耗尽，wait reason 为空 |
-| 2026-10-02 02:30:50 |  2.0 s |                    0 |    1,257,040 | deferred，`sqlite_pressure`           |
+仍被 manifest 引用的旧隔离记录不会自动删除，既有 recovery health 因此可能持续为 degraded；这是保留隔离事实的诊断，不能据此断言当前归档停滞。新任务不依赖该健康标签准入。区分历史隔离与当前故障的健康展示属于后续优化，本轮不隐藏告警或放宽文件/raw 保护。
 
-这些观察总计下降 11 行，约为 125.7 万存量的 0.0009%；不能把“部分成功”解释为积压问题已解决。后续核实的线上 v2.82.1 未改变本表对应的 retention、runtime、维护库和压力准入代码。统计刷新队列同时有 420 个待办且物化所有者禁用；这是会话派生状态，不能并入 invocation 积压，也不授权自动启用物化所有者。
+准入等待受本轮剩余超时约束；取消只移除尚未开始 SQLite 工作的协调器 waiter，不抢占 P1 或改变公平规则。兼容元数据的压力旁路也使用同一约束，避免归档未开始时等待超过整轮兜底时间。没有旧 prepared 行时不提交空隔离事务。
 
-源码核实的限制与待证明原因：
+每轮通过 task-local 保存首次实际准入拒绝原因，供不可变运行结果使用；后续阶段成功提交不会擦除该原因，下一轮也不会继承历史恢复或共享写状态的原因。后台槽占用保留 `background_busy`，不能误报为 SQLite 压力。
 
-- `src/maintenance/retention.rs` 的 invocation 初始批次为 4 行，最大 64 行；自适应预算可调整，但 `archive_old_invocations` 在循环前取得 candidate limit，后续提交的调整未在本次循环逐批重新读取。该函数允许多个批次，因此初始 4 行不能独自解释每轮只提交 3–4 行。
-- `src/db_pressure.rs` 的全局后台槽只有一个；后台槽占用、优先等待者与真实 SQLite busy/locked/cooldown 是不同的准入原因。retention 的部分延期路径将不同拒绝统一记录成 `sqlite_pressure`，现有记录不能证明过去每次延期都是 SQLite 锁冲突。
-- `src/proxy_sqlite_write_coordinator.rs` 的维护写公平机制不能自动保证另一个后台槽的取得；不能只增加单轮时长或批次上限就宣称消除了后台饥饿。
-- `src/runtime.rs` 的 managed 调度按计划 occurrence 再次触发；partial/deferred 本身没有保证快速接续。`src/maintenance_store.rs` 的覆盖计划会使 legacy 默认入口跳过，健康字段的 `nextRetryAt` 不等于调度器已经安排了该时刻的运行。
-- 原逐阶段成果不足以复原 4.4 s/12.9 s 运行的具体停止边界。需要阶段、后台槽、协调器、SQL、archive 文件准备/证明/提交和实际候选批次的分解证据；后台 inventory 是可能的竞争者，不能当作已证实的历史占用者。
+主库的可选 `PRAGMA optimize` / checkpoint 使用独立连接、至多 2 秒且不超过整轮剩余时间的执行期限、匹配的 busy timeout 和每 1000 VM 指令检查的真实 SQLite progress handler。执行完成后移除 handler 并等待连接关闭，再释放后台准入；不把取消中的连接还池。维护语句的取消不撤销已完成归档，也不伪装成整轮超时，日志记录 `sqlite_maintenance_query_budget`；连接清理失败不能被预算取消掩盖。回归测试验证慢写语句取消后原值保留、独立 writer 能立即取得锁。
 
-本轮没有执行生产全库 COUNT、EXPLAIN、修复、重启或控制变更；线上停止根因仍需实现后的定向观测与可复现测试进一步确认。
+容量排查发现在线 terminal 写入复用大历史 Prompt key 时，原工作集触发器的 OR 条件会对历史正文反复计算展示状态，持续占用 P1。查询改为现有 key/时间索引上的近期范围，以及 `invocation_in_progress_live` 的旧活跃 ID 和当前变更 ID；仍回到源记录复核 key、时间和展示状态。当前 ID 覆盖 INSERT/UPDATE/DELETE 的触发器执行顺序，两个时间范围不重叠。此优化保留实时工作集口径，不调用会话历史统计物化。
 
-### 已确认的产品契约
+稀疏 ID 分支由 SQLite 选择访问方式，不指定 `NOT INDEXED`；启动识别现有触发器定义并按需事务替换，保留投影行和原迁移完成事实。SQLite 的 `NOT INDEXED` 仍允许 rowid 查找，而源表 ID 是 `INTEGER PRIMARY KEY`；移除该子句不能证明旧查询发生全表扫描，也不能证明性能改善。SQL 序列化回归只检查生成查询的结构，实际开销由当前 head 的 GitHub Actions 证据决定。
 
-| 决策          | 契约                                                                                                  | 需求映射                  |
-| ------------- | ----------------------------------------------------------------------------------------------------- | ------------------------- |
-| Q1 最长滞留   | 展示最长归档逾期时长；例如已存在 12 天而保留 5 天，产品口径为超期时长，实际计算遵循现有自然日资格边界 | REQ-BRR-020               |
-| Q2 待处理范围 | 主图只计待归档 invocation 行；上游尝试、Prompt 会话、孤儿和文件分别按自身单位展示                     | REQ-BRR-021               |
-| Q3 消化目标   | 普通在线负载下，24 小时内完成起点固定存量，持续处理能力超过新增过期速率，保留在线优先和安全边界       | REQ-BRR-017               |
-| Q4 自动接续   | 有积压自动追赶，轮间让行和压力退避；自定义 interval/cron 控制巡检，禁用阻止后续追赶，清空后回巡检     | REQ-BRR-016/018，ADR 0027 |
-| Q5 小时点     | 每个 UTC 小时最后一次成功的准确快照；两项指标同次观测，保留实际时间，独立采样，失败及升级前缺测留空   | REQ-BRR-019/020/021       |
+## 模块映射
 
-1,257,040 行固定存量在 24 小时内归零，至少需要全天平均 14.55 行/秒的有效提交能力，新增过期量另算。这是目标的量级，不是已经测得的容量。如果每天只执行 24 个 60 秒工作轮次，活跃时间内需要约 873 行/秒，仅观察 4 行成功不能支持这个承诺。
+| 需求                | 当前源码                                                                                       | 验证口径                                                                               |
+| ------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| REQ-BRR-002/022     | `src/maintenance/retention/batch_plan.rs`, `task_batches.rs`                                   | 预算参与批次规划；运行超时只作安全兜底，重复超时是缺陷信号                             |
+| REQ-BRR-022         | `src/maintenance/archive/writers.rs`, `quota_compaction.rs`, `retention/archive_identity.rs`   | 同月规范路径、任务临时文件清理、身份冲突和内容摘要、未证明源行保留                     |
+| REQ-BRR-022         | `src/summary_source_change.rs`, `retention/batch_plan.rs`                                      | 完整 V2 Snapshot 验证在写事务外；短事务比较元数据后发布，Summary 不重复计入 live 副本  |
+| REQ-BRR-023         | `src/maintenance/retention.rs`, `src/runtime.rs`                                               | batch rows、已提交行、文件准备、锁等待、整轮有效服务速率、24h 到达速率、倍率及超时次数 |
+| REQ-BRR-023         | `web/src/lib/api/core-foundation.ts`, `RetentionRunThroughput.tsx`, `SystemTaskDetailPage.tsx` | 新字段可选；真实零与缺失区分，旧响应显示未知；Prompt 统计仍暂不可用                    |
+| REQ-BRR-016..021    | 既有 runtime、maintenance_store、小时 observer 和趋势组件                                      | 单一 owner 自动追赶、禁用控制、准确小时双指标保留；本轮不新增调度器或改动小时观测定义  |
+| REQ-BRR-003/005/015 | 既有 Prompt cache 物化所有者                                                                   | 独立持久化队列继续异步处理；不放回归档事务，不改变精确统计读契约                       |
+| REQ-BRR-002/004/023 | `src/schema.rs`, `schema/prompt_cache_working_set_triggers.rs`, `retention.rs`                 | 大 key 在线工作集不扫描历史正文；准入超时取消 waiter，P1 优先和现有迁移事实保留        |
 
-### 执行与吞吐方案
+## 观测与 API
 
-复用现有 retention owner 和 managed 调度边界，把“下一次巡检”与“当前积压的继续资格”分开。每轮发布真实终态后，启用且还有可推进积压则在让行或退避后请求下一轮；该请求与巡检/手动请求在同一单实例入口合并。禁用代次在每次新工作准入前检查，重启从业务检查点重新确认待办。不得增加并行归档 worker、补跑 occurrence 或绕过管理员控制。
+维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason。
 
-归档微批次在每次候选读取前取得最新自适应限制，结合实际提交、文件准备和写锁时间控制工作量。先通过分段计时确定归档准备、已有批次证明、raw 引用检查、全局后台槽或写协调器哪一项限制吞吐，再改动对应瓶颈；提高上限须有短锁、文件边界和在线延迟实证，不能将初始 4 行直接改成无界大事务。阶段轮转保留可恢复检查点，统计物化仍由原所有者消费。
+批次 timeoutCount 只计该选定数据集/月批次尚未全部提交且整轮执行期限已到的停止；每批最多一次，按 dataset 汇总即可得到其次数。已完成批次的迟后收尾、未过期的准入延期及非超时错误不计入。invocation 身份读取也在批次观测范围内。兼容的整轮 timeoutCount 继续表示该轮是否触发兜底期限，budgetExhausted 仍独立报告；旧批次缺少新字段时归一化为未知，不补零。轻量回归用零期限和无期限的确定性上下文验证归属及序列化，不测 CPU 性能。
 
-对后台槽采用已有有界排队/公平能力，等待发生在全局 mutex 外；真实压力保持退避，前台和交互写保留优先。诊断保留低基数的阶段和原因，至少区分 `background_slot`、`maintenance_write`、SQL/事务与归档阶段，以及 `background_busy`、`coordinator_wait`、busy/locked/cooldown、预算、禁用/关闭、异常。计划显示提供 next inspection 和 next eligible catch-up；资格时间不保证实际执行时间。归档核心的剩余量决定追赶，Prompt 暂不可用或其所有者禁用不能使已无 invocation 积压的核心无意义空转。
+服务速率使用本数据集实际提交行数除以整轮 elapsed，包含其他阶段、准入和收尾，避免只用压缩的短时速度。到达速率在独占连接上以真实 SQLite progress handler 的 2 秒预算读取最近 24 小时行数；不可观测则为未知，真实零到达时倍率未知。运行结果一经持久化，后台统计刷新不改写它。
 
-### 小时观测与图表方案
+既有工作量观测继续使用本轮起点的固定 cutoff/MAX(id) 范围。新批次路径累计去重后的 invocation 候选 ID，并在每个主库微事务提交后增加 processed；文件发布本身不计作源行完成，attempt 不混入 invocation 指标。批次中途失败仍保留已提交数量。Demo 和 Storybook 的工作量与吞吐取自同一运行样本及实际运行时长。
 
-独立后台采样器测量 live invocation 的过期归档范围，不依赖 retention run 是否发生；任务禁用时仍采样，服务离线时留缺口。通过已有时间索引在同一读快照取得准确 COUNT 与最老候选，记录 `observedAt`、cutoff、保留策略及指标。采样使用有界 SQL 执行和真实取消/连接清理，复用已有预算能力；预算拒绝或失败只报告本次采样状态，不把陈旧 health 值改名为新快照。实际采样频率与预算需由百万行成本验证，至少提供逐小时成功观测的正常负载能力，不承诺整点零延迟。
+主页面继续显示 7 天逐小时待归档 invocation 数量及最长逾期。attempt、Prompt 会话、raw 文件按原单位独立计量。页面读维护库和运行结果，不同步扫描主库或触发物化。
 
-最长逾期不能复用当前 `oldestBacklogAgeSecs`，该字段是记录年龄；其旧 API 含义保持不变，新增逾期指标单独表达。当前规则为 Shanghai 当日午夜减 N 个自然日，候选比较为 `occurred_at < cutoff`；发生在本地日期 D 的记录首次符合规则的时刻是 D 加 N+1 个自然日的午夜。应复用相同时间解析和资格判断，在观测时间计算最早资格时刻的逾期；不能简单做 `now - oldestOccurredAt - N * 86400`。历史桶记录当时策略，策略更改时在图表提示，避免把策略收缩误读为吞吐退化。
-
-小时历史属于维护库，而不是可清空的性能遥测缓存。每个 UTC 小时幂等保留 `observedAt` 最晚的成功观测，两项指标一起发布；失败不清除较早成功。后台发布失败可重试同一观测，不能改变采样时间或覆盖更新的观测；维护库丢失不退回 HTTP 中同步扫描主库。历史保留覆盖滚动 7 天所有相交小时桶，清理采用有界批次，结构安装不回填历史。
-
-任务页增加一张“最近 7 天归档积压”趋势卡，建议使用现有 Recharts 绘制上下两个共享时间轴的图：上图为待归档条数，下图为最长逾期，避免两种单位共用同一纵轴。UTC 分桶、Shanghai 标签；当前未结束小时可显示最近成功样本，tooltip 显示实际采样时间和策略。缺测断线不补值；准确的 0 行显示为 0，最长逾期为空并说明“无待归档记录”；过期观测与未知独立标识。其他阶段列出各自 backlog、单位和原因，尚无精确测量的阶段显示未知。升级后只有已采集时段有曲线，不生成虚构的完整 7 天趋势。
-
-API 以可选字段或有界历史接口提供已持久化观测、覆盖范围与采样状态，保持现有字段和 status。任务页读取维护库快照，不启动 COUNT、统计物化或归档。具体字段结构、采样 cadence、轮间让行/backoff 常量与公平实现由实现计划和成本证据确定，本节不锁定尚未验证的性能参数。
-
-### 新需求的验证缺口
-
-REQ-BRR-016..021 已有代码候选和定向单元覆盖，但尚无 shared-testbox 的真实 retention 容量卡、完整迁移实证或当前候选的视觉证据。原百万行 benchmark 只运行 Prompt 统计刷新，不执行真实归档链路；其中在线 p95/p99 还高于基线，不能用于通过 VER-BRR-009。
-
-新实测必须运行真实 retention 源行转换、archive 文件准备/证明/发布及 raw 所有权路径，固定百万行存量、倾斜 key、在线读写、文件特征与实际后台竞争，先定义可复现的普通负载；开发基线和候选分别重复三次。每次记录固定 cohort 的剩余量直到实际归零及新增过期量，不能仅用几分钟速率推算 24 小时达标。对线上负载的校准仅使用不含 payload/身份的聚合信息，不复制生产数据库。持续高压另作压力场景，不能偷偷减少代表性在线负载以通过目标。
-
-采样验证覆盖同快照精确对照、百万行读取成本、取消后的 SQL/锁状态、停用仍采样、同桶失败保留、跨小时/重启、策略变化与自然日边界。页面验证覆盖两条趋势、缺口/未知/零/过期、升级初期、其他阶段各自单位、追赶与巡检、桌面及移动端。历史表增加的维护库结构仍须幂等迁移、保留旧未知值且 ready 不扫描历史。
-
-## 模块边界与执行方案
-
-### 同一入口与预算
-
-在 `src/maintenance/retention.rs` 提供一个 retention 运行服务，由 `src/runtime.rs` 手动/自定义调度入口和默认/启动/恢复 worker 共用。它持有单实例 gate、真实运行起点、控制代次、预算、活跃会话保护及阶段结果；不能再用参数不足的 bare maintenance 调用作为手动入口。
-
-运行预算从执行起点计算，包括准入等待。每个阶段在等待前、每次候选读取前、每个业务提交后检查剩余预算；预算用尽停止准入新批次。已准备的文件走现有 prepared archive 恢复协议，已提交的批次保留，未提交的事务回滚。文件读取和压缩按块检查取消，文件发布与业务提交保留其不可拆分的安全边界。
-
-60 秒是准入/工作预算，真实结束时间允许当前安全收尾；结果记录 `budgetMs`、`elapsedMs` 和 `settlementMs`。2 秒查询预算必须在 SQLite 执行层生效，并确认停止、回滚和连接释放；实现前先验证当前 SQLx 的实际取消能力，不能只加 `tokio::time::timeout` 就宣告满足。
-
-### 归档提交与统计队列
-
-删除 invocation 的事务仅保留 archive 证明、源行转换、统计失效及 durable key enqueue；移除其同步调用 `refresh_prompt_cache_conversation_stats_on_connection` 的路径。prepared archive 恢复、详情裁剪等同类发布路径也使用同一规则，避免普通归档变快而恢复路径仍同步聚合。
-
-既有物化 worker 继续拥有统计刷新及其启用控制。归档提交后发出唤醒提示，durable queue 是恢复依据，唤醒丢失可由已有调度探测恢复。物化被禁用时不绕过控制，归档结果记录统计待办及禁用原因。
-
-统计刷新优先保持现有一事务的刷新/queue-clear 原子性。对于无法在 2 秒页预算内完成的单 key，引入 key 内部的 invocation keyset 分页和 durable 暂存聚合：记录 source 范围、mutation 代次、页游标及累计统计，在短提交中保存每页进度；最终仅在代次未改变时原子发布完整统计并清除相同代次的 queue 项。发生新 mutation 则失效本轮暂存、保留待办并重建，绝不展示暂存结果。持续写入时允许暂不可用；静默后必须收敛，避免固定重试同一条超时全量 SQL。
-
-查询复用项目的规范化 Prompt key 表达式，优先使用已有 `(normalizedPromptKey, occurred_at)` 索引，按 `(occurred_at, id)` 顺序分页并保存双字段游标；`source_max_invocation_id` 只作本轮 source 范围，不作 mutation 证明。以 fixture 的查询计划和实际耗时验证定位、排序和取页均有界，不能只验证返回行数。需要补索引时不得把大表建索引隐含进快速 readiness 保证，须单独验证结构安装的写入/启动影响。调整聚合物化的批次控制须同步更新 ADR 0022 的实现描述：保留 400-key 逻辑页与自适应思想，但 key 内分页/真实超时不能被 32-key 下限阻挡。
-
-### 独立的孤儿候选页
-
-把“寻找至多 400 个孤儿”改为“按 key 游标读取一小页会话候选，再逐个作精确引用检查”。候选页查询不包含无界的 correlated OR 搜索；key 引用与 invoke-id 范围引用分别使用可验证的索引 probe。已有 grace、保留规则、活跃占用和 invoke sequence 安全条件须一起保留。
-
-候选范围及已检查位置持久化；无孤儿的页也推进游标。游标完成后开始新的扫描 epoch，覆盖先前游标之前新出现或重新符合清理条件的会话。超时、锁冲突和压力只结束本阶段，归档继续；失败页不能推进到未检查的候选之后。
-
-先在全局缓存锁外进行候选扫描；删除前用短暂的 key 占用/代次保护和事务内引用再验证保证安全。不能把活跃 key 的一次快照当作删除授权，也不能在全局缓存 mutex 内等待慢 SQL。删除后缓存 eviction 必须校验 conversation 身份/代次，不能移除同时重新创建的身份；已有 invoke sequence 下限不能被统计重建重置。具体保护复用已有引用/序列 reservation 路径并通过并发 fixture 验证。
-
-### 独立阶段与恢复
-
-运行服务组合 archive reconciliation、invocation archive/prune、相关 archive 清理及会话派生阶段，分别记录 committed count、pending、elapsed、wait、checkpoint、nextRetry 和 reason。耗时阶段之间使用公平、有界的份额，不能因最前面的慢阶段反复耗尽预算而饿死其他可安全推进的阶段。
-
-归档核心完成不要求物化 worker 在同一轮完成。页面进度可继续显示最新后台状态；本轮终态是结束时的不可变审计快照。部分完成采用既有恢复机制的正常 eligibility；压力退避遵循既有策略，内部重试不得伪装成新的 cron occurrence 或累积错过的小时运行。
-
-## 观测与接口方案
-
-保留 `TaskRun.status` 原有值，在运行详情中增加可选的 `completion`、`coreCompletion` 和有界 `stages`。成功执行但仍有待办可为 `status=success, completion=partial`；预算耗尽不是 fatal failure。纯压力/准入拒绝且无进展为 deferred；可恢复异常即使无进展也为 partial 并记录原因。致命错误仍为 failed，已提交成果保留。
-
-| 页面信息    | 来源与口径                                                                      |
-| ----------- | ------------------------------------------------------------------------------- |
-| 总量        | 运行起点的过期 invocation 观测，带 `observedAt` 和 source 范围；范围不足则未知  |
-| 已完成      | 同一 source 范围内、本轮成功提交的 invocation 行；不加上 attempt 行、key 或文件 |
-| 进度/ETA    | 仅在同口径覆盖有效时计算；partial 不显示总体 100%，统计积压单独展示             |
-| 阶段/检查点 | 业务 checkpoint 的异步维护库镜像，含游标摘要、等待原因和下次资格                |
-| 完整成果    | invocation/attempt 行、归档批次、raw 文件/字节、裁剪等现有 summary 全字段       |
-| 耗时        | 本轮阶段耗时、准入等待、SQL 执行与预算收尾；不使用失败后新建的计时器            |
-| 调度        | 实际生效的默认/管理员覆盖来源及下一触发；恢复重试另行标识                       |
-| 观测新鲜度  | 真正的 snapshot 时间；无更新标记 stale，数据缺失标记 unknown                    |
-| Prompt 统计 | 未收敛为暂不可用，同时展示刷新阶段、pending 和禁用/等待原因                     |
-
-运行开始时固定过期 cutoff 和 `MAX(codex_invocations.id)` 上界，复用匹配范围的 backlog 观测，不为页面或每个 batch 执行全表 COUNT。`id` 是自增整数，因此后插入的回填或 backdated invocation 不纳入本轮计数范围，由下一轮处理；既有行发生 eligibility 变更时必须重新核对范围覆盖，不能仅以 MAX(id) 证明总量仍精确。如现有观测不能匹配该范围，显示观察数和未知百分比。业务进展时间与等待心跳时间分开记录，约 1 秒合并快照仅写维护库。
-
-有效计划由运行调度器提供，优先管理员 interval/cron 覆盖，否则是默认 3600 秒。页面展示 runtime 的下一次资格，禁用后无下一次执行；不通过迁移给所有 registry 行盲写默认 interval，也不启动第二个同任务调度器。
-
-性能摘要修正共享时间桶计算：对 `[from,to)` 使用从 `floor(from/step)` 到 `floor((to-1)/step)` 的全部相交桶；覆盖信息使用同一边界。最新耗时只取有 duration 样本的桶。历史详情即时展示运行结果，小时聚合作趋势；维护库或遥测无覆盖时不能用“0 次”遮盖缺失。
-
-## Implementation Coverage
-
-| 要求                            | 主要源码映射                                                                                                                                            | 当前状态 / 剩余证据                                                                                                                                                                                                                                                        |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| REQ-BRR-001/002/004/008         | `src/maintenance/retention.rs`, `src/runtime.rs`                                                                                                        | 已实现统一调度入口、60 秒工作预算、独立收尾计时和结构化阶段结果；shared-testbox 三 profile 及历史状态恢复夹具已通过                                                                                                                                                        |
-| REQ-BRR-003/005/015             | `src/prompt_cache_conversations.rs`, `src/maintenance/retention.rs`                                                                                     | 已实现 SQLite progress handler、2 秒共享剩余预算、单 key 分页、代次安全发布和暂不可用契约；百万行候选已收敛并释放队列                                                                                                                                                      |
-| REQ-BRR-006/007                 | `src/prompt_cache_conversations.rs`, `src/maintenance/retention.rs`                                                                                     | 已实现持久化孤儿 epoch/cursor、候选精确 probe、删除前身份复核和事务 checkpoint；archive-file-io profile 已通过                                                                                                                                                             |
-| REQ-BRR-009/010/011/013         | `src/maintenance_store.rs`, `src/runtime.rs`, `src/api/slices/system_routes_and_tasks.rs`                                                               | 已实现固定 source 范围、完整 run details、阶段进度、默认/覆盖计划和 stale 观测；API 兼容及历史状态恢复回归已通过                                                                                                                                                           |
-| REQ-BRR-012                     | `src/performance_telemetry.rs`                                                                                                                          | 已修正半开相交桶、覆盖率和最新有样本桶选择；非整点窗口回归已通过                                                                                                                                                                                                           |
-| REQ-BRR-008/009/010/011/013/015 | `web/src/lib/api/core-foundation.ts`, `web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/pages/system/taskLabels.ts`, `web/src/demo/handlers.ts` | 已发布可选字段兼容、成果/阶段/单位/计划、未知/过期/统计待刷新显示；原交付的 Storybook、Web 单测、typecheck、lint、build、任务页 E2E 及视觉确认已完成                                                                                                                       |
-| REQ-BRR-014                     | `src/maintenance_store.rs`, `src/prompt_cache_conversations.rs`, `src/tests/stateful_sqlite/*`                                                          | 已实现幂等 DDL、主库续作结构、维护库 nullable 字段和代次回归；v2.71.45/v2.80.2 前向修复、重复 DDL、中断 staging/generation 保留及 ready 不回填回归已通过                                                                                                                   |
-| REQ-BRR-016/018                 | `src/runtime.rs`, `src/maintenance/retention.rs`, `src/db_pressure.rs`, `src/proxy_sqlite_write_coordinator.rs`, `src/maintenance_store.rs`             | 已实现单一 owner 的 catch-up 资格、原因退避、禁用清除及逐批自适应限制；容量实测记录了压力轮、锁重试和 60 秒边界，单实例、配置禁用、completed 但仍有 backlog 的接续回归已通过；线上竞争公平性的容量校准留给后续实测                                                         |
-| REQ-BRR-017                     | retention 真实发布链路与 shared-testbox 端到端实验                                                                                                      | 已增强 harness 以覆盖 invocation 关联 raw 文件和持续新增过期行；三次候选固定 cohort 均归零，三次基线 partial 均只提交 192 行，吞吐目标有证据但在线 p95/p99 中位数略高，A7/VER-BRR-009 仍未完全验证，详见 [capacity card](assets/shared-testbox-retention-capacity-card.md) |
-| REQ-BRR-019/020                 | `src/maintenance_store.rs`, `src/maintenance/retention.rs`, runtime observer                                                                            | 已实现 2 秒 SQLite 进度取消、同快照 COUNT/最早资格候选、UTC 小时幂等历史和缺测填充；小时零积压/缺测、同小时末次成功、逾期自然日边界和预算取消回归已通过；生产负载下独立锁释放测量不由容量卡证明                                                                            |
-| REQ-BRR-021                     | 任务 API、`web/src/pages/system/SystemTaskDetailPage.tsx`, `web/src/lib/api/core-foundation.ts`, Demo/Storybook                                         | 已实现可选 trend API、7 天双图、观测时间/策略 tooltip、缺测断线和追赶字段；任务页 E2E 8/8、Storybook 172/172 已通过，桌面/移动端双图资产见 Visual Evidence                                                                                                                 |
+main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留其 `ObservabilityTaskLink`，不恢复已退役的 `ManagedTaskDetail.performance` 或旧性能指标库。本轮 `archiveBatches` 和 `timeoutCount` 仍属于维护库中的不可变业务运行结果。
 
 ## Compatibility and Migration
 
-当前候选仍按 minor 评估：public API 保留原字段及 status 并只增加可选字段；维护库新增小时观测表和任务追赶状态采用幂等前向迁移，旧 Minor 程序不承诺维护新状态。记录见 [version impact](assets/version-impact-record.json) 和 [migration record](assets/persistent-state-migration-record.json)；候选容量结果已记录，API 兼容与迁移测试支持 minor 分类；PR 的当前候选审查和 CI 另行绑定。
+本轮不增加主库表、列、状态枚举或迁移标识。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。旧 prepared 状态隔离和当前任务源行转换属于运行 DML。历史吞吐缺失保持未知。
 
-主库只增加业务正确性需要的 cursor、source 范围、刷新代次/暂存和索引。维护库增加 nullable 结果/快照字段。结构安装幂等；新索引安装需要 SQLite 构建索引，但不执行业务历史聚合或观测历史回填；运行时逐页产生 DML；旧进度、历史耗时和完成度保持未知。既有 archive artifact、保留天数和 wire 格式不变。
+新增任务 JSON 字段和 Web 归一化向后兼容。API 与持久化影响分开评估；本轮记录见 [version impact](assets/task-local-version-impact-record.json) 和 [state compatibility](assets/task-local-persistent-state-record.json)。最终分类由当前候选兼容验证决定；旧 PR 的 minor 记录仅作为历史。
 
-支持状态以既有 retention 的 v2.71.x 旧 schema 和本次生产 v2.80.2 schema 为必测边界；当前仓库没有额外可复现的中间 retention schema 快照，因此不把未验证的中间结构写成已覆盖事实。候选读取旧状态，而旧 Minor 程序不承诺维护新续作语义。停止发布后的恢复采用新版本前向修复，备份恢复单独处理。`ensure_schema_repairs_v271_and_v2802_retention_fixtures_without_historical_backfill` 固定了两个声明边界的旧 invocation/队列形状，重复运行 DDL，并验证历史行、未完成队列和 staging generation 不丢失；新增结构仍由幂等 DDL 和缺列修复覆盖。
+当前同 Minor 兼容来源为 v4.0.0：现有 manifest 模块以及五个编解码、证明和查询函数与其源码逐一比较；v3.0.0/v3.1.0、v2.85.0..4 与 v2.86.0..2 的指纹保留为历史较早 Major 证据。源码等价性不能替代当前候选的文件往返、状态升级和运行验证。
 
-## Verification and Staged Delivery
+## Verification
 
-主人明确选择先发布已证明有积极效果的实现，后续另开 PR 优化。因此本次交付以自动追赶、准确小时观测、可读双图及合成 fixture 下显著改善为范围；长期 REQ-BRR-017 / VER-BRR-009 不删除、不标记完成。生产常态负载校准、全时段在线 p95/p99 不劣、持续峰值和独立锁释放/逐文件证明测量作为后续实测工作。这个范围调整不放宽归档证明、raw 所有权、活跃会话、单实例、迁移或查询预算约束。
+- 发布构建试验使用 1,270,000 条过期 invocation、1.2 倍 attempt、500,000 行倾斜 key、十个月份、约 3 KB payload、共享 raw 链接和稀疏孤儿，执行真实文件发布及主库转换。
+- 普通新增负载采用 30,000 invocation/day 与 36,000 attempt/day；基线与候选使用相同 fixture 和请求序列，各重复三次。请求按固定时钟独立发出，包含排队延迟并等待已发请求完成，不因慢写入跳过计划到达。窗口模式的负载发生器独立截止，避免旧基线的准入等待无限延长发压。cohort 计数使用现有覆盖索引，避免验收脚本扫描大行正文。要求真实固定 cohort 归零，不能仅按短时速率外推 24 小时。
+- `retention_task_local_service_rate_release_benchmark` 是独立的 GitHub Actions 发布构建长时试验，保持 ignored，不进入通用 PR 必过 profiles。单次命令最长 25 小时，其中容量计时上限 24 小时，额外时间仅用于建数和最终文件证明。每次保存逐轮 JSON、最终 cohort、实际文件摘要和在线延迟；其容量结论不由普通功能测试替代。
+- 在线探针覆盖聚合、列表、详情和 P1 terminal 写；生产 HTTP 方法比例暂无准确观测，当前 3:1 读写重放是显式保守假设，不能写成生产实测比例。持续峰值用相同发布构建和序列的 20 倍到达速率观察让行与在线等待；磁盘边界在独立 32 MiB tmpfs 中运行拒绝夹具，确认 1000 条未证明源行保留且没有归档发布。锁释放由取消后的独占连接与写锁回归验证。
+- 容量夹具同时在同一主库运行真实 Prompt 会话物化所有者，共享后台准入槽和 P2/P1 写协调器，使用生产的 2000 行扫描上限、3 秒运行上限与 15 秒续作间隔。锁竞争按现有压力冷却及 active interval 重试，非压力异常仍使试验失败；结果记录实际扫描/更新、延期及压力失败次数；只重放在线探针的试验保留为诊断证据，不能替代含后台竞争的当前候选验收。
+- 容量通过要求 invocation >=17.4 rows/s、attempt >=20.8 rows/s、普通负载不频繁超时，以及在线 p95/p99 中位数不劣于基线。
+- `retention_task_local_batches` 覆盖同月重复更新、主库结构不变、取消后的 ATTACH 连接/临时文件清理、坏文件保留源行、旧 prepared 隔离和跨数据集失败计数。第二个源数据事务失败夹具验证已提交 64 行准确报告、工作量样本发现 1000 行但仅完成 64 行、未提交源行保留、Summary 精确总量及下一轮重新选取；不创建续作 journal。
+- 工作集回归比较近期/旧活跃/变更身份/失败状态/删除与准确全量参考；万行历史下用真实 SQLite VM 指令预算拒绝退回历史正文扫描。触发器定义识别、迁移事务中断、重启及原完成事实不改写分别验证。
+- 工作文件回归用真实持锁子进程验证活跃所有者保留、终止后内核释放、PID 复用下废弃清理、目录竞争立即延期及非规范文件名保留。受限磁盘夹具还验证废弃工作在空间预检前清理，源行和 manifest 不变。
+- 空间预检的轻量回归只验证 SQLite 头的 4 GiB 边界、64 KiB 页和失效元数据，不创建大文件或测吞吐。同月较早 attempt 追加的文件回归验证相同目标、两次实际提交、完整行数、覆盖末端和原保留期限不缩短。
+- 可选 SQLite 维护取消回归在首次 progress callback 确定性中断，验证回滚、独占连接关闭和 busy_timeout=0 下新 writer 取得锁；目录锁回归只断言非阻塞拒绝和文件保留。这些普通测试不以有限 SQL 工作量耗时、1 秒总时长或 250 ms 锁等待作性能判定。
+- 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
+- Web 验证包括旧 API 字段兼容、Demo 真实零/未知值、全量 unit/typecheck/lint/build、六个吞吐状态及 SystemWorkspace Storybook、任务页桌面/移动交互 E2E。视觉确认不代替功能或容量验收。
+- 任务页 SSE 重连 Storybook 交互等待实际连接状态为 connected 后再发送模拟 error，随后验证重连提示和时间线。断开不由固定毫秒定时器触发；此同步只约束测试事件顺序，不改变生产 SSE 状态机或重试策略。
+- Prompt 会话事件过滤的既有单测等待实际筛选内容完成渲染后检查原断言；单靠两次 Promise flush 不代表异步事件请求已完成。此测试同步修正不改变产品逻辑、超时或 retention 的验收口径。主线整合后的后端输入使用逐文件摘要证明，文档或 Web 测试提交不得冒充重新编译的后端提交。
+- Prompt 统计代次与重启回归在让行检查时读取已提交 staging，确定性地停在首个 256 行页；独立异步观察者可能在负载下晚于数页提交，不能保证该测试所需的精确边界。原聚合、代次、恢复和页游标断言保持不变。
+- main 的 SQL 观测序列化夹具使用实际工作集 SQL 生成器及 `NEW.id`，与优化后的触发器身份参数一致；保留原长语句、脱敏和序列化断言，不更改生产观测或归档行为。
+- 稀疏 ID 查询结构的针对性 SQL 序列化测试通过，不代表访问计划或性能验收。历史 Actions 的有效 CPU/请求开销为 8.50%，超过 5% 门槛；另一轮 disabled 窗口的变异系数 12.26%，无法给出有效开销比较。诊断采样也不能签发预算结论，根因仍未确认；这些失败或缺测不以本地测试和假设覆盖。
+- 同步 v4.0.2 基线后的 `bfc0d23f` 在 Actions 的原作业单次重跑中取得有效稳定的六窗口结果：CPU/请求相对开销 5.61% 未通过，p95 开销 0.64% 通过。开启模式的短 profile 只能定位热点，无法独立证明相对开销来源；诊断作业补齐关闭模式同阶段 profile，归档运行时与 5% 验收阈值不变。
+- 路由超时回归使用不返回正文的本地上游并固定初始 sticky 路由，备用上游使用既有本地成功夹具；直接验证初次 stream timeout、备用 transit 请求成功及恰好一次接管，不依赖虚构域名的 DNS/连接耗时制造 502/503。测试配置使用 2 秒功能超时，不断言 wall-clock 性能；不改生产路由逻辑或默认超时。retention 准入回归验证延期、无泄漏 waiter、P1 优先和未写入元数据，移除 CPU 敏感的一秒内完成断言。此批次只在 GitHub Actions 执行 stateful profile。
+- 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选的普通源码/功能验证和适用视觉门禁完成后启动；合并前必须通过必需 Actions 检查及产物冒烟。按主人禁止不必要性能实验进入通用 PR 门禁的指令，性能预算及 CPU 诊断保留为 Actions 辅助检查，Build Artifacts 不再依赖其结果。本次交付不将历史开销失败、缺测或尚未完成的容量实测标为通过；后续性能验证独立记录。
+- Quota 候选排序使用专用 SQLite 连接，剩余任务预算限制锁等待，progress handler 在截止或关闭请求时中断实际查询；移除 handler 并关闭连接后才返回。准备月度文件复用任务剩余时间的超时兜底，未完成工作随 future 清理，已提交批次保留。回归通过固定回调取消、零准备预算及未完成 future 验证源行保留、连接释放和下一轮重新选取，不使用执行速度断言。
 
-Rust fmt/check/Clippy、维护库调度和恢复定向回归、Web unit/typecheck/lint/build 均通过。shared-testbox lightweight 1,275/1,275、archive-file-io 300/300 通过；stateful-sqlite 主跑唯一已有路由超时在隔离重跑通过。PR #1068 的后续完整 CI 在候选 `1170aed8` 已全部通过，包括 lightweight、两个 stateful-sqlite shard、archive-file-io、representative scale、Web、Storybook accessibility 和任务页 Demo E2E。最终候选由 live PR current-head checks 和 Tier 4 五 lane 结果绑定；不把此前 SHA 的证据假写为当前 SHA。
+- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受剩余期限及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
 
-本任务 leased port `50800` 的 Demo/runtime E2E 8/8、Storybook 172/172 已通过；默认 `60080` 属于其他 worktree，排除其验证结果。小时观测、自然日口径和旧 schema 的前向修复测试保留在匹配的后端资源 profile 中。迁移与 SemVer 记录见 assets；独立当前候选审查结果由交付流程保存。
+- 池连接归还由 SQLx 异步执行。写许可申请前在无许可状态下确认池可用并完成空闲连接归还，避免单连接池或刚提交微批次误报池满；随后仍不持连接排队、获准后只非阻塞取连接。确定性回归按 pool-ready 通知安排 P1 取走连接，验证反向等待不存在以及 readiness 竞争时释放许可延期。
 
-三次 release-build 候选的 130 万行固定 source cohort 全部归零，耗时中位数 786.364 秒；三次基线受控窗口各归档 192 行。在线读探针 p95/p99 中位数为候选 67/90us、基线 53/87us。该短读探针、有限 writer 与直接 retention 调用不等于真实流量重放、调度器容量或完整 SQL 锁释放证明；完整限制和日志见 [capacity card](assets/shared-testbox-retention-capacity-card.md)。本次阶段交付已具有积极实证，原 A7 保持未完全验证。
-
-第二批审查修复：恢复默认操作重新持久化 3600 秒巡检及 default 来源；本轮积压观测未知时按已有原因退避重新取得追赶资格，不把未知当零，空数据库的准确源上界查询可证明积压为零；独立 observer 获取后台压力许可后才读取主库。该批修复有实际入队/运行完成/重新安排/准确清空的定向回归，不改变归档批次、archive/raw 证明或 Demo 渲染输入。
+运行在首条提交前触发兜底超时也属于 overall partial，不能按无提交的纯准入延期处理；fatal 仍优先，纯压力/连接池/写准入等待且未超时仍为 deferred。完成度回归直接构造 budgetExhausted、deferred 和起点范围组合，覆盖未知范围及 fatal 优先，不执行计时或性能测量。
 
 ## Visual Evidence
 
-当前 Task Evidence Set 来自本任务纯前端 Web Demo 的桌面和移动 viewport，模拟数据展示共享时间轴的 invocation 条数与最长逾期两图，缺测断线、Prompt 统计暂不可用。截图已通过 owner-facing 快照展示；当前同路径基线不存在，因此为 current-only evidence。主人随后明确要求先走 PR 发版，本流程按该交付指令继续，不将该指令伪记为单独截图准确性确认。生产页面或无关程序没有在本次证据中截图。
+本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。
 
-![Desktop retention backlog and overdue trend](assets/retention-catchup-trend-desktop.png)
+同路径基线不存在，比较为 current-only；主人明确确认「截图准确，接受此布局」。此确认只证明布局和模拟状态，不能替代容量实测。旧 retention-task / retention-catchup-trend 图片保留为历史，排除于本轮 Task Evidence Set。
 
-![Mobile retention backlog and overdue trend](assets/retention-catchup-trend-mobile.png)
+截图使用同一模拟运行的 898 invocation、1000 attempt 和 48 秒耗时，分别展示 18.71/20.83 rows/s 与 53.9/50.0 倍到达速率。工作量图表与吞吐卡片使用一致样本；这些数值只用于可重复的界面验证。
 
-旧 `retention-task-*.png` 属于 v2.82.0 基础交付，保留供历史参考，不纳入本次 PR Task Evidence Set。当前截图之后的 delta 不改变 Web 渲染源码或 Demo 输入；无需重复抓取。
+![Desktop task batch throughput](assets/retention-monthly-throughput-desktop.png)
+
+![Mobile task batch throughput](assets/retention-monthly-throughput-mobile.png)
 
 ## References
 
 - [长期需求](SPEC.md)
-- [主题历史](HISTORY.md)
-- [ADR 0025](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
-- [ADR 0027](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
+- [历史与此前容量限制](HISTORY.md)
+- [ADR 0032](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
