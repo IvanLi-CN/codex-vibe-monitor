@@ -6131,10 +6131,7 @@ impl SubscriptionHub {
         require_active_owner: bool,
         expected_upstream_account_attempt_refresh_generation: Option<u64>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
-        let coalesce_managed_task_refresh = matches!(
-            &topic,
-            SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskWorkload { .. }
-        );
+        let coalesce_managed_task_refresh = is_managed_task_refresh_topic(&topic);
         let topic_key = topic.cache_key()?;
         let mut result = self
             .refresh_topic_inner_once(
@@ -6191,10 +6188,7 @@ impl SubscriptionHub {
             &topic,
             SubscriptionTopic::ParallelWorkCurrent { range, .. } if range != "yesterday"
         );
-        let coalesce_managed_task_refresh = matches!(
-            &topic,
-            SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskWorkload { .. }
-        );
+        let coalesce_managed_task_refresh = is_managed_task_refresh_topic(&topic);
         let _managed_task_refresh_serial = if coalesce_managed_task_refresh {
             Some(self.managed_task_refresh_serial.lock().await)
         } else {
@@ -7999,6 +7993,17 @@ impl Default for SubscriptionHub {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn is_managed_task_refresh_topic(topic: &SubscriptionTopic) -> bool {
+    matches!(
+        topic,
+        SubscriptionTopic::ManagedTaskCatalog
+            | SubscriptionTopic::ManagedTaskRuntime
+            | SubscriptionTopic::ManagedTaskTimeline
+            | SubscriptionTopic::ManagedTaskDetail { .. }
+            | SubscriptionTopic::ManagedTaskWorkload { .. }
+    )
 }
 
 impl SubscriptionHub {
@@ -20984,6 +20989,39 @@ mod tests {
             &crate::task_timeline::TaskObservationChange::Workload("another_task".to_string()),
             &workload,
         ));
+    }
+
+    #[tokio::test]
+    async fn managed_task_refresh_generation_covers_every_task_topic() {
+        let hub = SubscriptionHub::new();
+        let topics = [
+            SubscriptionTopic::ManagedTaskCatalog,
+            SubscriptionTopic::ManagedTaskRuntime,
+            SubscriptionTopic::ManagedTaskTimeline,
+            SubscriptionTopic::ManagedTaskDetail {
+                task_key: "retention_archive".to_string(),
+            },
+            SubscriptionTopic::ManagedTaskWorkload {
+                task_key: "retention_archive".to_string(),
+                window_hours: 24,
+                limit: 200,
+            },
+        ];
+
+        for topic in topics {
+            assert!(is_managed_task_refresh_topic(&topic));
+            assert!(hub.mark_managed_task_topic_dirty(&topic).await);
+            assert!(hub.mark_managed_task_topic_dirty(&topic).await);
+            let topic_key = topic.cache_key().expect("managed task topic key");
+            let generation = hub
+                .state
+                .lock()
+                .await
+                .managed_task_refresh_generations
+                .get(&topic_key)
+                .copied();
+            assert_eq!(generation, Some(2));
+        }
     }
 
     #[test]
