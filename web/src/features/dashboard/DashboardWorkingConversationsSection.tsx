@@ -3327,13 +3327,14 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
           tokenUnit: "tokens",
         };
   const buildBreakdownNumberSpec = (value: number) =>
-    buildAdaptiveNumberTextSpec(value, localeTag, 0);
+    buildAdaptiveNumberTextSpec(value, localeTag, 0, { presentation: "usage-breakdown" });
   const buildBreakdownRatioSpec = (value: number | null) =>
     buildAdaptivePercentTextSpec(value, localeTag, { maximumFractionDigits: 1 });
   const buildBreakdownCurrencySpec = (value: number | null) =>
     buildAdaptiveCurrencyTextSpec(value, localeTag, {
       minimumFractionDigits: 0,
       maximumFractionDigits: 4,
+      presentation: "usage-breakdown",
     });
   const latencyDetailSections = useMemo<AccountMetricDetailSection[]>(() => {
     const currentFirstByteMs = finiteNumber(account.currentFirstTokenAvgMs);

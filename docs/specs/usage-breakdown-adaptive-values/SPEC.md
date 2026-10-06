@@ -28,6 +28,7 @@
 
 - 自适应候选 MUST 复用 `adaptiveMetricValueSpec.ts` 的本地化和量级规则，而不是在 Dashboard 浮层内另造一套字符串缩写逻辑。
 - 候选选择 MUST 遵循“完整本地化值 -> 在语义允许范围内降低小数位 -> 使用共享量级单位”的阶梯；计数和 Token 沿用 K/M/B/T，成本沿用 `$K`/`$M`/`$B`/`$T`，比例沿用项目百分比精度规则。
+- 用量明细 MUST 复用共享的硬阈值：当完整值包含至少两个千位分隔符时，量级候选优先于完整分组值；该策略不得改变调用方的 locale、货币符号或完整值精度。
 - 量级边界发生舍入进位时 MUST 升级到正确的下一量级；不得显示 `1000K` 这类不自然表达，也不得用固定小数位强行占满列宽。
 - 候选只能改变呈现精度和单位，不得改变原始聚合值、成本语义或比较关系。
 
@@ -90,7 +91,7 @@ None
 - Source: Storybook canvas, `Dashboard/UsageBreakdownTooltip/ConstrainedOverlay` and `Dashboard/UsageBreakdownTooltip/Mobile390`.
 - Assets: [`constrained-overlay.png`](./assets/constrained-overlay.png), [`mobile390.png`](./assets/mobile390.png).
 - Acceptance: owner-confirmed screenshots show single-line column headings, independently adaptive values, unit-bearing full-value Tooltip content without a native `title`, and no horizontal overflow at the constrained desktop width or `390px` viewport.
-- Preflight: both source-managed surfaces passed the required margin, containment, opaque-background, and horizontal-overflow checks; the candidate comparison against baseline `83436dd4cb4f72ad33f2284a52187a773c30497a` was `current-only` because these asset paths did not exist in the baseline.
+- Preflight: both source-managed surfaces passed the required margin, containment, opaque-background, and horizontal-overflow checks; the follow-up comparison against the merged baseline passed with equal canvas sizes and owner confirmation of the intentional value changes.
 
 ## References
 

@@ -651,13 +651,14 @@ export function TodayStatsOverview({
           tokenUnit: "tokens",
         };
   const buildBreakdownNumberSpec = (value: number) =>
-    buildAdaptiveNumberTextSpec(value, localeTag, 0);
+    buildAdaptiveNumberTextSpec(value, localeTag, 0, { presentation: "usage-breakdown" });
   const buildBreakdownRatioSpec = (value: number | null) =>
     buildAdaptivePercentTextSpec(value, localeTag, { maximumFractionDigits: 1 });
   const buildBreakdownCurrencySpec = (value: number | null) =>
     buildAdaptiveCurrencyTextSpec(value, localeTag, {
       minimumFractionDigits: 2,
       maximumFractionDigits: 4,
+      presentation: "usage-breakdown",
     });
 
   const content = (
