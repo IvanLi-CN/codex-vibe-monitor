@@ -1398,6 +1398,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
 pub(crate) struct StartupBackfillMaintenancePass {
     pub(crate) ran_actionable_task: bool,
     pub(crate) had_failure: bool,
+    pub(crate) deferred: bool,
     pub(crate) detail: Option<String>,
 }
 
@@ -1806,6 +1807,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                     return StartupBackfillMaintenancePass {
                         ran_actionable_task,
                         had_failure,
+                        deferred: had_deferred_task,
                         detail,
                     };
                 }
@@ -1935,6 +1937,7 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
     StartupBackfillMaintenancePass {
         ran_actionable_task,
         had_failure,
+        deferred: had_deferred_task,
         detail,
     }
 }
@@ -2215,6 +2218,18 @@ async fn run_startup_backfill_task_if_due_outcome(
     let _child_observation_guard = TaskObservationChildGuard(observation.clone());
 
     let started_at = Instant::now();
+    let prompt_cache_completed_before =
+        if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                &state.pool,
+            )
+            .await
+            .ok()
+            .and_then(|progress| progress.completed_keys)
+            .unwrap_or_default()
+        } else {
+            0
+        };
     let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
     // Most backfills combine bounded SQL batches with file reads/decompression. If an interactive
     // writer arrives while one of those P2 tasks is active, cancel the in-flight future so its
@@ -2461,6 +2476,38 @@ async fn run_startup_backfill_task_if_due_outcome(
             (outcome, None)
         }
         Err(err) => {
+            // A bounded backfill may have committed earlier micro-batches before a later
+            // source/read failure. Preserve that committed delta in the child workload sample
+            // before persisting the failed scheduler state.
+            if let Ok(committed_progress) =
+                load_startup_backfill_progress(&state.pool, &task_name).await
+            {
+                let startup_committed_delta = i64::try_from(
+                    committed_progress
+                        .last_updated
+                        .saturating_sub(progress.last_updated),
+                )
+                .unwrap_or(i64::MAX);
+                let prompt_cache_committed_delta = if task
+                    == StartupBackfillTask::PromptCacheConversationsMaterialization
+                {
+                    crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                        &state.pool,
+                    )
+                    .await
+                    .ok()
+                    .and_then(|progress| progress.completed_keys)
+                    .unwrap_or_default()
+                    .saturating_sub(prompt_cache_completed_before)
+                } else {
+                    0
+                };
+                let committed_delta = startup_committed_delta.max(prompt_cache_committed_delta);
+                workload_observation.set_processed_work(committed_delta);
+                if observation_parent_task_key == Some("prompt_cache_materialization") {
+                    observation.set_processed_work(committed_delta);
+                }
+            }
             let next_due = match persist_startup_backfill_task_failure(
                 state, task, &task_name, &progress, started_at, &err,
             )
@@ -2535,8 +2582,8 @@ pub(crate) async fn persist_startup_backfill_task_failure(
         task_name,
         StartupBackfillProgressUpdate {
             cursor_id: progress.cursor_id,
-            scanned: 0,
-            updated: 0,
+            scanned: progress.last_scanned,
+            updated: progress.last_updated,
             zero_update_streak: progress.zero_update_streak,
             next_run_after: &retry_after,
             status: STARTUP_BACKFILL_STATUS_FAILED,

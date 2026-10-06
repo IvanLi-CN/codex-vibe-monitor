@@ -218,7 +218,7 @@ pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64)
     let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
         if task_keys.contains(&observation.inner.task_key.as_str()) {
             if count == 0 {
-                observation.set_processed_work(0);
+                observation.set_processed_work_if_unset();
             } else {
                 observation.add_processed_work(count);
             }
@@ -232,11 +232,15 @@ pub(crate) fn record_managed_task_discovered_work(task_keys: &[&str], count: i64
     }
     let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
         if task_keys.contains(&observation.inner.task_key.as_str()) {
-            observation.set_discovered_work(
-                count,
-                format_utc_iso_millis(Utc::now()),
-                "run-window".to_string(),
-            );
+            if count == 0 {
+                observation.set_discovered_work_if_unset();
+            } else {
+                observation.set_discovered_work(
+                    count,
+                    format_utc_iso_millis(Utc::now()),
+                    "run-window".to_string(),
+                );
+            }
         }
     });
 }
@@ -532,6 +536,43 @@ impl TaskExecutionObservation {
                     metric.range = "run-window".to_string();
                     metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
                     metric.coverage = "window".to_string();
+                }
+            },
+        );
+    }
+
+    pub(crate) fn set_processed_work_if_unset(&self) {
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            false,
+            |sample| {
+                if let Some(metric) = sample_metric(sample, "processed")
+                    && metric.value.is_none()
+                {
+                    metric.value = Some(0);
+                    metric.range = "run-window".to_string();
+                    metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                    metric.coverage = "window".to_string();
+                }
+            },
+        );
+    }
+
+    pub(crate) fn set_discovered_work_if_unset(&self) {
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            false,
+            |sample| {
+                if let Some(metric) = sample_metric(sample, "discovered")
+                    && metric.value.is_none()
+                {
+                    metric.value = Some(0);
+                    metric.range = "run-window".to_string();
+                    metric.observed_at = Some(format_utc_iso_millis(Utc::now()));
+                    metric.coverage = "window".to_string();
+                    refresh_subset_relation(sample);
                 }
             },
         );

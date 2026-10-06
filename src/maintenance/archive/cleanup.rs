@@ -2423,11 +2423,9 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         .find(|(state, _)| state == "terminal_gap")
         .map(|(_, count)| usize::try_from((*count).max(0)).unwrap_or(usize::MAX))
         .unwrap_or_default();
-    let verified_proof_count =
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof")
-            .fetch_one(pool)
-            .await
-            .map(|count| usize::try_from(count.max(0)).unwrap_or(usize::MAX))?;
+    // Report only proofs promoted by this bounded turn. A cumulative table count would
+    // repeatedly re-report historical work on every supervisor pass.
+    let verified_proof_count = promoted_page_sets;
     let mut result = SummaryArchiveSnapshotBackfillWindowResult {
         next_cursor_id: cursor_id,
         candidate_count,
@@ -2498,6 +2496,7 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             )
             .await?;
             result.materialized_archive_batches += 1;
+            result.verified_proof_count = result.verified_proof_count.saturating_add(1);
         }
         if !candidates_from_due_queue {
             result.next_cursor_id = candidate.id;

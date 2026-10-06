@@ -53,7 +53,9 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         match fetch_result {
             Ok(urls) => {
                 fetched_any_subscription = true;
-                fetched_subscription_count = fetched_subscription_count.saturating_add(1);
+                if !urls.is_empty() {
+                    fetched_subscription_count = fetched_subscription_count.saturating_add(1);
+                }
                 subscription_proxy_urls.extend(urls);
             }
             Err(err) => {

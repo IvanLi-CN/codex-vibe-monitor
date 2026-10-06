@@ -1716,6 +1716,124 @@ async fn run_managed_task_once_with_scoped_observation(
             details: Some(details),
         });
     }
+    if task_key == "long_term_projection" {
+        return Ok(
+            match run_long_term_projection_once_managed(state.as_ref()).await? {
+                crate::long_term_stats::LongTermProjectionFlushOutcome::Completed => {
+                    ManagedTaskExecution::simple("长期统计投影刷新完成".to_string())
+                }
+                crate::long_term_stats::LongTermProjectionFlushOutcome::DeferredByPressure {
+                    retry_at,
+                } => ManagedTaskExecution {
+                    summary: "长期统计投影已延后".to_string(),
+                    detail: Some("写入压力下保留已提交进度".to_string()),
+                    completion: Some("deferred".to_string()),
+                    core_completion: None,
+                    details: Some(json!({
+                        "waitReason": "writer_pressure",
+                        "retryAt": retry_at.map(|at| format!("{:?}", at)),
+                    })),
+                },
+            },
+        );
+    }
+    if task_key == "timeseries_minute_projection" {
+        return Ok(
+            match crate::api::flush_timeseries_minute_projection_managed(
+                state.as_ref(),
+                "managed_task",
+                run_id,
+            )
+            .await
+            .map_err(|error| anyhow!("分钟时序投影刷新失败: {:?}", error))?
+            {
+                crate::api::TimeseriesMinuteProjectionFlushOutcome::Flushed => {
+                    ManagedTaskExecution::simple("分钟时序投影刷新完成".to_string())
+                }
+                crate::api::TimeseriesMinuteProjectionFlushOutcome::Deferred(deferred) => {
+                    ManagedTaskExecution {
+                        summary: "分钟时序投影已延后".to_string(),
+                        detail: Some("写入压力下保留已提交进度".to_string()),
+                        completion: Some("deferred".to_string()),
+                        core_completion: None,
+                        details: Some(json!({
+                            "waitReason": "writer_pressure",
+                            "retryAfterMs": deferred.retry_after.map(|delay| delay.as_millis() as u64),
+                        })),
+                    }
+                }
+                crate::api::TimeseriesMinuteProjectionFlushOutcome::Cancelled => {
+                    ManagedTaskExecution {
+                        summary: "分钟时序投影已取消".to_string(),
+                        detail: Some("本次执行未完成".to_string()),
+                        completion: Some("deferred".to_string()),
+                        core_completion: None,
+                        details: Some(json!({"waitReason": "cancelled"})),
+                    }
+                }
+            },
+        );
+    }
+    if task_key == "summary_coverage_recovery" {
+        let next_turn =
+            crate::api::SummaryCoverageRecoverySupervisor::run_with_priority_reservation(
+                state.as_ref(),
+                None,
+            )
+            .await?;
+        return Ok(match next_turn {
+            crate::api::SummaryCoverageRecoveryNextTurn::Deferred => ManagedTaskExecution {
+                summary: "汇总覆盖恢复已延后".to_string(),
+                detail: Some("数据库压力门控暂未允许恢复".to_string()),
+                completion: Some("deferred".to_string()),
+                core_completion: None,
+                details: Some(json!({"waitReason": "writer_pressure"})),
+            },
+            _ => ManagedTaskExecution::simple("汇总覆盖恢复完成".to_string()),
+        });
+    }
+    if matches!(
+        task_key,
+        "startup_backfill" | "prompt_cache_materialization"
+    ) || task_key.starts_with("startup_backfill.")
+    {
+        let selected_tasks = if task_key == "prompt_cache_materialization" {
+            Some(vec![
+                crate::StartupBackfillTask::PromptCacheConversationsMaterialization,
+            ])
+        } else if let Some(name) = task_key.strip_prefix("startup_backfill.") {
+            Some(vec![managed_startup_backfill_task(name)?])
+        } else {
+            None
+        };
+        let pass = crate::run_startup_backfill_maintenance_pass_managed(
+            state.clone(),
+            &state.shutdown,
+            selected_tasks.as_deref(),
+            (task_key == "prompt_cache_materialization").then_some("prompt_cache_materialization"),
+            Some(run_id),
+        )
+        .await;
+        if pass.had_failure {
+            bail!(
+                pass.detail
+                    .unwrap_or_else(|| format!("{task_key} 执行失败"))
+            );
+        }
+        return Ok(if pass.deferred {
+            ManagedTaskExecution {
+                summary: format!("{task_key} 已延后"),
+                detail: pass.detail,
+                completion: Some("deferred".to_string()),
+                core_completion: None,
+                details: Some(json!({"waitReason": "background_busy"})),
+            }
+        } else if task_key == "startup_backfill" && !pass.ran_actionable_task {
+            ManagedTaskExecution::simple("启动回填没有可处理项".to_string())
+        } else {
+            ManagedTaskExecution::simple(format!("{task_key} 处理完成"))
+        });
+    }
     match task_key {
         "pool_orphan_recovery" => {
             let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;
@@ -1871,10 +1989,6 @@ async fn run_managed_task_once(
                 reconciled_records,
             );
             Ok("仪表盘运行投影校对完成".to_string())
-        }
-        "long_term_projection" => {
-            run_long_term_projection_once_managed(state.as_ref()).await?;
-            Ok("长期统计投影刷新完成".to_string())
         }
         "timeseries_minute_projection" => {
             crate::api::flush_timeseries_minute_projection_managed(

@@ -1687,7 +1687,7 @@ const LONG_TERM_PROJECTION_REBUILD_PUBLICATION_DATES: usize =
     (LONG_TERM_PROJECTION_WRITE_BATCH_ROWS - 2) / 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LongTermProjectionFlushOutcome {
+pub(crate) enum LongTermProjectionFlushOutcome {
     Completed,
     DeferredByPressure { retry_at: Option<Instant> },
 }
@@ -3361,16 +3361,6 @@ async fn flush_long_term_projection_unlocked(
         flush_long_term_projection_inner(state, trigger)
     })
     .await;
-    if let Ok(stats) = result.as_ref() {
-        crate::record_managed_task_discovered_work(
-            &["long_term_projection"],
-            i64::try_from(stats.terminal_event_count).unwrap_or(i64::MAX),
-        );
-        crate::record_managed_task_processed_work(
-            &["long_term_projection"],
-            i64::try_from(stats.terminal_event_count).unwrap_or(i64::MAX),
-        );
-    }
     let load_row_count = result
         .as_ref()
         .map(|stats| stats.loaded_row_count)
@@ -3422,10 +3412,10 @@ pub(crate) async fn run_long_term_projection_once(state: &AppState) -> Result<()
         .map(|_| ())
 }
 
-pub(crate) async fn run_long_term_projection_once_managed(state: &AppState) -> Result<()> {
-    flush_long_term_projection_unlocked(state, "managed_task")
-        .await
-        .map(|_| ())
+pub(crate) async fn run_long_term_projection_once_managed(
+    state: &AppState,
+) -> Result<LongTermProjectionFlushOutcome> {
+    flush_long_term_projection_unlocked(state, "managed_task").await
 }
 
 async fn run_long_term_projection_flush_with_retry<T, Operation, OperationFuture>(

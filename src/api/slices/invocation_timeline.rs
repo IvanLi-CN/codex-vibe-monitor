@@ -957,10 +957,6 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
         return Ok(TimelineSnapshotCleanupResult::default());
     }
-    crate::record_managed_task_discovered_work(
-        &["invocation_timeline_snapshot"],
-        i64::try_from(tokens.len()).unwrap_or(i64::MAX),
-    );
     pause_before_timeline_cleanup_active_tokens().await;
     let now = Instant::now();
     let active_tokens = {
@@ -970,10 +966,19 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
         snapshots.retain(|_, snapshot| snapshot.expires_at > now);
         snapshots.keys().cloned().collect::<HashSet<_>>()
     };
+    let eligible_token_count = tokens
+        .iter()
+        .filter(|token| !active_tokens.contains(*token))
+        .count();
+    crate::record_managed_task_discovered_work(
+        &["invocation_timeline_snapshot"],
+        i64::try_from(eligible_token_count).unwrap_or(i64::MAX),
+    );
     let mut result = TimelineSnapshotCleanupResult {
         scanned_tokens: tokens.len(),
         ..Default::default()
     };
+    crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 0);
     for token in tokens {
         if active_tokens.contains(&token) {
             continue;
@@ -989,10 +994,7 @@ pub(crate) async fn cleanup_timeline_snapshot_rows_once(
             result.deleted_rows = result
                 .deleted_rows
                 .saturating_add(delete_result.rows_affected());
-            crate::record_managed_task_processed_work(
-                &["invocation_timeline_snapshot"],
-                i64::try_from(delete_result.rows_affected()).unwrap_or(i64::MAX),
-            );
+            crate::record_managed_task_processed_work(&["invocation_timeline_snapshot"], 1);
         }
         acknowledge_timeline_snapshot_release(&token);
     }

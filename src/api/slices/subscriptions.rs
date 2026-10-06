@@ -4242,6 +4242,23 @@ impl SubscriptionHub {
         )
     }
 
+    pub(crate) async fn summary_delta_journal_unabsorbed_identities(&self) -> HashSet<String> {
+        let state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| summary_delta_workload_identity(&entry.delta))
+            .chain(
+                state
+                    .summary_delta_journal
+                    .replayed_entries
+                    .iter()
+                    .map(summary_delta_workload_identity),
+            )
+            .collect()
+    }
+
     pub(crate) async fn summary_source_change_cursor(&self) -> u64 {
         self.state.lock().await.summary_source_change_cursor
     }
@@ -7849,6 +7866,16 @@ impl SubscriptionHub {
             }
         }
     }
+}
+
+fn summary_delta_workload_identity(delta: &DashboardActivityTerminalDelta) -> String {
+    format!(
+        "{}\0{}\0{}\0{}",
+        delta.persisted_row_id.unwrap_or_default(),
+        delta.invoke_id,
+        delta.occurred_at,
+        delta.terminal_sequence,
+    )
 }
 
 fn buffer_parallel_work_prebaseline_mutations(

@@ -1417,7 +1417,7 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
                 format_utc_iso_millis(Utc::now()),
                 "run-window".to_string(),
             );
-            observation.set_processed_work(0);
+            observation.set_processed_work_if_unset();
         }
         return Ok(TimeseriesMinuteProjectionFlushOutcome::Flushed);
     }

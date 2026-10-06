@@ -151,6 +151,7 @@ pub(crate) struct SummaryCoverageRecoverySupervisor;
 pub(crate) enum SummaryCoverageRecoveryNextTurn {
     Immediate,
     Idle,
+    Deferred,
 }
 
 #[derive(Debug)]
@@ -164,7 +165,9 @@ pub(crate) fn summary_coverage_recovery_next_turn_delay(
 ) -> Duration {
     match next_turn {
         SummaryCoverageRecoveryNextTurn::Immediate => Duration::ZERO,
-        SummaryCoverageRecoveryNextTurn::Idle => SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL,
+        SummaryCoverageRecoveryNextTurn::Idle | SummaryCoverageRecoveryNextTurn::Deferred => {
+            SUMMARY_SNAPSHOT_MIN_REFRESH_INTERVAL
+        }
     }
 }
 
@@ -435,7 +438,7 @@ impl SummaryCoverageRecoverySupervisor {
                 crate::record_managed_task_discovered_work(&["summary_coverage_recovery"], 0);
                 crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 0);
                 return Ok(SummaryCoverageRecoveryTurn {
-                    next_turn: SummaryCoverageRecoveryNextTurn::Idle,
+                    next_turn: SummaryCoverageRecoveryNextTurn::Deferred,
                     reservation: None,
                 });
             }
