@@ -54,7 +54,7 @@
 - VER-006: 原运行实例 CPU 热点可用匹配符号解析；固定一次性镜像读取原映射路径，应用镜像保留 profiler 的第三方许可，采样目标、并发、时限与产物容量受限。 covers: REQ-014
 - VER-007: WAL、自定义路径、symlink、absent、损坏、未知归属、中断、重复及备份恢复有证据；v3 镜像与 schema-v1 来源可迁移，v2/v4 版本、额外 CHECK、不同 DEFAULT 与未知索引被拒绝，源文件摘要保持不变；新进程无旧库依赖，业务状态保留。 covers: REQ-001, REQ-005, REQ-015
 - VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡，阻断现有 Build Artifacts 门禁。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
-- VER-009: 五个 dashboard JSON 可独立 provision，UID、`cvm-prometheus`、变量、导航/任务深链接、面板类型/布局、PromQL 聚合和缺测说明通过静态合同检查；受控合成数据在桌面与 393×852 窄屏保持排查顺序，真实 Grafana/Prometheus 不可用时不得用生产或伪造数据替代。 covers: REQ-009, REQ-012, REQ-012A
+- VER-009: 五个 dashboard JSON 可独立 provision，UID、`cvm-prometheus`、变量、导航/任务深链接、面板类型/布局、PromQL 聚合和缺测说明通过静态合同检查；桌面与 393×852 窄屏的视觉验收必须来自当前候选实际 provision 的 Grafana/Prometheus 实例，真实渲染不可用时保持未验证，不得用生产截图或合成图片替代。 covers: REQ-009, REQ-012, REQ-012A
 
 ## Related ADRs
 
