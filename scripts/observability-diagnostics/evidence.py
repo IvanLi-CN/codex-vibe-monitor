@@ -268,11 +268,11 @@ def diagnostic_card(candidate, context, windows, error=None):
                         and w.get("load", {}).get("completed") == w.get("load", {}).get("offered") == 1500
                         and w.get("baselineFingerprint") is not None
                         and w.get("initialFingerprint") == w.get("baselineFingerprint") for w in windows)
-                and all(w.get("profile", {}).get("status") == "verified" for w in windows if w["enabled"] == "true"))
+                and all(w.get("profile", {}).get("status") == "verified" for w in windows))
     return {"kind": "cvm-cpu-diagnosis-v1", "candidate": candidate, "context": context,
             "budgetCertification": "not-issued", "profilingAltersWorkload": True,
             "diagnosticStatus": "complete" if complete and error is None else "unavailable",
             "errorClass": error, "windows": len(windows),
             "limitations": ["Diagnostic observer/profiler changes workload cost; no budget certification.",
-                            "One 30-second capture per enabled window may miss intermittent work.",
+                            "One 30-second capture per window in each mode may miss intermittent work.",
                             "Unavailable hardware and process fields remain unknown."]}

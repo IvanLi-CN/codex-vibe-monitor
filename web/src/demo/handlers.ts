@@ -3252,6 +3252,7 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
         finalPending: 2_544,
         skippedIndices: [47, 82],
         zeroCommitFailureIndices: [46, 81],
+        maxProcessedPerRun: 1000,
       })
     : null;
   const workloadMetric = (
@@ -3305,6 +3306,8 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     0,
     Date.parse(latestRunFinishedAt) - Date.parse(latestRunStartedAt),
   );
+  const retentionCommittedRows = latestSample?.processed?.value ?? 0;
+  const retentionElapsedSeconds = (latestRunDurationMs || 31_000) / 1000;
   const defaultRun: DemoManagedTaskRun = {
     id: latestSample?.managedRunId ?? 1,
     startedAt: latestRunStartedAt,
@@ -3316,13 +3319,42 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     updatedCount: latestSample?.processed?.value ?? (task.isManual ? null : 1780),
     errorDetail: null,
     completion: taskKey === "retention_archive" ? "partial" : "completed",
-    coreCompletion: task.isManual ? null : "completed",
+    coreCompletion: task.isManual
+      ? null
+      : taskKey === "retention_archive"
+        ? "partial"
+        : "completed",
     details:
       taskKey === "retention_archive"
         ? {
             budgetMs: 60000,
             elapsedMs: latestRunDurationMs || 31_000,
             settlementMs: 2,
+            timeoutCount: 0,
+            archiveBatches: [
+              {
+                dataset: "codex_invocations",
+                monthKey: "2026-09",
+                batchRows: retentionCommittedRows,
+                committedRows: retentionCommittedRows,
+                committedRowsPerSecond: retentionCommittedRows / retentionElapsedSeconds,
+                arrivalRowsPerSecond: 0.3472,
+                serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
+                filePrepareMs: 3600,
+                lockWaitMs: 125,
+              },
+              {
+                dataset: "pool_upstream_request_attempts",
+                monthKey: "2026-09",
+                batchRows: 1000,
+                committedRows: 1000,
+                committedRowsPerSecond: 1000 / retentionElapsedSeconds,
+                arrivalRowsPerSecond: 0.4167,
+                serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
+                filePrepareMs: 1800,
+                lockWaitMs: 80,
+              },
+            ],
             promptCacheStats: {
               state: "unavailable",
               pending: 3,

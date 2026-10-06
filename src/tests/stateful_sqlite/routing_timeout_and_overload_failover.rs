@@ -23,15 +23,41 @@ where
 #[test]
 fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transit() {
     run_timeout_future_with_large_stack(async move {
-        let (shared_upstream_base, shared_upstream_handle) =
-            spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+        // This fixture must time out even when the runner stalls. Competing short
+        // sleeps can make the response win after both timers have become ready.
+        let upstream = Router::new().route(
+            "/v1/responses",
+            post(|| async {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header(http_header::CONTENT_TYPE, "application/json")
+                    .body(Body::from_stream(stream::pending::<
+                        Result<Bytes, Infallible>,
+                    >()))
+                    .expect("build pending upstream response")
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind pending upstream");
+        let shared_upstream_base = format!(
+            "http://{}",
+            listener.local_addr().expect("pending upstream address")
+        );
+        let shared_upstream_handle = tokio::spawn(async move {
+            axum::serve(listener, upstream)
+                .await
+                .expect("serve pending upstream");
+        });
+        let (alternate_base, alternate_attempts, alternate_handle) =
+            spawn_pool_retry_upstream(&[("Bearer route-broken-alt-invalid-group", 0)]).await;
         let mut config = test_config();
         config.openai_upstream_base_url =
             Url::parse("https://api.openai.com/").expect("valid upstream base url");
-        config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+        config.pool_upstream_responses_attempt_timeout = Duration::from_secs(2);
         let state = test_state_from_config(config, true).await;
         seed_pool_routing_api_key(&state, "pool-live-key").await;
-        insert_test_pool_api_key_account_with_options(
+        let initial_account_id = insert_test_pool_api_key_account_with_options(
             &state,
             "Shared Route A",
             "route-shared-a-broken-alt",
@@ -61,11 +87,19 @@ fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transi
             "route-broken-alt-invalid-group",
             None,
             None,
-            Some("https://broken-alt.example.com/backend-api/codex"),
+            Some(alternate_base.as_str()),
         )
         .await;
         set_test_account_group_name(&state.pool, broken_alternate_id, Some("broken-alt-group"))
             .await;
+        let sticky_seen_at = format_test_recent_active_timestamp(Utc::now());
+        upsert_test_sticky_route_at(
+            &state.pool,
+            "sticky-timeout-broken-alt-group",
+            initial_account_id,
+            &sticky_seen_at,
+        )
+        .await;
 
         let response = proxy_openai_v1(
         State(state.clone()),
@@ -82,18 +116,45 @@ fn capture_target_pool_route_timeout_ignores_legacy_group_proxy_error_for_transi
         ),
     )
     .await;
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("read timeout broken-alt response body");
         let response_payload: Value =
             serde_json::from_slice(&body).expect("decode timeout broken-alt response body");
-        let error = response_payload["error"]
-            .as_str()
-            .expect("transit route error should be present");
-        assert!(!error.contains("has no bound forward proxy nodes"));
+        assert_eq!(response_payload["ok"], true);
+        assert_eq!(
+            response_payload["authorization"], "Bearer route-broken-alt-invalid-group",
+            "the alternate transit route must handle the request despite its legacy group"
+        );
+        wait_for_codex_invocations(&state.pool, 1).await;
+        wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+        let attempts = sqlx::query_as::<_, (String, Option<String>)>(
+            "SELECT status, failure_kind FROM pool_upstream_request_attempts ORDER BY attempt_index",
+        )
+        .fetch_all(&state.pool)
+        .await
+        .expect("load controlled timeout failover attempts");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0],
+            (
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE.to_string(),
+                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string()),
+            )
+        );
+        assert_eq!(attempts[1].0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+        assert_eq!(
+            alternate_attempts
+                .lock()
+                .expect("lock controlled alternate attempts")
+                .get("Bearer route-broken-alt-invalid-group")
+                .copied(),
+            Some(1)
+        );
 
         shared_upstream_handle.abort();
+        alternate_handle.abort();
     });
 }
 

@@ -1,26 +1,47 @@
 # 外部性能观测实现
 
+## PR 检查与性能验收边界
+
+按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
+合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
+job，继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact
+producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
+普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
+历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及
+50 倍吞吐、24 小时固定存量归零和在线延迟目标留待专项 Actions 验证。
+
 ## Hosted CPU diagnosis
 
 诊断快照 helper 的 CLI 分发仅在直接执行时运行，CPU diagnosis runner 导入
 `client.py` 时不会因缺少 `mode` 丢失计数器。子进程回归覆盖无参数导入和固定
 数值指标读取，保留既有 CLI 模式。此修复只改善诊断证据完整性，不改变六窗口
-性能验收、5% 稳定性/开销阈值或预算结论；新候选仍须独立通过 Actions 验收。
+性能验收、5% 稳定性/开销阈值或预算结论；性能签收仍须独立的 Actions 验收。
 
 候选 `ccfd94b7` 在 Actions run `37225986112` 的开启窗口 CPU/请求 CV 为
 11.77%，超过 5% 稳定性上限；该数值不是已接受的 CPU 开销百分比。先前同合同
 候选 `36d8c612` 通过，仅作为历史比较。普通修复批次停在七批，根因尚未确定。
 
-经授权增加独立 GitHub-hosted VM 的 `Observability CPU Diagnosis`，仅用于本 PR。
+独立 GitHub-hosted VM 的 `Observability CPU Diagnosis` 仅用于明确列名的 PR
+#1071 和 #1079。#1079 的同合同候选 CPU/请求开销为 8.50%，超过 5% 门槛；
+主线历史证据为 3.02%。现有采样发生在 A/B 之前，不能归因测量窗口内的差异，
+因此临时复用该作业补齐窗口计数和 CPU profile；根因未定，不开启普通修复批次。
 入口在 `scripts/observability-diagnostics/`，不修改预算验收脚本、场景摘要来源或
 阈值；消费同一不可变镜像，复用合成初始化、60 秒预热与六个交替 300 秒窗口。
 每秒记录绑定原容器和 PID start ticks 的 user/system CPU、throttle、context switch、
 进程 IO，以及可获取的 runner frequency/steal。缺测保留 unknown；初始数据副本
 必须具有相同有界指纹，指标只输出固定白名单数值之和，不保留动态标签。
-每个开启窗口仅采样一次 100 Hz/30 秒原实例 profile，验证 revision、container、
-build ID、样本数及产物哈希。驱动清理仅使用本次创建返回的 ID。
+开启和关闭模式的每个窗口均在负载开始 60 秒后采样一次 100 Hz/30 秒原实例
+profile，验证 revision、container、build ID、样本数及产物哈希。任一模式缺少
+profile 时诊断不完整；两组产物共同遵守原有容量上限。驱动清理仅使用本次创建
+返回的 ID。
 诊断采集会改变成本，`diagnostic-card.json` 永远不签发预算；即使并行的正常
 验收通过，也不能在根因未明时宣称旧回归已解决，不自动重跑或开启正式审查。
+
+#1079 的 `bfc0d23f` 在 Actions run `37436462176` 第二次执行中取得六个有效、
+稳定窗口，CPU/请求相对开销为 5.61%，仍高于 5%；p95 相对开销为 0.64%，通过。
+同镜像诊断完成，但只有开启模式的三个短 profile，无法直接识别新增开销。
+补齐关闭模式的同阶段采样只用于归因；不修改预算合同、验收场景或阈值，不构成
+普通修复批次，也不证明归档容量目标或旧回归已解决。
 
 诊断前同步主线 `7681ce2d`，保留新的任务工作量趋势、业务状态与 SSE；移除合并
 冲突中的旧性能摘要，保留 Grafana 任务链接。主线业务运行时发生变化，新的诊断

@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { ObservabilityTaskLink } from "../../features/observability/ObservabilityTaskLink";
+import { RetentionRunThroughput } from "../../features/system/RetentionRunThroughput";
 import { TaskWorkloadSummary, TaskWorkloadTrend } from "../../features/system/TaskWorkloadTrend";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
@@ -487,6 +488,9 @@ export default function SystemTaskDetailPage() {
                     </div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
+                  {taskKey === "retention_archive" ? (
+                    <RetentionRunThroughput details={run.details} />
+                  ) : null}
                 </div>
               ))
             )}

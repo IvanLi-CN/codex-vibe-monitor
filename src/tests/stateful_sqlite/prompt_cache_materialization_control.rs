@@ -660,7 +660,7 @@ async fn prompt_cache_materialization_large_key_is_paged_once_across_phases() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompt_cache_materialization_pages_resume_across_generation_change_and_control_restart() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -697,25 +697,22 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
         .prompt_cache_materialization_control
         .snapshot()
         .expect("initialized materialization control");
-    let yielded = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observer_pool = pool.clone();
-    let observer_yielded = yielded.clone();
-    let observer = tokio::spawn(async move {
-        loop {
-            let staged: i64 = sqlx::query_scalar(
+    // Observe the committed page at the priority check itself. A separately
+    // scheduled observer can run after several pages under suite contention.
+    let should_yield = || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+                let staged: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging WHERE cursor_id > 0",
-            )
-            .fetch_one(&observer_pool)
-            .await
-            .expect("observe a committed page before yielding");
-            if staged > 0 {
-                observer_yielded.store(true, std::sync::atomic::Ordering::SeqCst);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(1)).await;
-        }
-    });
-    let should_yield = || yielded.load(std::sync::atomic::Ordering::SeqCst);
+                )
+                .fetch_one(&observer_pool)
+                .await
+                .expect("observe a committed page before yielding");
+                staged > 0
+            })
+        })
+    };
     let first_page = run_prompt_cache_conversations_materialization_with_pressure_and_control(
         &pool,
         400,
@@ -726,7 +723,6 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
     )
     .await
     .expect("run first statistics page");
-    observer.await.expect("page-boundary priority observer");
     assert_eq!(first_page.defer_reason, Some("coordinator_priority"));
     let should_yield = || false;
     let (outer_cursor, completed_keys): (Option<String>, i64) = sqlx::query_as(

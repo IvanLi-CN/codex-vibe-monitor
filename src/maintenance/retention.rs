@@ -1,9 +1,12 @@
 use super::*;
 
 mod archive_identity;
+pub(super) mod batch_plan;
+mod task_batches;
 use archive_identity::invocation_archive_source_identity_matches;
 pub(crate) use archive_identity::{
-    InvocationArchiveIdentityDatabase, invocation_archive_source_identity_sha256,
+    InvocationArchiveIdentityDatabase, archive_table_source_identity_sha256,
+    invocation_archive_source_identity_sha256,
 };
 #[cfg(test)]
 pub(crate) use archive_identity::{
@@ -11,6 +14,19 @@ pub(crate) use archive_identity::{
     invocation_archive_source_identity_sha256_candidate_v2_for_test,
     invocation_archive_source_identity_sha256_legacy_for_test,
 };
+pub(crate) use batch_plan::archive_file_can_start;
+#[cfg(test)]
+pub(crate) use batch_plan::{
+    BatchObservation, archive_sqlite_size_from_header, retention_test_with_batch_metrics,
+};
+pub(crate) use batch_plan::{
+    RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
+};
+use batch_plan::{archive_batch_can_start, archive_candidate_limit, select_archive_batch};
+#[cfg(test)]
+pub(crate) use task_batches::archive_old_invocations;
+use task_batches::archive_old_invocations_with_source_max;
+pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
@@ -42,6 +58,7 @@ const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
 const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(60);
+const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS: i32 = 1_000;
@@ -82,6 +99,7 @@ static SYSTEM_TASK_RUN_RETENTION_SCHEDULE_LOCK: std::sync::Mutex<()> = std::sync
 tokio::task_local! {
     static RETENTION_SHUTDOWN: CancellationToken;
     static RETENTION_RUN_DEADLINE: RefCell<Option<Instant>>;
+    static RETENTION_RUN_DEFER_REASON: RefCell<Option<String>>;
     static RETENTION_CURRENT_PREPARED_KEY: RefCell<Option<String>>;
     static RETENTION_TRY_ARCHIVE_LOCKS: ();
     static RETENTION_RAW_CAPTURE_CIRCUIT: RefCell<Option<Arc<RawCaptureCircuitBreaker>>>;
@@ -123,11 +141,21 @@ fn retention_archive_locks_are_try_only() -> bool {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct RetentionSqliteMaintenanceTestProbe {
+    pub(crate) progress_callbacks: std::sync::atomic::AtomicUsize,
+    pub(crate) connection_closed: AtomicBool,
+}
+
+#[cfg(test)]
 tokio::task_local! {
+    pub(crate) static RETENTION_TEST_SQLITE_MAINTENANCE_PROBE:
+        Arc<RetentionSqliteMaintenanceTestProbe>;
     pub(crate) static RETENTION_TEST_WRITE_COORDINATOR:
         std::sync::Arc<crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator>;
     pub(crate) static RETENTION_TEST_DB_PRESSURE_GATE:
         std::sync::Arc<crate::db_pressure::DbPressureGate>;
+    pub(crate) static RETENTION_TEST_WRITE_CONNECTION_POOL_READY: Arc<Notify>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_TRAVERSAL:
         std::sync::Arc<std::sync::atomic::AtomicUsize>;
     pub(crate) static RETENTION_TEST_LEGACY_DIRECTORY_ENTRIES:
@@ -356,6 +384,17 @@ pub(crate) fn retention_archive_file_lock(path: &Path) -> Result<RetentionArchiv
     retention_file_lock(path, libc::LOCK_EX, retention_archive_locks_are_try_only())
 }
 
+#[cfg(unix)]
+pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    match retention_file_lock(path, libc::LOCK_EX, true) {
+        Err(error) if error.to_string() == "archive directory lock busy" => {
+            retention_record_defer("archive_work_cleanup", "archive_directory_lock_busy");
+            Err(retention_write_deferred("archive_work_cleanup"))
+        }
+        result => result,
+    }
+}
+
 pub(crate) fn retention_archive_parent_identity(path: &Path) -> Option<String> {
     let parent = path.parent()?;
     let metadata = fs::metadata(parent).ok()?;
@@ -392,6 +431,11 @@ impl RetentionArchiveFileLock {
 #[cfg(not(unix))]
 pub(crate) fn retention_archive_file_lock(_path: &Path) -> Result<RetentionArchiveFileLock> {
     Ok(RetentionArchiveFileLock)
+}
+
+#[cfg(not(unix))]
+pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    retention_archive_file_lock(path)
 }
 
 pub(crate) fn acquire_retention_raw_write_fence(
@@ -656,7 +700,7 @@ fn retention_recovery_clear_current_prepared_key() {
     });
 }
 
-fn retention_run_budget_expired() -> bool {
+pub(crate) fn retention_run_budget_expired() -> bool {
     RETENTION_RUN_DEADLINE
         .try_with(|deadline| {
             deadline
@@ -675,6 +719,28 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
         })
         .ok()
         .flatten()
+}
+
+pub(super) fn retention_run_shutdown_token() -> Option<CancellationToken> {
+    RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
+    budget: Duration,
+    work: F,
+) -> F::Output {
+    RETENTION_RUN_DEADLINE
+        .scope(RefCell::new(Some(Instant::now() + budget)), work)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_with_shutdown<F: Future>(
+    shutdown: CancellationToken,
+    work: F,
+) -> F::Output {
+    RETENTION_SHUTDOWN.scope(shutdown, work).await
 }
 
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
@@ -951,6 +1017,13 @@ pub(super) fn retention_micro_batch_limit(config: &AppConfig, operation: &'stati
 fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     RETENTION_DEFER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reason = reason.to_string();
+    // Later stages may commit and clear shared health; retain this run's first actual cause.
+    let _ = RETENTION_RUN_DEFER_REASON.try_with(|current| {
+        let mut current = current.borrow_mut();
+        if current.is_none() {
+            *current = Some(reason.clone());
+        }
+    });
     let mut health = RETENTION_WRITE_HEALTH
         .lock()
         .expect("retention write health");
@@ -1199,7 +1272,7 @@ pub(super) fn take_retention_micro_batch<T>(
     selected
 }
 
-pub(super) struct RetentionWriteAdmission {
+pub(crate) struct RetentionWriteAdmission {
     write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     p1_waiter_count: usize,
@@ -1257,6 +1330,146 @@ fn retention_write_coordinator_handle()
     }
 }
 
+pub(crate) async fn acquire_retention_pool_connection(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+) -> Result<Option<sqlx::pool::PoolConnection<Sqlite>>> {
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        return Ok(None);
+    }
+    let shutdown = retention_run_shutdown_token();
+    let acquire = async {
+        if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, pool.acquire()).await {
+                Ok(result) => result.map(Some),
+                Err(_) => {
+                    retention_record_defer(operation, "retention_work_budget");
+                    Ok(None)
+                }
+            }
+        } else {
+            pool.acquire().await.map(Some)
+        }
+    };
+    let result = if let Some(shutdown) = shutdown.as_ref() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                return Ok(None);
+            }
+            result = acquire => result,
+        }
+    } else {
+        acquire.await
+    };
+    let connection = match result {
+        Ok(connection) => connection,
+        Err(sqlx::Error::PoolTimedOut) => {
+            retention_record_defer(operation, "sqlite_pool_wait");
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if retention_run_budget_expired()
+        || shutdown
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    {
+        drop(connection);
+        retention_record_defer(
+            operation,
+            if retention_run_budget_expired() {
+                "retention_work_budget"
+            } else {
+                "shutdown"
+            },
+        );
+        return Ok(None);
+    }
+    Ok(connection)
+}
+
+pub(crate) async fn acquire_retention_write_connection(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+) -> Result<Option<(sqlx::pool::PoolConnection<Sqlite>, RetentionWriteAdmission)>> {
+    #[cfg(test)]
+    let deny_reason = RETENTION_TEST_DB_PRESSURE_GATE
+        .try_with(|gate| gate.background_deny_reason())
+        .unwrap_or_else(|_| crate::db_pressure::global_db_pressure_gate().background_deny_reason());
+    #[cfg(not(test))]
+    let deny_reason = crate::db_pressure::global_db_pressure_gate().background_deny_reason();
+    if let Some(reason) = deny_reason {
+        retention_record_defer(operation, reason);
+        return Ok(None);
+    }
+    // SQLx returns connections asynchronously. Wait for pool readiness and finish
+    // returning this idle connection before requesting the coordinator, otherwise
+    // an uncontended pool can look exhausted after every committed chunk.
+    let Some(mut connection) = acquire_retention_pool_connection(pool, operation).await? else {
+        return Ok(None);
+    };
+    let release = connection.return_to_pool();
+    let release = async {
+        if let Some(remaining) = retention_run_remaining_budget() {
+            tokio::time::timeout(remaining, release).await.is_ok()
+        } else {
+            release.await;
+            true
+        }
+    };
+    let returned = if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                return Ok(None);
+            }
+            returned = release => returned,
+        }
+    } else {
+        release.await
+    };
+    drop(connection);
+    if !returned {
+        retention_record_defer(operation, "retention_work_budget");
+        return Ok(None);
+    }
+    #[cfg(test)]
+    let _ = RETENTION_TEST_WRITE_CONNECTION_POOL_READY.try_with(|ready| ready.notify_one());
+    // Wait for the coordinator without holding a pool connection. Once admitted,
+    // take only an immediately available connection: neither resource may be
+    // retained while waiting for the other, including a P1 writer using the pool.
+    let Some(mut admission) = acquire_retention_write_admission(operation).await else {
+        return Ok(None);
+    };
+    if retention_run_budget_expired()
+        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+    {
+        admission.write_permit.revoke_fairness_admission();
+        drop(admission);
+        retention_record_defer(
+            operation,
+            if retention_run_budget_expired() {
+                "retention_work_budget"
+            } else {
+                "shutdown"
+            },
+        );
+        return Ok(None);
+    }
+    if let Some(connection) = pool.try_acquire() {
+        Ok(Some((connection, admission)))
+    } else {
+        admission.write_permit.revoke_fairness_admission();
+        drop(admission);
+        retention_record_defer(operation, "sqlite_pool_wait");
+        Ok(None)
+    }
+}
+
 pub(super) async fn acquire_retention_write_admission(
     operation: &'static str,
 ) -> Option<RetentionWriteAdmission> {
@@ -1306,23 +1519,47 @@ async fn acquire_retention_write_coordinator(
     crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
 )> {
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        return None;
+    }
     let coordinator = retention_write_coordinator_handle();
-    let write_permit = match RETENTION_SHUTDOWN.try_with(Clone::clone) {
-        Ok(shutdown) => {
-            coordinator
-                .acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown)
-                .await
+    let acquire = async {
+        match RETENTION_SHUTDOWN.try_with(Clone::clone) {
+            Ok(shutdown) => {
+                coordinator
+                    .acquire_maintenance_cancellable(RETENTION_FAIRNESS_INTERVAL, &shutdown)
+                    .await
+            }
+            Err(_) => Some(
+                coordinator
+                    .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
+                    .await,
+            ),
         }
-        Err(_) => Some(
-            coordinator
-                .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-                .await,
-        ),
+    };
+    // A queued maintenance waiter owns no SQLite work. Dropping it unregisters the waiter;
+    // the deadline must also cover admission behind an active foreground writer.
+    let write_permit = if let Some(remaining) = retention_run_remaining_budget() {
+        match tokio::time::timeout(remaining, acquire).await {
+            Ok(permit) => permit,
+            Err(_) => {
+                retention_record_defer(operation, "retention_work_budget");
+                return None;
+            }
+        }
+    } else {
+        acquire.await
     };
     let Some(write_permit) = write_permit else {
         retention_record_defer(operation, "shutdown");
         return None;
     };
+    if retention_run_budget_expired() {
+        drop(write_permit);
+        retention_record_defer(operation, "retention_work_budget");
+        return None;
+    }
     Some((write_permit, coordinator.snapshot().await))
 }
 
@@ -1358,6 +1595,9 @@ pub(crate) struct RetentionRunSummary {
     pub(crate) fatal_error: Option<String>,
     pub(crate) recoverable_failure: bool,
     pub(crate) orphan_cleanup_completed: bool,
+    pub(crate) batches: Vec<RetentionBatchMetrics>,
+    pub(crate) timeout_count: Option<u64>,
+    pub(crate) arrival_rates: HashMap<String, f64>,
 }
 
 impl RetentionRunSummary {
@@ -1390,14 +1630,22 @@ impl RetentionRunSummary {
     pub(crate) fn completion(&self) -> &'static str {
         if self.fatal_error.is_some() {
             "failed"
-        } else if self.recoverable_failure {
+        } else if self.recoverable_failure
+            || self.budget_exhausted
+            || self.wait_reason.as_deref() == Some("parallel_work_minute_coverage")
+        {
             "partial"
-        } else if self.budget_exhausted || self.deferred {
+        } else if self.deferred {
             if self.touched_anything() {
                 "partial"
             } else {
                 "deferred"
             }
+        } else if self
+            .backlog_total
+            .is_some_and(|total| total.max(0) as u64 > self.invocation_rows_archived as u64)
+        {
+            "partial"
         } else {
             "completed"
         }
@@ -3010,17 +3258,9 @@ async fn retention_recovery_persist_scheduler_cursor_without_pressure_for_scope(
     reset_failure_count: bool,
     failure_fingerprint: Option<&str>,
 ) -> Result<()> {
-    #[cfg(test)]
-    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
-        .try_with(std::sync::Arc::clone)
-        .unwrap_or_else(|_| {
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        });
-    #[cfg(not(test))]
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let write_permit = coordinator
-        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-        .await;
+    let (write_permit, _) = acquire_retention_write_coordinator("retention_recovery_scheduler")
+        .await
+        .ok_or_else(|| retention_write_deferred("retention_recovery_scheduler"))?;
     let next_retry_at = if retry_secs > 0 {
         Some(format!("+{retry_secs} seconds"))
     } else {
@@ -3057,17 +3297,9 @@ async fn retention_recovery_persist_scheduler_cursor_without_pressure_for_scope(
 }
 
 async fn retention_recovery_mark_prepared_progress(pool: &Pool<Sqlite>) -> Result<()> {
-    #[cfg(test)]
-    let coordinator = RETENTION_TEST_WRITE_COORDINATOR
-        .try_with(std::sync::Arc::clone)
-        .unwrap_or_else(|_| {
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        });
-    #[cfg(not(test))]
-    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
-    let write_permit = coordinator
-        .acquire_maintenance(RETENTION_FAIRNESS_INTERVAL)
-        .await;
+    let (write_permit, _) = acquire_retention_write_coordinator("retention_recovery_progress")
+        .await
+        .ok_or_else(|| retention_write_deferred("retention_recovery_progress"))?;
     sqlx::query(
         "UPDATE retention_recovery_cursors
          SET last_progress_at = datetime('now'), updated_at = datetime('now')
@@ -3106,10 +3338,81 @@ pub(crate) async fn reconcile_retention_prepared_archives_for_test(
     reconcile_retention_prepared_archives(pool, config).await
 }
 
+/// Retire obsolete, unowned artifacts without reading prior source IDs or resuming work.
+async fn retire_task_local_quarantines(pool: &Pool<Sqlite>, config: &AppConfig) -> Result<()> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT prepared_key,file_path FROM retention_prepared_archives
+         WHERE state='quarantined' AND quarantined_at IS NOT NULL
+         AND julianday('now')-julianday(quarantined_at)>= (?1 / 86400.0)
+         ORDER BY id LIMIT 32",
+    )
+    .bind(RETENTION_RECOVERY_QUARANTINE_GRACE_SECS)
+    .fetch_all(pool)
+    .await?;
+    for (key, file) in rows {
+        if retention_run_budget_expired() {
+            break;
+        }
+        let path = Path::new(&file);
+        let _lock = retention_archive_file_lock(path)?;
+        let Some(_admission) = acquire_retention_write_admission("legacy_quarantine_cleanup").await
+        else {
+            break;
+        };
+        let mut tx = pool.begin().await?;
+        let owned: bool = sqlx::query_scalar(
+            "SELECT NOT EXISTS(SELECT 1 FROM archive_batches WHERE file_path=?1)
+             AND NOT EXISTS(SELECT 1 FROM retention_prepared_archives WHERE file_path=?1
+                 AND prepared_key<>?2 AND state IN ('preparing','published'))
+             AND EXISTS(SELECT 1 FROM retention_prepared_archives WHERE prepared_key=?2
+                 AND state='quarantined' AND julianday('now')-julianday(quarantined_at)>= (?3 / 86400.0))",
+        ).bind(&file).bind(&key).bind(RETENTION_RECOVERY_QUARANTINE_GRACE_SECS).fetch_one(tx.as_mut()).await?;
+        if owned && (!path.exists() || retention_archive_path_is_owned(config, path)) {
+            match fs::remove_file(path) {
+                Ok(()) => (),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+            sqlx::query("DELETE FROM retention_prepared_archives WHERE prepared_key=?1")
+                .bind(&key)
+                .execute(tx.as_mut())
+                .await?;
+        }
+        tx.commit().await?;
+    }
+    Ok(())
+}
+
 async fn reconcile_retention_prepared_archives(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
 ) -> Result<()> {
+    if retention_run_remaining_budget().is_some() {
+        // Compatibility isolation only. A current task never continues source mutations
+        // from the previous program's prepared artifact or source_ids cursor.
+        let pending: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM retention_prepared_archives
+             WHERE state IN ('preparing','published'))",
+        )
+        .fetch_one(pool)
+        .await?;
+        if !pending {
+            return retire_task_local_quarantines(pool, config).await;
+        }
+        let Some(_admission) = acquire_retention_write_admission("legacy_prepared_isolation").await
+        else {
+            return Ok(());
+        };
+        sqlx::query("UPDATE retention_prepared_archives
+             SET state = 'quarantined', quarantined_at = COALESCE(quarantined_at, datetime('now')),
+                 next_retry_at = NULL, last_failure_stage = 'task_local_reselection', updated_at = datetime('now')
+             WHERE id IN (SELECT id FROM retention_prepared_archives
+                 WHERE state IN ('preparing', 'published') ORDER BY id LIMIT 32)")
+            .execute(pool).await?;
+        drop(_admission);
+        retire_task_local_quarantines(pool, config).await?;
+        return Ok(());
+    }
     retention_recovery_set_stage("prepared_reconcile");
     let not_due: i64 = sqlx::query_scalar(
         "SELECT COALESCE(next_retry_at > datetime('now'), 0)
@@ -7812,6 +8115,9 @@ pub(crate) fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
 pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(temp_sqlite_source_meta_path(path));
+    for suffix in ["-journal", "-wal", "-shm"] {
+        let _ = fs::remove_file(PathBuf::from(format!("{}{suffix}", path.display())));
+    }
 }
 
 impl Drop for TempSqliteCleanup {
@@ -8376,7 +8682,6 @@ async fn run_data_retention_maintenance_with_prompt_cache(
     shutdown: Option<&CancellationToken>,
     prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
-    let defer_generation = retention_defer_generation();
     let run_started_at = Instant::now();
     let run_deadline = run_started_at + RETENTION_WORK_BUDGET;
     let run = async {
@@ -8407,18 +8712,46 @@ async fn run_data_retention_maintenance_with_prompt_cache(
     let result = RETENTION_RUN_DEADLINE
         .scope(
             RefCell::new(Some(run_deadline)),
-            RETENTION_CURRENT_PREPARED_KEY.scope(RefCell::new(None), run),
+            RETENTION_CURRENT_PREPARED_KEY.scope(
+                RefCell::new(None),
+                batch_plan::TASK_BATCH_METRICS.scope(
+                    RefCell::new(Vec::new()),
+                    RETENTION_RUN_DEFER_REASON.scope(RefCell::new(None), async {
+                        run.await.map(|mut summary| {
+                            batch_plan::collect_run_metrics(&mut summary);
+                            let defer_reason =
+                                RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+                            (summary, defer_reason)
+                        })
+                    }),
+                ),
+            ),
         )
         .await;
-    result.map(|mut summary| {
-        summary.deferred = retention_defer_generation() != defer_generation;
+    result.map(|(mut summary, defer_reason)| {
+        summary.deferred |= defer_reason.is_some();
         summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
         summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
+        summary.timeout_count = Some(u64::from(summary.budget_exhausted));
+        let run_seconds = run_started_at.elapsed().as_secs_f64();
+        for batch in &mut summary.batches {
+            batch.committed_rows_per_second =
+                (run_seconds > 0.0).then_some(batch.committed_rows as f64 / run_seconds);
+            batch.arrival_rows_per_second = summary.arrival_rates.get(&batch.dataset).copied();
+            batch.service_rate_multiple = batch
+                .arrival_rows_per_second
+                .filter(|arrival| *arrival > 0.0)
+                .and_then(|arrival| {
+                    batch
+                        .committed_rows_per_second
+                        .map(|service| service / arrival)
+                });
+        }
         if summary.wait_reason.is_none() && (summary.deferred || summary.budget_exhausted) {
             summary.wait_reason = if summary.budget_exhausted {
                 Some("retention_work_budget".to_string())
             } else {
-                retention_recovery_health_snapshot().defer_reason
+                defer_reason
             };
         }
         summary
@@ -8480,6 +8813,7 @@ async fn run_data_retention_maintenance_inner(
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
         dry_run,
+        arrival_rates: batch_plan::arrival_rates(pool).await,
         ..RetentionRunSummary::default()
     };
     let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
@@ -8628,28 +8962,6 @@ async fn run_data_retention_maintenance_inner(
         drop(admission);
     }
 
-    let raw_compression = compress_cold_proxy_raw_payloads_with_budget(
-        pool,
-        config,
-        raw_path_fallback_root,
-        dry_run,
-        retention_run_remaining_budget().or(Some(config.retention_catchup_budget)),
-    )
-    .await
-    .context("failed to compress cold proxy raw payloads during retention")?;
-    summary.raw_files_compression_candidates += raw_compression.files_considered;
-    summary.raw_files_compressed += raw_compression.files_compressed;
-    summary.raw_bytes_before += raw_compression.bytes_before;
-    summary.raw_bytes_after += raw_compression.bytes_after;
-    summary.raw_bytes_after_estimated += raw_compression.estimated_bytes_after;
-    if !dry_run {
-        log_raw_compression_backlog_if_needed(pool, config).await?;
-    }
-
-    if should_stop_data_retention_maintenance(shutdown) {
-        return Ok(summary);
-    }
-
     let payload_loss_days = config
         .invocation_success_full_days
         .min(config.invocation_max_days);
@@ -8683,7 +8995,10 @@ async fn run_data_retention_maintenance_inner(
         {
             Ok(archive) => archive,
             Err(error) => {
-                if is_retention_write_deferred(&error) {
+                if retention_run_budget_expired() {
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_work_budget".to_string());
+                } else if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("finalizing");
                     summary.deferred = true;
                     summary.wait_reason = Some("retention_write_admission".to_string());
@@ -8704,7 +9019,10 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
-                    summary.fatal_error = Some(format!("invocation archive failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation archive failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
@@ -8726,6 +9044,71 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += invocation_archive.1;
     summary.raw_files_removed += invocation_archive.2;
 
+    let pool_attempt_archive = archive_timestamped_dataset(
+        pool,
+        config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
+        shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
+        dry_run,
+    )
+    .await;
+    let pool_attempt_archive = match pool_attempt_archive {
+        Ok(archive) => archive,
+        Err(error) if retention_run_budget_expired() => {
+            summary.deferred = true;
+            summary.wait_reason = Some("retention_work_budget".to_string());
+            debug!(error = %error, "attempt archive task timeout fallback");
+            return Ok(summary);
+        }
+        Err(error) => {
+            if is_retention_write_deferred(&error) || crate::is_sqlite_lock_error(&error) {
+                summary.deferred = true;
+                summary.wait_reason = Some(if crate::is_sqlite_lock_error(&error) {
+                    "sqlite_pressure".to_string()
+                } else {
+                    "retention_write_admission".to_string()
+                });
+            } else {
+                summary.fatal_error = Some(format!(
+                    "pool upstream attempt archive failed; failure_fingerprint:{}",
+                    retention_error_fingerprint(&error)
+                ));
+            }
+            // Preserve already committed invocation batches in the immutable run result.
+            return Ok(summary);
+        }
+    };
+    summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
+    summary.archive_batches_touched += pool_attempt_archive.1;
+    summary.raw_files_removed += pool_attempt_archive.2;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
+    let raw_compression = compress_cold_proxy_raw_payloads_with_budget(
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        retention_run_remaining_budget().or(Some(config.retention_catchup_budget)),
+    )
+    .await
+    .context("failed to compress cold proxy raw payloads during retention")?;
+    summary.raw_files_compression_candidates += raw_compression.files_considered;
+    summary.raw_files_compressed += raw_compression.files_compressed;
+    summary.raw_bytes_before += raw_compression.bytes_before;
+    summary.raw_bytes_after += raw_compression.bytes_after;
+    summary.raw_bytes_after_estimated += raw_compression.estimated_bytes_after;
+    if !dry_run {
+        log_raw_compression_backlog_if_needed(pool, config).await?;
+    }
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
     }
@@ -8736,10 +9119,15 @@ async fn run_data_retention_maintenance_inner(
         match prune_old_invocation_details(pool, config, raw_path_fallback_root, dry_run).await {
             Ok(pruned) => pruned,
             Err(error) => {
-                if dry_run {
+                if retention_run_budget_expired() {
+                    summary.deferred = true;
+                    summary.wait_reason = Some("retention_work_budget".to_string());
+                } else if dry_run {
                     retention_recovery_record_failure("detail_prune", &error);
-                    summary.fatal_error =
-                        Some(format!("invocation detail pruning failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation detail pruning failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 } else if is_retention_write_deferred(&error) {
                     retention_recovery_record_deferred("detail_prune");
                     summary.deferred = true;
@@ -8761,8 +9149,10 @@ async fn run_data_retention_maintenance_inner(
                         &error,
                     )
                     .await;
-                    summary.fatal_error =
-                        Some(format!("invocation detail pruning failed: {error:#}"));
+                    summary.fatal_error = Some(format!(
+                        "invocation detail pruning failed; failure_fingerprint:{}",
+                        retention_error_fingerprint(&error)
+                    ));
                 }
                 retention_recovery_log_event(
                     tracing::Level::WARN,
@@ -8890,24 +9280,6 @@ async fn run_data_retention_maintenance_inner(
         return Ok(summary);
     }
 
-    let pool_attempt_archive = archive_timestamped_dataset(
-        pool,
-        config,
-        archive_table_spec("pool_upstream_request_attempts"),
-        "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
-        shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
-        dry_run,
-    )
-    .await
-    .context("failed to archive pool upstream request attempts during retention")?;
-    summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
-    summary.archive_batches_touched += pool_attempt_archive.1;
-    summary.raw_files_removed += pool_attempt_archive.2;
-
-    if should_stop_data_retention_maintenance(shutdown) {
-        return Ok(summary);
-    }
-
     let quota_archive = compact_old_quota_snapshots(pool, config, dry_run)
         .await
         .context("failed to compact old quota snapshots during retention")?;
@@ -8955,11 +9327,82 @@ pub(crate) async fn run_best_effort_retention_pragma(
         return Ok(());
     };
     let execute_started = Instant::now();
-    match sqlx::query(sql)
-        .execute(pool)
+    let query_budget = retention_run_remaining_budget()
+        .unwrap_or(RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET)
+        .min(RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET);
+    let deadline = Instant::now() + query_budget;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    let shutdown = RETENTION_SHUTDOWN.try_with(Clone::clone).ok();
+    let mut cleanup_failed = false;
+    let result =
+        async {
+            // PRAGMA optimize can run ANALYZE even with SQLite's default sampling limit.
+            // Use a dedicated connection so cancellation never returns live SQLite work or
+            // a progress handler to the pool. Await execution and close before releasing P2.
+            let options = pool
+                .connect_options()
+                .as_ref()
+                .clone()
+                .busy_timeout(query_budget);
+            let mut connection =
+                match tokio::time::timeout(query_budget, SqliteConnection::connect_with(&options))
+                    .await
+                {
+                    Ok(connection) => connection?,
+                    Err(_) => {
+                        interrupted.store(true, Ordering::Release);
+                        return Err(anyhow!(
+                            "retention SQLite maintenance connection budget exceeded"
+                        ));
+                    }
+                };
+            {
+                let interrupted = interrupted.clone();
+                let query_shutdown = shutdown.clone();
+                #[cfg(test)]
+                let test_probe = RETENTION_TEST_SQLITE_MAINTENANCE_PROBE
+                    .try_with(Arc::clone)
+                    .ok();
+                let mut handle = connection.lock_handle().await?;
+                handle.set_progress_handler(1_000, move || {
+                    #[cfg(test)]
+                    let test_cancelled = test_probe.as_ref().is_some_and(|probe| {
+                        probe.progress_callbacks.fetch_add(1, Ordering::AcqRel);
+                        true
+                    });
+                    #[cfg(not(test))]
+                    let test_cancelled = false;
+                    let keep_running = Instant::now() < deadline
+                        && !test_cancelled
+                        && query_shutdown
+                            .as_ref()
+                            .is_none_or(|token| !token.is_cancelled());
+                    if !keep_running {
+                        interrupted.store(true, Ordering::Release);
+                    }
+                    keep_running
+                });
+            }
+            let result = sqlx::query(sql).execute(&mut connection).await;
+            let cleanup = connection.lock_handle().await.map(|mut handle| {
+                handle.remove_progress_handler();
+            });
+            // Closing also rolls back any interrupted implicit ANALYZE transaction.
+            let closed = connection.close().await;
+            #[cfg(test)]
+            let _ = RETENTION_TEST_SQLITE_MAINTENANCE_PROBE.try_with(|probe| {
+                probe
+                    .connection_closed
+                    .store(closed.is_ok(), Ordering::Release);
+            });
+            cleanup_failed = cleanup.is_err() || closed.is_err();
+            cleanup?;
+            closed?;
+            result.map_err(anyhow::Error::from)
+        }
         .await
-        .with_context(|| format!("failed to run {description}"))
-    {
+        .with_context(|| format!("failed to run {description}"));
+    match result {
         Ok(_) => {
             retention_record_commit!(
                 "retention_pragma",
@@ -8972,6 +9415,21 @@ pub(crate) async fn run_best_effort_retention_pragma(
                 Duration::ZERO,
                 admission.p1_waiter_count,
                 0,
+            );
+            Ok(())
+        }
+        Err(_) if interrupted.load(Ordering::Acquire) && !cleanup_failed => {
+            let reason = if shutdown.as_ref().is_some_and(|token| token.is_cancelled()) {
+                "shutdown"
+            } else {
+                "sqlite_maintenance_query_budget"
+            };
+            debug!(
+                operation = "retention_pragma",
+                reason,
+                elapsed_ms = execute_started.elapsed().as_millis() as u64,
+                description,
+                "optional SQLite maintenance cancelled; archive commits remain complete"
             );
             Ok(())
         }
@@ -9956,1350 +10414,6 @@ async fn filter_unreferenced_proxy_raw_paths(
     Ok(unreferenced)
 }
 
-pub(crate) async fn prune_old_invocation_details(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    raw_path_fallback_root: Option<&Path>,
-    dry_run: bool,
-) -> Result<(usize, usize, usize)> {
-    let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
-    let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
-    let spec = archive_table_spec("codex_invocations");
-    let success_like_condition = invocation_status_is_success_like_sql("status", "error_message");
-    if dry_run {
-        let sql = format!(
-            r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path,
-                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
-                       AS estimated_write_bytes
-            FROM codex_invocations
-            WHERE {success_like_condition}
-              AND detail_level = ?1
-              AND occurred_at < ?2
-              AND occurred_at >= ?3
-            ORDER BY occurred_at ASC, id ASC
-            "#,
-            success_like_condition = success_like_condition,
-        );
-        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
-            .bind(DETAIL_LEVEL_FULL)
-            .bind(&prune_cutoff)
-            .bind(&archive_cutoff)
-            .fetch_all(pool)
-            .await?;
-        let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
-        for candidate in &candidates {
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            *by_group.entry(group_key).or_default() += 1;
-        }
-        for (group_key, rows) in &by_group {
-            info!(
-                dataset = spec.dataset,
-                archive_group = group_key,
-                rows = *rows,
-                reason = DETAIL_PRUNE_REASON_SUCCESS_OVER_30D,
-                "retention dry-run planned invocation detail prune archive batch"
-            );
-        }
-        let raw_paths = candidates
-            .iter()
-            .flat_map(|candidate| {
-                [
-                    candidate.request_raw_path.clone(),
-                    candidate.response_raw_path.clone(),
-                ]
-            })
-            .collect::<Vec<_>>();
-        return Ok((
-            candidates.len(),
-            by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
-        ));
-    }
-
-    let mut rows_pruned = 0usize;
-    let mut archive_batches = 0usize;
-    let mut raw_files_removed = 0usize;
-
-    loop {
-        if retention_run_budget_expired() {
-            break;
-        }
-        let sql = format!(
-            r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path,
-                   COALESCE(length(payload), 0) + COALESCE(length(raw_response), 0) + 512
-                       AS estimated_write_bytes
-            FROM codex_invocations
-            WHERE {success_like_condition}
-              AND detail_level = ?1
-              AND occurred_at < ?2
-              AND occurred_at >= ?3
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?4
-            "#,
-            success_like_condition = success_like_condition,
-        );
-        let candidate_limit = retention_candidate_limit(config, "invocation_detail_prune");
-        let candidates_query = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
-            .bind(DETAIL_LEVEL_FULL)
-            .bind(&prune_cutoff)
-            .bind(&archive_cutoff)
-            .bind(candidate_limit as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => break,
-            }
-        } else {
-            candidates_query.await?
-        };
-
-        if candidates.is_empty() {
-            break;
-        }
-
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
-        let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
-        for candidate in candidates {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let group = take_retention_micro_batch(group, |candidate| {
-                candidate.estimated_write_bytes.max(1) as usize
-            });
-            let prepare_started = Instant::now();
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
-            let raw_paths = group
-                .iter()
-                .flat_map(|candidate| {
-                    [
-                        candidate.request_raw_path.clone(),
-                        candidate.response_raw_path.clone(),
-                    ]
-                })
-                .collect::<Vec<_>>();
-            if ids.is_empty() || retention_run_budget_expired() {
-                break;
-            }
-            let mut source_connection = pool.acquire().await?;
-            let source_identity_query = invocation_archive_source_identity_sha256(
-                &mut source_connection,
-                InvocationArchiveIdentityDatabase::Main,
-                &ids,
-            );
-            let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, source_identity_query).await {
-                    Ok(result) => result?,
-                    Err(_) => break,
-                }
-            } else {
-                source_identity_query.await?
-            };
-            drop(source_connection);
-            if retention_run_budget_expired() {
-                break;
-            }
-            let mut descriptor = retention_prepared_archive_descriptor(
-                config,
-                spec.dataset,
-                &group_key,
-                &load_invocation_archive_candidates_by_ids(pool, &ids).await?,
-                source_identity_sha256,
-                RETENTION_RECOVERY_PUBLICATION_DETAIL_PRUNE,
-            )?;
-            descriptor.file_path = retention_live_mirror_archive_path(
-                config,
-                &group_key,
-                &ids,
-                &descriptor.source_identity_sha256,
-            )?
-            .to_string_lossy()
-            .to_string();
-            descriptor.prepared_key = format!(
-                "{}:{}:{}",
-                descriptor.dataset, descriptor.file_path, descriptor.source_identity_sha256
-            );
-            retention_recovery_set_current_prepared_key(&descriptor.prepared_key);
-            if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
-                if is_retention_write_deferred(&error) {
-                    retention_recovery_record_deferred("preparing");
-                    return Ok((rows_pruned, archive_batches, raw_files_removed));
-                }
-                if is_retention_recovery_failure_persisted(&error) {
-                    retention_recovery_record_failure("preparing", &error);
-                    return Err(error);
-                }
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "preparing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            let archive_result = match archive_layout_for_dataset(config, spec.dataset) {
-                ArchiveBatchLayout::LegacyMonth => {
-                    archive_rows_into_month_batch_at_path(
-                        pool,
-                        spec,
-                        &group_key,
-                        &ids,
-                        PathBuf::from(&descriptor.file_path),
-                    )
-                    .await
-                }
-                ArchiveBatchLayout::SegmentV1 => {
-                    archive_rows_into_segment_batch_at_path(
-                        pool,
-                        config,
-                        spec,
-                        &group_key,
-                        &ids,
-                        PathBuf::from(&descriptor.file_path),
-                    )
-                    .await
-                }
-            };
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
-            else {
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
-            };
-            if archive_outcome.source_identity_sha256.as_deref()
-                != Some(descriptor.source_identity_sha256.as_str())
-            {
-                let error =
-                    anyhow!("retention prepared archive source identity verification failed");
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "preparing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            set_archive_batch_coverage_from_local_rows(
-                &mut archive_outcome,
-                group.iter().map(|candidate| candidate.occurred_at.as_str()),
-                Some(config.invocation_archive_ttl_days),
-            )?;
-            archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_LIVE_MIRROR;
-            retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
-            let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
-            let prepare_elapsed = prepare_started.elapsed();
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            if actual_archive_sha256 != archive_outcome.sha256 {
-                let error =
-                    anyhow!("retention prepared archive artifact digest verification failed");
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "publishing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            let Some(admission) =
-                acquire_retention_write_admission("invocation_detail_prune").await
-            else {
-                retention_recovery_persist_pressure_defer(
-                    pool,
-                    RETENTION_RECOVERY_PREPARED_SCOPE,
-                    "prepared_reconcile",
-                )
-                .await?;
-                return Ok((rows_pruned, archive_batches, raw_files_removed));
-            };
-            let execute_started = Instant::now();
-            let mut tx = pool.begin().await?;
-            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &archive_outcome.file_path,
-            )
-            .await?;
-            retention_recovery_verify_publication_tx(
-                tx.as_mut(),
-                &descriptor,
-                &archive_outcome.sha256,
-            )
-            .await?;
-            let prompt_cache_keys =
-                load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids).await?;
-            let prompt_cache_key_refs = prompt_cache_keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            if !prompt_cache_key_refs.is_empty() {
-                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
-            }
-            let mut query = QueryBuilder::<Sqlite>::new(
-                "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND (json_extract(payload, '$.upstreamAccountId') IS NOT NULL OR json_extract(payload, '$.requestModel') IS NOT NULL OR json_extract(payload, '$.responseModel') IS NOT NULL OR json_extract(payload, '$.reasoningEffort') IS NOT NULL OR json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL) THEN json_patch(json_patch(json_patch(json_patch(json_patch('{}', CASE WHEN json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestModel') IS NOT NULL THEN json_object('requestModel', json_extract(payload, '$.requestModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.responseModel') IS NOT NULL THEN json_object('responseModel', json_extract(payload, '$.responseModel')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.reasoningEffort') IS NOT NULL THEN json_object('reasoningEffort', json_extract(payload, '$.reasoningEffort')) ELSE '{}' END), CASE WHEN json_extract(payload, '$.requestCompressionAlgorithm') IS NOT NULL THEN json_object('requestCompressionAlgorithm', json_extract(payload, '$.requestCompressionAlgorithm')) ELSE '{}' END) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
-            );
-            query
-                .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
-                .push(", detail_pruned_at = ")
-                .push_bind(pruned_at)
-                .push(", detail_prune_reason = ")
-                .push_bind(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
-                .push(" WHERE id IN (");
-            {
-                let mut separated = query.separated(", ");
-                for id in &ids {
-                    separated.push_bind(id);
-                }
-            }
-            query.push(")");
-            query.build().execute(tx.as_mut()).await?;
-            // UPDATE triggers persist the affected keys. Statistics are refreshed by the
-            // materialization owner after this retention transaction commits.
-            if let Some(latest) = group
-                .iter()
-                .map(|candidate| candidate.occurred_at.as_str())
-                .max()
-            {
-                record_parallel_work_unrecoverable_detail_tx(tx.as_mut(), latest).await?;
-            }
-            retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
-            let raw_reference_check_started = Instant::now();
-            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-            let raw_paths = filter_unreferenced_proxy_raw_paths(
-                tx.as_mut(),
-                &raw_paths,
-                raw_path_fallback_root,
-            )
-            .await?;
-            let raw_reference_check_elapsed =
-                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
-            let commit_started = Instant::now();
-            tx.commit().await?;
-            retention_record_commit_with_reference_check!(
-                "invocation_detail_prune",
-                admission.admission_mode(),
-                group.len(),
-                group
-                    .iter()
-                    .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
-                    .sum(),
-                prepare_elapsed,
-                admission.lock_wait(),
-                commit_started.duration_since(execute_started),
-                commit_started.elapsed(),
-                raw_reference_check_elapsed,
-                admission.p1_waiter_count,
-                candidate_remaining_hint,
-            );
-            if !raw_paths.is_empty() {
-                mark_retention_raw_inventory_reset_intent(pool).await?;
-            }
-            rows_pruned += group.len();
-            archive_batches += 1;
-            raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
-            drop(admission);
-        }
-    }
-
-    Ok((rows_pruned, archive_batches, raw_files_removed))
-}
-
-pub(crate) async fn archive_old_invocations(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    raw_path_fallback_root: Option<&Path>,
-    dry_run: bool,
-) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
-    let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
-    archive_old_invocations_with_source_max(
-        pool,
-        config,
-        raw_path_fallback_root,
-        dry_run,
-        &cutoff,
-        None,
-    )
-    .await
-}
-
-async fn archive_old_invocations_with_source_max(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    raw_path_fallback_root: Option<&Path>,
-    dry_run: bool,
-    cutoff: &str,
-    source_max_invocation_id: Option<i64>,
-) -> Result<(usize, usize, usize, std::collections::HashSet<String>)> {
-    let spec = archive_table_spec("codex_invocations");
-
-    if dry_run {
-        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
-            r#"
-            SELECT
-                id,
-                invoke_id,
-                occurred_at,
-                source,
-                status,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                reasoning_tokens,
-                total_tokens,
-                cost,
-                first_token_ms,
-                payload,
-                request_raw_path,
-                response_raw_path
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-              AND (?2 IS NULL OR id <= ?2)
-            ORDER BY occurred_at ASC, id ASC
-            "#,
-        )
-        .bind(cutoff)
-        .bind(source_max_invocation_id)
-        .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => return Ok((0, 0, 0, std::collections::HashSet::new())),
-            }
-        } else {
-            candidates_query.await?
-        };
-
-        let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
-        for candidate in &candidates {
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            *by_group.entry(group_key).or_default() += 1;
-        }
-        for (group_key, rows) in &by_group {
-            info!(
-                dataset = spec.dataset,
-                archive_group = group_key,
-                rows = *rows,
-                reason = DETAIL_PRUNE_REASON_MAX_AGE_ARCHIVED,
-                "retention dry-run planned invocation archive batch"
-            );
-        }
-        let raw_paths = candidates
-            .iter()
-            .flat_map(|candidate| {
-                [
-                    candidate.request_raw_path.clone(),
-                    candidate.response_raw_path.clone(),
-                ]
-            })
-            .collect::<Vec<_>>();
-        return Ok((
-            candidates.len(),
-            by_group.len(),
-            count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
-            std::collections::HashSet::new(),
-        ));
-    }
-
-    let mut rows_archived = 0usize;
-    let mut archive_batches = 0usize;
-    let mut raw_files_removed = 0usize;
-    let mut prompt_cache_keys = std::collections::HashSet::new();
-    let mut discovered_ids = HashSet::new();
-
-    loop {
-        if retention_run_budget_expired() {
-            break;
-        }
-        let candidate_limit = retention_candidate_limit(config, "invocation_archive");
-        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
-            r#"
-            SELECT
-                id,
-                invoke_id,
-                occurred_at,
-                source,
-                status,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                reasoning_tokens,
-                total_tokens,
-                cost,
-                first_token_ms,
-                payload,
-                request_raw_path,
-                response_raw_path
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-              AND (?2 IS NULL OR id <= ?2)
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?3
-            "#,
-        )
-        .bind(cutoff)
-        .bind(source_max_invocation_id)
-        .bind(candidate_limit as i64)
-        .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => break,
-            }
-        } else {
-            candidates_query.await?
-        };
-
-        if !dry_run {
-            discovered_ids.extend(candidates.iter().map(|candidate| candidate.id));
-            workload::record_discovered_count(discovered_ids.len());
-        }
-
-        if candidates.is_empty() {
-            break;
-        }
-
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
-        let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
-            by_group.entry(group_key).or_default().push(candidate);
-        }
-
-        for (group_key, group) in by_group {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let group = take_retention_micro_batch(group, |candidate| {
-                candidate.payload.as_deref().map_or(256, str::len).max(1)
-            });
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
-            if ids.is_empty() || retention_run_budget_expired() {
-                break;
-            }
-            let mut source_connection = pool.acquire().await?;
-            let source_identity_query = invocation_archive_source_identity_sha256(
-                &mut source_connection,
-                InvocationArchiveIdentityDatabase::Main,
-                &ids,
-            );
-            let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, source_identity_query).await {
-                    Ok(result) => result?,
-                    Err(_) => break,
-                }
-            } else {
-                source_identity_query.await?
-            };
-            drop(source_connection);
-            if retention_run_budget_expired() {
-                break;
-            }
-            let prepare_started = Instant::now();
-            let descriptor = retention_prepared_archive_descriptor(
-                config,
-                spec.dataset,
-                &group_key,
-                &group,
-                source_identity_sha256,
-                RETENTION_RECOVERY_PUBLICATION_INVOCATION_ARCHIVE,
-            )?;
-            retention_recovery_set_current_prepared_key(&descriptor.prepared_key);
-            if let Err(error) = retention_recovery_record_preparing(pool, &descriptor).await {
-                if is_retention_write_deferred(&error) {
-                    retention_recovery_record_deferred("preparing");
-                    return Ok((
-                        rows_archived,
-                        archive_batches,
-                        raw_files_removed,
-                        prompt_cache_keys,
-                    ));
-                }
-                if is_retention_recovery_failure_persisted(&error) {
-                    retention_recovery_record_failure("preparing", &error);
-                    return Err(error);
-                }
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "preparing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            let raw_paths = group
-                .iter()
-                .flat_map(|candidate| {
-                    [
-                        candidate.request_raw_path.clone(),
-                        candidate.response_raw_path.clone(),
-                    ]
-                })
-                .collect::<Vec<_>>();
-
-            let materialized_rows = group
-                .iter()
-                .map(invocation_archive_candidate_to_hourly_source_record)
-                .collect::<Vec<_>>();
-            let archive_future = async {
-                match archive_layout_for_dataset(config, spec.dataset) {
-                    ArchiveBatchLayout::LegacyMonth => {
-                        archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await
-                    }
-                    ArchiveBatchLayout::SegmentV1 => {
-                        archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await
-                    }
-                }
-            };
-            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => break,
-                }
-            } else {
-                archive_future.await
-            };
-            let Some(mut archive_outcome) = (match archive_result {
-                Ok(outcome) => Some(outcome),
-                Err(error) if is_retention_write_deferred(&error) => {
-                    retention_recovery_record_deferred("preparing");
-                    return Ok((
-                        rows_archived,
-                        archive_batches,
-                        raw_files_removed,
-                        prompt_cache_keys,
-                    ));
-                }
-                Err(error) => {
-                    retention_recovery_persist_failure(
-                        pool,
-                        &descriptor.prepared_key,
-                        "preparing",
-                        &error,
-                    )
-                    .await?;
-                    return Err(retention_recovery_failure_persisted(
-                        &descriptor.prepared_key,
-                        error,
-                    ));
-                }
-            }) else {
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
-            };
-            if archive_outcome.source_identity_sha256.as_deref()
-                != Some(descriptor.source_identity_sha256.as_str())
-            {
-                let error =
-                    anyhow!("retention prepared archive source identity verification failed");
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "preparing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            set_archive_batch_coverage_from_local_rows(
-                &mut archive_outcome,
-                group.iter().map(|candidate| candidate.occurred_at.as_str()),
-                None,
-            )?;
-            archive_outcome.archive_expires_at =
-                Some(shanghai_archive_expiry_from_reference_timestamp(
-                    &format_utc_iso(Utc::now()),
-                    config.invocation_archive_ttl_days,
-                )?);
-            archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
-            retention_recovery_mark_published(pool, &descriptor, &archive_outcome.sha256).await?;
-            let prepare_elapsed = prepare_started.elapsed();
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            if actual_archive_sha256 != archive_outcome.sha256 {
-                let error =
-                    anyhow!("retention prepared archive artifact changed before publication");
-                retention_recovery_persist_failure(
-                    pool,
-                    &descriptor.prepared_key,
-                    "publishing",
-                    &error,
-                )
-                .await?;
-                return Err(retention_recovery_failure_persisted(
-                    &descriptor.prepared_key,
-                    error,
-                ));
-            }
-            let Some(admission) = acquire_retention_write_admission("invocation_archive").await
-            else {
-                retention_recovery_persist_pressure_defer(
-                    pool,
-                    RETENTION_RECOVERY_PREPARED_SCOPE,
-                    "prepared_reconcile",
-                )
-                .await?;
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
-            };
-            let execute_started = Instant::now();
-            let mut tx = pool.begin().await?;
-            // P2 normally advances this cursor before retention. Rows beyond it would be
-            // deleted before the regular replay can observe them, so materialize just those
-            // rows in this same archive transaction before claiming the archive is covered.
-            let live_rollup_cursor =
-                load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
-                    .await?;
-            let unprojected_rows = materialized_rows
-                .iter()
-                .filter(|row| row.id > live_rollup_cursor)
-                .cloned()
-                .collect::<Vec<_>>();
-            if !unprojected_rows.is_empty() {
-                upsert_invocation_hourly_rollups_tx(
-                    tx.as_mut(),
-                    &unprojected_rows,
-                    &INVOCATION_HOURLY_ROLLUP_TARGETS,
-                )
-                .await?;
-
-                // The all-time reader can safely read a raw tail only after a
-                // contiguous live prefix. Do not leap over newer retained rows
-                // that happened to receive lower IDs than this archive batch.
-                let prefix_end = unprojected_rows
-                    .iter()
-                    .map(|row| row.id)
-                    .max()
-                    .expect("unprojected rows are non-empty");
-                let prefix_row_count = sqlx::query_scalar::<_, i64>(
-                    "SELECT COUNT(*) FROM codex_invocations WHERE id > ?1 AND id <= ?2",
-                )
-                .bind(live_rollup_cursor)
-                .bind(prefix_end)
-                .fetch_one(tx.as_mut())
-                .await?;
-                if prefix_row_count == unprojected_rows.len() as i64 {
-                    save_hourly_rollup_live_progress_tx(
-                        tx.as_mut(),
-                        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                        prefix_end,
-                    )
-                    .await?;
-                }
-            }
-            upsert_invocation_rollups(tx.as_mut(), &group).await?;
-            stage_invocation_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &archive_outcome.file_path,
-            )
-            .await?;
-            // Keep a normalized, raw-free Summary source page in the same transaction as the
-            // authoritative archive publication. Cleanup can therefore retire the file only
-            // after this exact page and its manifest identity are durable.
-            let snapshot_archive_batch_id = load_archive_batch_id_for_file_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &archive_outcome.month_key,
-                &archive_outcome.file_path,
-            )
-            .await?;
-            let invoke_ids_by_row_id = group
-                .iter()
-                .map(|candidate| (candidate.id, candidate.invoke_id.clone()))
-                .collect::<HashMap<_, _>>();
-            let snapshot_payload = encode_summary_archive_snapshot_v2_payload(
-                &materialized_rows,
-                &invoke_ids_by_row_id,
-            )?;
-            let snapshot_page = SummaryArchiveSnapshotPage {
-                archive_batch_id: snapshot_archive_batch_id,
-                manifest_sha256: archive_outcome.sha256.clone(),
-                page_index: 0,
-                coverage_start: archive_outcome.coverage_start_at.clone().ok_or_else(|| {
-                    anyhow!("authoritative archive is missing Snapshot start coverage")
-                })?,
-                coverage_end: archive_outcome.coverage_end_at.clone().ok_or_else(|| {
-                    anyhow!("authoritative archive is missing Snapshot end coverage")
-                })?,
-                row_count: u32::try_from(materialized_rows.len())
-                    .context("Summary Archive Snapshot row count overflow")?,
-                payload: snapshot_payload,
-            };
-            store_summary_archive_snapshot_page_v2_tx(tx.as_mut(), &snapshot_page).await?;
-            // The page is written as part of the authoritative archive transaction.  Mark the
-            // V2 proof in that same transaction so cleanup can never observe a page without its
-            // semantic authority.
-            if !summary_archive_snapshot_has_proof_tx(
-                tx.as_mut(),
-                snapshot_archive_batch_id,
-                &archive_outcome.sha256,
-            )
-            .await?
-            {
-                bail!("retention Summary Snapshot V2 semantic proof validation failed");
-            }
-            store_summary_archive_snapshot_v2_final_proof_tx(
-                tx.as_mut(),
-                snapshot_archive_batch_id,
-                &archive_outcome.sha256,
-            )
-            .await?;
-            retention_recovery_verify_publication_tx(
-                tx.as_mut(),
-                &descriptor,
-                &archive_outcome.sha256,
-            )
-            .await?;
-            let ids_json = serde_json::to_string(&ids)?;
-            let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
-                "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
-                 FROM codex_invocations \
-                 WHERE id IN (SELECT value FROM json_each(?1)) \
-                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} IS NOT NULL \
-                   AND {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} <> ''"
-            ))
-            .bind(ids_json)
-            .fetch_all(tx.as_mut())
-            .await?;
-            let archived_prompt_cache_key_refs = archived_prompt_cache_keys
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>();
-            if !archived_prompt_cache_key_refs.is_empty() {
-                mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
-            }
-            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
-            // DELETE triggers persist the affected keys. Statistics are refreshed asynchronously
-            // by the materialization owner after archive publication.
-            prompt_cache_keys.extend(archived_prompt_cache_keys);
-            mark_retention_archived_hourly_rollup_targets_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &materialized_rows,
-                &[],
-            )
-            .await?;
-            for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
-                mark_hourly_rollup_archive_replayed_tx(
-                    tx.as_mut(),
-                    target,
-                    spec.dataset,
-                    &archive_outcome.file_path,
-                )
-                .await?;
-            }
-            finalize_invocation_archive_batch_publication_tx(
-                tx.as_mut(),
-                &archive_outcome.file_path,
-            )
-            .await?;
-            retention_recovery_delete_tx(tx.as_mut(), &descriptor.prepared_key).await?;
-            let raw_reference_check_started = Instant::now();
-            let had_raw_reference_candidates = raw_paths.iter().any(Option::is_some);
-            let raw_paths = filter_unreferenced_proxy_raw_paths(
-                tx.as_mut(),
-                &raw_paths,
-                raw_path_fallback_root,
-            )
-            .await?;
-            let raw_reference_check_elapsed =
-                had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
-            let commit_started = Instant::now();
-            tx.commit().await?;
-            workload::record_processed_count(group.len());
-            retention_record_commit_with_reference_check!(
-                "invocation_archive",
-                admission.admission_mode(),
-                group.len(),
-                group
-                    .iter()
-                    .map(|candidate| {
-                        candidate
-                            .payload
-                            .as_deref()
-                            .map_or(256, |payload| payload.len())
-                    })
-                    .sum(),
-                prepare_elapsed,
-                admission.lock_wait(),
-                commit_started.duration_since(execute_started),
-                commit_started.elapsed(),
-                raw_reference_check_elapsed,
-                admission.p1_waiter_count,
-                candidate_remaining_hint,
-            );
-            if !raw_paths.is_empty() {
-                mark_retention_raw_inventory_reset_intent(pool).await?;
-            }
-            rows_archived += group.len();
-            archive_batches += 1;
-            retention_recovery_record_progress();
-            raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
-            drop(admission);
-        }
-    }
-
-    Ok((
-        rows_archived,
-        archive_batches,
-        raw_files_removed,
-        prompt_cache_keys,
-    ))
-}
-
-pub(crate) async fn archive_timestamped_dataset(
-    pool: &Pool<Sqlite>,
-    config: &AppConfig,
-    spec: ArchiveTableSpec,
-    select_sql: &str,
-    cutoff: String,
-    dry_run: bool,
-) -> Result<(usize, usize, usize)> {
-    if dry_run {
-        let dry_run_sql = match spec.dataset {
-            "forward_proxy_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', datetime(occurred_at, '+8 hours')) AS month_key,
-                       COUNT(*) AS row_count
-                FROM forward_proxy_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            "pool_upstream_request_attempts" => {
-                r#"
-                SELECT strftime('%Y-%m', occurred_at) AS month_key,
-                       COUNT(*) AS row_count
-                FROM pool_upstream_request_attempts
-                WHERE occurred_at < ?1
-                GROUP BY 1
-                ORDER BY 1
-                "#
-            }
-            other => bail!("unsupported dry-run archive dataset: {other}"),
-        };
-        let batch_counts = sqlx::query_as::<_, DryRunBatchCount>(dry_run_sql)
-            .bind(&cutoff)
-            .fetch_all(pool)
-            .await?;
-        for batch in &batch_counts {
-            info!(
-                dataset = spec.dataset,
-                month_key = %batch.month_key,
-                rows = batch.row_count,
-                "retention dry-run planned archive batch"
-            );
-        }
-        return Ok((
-            batch_counts
-                .iter()
-                .map(|batch| batch.row_count as usize)
-                .sum(),
-            batch_counts.len(),
-            0,
-        ));
-    }
-
-    let mut rows_archived = 0usize;
-    let mut archive_batches = 0usize;
-    let mut raw_files_removed = 0usize;
-
-    loop {
-        if retention_run_budget_expired() {
-            break;
-        }
-        let candidate_limit = retention_candidate_limit(config, "timestamped_archive");
-        let candidates_query = sqlx::query_as::<_, TimestampedArchiveCandidate>(select_sql)
-            .bind(&cutoff)
-            .bind(candidate_limit as i64)
-            .fetch_all(pool);
-        let candidates = if let Some(remaining) = retention_run_remaining_budget() {
-            match tokio::time::timeout(remaining, candidates_query).await {
-                Ok(result) => result?,
-                Err(_) => break,
-            }
-        } else {
-            candidates_query.await?
-        };
-
-        if candidates.is_empty() {
-            break;
-        }
-
-        let candidate_remaining_hint = usize::from(candidates.len() >= candidate_limit);
-        let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
-        for candidate in candidates {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let month_key =
-                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
-            by_month.entry(month_key).or_default().push(candidate);
-        }
-
-        for (month_key, group) in by_month {
-            if retention_run_budget_expired() {
-                break;
-            }
-            let group = take_retention_micro_batch(group, |_| 256);
-            let prepare_started = Instant::now();
-            let ids = group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
-            if ids.is_empty() || retention_run_budget_expired() {
-                break;
-            }
-            let pool_attempt_raw_paths = if spec.dataset == "pool_upstream_request_attempts" {
-                let placeholders = std::iter::repeat_n("?", ids.len())
-                    .collect::<Vec<_>>()
-                    .join(",");
-                let query = format!(
-                    "SELECT response_raw_path FROM pool_upstream_request_attempts WHERE id IN ({placeholders})"
-                );
-                let mut query_builder = sqlx::query_scalar::<_, Option<String>>(&query);
-                for id in &ids {
-                    query_builder = query_builder.bind(id);
-                }
-                query_builder
-                    .fetch_all(pool)
-                    .await?
-                    .into_iter()
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let recreated_pool_upstream_month_archive = if spec.dataset
-                == "pool_upstream_request_attempts"
-            {
-                let archive_file_path = archive_batch_file_path(config, spec.dataset, &month_key)?
-                    .to_string_lossy()
-                    .to_string();
-                pool_upstream_month_archive_reappeared_after_cleanup(pool, &archive_file_path)
-                    .await?
-            } else {
-                false
-            };
-            let materialized_forward_proxy_rows = if spec.dataset == "forward_proxy_attempts" {
-                group
-                    .iter()
-                    .map(|candidate| ForwardProxyAttemptHourlySourceRecord {
-                        id: candidate.id,
-                        proxy_key: String::new(),
-                        occurred_at: candidate.timestamp_value.clone(),
-                        is_success: 0,
-                        latency_ms: None,
-                    })
-                    .collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            };
-            let archive_future =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
-            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => break,
-                }
-            } else {
-                archive_future.await
-            };
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
-            else {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
-            };
-            if spec.dataset == "pool_upstream_request_attempts" {
-                set_archive_batch_coverage_from_local_rows(
-                    &mut archive_outcome,
-                    group
-                        .iter()
-                        .map(|candidate| candidate.timestamp_value.as_str()),
-                    Some(config.pool_upstream_request_attempts_archive_ttl_days),
-                )?;
-                if recreated_pool_upstream_month_archive
-                    && archive_outcome.row_count == ids.len() as i64
-                {
-                    archive_outcome.archive_expires_at =
-                        Some(shanghai_archive_expiry_from_reference_timestamp(
-                            &format_utc_iso(Utc::now()),
-                            config.pool_upstream_request_attempts_archive_ttl_days,
-                        )?);
-                }
-            } else {
-                set_archive_batch_coverage_from_utc_rows(
-                    &mut archive_outcome,
-                    group
-                        .iter()
-                        .map(|candidate| candidate.timestamp_value.as_str()),
-                )?;
-            }
-            let prepare_elapsed = prepare_started.elapsed();
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
-                Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches, raw_files_removed)),
-            };
-            if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
-            }
-            let Some(admission) = acquire_retention_write_admission("timestamped_archive").await
-            else {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
-            };
-            let execute_started = Instant::now();
-            let mut tx = pool.begin().await?;
-            let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
-                "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
-            )
-            .bind(spec.dataset)
-            .bind(&archive_outcome.month_key)
-            .bind(&archive_outcome.file_path)
-            .fetch_optional(tx.as_mut())
-            .await?
-            .flatten();
-            if cleanup_state
-                .as_deref()
-                .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
-            {
-                tx.rollback().await?;
-                drop(admission);
-                return Ok((rows_archived, archive_batches, raw_files_removed));
-            }
-            upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
-            if spec.dataset == "pool_upstream_request_attempts" {
-                let archive_batch_id = load_archive_batch_id_for_file_tx(
-                    tx.as_mut(),
-                    spec.dataset,
-                    &archive_outcome.month_key,
-                    &archive_outcome.file_path,
-                )
-                .await?;
-                let archive_file_contains_only_new_rows =
-                    archive_outcome.row_count == ids.len() as i64;
-                let node_health_archive_already_replayed = hourly_rollup_archive_replayed_tx(
-                    tx.as_mut(),
-                    POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-                    spec.dataset,
-                    &archive_outcome.file_path,
-                )
-                .await?;
-                let node_health_hourly_archive_already_replayed =
-                    hourly_rollup_archive_replayed_tx(
-                        tx.as_mut(),
-                        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-                        spec.dataset,
-                        &archive_outcome.file_path,
-                    )
-                    .await?;
-                cache_pool_upstream_node_health_archive_rows_from_live_ids_tx(
-                    tx.as_mut(),
-                    &archive_outcome.file_path,
-                    &ids,
-                )
-                .await?;
-                refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
-                    tx.as_mut(),
-                    archive_batch_id,
-                    &archive_outcome.file_path,
-                )
-                .await?;
-                if archive_file_contains_only_new_rows
-                    || node_health_hourly_archive_already_replayed
-                {
-                    mark_hourly_rollup_archive_replayed_tx(
-                        tx.as_mut(),
-                        POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET,
-                        spec.dataset,
-                        &archive_outcome.file_path,
-                    )
-                    .await?;
-                } else {
-                    sqlx::query(
-                        r#"
-                        DELETE FROM hourly_rollup_archive_replay
-                        WHERE target = ?1
-                          AND dataset = ?2
-                          AND file_path = ?3
-                        "#,
-                    )
-                    .bind(POOL_UPSTREAM_NODE_HEALTH_HOURLY_ARCHIVE_REPLAY_TARGET)
-                    .bind(spec.dataset)
-                    .bind(&archive_outcome.file_path)
-                    .execute(tx.as_mut())
-                    .await?;
-                }
-                if archive_file_contains_only_new_rows || node_health_archive_already_replayed {
-                    mark_hourly_rollup_archive_replayed_tx(
-                        tx.as_mut(),
-                        POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET,
-                        spec.dataset,
-                        &archive_outcome.file_path,
-                    )
-                    .await?;
-                    mark_archive_batch_historical_rollups_materialized_tx(
-                        tx.as_mut(),
-                        spec.dataset,
-                        &archive_outcome.file_path,
-                    )
-                    .await?;
-                } else {
-                    sqlx::query(
-                        r#"
-                        DELETE FROM hourly_rollup_archive_replay
-                        WHERE target = ?1
-                          AND dataset = ?2
-                          AND file_path = ?3
-                        "#,
-                    )
-                    .bind(POOL_UPSTREAM_NODE_HEALTH_ARCHIVE_REPLAY_TARGET)
-                    .bind(spec.dataset)
-                    .bind(&archive_outcome.file_path)
-                    .execute(tx.as_mut())
-                    .await?;
-                    sqlx::query(
-                        r#"
-                        UPDATE archive_batches
-                        SET historical_rollups_materialized_at = NULL
-                        WHERE dataset = ?1
-                          AND file_path = ?2
-                        "#,
-                    )
-                    .bind(spec.dataset)
-                    .bind(&archive_outcome.file_path)
-                    .execute(tx.as_mut())
-                    .await?;
-                }
-            } else {
-                mark_archive_batch_historical_rollups_materialized_tx(
-                    tx.as_mut(),
-                    spec.dataset,
-                    &archive_outcome.file_path,
-                )
-                .await?;
-            }
-            delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
-            mark_retention_archived_hourly_rollup_targets_tx(
-                tx.as_mut(),
-                spec.dataset,
-                &[],
-                &materialized_forward_proxy_rows,
-            )
-            .await?;
-            let (raw_paths, raw_reference_check_elapsed) =
-                if spec.dataset == "pool_upstream_request_attempts" {
-                    let raw_reference_check_started = Instant::now();
-                    let had_raw_reference_candidates =
-                        pool_attempt_raw_paths.iter().any(Option::is_some);
-                    let raw_paths = filter_unreferenced_proxy_raw_paths(
-                        tx.as_mut(),
-                        &pool_attempt_raw_paths,
-                        config.database_path.parent(),
-                    )
-                    .await?;
-                    (
-                        raw_paths,
-                        had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed()),
-                    )
-                } else {
-                    (Vec::new(), None)
-                };
-            let commit_started = Instant::now();
-            tx.commit().await?;
-            retention_record_commit_with_reference_check!(
-                "timestamped_archive",
-                admission.admission_mode(),
-                group.len(),
-                group.len().saturating_mul(256),
-                prepare_elapsed,
-                admission.lock_wait(),
-                commit_started.duration_since(execute_started),
-                commit_started.elapsed(),
-                raw_reference_check_elapsed,
-                admission.p1_waiter_count,
-                candidate_remaining_hint,
-            );
-            if spec.dataset == "pool_upstream_request_attempts" {
-                if !raw_paths.is_empty() {
-                    mark_retention_raw_inventory_reset_intent(pool).await?;
-                }
-                rows_archived += group.len();
-                archive_batches += 1;
-                raw_files_removed +=
-                    delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
-                drop(admission);
-            } else {
-                drop(admission);
-                rows_archived += group.len();
-                archive_batches += 1;
-            }
-        }
-    }
-
-    Ok((rows_archived, archive_batches, raw_files_removed))
-}
-
 pub(crate) fn archive_timestamped_dataset_month_key(
     dataset: &str,
     timestamp_value: &str,
@@ -11824,6 +10938,50 @@ mod retention_summary_tests {
     use super::{RetentionRunSummary, retention_backlog_max_overdue_seconds};
 
     #[test]
+    fn selected_batch_completion_does_not_complete_captured_backlog() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            invocation_rows_archived: 1_000,
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        assert_eq!(summary.core_completion(), "completed");
+        summary.invocation_rows_archived = 1_001;
+        assert_eq!(summary.completion(), "completed");
+        summary.invocation_rows_archived = 0;
+        assert_eq!(summary.completion(), "partial", "known pending work");
+        summary.backlog_total = Some(0);
+        assert_eq!(summary.completion(), "completed", "accurate empty scope");
+    }
+
+    #[test]
+    fn pending_coverage_is_partial_but_pure_admission_is_deferred() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            deferred: true,
+            wait_reason: Some("parallel_work_minute_coverage".to_string()),
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        for reason in [
+            "sqlite_pressure",
+            "sqlite_pool_wait",
+            "retention_write_admission",
+        ] {
+            summary.wait_reason = Some(reason.to_string());
+            assert_eq!(summary.completion(), "deferred", "pure admission: {reason}");
+        }
+        summary.invocation_rows_archived = 64;
+        assert_eq!(
+            summary.completion(),
+            "partial",
+            "committed progress remains"
+        );
+        summary.fatal_error = Some("archive failed".to_string());
+        assert_eq!(summary.completion(), "failed", "fatal error takes priority");
+    }
+
+    #[test]
     fn recoverable_failure_is_partial_without_progress() {
         let summary = RetentionRunSummary {
             deferred: true,
@@ -11832,6 +10990,23 @@ mod retention_summary_tests {
         };
         assert_eq!(summary.completion(), "partial");
         assert_eq!(summary.core_completion(), "partial");
+    }
+
+    #[test]
+    fn timeout_without_committed_progress_is_partial_not_pure_admission() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            budget_exhausted: true,
+            wait_reason: Some("retention_work_budget".to_string()),
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        summary.deferred = true;
+        assert_eq!(summary.completion(), "partial", "timeout wins over defer");
+        summary.backlog_total = None;
+        assert_eq!(summary.completion(), "partial", "unknown scope timed out");
+        summary.fatal_error = Some("archive failed".to_string());
+        assert_eq!(summary.completion(), "failed", "fatal error takes priority");
     }
 
     #[test]

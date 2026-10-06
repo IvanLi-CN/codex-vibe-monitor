@@ -290,7 +290,13 @@ mod tests {
 
     #[test]
     fn sql_report_contract_uses_hotpath_serializer_shape() {
-        let statement = prompt_cache_working_set_live_refresh_sql_for_key("NEW.prompt_cache_key");
+        let statement =
+            prompt_cache_working_set_live_refresh_sql_for_key("NEW.prompt_cache_key", "NEW.id");
+        assert!(
+            statement.contains("INDEXED BY idx_codex_invocations_prompt_cache_key_occurred_at")
+        );
+        assert!(statement.contains("FROM codex_invocations WHERE id IN"));
+        assert!(!statement.contains("NOT INDEXED"));
         // Trigger refreshes compose several of the real generated statements.
         let query = crate::observability::hotpath_sql_normalization::normalize(&format!(
             "CREATE TRIGGER fixture AFTER UPDATE ON codex_invocations BEGIN {statement}; {statement}; {statement}; END"
