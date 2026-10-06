@@ -1,102 +1,69 @@
 {
-  "uid": "cvm-overview",
-  "title": "CVM \u00b7 Overview",
-  "schemaVersion": 41,
-  "version": 1,
+  "annotations": {
+    "list": []
+  },
+  "description": "按发现异常 → 分类 → 定位原因 → 查看证据排查。默认业务 endpoint=responses/chat_completions；缺测、零值和过期采样保持不同语义。",
   "editable": false,
-  "timezone": "utc",
-  "time": {
-    "from": "now-30m",
-    "to": "now"
-  },
-  "refresh": "15s",
-  "tags": [
-    "cvm",
-    "performance"
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "请求与代理",
+      "type": "dash-db",
+      "url": "/d/cvm-proxy"
+    },
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "数据库竞争",
+      "type": "dash-db",
+      "url": "/d/cvm-sqlite"
+    },
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "CPU 与运行时",
+      "type": "dash-db",
+      "url": "/d/cvm-runtime"
+    },
+    {
+      "asDropdown": true,
+      "icon": "external link",
+      "includeVars": true,
+      "keepTime": true,
+      "tags": [],
+      "targetBlank": false,
+      "title": "浏览器体验",
+      "type": "dash-db",
+      "url": "/d/cvm-web"
+    }
   ],
-  "templating": {
-    "list": [
-      {
-        "name": "service",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "cvm-prometheus"
-        },
-        "query": "label_values(up, service)",
-        "refresh": 1,
-        "includeAll": true,
-        "allValue": ".*",
-        "multi": true,
-        "current": {
-          "text": "All",
-          "value": "$__all"
-        }
-      },
-      {
-        "name": "environment",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "cvm-prometheus"
-        },
-        "query": "label_values(up{service=~\"$service\"},environment)",
-        "refresh": 1,
-        "includeAll": true,
-        "allValue": ".*",
-        "multi": true,
-        "current": {
-          "text": "All",
-          "value": "$__all"
-        }
-      },
-      {
-        "name": "instance",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "cvm-prometheus"
-        },
-        "query": "label_values(up{service=~\"$service\",environment=~\"$environment\"},instance)",
-        "refresh": 1,
-        "includeAll": true,
-        "allValue": ".*",
-        "multi": true,
-        "current": {
-          "text": "All",
-          "value": "$__all"
-        }
-      },
-      {
-        "name": "task_key",
-        "type": "query",
-        "datasource": {
-          "type": "prometheus",
-          "uid": "cvm-prometheus"
-        },
-        "query": "label_values(cvm_task_runs_total, task_key)",
-        "refresh": 1,
-        "includeAll": true,
-        "allValue": ".*",
-        "multi": true,
-        "current": {
-          "text": "All",
-          "value": "$__all"
-        }
-      }
-    ]
-  },
+  "liveNow": false,
   "panels": [
     {
       "id": 1,
-      "type": "timeseries",
-      "title": "Scrape availability",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "type": "stat",
+      "title": "业务调用 / 分钟",
+      "description": "只统计当前 endpoint 变量中的 responses/chat_completions；这是速率，不是窗口总数。",
       "gridPos": {
         "x": 0,
         "y": 0,
-        "w": 12,
-        "h": 8
+        "w": 4,
+        "h": 4
       },
       "datasource": {
         "type": "prometheus",
@@ -105,15 +72,22 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "up{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "expr": "sum (rate(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])) * 60",
+          "legendFormat": "调用 / 分钟",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "Unknown",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "无样本",
           "custom": {
             "spanNulls": false
           }
@@ -121,25 +95,29 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi"
-        }
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
       }
     },
     {
       "id": 2,
-      "type": "timeseries",
-      "title": "Sampler age (CPU/memory/files)",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "type": "stat",
+      "title": "终态失败率",
+      "description": "分母是业务 invocation 的 success + error + cancelled；取消不并入失败。",
       "gridPos": {
-        "x": 12,
+        "x": 4,
         "y": 0,
-        "w": 12,
-        "h": 8
+        "w": 4,
+        "h": 4
       },
       "datasource": {
         "type": "prometheus",
@@ -148,15 +126,76 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "time() - cvm_observability_sampler_last_success_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "expr": "100 * sum (increase(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",outcome=\"error\"}[$__range])) / clamp_min(sum (increase(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])), 1)",
+          "legendFormat": "失败率",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "TTFT p95",
+      "description": "经典 Histogram 先合并 bucket 再算 p95；无 TTFT 样本时保持未知。",
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(cvm_proxy_ttft_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])))",
+          "legendFormat": "TTFT p95",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "noValue": "Unknown",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "无样本",
           "custom": {
             "spanNulls": false
           }
@@ -164,23 +203,189 @@
         "overrides": []
       },
       "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "tooltip": {
-          "mode": "multi"
-        }
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
       }
     },
     {
-      "id": 3,
+      "id": 4,
+      "type": "stat",
+      "title": "CPU（核）",
+      "description": "user + system 的相对单核 CPU 使用；Gauge up 不等于业务正常。",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(cvm_process_cpu_seconds_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "CPU",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "SQLite 准入等待 p95",
+      "description": "四类 coordinator wait 合并后计算 p95；不与 queue/pool/execute 相加。",
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "准入等待 p95",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "RSS",
+      "description": "进程当前 RSS；资源采样缺测保持未知，不补成零。",
+      "gridPos": {
+        "x": 20,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(cvm_process_rss_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"})",
+          "legendFormat": "RSS",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 7,
       "type": "timeseries",
-      "title": "Requests / second",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "title": "TTFT p50 / p95 趋势",
+      "description": "业务 endpoint 的 TTFT。样本数不足时曲线可能为空；不要把空曲线解释为零。",
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 4,
         "w": 12,
         "h": 8
       },
@@ -191,17 +396,42 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "sum(rate(cvm_http_requests_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(cvm_proxy_ttft_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(cvm_proxy_ttft_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__rate_interval])))",
+          "legendFormat": "p95",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "reqps",
-          "noValue": "Unknown",
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "无样本",
           "custom": {
-            "spanNulls": false
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
           }
         },
         "overrides": []
@@ -209,21 +439,23 @@
       "options": {
         "legend": {
           "displayMode": "list",
-          "placement": "bottom"
+          "placement": "bottom",
+          "calcs": []
         },
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },
     {
-      "id": 4,
+      "id": 8,
       "type": "timeseries",
-      "title": "CPU cores",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "title": "CPU 趋势",
+      "description": "CPU 是相对单核核数；不与业务调用率共用双轴，业务速率见下方对齐图。",
       "gridPos": {
         "x": 12,
-        "y": 8,
+        "y": 4,
         "w": 12,
         "h": 8
       },
@@ -235,16 +467,32 @@
         {
           "refId": "A",
           "expr": "sum(rate(cvm_process_cpu_seconds_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "legendFormat": "CPU 核",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "none",
-          "noValue": "Unknown",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
           "custom": {
-            "spanNulls": false
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
           }
         },
         "overrides": []
@@ -252,193 +500,23 @@
       "options": {
         "legend": {
           "displayMode": "list",
-          "placement": "bottom"
+          "placement": "bottom",
+          "calcs": []
         },
         "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 5,
-      "type": "timeseries",
-      "title": "Response head p95",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "cvm-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_http_header_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "Unknown",
-          "custom": {
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 6,
-      "type": "timeseries",
-      "title": "Response body p95",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "cvm-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_http_body_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "noValue": "Unknown",
-          "custom": {
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Response body samples",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "cvm-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "sum(increase(cvm_http_body_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "Unknown",
-          "custom": {
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
-        }
-      }
-    },
-    {
-      "id": 8,
-      "type": "timeseries",
-      "title": "In-flight requests",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
-      "gridPos": {
-        "x": 12,
-        "y": 24,
-        "w": 12,
-        "h": 8
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "cvm-prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "cvm_http_inflight{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "Unknown",
-          "custom": {
-            "spanNulls": false
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },
     {
       "id": 9,
-      "type": "timeseries",
-      "title": "RSS",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "type": "barchart",
+      "title": "业务调用终态 / 分钟",
+      "description": "成功、失败、取消分开计数；使用 rate 转换为每分钟事件，不把取消解释为失败。",
       "gridPos": {
         "x": 0,
-        "y": 32,
+        "y": 12,
         "w": 12,
         "h": 8
       },
@@ -449,39 +527,106 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "cvm_process_rss_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "expr": "sum (rate(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",outcome=\"success\"}[$__rate_interval])) * 60",
+          "legendFormat": "成功",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        },
+        {
+          "refId": "B",
+          "expr": "sum (rate(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",outcome=\"error\"}[$__rate_interval])) * 60",
+          "legendFormat": "失败",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        },
+        {
+          "refId": "C",
+          "expr": "sum (rate(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",outcome=\"cancelled\"}[$__rate_interval])) * 60",
+          "legendFormat": "取消",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "bytes",
-          "noValue": "Unknown",
+          "unit": "none",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
+          "noValue": "无样本",
           "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            },
             "spanNulls": false
           }
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "失败"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "取消"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
+        "orientation": "vertical",
+        "showValue": "auto",
+        "stacking": "normal",
+        "groupWidth": 0.7,
         "legend": {
           "displayMode": "list",
           "placement": "bottom"
         },
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
         }
       }
     },
     {
       "id": 10,
       "type": "timeseries",
-      "title": "SQLite contention p95",
-      "description": "UTC window. Empty data is unknown. Quantiles require samples; use count panels and scrape/sampler freshness before interpretation. App histograms are classic; hotpath histograms are native.",
+      "title": "四类数据库准入等待 p95",
+      "description": "class 展示名：调用终态写入、代理交互操作、派生数据更新、保留与归档维护。这里只比较 wait p95，不做叠加。",
       "gridPos": {
         "x": 12,
-        "y": 32,
+        "y": 12,
         "w": 12,
         "h": 8
       },
@@ -492,17 +637,33 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "histogram_quantile(0.95, sum by (le)(rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
-          "legendFormat": "{{instance}} {{class}} {{task_key}} {{outcome}} {{source}}",
-          "range": true
+          "expr": "histogram_quantile(0.95, sum by (le,class) (rate(cvm_sqlite_coordinator_wait_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+          "legendFormat": "{{class}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
-          "noValue": "Unknown",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
+          "noValue": "无样本",
           "custom": {
-            "spanNulls": false
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "fillOpacity": 12,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
           }
         },
         "overrides": []
@@ -510,13 +671,351 @@
       "options": {
         "legend": {
           "displayMode": "list",
-          "placement": "bottom"
+          "placement": "bottom",
+          "calcs": []
         },
         "tooltip": {
-          "mode": "multi"
+          "mode": "multi",
+          "sort": "desc"
         }
       }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Exporter up",
+      "description": "up=0 只表示抓取不可用；不把 exporter 健康当作业务健康。",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(up{job=\"cvm-app\",service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"})",
+          "legendFormat": "up",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "CPU 采样新鲜度",
+      "description": "距离最近一次 CPU 采样成功的秒数；过期与缺测分开。",
+      "gridPos": {
+        "x": 6,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cvm_observability_sampler_last_success_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",source=\"cpu\"}",
+          "legendFormat": "CPU 采样年龄",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "内存采样新鲜度",
+      "description": "距离最近一次 memory 采样成功的秒数；空值表示尚无有效样本。",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cvm_observability_sampler_last_success_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",source=\"memory\"}",
+          "legendFormat": "内存采样年龄",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "文件采样新鲜度",
+      "description": "距离最近一次 database/WAL/files 采样成功的秒数；不扫描文件补历史。",
+      "gridPos": {
+        "x": 18,
+        "y": 20,
+        "w": 6,
+        "h": 4
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - cvm_observability_sampler_last_success_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",source=\"files\"}",
+          "legendFormat": "文件采样年龄",
+          "range": true,
+          "instant": false,
+          "format": "time_series",
+          "hide": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "cyan"
+          },
+          "noValue": "无样本",
+          "custom": {
+            "spanNulls": false
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "graphMode": "area",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 90,
+      "type": "row",
+      "title": "高级：观测质量",
+      "collapsed": true,
+      "gridPos": {
+        "x": 0,
+        "y": 24,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 91,
+          "type": "text",
+          "title": "高级：观测质量说明",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 24,
+            "h": 5
+          },
+          "options": {
+            "mode": "markdown",
+            "content": "### 解释\n\n- 缺测保持未知，真实零值仍显示为 0。\n- CPU、内存和文件采样年龄分别来自 `source` 标签；过期读数不能当作当前资源状态。\n- 需要定位时沿当前时间范围打开请求与代理、数据库竞争、CPU 与运行时、浏览器体验四个详情页。"
+          }
+        }
+      ]
     }
   ],
-  "links": []
+  "refresh": "15s",
+  "schemaVersion": 41,
+  "style": "dark",
+  "tags": [
+    "cvm",
+    "performance",
+    "observability"
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "label": "service",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up, service)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "environment",
+        "type": "query",
+        "label": "environment",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\"}, environment)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "label": "instance",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\",environment=~\"$environment\"}, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "endpoint",
+        "type": "query",
+        "label": "endpoint",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, endpoint)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": "responses|chat_completions",
+        "multi": true,
+        "current": {
+          "text": "业务 endpoint",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timezone": "utc",
+  "title": "CVM · 性能总览",
+  "uid": "cvm-overview",
+  "version": 1
 }

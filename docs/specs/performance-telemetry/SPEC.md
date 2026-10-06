@@ -24,6 +24,7 @@
 - REQ-010: 请求头与完整 body 生命周期分开；一次 invocation 在规范去重边界计一次，upstream attempt 和重试独立；coordinator、pool、queue、SQL execution、ACK 与 enqueue-to-commit 为真实来源窗口，不把均值当样本。 covers: [指标迁移](METRICS.md)
 - REQ-011: SQLx tracing 不受全局日志过滤，最终 router 仅安装一次 hotpath layer；函数默认 10% 抽样并显示样本数，SQL/锁及关键 SDK 指标完整观测。 covers: [hotpath 合同](../../design/performance-observability.md#hotpath-与应用-api)
 - REQ-012: 正式 Grafana dashboard、datasource UID、变量、规则和告警从版本控制 provision；无样本分位数为空，平台不支持和外部连通性未检查保持 unknown。 covers: [仪表盘合同](../../design/performance-observability.md#仪表盘告警和留存)
+- REQ-012A: 五个固定 dashboard 按“发现异常 → 分类 → 定位原因 → 查看证据”组织；总览默认业务 endpoint，读数/趋势/归因遵守 24 列和窄屏顺序，Stat/Time series/横向条形图/Table 使用固定颜色、单位、样本数与中文说明，高级说明可折叠并通过保留时间/实例的 dashboard links 下钻。窗口计数使用 `increase`、速率使用 `rate`，经典 Histogram 先合并 bucket 后算分位数，hotpath 只使用 native Histogram；表格查询整个所选窗口，缺测、零值、低样本和过期读数保持可区分。 covers: [仪表盘布局与查询合同](../../design/performance-observability.md#仪表盘布局与查询合同)
 - REQ-013: 人类通过公网 HTTPS 与交互认证访问 Grafana，Agent 用独立 Viewer Token 经 HTTPS 查询，无需 SSH 或直连 Prometheus；入口只为必要机器路径跳过交互挑战且仍验证 Token，拒绝缺失/错误 Token 与写请求。 covers: [访问合同](../../design/performance-observability.md#101-服务访问和权限)
 - REQ-014: SSH 仅用于本项目 hotpath 与 CPU 诊断；CPU 对运行实例 attach，默认 100 Hz/30 秒、上限 60 秒、单实例单并发，符号必须匹配 build ID，产物保留 7 天/512 MiB，不新增 daemon 或任意 PID/root shell。 covers: [CPU 合同](../../design/performance-observability.md#cpu-采样与-ssh-运维合同)
 - REQ-015: 本次退役限定 v3→v4，核验固定 digest 的 v3 镜像与停止 writer 的身份，拒绝 v2 直接跨 major 及 v4 来源。须精确核验文件身份与前一 major 的完整 schema-v1 DDL，包含默认值、表约束与索引，仅忽略格式和注释；停旧 writer 后含 WAL 一致归档并校验，再移出应用挂载。未知归属、DDL 或备份失败保留源。阶段清单可重入，中断用前向恢复，恢复备份是独立灾难恢复操作。 covers: [退役合同](../../design/performance-observability.md#旧系统一次性退役与恢复)
@@ -52,7 +53,8 @@
 - VER-005: HTTPS 机器查询、只读权限、凭据隔离、报告限额与降级可观察；报告适配使用依赖的实际序列化模型并覆盖应用实际的组合长启动 SQL，SQL 文本保持整份报告的 1 MiB 边界；hotpath SQL 标签包含 UTF-8 与截断唯一性后缀后符合 Prometheus 标签值上限，抓取不因长启动 SQL 失败；故障只记录报告类型与错误类别，图表和规则可重建。 covers: REQ-007, REQ-012, REQ-013
 - VER-006: 原运行实例 CPU 热点可用匹配符号解析；固定一次性镜像读取原映射路径，应用镜像保留 profiler 的第三方许可，采样目标、并发、时限与产物容量受限。 covers: REQ-014
 - VER-007: WAL、自定义路径、symlink、absent、损坏、未知归属、中断、重复及备份恢复有证据；v3 镜像与 schema-v1 来源可迁移，v2/v4 版本、额外 CHECK、不同 DEFAULT 与未知索引被拒绝，源文件摘要保持不变；新进程无旧库依赖，业务状态保留。 covers: REQ-001, REQ-005, REQ-015
-- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡；Build Artifacts 只依赖 smoke artifact producer，不依赖性能预算或诊断结果。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
+- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡，阻断现有 Build Artifacts 门禁。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
+- VER-009: 五个 dashboard JSON 可独立 provision，UID、`cvm-prometheus`、变量、导航/任务深链接、面板类型/布局、PromQL 聚合和缺测说明通过静态合同检查；受控合成数据在桌面与 393×852 窄屏保持排查顺序，真实 Grafana/Prometheus 不可用时不得用生产或伪造数据替代。 covers: REQ-009, REQ-012, REQ-012A
 
 ## Related ADRs
 
