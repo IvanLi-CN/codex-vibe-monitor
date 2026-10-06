@@ -8,6 +8,8 @@ mod invocation_timeline_maintenance;
 mod models_dev_http_client;
 mod observability_lifecycles;
 mod prompt_cache_attribution;
+mod retention_archive_size;
+mod retention_batch_metrics;
 mod time_ranges_and_proxy_display;
 
 pub(crate) use forward_proxy_config_and_storage::*;

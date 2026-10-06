@@ -270,7 +270,7 @@ class WorkflowGateTests(unittest.TestCase):
         cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-pr.yml")
 
     def verify(self, workflow):
-        contract.require_observability_performance_contract(workflow, workflow["jobs"]["build"])
+        contract.require_observability_performance_contract(workflow)
 
     def test_current_workflow_fails_closed(self):
         self.verify(self.workflow)
@@ -285,13 +285,11 @@ class WorkflowGateTests(unittest.TestCase):
         workflow["jobs"]["observability-performance"]["needs"] = "build-pr-smoke-artifacts"
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
-    def test_ignored_or_skipped_performance_result_is_rejected(self):
-        for skip in [True, False]:
-            workflow = copy.deepcopy(self.workflow)
-            step = next(x for x in workflow["jobs"]["build"]["steps"] if x["name"] == "Verify observability performance budget")
-            if skip: step["if"] = "failure()"
-            else: step["run"] = "echo accepted"
-            with self.assertRaises(contract.ContractError): self.verify(workflow)
+    def test_build_artifacts_does_not_depend_on_performance_result(self):
+        needs = self.workflow["jobs"]["build"].get("needs")
+        self.assertEqual(needs, "build-pr-smoke-artifacts")
+        self.assertFalse(any(step["name"] == "Verify observability performance budget"
+                             for step in self.workflow["jobs"]["build"]["steps"]))
 
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)

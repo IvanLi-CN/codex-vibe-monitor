@@ -1691,6 +1691,8 @@ async fn run_managed_task_once_with_scoped_observation(
             "invocationRowsArchived": summary.invocation_rows_archived,
             "invocationDetailsPruned": summary.invocation_details_pruned,
             "archiveBatchesTouched": summary.archive_batches_touched,
+            "archiveBatches": summary.batches,
+            "timeoutCount": summary.timeout_count,
             "rawFilesRemoved": summary.raw_files_removed,
             "promptCacheConversationsReleased": summary.prompt_cache_conversations_released,
             "summary": detail,

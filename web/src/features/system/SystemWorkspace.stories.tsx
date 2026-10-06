@@ -23,7 +23,7 @@ import type {
   TaskWorkloadTrend,
 } from "../../lib/api";
 import type { RuntimePressureDashboardHotTopicHealth } from "../../lib/api/core-foundation";
-import { getTopicDescriptorKey } from "../../lib/sse";
+import { getCurrentSseStatus, getTopicDescriptorKey } from "../../lib/sse";
 import SystemLayout from "../../pages/system/SystemLayout";
 import SystemModelsPage from "../../pages/system/SystemModelsPage";
 import SystemProxyPage from "../../pages/system/SystemProxyPage";
@@ -388,6 +388,7 @@ const STORYBOOK_RETENTION_FIXTURE = buildRetentionWorkloadFixture({
   finalPending: 32_000,
   skippedIndices: [10, 22],
   zeroCommitFailureIndices: [9, 21],
+  maxProcessedPerRun: 1000,
 });
 const STORYBOOK_RETENTION_BACKLOG_TREND = STORYBOOK_RETENTION_FIXTURE.backlog;
 const STORYBOOK_WORKLOAD_SAMPLES = STORYBOOK_RETENTION_FIXTURE.samples;
@@ -502,6 +503,25 @@ const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
         elapsedMs: STORYBOOK_LATEST_RUN_DURATION,
         settlementMs: 4_000,
         budgetExhausted: STORYBOOK_LATEST_RUN_DURATION >= 60_000,
+        timeoutCount: STORYBOOK_LATEST_RUN_DURATION >= 60_000 ? 1 : 0,
+        archiveBatches: [
+          {
+            dataset: "codex_invocations",
+            monthKey: "2026-09",
+            batchRows: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
+            committedRows: STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0,
+            committedRowsPerSecond:
+              ((STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0) * 1000) /
+              STORYBOOK_LATEST_RUN_DURATION,
+            arrivalRowsPerSecond: 0.3472,
+            serviceRateMultiple:
+              ((STORYBOOK_LATEST_WORKLOAD_RUN?.processed?.value ?? 0) * 1000) /
+              STORYBOOK_LATEST_RUN_DURATION /
+              0.3472,
+            filePrepareMs: 3600,
+            lockWaitMs: 125,
+          },
+        ],
         waitReason: "prompt_cache_materialization_pending",
         promptCacheStats: {
           state: "unavailable",
@@ -554,6 +574,7 @@ function retentionTaskDetailForState(
         completion: "completed",
         coreCompletion: "completed",
         budgetExhausted: false,
+        timeoutCount: 0,
         waitReason: null,
         promptCacheStats: { state: "available", pending: 0, reason: "fresh" },
       },
@@ -1681,13 +1702,7 @@ function renderWorkspace(initialEntry: string) {
   );
 }
 
-function TaskPageSseFixture({
-  children,
-  reconnecting = false,
-}: {
-  children: ReactNode;
-  reconnecting?: boolean;
-}) {
+function TaskPageSseFixture({ children }: { children: ReactNode }) {
   useEffect(() => {
     const snapshotTimer = window.setTimeout(() => {
       const controller = getStorybookPageSseController();
@@ -1722,24 +1737,16 @@ function TaskPageSseFixture({
         });
       }
     }, 100);
-    const disconnectTimer = reconnecting
-      ? window.setTimeout(() => getStorybookPageSseController()?.emitError(), 750)
-      : null;
     return () => {
       window.clearTimeout(snapshotTimer);
-      if (disconnectTimer != null) window.clearTimeout(disconnectTimer);
     };
-  }, [reconnecting]);
+  }, []);
 
   return <>{children}</>;
 }
 
-function renderTaskWorkspace(reconnecting = false) {
-  return (
-    <TaskPageSseFixture reconnecting={reconnecting}>
-      {renderWorkspace("/system/tasks")}
-    </TaskPageSseFixture>
-  );
+function renderTaskWorkspace() {
+  return <TaskPageSseFixture>{renderWorkspace("/system/tasks")}</TaskPageSseFixture>;
 }
 
 export const Status: Story = {
@@ -2536,7 +2543,7 @@ export const TasksDark: Story = {
 };
 
 export const TasksSseReconnecting: Story = {
-  render: () => renderTaskWorkspace(true),
+  render: () => renderTaskWorkspace(),
   tags: ["test"],
   globals: {
     themeMode: "light",
@@ -2545,6 +2552,10 @@ export const TasksSseReconnecting: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(canvas.findByText("正在执行")).resolves.toBeVisible();
+    await waitFor(() => expect(getCurrentSseStatus().phase).toBe("connected"));
+    const controller = getStorybookPageSseController();
+    expect(controller).not.toBeNull();
+    controller?.emitError();
     await expect(canvas.findByRole("alert")).resolves.toHaveTextContent("实时数据断开，正在重连");
     await expect(canvas.findByTestId("task-timeline-now")).resolves.toBeVisible();
   },

@@ -2880,7 +2880,24 @@ export interface ManagedTaskProgress {
   }> | null;
 }
 
+export interface RetentionArchiveBatchMetrics {
+  dataset: string;
+  monthKey: string;
+  batchRows?: number | null;
+  committedRows?: number | null;
+  committedRowsPerSecond?: number | null;
+  arrivalRowsPerSecond?: number | null;
+  serviceRateMultiple?: number | null;
+  filePrepareMs?: number | null;
+  lockWaitMs?: number | null;
+  elapsedMs?: number | null;
+  timeoutCount?: number | null;
+  smallBatchReason?: string | null;
+}
+
 export interface ManagedTaskRunDetails {
+  archiveBatches?: RetentionArchiveBatchMetrics[] | null;
+  timeoutCount?: number | null;
   completion?: string | null;
   coreCompletion?: string | null;
   budgetMs?: number | null;
@@ -5901,6 +5918,29 @@ function normalizeManagedTaskProgress(raw: unknown): ManagedTaskProgress | null 
   };
 }
 
+function normalizeArchiveBatch(raw: unknown): RetentionArchiveBatchMetrics | null {
+  const batch = asRecord(raw);
+  if (typeof batch?.dataset !== "string" || typeof batch?.monthKey !== "string") return null;
+  const nonNegative = (value: unknown): number | null => {
+    const number = normalizeFiniteNumber(value);
+    return number != null && number >= 0 ? number : null;
+  };
+  return {
+    dataset: batch.dataset,
+    monthKey: batch.monthKey,
+    batchRows: nonNegative(batch.batchRows),
+    committedRows: nonNegative(batch.committedRows),
+    committedRowsPerSecond: nonNegative(batch.committedRowsPerSecond),
+    arrivalRowsPerSecond: nonNegative(batch.arrivalRowsPerSecond),
+    serviceRateMultiple: nonNegative(batch.serviceRateMultiple),
+    filePrepareMs: nonNegative(batch.filePrepareMs),
+    lockWaitMs: nonNegative(batch.lockWaitMs),
+    elapsedMs: nonNegative(batch.elapsedMs),
+    timeoutCount: Number.isInteger(batch.timeoutCount) ? nonNegative(batch.timeoutCount) : null,
+    smallBatchReason: typeof batch.smallBatchReason === "string" ? batch.smallBatchReason : null,
+  };
+}
+
 function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
   const payload = asRecord(raw);
   const id = normalizeFiniteNumber(payload?.id);
@@ -5911,6 +5951,12 @@ function normalizeManagedTaskRun(raw: unknown): ManagedTaskRun | null {
   const normalizedDetails = details
     ? {
         ...details,
+        timeoutCount: normalizeFiniteNumber(details.timeoutCount),
+        archiveBatches: Array.isArray(details.archiveBatches)
+          ? details.archiveBatches
+              .map(normalizeArchiveBatch)
+              .filter((batch): batch is RetentionArchiveBatchMetrics => batch != null)
+          : undefined,
         promptCacheStats: promptCacheStats
           ? {
               state:

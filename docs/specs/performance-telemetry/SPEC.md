@@ -27,8 +27,8 @@
 - REQ-013: 人类通过公网 HTTPS 与交互认证访问 Grafana，Agent 用独立 Viewer Token 经 HTTPS 查询，无需 SSH 或直连 Prometheus；入口只为必要机器路径跳过交互挑战且仍验证 Token，拒绝缺失/错误 Token 与写请求。 covers: [访问合同](../../design/performance-observability.md#101-服务访问和权限)
 - REQ-014: SSH 仅用于本项目 hotpath 与 CPU 诊断；CPU 对运行实例 attach，默认 100 Hz/30 秒、上限 60 秒、单实例单并发，符号必须匹配 build ID，产物保留 7 天/512 MiB，不新增 daemon 或任意 PID/root shell。 covers: [CPU 合同](../../design/performance-observability.md#cpu-采样与-ssh-运维合同)
 - REQ-015: 本次退役限定 v3→v4，核验固定 digest 的 v3 镜像与停止 writer 的身份，拒绝 v2 直接跨 major 及 v4 来源。须精确核验文件身份与前一 major 的完整 schema-v1 DDL，包含默认值、表约束与索引，仅忽略格式和注释；停旧 writer 后含 WAL 一致归档并校验，再移出应用挂载。未知归属、DDL 或备份失败保留源。阶段清单可重入，中断用前向恢复，恢复备份是独立灾难恢复操作。 covers: [退役合同](../../design/performance-observability.md#旧系统一次性退役与恢复)
-- REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job，测量 job 串行运行同一候选镜像的默认观测开/关、相同非饱和负载与重复稳定窗口。CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过，本地或共享测试机结果不能证明预算达标。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
-- REQ-016A: PSI 的 `some avg10/avg60` 准入阈值为 CPU <2%、IO <5%、memory <0.1%；每轮 60 秒预热后按 20 秒间隔取得连续三次安静样本，每轮额外等待最多 300 秒、六轮累计最多 900 秒。正式窗口绑定开关、配对编号和 UTC/单调起止时间，以 10 秒间隔和初末边界样本判定环境；超阈值、缺失/非法样本、采集错误或间隔超过 20 秒均记为 unavailable 并阻断门禁，不自动重跑或筛选通过样本。预热与停启压力不作为正式窗口样本，等待仍受 70 分钟 job 上限约束。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job，测量 job 串行运行同一候选镜像的默认观测开/关、相同非饱和负载与重复稳定窗口。CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过，本地或共享测试机结果不能证明预算达标。性能实验属于专项验收或辅助检查，不得通过 Build Artifacts 的依赖成为每个 PR 的必要门禁。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016A: PSI 的 `some avg10/avg60` 准入阈值为 CPU <2%、IO <5%、memory <0.1%；每轮 60 秒预热后按 20 秒间隔取得连续三次安静样本，每轮额外等待最多 300 秒、六轮累计最多 900 秒。正式窗口绑定开关、配对编号和 UTC/单调起止时间，以 10 秒间隔和初末边界样本判定环境；超阈值、缺失/非法样本、采集错误或间隔超过 20 秒均记为 unavailable，不得签发性能验收通过卡，不自动重跑或筛选通过样本。预热与停启压力不作为正式窗口样本，等待仍受 70 分钟 job 上限约束。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
 
 ## API Contract
 
@@ -52,7 +52,7 @@
 - VER-005: HTTPS 机器查询、只读权限、凭据隔离、报告限额与降级可观察；报告适配使用依赖的实际序列化模型并覆盖应用实际的组合长启动 SQL，SQL 文本保持整份报告的 1 MiB 边界；hotpath SQL 标签包含 UTF-8 与截断唯一性后缀后符合 Prometheus 标签值上限，抓取不因长启动 SQL 失败；故障只记录报告类型与错误类别，图表和规则可重建。 covers: REQ-007, REQ-012, REQ-013
 - VER-006: 原运行实例 CPU 热点可用匹配符号解析；固定一次性镜像读取原映射路径，应用镜像保留 profiler 的第三方许可，采样目标、并发、时限与产物容量受限。 covers: REQ-014
 - VER-007: WAL、自定义路径、symlink、absent、损坏、未知归属、中断、重复及备份恢复有证据；v3 镜像与 schema-v1 来源可迁移，v2/v4 版本、额外 CHECK、不同 DEFAULT 与未知索引被拒绝，源文件摘要保持不变；新进程无旧库依赖，业务状态保留。 covers: REQ-001, REQ-005, REQ-015
-- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡，阻断现有 Build Artifacts 门禁。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
+- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡；Build Artifacts 只依赖 smoke artifact producer，不依赖性能预算或诊断结果。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
 
 ## Related ADRs
 
