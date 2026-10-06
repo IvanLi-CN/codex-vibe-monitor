@@ -79,6 +79,7 @@ class Run:
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
             service["cap_drop"]=["ALL"];service.pop("ports",None)
+            # Keep helpers runner-managed; pinning them can create host PSI pressure.
         fixture=self.source/"scripts/observability-acceptance"
         common={"image":"python:3.12-alpine","user":f"{os.getuid()}:{os.getgid()}","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.private)+":/private"]}
         compose["services"].update({
