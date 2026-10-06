@@ -1852,25 +1852,16 @@ async fn run_managed_task_once(
             Ok("系统状态快照刷新完成".to_string())
         }
         "invocation_timeline_snapshot" => {
-            let cleanup = cleanup_timeline_snapshot_rows_once(&state.pool)
+            cleanup_timeline_snapshot_rows_once(&state.pool)
                 .await
                 .map_err(|_| anyhow!("调用时间线快照清理失败"))?;
-            crate::record_managed_task_discovered_work(
-                &["invocation_timeline_snapshot"],
-                i64::try_from(cleanup.deleted_rows).unwrap_or(i64::MAX),
-            );
-            crate::record_managed_task_processed_work(
-                &["invocation_timeline_snapshot"],
-                i64::try_from(cleanup.deleted_rows).unwrap_or(i64::MAX),
-            );
             Ok("调用时间线快照清理完成".to_string())
         }
         "dashboard_runtime_projection_reconcile" => {
             let result = reconcile_dashboard_runtime_projection_once(state.as_ref())
                 .await
                 .map_err(|_| anyhow!("仪表盘运行投影校对失败"))?;
-            let reconciled_records =
-                i64::try_from(result.snapshot.accounts.len()).unwrap_or(i64::MAX);
+            let reconciled_records = i64::from(result.changed);
             crate::record_managed_task_discovered_work(
                 &["dashboard_runtime_projection_reconcile"],
                 reconciled_records,
@@ -1923,19 +1914,11 @@ async fn run_managed_task_once(
             Ok("Prompt 缓存物化完成".to_string())
         }
         "startup_hourly_rollup_bootstrap" => {
-            let work_count = bootstrap_hourly_rollups_for_runtime_startup_with_work(
+            bootstrap_hourly_rollups_for_runtime_startup_with_work(
                 &state.pool,
                 Some(state.config.invocation_max_days),
             )
             .await?;
-            crate::record_managed_task_discovered_work(
-                &["startup_hourly_rollup_bootstrap"],
-                i64::try_from(work_count).unwrap_or(i64::MAX),
-            );
-            crate::record_managed_task_processed_work(
-                &["startup_hourly_rollup_bootstrap"],
-                i64::try_from(work_count).unwrap_or(i64::MAX),
-            );
             Ok("启动时小时汇总补齐完成".to_string())
         }
         "raw_compression" => {
@@ -2377,15 +2360,24 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 ));
 
             let hourly_rollups_started_at = Instant::now();
-            let hourly_rollups = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => None,
-                _ = coordinator.wait_for_p2_preemption() => None,
-                result = bootstrap_hourly_rollups_for_runtime_startup_with_work(
-                    &state.pool,
-                    Some(state.config.invocation_max_days),
-                ) => Some(result),
-            };
+            let hourly_rollups = crate::with_managed_task_observation(
+                task_run
+                    .observation
+                    .clone()
+                    .expect("hourly rollup observation is initialized before work"),
+                async {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => None,
+                        _ = coordinator.wait_for_p2_preemption() => None,
+                        result = bootstrap_hourly_rollups_for_runtime_startup_with_work(
+                            &state.pool,
+                            Some(state.config.invocation_max_days),
+                        ) => Some(result),
+                    }
+                },
+            )
+            .await;
             let Some(hourly_rollups) = hourly_rollups else {
                 drop(write_permit);
                 drop(pressure_permit);
@@ -2717,10 +2709,13 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                 "processing",
                 startup_run.as_ref().map(|run| run.id),
             );
-            let refresh_result = refresh_forward_proxy_subscriptions(
-                state.clone(),
-                true,
-                Some(startup_known_subscription_keys),
+            let refresh_result = crate::with_managed_task_observation(
+                observation.clone(),
+                refresh_forward_proxy_subscriptions(
+                    state.clone(),
+                    true,
+                    Some(startup_known_subscription_keys),
+                ),
             )
             .await;
             observation.finish_from_result(&refresh_result);
@@ -2799,7 +2794,11 @@ pub(crate) fn spawn_forward_proxy_maintenance(
                         "processing",
                         task_run.as_ref().map(|run| run.id),
                     );
-                    let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), false, None).await;
+                    let refresh_result = crate::with_managed_task_observation(
+                        observation.clone(),
+                        refresh_forward_proxy_subscriptions(state.clone(), false, None),
+                    )
+                    .await;
                     observation.finish_from_result(&refresh_result);
                     if let Err(err) = refresh_result {
                         let detail = err.to_string();

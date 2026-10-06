@@ -643,18 +643,20 @@ pub(crate) fn spawn_system_raw_payload_metrics_inventory(
                 "processing",
             );
             let mut terminal_status = "success";
-            if let Err(error) =
-                crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref()).await
-            {
+            let inventory_result =
+                crate::with_managed_task_observation(observation.clone(), async {
+                    crate::resume_retention_raw_payload_metrics_inventory_reset(state.as_ref())
+                        .await?;
+                    refresh_system_raw_payload_metrics_inventory(state.as_ref()).await?;
+                    Ok::<(), anyhow::Error>(())
+                })
+                .await;
+            if let Err(error) = inventory_result {
                 terminal_status = "failed";
                 set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
                 warn!(error = %error, "system raw metrics inventory reset resume failed");
             }
-            if let Err(error) = refresh_system_raw_payload_metrics_inventory(state.as_ref()).await {
-                terminal_status = "failed";
-                set_system_raw_metrics_health_override(state.as_ref(), Some("error")).await;
-                warn!(error = %error, "system raw metrics inventory batch failed");
-            } else {
+            if terminal_status == "success" {
                 let circuit_snapshot = state.raw_capture_circuit.snapshot();
                 if circuit_snapshot.inventory_state == "ready"
                     || circuit_snapshot.spool_inventory_overflow

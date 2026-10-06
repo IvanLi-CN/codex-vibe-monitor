@@ -2359,7 +2359,11 @@ pub(crate) async fn post_forward_proxy_refresh_subscriptions(
         task_run.as_ref().map(|run| run.id),
     );
 
-    let refresh_result = refresh_forward_proxy_subscriptions(state.clone(), true, None).await;
+    let refresh_result = crate::with_managed_task_observation(
+        observation.clone(),
+        refresh_forward_proxy_subscriptions(state.clone(), true, None),
+    )
+    .await;
     observation.finish_from_result(&refresh_result);
 
     if let Err(err) = refresh_result {

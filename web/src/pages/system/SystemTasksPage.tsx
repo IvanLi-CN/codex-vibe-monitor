@@ -246,6 +246,7 @@ export default function SystemTasksPage(): JSX.Element {
   const sseStatus = useSseStatus();
   const connectionLostAt = useRef<number | null>(null);
   const timelineWatermark = useRef<number | null>(null);
+  const catalogEpoch = useRef(0);
 
   useEffect(() => {
     if (runtime) {
@@ -296,6 +297,7 @@ export default function SystemTasksPage(): JSX.Element {
 
   useEffect(() => {
     if (!catalogTopic.data) return;
+    catalogEpoch.current += 1;
     setTasks(catalogTopic.data);
     setError(null);
     setLoading(false);
@@ -303,9 +305,10 @@ export default function SystemTasksPage(): JSX.Element {
 
   useEffect(() => {
     let active = true;
+    const requestEpoch = catalogEpoch.current;
     void fetchManagedTasks()
       .then((catalog) => {
-        if (active) {
+        if (active && catalogEpoch.current === requestEpoch) {
           setTasks(catalog);
           setError(null);
         }
@@ -319,8 +322,11 @@ export default function SystemTasksPage(): JSX.Element {
       });
     const onVisibilityChange = () => {
       if (document.visibilityState === "visible") {
+        const refreshEpoch = ++catalogEpoch.current;
         void fetchManagedTasks()
-          .then(setTasks)
+          .then((catalog) => {
+            if (catalogEpoch.current === refreshEpoch) setTasks(catalog);
+          })
           .catch((reason: unknown) =>
             setError(reason instanceof Error ? reason.message : String(reason)),
           );

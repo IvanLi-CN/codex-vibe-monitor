@@ -530,7 +530,8 @@ struct TaskRunRow {
 }
 
 #[derive(Debug, FromRow)]
-struct LatestExecutionRow {
+struct LatestTaskExecutionRow {
+    task_key: String,
     id: i64,
     execution_uid: Option<String>,
     trigger_kind: String,
@@ -1405,7 +1406,7 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
         "raw_payload_metrics_inventory" => Some("inventory paths"),
         "prompt_cache_materialization" => Some("conversation sessions"),
         "forward_proxy_subscription_refresh" => Some("subscription sources"),
-        "startup_hourly_rollup_bootstrap" => Some("summary buckets"),
+        "startup_hourly_rollup_bootstrap" => Some("rollup writes"),
         "summary_snapshot" => Some("live terminal contributions"),
         "dashboard_runtime_projection_reconcile" => Some("reconciled runtime records"),
         "long_term_projection" => Some("terminal events"),
@@ -3685,8 +3686,39 @@ impl MaintenanceStore {
             .map(decorate_effective_schedule)
             .map(decorate_task)
             .collect::<Vec<_>>();
+        let latest_rows = sqlx::query_as::<_, LatestTaskExecutionRow>(
+            "SELECT task_key,id,execution_uid,trigger_kind,started_at,actual_started_at,finished_at,
+                    actual_finished_at,duration_ms,actual_duration_ms,status,error_detail
+             FROM (
+                 SELECT task_key,id,execution_uid,trigger_kind,started_at,actual_started_at,finished_at,
+                        actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,
+                        ROW_NUMBER() OVER (PARTITION BY task_key ORDER BY started_at DESC,id DESC) AS row_number
+                 FROM managed_task_runs
+                 WHERE status NOT IN ('requested','queued')
+             )
+             WHERE row_number=1",
+        )
+        .fetch_all(&self.pool)
+        .await?
+        .into_iter()
+        .map(|row| {
+            let summary = TaskExecutionSummary {
+                execution_uid: row.execution_uid,
+                run_id: row.id,
+                trigger_kind: row.trigger_kind,
+                attempted_at: row.started_at,
+                actual_started_at: row.actual_started_at,
+                finished_at: row.actual_finished_at.or(row.finished_at),
+                duration_ms: row.actual_duration_ms.or(row.duration_ms),
+                result: row.status.clone(),
+                status: row.status,
+                reason: row.error_detail,
+            };
+            (row.task_key, summary)
+        })
+        .collect::<std::collections::HashMap<_, _>>();
         for task in &mut decorated {
-            task.last_execution = self.latest_execution(&task.task_key).await?;
+            task.last_execution = latest_rows.get(&task.task_key).cloned();
             if let (Some(summary), Some(snapshot)) =
                 (task.last_execution.as_mut(), runtime_snapshot.as_ref())
                 && summary.status == "running"
@@ -3705,31 +3737,6 @@ impl MaintenanceStore {
             };
         }
         Ok(decorated)
-    }
-
-    async fn latest_execution(&self, task_key: &str) -> Result<Option<TaskExecutionSummary>> {
-        let row = sqlx::query_as::<_, LatestExecutionRow>(
-            "SELECT id,execution_uid,trigger_kind,started_at,actual_started_at,finished_at,
-                    actual_finished_at,duration_ms,actual_duration_ms,status,error_detail
-             FROM managed_task_runs
-             WHERE task_key=? AND status NOT IN ('requested','queued')
-             ORDER BY started_at DESC,id DESC LIMIT 1",
-        )
-        .bind(task_key)
-        .fetch_optional(&self.pool)
-        .await?;
-        Ok(row.map(|row| TaskExecutionSummary {
-            execution_uid: row.execution_uid,
-            run_id: row.id,
-            trigger_kind: row.trigger_kind,
-            attempted_at: row.started_at,
-            actual_started_at: row.actual_started_at,
-            finished_at: row.actual_finished_at.or(row.finished_at),
-            duration_ms: row.actual_duration_ms.or(row.duration_ms),
-            result: row.status.clone(),
-            status: row.status,
-            reason: row.error_detail,
-        }))
     }
 
     pub(crate) async fn workload_window(
@@ -3877,9 +3884,11 @@ impl MaintenanceStore {
             .unwrap_or_else(|| format_utc_iso_millis(Utc::now() - ChronoDuration::hours(24)));
         let mut coverage_gaps = sqlx::query_as::<_, TaskWorkloadCoverageGapRow>(
             "SELECT segment_id,started_at,finished_at,reason FROM task_timeline_segments
-             WHERE task_key=? AND kind='coverage_gap' AND last_observed_at>=?
+             WHERE (task_key=? OR (task_key='__timeline__' AND ?='invocation_timeline_snapshot'))
+               AND kind='coverage_gap' AND last_observed_at>=?
              ORDER BY started_at DESC LIMIT 100",
         )
+        .bind(task_key)
         .bind(task_key)
         .bind(coverage_floor)
         .fetch_all(&self.pool)

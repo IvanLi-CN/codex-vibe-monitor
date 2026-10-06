@@ -743,6 +743,8 @@ pub(crate) struct SubscriptionHub {
     // rolling Projection refresh. It still needs one owner so a cadence tick cannot duplicate a
     // page already being reduced by the recovery worker.
     summary_coverage_recovery: tokio::sync::Mutex<()>,
+    // Prevent concurrent catalog/workload owners from duplicating an initial SQLite build.
+    managed_task_refresh_serial: tokio::sync::Mutex<()>,
     broadcaster: broadcast::Sender<SubscriptionDispatchEvent>,
     runtime_mutation_bus: Arc<RuntimeMutationBus>,
     runtime_topic_recovery_notify: Arc<Notify>,
@@ -3873,6 +3875,7 @@ impl SubscriptionHub {
             state: Mutex::new(SubscriptionHubState::default()),
             summary_projection_refresh: tokio::sync::Mutex::new(()),
             summary_coverage_recovery: tokio::sync::Mutex::new(()),
+            managed_task_refresh_serial: tokio::sync::Mutex::new(()),
             broadcaster,
             runtime_mutation_bus: Arc::new(RuntimeMutationBus::new()),
             runtime_topic_recovery_notify: Arc::new(Notify::new()),
@@ -6141,11 +6144,20 @@ impl SubscriptionHub {
             &topic,
             SubscriptionTopic::ParallelWorkCurrent { range, .. } if range != "yesterday"
         );
+        let coalesce_managed_task_refresh = matches!(
+            &topic,
+            SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskWorkload { .. }
+        );
+        let _managed_task_refresh_serial = if coalesce_managed_task_refresh {
+            Some(self.managed_task_refresh_serial.lock().await)
+        } else {
+            None
+        };
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
         // state or replace the retained last-good frame.
         let (refresh_generation, refresh_had_cached_topic) = if require_active_owner {
-            let guard = self.state.lock().await;
+            let mut guard = self.state.lock().await;
             if guard
                 .active_subscribers
                 .get(&topic_key)
@@ -6163,6 +6175,16 @@ impl SubscriptionHub {
                 // A disconnect/reconnect can invalidate the dedicated refresh after its worker
                 // acquired the lease but before it begins the database build.
                 return Ok(None);
+            }
+            if coalesce_managed_task_refresh && let Some(cached) = guard.topics.get_mut(&topic_key)
+            {
+                if cached.refresh_scheduled {
+                    return Ok(Some(cached.clone()));
+                }
+                if !cached.dirty {
+                    return Ok(Some(cached.clone()));
+                }
+                cached.refresh_scheduled = true;
             }
             guard
                 .topics
@@ -6217,7 +6239,19 @@ impl SubscriptionHub {
             };
             (payload, None, None)
         } else {
-            (topic.build_cached_payload(state.clone()).await?, None, None)
+            let payload = match topic.build_cached_payload(state.clone()).await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    if coalesce_managed_task_refresh {
+                        let mut guard = self.state.lock().await;
+                        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+                            cached.refresh_scheduled = false;
+                        }
+                    }
+                    return Err(error);
+                }
+            };
+            (payload, None, None)
         };
         self.dashboard_topology_counters.record_materialization(
             topic.name(),
@@ -6261,6 +6295,11 @@ impl SubscriptionHub {
                         cached.dirty = true;
                         cached.refresh_scheduled = false;
                         cached.latest_live_snapshot = None;
+                    }
+                    if coalesce_managed_task_refresh
+                        && let Some(cached) = guard.topics.get_mut(&topic_key)
+                    {
+                        cached.refresh_scheduled = false;
                     }
                     return Ok(None);
                 }

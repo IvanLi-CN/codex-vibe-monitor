@@ -1610,6 +1610,10 @@ pub(crate) async fn flush_timeseries_minute_projection_with_coordinator_and_canc
             }
             tx.commit().await?;
             transaction_count += 1;
+            if let Some(observation) = observation.as_ref() {
+                observation
+                    .set_processed_work(i64::try_from(written_key_count).unwrap_or(i64::MAX));
+            }
             debug!(
                 route = "timeseries_projection",
                 builder = "minute_projection_v2",

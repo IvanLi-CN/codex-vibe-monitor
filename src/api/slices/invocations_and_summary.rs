@@ -16509,13 +16509,33 @@ pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
                 "processing",
             );
             last_refresh_attempt = Some(Instant::now());
-            let refresh_result = tokio::select! {
-                biased;
-                _ = state.shutdown.cancelled() => return,
-                result = refresh_summary_snapshots(state.as_ref()) => result,
+            let (journal_before, _) = state.subscription_hub.summary_delta_journal_counts().await;
+            let refresh_result = crate::with_managed_task_observation(observation.clone(), async {
+                tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => None,
+                    result = refresh_summary_snapshots(state.as_ref()) => Some(result),
+                }
+            })
+            .await;
+            let Some(refresh_result) = refresh_result else {
+                return;
             };
             let status = match refresh_result {
                 Ok(()) => {
+                    let (journal_after, _) =
+                        state.subscription_hub.summary_delta_journal_counts().await;
+                    let contribution_count =
+                        i64::try_from(journal_after.saturating_sub(journal_before))
+                            .unwrap_or(i64::MAX);
+                    crate::record_managed_task_discovered_work(
+                        &["summary_snapshot"],
+                        contribution_count,
+                    );
+                    crate::record_managed_task_processed_work(
+                        &["summary_snapshot"],
+                        contribution_count,
+                    );
                     dirty = false;
                     retry_not_before = None;
                     "success"

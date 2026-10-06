@@ -3039,7 +3039,8 @@ async fn run_startup_backfill_task_with_pressure(
                 StartupBackfillRunState {
                     next_cursor_id: cursor_id,
                     scanned: cache_summary.scanned_batches + hourly_summary.scanned_batches,
-                    updated: cache_summary.cached_rows + hourly_summary.materialized_rows,
+                    updated: cache_summary.materialized_batches
+                        + hourly_summary.materialized_batches,
                     hit_scan_limit: cache_summary.hit_budget || hourly_summary.hit_budget,
                     retry_soon: false,
                     force_idle: cache_summary.pending_batches == 0

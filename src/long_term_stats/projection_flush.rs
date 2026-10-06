@@ -18,7 +18,11 @@ pub(super) async fn flush_long_term_projection(
         crate::maintenance_store::task_execution_class("long_term_projection"),
         "processing",
     );
-    let result = flush_long_term_projection_unlocked(state, trigger).await;
+    let result = crate::with_managed_task_observation(
+        observation.clone(),
+        flush_long_term_projection_unlocked(state, trigger),
+    )
+    .await;
     let status = match &result {
         Ok(LongTermProjectionFlushOutcome::Completed) => "success",
         Ok(LongTermProjectionFlushOutcome::DeferredByPressure { .. }) => "skipped",

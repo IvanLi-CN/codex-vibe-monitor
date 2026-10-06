@@ -90,6 +90,16 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated = replay_live_invocation_hourly_rollups(pool).await?;
         work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
@@ -97,6 +107,16 @@ async fn sync_hourly_rollups_from_live_tables_once(
     loop {
         let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
         work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
@@ -105,6 +125,16 @@ async fn sync_hourly_rollups_from_live_tables_once(
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_invocations(pool).await?;
         work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
@@ -113,12 +143,36 @@ async fn sync_hourly_rollups_from_live_tables_once(
         let updated =
             replay_live_upstream_host_network_minute_rollups_from_pool_attempts(pool).await?;
         work_count = work_count.saturating_add(updated);
+        if updated > 0 {
+            crate::record_managed_task_discovered_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["startup_hourly_rollup_bootstrap"],
+                i64::try_from(updated).unwrap_or(i64::MAX),
+            );
+        }
         if updated == 0 {
             break;
         }
     }
     let repaired_activity_v2_rows = repair_live_invocation_account_activity_v2_once(pool).await?;
     work_count = work_count.saturating_add(repaired_activity_v2_rows);
+    if repaired_activity_v2_rows > 0 {
+        crate::record_managed_task_discovered_work(
+            &["startup_hourly_rollup_bootstrap"],
+            i64::try_from(repaired_activity_v2_rows).unwrap_or(i64::MAX),
+        );
+        crate::record_managed_task_processed_work(
+            &["startup_hourly_rollup_bootstrap"],
+            i64::try_from(repaired_activity_v2_rows).unwrap_or(i64::MAX),
+        );
+    }
+    if work_count == 0 {
+        crate::record_managed_task_discovered_work(&["startup_hourly_rollup_bootstrap"], 0);
+        crate::record_managed_task_processed_work(&["startup_hourly_rollup_bootstrap"], 0);
+    }
     wake_account_activity_v2_coverage_repair(pool, repaired_activity_v2_rows).await?;
     if let Some(days) = invocation_live_days {
         maintain_parallel_work_rollups(pool, Some(shanghai_retention_cutoff(days).timestamp()))

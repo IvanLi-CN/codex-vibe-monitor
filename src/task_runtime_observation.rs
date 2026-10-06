@@ -644,6 +644,8 @@ impl TaskExecutionObservation {
                         .any(|metric| metric.value.is_some());
                 if status == "skipped" && !has_metric_observation {
                     sample.actual_started_at = None;
+                    sample.finished_at = None;
+                    sample.duration_ms = None;
                 }
                 if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
                     sample.reason = Some(reason.to_string());
@@ -728,6 +730,8 @@ impl TaskWorkloadObservation {
                 .any(|metric| metric.value.is_some());
             if status == "skipped" && !has_metric_observation {
                 sample.actual_started_at = None;
+                sample.finished_at = None;
+                sample.duration_ms = None;
             }
             if let Some(reason) = reason.filter(|reason| !reason.trim().is_empty()) {
                 sample.reason = Some(reason.to_string());
@@ -1252,7 +1256,8 @@ mod tests {
         assert_eq!(sample.status, "skipped");
         assert!(sample.actual_started_at.is_none());
         assert_eq!(sample.reason.as_deref(), Some("background_busy"));
-        assert!(sample.finished_at.is_some());
+        assert!(sample.finished_at.is_none());
+        assert!(sample.duration_ms.is_none());
     }
 
     #[test]

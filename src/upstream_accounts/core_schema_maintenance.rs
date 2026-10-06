@@ -2190,11 +2190,17 @@ pub(crate) fn spawn_upstream_account_maintenance(
                         ),
                         "processing",
                     );
-                    let result = tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => None,
-                        result = run_upstream_account_maintenance_once(state.clone()) => Some(result),
-                    };
+                    let result = crate::with_managed_task_observation(
+                        observation.clone(),
+                        async {
+                            tokio::select! {
+                                biased;
+                                _ = cancel.cancelled() => None,
+                                result = run_upstream_account_maintenance_once(state.clone()) => Some(result),
+                            }
+                        },
+                    )
+                    .await;
                     let Some(result) = result else {
                         info!("upstream account maintenance cancelled during execution");
                         break;

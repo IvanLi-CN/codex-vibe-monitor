@@ -3629,6 +3629,14 @@ async fn flush_long_term_projection_inner(
                     defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
                     return Ok(LongTermProjectionWorkStats::default());
                 }
+                crate::record_managed_task_discovered_work(
+                    &["long_term_projection"],
+                    i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+                );
+                crate::record_managed_task_processed_work(
+                    &["long_term_projection"],
+                    i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+                );
                 cursor = direct_cursor;
                 hourly.clear();
                 daily.clear();
@@ -3660,6 +3668,14 @@ async fn flush_long_term_projection_inner(
                 defer_long_term_projection_terminal_repair(state, "dirty_publication").await;
                 return Ok(LongTermProjectionWorkStats::default());
             }
+            crate::record_managed_task_discovered_work(
+                &["long_term_projection"],
+                i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+            );
+            crate::record_managed_task_processed_work(
+                &["long_term_projection"],
+                i64::try_from(batch_event_count).unwrap_or(i64::MAX),
+            );
             cursor = direct_cursor;
         }
         if let Some(event) = repair_event {
@@ -3900,6 +3916,10 @@ async fn flush_long_term_projection_inner(
         "long-term projection flush completed"
     );
     drop(runtime);
+    if event_count == 0 {
+        crate::record_managed_task_discovered_work(&["long_term_projection"], 0);
+        crate::record_managed_task_processed_work(&["long_term_projection"], 0);
+    }
     Ok(LongTermProjectionWorkStats {
         loaded_row_count,
         terminal_event_count: event_count as u64,

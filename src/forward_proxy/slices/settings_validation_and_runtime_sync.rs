@@ -19,6 +19,8 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         && (Utc::now() - last_refresh_at).num_seconds()
             < i64::try_from(interval_secs).unwrap_or(i64::MAX)
     {
+        crate::record_managed_task_discovered_work(&["forward_proxy_subscription_refresh"], 0);
+        crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
         return Ok(());
     }
 
@@ -32,11 +34,13 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     let mut fetched_subscription_count = 0usize;
     for subscription_url in &subscription_urls {
         if state.shutdown.is_cancelled() {
+            crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
             info!("stopping forward proxy subscription refresh because shutdown is in progress");
             return Ok(());
         }
         let fetch_result = tokio::select! {
             _ = state.shutdown.cancelled() => {
+                crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
                 info!("stopping forward proxy subscription refresh because shutdown is in progress");
                 return Ok(());
             }
@@ -66,6 +70,7 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
         bail!("all forward proxy subscriptions failed to refresh");
     }
     if state.shutdown.is_cancelled() {
+        crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
         info!("stopping forward proxy subscription refresh because shutdown is in progress");
         return Ok(());
     }
@@ -74,12 +79,14 @@ pub(crate) async fn refresh_forward_proxy_subscriptions(
     let added_subscription_endpoints = {
         let mut manager = state.forward_proxy.lock().await;
         if state.shutdown.is_cancelled() {
+            crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
             info!(
                 "stopping forward proxy subscription refresh before applying refreshed endpoints because shutdown is in progress"
             );
             return Ok(());
         }
         if manager.settings.subscription_urls != subscription_urls {
+            crate::record_managed_task_processed_work(&["forward_proxy_subscription_refresh"], 0);
             debug!("skip stale forward proxy subscription refresh after settings changed");
             return Ok(());
         }

@@ -1,5 +1,5 @@
 import type { JSX } from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
   fetchManagedTaskWorkload,
@@ -110,6 +110,12 @@ interface ChartPath {
   d: string;
   firstX: number;
   lastX: number;
+  points: Array<{ x: number; y: number }>;
+}
+
+function metricIdentity(sample: TaskWorkloadSample, metric: SparklineMetric): string {
+  const value = sample[metric];
+  return `${value?.unit ?? ""}\u0000${value?.scope ?? ""}\u0000${value?.range ?? ""}`;
 }
 
 function metricUnit(sample: TaskWorkloadSample, metric: SparklineMetric): string | null {
@@ -117,23 +123,20 @@ function metricUnit(sample: TaskWorkloadSample, metric: SparklineMetric): string
   return unit ? unit : null;
 }
 
-function chartUnit(samples: TaskWorkloadSample[], trend: TaskWorkloadTrend | null): string | null {
-  const observedUnits = new Set(
-    samples.flatMap((sample) =>
-      (["pending", "discovered", "processed"] as const).flatMap((metric) => {
-        const unit = metricUnit(sample, metric);
-        return unit ? [unit] : [];
-      }),
-    ),
+function chartUnits(
+  samples: TaskWorkloadSample[],
+  trend: TaskWorkloadTrend | null,
+): Record<SparklineMetric, string | null> {
+  return (["pending", "discovered", "processed"] as const).reduce(
+    (result, metric) => {
+      const observedUnit = samples
+        .map((sample) => metricUnit(sample, metric))
+        .find((unit): unit is string => unit != null);
+      result[metric] = observedUnit ?? trend?.capabilities?.[metric]?.unit?.trim() ?? null;
+      return result;
+    },
+    {} as Record<SparklineMetric, string | null>,
   );
-  if (observedUnits.size > 0) return observedUnits.values().next().value ?? null;
-  const capabilityUnits = new Set(
-    (["pending", "discovered", "processed"] as const).flatMap((metric) => {
-      const unit = trend?.capabilities?.[metric]?.unit?.trim();
-      return unit ? [unit] : [];
-    }),
-  );
-  return capabilityUnits.values().next().value ?? null;
 }
 
 function hasMixedUnits(samples: TaskWorkloadSample[]): boolean {
@@ -148,34 +151,67 @@ function hasMixedUnits(samples: TaskWorkloadSample[]): boolean {
   return units.size > 1;
 }
 
-function chartPath(
+function chartPaths(
   samples: TaskWorkloadSample[],
   metric: SparklineMetric,
   maxValue: number,
   now: number,
   unit: string | null,
-): ChartPath | null {
-  const points = samples.flatMap((sample) => {
+  coverageGaps: TaskWorkloadTrend["coverageGaps"],
+): ChartPath[] {
+  const ordered = [...samples].sort((left, right) => {
+    const timeOrder = (sampleTime(left) ?? 0) - (sampleTime(right) ?? 0);
+    return timeOrder || left.sampleId.localeCompare(right.sampleId);
+  });
+  const paths: ChartPath[] = [];
+  let points: Array<{ x: number; y: number }> = [];
+  let previousTime: number | null = null;
+  let previousIdentity: string | null = null;
+  const flush = () => {
+    if (points.length > 0) {
+      paths.push({
+        d: `M ${points.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" L ")}`,
+        firstX: points[0].x,
+        lastX: points.at(-1)?.x ?? points[0].x,
+        points,
+      });
+    }
+    points = [];
+  };
+  for (const sample of ordered) {
     const time = sampleTime(sample);
     const value = metricValue(sample[metric]);
     if (
       time == null ||
       value == null ||
-      (unit != null && metricUnit(sample, metric) !== unit) ||
+      sample[metric]?.coverage === "unknown" ||
+      (unit == null ? metricUnit(sample, metric) != null : metricUnit(sample, metric) !== unit) ||
       time < now - WINDOW_MS ||
       time > now
-    )
-      return [];
+    ) {
+      flush();
+      previousTime = null;
+      previousIdentity = null;
+      continue;
+    }
+    const previous = previousTime;
+    const gapBetweenSamples =
+      previous != null &&
+      (coverageGaps ?? []).some((gap) => {
+        const start = Date.parse(gap.startedAt);
+        const end = gap.finishedAt == null ? now : Date.parse(gap.finishedAt);
+        return Number.isFinite(start) && Number.isFinite(end) && start <= time && end >= previous;
+      });
+    const identity = metricIdentity(sample, metric);
+    if (gapBetweenSamples || (previousIdentity != null && previousIdentity !== identity)) flush();
     const x = ((time - (now - WINDOW_MS)) / WINDOW_MS) * 320;
     const y = 48 - (Math.max(0, value) / maxValue) * 40;
-    return [{ x, y }];
-  });
-  if (points.length < 2) return null;
-  return {
-    d: `M ${points.map(({ x, y }) => `${x.toFixed(2)},${y.toFixed(2)}`).join(" L ")}`,
-    firstX: points[0].x,
-    lastX: points.at(-1)?.x ?? points[0].x,
-  };
+    points.push({ x, y });
+    previousTime = time;
+    previousIdentity = identity;
+  }
+  flush();
+  return paths;
 }
 
 function areaPath(path: ChartPath, baselineY: number): string {
@@ -188,7 +224,7 @@ function formatMetric(value: number | null | undefined): string {
 
 function formatWorkloadMetric(metric: TaskWorkloadMetric | null | undefined): string {
   if (!metric) return "未知";
-  return `${formatMetric(metric.value)} · ${metric.unit || "单位未知"} · ${metric.range || "范围未知"}`;
+  return `${formatMetric(metric.value)} · ${metric.unit || "单位未知"} · ${metric.scope || "范围未知"} · ${metric.range || "范围未知"} · ${coverageLabel(metric.coverage)}`;
 }
 
 function formatDuration(durationMs: number | null | undefined): string {
@@ -274,10 +310,22 @@ export function TaskWorkloadSparkline({
   const [trend, setTrend] = useState<TaskWorkloadTrend | null>(
     () => workloadCache.get(task.taskKey) ?? null,
   );
+  const trendRevisionRef = useRef(trend?.revision ?? -1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [topicSlotAcquired, setTopicSlotAcquired] = useState(false);
   const activeVisible = visible && pageVisible;
+  const applyTrend = useCallback(
+    (next: TaskWorkloadTrend): boolean => {
+      if (next.revision < trendRevisionRef.current) return false;
+      trendRevisionRef.current = next.revision;
+      setTrend(next);
+      workloadCache.set(task.taskKey, next);
+      trimCache();
+      return true;
+    },
+    [task.taskKey],
+  );
   const topic = useSubscriptionTopic<TaskWorkloadTrend>(
     topicSlotAcquired
       ? {
@@ -323,14 +371,17 @@ export function TaskWorkloadSparkline({
   }, [activeVisible, task.taskKey]);
 
   useEffect(() => {
+    const cached = workloadCache.get(task.taskKey) ?? null;
+    trendRevisionRef.current = cached?.revision ?? -1;
+    setTrend(cached);
+  }, [task.taskKey]);
+
+  useEffect(() => {
     if (!activeVisible) return;
     let active = true;
-    const cached = workloadCache.get(task.taskKey);
-    if (cached) setTrend(cached);
     void loadWorkload(task.taskKey, visibilityGeneration > 0)
       .then((next) => {
-        if (active) {
-          setTrend(next);
+        if (active && applyTrend(next)) {
           setLoadError(null);
         }
       })
@@ -340,15 +391,13 @@ export function TaskWorkloadSparkline({
     return () => {
       active = false;
     };
-  }, [activeVisible, task.taskKey, visibilityGeneration]);
+  }, [activeVisible, applyTrend, task.taskKey, visibilityGeneration]);
 
   useEffect(() => {
     if (topic.data) {
-      setTrend(topic.data);
-      workloadCache.set(task.taskKey, topic.data);
-      trimCache();
+      applyTrend(topic.data);
     }
-  }, [task.taskKey, topic.data]);
+  }, [applyTrend, topic.data]);
 
   useEffect(() => {
     if (!activeVisible) return;
@@ -357,23 +406,52 @@ export function TaskWorkloadSparkline({
   }, [activeVisible]);
 
   const samples = trend?.samples ?? [];
-  const unit = chartUnit(samples, trend);
+  const units = chartUnits(samples, trend);
   const mixedUnits = hasMixedUnits(samples);
-  const values = samples.flatMap((sample) =>
-    (["pending", "discovered", "processed"] as const).flatMap((key) => {
-      const metric = sample[key];
-      const value = metricValue(metric);
-      return value == null || (unit != null && metricUnit(sample, key) !== unit) ? [] : [value];
-    }),
+  const maxValues = (["pending", "discovered", "processed"] as const).reduce(
+    (result, metric) => {
+      const values = samples.flatMap((sample) => {
+        const value = metricValue(sample[metric]);
+        const sampleUnit = metricUnit(sample, metric);
+        return value == null ||
+          sample[metric]?.coverage === "unknown" ||
+          (units[metric] == null ? sampleUnit != null : sampleUnit !== units[metric])
+          ? []
+          : [value];
+      });
+      result[metric] = Math.max(1, ...values);
+      return result;
+    },
+    {} as Record<SparklineMetric, number>,
   );
-  const maxValue = Math.max(1, ...values);
   const paths = useMemo(
     () => ({
-      pending: chartPath(samples, "pending", maxValue, now, unit),
-      discovered: chartPath(samples, "discovered", maxValue, now, unit),
-      processed: chartPath(samples, "processed", maxValue, now, unit),
+      pending: chartPaths(
+        samples,
+        "pending",
+        maxValues.pending,
+        now,
+        units.pending,
+        trend?.coverageGaps,
+      ),
+      discovered: chartPaths(
+        samples,
+        "discovered",
+        maxValues.discovered,
+        now,
+        units.discovered,
+        trend?.coverageGaps,
+      ),
+      processed: chartPaths(
+        samples,
+        "processed",
+        maxValues.processed,
+        now,
+        units.processed,
+        trend?.coverageGaps,
+      ),
     }),
-    [maxValue, now, samples, unit],
+    [maxValues, now, samples, trend?.coverageGaps, units],
   );
   const latest = samples.at(-1);
   const latestValues = {
@@ -386,9 +464,12 @@ export function TaskWorkloadSparkline({
   const status = loadFailure
     ? "加载失败"
     : mixedUnits
-      ? "单位不一致"
+      ? "单位分别显示"
       : coverageLabel(trend?.coverage ?? "loading");
-  const hasSeries = Object.values(paths).some(Boolean);
+  const hasSeries = Object.values(paths).some((series) => series.length > 0);
+  const unitLabel = (["pending", "discovered", "processed"] as const)
+    .map((metric) => `${metric[0].toUpperCase()}:${units[metric] ?? "未知"}`)
+    .join("，");
   const textColor = dark ? "#d8e4f0" : "#344454";
   const chart =
     activeVisible && trend && hasSeries ? (
@@ -398,48 +479,56 @@ export function TaskWorkloadSparkline({
         viewBox="0 0 320 56"
         preserveAspectRatio="none"
       >
-        <title>{`${task.title}最近 24 小时 P/D/C 工作量趋势（单位：${unit ?? "未知"}）`}</title>
+        <title>{`${task.title}最近 24 小时 P/D/C 工作量趋势（${unitLabel}）`}</title>
+        <desc>
+          {mixedUnits
+            ? "P、D、C 使用独立纵向尺度，共用最近 24 小时横轴；原始单位保留在图例和详情中。"
+            : "P、D、C 使用同一纵向尺度，共用最近 24 小时横轴。"}
+        </desc>
         <path
           d="M 0,48 L 320,48 L 320,56 L 0,56 Z"
           fill={dark ? "#132a3b" : "#e8f1f7"}
           opacity={backgroundMode ? "0.28" : "0.45"}
         />
-        {paths.pending ? (
-          <path d={areaPath(paths.pending, 48)} fill="#42a5f5" opacity="0.08" />
-        ) : null}
-        {paths.discovered ? (
-          <path d={areaPath(paths.discovered, 48)} fill="#a66cff" opacity="0.08" />
-        ) : null}
-        {paths.processed ? (
-          <path d={areaPath(paths.processed, 48)} fill="#28c98b" opacity="0.1" />
-        ) : null}
-        {paths.pending ? (
-          <path
-            d={paths.pending.d}
-            fill="none"
-            stroke="#42a5f5"
-            strokeWidth={backgroundMode ? 0.9 : 1.5}
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
-        {paths.discovered ? (
-          <path
-            d={paths.discovered.d}
-            fill="none"
-            stroke="#a66cff"
-            strokeWidth={backgroundMode ? 0.9 : 1.5}
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
-        {paths.processed ? (
-          <path
-            d={paths.processed.d}
-            fill="none"
-            stroke="#28c98b"
-            strokeWidth={backgroundMode ? 1 : 1.7}
-            vectorEffect="non-scaling-stroke"
-          />
-        ) : null}
+        {(
+          [
+            ["pending", "#42a5f5", "0.08", backgroundMode ? 0.9 : 1.5],
+            ["discovered", "#a66cff", "0.08", backgroundMode ? 0.9 : 1.5],
+            ["processed", "#28c98b", "0.1", backgroundMode ? 1 : 1.7],
+          ] as const
+        ).flatMap(([metric, color, fillOpacity, strokeWidth]) =>
+          paths[metric].flatMap((path) => {
+            const pathKey = `${metric}-${path.firstX}-${path.lastX}-${path.points.length}`;
+            return [
+              path.points.length > 1 ? (
+                <path
+                  key={`${pathKey}-area`}
+                  d={areaPath(path, 48)}
+                  fill={color}
+                  opacity={fillOpacity}
+                />
+              ) : null,
+              path.points.length > 1 ? (
+                <path
+                  key={`${pathKey}-line`}
+                  d={path.d}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={strokeWidth}
+                  vectorEffect="non-scaling-stroke"
+                />
+              ) : (
+                <circle
+                  key={`${pathKey}-point`}
+                  cx={path.points[0].x}
+                  cy={path.points[0].y}
+                  r="2.2"
+                  fill={color}
+                />
+              ),
+            ];
+          }),
+        )}
         <line
           x1="0"
           x2="320"
@@ -472,15 +561,15 @@ export function TaskWorkloadSparkline({
         >
           <span>
             <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />P{" "}
-            {formatMetric(latestValues.pending)}
+            {formatMetric(latestValues.pending)} {units.pending ?? "单位未知"}
           </span>
           <span>
             <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />D{" "}
-            {formatMetric(latestValues.discovered)}
+            {formatMetric(latestValues.discovered)} {units.discovered ?? "单位未知"}
           </span>
           <span>
             <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />C{" "}
-            {formatMetric(latestValues.processed)}
+            {formatMetric(latestValues.processed)} {units.processed ?? "单位未知"}
           </span>
           <span className="text-base-content/55">{statusLabel}</span>
           <button
