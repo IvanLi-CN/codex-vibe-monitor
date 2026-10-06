@@ -805,6 +805,7 @@ struct SubscriptionHubState {
     runtime_topic_recovery_queue: VecDeque<(String, u64)>,
     runtime_topic_recovery_queued: HashSet<String>,
     runtime_topic_recovery_running: bool,
+    managed_task_refresh_generations: HashMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -6130,6 +6131,52 @@ impl SubscriptionHub {
         require_active_owner: bool,
         expected_upstream_account_attempt_refresh_generation: Option<u64>,
     ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
+        let coalesce_managed_task_refresh = matches!(
+            &topic,
+            SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskWorkload { .. }
+        );
+        let topic_key = topic.cache_key()?;
+        let mut result = self
+            .refresh_topic_inner_once(
+                state.clone(),
+                topic.clone(),
+                emit_live,
+                require_active_owner,
+                expected_upstream_account_attempt_refresh_generation,
+            )
+            .await?;
+        while coalesce_managed_task_refresh && result.is_some() {
+            let needs_followup = {
+                let guard = self.state.lock().await;
+                guard
+                    .topics
+                    .get(&topic_key)
+                    .is_some_and(|cached| cached.dirty && !cached.refresh_scheduled)
+            };
+            if !needs_followup {
+                break;
+            }
+            result = self
+                .refresh_topic_inner_once(
+                    state.clone(),
+                    topic.clone(),
+                    emit_live,
+                    require_active_owner,
+                    expected_upstream_account_attempt_refresh_generation,
+                )
+                .await?;
+        }
+        Ok(result)
+    }
+
+    async fn refresh_topic_inner_once(
+        &self,
+        state: Arc<AppState>,
+        topic: SubscriptionTopic,
+        emit_live: bool,
+        require_active_owner: bool,
+        expected_upstream_account_attempt_refresh_generation: Option<u64>,
+    ) -> Result<Option<CachedSubscriptionTopic>, ApiError> {
         let topic_key = topic.cache_key()?;
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
@@ -6156,44 +6203,57 @@ impl SubscriptionHub {
         // A recovery or owner disconnect may happen while a cold build is in flight. Capture
         // the cache generation before building so an old result can never clear newer dirty
         // state or replace the retained last-good frame.
-        let (refresh_generation, refresh_had_cached_topic) = if require_active_owner {
-            let mut guard = self.state.lock().await;
-            if guard
-                .active_subscribers
-                .get(&topic_key)
-                .copied()
-                .unwrap_or_default()
-                == 0
-            {
-                return Ok(None);
-            }
-            if let Some(expected_generation) = expected_upstream_account_attempt_refresh_generation
-                && !guard.topics.get(&topic_key).is_some_and(|cached| {
-                    cached.upstream_account_attempt_refresh_generation == expected_generation
-                })
-            {
-                // A disconnect/reconnect can invalidate the dedicated refresh after its worker
-                // acquired the lease but before it begins the database build.
-                return Ok(None);
-            }
-            if coalesce_managed_task_refresh && let Some(cached) = guard.topics.get_mut(&topic_key)
-            {
-                if cached.refresh_scheduled {
-                    return Ok(Some(cached.clone()));
+        let ((refresh_generation, refresh_had_cached_topic), managed_task_refresh_generation) =
+            if require_active_owner {
+                let mut guard = self.state.lock().await;
+                if guard
+                    .active_subscribers
+                    .get(&topic_key)
+                    .copied()
+                    .unwrap_or_default()
+                    == 0
+                {
+                    return Ok(None);
                 }
-                if !cached.dirty {
-                    return Ok(Some(cached.clone()));
+                if let Some(expected_generation) =
+                    expected_upstream_account_attempt_refresh_generation
+                    && !guard.topics.get(&topic_key).is_some_and(|cached| {
+                        cached.upstream_account_attempt_refresh_generation == expected_generation
+                    })
+                {
+                    // A disconnect/reconnect can invalidate the dedicated refresh after its worker
+                    // acquired the lease but before it begins the database build.
+                    return Ok(None);
                 }
-                cached.refresh_scheduled = true;
-            }
-            guard
-                .topics
-                .get(&topic_key)
-                .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
-                .unwrap_or((Some(guard.runtime_topic_recovery_generation), false))
-        } else {
-            (None, false)
-        };
+                let managed_task_refresh_generation = coalesce_managed_task_refresh.then(|| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                });
+                if coalesce_managed_task_refresh
+                    && let Some(cached) = guard.topics.get_mut(&topic_key)
+                {
+                    if cached.refresh_scheduled {
+                        return Ok(Some(cached.clone()));
+                    }
+                    if !cached.dirty {
+                        return Ok(Some(cached.clone()));
+                    }
+                    cached.refresh_scheduled = true;
+                }
+                (
+                    guard
+                        .topics
+                        .get(&topic_key)
+                        .map(|cached| (Some(cached.runtime_topic_recovery_generation), true))
+                        .unwrap_or((Some(guard.runtime_topic_recovery_generation), false)),
+                    managed_task_refresh_generation,
+                )
+            } else {
+                ((None, false), None)
+            };
         let timeline_baseline =
             if emit_live && matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
                 self.state
@@ -6553,6 +6613,15 @@ impl SubscriptionHub {
             let schedule_initial_hydration =
                 !deferred_working_hydration_keys.is_empty() && !had_key_hydration_scheduled;
             let schedule_initial_reconcile = deferred_working_reconcile && !had_reconcile_scheduled;
+            let managed_task_refresh_needs_followup =
+                managed_task_refresh_generation.is_some_and(|expected| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        != expected
+                });
             let mut next = CachedSubscriptionTopic {
                 topic: topic.clone(),
                 descriptor: descriptor.clone(),
@@ -6588,7 +6657,7 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.upstream_account_attempt_refresh_generation),
-                dirty: deferred_working_reconcile,
+                dirty: deferred_working_reconcile || managed_task_refresh_needs_followup,
                 runtime_topic_recovery_generation: guard
                     .topics
                     .get(&topic_key)
@@ -7934,6 +8003,24 @@ impl SubscriptionHub {
             cached.invalidate_upstream_account_attempt_refresh();
             cached.latest_live_snapshot = None;
         }
+    }
+
+    async fn mark_managed_task_topic_dirty(&self, topic: &SubscriptionTopic) -> bool {
+        let Ok(topic_key) = topic.cache_key() else {
+            return false;
+        };
+        let mut guard = self.state.lock().await;
+        let generation = guard
+            .managed_task_refresh_generations
+            .entry(topic_key.clone())
+            .or_default();
+        *generation = generation.saturating_add(1);
+        if let Some(cached) = guard.topics.get_mut(&topic_key) {
+            cached.dirty = true;
+            cached.latest_live_snapshot = None;
+            return !cached.refresh_scheduled;
+        }
+        true
     }
 
     async fn mark_prompt_cache_topic_dirty_and_schedule_reconcile(
@@ -11770,6 +11857,12 @@ pub(crate) async fn topic_sse_stream(
                         for topic in selected_task_topics.iter().filter(|topic| {
                             managed_task_change_matches_topic(&change, topic)
                         }) {
+                            if !dashboard_topology_hub
+                                .mark_managed_task_topic_dirty(topic)
+                                .await
+                            {
+                                continue;
+                            }
                             if let Err(error) = dashboard_topology_hub
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
@@ -11781,6 +11874,12 @@ pub(crate) async fn topic_sse_stream(
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         warn!(skipped, "managed task SSE topic change receiver lagged");
                         for topic in &selected_task_topics {
+                            if !dashboard_topology_hub
+                                .mark_managed_task_topic_dirty(topic)
+                                .await
+                            {
+                                continue;
+                            }
                             if let Err(error) = dashboard_topology_hub
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await

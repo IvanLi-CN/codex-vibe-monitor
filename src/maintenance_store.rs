@@ -3937,11 +3937,10 @@ impl MaintenanceStore {
             .unwrap_or_else(|| format_utc_iso_millis(Utc::now() - ChronoDuration::hours(24)));
         let mut coverage_gaps = sqlx::query_as::<_, TaskWorkloadCoverageGapRow>(
             "SELECT segment_id,started_at,finished_at,reason FROM task_timeline_segments
-             WHERE (task_key=? OR (task_key='__timeline__' AND ?='invocation_timeline_snapshot'))
+             WHERE (task_key=? OR task_key='__timeline__')
                AND kind='coverage_gap' AND last_observed_at>=?
              ORDER BY started_at DESC LIMIT 100",
         )
-        .bind(task_key)
         .bind(task_key)
         .bind(coverage_floor)
         .fetch_all(&self.pool)
@@ -5361,10 +5360,10 @@ mod tests {
               active_child_title,managed_run_id,revision)
              VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         )
-        .bind("coverage-gap-other-task")
+        .bind("coverage-gap-global")
         .bind("coverage-gap-session")
         .bind("coverage_gap")
-        .bind("long_term_projection")
+        .bind("__timeline__")
         .bind("长期统计投影")
         .bind(&gap_at)
         .bind(&gap_at)
@@ -5395,8 +5394,9 @@ mod tests {
         assert_eq!(trend.samples[0].execution_uid, "execution-2");
         assert!(trend.samples[0].attempted_at >= trend.window_start);
         assert_eq!(trend.window_end, trend.observed_at);
-        assert_eq!(trend.coverage, "recorded");
-        assert!(trend.coverage_gaps.is_empty());
+        assert_eq!(trend.coverage, "incomplete: recorder coverage gap");
+        assert_eq!(trend.coverage_gaps.len(), 1);
+        assert_eq!(trend.coverage_gaps[0].id, "coverage-gap-global");
     }
 
     #[tokio::test]

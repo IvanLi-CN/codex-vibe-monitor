@@ -16,6 +16,7 @@ const workloadCache = new Map<string, TaskWorkloadTrend>();
 const workloadLoads = new Map<string, Promise<TaskWorkloadTrend>>();
 const workloadQueue: Array<{
   key: string;
+  cancelled: boolean;
   resolve: (value: TaskWorkloadTrend) => void;
   reject: (reason: unknown) => void;
 }> = [];
@@ -58,15 +59,36 @@ function trimCache(): void {
   }
 }
 
+function cacheTrend(taskKey: string, trend: TaskWorkloadTrend): void {
+  const cached = workloadCache.get(taskKey);
+  if (cached && trend.revision < cached.revision) return;
+  workloadCache.set(taskKey, trend);
+  trimCache();
+}
+
+function cancelQueuedWorkload(taskKey: string): void {
+  for (const request of workloadQueue) {
+    if (request.key === taskKey && !request.cancelled) {
+      request.cancelled = true;
+      workloadLoads.delete(taskKey);
+      request.reject(new DOMException("workload load cancelled", "AbortError"));
+    }
+  }
+}
+
 function pumpLoads(): void {
   while (activeLoads < MAX_CONCURRENT_LOADS && workloadQueue.length > 0) {
     const next = workloadQueue.shift();
     if (!next) return;
+    if (next.cancelled) {
+      workloadLoads.delete(next.key);
+      next.reject(new DOMException("workload load cancelled", "AbortError"));
+      continue;
+    }
     activeLoads += 1;
     void fetchManagedTaskWorkload(next.key, { windowHours: 24, limit: 200 })
       .then((trend) => {
-        workloadCache.set(next.key, trend);
-        trimCache();
+        cacheTrend(next.key, trend);
         next.resolve(trend);
       })
       .catch(next.reject)
@@ -88,7 +110,7 @@ function loadWorkload(taskKey: string, refresh = false): Promise<TaskWorkloadTre
   const existing = workloadLoads.get(taskKey);
   if (existing) return existing;
   const promise = new Promise<TaskWorkloadTrend>((resolve, reject) => {
-    workloadQueue.push({ key: taskKey, resolve, reject });
+    workloadQueue.push({ key: taskKey, cancelled: false, resolve, reject });
     pumpLoads();
   });
   workloadLoads.set(taskKey, promise);
@@ -305,7 +327,6 @@ export function TaskWorkloadSparkline({
   const [pageVisible, setPageVisible] = useState(
     () => typeof document === "undefined" || document.visibilityState !== "hidden",
   );
-  const [visibilityGeneration, setVisibilityGeneration] = useState(0);
   const [now, setNow] = useState(() => Date.now());
   const [trend, setTrend] = useState<TaskWorkloadTrend | null>(
     () => workloadCache.get(task.taskKey) ?? null,
@@ -320,8 +341,7 @@ export function TaskWorkloadSparkline({
       if (next.revision < trendRevisionRef.current) return false;
       trendRevisionRef.current = next.revision;
       setTrend(next);
-      workloadCache.set(task.taskKey, next);
-      trimCache();
+      cacheTrend(task.taskKey, next);
       return true;
     },
     [task.taskKey],
@@ -355,7 +375,6 @@ export function TaskWorkloadSparkline({
     const onVisibilityChange = () => {
       const nextVisible = document.visibilityState !== "hidden";
       setPageVisible(nextVisible);
-      if (nextVisible) setVisibilityGeneration((generation) => generation + 1);
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -379,7 +398,7 @@ export function TaskWorkloadSparkline({
   useEffect(() => {
     if (!activeVisible) return;
     let active = true;
-    void loadWorkload(task.taskKey, visibilityGeneration > 0)
+    void loadWorkload(task.taskKey, true)
       .then((next) => {
         if (active && applyTrend(next)) {
           setLoadError(null);
@@ -390,8 +409,9 @@ export function TaskWorkloadSparkline({
       });
     return () => {
       active = false;
+      cancelQueuedWorkload(task.taskKey);
     };
-  }, [activeVisible, applyTrend, task.taskKey, visibilityGeneration]);
+  }, [activeVisible, applyTrend, task.taskKey]);
 
   useEffect(() => {
     if (topic.data) {
@@ -541,7 +561,13 @@ export function TaskWorkloadSparkline({
         />
       </svg>
     ) : null;
-  const statusLabel = activeVisible ? (trend?.truncated ? "最近 200 次" : status) : "进入视口加载";
+  const statusLabel = activeVisible
+    ? loadFailure
+      ? status
+      : trend?.truncated
+        ? "最近 200 次"
+        : status
+    : "进入视口加载";
   const controls = (
     <>
       <div

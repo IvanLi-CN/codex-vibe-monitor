@@ -314,7 +314,7 @@ export default function SystemTasksPage(): JSX.Element {
         }
       })
       .catch((reason: unknown) => {
-        if (!active) return;
+        if (!active || catalogEpoch.current !== requestEpoch) return;
         setError(reason instanceof Error ? reason.message : String(reason));
       })
       .finally(() => {
@@ -327,9 +327,10 @@ export default function SystemTasksPage(): JSX.Element {
           .then((catalog) => {
             if (catalogEpoch.current === refreshEpoch) setTasks(catalog);
           })
-          .catch((reason: unknown) =>
-            setError(reason instanceof Error ? reason.message : String(reason)),
-          );
+          .catch((reason: unknown) => {
+            if (catalogEpoch.current !== refreshEpoch) return;
+            setError(reason instanceof Error ? reason.message : String(reason));
+          });
         runtimeTopic.refresh();
         catalogTopic.refresh();
         timelineTopic.refresh();
