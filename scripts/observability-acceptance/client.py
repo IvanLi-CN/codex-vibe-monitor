@@ -62,7 +62,8 @@ def browser_batch():
 def browser_seed():
     token=(ROOT/"grafana-viewer-token").read_text().strip()
     dashboard=ok("https://entry:8443","/api/dashboards/uid/cvm-web",token=token)["dashboard"]
-    assert all(panel["fieldConfig"]["defaults"]["noValue"]=="Unknown" for panel in dashboard["panels"])
+    data_panels=[panel for panel in dashboard["panels"] if panel.get("type")!="row"]
+    assert data_panels and all(panel["fieldConfig"]["defaults"]["noValue"]=="Unknown" for panel in data_panels)
     missing=ok("http://prometheus:9090","/api/v1/query?"+urllib.parse.urlencode({"query":"cvm_browser_data_ready_seconds_count"}))["data"]["result"]
     assert missing==[],"missing browser collection was represented as a measured zero"
     browser_batch()
@@ -91,6 +92,7 @@ def functional():
         if collected and float(collected[0]["value"][1])>=2: break
         assert time.monotonic()<deadline,"browser observations were not scraped"
         time.sleep(2)
+    web_samples=0
     for uid in ["overview","proxy","sqlite","runtime","web"]:
         path="/api/dashboards/uid/cvm-"+uid
         for token in [None,"bad"]: assert request("https://entry:8443",path,token=token)[0] in (401,403)
@@ -99,12 +101,14 @@ def functional():
         for panel in dashboard["panels"]:
             for target in panel.get("targets",[]):
                 expression=target["expr"]
-                for name,value in [("$__rate_interval","1m"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$task_key",".*")]: expression=expression.replace(name,value)
+                for name,value in [("$__rate_interval","1m"),("$__range_s","1800"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$endpoint","responses|chat_completions"),("$task_key",".*"),("$lock_label",".*"),("$page",".*"),("$device",".*")]: expression=expression.replace(name,value)
                 result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)
                 assert result["status"]=="success",expression
                 if uid=="web":
                     samples=result["data"]["result"]
-                    assert samples and all(math.isfinite(float(row["value"][1])) for row in samples),(panel["title"],expression,samples)
+                    assert all(math.isfinite(float(row["value"][1])) for row in samples),(panel["title"],expression,samples)
+                    web_samples+=len(samples)
+    assert web_samples>0,"browser dashboard returned no observed series"
     for base in ["https://entry:8443","http://grafana:3000"]:
         assert request(base,"/api/dashboards/db",method="POST",payload={"dashboard":{"title":"forbidden"}},token=viewer_token)[0] in (403,405)
     assert request("https://entry:8443","/")[0]==401

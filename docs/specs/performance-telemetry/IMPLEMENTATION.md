@@ -143,6 +143,14 @@ ModelPerformanceDetails 保留。应用提供五个 Grafana 入口与固定任�
 和该实例运行库只读挂载到进程内原路径，以满足 samply live converter 的读取要求；
 无网络、无 Docker socket、无宿主文件替换。镜像符号由 CI 从实际镜像提取，不重新编译采样二进制。
 
+本候选重新编排五页 Grafana dashboard：总览使用六项 4 列首屏读数，详情页使用四项 6 列
+首屏读数；中部趋势和底部归因表按排查顺序排列，并通过固定 dashboard links 保留时间、
+变量和实例。PromQL 统一使用 `increase` 计算窗口事件、`rate` 计算速率，经典 Histogram
+先聚合 `_bucket` 再求分位数，hotpath 表格使用 native Histogram 的样本数、平均值、p95
+和累计采样耗时；缺测、低样本、零值和过期采样在标题/说明中保留不同语义。总览默认只看
+`responses|chat_completions`，浏览器 `device` 变量只作用于真实带该标签的 data-ready/paint，
+runtime 任务表保留 `task_key` 深链接，火焰图未配置时明确继续使用 samply。
+
 退役工具比较前一 major 五条完整 schema-v1 DDL，仅忽略格式和注释，拒绝额外
 CHECK 和不同 DEFAULT；同时检查列类型、主键、索引与约束，核验精确文件族和路径身份。
 CLI 检查归档隔离于停止容器的所有真实持久挂载。备份包含 WAL，再校验移出；
