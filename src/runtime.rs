@@ -1937,11 +1937,18 @@ async fn run_managed_task_once(
             Ok("正向代理订阅刷新完成".to_string())
         }
         "summary_snapshot" => {
-            let (journal_before, _) = state.subscription_hub.summary_delta_journal_counts().await;
+            let journal_before = state
+                .subscription_hub
+                .summary_delta_journal_unabsorbed_deltas()
+                .await;
             crate::api::refresh_summary_snapshots(state.as_ref()).await?;
-            let (journal_after, _) = state.subscription_hub.summary_delta_journal_counts().await;
-            let contribution_count =
-                i64::try_from(journal_after.saturating_sub(journal_before)).unwrap_or(i64::MAX);
+            let contribution_count = i64::try_from(
+                state
+                    .subscription_hub
+                    .summary_delta_journal_absorbed_deltas_count(&journal_before)
+                    .await,
+            )
+            .unwrap_or(i64::MAX);
             crate::record_managed_task_discovered_work(&["summary_snapshot"], contribution_count);
             crate::record_managed_task_processed_work(&["summary_snapshot"], contribution_count);
             Ok("汇总快照刷新完成".to_string())

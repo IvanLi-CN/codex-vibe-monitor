@@ -1663,17 +1663,22 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
     let started_at = Instant::now();
     let mut summary = ProxyUsageBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
-    loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
-            hit_budget = true;
-            break;
-        }
+    let result = async {
+        loop {
+            if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed)
+            {
+                hit_budget = true;
+                break;
+            }
 
-        let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
-            r#"
+            let candidates = sqlx::query_as::<_, ProxyUsageBackfillCandidate>(
+                r#"
             SELECT id, response_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
@@ -1685,25 +1690,27 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
             ORDER BY id ASC
             LIMIT ?4
             "#,
-        )
-        .bind(SOURCE_PROXY)
-        .bind(last_seen_id)
-        .bind(snapshot_max_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
-        .fetch_all(pool)
-        .await?;
+            )
+            .bind(SOURCE_PROXY)
+            .bind(last_seen_id)
+            .bind(snapshot_max_id)
+            .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+            .fetch_all(pool)
+            .await?;
 
-        if candidates.is_empty() {
-            break;
-        }
+            if candidates.is_empty() {
+                break;
+            }
 
-        let mut updates = Vec::new();
-        for candidate in candidates {
-            last_seen_id = candidate.id;
-            summary.scanned += 1;
+            let mut updates = Vec::new();
+            for candidate in candidates {
+                last_seen_id = candidate.id;
+                summary.scanned += 1;
 
-            let raw_response =
-                match read_proxy_raw_bytes(&candidate.response_raw_path, raw_path_fallback_root) {
+                let raw_response = match read_proxy_raw_bytes(
+                    &candidate.response_raw_path,
+                    raw_path_fallback_root,
+                ) {
                     Ok(content) => content,
                     Err(_) => {
                         summary.skipped_missing_file += 1;
@@ -1718,40 +1725,44 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                     }
                 };
 
-            let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
-            let (payload_for_parse, decode_error) =
-                decode_response_payload_for_usage(&raw_response, None);
-            let response_info =
-                parse_target_response_payload(target, payload_for_parse.as_ref(), is_stream, None);
-            let usage = response_info.usage;
-            let has_usage = usage.total_tokens.is_some()
-                || usage.input_tokens.is_some()
-                || usage.output_tokens.is_some()
-                || usage.cache_input_tokens.is_some()
-                || usage.reported_cache_write_tokens.is_some()
-                || usage.reasoning_tokens.is_some();
-            if !has_usage {
-                if decode_error.is_some() {
-                    summary.skipped_decode_error += 1;
-                } else {
-                    summary.skipped_without_usage += 1;
+                let (target, is_stream) = parse_proxy_capture_summary(candidate.payload.as_deref());
+                let (payload_for_parse, decode_error) =
+                    decode_response_payload_for_usage(&raw_response, None);
+                let response_info = parse_target_response_payload(
+                    target,
+                    payload_for_parse.as_ref(),
+                    is_stream,
+                    None,
+                );
+                let usage = response_info.usage;
+                let has_usage = usage.total_tokens.is_some()
+                    || usage.input_tokens.is_some()
+                    || usage.output_tokens.is_some()
+                    || usage.cache_input_tokens.is_some()
+                    || usage.reported_cache_write_tokens.is_some()
+                    || usage.reasoning_tokens.is_some();
+                if !has_usage {
+                    if decode_error.is_some() {
+                        summary.skipped_decode_error += 1;
+                    } else {
+                        summary.skipped_without_usage += 1;
+                    }
+                    continue;
                 }
-                continue;
+
+                updates.push(ProxyUsageBackfillUpdate {
+                    id: candidate.id,
+                    usage,
+                });
             }
 
-            updates.push(ProxyUsageBackfillUpdate {
-                id: candidate.id,
-                usage,
-            });
-        }
-
-        if !updates.is_empty() {
-            let mut tx = pool.begin().await?;
-            let mut updated_this_batch = 0_u64;
-            let mut updated_ids = Vec::new();
-            for update in updates {
-                let affected = sqlx::query(
-                    r#"
+            if !updates.is_empty() {
+                let mut tx = pool.begin().await?;
+                let mut updated_this_batch = 0_u64;
+                let mut updated_ids = Vec::new();
+                for update in updates {
+                    let affected = sqlx::query(
+                        r#"
                     UPDATE codex_invocations
                     SET input_tokens = ?1,
                         output_tokens = ?2,
@@ -1763,36 +1774,50 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
                       AND source = ?8
                       AND total_tokens IS NULL
                     "#,
-                )
-                .bind(update.usage.input_tokens)
-                .bind(update.usage.output_tokens)
-                .bind(update.usage.cache_input_tokens)
-                .bind(update.usage.reasoning_tokens)
-                .bind(update.usage.total_tokens)
-                .bind(update.usage.reported_cache_write_tokens)
-                .bind(update.id)
-                .bind(SOURCE_PROXY)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-                updated_this_batch += affected;
-                if affected > 0 {
-                    updated_ids.push(update.id);
+                    )
+                    .bind(update.usage.input_tokens)
+                    .bind(update.usage.output_tokens)
+                    .bind(update.usage.cache_input_tokens)
+                    .bind(update.usage.reasoning_tokens)
+                    .bind(update.usage.total_tokens)
+                    .bind(update.usage.reported_cache_write_tokens)
+                    .bind(update.id)
+                    .bind(SOURCE_PROXY)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+                    updated_this_batch += affected;
+                    if affected > 0 {
+                        updated_ids.push(update.id);
+                    }
                 }
+                if !updated_ids.is_empty() {
+                    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids)
+                        .await?;
+                }
+                tx.commit().await?;
+                summary.updated += updated_this_batch;
             }
-            if !updated_ids.is_empty() {
-                recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
-            }
-            tx.commit().await?;
-            summary.updated += updated_this_batch;
+            committed_cursor_id = last_seen_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
         }
-    }
 
-    Ok(BackfillBatchOutcome {
-        summary,
-        next_cursor_id: last_seen_id,
-        hit_budget,
-        samples,
+        Ok(BackfillBatchOutcome {
+            summary,
+            next_cursor_id: committed_cursor_id,
+            hit_budget,
+            samples: samples.clone(),
+        })
+    }
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: committed_cursor_id,
+            scanned: committed_scanned,
+            updated: committed_updated,
+        })
     })
 }
 
@@ -1901,10 +1926,14 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
     let started_at = Instant::now();
     let mut summary = ProxyCostBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
-    loop {
+    let result = async {
+        loop {
         if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
@@ -2199,12 +2228,25 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
             tx.commit().await?;
             summary.updated += updated_this_batch;
         }
-    }
+        committed_cursor_id = last_seen_id;
+        committed_scanned = summary.scanned;
+        committed_updated = summary.updated;
+        }
 
-    Ok(BackfillBatchOutcome {
-        summary,
-        next_cursor_id: last_seen_id,
-        hit_budget,
-        samples,
+        Ok(BackfillBatchOutcome {
+            summary,
+            next_cursor_id: committed_cursor_id,
+            hit_budget,
+            samples: samples.clone(),
+        })
+    }
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: committed_cursor_id,
+            scanned: committed_scanned,
+            updated: committed_updated,
+        })
     })
 }

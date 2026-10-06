@@ -2497,6 +2497,7 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             .await?;
             result.materialized_archive_batches += 1;
             result.verified_proof_count = result.verified_proof_count.saturating_add(1);
+            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
         }
         if !candidates_from_due_queue {
             result.next_cursor_id = candidate.id;

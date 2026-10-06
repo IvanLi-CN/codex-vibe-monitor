@@ -459,10 +459,6 @@ impl SummaryCoverageRecoverySupervisor {
             &["summary_coverage_recovery"],
             i64::try_from(priority_backfill.candidate_count).unwrap_or(i64::MAX),
         );
-        crate::record_managed_task_processed_work(
-            &["summary_coverage_recovery"],
-            i64::try_from(priority_backfill.verified_proof_count).unwrap_or(i64::MAX),
-        );
         info!(
             stage = "historical_coverage_snapshot_backfill",
             elapsed_ms = started_at.elapsed().as_millis() as u64,
@@ -647,10 +643,6 @@ impl SummaryCoverageRecoverySupervisor {
             crate::record_managed_task_discovered_work(
                 &["summary_coverage_recovery"],
                 i64::try_from(backfill.candidate_count).unwrap_or(i64::MAX),
-            );
-            crate::record_managed_task_processed_work(
-                &["summary_coverage_recovery"],
-                i64::try_from(backfill.verified_proof_count).unwrap_or(i64::MAX),
             );
         }
         info!(

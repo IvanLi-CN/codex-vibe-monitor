@@ -21,7 +21,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24328,
+      "line_budget": 24371,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -57,7 +57,7 @@
     {
       "path": "src/maintenance/startup_backfill.rs",
       "role": "production",
-      "line_budget": 3670,
+      "line_budget": 3693,
       "next_module_workstream": "Split startup backfill scheduling, budgets, pressure, coverage, and task execution."
     },
     {

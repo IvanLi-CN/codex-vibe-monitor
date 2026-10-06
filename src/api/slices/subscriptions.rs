@@ -4259,6 +4259,49 @@ impl SubscriptionHub {
             .collect()
     }
 
+    pub(crate) async fn summary_delta_journal_unabsorbed_deltas(
+        &self,
+    ) -> Vec<DashboardActivityTerminalDelta> {
+        let state = self.state.lock().await;
+        state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| entry.delta.clone())
+            .chain(state.summary_delta_journal.replayed_entries.iter().cloned())
+            .collect()
+    }
+
+    pub(crate) async fn summary_delta_journal_absorbed_deltas_count(
+        &self,
+        before: &[DashboardActivityTerminalDelta],
+    ) -> usize {
+        let state = self.state.lock().await;
+        let Some(projection) = state.summary_projection.as_ref() else {
+            return 0;
+        };
+        let remaining = state
+            .summary_delta_journal
+            .entries
+            .iter()
+            .map(|entry| summary_delta_workload_identity(&entry.delta))
+            .chain(
+                state
+                    .summary_delta_journal
+                    .replayed_entries
+                    .iter()
+                    .map(summary_delta_workload_identity),
+            )
+            .collect::<HashSet<_>>();
+        before
+            .iter()
+            .filter(|delta| {
+                !remaining.contains(&summary_delta_workload_identity(delta))
+                    && projection.contains_persisted_live_terminal_delta(delta)
+            })
+            .count()
+    }
+
     pub(crate) async fn summary_source_change_cursor(&self) -> u64 {
         self.state.lock().await.summary_source_change_cursor
     }

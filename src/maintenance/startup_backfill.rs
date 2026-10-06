@@ -1053,6 +1053,26 @@ pub(crate) struct BackfillBatchOutcome<T> {
     pub(crate) samples: Vec<String>,
 }
 
+#[derive(Debug)]
+pub(crate) struct BackfillPartialFailure {
+    pub(crate) source: anyhow::Error,
+    pub(crate) next_cursor_id: i64,
+    pub(crate) scanned: u64,
+    pub(crate) updated: u64,
+}
+
+impl std::fmt::Display for BackfillPartialFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source.fmt(formatter)
+    }
+}
+
+impl std::error::Error for BackfillPartialFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source.root_cause())
+    }
+}
+
 pub(crate) fn startup_backfill_query_limit(scanned: u64, scan_limit: Option<u64>) -> i64 {
     let remaining = scan_limit
         .map(|limit| limit.saturating_sub(scanned))
@@ -2466,16 +2486,40 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
     };
     // Network/business work has finished. Do not hold online write admission
     // while waiting for a control update or maintenance-database checkpoint.
-    let _result_guard = match prompt_cache_materialization_control.as_ref() {
+    let result_guard = match prompt_cache_materialization_control.as_ref() {
         Some((control, generation)) => {
             drop(write_permit.take());
-            let Some(guard) = control.lock_current_generation(*generation).await else {
-                return Ok((prompt_cache_stale_result_outcome(), None));
-            };
-            Some(guard)
+            control.lock_current_generation(*generation).await
         }
         None => None,
     };
+    if prompt_cache_materialization_control.is_some() && result_guard.is_none() {
+        let committed_work = if let Ok((run, _)) = task_result.as_ref() {
+            run.updated
+        } else {
+            crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                &state.pool,
+            )
+            .await
+            .ok()
+            .and_then(|progress| progress.completed_keys)
+            .unwrap_or_default()
+            .saturating_sub(prompt_cache_completed_before)
+            .try_into()
+            .unwrap_or_default()
+        };
+        let committed_work = i64::try_from(committed_work).unwrap_or(i64::MAX);
+        workload_observation.set_processed_work(committed_work);
+        if observation_parent_task_key == Some("prompt_cache_materialization") {
+            observation.set_processed_work(committed_work);
+        }
+        if managed_run_id.is_none() {
+            observation.finish_with_status_and_reason("skipped", Some("stats_generation_changed"));
+        }
+        workload_observation
+            .finish_with_status_and_reason("skipped", Some("stats_generation_changed"));
+        return Ok((prompt_cache_stale_result_outcome(), None));
+    }
     let outcome = match task_result {
         Ok((run, detail)) => {
             if task == StartupBackfillTask::PoolUpstreamNodeHealthArchives {
@@ -2657,40 +2701,50 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             (outcome, None)
         }
         Err(err) => {
+            let partial_progress = err.downcast_ref::<BackfillPartialFailure>();
+            let mut failure_progress = progress.clone();
+            if let Some(partial) = partial_progress {
+                failure_progress.cursor_id = partial.next_cursor_id.max(progress.cursor_id);
+                failure_progress.last_scanned = partial.scanned;
+                failure_progress.last_updated = partial.updated;
+            }
             // A bounded backfill may have committed earlier micro-batches before a later
             // source/read failure. Preserve that committed delta in the child workload sample
             // before persisting the failed scheduler state.
-            if let Ok(committed_progress) =
-                load_startup_backfill_progress(&state.pool, &task_name).await
+            let startup_committed_delta = i64::try_from(
+                failure_progress
+                    .last_updated
+                    .saturating_sub(progress.last_updated),
+            )
+            .unwrap_or(i64::MAX);
+            let prompt_cache_committed_delta = if task
+                == StartupBackfillTask::PromptCacheConversationsMaterialization
             {
-                let startup_committed_delta = i64::try_from(
-                    committed_progress
-                        .last_updated
-                        .saturating_sub(progress.last_updated),
+                crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
+                    &state.pool,
                 )
-                .unwrap_or(i64::MAX);
-                let prompt_cache_committed_delta = if task
-                    == StartupBackfillTask::PromptCacheConversationsMaterialization
-                {
-                    crate::prompt_cache_conversations::load_prompt_cache_conversation_migration_progress(
-                        &state.pool,
-                    )
-                    .await
-                    .ok()
-                    .and_then(|progress| progress.completed_keys)
-                    .unwrap_or_default()
-                    .saturating_sub(prompt_cache_completed_before)
-                } else {
-                    0
-                };
-                let committed_delta = startup_committed_delta.max(prompt_cache_committed_delta);
-                workload_observation.set_processed_work(committed_delta);
-                if observation_parent_task_key == Some("prompt_cache_materialization") {
-                    observation.set_processed_work(committed_delta);
-                }
+                .await
+                .ok()
+                .and_then(|progress| progress.completed_keys)
+                .unwrap_or_default()
+                .saturating_sub(prompt_cache_completed_before)
+            } else {
+                0
+            };
+            let committed_delta = partial_progress
+                .map(|partial| i64::try_from(partial.updated).unwrap_or(i64::MAX))
+                .unwrap_or_else(|| startup_committed_delta.max(prompt_cache_committed_delta));
+            workload_observation.set_processed_work(committed_delta);
+            if observation_parent_task_key == Some("prompt_cache_materialization") {
+                observation.set_processed_work(committed_delta);
             }
             let next_due = match persist_startup_backfill_task_failure(
-                state, task, &task_name, &progress, started_at, &err,
+                state,
+                task,
+                &task_name,
+                &failure_progress,
+                started_at,
+                &err,
             )
             .await
             {

@@ -88,17 +88,22 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
     let started_at = Instant::now();
     let mut summary = ProxyPromptCacheKeyBackfillSummary::default();
     let mut last_seen_id = start_after_id;
+    let mut committed_cursor_id = start_after_id;
+    let mut committed_scanned = 0_u64;
+    let mut committed_updated = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
-    loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
-            hit_budget = true;
-            break;
-        }
+    let result = async {
+        loop {
+            if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed)
+            {
+                hit_budget = true;
+                break;
+            }
 
-        let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
-            r#"
+            let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
+                r#"
             SELECT id, request_raw_path
             FROM codex_invocations
             WHERE source = ?1
@@ -113,31 +118,47 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             ORDER BY id ASC
             LIMIT ?3
             "#,
-        )
-        .bind(SOURCE_PROXY)
-        .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
-        .fetch_all(pool)
-        .await?;
+            )
+            .bind(SOURCE_PROXY)
+            .bind(last_seen_id)
+            .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+            .fetch_all(pool)
+            .await?;
 
-        if candidates.is_empty() {
-            break;
-        }
+            if candidates.is_empty() {
+                break;
+            }
 
-        let mut updates = Vec::new();
-        for candidate in candidates {
-            last_seen_id = candidate.id;
-            summary.scanned += 1;
+            let mut updates = Vec::new();
+            for candidate in candidates {
+                last_seen_id = candidate.id;
+                summary.scanned += 1;
 
-            let raw_request =
-                match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
-                    Ok(content) => content,
+                let raw_request =
+                    match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root)
+                    {
+                        Ok(content) => content,
+                        Err(_) => {
+                            summary.skipped_missing_file += 1;
+                            push_backfill_sample(
+                                &mut samples,
+                                format!(
+                                    "id={} request_raw_path={} reason=missing_file",
+                                    candidate.id, candidate.request_raw_path
+                                ),
+                            );
+                            continue;
+                        }
+                    };
+
+                let request_payload = match serde_json::from_slice::<Value>(&raw_request) {
+                    Ok(payload) => payload,
                     Err(_) => {
-                        summary.skipped_missing_file += 1;
+                        summary.skipped_invalid_json += 1;
                         push_backfill_sample(
                             &mut samples,
                             format!(
-                                "id={} request_raw_path={} reason=missing_file",
+                                "id={} request_raw_path={} reason=invalid_json",
                                 candidate.id, candidate.request_raw_path
                             ),
                         );
@@ -145,37 +166,22 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                     }
                 };
 
-            let request_payload = match serde_json::from_slice::<Value>(&raw_request) {
-                Ok(payload) => payload,
-                Err(_) => {
-                    summary.skipped_invalid_json += 1;
-                    push_backfill_sample(
-                        &mut samples,
-                        format!(
-                            "id={} request_raw_path={} reason=invalid_json",
-                            candidate.id, candidate.request_raw_path
-                        ),
-                    );
+                let Some(prompt_cache_key) =
+                    extract_prompt_cache_key_from_request_body(&request_payload)
+                else {
+                    summary.skipped_missing_key += 1;
                     continue;
-                }
-            };
+                };
+                updates.push((candidate.id, prompt_cache_key));
+            }
 
-            let Some(prompt_cache_key) =
-                extract_prompt_cache_key_from_request_body(&request_payload)
-            else {
-                summary.skipped_missing_key += 1;
-                continue;
-            };
-            updates.push((candidate.id, prompt_cache_key));
-        }
-
-        if !updates.is_empty() {
-            let mut tx = pool.begin().await?;
-            let mut updated_ids = Vec::new();
-            let mut updated_prompt_cache_keys = HashSet::new();
-            for (id, prompt_cache_key) in updates {
-                let affected = sqlx::query(
-                    r#"
+            if !updates.is_empty() {
+                let mut tx = pool.begin().await?;
+                let mut updated_ids = Vec::new();
+                let mut updated_prompt_cache_keys = HashSet::new();
+                for (id, prompt_cache_key) in updates {
+                    let affected = sqlx::query(
+                        r#"
                     UPDATE codex_invocations
                     SET payload = json_remove(
                         json_set(
@@ -195,38 +201,55 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                         OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
                       )
                     "#,
-                )
-                .bind(&prompt_cache_key)
-                .bind(id)
-                .bind(SOURCE_PROXY)
-                .execute(&mut *tx)
-                .await?
-                .rows_affected();
-                summary.updated += affected;
-                if affected > 0 {
-                    updated_ids.push(id);
-                    updated_prompt_cache_keys.insert(prompt_cache_key);
+                    )
+                    .bind(&prompt_cache_key)
+                    .bind(id)
+                    .bind(SOURCE_PROXY)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected();
+                    summary.updated += affected;
+                    if affected > 0 {
+                        updated_ids.push(id);
+                        updated_prompt_cache_keys.insert(prompt_cache_key);
+                    }
+                }
+                if !updated_ids.is_empty() {
+                    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids)
+                        .await?;
+                }
+                tx.commit().await?;
+                committed_cursor_id = last_seen_id;
+                committed_scanned = summary.scanned;
+                committed_updated = summary.updated;
+                if !updated_prompt_cache_keys.is_empty() {
+                    // The trigger keeps the aggregate refresh durable; historical aggregation belongs
+                    // to the pressure-gated materialization task, not this metadata backfill pass.
+                    for prompt_cache_key in &updated_prompt_cache_keys {
+                        crate::ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await?;
+                    }
                 }
             }
-            if !updated_ids.is_empty() {
-                recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
-            }
-            tx.commit().await?;
-            if !updated_prompt_cache_keys.is_empty() {
-                // The trigger keeps the aggregate refresh durable; historical aggregation belongs
-                // to the pressure-gated materialization task, not this metadata backfill pass.
-                for prompt_cache_key in &updated_prompt_cache_keys {
-                    crate::ensure_prompt_cache_conversation_row(pool, prompt_cache_key).await?;
-                }
-            }
+            committed_cursor_id = last_seen_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
         }
-    }
 
-    Ok(BackfillBatchOutcome {
-        summary,
-        next_cursor_id: last_seen_id,
-        hit_budget,
-        samples,
+        Ok(BackfillBatchOutcome {
+            summary,
+            next_cursor_id: committed_cursor_id,
+            hit_budget,
+            samples: samples.clone(),
+        })
+    }
+    .await;
+    result.map_err(|error| {
+        anyhow::Error::new(crate::BackfillPartialFailure {
+            source: error,
+            next_cursor_id: committed_cursor_id,
+            scanned: committed_scanned,
+            updated: committed_updated,
+        })
     })
 }
 
