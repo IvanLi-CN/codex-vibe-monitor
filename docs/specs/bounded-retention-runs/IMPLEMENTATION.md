@@ -78,6 +78,7 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 - 可选 SQLite 维护取消回归在首次 progress callback 确定性中断，验证回滚、独占连接关闭和 busy_timeout=0 下新 writer 取得锁；目录锁回归只断言非阻塞拒绝和文件保留。这些普通测试不以有限 SQL 工作量耗时、1 秒总时长或 250 ms 锁等待作性能判定。
 - 后端按仓库 runner 顺序执行 lightweight、stateful-sqlite、archive-file-io 三个资源 profile，并验证 fmt/check/Clippy 和 source-quality。CI 和实测绑定候选 SHA，不能用旧分支结果替代。
 - Web 验证包括旧 API 字段兼容、Demo 真实零/未知值、全量 unit/typecheck/lint/build、六个吞吐状态及 SystemWorkspace Storybook、任务页桌面/移动交互 E2E。视觉确认不代替功能或容量验收。
+- 任务页 SSE 重连 Storybook 交互等待实际连接状态为 connected 后再发送模拟 error，随后验证重连提示和时间线。断开不由固定毫秒定时器触发；此同步只约束测试事件顺序，不改变生产 SSE 状态机或重试策略。
 - Prompt 会话事件过滤的既有单测等待实际筛选内容完成渲染后检查原断言；单靠两次 Promise flush 不代表异步事件请求已完成。此测试同步修正不改变产品逻辑、超时或 retention 的验收口径。主线整合后的后端输入使用逐文件摘要证明，文档或 Web 测试提交不得冒充重新编译的后端提交。
 - Prompt 统计代次与重启回归在让行检查时读取已提交 staging，确定性地停在首个 256 行页；独立异步观察者可能在负载下晚于数页提交，不能保证该测试所需的精确边界。原聚合、代次、恢复和页游标断言保持不变。
 - main 的 SQL 观测序列化夹具使用实际工作集 SQL 生成器及 `NEW.id`，与优化后的触发器身份参数一致；保留原长语句、脱敏和序列化断言，不更改生产观测或归档行为。
