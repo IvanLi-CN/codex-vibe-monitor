@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import type { UsageBreakdown, UsageBreakdownModel } from "../../lib/api";
 import { cn } from "../../lib/utils";
+import { AdaptiveDisplayValue, type AdaptiveDisplayValueSpec } from "../shared/AdaptiveMetricValue";
 import { ModelIdentity } from "../shared/ModelIdentity";
 import {
   ModelBreakdownMetricHeader,
@@ -25,18 +26,20 @@ type UsageCostBreakdown = NonNullable<UsageBreakdown["costs"]>;
 export interface UsageBreakdownTooltipProps {
   title: string;
   breakdown: UsageBreakdown;
-  formatNumber: (value: number) => string;
-  formatRatio: (value: number | null) => string;
-  formatCurrency: (value: number) => string;
+  buildNumberSpec: (value: number) => AdaptiveDisplayValueSpec;
+  buildRatioSpec: (value: number | null) => AdaptiveDisplayValueSpec;
+  buildCurrencySpec: (value: number | null) => AdaptiveDisplayValueSpec;
   labels: {
     total: string;
     model: string;
     cacheWrite: string;
     cacheRead: string;
     cacheHitRate: string;
+    cacheHitRateCompact: string;
     output: string;
     unknownModel: string;
     reasoningEffort: string;
+    tokenUnit: string;
   };
 }
 
@@ -58,8 +61,13 @@ interface BreakdownTableValue {
 }
 
 type BreakdownTableColumn =
-  | { key: "cache-hit-rate" | "total"; label: string; sortable: true }
-  | { key: "cache-write" | "cache-read" | "output"; label: string; sortable: false };
+  | { key: "cache-hit-rate" | "total"; label: string; compactLabel?: string; sortable: true }
+  | {
+      key: "cache-write" | "cache-read" | "output";
+      label: string;
+      compactLabel?: string;
+      sortable: false;
+    };
 
 function modelLabel(model: string, unknownModel: string) {
   return model === "unknown" ? unknownModel : model;
@@ -170,7 +178,8 @@ function BreakdownTable({
                 column.sortable ? (
                   <ModelBreakdownMetricHeader
                     key={column.key}
-                    label={column.label}
+                    label={column.compactLabel ?? column.label}
+                    ariaLabel={column.label}
                     column={column.key}
                     sort={sort}
                     onSort={onSort}
@@ -180,9 +189,12 @@ function BreakdownTable({
                   <th
                     key={column.key}
                     scope="col"
-                    className="min-w-0 border-l border-base-300/30 whitespace-nowrap px-1 py-1.5 text-right font-semibold"
+                    aria-label={column.label}
+                    className="min-w-0 border-l border-base-300/30 px-1 py-1.5 text-right font-semibold whitespace-nowrap"
                   >
-                    {column.label}
+                    <span className="block truncate leading-4">
+                      {column.compactLabel ?? column.label}
+                    </span>
                   </th>
                 ),
               )}
@@ -266,8 +278,8 @@ function BreakdownTable({
                       key={`${row.key}:${column.key}`}
                       className="min-w-0 border-t border-base-300/30 pt-1"
                     >
-                      <dt className="min-w-0 truncate text-[12px] leading-4 text-base-content/58">
-                        {column.label}
+                      <dt className="min-w-0 truncate whitespace-nowrap text-[12px] leading-4 text-base-content/58">
+                        {column.compactLabel ?? column.label}
                       </dt>
                       <dd className="mt-0 min-w-0 text-right font-mono text-[12px] leading-4 font-normal tabular-nums">
                         {value?.content ?? "—"}
@@ -333,35 +345,58 @@ function outputCost(costs: UsageCostBreakdown | null | undefined) {
   return costs.output + costs.reasoning;
 }
 
-function displayCurrency(value: number | null, formatCurrency: (value: number) => string) {
-  return value == null ? "—" : formatCurrency(value);
+function fullValueTooltipContent(spec: AdaptiveDisplayValueSpec, unit?: string) {
+  return unit ? `${spec.fullValue} ${unit}` : spec.fullValue;
+}
+
+function UsageAdaptiveValue({
+  spec,
+  fullValueUnit,
+  className,
+}: {
+  spec: AdaptiveDisplayValueSpec;
+  fullValueUnit?: string;
+  className?: string;
+}) {
+  return (
+    <AdaptiveDisplayValue
+      spec={spec}
+      className={cn("w-full text-right", className)}
+      compactTooltipContent={fullValueTooltipContent(spec, fullValueUnit)}
+      showNativeTitle={false}
+    />
+  );
 }
 
 function UsageAndCostValue({
   tokenCount,
   cost,
-  formatNumber,
-  formatCurrency,
+  buildNumberSpec,
+  buildCurrencySpec,
+  tokenUnit,
 }: {
   tokenCount: number;
   cost: number | null;
-  formatNumber: (value: number) => string;
-  formatCurrency: (value: number) => string;
+  buildNumberSpec: (value: number) => AdaptiveDisplayValueSpec;
+  buildCurrencySpec: (value: number | null) => AdaptiveDisplayValueSpec;
+  tokenUnit: string;
 }) {
-  const tokenText = formatNumber(tokenCount);
-  const costText = displayCurrency(cost, formatCurrency);
   return (
-    <span className="flex min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
-      <span className="text-base-content">{tokenText}</span>
-      <span className="text-base-content/62">{costText}</span>
+    <span className="flex w-full min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
+      <UsageAdaptiveValue
+        spec={buildNumberSpec(tokenCount)}
+        fullValueUnit={tokenUnit}
+        className="text-base-content"
+      />
+      <UsageAdaptiveValue spec={buildCurrencySpec(cost)} className="text-base-content/62" />
     </span>
   );
 }
 
-function UsageValueWithPlaceholder({ value }: { value: string }) {
+function UsageValueWithPlaceholder({ spec }: { spec: AdaptiveDisplayValueSpec }) {
   return (
-    <span className="flex min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
-      <span className="text-base-content">{value}</span>
+    <span className="flex w-full min-w-0 flex-col items-end gap-0.5 whitespace-nowrap">
+      <UsageAdaptiveValue spec={spec} className="text-base-content" />
       <span aria-hidden="true" className="block h-3 sm:h-4" />
     </span>
   );
@@ -378,9 +413,9 @@ function UsageBreakdownTable({
   title,
   breakdown,
   models,
-  formatNumber,
-  formatRatio,
-  formatCurrency,
+  buildNumberSpec,
+  buildRatioSpec,
+  buildCurrencySpec,
   labels,
   sort,
   onSort,
@@ -394,7 +429,12 @@ function UsageBreakdownTable({
   const columns = [
     { key: "cache-write" as const, label: labels.cacheWrite, sortable: false as const },
     { key: "cache-read" as const, label: labels.cacheRead, sortable: false as const },
-    { key: "cache-hit-rate" as const, label: labels.cacheHitRate, sortable: true as const },
+    {
+      key: "cache-hit-rate" as const,
+      label: labels.cacheHitRate,
+      compactLabel: labels.cacheHitRateCompact,
+      sortable: true as const,
+    },
     { key: "output" as const, label: labels.output, sortable: false as const },
     { key: "total" as const, label: labels.total, sortable: true as const },
   ];
@@ -414,8 +454,9 @@ function UsageBreakdownTable({
           <UsageAndCostValue
             tokenCount={item.cacheWriteTokens}
             cost={cacheWriteCost(item.costs)}
-            formatNumber={formatNumber}
-            formatCurrency={formatCurrency}
+            buildNumberSpec={buildNumberSpec}
+            buildCurrencySpec={buildCurrencySpec}
+            tokenUnit={labels.tokenUnit}
           />
         ),
       },
@@ -425,14 +466,15 @@ function UsageBreakdownTable({
           <UsageAndCostValue
             tokenCount={item.cacheReadTokens}
             cost={cacheReadCost(item.costs)}
-            formatNumber={formatNumber}
-            formatCurrency={formatCurrency}
+            buildNumberSpec={buildNumberSpec}
+            buildCurrencySpec={buildCurrencySpec}
+            tokenUnit={labels.tokenUnit}
           />
         ),
       },
       {
         key: "cache-hit-rate",
-        content: <UsageValueWithPlaceholder value={formatRatio(cacheHitRate(item))} />,
+        content: <UsageValueWithPlaceholder spec={buildRatioSpec(cacheHitRate(item))} />,
       },
       {
         key: "output",
@@ -440,8 +482,9 @@ function UsageBreakdownTable({
           <UsageAndCostValue
             tokenCount={item.outputTokens}
             cost={outputCost(item.costs)}
-            formatNumber={formatNumber}
-            formatCurrency={formatCurrency}
+            buildNumberSpec={buildNumberSpec}
+            buildCurrencySpec={buildCurrencySpec}
+            tokenUnit={labels.tokenUnit}
           />
         ),
       },
@@ -451,8 +494,9 @@ function UsageBreakdownTable({
           <UsageAndCostValue
             tokenCount={totalTokens(item)}
             cost={totalCost(item.costs)}
-            formatNumber={formatNumber}
-            formatCurrency={formatCurrency}
+            buildNumberSpec={buildNumberSpec}
+            buildCurrencySpec={buildCurrencySpec}
+            tokenUnit={labels.tokenUnit}
           />
         ),
       },
@@ -485,9 +529,9 @@ function UsageBreakdownTable({
 export function UsageBreakdownTooltip({
   title,
   breakdown,
-  formatNumber,
-  formatRatio,
-  formatCurrency,
+  buildNumberSpec,
+  buildRatioSpec,
+  buildCurrencySpec,
   labels,
 }: UsageBreakdownTooltipProps) {
   const { locale } = useTranslation();
@@ -523,9 +567,9 @@ export function UsageBreakdownTooltip({
         title={title}
         breakdown={breakdown}
         models={models}
-        formatNumber={formatNumber}
-        formatRatio={formatRatio}
-        formatCurrency={formatCurrency}
+        buildNumberSpec={buildNumberSpec}
+        buildRatioSpec={buildRatioSpec}
+        buildCurrencySpec={buildCurrencySpec}
         labels={labels}
         sort={effectiveSort}
         onSort={setSort}
