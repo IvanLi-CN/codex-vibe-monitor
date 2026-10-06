@@ -11739,6 +11739,29 @@ fn spawn_runtime_mutation_router(state: Arc<AppState>) {
     });
 }
 
+fn schedule_managed_task_topic_refresh_retry(
+    hub: Arc<SubscriptionHub>,
+    state: Arc<AppState>,
+    topic: SubscriptionTopic,
+) {
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if !hub.mark_managed_task_topic_dirty(&topic).await {
+            return;
+        }
+        if let Err(error) = hub
+            .refresh_topic_if_active(state, topic.clone(), true)
+            .await
+        {
+            warn!(
+                topic = topic.name(),
+                ?error,
+                "managed task SSE topic retry failed"
+            );
+        }
+    });
+}
+
 fn runtime_mutation_batch_has_sequence_gap(
     last_sequence: &mut u64,
     batch: &[SequencedRuntimeMutation],
@@ -11880,7 +11903,12 @@ pub(crate) async fn topic_sse_stream(
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
                             {
-                                warn!(topic = topic.name(), ?error, "managed task SSE topic refresh failed");
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic refresh failed; scheduling retry");
+                                schedule_managed_task_topic_refresh_retry(
+                                    dashboard_topology_hub.clone(),
+                                    state.clone(),
+                                    topic.clone(),
+                                );
                             }
                         }
                     }
@@ -11897,7 +11925,12 @@ pub(crate) async fn topic_sse_stream(
                                 .refresh_topic_if_active(state.clone(), topic.clone(), true)
                                 .await
                             {
-                                warn!(topic = topic.name(), ?error, "managed task SSE topic recovery failed");
+                                warn!(topic = topic.name(), ?error, "managed task SSE topic recovery failed; scheduling retry");
+                                schedule_managed_task_topic_refresh_retry(
+                                    dashboard_topology_hub.clone(),
+                                    state.clone(),
+                                    topic.clone(),
+                                );
                             }
                         }
                     }
