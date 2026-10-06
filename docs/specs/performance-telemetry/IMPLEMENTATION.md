@@ -1,11 +1,21 @@
 # 外部性能观测实现
 
+## PR 检查与性能验收边界
+
+按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
+合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
+job，继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact
+producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
+普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
+历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及
+50 倍吞吐、24 小时固定存量归零和在线延迟目标留待专项 Actions 验证。
+
 ## Hosted CPU diagnosis
 
 诊断快照 helper 的 CLI 分发仅在直接执行时运行，CPU diagnosis runner 导入
 `client.py` 时不会因缺少 `mode` 丢失计数器。子进程回归覆盖无参数导入和固定
 数值指标读取，保留既有 CLI 模式。此修复只改善诊断证据完整性，不改变六窗口
-性能验收、5% 稳定性/开销阈值或预算结论；新候选仍须独立通过 Actions 验收。
+性能验收、5% 稳定性/开销阈值或预算结论；性能签收仍须独立的 Actions 验收。
 
 候选 `ccfd94b7` 在 Actions run `37225986112` 的开启窗口 CPU/请求 CV 为
 11.77%，超过 5% 稳定性上限；该数值不是已接受的 CPU 开销百分比。先前同合同
