@@ -51,11 +51,11 @@ PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
 
 
 def measurement_cpu_layout(affinity):
-    """Reserve one runner CPU for the app and the rest for test services."""
+    """Pin the app to one runner CPU and leave helpers on runner-default affinity."""
     cpus = sorted({int(cpu) for cpu in affinity})
     if len(cpus) < 2 or any(cpu < 0 for cpu in cpus):
         raise ValueError("performance acceptance requires at least two runner CPUs for isolation")
-    return {"app": str(cpus[0]), "auxiliary": ",".join(str(cpu) for cpu in cpus[1:])}
+    return {"app": str(cpus[0]), "auxiliary": "runner-default"}
 
 
 def pressure_eligible(raw):
