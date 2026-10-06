@@ -6513,13 +6513,24 @@ impl SubscriptionHub {
             let current_slice = guard.dashboard_current_slice.clone();
             let network_slice = guard.dashboard_network_slice.clone();
             let terminal_slice = guard.dashboard_terminal_slice.clone();
+            let managed_refresh_is_current =
+                managed_task_refresh_generation.is_none_or(|expected| {
+                    guard
+                        .managed_task_refresh_generations
+                        .get(&topic_key)
+                        .copied()
+                        .unwrap_or_default()
+                        == expected
+                });
             if !matches!(
                 &built_payload,
                 BuiltSubscriptionTopicPayload::JsonDelta { .. }
             ) && deferred_working_replay.is_empty()
                 && let Some(existing) = guard.topics.get_mut(&topic_key)
             {
-                if existing.snapshot_frame.payload_bytes.as_ref() == serialized_payload.as_slice()
+                if managed_refresh_is_current
+                    && existing.snapshot_frame.payload_bytes.as_ref()
+                        == serialized_payload.as_slice()
                     && existing.dirty
                     && existing.dashboard_materializer.is_some()
                     && refreshed_dashboard_materializer.is_some()
@@ -6550,7 +6561,9 @@ impl SubscriptionHub {
                     }
                     return Ok(Some(existing.clone()));
                 }
-                if reuse_unchanged_cached_topic(existing, &serialized_payload).is_some() {
+                if managed_refresh_is_current
+                    && reuse_unchanged_cached_topic(existing, &serialized_payload).is_some()
+                {
                     self.dashboard_topology_counters
                         .record_frame_reused(topic.name());
                     if let Some(build) = &prompt_cache_build {

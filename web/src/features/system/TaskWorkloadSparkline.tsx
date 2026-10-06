@@ -10,6 +10,7 @@ import {
 } from "../../lib/api";
 
 const WINDOW_MS = 24 * 60 * 60 * 1_000;
+const CACHE_FRESHNESS_MS = 30_000;
 const MAX_CACHE_ENTRIES = 64;
 const MAX_CONCURRENT_LOADS = 4;
 const workloadCache = new Map<string, TaskWorkloadTrend>();
@@ -66,6 +67,11 @@ function cacheTrend(taskKey: string, trend: TaskWorkloadTrend): void {
   trimCache();
 }
 
+function isFreshTrend(trend: TaskWorkloadTrend): boolean {
+  const observedAt = Date.parse(trend.observedAt ?? trend.windowEnd ?? "");
+  return Number.isFinite(observedAt) && Date.now() - observedAt <= CACHE_FRESHNESS_MS;
+}
+
 function cancelQueuedWorkload(taskKey: string): void {
   for (const request of workloadQueue) {
     if (request.key === taskKey && !request.cancelled) {
@@ -102,7 +108,7 @@ function pumpLoads(): void {
 
 function loadWorkload(taskKey: string, refresh = false): Promise<TaskWorkloadTrend> {
   const cached = refresh ? undefined : workloadCache.get(taskKey);
-  if (cached) {
+  if (cached && isFreshTrend(cached)) {
     workloadCache.delete(taskKey);
     workloadCache.set(taskKey, cached);
     return Promise.resolve(cached);
@@ -398,7 +404,7 @@ export function TaskWorkloadSparkline({
   useEffect(() => {
     if (!activeVisible) return;
     let active = true;
-    void loadWorkload(task.taskKey, true)
+    void loadWorkload(task.taskKey)
       .then((next) => {
         if (active && applyTrend(next)) {
           setLoadError(null);
@@ -416,6 +422,7 @@ export function TaskWorkloadSparkline({
   useEffect(() => {
     if (topic.data) {
       applyTrend(topic.data);
+      setLoadError(null);
     }
   }, [applyTrend, topic.data]);
 
