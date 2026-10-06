@@ -349,7 +349,7 @@
 - sensitive_exclusion: `N/A`
 - comparison_base: `2e4733e0344975ac9a8a1689d7d2d7cab8ddfedf`
 - comparison: `current-only`; the locked baseline contains no catalog-background image at these exact paths
-- rendered_candidate: `7e406bf3c4d5d1b1f40b4cbd9a41fa3d5e11c73a`
+- rendered_candidate: `7e406bf32672777779c114dd1d5f06957c7a9862`
 - owner_confirmation: confirmed in chat on 2026-10-06 ("看起来没问题了，允许提交视觉证据。")
 - submission_gate: `approved`
 - state: 37-task catalog with visible-row lazy-loaded P/D/C background, corrected area closure, and workload detail inspection
