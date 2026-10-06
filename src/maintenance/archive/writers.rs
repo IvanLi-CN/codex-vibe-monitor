@@ -266,7 +266,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
     let mut last_seen_batch_id = start_after_batch_id;
     let mut committed_cursor_id = start_after_batch_id;
     let mut committed_scanned_batches = 0_u64;
-    let mut committed_updated_batches = 0_u64;
+    let mut committed_updated_rows = 0_u64;
     let mut hit_budget = false;
     let mut samples = Vec::new();
 
@@ -511,7 +511,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             }
             committed_cursor_id = batch.id;
             committed_scanned_batches = summary.scanned_batches;
-            committed_updated_batches = summary.updated_batches;
+            committed_updated_rows = summary.updated_rows;
             let _ = fs::remove_file(&backup_path);
             let _ = sqlx::query(
                 "UPDATE archive_batches SET replacement_staged_path = NULL
@@ -537,7 +537,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_archive_public_ids_fr
             source: error,
             next_cursor_id: committed_cursor_id,
             scanned: committed_scanned_batches,
-            updated: committed_updated_batches,
+            updated: committed_updated_rows,
         })
     })
 }

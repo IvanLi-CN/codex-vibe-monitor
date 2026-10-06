@@ -3313,12 +3313,27 @@ async fn run_startup_backfill_task_with_pressure(
             let cache_summary =
                 backfill_pool_upstream_node_health_archives(&state.pool, Some(1), max_elapsed)
                     .await?;
-            let hourly_summary = backfill_pool_upstream_node_health_hourly_archives(
+            let hourly_summary = match backfill_pool_upstream_node_health_hourly_archives(
                 &state.pool,
                 Some(1),
                 max_elapsed,
             )
-            .await?;
+            .await
+            {
+                Ok(summary) => summary,
+                Err(error) => {
+                    let (scanned, updated) = error
+                        .downcast_ref::<BackfillPartialFailure>()
+                        .map(|partial| (partial.scanned, partial.updated))
+                        .unwrap_or_default();
+                    return Err(anyhow::Error::new(BackfillPartialFailure {
+                        source: error,
+                        next_cursor_id: cursor_id,
+                        scanned: cache_summary.scanned_batches + scanned,
+                        updated: cache_summary.materialized_batches + updated,
+                    }));
+                }
+            };
             Ok((
                 StartupBackfillRunState {
                     next_cursor_id: cursor_id,

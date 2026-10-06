@@ -325,9 +325,6 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
-            committed_cursor_id = candidate.id;
-            committed_scanned = summary.scanned;
-
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
@@ -340,6 +337,8 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                                 candidate.id, candidate.request_raw_path
                             ),
                         );
+                        committed_cursor_id = candidate.id;
+                        committed_scanned = summary.scanned;
                         continue;
                     }
                 };
@@ -355,6 +354,8 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                             candidate.id, candidate.request_raw_path
                         ),
                     );
+                    committed_cursor_id = candidate.id;
+                    committed_scanned = summary.scanned;
                     continue;
                 }
             };
@@ -363,6 +364,8 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
                 extract_requested_service_tier_from_request_body(&request_payload)
             else {
                 summary.skipped_missing_tier += 1;
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
                 continue;
             };
 
@@ -401,6 +404,8 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
             .rows_affected();
             summary.updated += affected;
             committed_updated = summary.updated;
+            committed_cursor_id = candidate.id;
+            committed_scanned = summary.scanned;
         }
     }
 
@@ -488,9 +493,6 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
-            committed_cursor_id = candidate.id;
-            committed_scanned = summary.scanned;
-
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
@@ -503,6 +505,8 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                                 candidate.id, candidate.request_raw_path
                             ),
                         );
+                        committed_cursor_id = candidate.id;
+                        committed_scanned = summary.scanned;
                         continue;
                     }
                 };
@@ -518,6 +522,8 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                             candidate.id, candidate.request_raw_path
                         ),
                     );
+                    committed_cursor_id = candidate.id;
+                    committed_scanned = summary.scanned;
                     continue;
                 }
             };
@@ -527,6 +533,8 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
                 &request_payload,
             ) else {
                 summary.skipped_missing_effort += 1;
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
                 continue;
             };
 
@@ -565,6 +573,8 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
             .rows_affected();
             summary.updated += affected;
             committed_updated = summary.updated;
+            committed_cursor_id = candidate.id;
+            committed_scanned = summary.scanned;
         }
     }
 

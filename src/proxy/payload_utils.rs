@@ -263,8 +263,6 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
-            committed_cursor_id = candidate.id;
-            committed_scanned = summary.scanned;
 
             let mut service_tier = parse_target_response_payload(
                 ProxyCaptureTarget::Responses,
@@ -299,6 +297,8 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
                                 candidate.id, path
                             ),
                         );
+                        committed_cursor_id = candidate.id;
+                        committed_scanned = summary.scanned;
                         continue;
                     }
                 }
@@ -306,6 +306,8 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
 
             let Some(service_tier) = service_tier else {
                 summary.skipped_missing_tier += 1;
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
                 continue;
             };
 
@@ -317,6 +319,8 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
                 .is_some_and(|current| current == service_tier)
                 && !should_mark_stream_backfill
             {
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
                 continue;
             }
 
@@ -358,6 +362,8 @@ pub(crate) async fn backfill_invocation_service_tiers_from_cursor(
             .rows_affected();
             summary.updated += affected;
             committed_updated = summary.updated;
+            committed_cursor_id = candidate.id;
+            committed_scanned = summary.scanned;
         }
     }
 

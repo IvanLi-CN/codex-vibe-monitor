@@ -1486,6 +1486,7 @@ async fn promote_verified_summary_snapshot_page_sets(
         if ensure_summary_archive_snapshot_v2_final_proof(pool, archive_batch_id, &manifest_sha256)
             .await?
         {
+            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
             sqlx::query(
                 "INSERT INTO summary_archive_snapshot_backfill_outcome \
                  (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at, \
@@ -1502,7 +1503,6 @@ async fn promote_verified_summary_snapshot_page_sets(
             .await
             .context("record promoted Summary Snapshot V2 outcome")?;
             promoted += 1;
-            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
         }
         drop(admission);
     }
@@ -2492,13 +2492,13 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             }
             result.unavailable_archive_batches += 1;
         } else {
+            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
             record_summary_archive_snapshot_backfill_outcome(
                 pool, &candidate, "complete", "", 0, 0,
             )
             .await?;
             result.materialized_archive_batches += 1;
             result.verified_proof_count = result.verified_proof_count.saturating_add(1);
-            crate::record_managed_task_processed_work(&["summary_coverage_recovery"], 1);
         }
         if !candidates_from_due_queue {
             result.next_cursor_id = candidate.id;
