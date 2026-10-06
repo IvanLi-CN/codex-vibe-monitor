@@ -19,6 +19,7 @@ const workloadLoads = new Map<string, Promise<TaskWorkloadTrend>>();
 const workloadQueue: Array<{
   key: string;
   cancelled: boolean;
+  promise: Promise<TaskWorkloadTrend>;
   resolve: (value: TaskWorkloadTrend) => void;
   reject: (reason: unknown) => void;
 }> = [];
@@ -86,7 +87,7 @@ function cancelQueuedWorkload(taskKey: string): void {
   for (const request of workloadQueue) {
     if (request.key === taskKey && !request.cancelled) {
       request.cancelled = true;
-      workloadLoads.delete(taskKey);
+      if (workloadLoads.get(taskKey) === request.promise) workloadLoads.delete(taskKey);
       request.reject(new DOMException("workload load cancelled", "AbortError"));
     }
   }
@@ -97,7 +98,7 @@ function pumpLoads(): void {
     const next = workloadQueue.shift();
     if (!next) return;
     if (next.cancelled) {
-      workloadLoads.delete(next.key);
+      if (workloadLoads.get(next.key) === next.promise) workloadLoads.delete(next.key);
       next.reject(new DOMException("workload load cancelled", "AbortError"));
       continue;
     }
@@ -110,7 +111,7 @@ function pumpLoads(): void {
       .catch(next.reject)
       .finally(() => {
         activeLoads -= 1;
-        workloadLoads.delete(next.key);
+        if (workloadLoads.get(next.key) === next.promise) workloadLoads.delete(next.key);
         pumpLoads();
       });
   }
@@ -125,10 +126,20 @@ function loadWorkload(taskKey: string, refresh = false): Promise<TaskWorkloadTre
   }
   const existing = workloadLoads.get(taskKey);
   if (existing) return existing;
+  let resolveLoad!: (value: TaskWorkloadTrend) => void;
+  let rejectLoad!: (reason: unknown) => void;
   const promise = new Promise<TaskWorkloadTrend>((resolve, reject) => {
-    workloadQueue.push({ key: taskKey, cancelled: false, resolve, reject });
-    pumpLoads();
+    resolveLoad = resolve;
+    rejectLoad = reject;
   });
+  workloadQueue.push({
+    key: taskKey,
+    cancelled: false,
+    promise,
+    resolve: resolveLoad,
+    reject: rejectLoad,
+  });
+  pumpLoads();
   workloadLoads.set(taskKey, promise);
   return promise;
 }
