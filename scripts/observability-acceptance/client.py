@@ -62,7 +62,8 @@ def browser_batch():
 def browser_seed():
     token=(ROOT/"grafana-viewer-token").read_text().strip()
     dashboard=ok("https://entry:8443","/api/dashboards/uid/cvm-web",token=token)["dashboard"]
-    assert all(panel["fieldConfig"]["defaults"]["noValue"]=="Unknown" for panel in dashboard["panels"])
+    data_panels=[panel for panel in dashboard["panels"] if panel.get("type")!="row"]
+    assert data_panels and all(panel["fieldConfig"]["defaults"]["noValue"]=="Unknown" for panel in data_panels)
     missing=ok("http://prometheus:9090","/api/v1/query?"+urllib.parse.urlencode({"query":"cvm_browser_data_ready_seconds_count"}))["data"]["result"]
     assert missing==[],"missing browser collection was represented as a measured zero"
     browser_batch()
@@ -99,7 +100,7 @@ def functional():
         for panel in dashboard["panels"]:
             for target in panel.get("targets",[]):
                 expression=target["expr"]
-                for name,value in [("$__rate_interval","1m"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$task_key",".*")]: expression=expression.replace(name,value)
+                for name,value in [("$__rate_interval","1m"),("$__range_s","1800"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$endpoint","responses|chat_completions"),("$task_key",".*"),("$lock_label",".*"),("$page",".*"),("$device",".*")]: expression=expression.replace(name,value)
                 result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)
                 assert result["status"]=="success",expression
                 if uid=="web":

@@ -87,7 +87,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "spanNulls": false
           }
@@ -141,7 +141,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "spanNulls": false
           }
@@ -195,7 +195,7 @@
             "mode": "fixed",
             "fixedColor": "red"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "spanNulls": false
           }
@@ -249,7 +249,7 @@
             "mode": "fixed",
             "fixedColor": "red"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "spanNulls": false
           }
@@ -303,7 +303,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -364,7 +364,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -461,7 +461,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "spanNulls": false
           }
@@ -533,7 +533,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -594,7 +594,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -687,7 +687,7 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "align": "auto",
             "displayMode": "auto"
@@ -749,7 +749,7 @@
             "mode": "fixed",
             "fixedColor": "red"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -810,7 +810,7 @@
             "mode": "fixed",
             "fixedColor": "red"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -871,7 +871,7 @@
             "mode": "fixed",
             "fixedColor": "orange"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
@@ -932,7 +932,7 @@
             "mode": "fixed",
             "fixedColor": "cyan"
           },
-          "noValue": "无样本",
+          "noValue": "Unknown",
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "smooth",
