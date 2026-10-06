@@ -1,0 +1,37 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: cvm-app
+    sample_limit: 4000
+    label_limit: 12
+    label_value_length_limit: 512
+    body_size_limit: 2MB
+    static_configs:
+      - targets: [fixture:9091]
+        labels:
+          service: codex-vibe-monitor
+          environment: synthetic-preview
+          instance: fixture
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: cvm_.*
+        action: keep
+
+  - job_name: cvm-hotpath
+    sample_limit: 1000
+    label_limit: 12
+    label_value_length_limit: 512
+    body_size_limit: 2MB
+    static_configs:
+      - targets: [fixture:6772]
+        labels:
+          service: codex-vibe-monitor
+          environment: synthetic-preview
+          instance: fixture
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: hotpath_(uptime_seconds|function_calls_total|function_duration_seconds|sql_queries_total|sql_duration_seconds|server_requests_total|server_responses_total|server_duration_seconds|mutex_acquisitions_total|mutex_wait_seconds|mutex_acquire_seconds|rwlock_acquisitions_total|rwlock_wait_seconds|rwlock_acquire_seconds)
+        action: keep

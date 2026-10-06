@@ -1,0 +1,67 @@
+services:
+  fixture:
+    image: python:3.13-alpine@sha256:2d9aefe2fef018a7eb2c13064c89c71929800fd2e5dccdbf52ea5da5bb8d929a
+    command: ["python", "/opt/cvm-preview/metrics_server.py"]
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./metrics_server.py:/opt/cvm-preview/metrics_server.py:ro
+    networks: [preview]
+
+  prometheus:
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2h
+      - --storage.tsdb.wal-compression
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    tmpfs:
+      - /prometheus:rw,mode=1777
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9090/-/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    depends_on:
+      fixture:
+        condition: service_started
+    networks: [preview]
+
+  grafana:
+    image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+    ports:
+      - "0.0.0.0:${GRAFANA_PREVIEW_PORT:-3101}:3000"
+    environment:
+      GF_SERVER_ROOT_URL: ${GRAFANA_PREVIEW_URL:-http://127.0.0.1:3101}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SECURITY_COOKIE_SECURE: "false"
+      GF_SECURITY_COOKIE_SAMESITE: lax
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_PLUGINS_PREINSTALL_DISABLED: "true"
+      GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
+      GF_ALERTING_ENABLED: "false"
+      GF_UNIFIED_ALERTING_ENABLED: "true"
+    volumes:
+      - ../grafana/provisioning:/etc/grafana/provisioning:ro
+      - ../grafana/dashboards:/etc/grafana/dashboards:ro
+    tmpfs:
+      - /var/lib/grafana:rw,mode=1777
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    networks: [preview]
+
+networks:
+  preview:
+    name: cvm-grafana-preview

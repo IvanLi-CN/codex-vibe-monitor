@@ -13,6 +13,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 SCRIPTS = Path(__file__).resolve().parent
+SOURCE = SCRIPTS.parent
 
 def load(name, path):
     loader = importlib.machinery.SourceFileLoader(name, str(path))
@@ -24,6 +25,7 @@ def load(name, path):
 migration = load("retire_performance", SCRIPTS / "retire-performance-db.py")
 observe = load("cvm_observe", SCRIPTS / "cvm-observe")
 cpu = load("cvm_cpu", SCRIPTS / "cvm-hotpath-cpu")
+preview = load("grafana_preview_metrics", SOURCE / "ops/observability/preview/metrics_server.py")
 OLD_IMAGE = "example/cvm@sha256:" + "a" * 64
 
 def fixture(path, ddl_transform=None):
@@ -53,6 +55,23 @@ def fixture(path, ddl_transform=None):
     connection.execute("INSERT INTO performance_epochs VALUES ('wal-only','now',NULL)")
     connection.commit()
     return connection
+
+
+class GrafanaPreviewTests(unittest.TestCase):
+    def test_fixture_emits_unique_series_for_both_scrape_ports(self):
+        for port in (9091, 6772):
+            with self.subTest(port=port):
+                payload = preview.Metrics().render(port)
+                series = [
+                    line.split(" ", 1)[0]
+                    for line in payload.splitlines()
+                    if line and not line.startswith("#")
+                ]
+                self.assertEqual(len(series), len(set(series)))
+        self.assertIn('source="synthetic-preview"', preview.Metrics().render(9091))
+
+    def test_preview_command_passes_shell_syntax_check(self):
+        subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
 
 class RetirementTests(unittest.TestCase):
     def test_program_range_and_old_writer_image_are_verified_before_cutover(self):

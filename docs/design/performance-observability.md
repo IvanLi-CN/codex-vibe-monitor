@@ -175,6 +175,37 @@ datasource UID 固定为 `cvm-prometheus`。仪表盘 JSON、变量、Prometheus
 
 所有图表展示时间窗口、单位和数据新鲜度；Histogram 分位数同时展示样本数，无样本的 p95/p99 为空。`up=0` 是抓取失败的真实信号，不能把被抓取指标缺失补成业务零；浏览器和平台不支持的指标保留 unknown。使用当前适用的内存诊断估算说明，不能将 managed/unattributed 估算当精确分配量。
 
+### 仪表盘布局与查询合同
+
+五个固定页面按“发现异常 → 分类 → 定位原因 → 查看证据”组织，保留 `cvm-overview`、
+`cvm-proxy`、`cvm-sqlite`、`cvm-runtime`、`cvm-web` UID 与 `cvm-prometheus` 数据源。
+24 列布局中，总览首行使用六个 4 列 Stat，详情页首行使用四个 6 列 Stat；趋势通常占
+12 列、归因表格占 24 列，面板顺序在窄屏纵向折叠时不改变。高级说明与不常用诊断内容
+放进折叠行，页面导航使用 dashboard links 保留变量、UTC 时间和实例；runtime 任务表
+保留 `var-task_key` 深链接。
+
+- `cvm-overview` 顶部展示业务调用/分钟、终态失败率、TTFT p95、CPU 核数、SQLite
+  准入等待 p95 与 RSS；默认 endpoint 是 `responses|chat_completions`。中部比较 TTFT
+  p50/p95、CPU、业务 success/error/cancelled 每分钟堆叠柱和四类 coordinator wait。
+- `cvm-proxy` 区分 invocation、upstream attempt、retry、TTFB、TTFT、上游 stream
+  lifetime 与 HTTP body lifetime；endpoint 表和 HTTP route 表同时列结果、分位数与样本数。
+- `cvm-sqlite` 分开 coordinator wait/hold、pool acquire、queue wait、batch execute、
+  ACK 和 enqueue-to-commit；`queue=all` 只表示总 pending，不与子队列相加。SQL 表最多
+  展示 10 个已导出的模板，默认按累计采样耗时排序。
+- `cvm-runtime` 用上下对齐的 CPU 与业务调用率图，函数耗时表明确 10% 计时抽样且包含
+  等待，不称 CPU 排名；任务表保留 `task_key` 深链接。managed/unattributed 内存与 RSS
+  分开，火焰图状态未配置时明确说明继续使用 samply。
+- `cvm-web` 的 `device` 变量只来自实际具有该标签的 data-ready 指标；API/SSE 查询不套
+  device 过滤。data-ready 无上报样本显示未知，其他已有样本的图继续展示；批次、事件、
+  节流样本和访问量不混为同一分母。
+
+查询口径固定为：当前资源使用最新有效 Gauge；窗口事件/排名使用 `increase(...[$__range])`，
+速率使用 `rate(...[$__rate_interval])`；经典 Histogram 从 `_bucket` 合并后计算 p50/p95，
+hotpath native Histogram 使用原生 histogram 表达式，不平均各实例或各维度的 p95。表格和
+排名查询整个所选窗口而不是最后瞬时值，分位数旁必须有对应 `_count` 或 native sample count。
+空序列是 unknown，真实零值保留为 0，采样年龄用于识别过期；不因阈值把所有大读数标红，
+沿用现有告警规则且不新增 SLO。
+
 抓取 15 秒，在线保留默认 30 天；Prometheus 的 size retention 与时间条件先满足者触发清理。实际容量由部署档位固定，并预留 WAL/head/compaction 空间，size retention 不能当严格卷容量上限。当前设计明确失去旧方案选定指标的 13 个月在线图表，不通过另建本地 rollup 弥补。
 
 初期告警覆盖抓取失联、持续高 CPU、SQLite 竞争/积压、错误率、任务积压和磁盘不足，使用 Grafana 内置能力。静态阈值和正常负载基线在规则中声明；未定义 SLO 时不伪装为 SLO 告警。通知渠道属于平台配置，设计锁定不授权向任何人发送通知。
