@@ -5,7 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type { PromptCacheConversationsResponse } from "../lib/api";
-import type { SubscriptionTopicDescriptor } from "../lib/sse";
+import type { SubscriptionTopicEvent } from "../lib/sse";
 import LivePage from "./Live";
 
 const LIVE_TAB_STORAGE_KEY = "codex-vibe-monitor.live.active-tab";
@@ -16,9 +16,19 @@ const mocks = vi.hoisted(() => ({
   useInvocationStream: vi.fn(),
   useModelRoutingLive: vi.fn(),
   useSseStatus: vi.fn(),
-  useSubscriptionTopic: vi.fn(),
+  getCachedTopicState: vi.fn(),
+  subscribeToTopic: vi.fn(),
   useSummary: vi.fn(),
 }));
+
+vi.mock("../lib/sse", async () => {
+  const actual = await vi.importActual<typeof import("../lib/sse")>("../lib/sse");
+  return {
+    ...actual,
+    getCachedTopicState: mocks.getCachedTopicState,
+    subscribeToTopic: mocks.subscribeToTopic,
+  };
+});
 
 vi.mock("../hooks/useCompactViewport", () => ({
   useCompactViewport: () => false,
@@ -42,10 +52,6 @@ vi.mock("../hooks/useStats", () => ({
 
 vi.mock("../hooks/useSseStatus", () => ({
   default: mocks.useSseStatus,
-}));
-
-vi.mock("../hooks/useSubscriptionTopic", () => ({
-  useSubscriptionTopic: mocks.useSubscriptionTopic,
 }));
 
 vi.mock("../features/forward-proxy/ForwardProxyLiveTable", () => ({
@@ -154,14 +160,8 @@ beforeEach(() => {
     nextRetryAt: null,
     autoReconnect: false,
   });
-  mocks.useSubscriptionTopic.mockImplementation(
-    (descriptor: SubscriptionTopicDescriptor | null, enabled = true) => ({
-      data: enabled && descriptor?.topic === "prompt-cache.window" ? promptCacheStats : null,
-      isLoading: false,
-      error: null,
-      refresh: vi.fn(),
-    }),
-  );
+  mocks.getCachedTopicState.mockReturnValue(null);
+  mocks.subscribeToTopic.mockReturnValue(vi.fn());
   mocks.useSummary.mockReturnValue({
     summary: null,
     isLoading: false,
@@ -198,15 +198,42 @@ describe("Live prompt-cache consumer integration", () => {
   it("renders the real subscription hook data through the real conversation table", () => {
     render(<LivePage />);
 
+    const subscription = mocks.subscribeToTopic.mock.calls.find(
+      ([descriptor]) => descriptor?.topic === "prompt-cache.window",
+    );
+    expect(subscription).toBeDefined();
+    const listener = subscription?.[1] as
+      | ((event: SubscriptionTopicEvent<PromptCacheConversationsResponse>) => void)
+      | undefined;
+    expect(listener).toBeDefined();
+    mocks.getCachedTopicState.mockReturnValue({
+      descriptor: subscription?.[0],
+      topicKey: "prompt-cache.window?detail=full&limit=50&recentInvocationLimit=16",
+      schemaEpoch: "prompt-cache.window/v1",
+      cursor: 1,
+      payload: promptCacheStats,
+      lastKind: "snapshot",
+      receivedAt: Date.parse(fixedTimestamp),
+      error: null,
+    });
+    act(() => {
+      listener?.({
+        type: "snapshot",
+        topic: subscription?.[0],
+        topicKey: "prompt-cache.window?detail=full&limit=50&recentInvocationLimit=16",
+        schemaEpoch: "prompt-cache.window/v1",
+        cursor: 1,
+        payload: promptCacheStats,
+        deliverySource: "network",
+      });
+    });
+
     const renderedText = host?.textContent ?? "";
     expect(renderedText).toContain("pck-integration");
     expect(renderedText).toContain("conv-1");
     expect(renderedText).toContain("成功");
     expect(renderedText).toContain("失败");
     expect(renderedText).toContain("120");
-    expect(mocks.useSubscriptionTopic).toHaveBeenCalledWith(
-      expect.objectContaining({ topic: "prompt-cache.window" }),
-      true,
-    );
+    expect(subscription?.[0]).toEqual(expect.objectContaining({ topic: "prompt-cache.window" }));
   });
 });

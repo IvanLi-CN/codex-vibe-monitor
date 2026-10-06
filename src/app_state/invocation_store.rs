@@ -41,6 +41,16 @@ pub(crate) struct PromptCacheRuntimeProjection {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) preview: PromptCacheConversationInvocationPreviewResponse,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) reported_cache_write_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
+    pub(crate) cost_input: f64,
+    pub(crate) cost_cache_write: f64,
+    pub(crate) cost_cache_read: f64,
+    pub(crate) cost_output: f64,
+    pub(crate) cost_reasoning: f64,
 }
 
 impl PromptCacheRuntimeProjection {
@@ -54,6 +64,16 @@ impl PromptCacheRuntimeProjection {
             prompt_cache_key,
             sticky_key,
             preview: prompt_cache_invocation_preview_from_runtime_record(record, preview_key),
+            input_tokens: record.input_tokens.unwrap_or_default(),
+            output_tokens: record.output_tokens.unwrap_or_default(),
+            cache_input_tokens: record.cache_input_tokens.unwrap_or_default(),
+            reported_cache_write_tokens: record.reported_cache_write_tokens.unwrap_or_default(),
+            reasoning_tokens: record.reasoning_tokens.unwrap_or_default(),
+            cost_input: record.cost_input.unwrap_or_default(),
+            cost_cache_write: record.cost_cache_write.unwrap_or_default(),
+            cost_cache_read: record.cost_cache_read.unwrap_or_default(),
+            cost_output: record.cost_output.unwrap_or_default(),
+            cost_reasoning: record.cost_reasoning.unwrap_or_default(),
         })
     }
 }

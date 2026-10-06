@@ -1567,6 +1567,16 @@ struct PromptCacheTopicDelta {
     is_success: bool,
     request_tokens: i64,
     cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+    reported_cache_write_tokens: i64,
+    reasoning_tokens: i64,
+    cost_input: f64,
+    cost_cache_write: f64,
+    cost_cache_read: f64,
+    cost_output: f64,
+    cost_reasoning: f64,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<String>,
     preview: Option<PromptCacheConversationInvocationPreviewResponse>,
@@ -1637,6 +1647,16 @@ impl PromptCacheTopicDelta {
             status,
             request_tokens: preview.total_tokens.max(0),
             cost: preview.cost.unwrap_or_default(),
+            input_tokens: projection.input_tokens,
+            output_tokens: projection.output_tokens,
+            cache_input_tokens: projection.cache_input_tokens,
+            reported_cache_write_tokens: projection.reported_cache_write_tokens,
+            reasoning_tokens: projection.reasoning_tokens,
+            cost_input: projection.cost_input,
+            cost_cache_write: projection.cost_cache_write,
+            cost_cache_read: projection.cost_cache_read,
+            cost_output: projection.cost_output,
+            cost_reasoning: projection.cost_reasoning,
             upstream_account_id: preview.upstream_account_id,
             upstream_account_name: preview.upstream_account_name.clone(),
             preview: Some(preview),
@@ -1666,6 +1686,16 @@ impl PromptCacheTopicDelta {
             is_success: false,
             request_tokens: 0,
             cost: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_input_tokens: 0,
+            reported_cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cost_input: 0.0,
+            cost_cache_write: 0.0,
+            cost_cache_read: 0.0,
+            cost_output: 0.0,
+            cost_reasoning: 0.0,
             upstream_account_id: mutation.upstream_account_id,
             upstream_account_name: None,
             preview: None,
@@ -2900,6 +2930,32 @@ fn apply_working_conversation_terminal_delta(
         .total_tokens
         .saturating_add(record.request_tokens.max(0));
     conversation.total_cost += record.cost;
+    increment_optional_i64(
+        &mut conversation.success_count,
+        i64::from(record.is_success),
+    );
+    increment_optional_i64(
+        &mut conversation.failure_count,
+        i64::from(!record.is_success),
+    );
+    increment_optional_i64(&mut conversation.input_tokens, record.input_tokens);
+    increment_optional_i64(&mut conversation.output_tokens, record.output_tokens);
+    increment_optional_i64(
+        &mut conversation.cache_input_tokens,
+        record.cache_input_tokens,
+    );
+    increment_optional_i64(
+        &mut conversation.reported_cache_write_tokens,
+        record.reported_cache_write_tokens,
+    );
+    increment_optional_i64(&mut conversation.reasoning_tokens, record.reasoning_tokens);
+    increment_optional_f64(&mut conversation.cost_input, record.cost_input);
+    increment_optional_f64(&mut conversation.cost_cache_write, record.cost_cache_write);
+    increment_optional_f64(&mut conversation.cost_cache_read, record.cost_cache_read);
+    increment_optional_f64(&mut conversation.cost_output, record.cost_output);
+    increment_optional_f64(&mut conversation.cost_reasoning, record.cost_reasoning);
+    update_option_if_earlier(&mut conversation.first_invocation_at, &record.occurred_at);
+    update_option_if_newer(&mut conversation.last_invocation_at, &record.occurred_at);
     update_option_if_newer(&mut conversation.last_terminal_at, &record.occurred_at);
 
     let account_group_key = resolve_prompt_cache_upstream_account_group_key(
@@ -3052,6 +3108,26 @@ fn update_option_if_newer(current: &mut Option<String>, candidate: &str) -> bool
     } else {
         false
     }
+}
+
+fn update_option_if_earlier(current: &mut Option<String>, candidate: &str) -> bool {
+    if current
+        .as_deref()
+        .is_none_or(|existing| working_timestamp_cmp(candidate, existing).is_lt())
+    {
+        *current = Some(candidate.to_string());
+        true
+    } else {
+        false
+    }
+}
+
+fn increment_optional_i64(current: &mut Option<i64>, delta: i64) {
+    *current = Some(current.unwrap_or_default().saturating_add(delta));
+}
+
+fn increment_optional_f64(current: &mut Option<f64>, delta: f64) {
+    *current = Some(current.unwrap_or_default() + delta);
 }
 
 #[derive(Debug, Clone)]
@@ -10935,6 +11011,7 @@ fn apply_prompt_cache_records_to_payload(
                 {
                     conversation.insert("lastTerminalAt".to_string(), occurred_at.clone());
                 }
+                apply_prompt_cache_statistics_delta(conversation, record, &occurred_at);
                 apply_prompt_cache_account_delta(conversation, record, &occurred_at);
             }
             let points = conversation
@@ -11060,6 +11137,51 @@ fn apply_prompt_cache_account_delta(
         {
             account.insert("lastActivityAt".to_string(), occurred_at.clone());
         }
+    }
+}
+
+fn apply_prompt_cache_statistics_delta(
+    conversation: &mut serde_json::Map<String, Value>,
+    record: &PromptCacheTopicDelta,
+    occurred_at: &Value,
+) {
+    increment_json_i64(conversation, "successCount", i64::from(record.is_success));
+    increment_json_i64(conversation, "failureCount", i64::from(!record.is_success));
+    increment_json_i64(conversation, "inputTokens", record.input_tokens);
+    increment_json_i64(conversation, "outputTokens", record.output_tokens);
+    increment_json_i64(conversation, "cacheInputTokens", record.cache_input_tokens);
+    increment_json_i64(
+        conversation,
+        "reportedCacheWriteTokens",
+        record.reported_cache_write_tokens,
+    );
+    increment_json_i64(conversation, "reasoningTokens", record.reasoning_tokens);
+    increment_json_f64(conversation, "costInput", record.cost_input);
+    increment_json_f64(conversation, "costCacheWrite", record.cost_cache_write);
+    increment_json_f64(conversation, "costCacheRead", record.cost_cache_read);
+    increment_json_f64(conversation, "costOutput", record.cost_output);
+    increment_json_f64(conversation, "costReasoning", record.cost_reasoning);
+
+    let occurred_at = occurred_at.as_str().unwrap_or_default();
+    if conversation
+        .get("firstInvocationAt")
+        .and_then(Value::as_str)
+        .is_none_or(|current| occurred_at < current)
+    {
+        conversation.insert(
+            "firstInvocationAt".to_string(),
+            Value::String(occurred_at.to_string()),
+        );
+    }
+    if conversation
+        .get("lastInvocationAt")
+        .and_then(Value::as_str)
+        .is_none_or(|current| occurred_at > current)
+    {
+        conversation.insert(
+            "lastInvocationAt".to_string(),
+            Value::String(occurred_at.to_string()),
+        );
     }
 }
 
@@ -13964,6 +14086,143 @@ mod tests {
         let preview = delta.preview.as_ref().expect("typed prompt cache preview");
         assert_eq!(preview.invoke_id, "compact-prompt-cache-projection");
         assert_eq!(preview.prompt_cache_key.as_deref(), Some("cache-key"));
+        drop(guard);
+        drop(lease);
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_window_topic_materializes_live_statistics_delta() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        let hub = state.subscription_hub.clone();
+        let topic = SubscriptionTopic::PromptCacheWindow {
+            selection: PromptCacheConversationSelection::ActivityWindowMinutes(5),
+            detail_level: PromptCacheConversationDetailLevel::Full,
+            recent_invocation_limit: Some(16),
+        };
+        let now = Utc::now();
+        let baseline_occurred_at = format_naive(
+            (now - ChronoDuration::minutes(2))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, input_tokens, output_tokens,
+                cache_input_tokens, reported_cache_write_tokens, reasoning_tokens, total_tokens,
+                cost, cost_input, cost_cache_write, cost_cache_read, cost_output, cost_reasoning,
+                payload, raw_response
+            ) VALUES (
+                'subscription-baseline', ?1, 'proxy', 'success', 4, 5, 6, 7, 8, 20,
+                0.20, 0.01, 0.02, 0.03, 0.04, 0.05, ?2, '{}'
+            )
+            "#,
+        )
+        .bind(&baseline_occurred_at)
+        .bind(json!({ "promptCacheKey": "subscription-live-key" }).to_string())
+        .execute(&state.pool)
+        .await
+        .expect("persist subscription baseline invocation");
+        crate::tests::complete_prompt_cache_conversation_materialization_for_test(&state.pool)
+            .await;
+
+        let lease = hub
+            .register_topic_subscribers(std::slice::from_ref(&topic))
+            .await
+            .expect("register prompt cache topic owner");
+        hub.refresh_topic(state.clone(), topic.clone(), false)
+            .await
+            .expect("build prompt cache subscription baseline");
+        {
+            let topic_key = topic.cache_key().expect("prompt cache topic key");
+            let guard = hub.state.lock().await;
+            let cached = guard
+                .topics
+                .get(&topic_key)
+                .expect("cached prompt cache topic");
+            let payload = cached.snapshot_frame.payload_value();
+            assert_eq!(payload["conversations"].as_array().map(Vec::len), Some(1));
+            assert_eq!(
+                payload["conversations"][0]["requestCount"], 1,
+                "the production topic baseline must include the persisted fixture",
+            );
+        }
+
+        let live_occurred_at = format_naive(
+            (now - ChronoDuration::minutes(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut live = dashboard_runtime_topology_live_record(&live_occurred_at);
+        live.id = 0;
+        live.invoke_id = "subscription-live-terminal".to_string();
+        live.status = Some("success".to_string());
+        live.live_phase = None;
+        live.prompt_cache_key = Some("subscription-live-key".to_string());
+        live.input_tokens = Some(10);
+        live.output_tokens = Some(11);
+        live.cache_input_tokens = Some(12);
+        live.reported_cache_write_tokens = Some(13);
+        live.reasoning_tokens = Some(14);
+        live.total_tokens = Some(50);
+        live.cost = Some(0.50);
+        live.cost_input = Some(0.11);
+        live.cost_cache_write = Some(0.12);
+        live.cost_cache_read = Some(0.13);
+        live.cost_output = Some(0.14);
+        live.cost_reasoning = Some(0.15);
+        state.proxy_runtime_invocations.upsert(live.clone());
+        let mutations = [SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::invocation(&live, RuntimeMutationKind::RuntimeUpsert),
+        }];
+        let live_identity = format!("{}\0{}", live.invoke_id, live.occurred_at);
+        hub.schedule_prompt_cache_topic_projection(state.clone(), &mutations)
+            .await;
+        {
+            let guard = hub.state.lock().await;
+            assert!(
+                guard
+                    .topics
+                    .get(&topic.cache_key().expect("prompt cache topic key"))
+                    .expect("cached prompt cache topic")
+                    .prompt_cache_pending_records
+                    .contains_key(&live_identity)
+            );
+        }
+        hub.materialize_prompt_cache_topic(state.clone(), &topic)
+            .await
+            .expect("materialize live prompt cache topic delta");
+
+        let topic_key = topic.cache_key().expect("prompt cache topic key");
+        let guard = hub.state.lock().await;
+        let cached = guard
+            .topics
+            .get(&topic_key)
+            .expect("cached prompt cache topic");
+        let payload = cached.snapshot_frame.payload_value();
+        let conversation = payload["conversations"]
+            .as_array()
+            .and_then(|conversations| conversations.first())
+            .expect("subscription conversation payload");
+        assert_eq!(conversation["promptCacheKey"], "subscription-live-key");
+        assert_eq!(conversation["requestCount"], 2);
+        assert_eq!(conversation["totalTokens"], 70);
+        assert_eq!(conversation["successCount"], 2);
+        assert_eq!(conversation["failureCount"], 0);
+        assert_eq!(conversation["inputTokens"], 14);
+        assert_eq!(conversation["outputTokens"], 16);
+        assert_eq!(conversation["cacheInputTokens"], 18);
+        assert_eq!(conversation["reportedCacheWriteTokens"], 20);
+        assert_eq!(conversation["reasoningTokens"], 22);
+        assert!((conversation["costInput"].as_f64().unwrap() - 0.12).abs() < 1e-9);
+        assert_ne!(
+            conversation["firstInvocationAt"],
+            conversation["lastInvocationAt"]
+        );
         drop(guard);
         drop(lease);
     }
@@ -22629,6 +22888,16 @@ mod tests {
         record.prompt_cache_key = Some("cache-key".to_string());
         record.total_tokens = Some(42);
         record.cost = Some(0.25);
+        record.input_tokens = Some(10);
+        record.output_tokens = Some(20);
+        record.cache_input_tokens = Some(3);
+        record.reported_cache_write_tokens = Some(4);
+        record.reasoning_tokens = Some(5);
+        record.cost_input = Some(0.01);
+        record.cost_cache_write = Some(0.02);
+        record.cost_cache_read = Some(0.03);
+        record.cost_output = Some(0.04);
+        record.cost_reasoning = Some(0.05);
         record.failure_class = Some("none".to_string());
 
         let delta = PromptCacheTopicDelta::from_record(&record)
@@ -22649,6 +22918,22 @@ mod tests {
         assert_eq!(conversation["promptCacheKey"], "cache-key");
         assert_eq!(conversation["requestCount"], 1);
         assert_eq!(conversation["totalTokens"], 42);
+        assert_eq!(conversation["successCount"], 1);
+        assert_eq!(conversation["failureCount"], 0);
+        assert_eq!(conversation["inputTokens"], 10);
+        assert_eq!(conversation["outputTokens"], 20);
+        assert_eq!(conversation["cacheInputTokens"], 3);
+        assert_eq!(conversation["reportedCacheWriteTokens"], 4);
+        assert_eq!(conversation["reasoningTokens"], 5);
+        assert_eq!(conversation["costInput"], 0.01);
+        assert_eq!(conversation["costCacheWrite"], 0.02);
+        assert_eq!(conversation["costCacheRead"], 0.03);
+        assert_eq!(conversation["costOutput"], 0.04);
+        assert_eq!(conversation["costReasoning"], 0.05);
+        assert_eq!(
+            conversation["firstInvocationAt"],
+            conversation["lastInvocationAt"]
+        );
         assert_eq!(
             conversation["recentInvocations"].as_array().unwrap().len(),
             1
@@ -22717,6 +23002,16 @@ mod tests {
             record.live_phase = None;
             record.total_tokens = Some(42);
             record.cost = Some(0.25);
+            record.input_tokens = Some(10);
+            record.output_tokens = Some(20);
+            record.cache_input_tokens = Some(3);
+            record.reported_cache_write_tokens = Some(4);
+            record.reasoning_tokens = Some(5);
+            record.cost_input = Some(0.01);
+            record.cost_cache_write = Some(0.02);
+            record.cost_cache_read = Some(0.03);
+            record.cost_output = Some(0.04);
+            record.cost_reasoning = Some(0.05);
             PromptCacheTopicDelta::from_record(&record)
                 .expect("build working terminal delta")
                 .expect("working terminal delta")
@@ -22894,6 +23189,18 @@ mod tests {
             .expect("alpha conversation");
         assert_eq!(alpha.request_count, 1);
         assert_eq!(alpha.total_tokens, 42);
+        assert_eq!(alpha.success_count, Some(1));
+        assert_eq!(alpha.failure_count, Some(0));
+        assert_eq!(alpha.input_tokens, Some(10));
+        assert_eq!(alpha.output_tokens, Some(20));
+        assert_eq!(alpha.cache_input_tokens, Some(3));
+        assert_eq!(alpha.reported_cache_write_tokens, Some(4));
+        assert_eq!(alpha.reasoning_tokens, Some(5));
+        assert_eq!(alpha.cost_input, Some(0.01));
+        assert_eq!(alpha.cost_cache_write, Some(0.02));
+        assert_eq!(alpha.cost_cache_read, Some(0.03));
+        assert_eq!(alpha.cost_output, Some(0.04));
+        assert_eq!(alpha.cost_reasoning, Some(0.05));
         assert!(alpha.last_in_flight_at.is_none());
         assert_eq!(alpha.last24h_requests.len(), 1);
         assert_eq!(alpha.upstream_accounts[0].upstream_account_id, None);
@@ -24299,6 +24606,16 @@ mod tests {
             is_success: status == "success",
             request_tokens: 0,
             cost: 0.0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_input_tokens: 0,
+            reported_cache_write_tokens: 0,
+            reasoning_tokens: 0,
+            cost_input: 0.0,
+            cost_cache_write: 0.0,
+            cost_cache_read: 0.0,
+            cost_output: 0.0,
+            cost_reasoning: 0.0,
             upstream_account_id: None,
             upstream_account_name: None,
             preview: None,
