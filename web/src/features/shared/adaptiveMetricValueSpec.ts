@@ -1,6 +1,6 @@
 export type AdaptiveMetricValueKind = "number" | "integer" | "currency";
 export type AdaptiveCurrencyProfile = "default" | "rate";
-export type AdaptiveMetricPresentation = "default" | "account-stat-card";
+export type AdaptiveMetricPresentation = "default" | "account-stat-card" | "usage-breakdown";
 
 const COMPACT_SUFFIX_LOCALE = "en-US";
 const COMPACT_UNITS = [
@@ -220,7 +220,7 @@ export function buildAdaptiveMetricSpec(
     minimumFractionDigits: defaultMinimumFractionDigits,
   }).format(value);
   const preferCompact =
-    presentation === "account-stat-card" && hasAtLeastTwoGroupingSeparators(value, localeTag, kind);
+    presentation !== "default" && hasAtLeastTwoGroupingSeparators(value, localeTag, kind);
   const candidates: AdaptiveDisplayMeasureCandidate[] = [];
 
   for (const [index, precision] of standardPrecisions.entries()) {
@@ -383,27 +383,34 @@ export function buildAdaptiveCurrencyTextSpec(
     ]);
   }
 
+  const metricSpec = buildAdaptiveMetricSpec(value, localeTag, "currency", options);
+  const preferCompact =
+    options.presentation === "usage-breakdown" &&
+    hasAtLeastTwoGroupingSeparators(value, localeTag, "currency");
+
   return buildAdaptiveTextSpec(fullValue, [
     {
       key: "full",
       value: fullValue,
-      priority: 0,
+      priority: preferCompact ? 100 : 0,
     },
     {
       key: "standard-1",
       value: createCurrencyFormatter(localeTag, 1).format(value),
-      priority: 1,
+      priority: preferCompact ? 101 : 1,
     },
     {
       key: "standard-0",
       value: createCurrencyFormatter(localeTag, 0).format(value),
-      priority: 2,
+      priority: preferCompact ? 102 : 2,
     },
-    ...buildAdaptiveMetricSpec(value, localeTag, "currency").candidates.map((candidate, index) => ({
-      key: candidate.key,
-      value: candidate.value,
-      priority: 20 + index,
-    })),
+    ...metricSpec.candidates
+      .filter((candidate) => candidate.compact)
+      .map((candidate, index) => ({
+        key: candidate.key,
+        value: candidate.value,
+        priority: preferCompact ? candidate.priority : 20 + index,
+      })),
   ]);
 }
 

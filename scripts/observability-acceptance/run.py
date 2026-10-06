@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from environment import AdmissionBudget, actions_context, comparison_report, observe_resources, quiet_admission, verify_measurement_evidence
+from environment import AdmissionBudget, actions_context, comparison_report, measurement_cpu_layout, observe_resources, quiet_admission, verify_measurement_evidence
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -36,11 +36,12 @@ class Run:
             raise ValueError("acceptance run must be inside the exact Agent Directory")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*",args.agent) or not re.fullmatch(r"[a-f0-9]{40}",args.candidate):
             raise ValueError("invalid agent or candidate identity")
+        self.cpu_layout=measurement_cpu_layout(self.context["cpuAffinity"]) if self.suite=="full" else None
         self.project="testbox-"+args.agent+"-"+hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
-        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":2,"appMemoryLimit":"1g"},indent=2)+"\n")
+        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g"},indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
         for name in ["metrics-token","read-token","grafana-admin-password"]:
@@ -78,6 +79,7 @@ class Run:
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
             service["cap_drop"]=["ALL"];service.pop("ports",None)
+            # Keep helpers runner-managed; pinning them can create host PSI pressure.
         fixture=self.source/"scripts/observability-acceptance"
         common={"image":"python:3.12-alpine","user":f"{os.getuid()}:{os.getgid()}","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.private)+":/private"]}
         compose["services"].update({
@@ -86,6 +88,9 @@ class Run:
             "entry":{**common,"command":["python","/work/fixture.py","https"]},
             "client":{**common,"command":["sleep","infinity"]},
         })
+        if self.cpu_layout:
+            compose["services"]["app"]["cpus"]=1
+            compose["services"]["app"]["cpuset"]=self.cpu_layout["app"]
         # Exercise the documented .env.local surface before hotpath/Tokio startup.
         app=compose["services"]["app"]
         local_names=["METRICS_BIND","METRICS_TOKEN_FILE","OBSERVABILITY_READ_TOKEN_FILE","GRAFANA_PUBLIC_URL","OBSERVABILITY_ENABLED"]

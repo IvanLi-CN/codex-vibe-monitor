@@ -5,6 +5,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { AdaptiveDisplayValue, AdaptiveMetricValue } from "./AdaptiveMetricValue";
 import {
   buildAdaptiveCurrencyAmountTextSpec,
+  buildAdaptiveCurrencyTextSpec,
   buildAdaptiveDurationTextSpec,
   buildAdaptiveNumberTextSpec,
 } from "./adaptiveMetricValueSpec";
@@ -160,6 +161,27 @@ describe("AdaptiveMetricValue", () => {
     expect(compactSpec.fullValue).toBe("30,030,779");
     expect(ordinarySpec.candidates[0]?.value).toBe("10,376");
     expect(defaultSpec.candidates[0]?.value).toBe("30,030,779");
+  });
+
+  it("prioritizes compact usage values without changing the full currency locale", () => {
+    const numberSpec = buildAdaptiveNumberTextSpec(53_684_518, "en-US", 0, {
+      presentation: "usage-breakdown",
+    });
+    const currencySpec = buildAdaptiveCurrencyTextSpec(53_684_518, "en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+      presentation: "usage-breakdown",
+    });
+    const defaultCurrencySpec = buildAdaptiveCurrencyTextSpec(53_684_518, "en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 4,
+    });
+
+    expect(numberSpec.candidates[0]?.value).toBe("53.7M");
+    expect(numberSpec.fullValue).toBe("53,684,518");
+    expect(currencySpec.candidates[0]?.value).toBe("$53.7M");
+    expect(currencySpec.fullValue).toBe("$53,684,518.00");
+    expect(defaultCurrencySpec.candidates[0]?.value).toBe("$53,684,518.00");
   });
 
   it("keeps the exact full value accessible when an account card starts compact", () => {

@@ -183,7 +183,7 @@ const longValueBreakdown: UsageBreakdown = {
 };
 
 function buildNumberSpec(value: number) {
-  return buildAdaptiveNumberTextSpec(value, "en-US", 0);
+  return buildAdaptiveNumberTextSpec(value, "en-US", 0, { presentation: "usage-breakdown" });
 }
 
 function buildRatioSpec(value: number | null) {
@@ -194,6 +194,7 @@ function buildCurrencySpec(value: number | null) {
   return buildAdaptiveCurrencyTextSpec(value, "en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 4,
+    presentation: "usage-breakdown",
   });
 }
 
