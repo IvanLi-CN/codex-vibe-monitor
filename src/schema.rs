@@ -652,8 +652,7 @@ pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(
          WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = {key_expr}
              AND occurred_at >= datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds')
          UNION ALL
-         -- `id` is the row identity; let SQLite use its primary-key lookup for
-         -- the sparse older live rows instead of scanning the whole table.
+         -- Recheck sparse older live candidates by their source row identity.
          SELECT * FROM codex_invocations WHERE id IN (
              SELECT invocation_id FROM invocation_in_progress_live
                  WHERE prompt_cache_key = {key_expr}

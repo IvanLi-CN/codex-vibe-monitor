@@ -22,6 +22,7 @@ ADR 0031 将归档文件批次与主库写批次区分，规定月份只决定�
 
 ## Related Changes
 
+- PR #1079 的 `f7fa7ea9` 移除稀疏 ID 分支的 `NOT INDEXED` 并更新触发器定义识别。此前将该子句解释为强制全表扫描的判断已撤回：SQLite 仍可访问 rowid。改动仅作为待验证候选，SQL 结构断言不是性能证明；当前 Actions、历史有效预算失败及不稳定窗口分别绑定，根因保持未确认。查询注释和实施记录同步去除已撤回的因果描述。
 - PR #1079 的第二个 Repair Batch 补齐 `archiveBatches[].timeoutCount`，将未完成批次触发的执行期限按数据集/月归属，保留整轮兼容值及预算标志；增加确定性轻量回归和旧 JSON/准确零兼容验证。旧 manifest 拥有的隔离记录可能保留 degraded 诊断，作为观测限制记录，不改变删除保护或任务准入。
 - [PR #1079](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1079)：主人将本次停靠点改为 PR 合并，并明确暂不在本地运行 stateful profile，以其他验证及 GitHub Actions 必过检查完成交付。性能测试仅允许在 GitHub Actions，完整容量目标仍待独立验证；不声称 50 倍吞吐、24 小时归零或在线延迟不劣已签收。
 - 本次任务内批次的 Tier 4 第一轮归为一个 Repair Batch：修正 gzip ISIZE 回绕造成的空间预检低估、同月较早记录追加导致的保留期缩短，并将新增取消/目录锁测试改为确定性状态断言，去除 wall-clock 性能阈值。修复候选重新交由 Actions 验证并刷新全部五 lane；与此前追赶交付的审查计数分别记录。
