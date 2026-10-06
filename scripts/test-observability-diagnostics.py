@@ -219,7 +219,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_separate_hosted_diagnosis_preserves_certification_contract(self):
         contract.require_observability_diagnostic_contract(self.workflow)
-        contract.require_observability_performance_contract(self.workflow, self.workflow["jobs"]["build"])
+        contract.require_observability_performance_contract(self.workflow)
 
     def test_private_unbounded_and_certificate_artifacts_rejected(self):
         for suffix in ["private/**", "*.log", "empirical-card.json", "**", "data/*.db"]:
@@ -234,7 +234,7 @@ class WorkflowTests(unittest.TestCase):
             workflow["jobs"]["observability-diagnostics"][key] = value
             with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["build"]["needs"].append("observability-diagnostics")
+        workflow["jobs"]["build"]["needs"] = ["build-pr-smoke-artifacts", "observability-diagnostics"]
         with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
 
 
