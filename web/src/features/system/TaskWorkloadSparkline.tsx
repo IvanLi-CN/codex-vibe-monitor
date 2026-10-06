@@ -14,6 +14,7 @@ const CACHE_FRESHNESS_MS = 30_000;
 const MAX_CACHE_ENTRIES = 64;
 const MAX_CONCURRENT_LOADS = 4;
 const workloadCache = new Map<string, TaskWorkloadTrend>();
+const workloadLiveRevisions = new Map<string, number>();
 const workloadLoads = new Map<string, Promise<TaskWorkloadTrend>>();
 const workloadQueue: Array<{
   key: string;
@@ -60,7 +61,16 @@ function trimCache(): void {
   }
 }
 
-function cacheTrend(taskKey: string, trend: TaskWorkloadTrend): void {
+function cacheTrend(
+  taskKey: string,
+  trend: TaskWorkloadTrend,
+  source: "http" | "topic" = "http",
+): void {
+  const liveRevision = workloadLiveRevisions.get(taskKey);
+  if (source === "http" && liveRevision != null && trend.revision <= liveRevision) return;
+  if (source === "topic") {
+    workloadLiveRevisions.set(taskKey, Math.max(liveRevision ?? -1, trend.revision));
+  }
   const cached = workloadCache.get(taskKey);
   if (cached && trend.revision < cached.revision) return;
   workloadCache.set(taskKey, trend);
@@ -94,7 +104,7 @@ function pumpLoads(): void {
     activeLoads += 1;
     void fetchManagedTaskWorkload(next.key, { windowHours: 24, limit: 200 })
       .then((trend) => {
-        cacheTrend(next.key, trend);
+        cacheTrend(next.key, trend, "http");
         next.resolve(trend);
       })
       .catch(next.reject)
@@ -343,11 +353,17 @@ export function TaskWorkloadSparkline({
   const [topicSlotAcquired, setTopicSlotAcquired] = useState(false);
   const activeVisible = visible && pageVisible;
   const applyTrend = useCallback(
-    (next: TaskWorkloadTrend): boolean => {
+    (next: TaskWorkloadTrend, source: "http" | "topic"): boolean => {
+      const liveRevision = workloadLiveRevisions.get(task.taskKey);
+      // SSE is the live source. A same-revision HTTP response may have been
+      // assembled before the event was flushed, so it must not roll the row back.
+      if (source === "http" && liveRevision != null && next.revision <= liveRevision) {
+        return false;
+      }
       if (next.revision < trendRevisionRef.current) return false;
       trendRevisionRef.current = next.revision;
       setTrend(next);
-      cacheTrend(task.taskKey, next);
+      cacheTrend(task.taskKey, next, source);
       return true;
     },
     [task.taskKey],
@@ -406,7 +422,7 @@ export function TaskWorkloadSparkline({
     let active = true;
     void loadWorkload(task.taskKey)
       .then((next) => {
-        if (active && applyTrend(next)) {
+        if (active && applyTrend(next, "http")) {
           setLoadError(null);
         }
       })
@@ -421,7 +437,7 @@ export function TaskWorkloadSparkline({
 
   useEffect(() => {
     if (topic.data) {
-      applyTrend(topic.data);
+      applyTrend(topic.data, "topic");
       setLoadError(null);
     }
   }, [applyTrend, topic.data]);
