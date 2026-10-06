@@ -808,6 +808,18 @@ function SummaryBlock({
     requestCount: string;
     totalTokens: string;
     totalCost: string;
+    successCount: string;
+    failureCount: string;
+    inputTokens: string;
+    outputTokens: string;
+    cacheInputTokens: string;
+    reportedCacheWriteTokens: string;
+    reasoningTokens: string;
+    costInput: string;
+    costCacheWrite: string;
+    costCacheRead: string;
+    costOutput: string;
+    costReasoning: string;
   };
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
@@ -826,6 +838,80 @@ function SummaryBlock({
       value: formatCurrency(conversation.totalCost, currencyFormatter),
     },
   ];
+  const detailItems = [
+    conversation.successCount != null
+      ? {
+          label: labels.successCount,
+          value: formatNumber(conversation.successCount, numberFormatter),
+        }
+      : null,
+    conversation.failureCount != null
+      ? {
+          label: labels.failureCount,
+          value: formatNumber(conversation.failureCount, numberFormatter),
+        }
+      : null,
+    conversation.inputTokens != null
+      ? {
+          label: labels.inputTokens,
+          value: formatNumber(conversation.inputTokens, numberFormatter),
+        }
+      : null,
+    conversation.cacheInputTokens != null
+      ? {
+          label: labels.cacheInputTokens,
+          value: formatNumber(conversation.cacheInputTokens, numberFormatter),
+        }
+      : null,
+    conversation.reportedCacheWriteTokens != null
+      ? {
+          label: labels.reportedCacheWriteTokens,
+          value: formatNumber(conversation.reportedCacheWriteTokens, numberFormatter),
+        }
+      : null,
+    conversation.outputTokens != null
+      ? {
+          label: labels.outputTokens,
+          value: formatNumber(conversation.outputTokens, numberFormatter),
+        }
+      : null,
+    conversation.reasoningTokens != null
+      ? {
+          label: labels.reasoningTokens,
+          value: formatNumber(conversation.reasoningTokens, numberFormatter),
+        }
+      : null,
+    conversation.costInput != null
+      ? {
+          label: labels.costInput,
+          value: formatCurrency(conversation.costInput, currencyFormatter),
+        }
+      : null,
+    conversation.costCacheWrite != null
+      ? {
+          label: labels.costCacheWrite,
+          value: formatCurrency(conversation.costCacheWrite, currencyFormatter),
+        }
+      : null,
+    conversation.costCacheRead != null
+      ? {
+          label: labels.costCacheRead,
+          value: formatCurrency(conversation.costCacheRead, currencyFormatter),
+        }
+      : null,
+    conversation.costOutput != null
+      ? {
+          label: labels.costOutput,
+          value: formatCurrency(conversation.costOutput, currencyFormatter),
+        }
+      : null,
+    conversation.costReasoning != null
+      ? {
+          label: labels.costReasoning,
+          value: formatCurrency(conversation.costReasoning, currencyFormatter),
+        }
+      : null,
+  ].filter((item): item is { label: string; value: string } => item != null);
 
   return (
     <div className="space-y-1.5">
@@ -835,6 +921,21 @@ function SummaryBlock({
           <span className="text-right font-medium">{item.value}</span>
         </div>
       ))}
+      {detailItems.length > 0 ? (
+        <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-1 border-t border-base-300/60 pt-1.5">
+          {detailItems.map((item) => (
+            <div
+              key={item.label}
+              className="flex min-w-0 items-center justify-between gap-1 text-[10px]"
+            >
+              <span className="min-w-0 truncate text-base-content/55" title={item.label}>
+                {item.label}
+              </span>
+              <span className="shrink-0 text-right font-medium tabular-nums">{item.value}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -4879,7 +4980,7 @@ export function PromptCacheConversationTable({
     if (!stats || stats.conversations.length === 0) return null;
     const earliestCreatedAt = stats.conversations.reduce<number | null>(
       (earliest, conversation) => {
-        const createdAt = parseEpoch(conversation.createdAt);
+        const createdAt = parseEpoch(conversation.firstInvocationAt ?? conversation.createdAt);
         if (createdAt == null) return earliest;
         return earliest == null ? createdAt : Math.min(earliest, createdAt);
       },
@@ -4957,9 +5058,22 @@ export function PromptCacheConversationTable({
       totalCost: t("live.conversations.table.totalCost"),
       requestCountCompact: t("live.conversations.table.requestCountCompact"),
       totalTokensCompact: t("live.conversations.table.totalTokensCompact"),
+      conversationId: t("live.conversations.table.conversationId"),
+      successCount: t("live.conversations.table.successCount"),
+      failureCount: t("live.conversations.table.failureCount"),
+      inputTokens: t("live.conversations.table.inputTokens"),
+      outputTokens: t("live.conversations.table.outputTokens"),
+      cacheInputTokens: t("live.conversations.table.cacheInputTokens"),
+      reportedCacheWriteTokens: t("live.conversations.table.reportedCacheWriteTokens"),
+      reasoningTokens: t("live.conversations.table.reasoningTokens"),
+      costInput: t("live.conversations.table.costInput"),
+      costCacheWrite: t("live.conversations.table.costCacheWrite"),
+      costCacheRead: t("live.conversations.table.costCacheRead"),
+      costOutput: t("live.conversations.table.costOutput"),
+      costReasoning: t("live.conversations.table.costReasoning"),
       time: t("live.conversations.table.time"),
-      createdAtShort: t("live.conversations.table.createdAtShort"),
-      lastActivityAtShort: t("live.conversations.table.lastActivityAtShort"),
+      firstInvocationAtShort: t("live.conversations.table.firstInvocationAtShort"),
+      lastInvocationAtShort: t("live.conversations.table.lastInvocationAtShort"),
     }),
     [t],
   );
@@ -5059,8 +5173,14 @@ export function PromptCacheConversationTable({
       <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
         <div className="space-y-3 p-3 sm:hidden">
           {stats.conversations.map((conversation) => {
-            const createdAtLabel = formatDateLabel(conversation.createdAt, dateFormatter);
-            const lastActivityLabel = formatDateLabel(conversation.lastActivityAt, dateFormatter);
+            const firstInvocationLabel = formatDateLabel(
+              conversation.firstInvocationAt ?? conversation.createdAt,
+              dateFormatter,
+            );
+            const lastInvocationLabel = formatDateLabel(
+              conversation.lastInvocationAt ?? conversation.lastActivityAt,
+              dateFormatter,
+            );
             const isExpanded = expandedPromptCacheKeySet.has(conversation.promptCacheKey);
 
             return (
@@ -5077,6 +5197,11 @@ export function PromptCacheConversationTable({
                       <div className="break-all font-mono text-xs">
                         {conversation.promptCacheKey}
                       </div>
+                      {conversation.conversationId ? (
+                        <div className="text-[10px] text-base-content/55">
+                          {totalLabels.conversationId}: {conversation.conversationId}
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -5150,12 +5275,12 @@ export function PromptCacheConversationTable({
                   </div>
                   <dl className="space-y-1 text-xs">
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">{totalLabels.createdAtShort}</dt>
-                      <dd className="text-right">{createdAtLabel}</dd>
+                      <dt className="text-base-content/60">{totalLabels.firstInvocationAtShort}</dt>
+                      <dd className="text-right">{firstInvocationLabel}</dd>
                     </div>
                     <div className="flex items-center justify-between gap-3">
-                      <dt className="text-base-content/60">{totalLabels.lastActivityAtShort}</dt>
-                      <dd className="text-right">{lastActivityLabel}</dd>
+                      <dt className="text-base-content/60">{totalLabels.lastInvocationAtShort}</dt>
+                      <dd className="text-right">{lastInvocationLabel}</dd>
                     </div>
                   </dl>
                 </div>
@@ -5216,6 +5341,11 @@ export function PromptCacheConversationTable({
                         >
                           {conversation.promptCacheKey}
                         </div>
+                        {conversation.conversationId ? (
+                          <div className="text-[10px] text-base-content/55">
+                            {totalLabels.conversationId}: {conversation.conversationId}
+                          </div>
+                        ) : null}
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
@@ -5268,17 +5398,25 @@ export function PromptCacheConversationTable({
                     <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                       <div className="space-y-1.5 text-[11px]">
                         <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
-                          <span className="text-base-content/60">{totalLabels.createdAtShort}</span>
+                          <span className="text-base-content/60">
+                            {totalLabels.firstInvocationAtShort}
+                          </span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.createdAt, dateFormatter)}
+                            {formatDateLabel(
+                              conversation.firstInvocationAt ?? conversation.createdAt,
+                              dateFormatter,
+                            )}
                           </span>
                         </div>
                         <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
                           <span className="text-base-content/60">
-                            {totalLabels.lastActivityAtShort}
+                            {totalLabels.lastInvocationAtShort}
                           </span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+                            {formatDateLabel(
+                              conversation.lastInvocationAt ?? conversation.lastActivityAt,
+                              dateFormatter,
+                            )}
                           </span>
                         </div>
                       </div>

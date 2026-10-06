@@ -1034,6 +1034,42 @@ pub(crate) struct PromptCacheConversationResponse {
         skip_serializing_if = "Option::is_none"
     )]
     pub(crate) last_in_flight_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) conversation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) success_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) failure_count: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) output_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cache_input_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reported_cache_write_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reasoning_tokens: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_input: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_cache_write: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_cache_read: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_output: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) cost_reasoning: Option<f64>,
+    #[serde(
+        serialize_with = "serialize_opt_local_or_utc_to_utc_iso",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) first_invocation_at: Option<String>,
+    #[serde(
+        serialize_with = "serialize_opt_local_or_utc_to_utc_iso",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) last_invocation_at: Option<String>,
     pub(crate) in_flight_phase_counts: InvocationPhaseCountsResponse,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) cursor: Option<String>,
@@ -1623,6 +1659,26 @@ pub(crate) struct PromptCacheConversationAggregateRow {
     pub(crate) last_terminal_at: Option<String>,
     #[sqlx(default)]
     pub(crate) last_in_flight_at: Option<String>,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct PromptCacheConversationStatisticsRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) conversation_id: String,
+    pub(crate) success_count: i64,
+    pub(crate) failure_count: i64,
+    pub(crate) input_tokens: i64,
+    pub(crate) output_tokens: i64,
+    pub(crate) cache_input_tokens: i64,
+    pub(crate) reported_cache_write_tokens: i64,
+    pub(crate) reasoning_tokens: i64,
+    pub(crate) cost_input: f64,
+    pub(crate) cost_cache_write: f64,
+    pub(crate) cost_cache_read: f64,
+    pub(crate) cost_output: f64,
+    pub(crate) cost_reasoning: f64,
+    pub(crate) first_invocation_at: Option<String>,
+    pub(crate) last_invocation_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

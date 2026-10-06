@@ -123,6 +123,21 @@ function createConversation(
     totalCost: overrides.totalCost ?? 0,
     createdAt: overrides.createdAt,
     lastActivityAt: overrides.lastActivityAt,
+    conversationId: overrides.conversationId,
+    successCount: overrides.successCount,
+    failureCount: overrides.failureCount,
+    inputTokens: overrides.inputTokens,
+    outputTokens: overrides.outputTokens,
+    cacheInputTokens: overrides.cacheInputTokens,
+    reportedCacheWriteTokens: overrides.reportedCacheWriteTokens,
+    reasoningTokens: overrides.reasoningTokens,
+    costInput: overrides.costInput,
+    costCacheWrite: overrides.costCacheWrite,
+    costCacheRead: overrides.costCacheRead,
+    costOutput: overrides.costOutput,
+    costReasoning: overrides.costReasoning,
+    firstInvocationAt: overrides.firstInvocationAt,
+    lastInvocationAt: overrides.lastInvocationAt,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations: overrides.recentInvocations ?? [],
     last24hRequests: overrides.last24hRequests ?? [],
@@ -401,6 +416,21 @@ describe("PromptCacheConversationTable", () => {
           totalCost: 1.2345,
           createdAt: "2026-03-02T00:00:00Z",
           lastActivityAt: "2026-03-02T16:00:00Z",
+          conversationId: "abc123",
+          successCount: 10,
+          failureCount: 2,
+          inputTokens: 2100,
+          outputTokens: 900,
+          cacheInputTokens: 450,
+          reportedCacheWriteTokens: 120,
+          reasoningTokens: 240,
+          costInput: 0.45,
+          costCacheWrite: 0.12,
+          costCacheRead: 0.18,
+          costOutput: 0.32,
+          costReasoning: 0.1645,
+          firstInvocationAt: "2026-03-02T00:05:00Z",
+          lastInvocationAt: "2026-03-02T16:00:00Z",
           upstreamAccounts: [
             {
               upstreamAccountId: 101,
@@ -459,6 +489,11 @@ describe("PromptCacheConversationTable", () => {
     const html = renderTable(stats);
 
     expect(html).toContain("pck-chat-001");
+    expect(html).toContain("对话: abc123");
+    expect(html).toContain("成功");
+    expect(html).toContain("失败");
+    expect(html).toContain("输入");
+    expect(html).toContain("缓存写入");
     expect(html).toContain("Prompt Cache Key");
     expect(html).toContain("24 小时 Token 累计");
     expect(html).toContain("sm:hidden");
@@ -793,8 +828,8 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("请求数");
     expect(html).toContain("3,456");
     expect(html).toContain("US$1.2345");
-    expect(html).toContain("创建");
-    expect(html).toContain("活动");
+    expect(html).toContain("首条");
+    expect(html).toContain("末条");
     expect(html).toContain(createdAtLabel);
     expect(html).toContain(lastActivityLabel);
     expect(html).toContain("w-[15%]");

@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Expose durable prompt-cache conversation identity and materialized aggregate breakdowns through the existing read API and frontend consumers.",
+    "release_unit_description": "Prompt-cache conversation statistics read integration (PR2).",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The response gains optional additive fields while existing fields, selection modes, pagination, and snapshot cursor semantics remain unchanged. The implementation reads existing prompt_cache_conversations master rows and adds no schema, durable encoding, or write-path changes.",
+      "assessed_at": "2026-10-06T22:46:33+08:00",
+      "evidence": [
+        "docs/specs/proxy-invocation-identity/SPEC.md",
+        "docs/specs/proxy-invocation-identity/IMPLEMENTATION.md"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "The candidate remains within the approved additive prompt-cache conversation read contract and its frontend presentation and ordering consumers."
+      },
+      "reasoning": "Durable conversation identity remains independently visible, while aggregate fields stay absent until materialization makes them trustworthy and snapshot reads fail closed for newer materialized data. No existing response field or durable state meaning changes.",
+      "reassessed_at": "2026-10-06T22:46:33+08:00",
+      "evidence": [
+        "src/api/slices/settings_models_and_cache.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/detail_queries.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/hydration.rs",
+        "web/src/lib/api/core-foundation.ts",
+        "web/src/lib/promptCacheLive.ts"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "The focused backend regression covers persisted master statistics, delayed materialization, and snapshot fail-closed behavior. Frontend tests, typechecking, production build, and Storybook visual evidence cover optional-field absence, display, and count-mode ordering without changing existing selection semantics.",
+      "verified_at": "2026-10-06T23:27:54+08:00",
+      "evidence": [
+        "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
+        "web/src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
+        "web/src/lib/promptCacheLive.test.ts",
+        "web/src/lib/api.test.ts",
+        "web/src/features/prompt-cache/PromptCacheConversationTable.stories.tsx",
+        "cargo fmt --all -- --check",
+        "cargo check --locked --all-targets --all-features",
+        "cargo clippy --locked --all-targets --all-features -- -D warnings",
+        "cargo test prompt_cache_conversations -- --nocapture",
+        "cd web && bunx vitest run src/lib/api.test.ts src/lib/promptCacheLive.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
+        "cd web && bun run typecheck:web",
+        "cd web && bun run build",
+        "cd web && bunx vitest run --project=storybook src/features/prompt-cache/PromptCacheConversationTable.stories.tsx"
+      ],
+      "status": "passed"
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing consumers within the current Major may ignore the optional conversation identity and aggregate fields; existing response fields, selection modes, pagination, and snapshot cursor semantics remain supported.",
+      "evidence": [
+        "docs/specs/proxy-invocation-identity/SPEC.md",
+        "src/api/slices/settings_models_and_cache.rs",
+        "web/src/lib/api/core-foundation.ts"
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Not applicable; PR2 reads existing prompt_cache_conversations master rows and does not add or change durable schema, encodings, or write paths.",
+      "source_program_compatibility_range": "Not applicable; earlier readers can continue to use the existing response fields and existing prompt-cache conversation state.",
+      "evidence": [
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/detail_queries.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/hydration.rs",
+        "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/proxy-invocation-identity/assets/pr2-version-impact-record.json"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "verified public_api=patch",
+      "persistent_state=not_applicable",
+      "release unit=highest applicable impact=patch"
+    ]
+  }
+}

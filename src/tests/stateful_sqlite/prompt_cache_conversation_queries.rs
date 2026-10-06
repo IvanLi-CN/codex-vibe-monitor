@@ -205,6 +205,242 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_expose_persisted_master_statistics() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let key = "pck-persisted-statistics";
+    let first_at = now - ChronoDuration::minutes(2);
+    let last_at = now - ChronoDuration::minutes(1);
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        status: &str,
+        key: &str,
+        input_tokens: i64,
+        output_tokens: i64,
+        cache_input_tokens: i64,
+        reported_cache_write_tokens: i64,
+        reasoning_tokens: i64,
+        total_tokens: i64,
+        cost: f64,
+        cost_input: f64,
+        cost_cache_write: f64,
+        cost_cache_read: f64,
+        cost_output: f64,
+        cost_reasoning: f64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status,
+                input_tokens, output_tokens, cache_input_tokens,
+                reported_cache_write_tokens, reasoning_tokens, total_tokens,
+                cost, cost_input, cost_cache_write, cost_cache_read, cost_output,
+                cost_reasoning, payload, raw_response, created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                    ?14, ?15, ?16, ?17, ?18, ?19)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(cache_input_tokens)
+        .bind(reported_cache_write_tokens)
+        .bind(reasoning_tokens)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(cost_input)
+        .bind(cost_cache_write)
+        .bind(cost_cache_read)
+        .bind(cost_output)
+        .bind(cost_reasoning)
+        .bind(json!({ "promptCacheKey": key }).to_string())
+        .bind("{}")
+        .bind(format_utc_iso_millis(occurred_at))
+        .execute(pool)
+        .await
+        .expect("insert persisted-statistics invocation");
+    }
+
+    insert_row(
+        &state.pool,
+        "pck-stats-success",
+        first_at,
+        "success",
+        key,
+        100,
+        20,
+        30,
+        10,
+        5,
+        120,
+        0.12,
+        0.01,
+        0.02,
+        0.03,
+        0.04,
+        0.05,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-stats-failure",
+        last_at,
+        "failed",
+        key,
+        200,
+        40,
+        60,
+        20,
+        10,
+        240,
+        0.24,
+        0.11,
+        0.12,
+        0.13,
+        0.14,
+        0.15,
+    )
+    .await;
+
+    ensure_prompt_cache_conversation_row(&state.pool, key)
+        .await
+        .expect("create persisted-statistics conversation identity");
+    let first_at_db = format_naive(first_at.with_timezone(&Shanghai).naive_local());
+    let last_at_db = format_naive(last_at.with_timezone(&Shanghai).naive_local());
+    let pending_aggregate = PromptCacheConversationAggregateRow {
+        prompt_cache_key: key.to_owned(),
+        request_count: 2,
+        total_tokens: 360,
+        total_cost: 0.36,
+        created_at: first_at_db.clone(),
+        last_activity_at: last_at_db.clone(),
+        cursor_created_at: None,
+        sort_anchor_at: None,
+        last_terminal_at: None,
+        last_in_flight_at: None,
+    };
+    let pending_conversation = {
+        let mut connection = state
+            .pool
+            .acquire()
+            .await
+            .expect("acquire prompt-cache hydration connection");
+        hydrate_prompt_cache_conversations_on_connection(
+            &state,
+            &mut connection,
+            InvocationSourceScope::ProxyOnly,
+            vec![pending_aggregate],
+            last_at,
+            PromptCacheConversationDetailLevel::Compact,
+            None,
+            None,
+            &[],
+        )
+        .await
+        .expect("delayed prompt cache conversation statistics should hydrate")
+        .into_iter()
+        .next()
+        .expect("delayed-statistics conversation should be included")
+    };
+    assert!(pending_conversation.conversation_id.is_some());
+    assert_eq!(pending_conversation.success_count, None);
+    assert_eq!(pending_conversation.first_invocation_at, None);
+    assert_eq!(pending_conversation.last_invocation_at, None);
+
+    materialize_prompt_cache_hourly_rollups(&state.pool).await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: None,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversation statistics should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == key)
+        .expect("persisted-statistics conversation should be included");
+
+    assert!(conversation.conversation_id.is_some());
+    assert_eq!(conversation.success_count, Some(1));
+    assert_eq!(conversation.failure_count, Some(1));
+    assert_eq!(conversation.input_tokens, Some(300));
+    assert_eq!(conversation.output_tokens, Some(60));
+    assert_eq!(conversation.cache_input_tokens, Some(90));
+    assert_eq!(conversation.reported_cache_write_tokens, Some(30));
+    assert_eq!(conversation.reasoning_tokens, Some(15));
+    assert!((conversation.cost_input.expect("input cost") - 0.12).abs() < 1e-9);
+    assert!((conversation.cost_cache_write.expect("cache-write cost") - 0.14).abs() < 1e-9);
+    assert!((conversation.cost_cache_read.expect("cache-read cost") - 0.16).abs() < 1e-9);
+    assert!((conversation.cost_output.expect("output cost") - 0.18).abs() < 1e-9);
+    assert!((conversation.cost_reasoning.expect("reasoning cost") - 0.20).abs() < 1e-9);
+    assert_eq!(
+        conversation.first_invocation_at.as_deref(),
+        Some(first_at_db.as_str())
+    );
+    assert_eq!(
+        conversation.last_invocation_at.as_deref(),
+        Some(last_at_db.as_str())
+    );
+
+    let snapshot_at = first_at + ChronoDuration::seconds(30);
+    let Json(snapshot_response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
+            cursor: None,
+            snapshot_at: Some(format_utc_iso_precise(snapshot_at)),
+            detail: None,
+            recent_invocation_limit: None,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        }),
+    )
+    .await
+    .expect("snapshot prompt cache conversation statistics should succeed");
+    let snapshot_conversation = snapshot_response
+        .conversations
+        .iter()
+        .find(|conversation| conversation.prompt_cache_key == key)
+        .expect("snapshot should retain the pre-boundary conversation");
+    assert_eq!(
+        snapshot_conversation.conversation_id,
+        conversation.conversation_id
+    );
+    assert_eq!(snapshot_conversation.success_count, None);
+    assert_eq!(snapshot_conversation.failure_count, None);
+    assert_eq!(snapshot_conversation.first_invocation_at, None);
+    assert_eq!(snapshot_conversation.last_invocation_at, None);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_include_recent_invocation_previews_with_limit_and_proxy_scope()
 {
     let state = test_state_with_openai_base(

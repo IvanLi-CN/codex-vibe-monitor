@@ -120,6 +120,12 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
+    let conversation_statistics_by_key =
+        query_prompt_cache_conversation_statistics(&mut *connection, &selected_keys)
+            .await?
+            .into_iter()
+            .map(|row| (row.prompt_cache_key.clone(), row))
+            .collect::<HashMap<_, _>>();
     let mut in_flight_phase_counts_by_key = HashMap::<String, InvocationPhaseCountsResponse>::new();
     for record in query_prompt_cache_in_flight_phase_records(
         &mut *connection,
@@ -483,6 +489,19 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
         .into_iter()
         .map(|row| {
             let owner = encrypted_owner_rows_by_key.remove(&row.prompt_cache_key);
+            let statistics = conversation_statistics_by_key.get(&row.prompt_cache_key);
+            let statistics_visible = statistics.is_some_and(|statistics| {
+                statistics.last_invocation_at.is_some()
+                    && match snapshot {
+                        None => true,
+                        Some(snapshot) => statistics.last_invocation_at.as_deref().is_some_and(
+                            |last_invocation_at| {
+                                last_invocation_at <= snapshot.snapshot_upper_bound
+                            },
+                        ),
+                    }
+            });
+            let visible_statistics = statistics_visible.then_some(statistics).flatten();
             PromptCacheConversationResponse {
                 prompt_cache_key: row.prompt_cache_key.clone(),
                 request_count: row.request_count,
@@ -492,6 +511,25 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
                 last_activity_at: row.last_activity_at,
                 last_terminal_at: row.last_terminal_at,
                 last_in_flight_at: row.last_in_flight_at,
+                conversation_id: statistics.map(|statistics| statistics.conversation_id.clone()),
+                success_count: visible_statistics.map(|statistics| statistics.success_count),
+                failure_count: visible_statistics.map(|statistics| statistics.failure_count),
+                input_tokens: visible_statistics.map(|statistics| statistics.input_tokens),
+                output_tokens: visible_statistics.map(|statistics| statistics.output_tokens),
+                cache_input_tokens: visible_statistics
+                    .map(|statistics| statistics.cache_input_tokens),
+                reported_cache_write_tokens: visible_statistics
+                    .map(|statistics| statistics.reported_cache_write_tokens),
+                reasoning_tokens: visible_statistics.map(|statistics| statistics.reasoning_tokens),
+                cost_input: visible_statistics.map(|statistics| statistics.cost_input),
+                cost_cache_write: visible_statistics.map(|statistics| statistics.cost_cache_write),
+                cost_cache_read: visible_statistics.map(|statistics| statistics.cost_cache_read),
+                cost_output: visible_statistics.map(|statistics| statistics.cost_output),
+                cost_reasoning: visible_statistics.map(|statistics| statistics.cost_reasoning),
+                first_invocation_at: visible_statistics
+                    .and_then(|statistics| statistics.first_invocation_at.clone()),
+                last_invocation_at: visible_statistics
+                    .and_then(|statistics| statistics.last_invocation_at.clone()),
                 in_flight_phase_counts: in_flight_phase_counts_by_key
                     .get(&row.prompt_cache_key)
                     .copied()

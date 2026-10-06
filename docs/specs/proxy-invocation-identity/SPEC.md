@@ -5,8 +5,8 @@
 ## Context and Scope
 
 - Context: Proxy request identifiers must remain compact while preserving conversation-level ordering and recoverability across process restarts.
-- In scope: Backend HTTP proxy allocation, historical WebSocket invocation identity reads, the prompt-cache conversation master, SQLite migration/backfill, delayed statistics, retention, and diagnostics.
-- Out of scope: Public API response fields, Dashboard/UI consumers, and frontend identifier presentation.
+- In scope: Backend HTTP proxy allocation, historical WebSocket invocation identity reads, the prompt-cache conversation master, SQLite migration/backfill, delayed statistics, retention, diagnostics, and the additive prompt-cache conversation read contract with its frontend consumers.
+- Out of scope: Reworking the allocator or materialization ownership, changing the existing selection/snapshot contracts, and production deployment or acceptance.
 
 ## Terms and Interfaces
 
@@ -14,6 +14,17 @@
 - `invoke_id`: A ten-character identifier consisting of a six-character prefix and a four-character ordered sequence.
 - `prompt-cache conversation master`: The durable `prompt_cache_conversations` row keyed by one normalized `prompt_cache_key`.
 - Interface: `src/prompt_cache_conversations.rs` and the proxy capture/runtime persistence paths.
+
+The public follow-up read surface is `GET /api/stats/prompt-cache-conversations`. It keeps the
+existing selection, snapshot, and compatibility fields while adding the durable master identity
+and delayed statistics when they are available: `conversationId`, `successCount`,
+`failureCount`, `inputTokens`, `outputTokens`, `cacheInputTokens`,
+`reportedCacheWriteTokens`, `reasoningTokens`, `costInput`, `costCacheWrite`,
+`costCacheRead`, `costOutput`, `costReasoning`, `firstInvocationAt`, and
+`lastInvocationAt`. The Live prompt-cache table and working-conversation consumers use these
+fields for presentation and stable count-mode history ordering. Until materialization makes the
+statistics trustworthy, the fields remain absent; snapshot reads fail closed for statistics newer
+than their snapshot boundary while retaining the stable conversation identity.
 
 ## Requirements
 
@@ -91,6 +102,17 @@
 - The additive schema operation MUST be idempotent, have an immutable completion marker, and remain separately observable from on-demand recovery and historical statistics materialization. Conversation recovery MUST preserve the maximum durable or known retained/pending issued-sequence floor before new reservations. Journal recovery MUST register pending identities before namespace creation or release can race them. Historical invocation IDs MUST NOT be rewritten or used to infer unreliable legacy hour ownership.
 - Supported upgrade recovery MUST handle interruption before schema completion, after range commit but before publication, and during lifecycle release. Program rollback MUST NOT automatically down-migrate reservation state; recovery MUST use a forward-repair program that respects committed ceilings and hourly ownership. Earlier writers unaware of this reservation contract are outside the migrated state's supported writer range.
 
+### REQ-PII-011
+
+- The prompt-cache conversation read API MUST expose the durable conversation identity and
+  materialized aggregate breakdowns as additive optional fields without changing the existing
+  response fields, selection modes, pagination, or snapshot cursor semantics.
+- Frontend consumers MUST preserve delayed-statistics absence, use the durable first invocation
+  timestamp for count-mode history ordering when present, and retain the existing live activity
+  anchor for working-conversation selection.
+- A snapshot MUST NOT publish durable aggregate fields whose last materialized invocation is newer
+  than the snapshot boundary. The stable conversation identity MAY remain visible independently.
+
 ## Verification
 
 ### VER-PII-001
@@ -153,6 +175,15 @@
 - covers: `REQ-PII-001`, `REQ-PII-002`, `REQ-PII-003`, `REQ-PII-005`, `REQ-PII-008`, `REQ-PII-010`
 - Pass condition: Hourly and conversation owners share batched committed ranges; both hot paths issue without database work; same-hour restart preserves the prefix and skips outstanding reservations; prefix candidates exclude both durable owner types and retained/pending IDs; rollover preserves active IDs; cleanup cannot release pending owners and eventually releases eligible ones; upgrade/reentry preserves known sequence floors and historical IDs; interruption or stale operations cannot reuse issued IDs; and the final range remains bounded without wrapping.
 
+### VER-PII-011
+
+- Method: Focused stateful SQLite API regression, frontend normalization/live-consumer/table tests,
+  TypeScript build, and Storybook canvas inspection at desktop and mobile widths.
+- covers: `REQ-PII-011`
+- Pass condition: Materialized identity and aggregate fields serialize in the public response, delayed
+  fields remain optional, count-mode ordering uses the durable first timestamp, the table renders
+  the breakdown on desktop and mobile, and snapshot boundaries do not publish newer statistics.
+
 ## Related ADRs
 
 - [`../../adr/0020-proxy-invocation-identity.md`](../../adr/0020-proxy-invocation-identity.md)
@@ -167,7 +198,17 @@
 
 ## Visual Evidence
 
-- None
+- Source: `storybook_canvas`, mock-only stories
+  `monitoring-promptcacheconversationtable--populated` and
+  `monitoring-promptcacheconversationtable--populated-mobile`.
+- Viewports: desktop `1280x900` CSS px and mobile `393x852` CSS px; the mobile
+  asset captures the complete responsive surface at `393px` width.
+- Evidence assets: [desktop](assets/pr2-prompt-cache-conversations-desktop-1280.png)
+  and [mobile](assets/pr2-prompt-cache-conversations-mobile-393.png).
+- Preflight: both source-managed surfaces contain their targets, use an opaque
+  natural theme background, satisfy the computed margin contract, and have no
+  horizontal overflow. Inner UI comparison is unchanged; only the evidence
+  surface margin was normalized after mainline synchronization.
 
 ## References
 

@@ -1,6 +1,39 @@
 use super::*;
 use sqlx::Executor;
 
+pub(crate) async fn query_prompt_cache_conversation_statistics<'e, E>(
+    executor: E,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationStatisticsRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT prompt_cache_key, conversation_id, success_count, failure_count, \
+                input_tokens, output_tokens, cache_input_tokens, reported_cache_write_tokens, \
+                reasoning_tokens, cost_input, cost_cache_write, cost_cache_read, cost_output, \
+                cost_reasoning, first_invocation_at, last_invocation_at \
+         FROM prompt_cache_conversations WHERE prompt_cache_key IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") ORDER BY prompt_cache_key ASC");
+
+    query
+        .build_query_as::<PromptCacheConversationStatisticsRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromptCacheInFlightPhaseRecord {
     pub(crate) identity: String,

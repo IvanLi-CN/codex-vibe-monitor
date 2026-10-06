@@ -25,7 +25,10 @@ const PROMPT_CACHE_UPSTREAM_ACCOUNT_LIMIT = 3;
 
 export type PromptCacheConversationHistoryByKey = Record<
   string,
-  Pick<PromptCacheConversation, "createdAt" | "lastActivityAt">
+  Pick<
+    PromptCacheConversation,
+    "createdAt" | "lastActivityAt" | "firstInvocationAt" | "lastInvocationAt"
+  >
 >;
 
 type PromptCacheConversationPreviewExtras = Partial<
@@ -77,6 +80,18 @@ function parseOccurredAtEpoch(raw: string | null | undefined) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
+function conversationFirstInvocationAt(
+  conversation: Pick<PromptCacheConversation, "createdAt" | "firstInvocationAt">,
+) {
+  return conversation.firstInvocationAt ?? conversation.createdAt;
+}
+
+function conversationLastInvocationAt(
+  conversation: Pick<PromptCacheConversation, "lastActivityAt" | "lastInvocationAt">,
+) {
+  return conversation.lastInvocationAt ?? conversation.lastActivityAt;
+}
+
 function parsePromptCacheSelectionWindowMs(selection: PromptCacheConversationSelection) {
   if (selection.mode === "count") {
     return PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS * 3_600_000;
@@ -121,15 +136,27 @@ export function getPromptCacheConversationVisibleLimit(
 function comparePromptCacheConversationOrder(
   left: Pick<
     PromptCacheConversation,
-    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+    | "createdAt"
+    | "lastActivityAt"
+    | "firstInvocationAt"
+    | "lastInvocationAt"
+    | "promptCacheKey"
+    | "recentInvocations"
   >,
   right: Pick<
     PromptCacheConversation,
-    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+    | "createdAt"
+    | "lastActivityAt"
+    | "firstInvocationAt"
+    | "lastInvocationAt"
+    | "promptCacheKey"
+    | "recentInvocations"
   >,
 ) {
-  const leftEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
-  const rightEpoch = parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
+  const leftEpoch =
+    parseOccurredAtEpoch(conversationFirstInvocationAt(left)) ?? Number.MIN_SAFE_INTEGER;
+  const rightEpoch =
+    parseOccurredAtEpoch(conversationFirstInvocationAt(right)) ?? Number.MIN_SAFE_INTEGER;
   if (leftEpoch !== rightEpoch) return rightEpoch - leftEpoch;
   return right.promptCacheKey.localeCompare(left.promptCacheKey);
 }
@@ -166,11 +193,21 @@ function getPromptCacheConversationWorkingSetAnchorEpoch(
 function comparePromptCacheConversationVisibleSetOrder(
   left: Pick<
     PromptCacheConversation,
-    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+    | "createdAt"
+    | "lastActivityAt"
+    | "firstInvocationAt"
+    | "lastInvocationAt"
+    | "promptCacheKey"
+    | "recentInvocations"
   >,
   right: Pick<
     PromptCacheConversation,
-    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+    | "createdAt"
+    | "lastActivityAt"
+    | "firstInvocationAt"
+    | "lastInvocationAt"
+    | "promptCacheKey"
+    | "recentInvocations"
   >,
   selection: PromptCacheConversationSelection,
   now: number,
@@ -552,6 +589,25 @@ function buildOptimisticConversation(
   const lastActivityAt = uniqueRecords
     .map((record) => record.occurredAt)
     .reduce((latest, occurredAt) => (latest == null || occurredAt > latest ? occurredAt : latest));
+  const sumOptionalMetric = (
+    read: (record: ApiInvocation) => number | null | undefined,
+  ): number | undefined => {
+    let hasValue = false;
+    const total = uniqueRecords.reduce((sum, record) => {
+      const value = read(record);
+      if (typeof value !== "number" || !Number.isFinite(value)) return sum;
+      hasValue = true;
+      return sum + Math.max(0, value);
+    }, 0);
+    return hasValue ? total : undefined;
+  };
+  const successCount = uniqueRecords.filter(
+    (record) => resolvePromptCacheInvocationOutcome(record) === "success",
+  ).length;
+  const failureCount = uniqueRecords.filter(
+    (record) => resolvePromptCacheInvocationOutcome(record) === "failure",
+  ).length;
+  const firstInvocationAt = createdAtOverride?.trim() || derivedCreatedAt;
 
   return {
     promptCacheKey,
@@ -572,8 +628,22 @@ function buildOptimisticConversation(
         typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : 0;
       return sum + cost;
     }, 0),
-    createdAt: createdAtOverride?.trim() || derivedCreatedAt || new Date().toISOString(),
+    createdAt: firstInvocationAt || new Date().toISOString(),
     lastActivityAt: lastActivityAt ?? new Date().toISOString(),
+    successCount,
+    failureCount,
+    inputTokens: sumOptionalMetric((record) => record.inputTokens),
+    outputTokens: sumOptionalMetric((record) => record.outputTokens),
+    cacheInputTokens: sumOptionalMetric((record) => record.cacheInputTokens),
+    reportedCacheWriteTokens: sumOptionalMetric((record) => record.reportedCacheWriteTokens),
+    reasoningTokens: sumOptionalMetric((record) => record.reasoningTokens),
+    costInput: sumOptionalMetric((record) => record.costInput),
+    costCacheWrite: sumOptionalMetric((record) => record.costCacheWrite),
+    costCacheRead: sumOptionalMetric((record) => record.costCacheRead),
+    costOutput: sumOptionalMetric((record) => record.costOutput),
+    costReasoning: sumOptionalMetric((record) => record.costReasoning),
+    firstInvocationAt: firstInvocationAt || null,
+    lastInvocationAt: lastActivityAt ?? null,
     upstreamAccounts: buildOptimisticUpstreamAccounts(uniqueRecords),
     recentInvocations: previewRecords.map(buildPromptCachePreviewFromInvocation),
     last24hRequests: mergePromptCacheRequestPoints([], uniqueRecords),
@@ -590,10 +660,17 @@ export function mergePromptCacheConversationHistory(
 
   const next: PromptCacheConversationHistoryByKey = {};
   for (const conversation of stats.conversations) {
-    next[conversation.promptCacheKey] = {
+    const history: PromptCacheConversationHistoryByKey[string] = {
       createdAt: conversation.createdAt,
       lastActivityAt: conversation.lastActivityAt,
     };
+    if (conversation.firstInvocationAt != null) {
+      history.firstInvocationAt = conversation.firstInvocationAt;
+    }
+    if (conversation.lastInvocationAt != null) {
+      history.lastInvocationAt = conversation.lastInvocationAt;
+    }
+    next[conversation.promptCacheKey] = history;
   }
 
   for (const promptCacheKey of pinnedPromptCacheKeys) {
@@ -608,16 +685,17 @@ export function mergePromptCacheConversationHistory(
       .filter(([promptCacheKey]) => !(promptCacheKey in next))
       .sort(([leftPromptCacheKey, left], [rightPromptCacheKey, right]) => {
         const leftLastActivityEpoch =
-          parseOccurredAtEpoch(left.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
+          parseOccurredAtEpoch(conversationLastInvocationAt(left)) ?? Number.MIN_SAFE_INTEGER;
         const rightLastActivityEpoch =
-          parseOccurredAtEpoch(right.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
+          parseOccurredAtEpoch(conversationLastInvocationAt(right)) ?? Number.MIN_SAFE_INTEGER;
         if (leftLastActivityEpoch !== rightLastActivityEpoch) {
           return rightLastActivityEpoch - leftLastActivityEpoch;
         }
 
-        const leftCreatedAtEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
+        const leftCreatedAtEpoch =
+          parseOccurredAtEpoch(conversationFirstInvocationAt(left)) ?? Number.MIN_SAFE_INTEGER;
         const rightCreatedAtEpoch =
-          parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
+          parseOccurredAtEpoch(conversationFirstInvocationAt(right)) ?? Number.MIN_SAFE_INTEGER;
         if (leftCreatedAtEpoch !== rightCreatedAtEpoch) {
           return rightCreatedAtEpoch - leftCreatedAtEpoch;
         }
@@ -642,7 +720,9 @@ export function mergePromptCacheConversationHistory(
     const value = next[promptCacheKey];
     if (
       previous?.createdAt !== value.createdAt ||
-      previous?.lastActivityAt !== value.lastActivityAt
+      previous?.lastActivityAt !== value.lastActivityAt ||
+      previous?.firstInvocationAt !== value.firstInvocationAt ||
+      previous?.lastInvocationAt !== value.lastInvocationAt
     ) {
       return next;
     }
@@ -806,7 +886,11 @@ export function mergePromptCacheConversationsResponse(
       continue;
     }
     nextConversations.push(
-      buildOptimisticConversation(promptCacheKey, filteredRecords, knownConversation?.createdAt),
+      buildOptimisticConversation(
+        promptCacheKey,
+        filteredRecords,
+        knownConversation?.firstInvocationAt ?? knownConversation?.createdAt,
+      ),
     );
   }
 
