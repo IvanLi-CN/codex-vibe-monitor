@@ -11743,20 +11743,27 @@ fn schedule_managed_task_topic_refresh_retry(
     hub: Arc<SubscriptionHub>,
     state: Arc<AppState>,
     topic: SubscriptionTopic,
+    delay: Duration,
 ) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        tokio::time::sleep(delay).await;
         if !hub.mark_managed_task_topic_dirty(&topic).await {
             return;
         }
         if let Err(error) = hub
-            .refresh_topic_if_active(state, topic.clone(), true)
+            .refresh_topic_if_active(state.clone(), topic.clone(), true)
             .await
         {
             warn!(
                 topic = topic.name(),
                 ?error,
                 "managed task SSE topic retry failed"
+            );
+            schedule_managed_task_topic_refresh_retry(
+                hub,
+                state,
+                topic,
+                std::cmp::min(delay.saturating_mul(2), Duration::from_secs(30)),
             );
         }
     });
@@ -11908,6 +11915,7 @@ pub(crate) async fn topic_sse_stream(
                                     dashboard_topology_hub.clone(),
                                     state.clone(),
                                     topic.clone(),
+                                    Duration::from_secs(1),
                                 );
                             }
                         }
@@ -11930,6 +11938,7 @@ pub(crate) async fn topic_sse_stream(
                                     dashboard_topology_hub.clone(),
                                     state.clone(),
                                     topic.clone(),
+                                    Duration::from_secs(1),
                                 );
                             }
                         }
