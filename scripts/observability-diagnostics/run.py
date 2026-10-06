@@ -32,7 +32,8 @@ class DiagnosticRun(acceptance.Run):
         self.profile_build_id = None
         config = json.loads((self.root / "run-config.json").read_text())
         config.update(role="diagnosis-only", budgetCertification="not-issued", windowSeconds=300,
-                      warmupSeconds=60, sampleIntervalSeconds=1, captureSeconds=30, captureRateHz=100)
+                      warmupSeconds=60, sampleIntervalSeconds=1, captureSeconds=30, captureRateHz=100,
+                      captureModes=["false", "true"])
         (self.root / "run-config.json").write_text(json.dumps(config, indent=2) + "\n")
 
     def configure(self):
@@ -92,7 +93,7 @@ class DiagnosticRun(acceptance.Run):
             with (self.root / ("capture-" + window["windowId"] + ".log")).open("w") as log:
                 subprocess.run(["docker", "start", "-a", driver], stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
             acceptance.execute(["docker", "cp", driver + ":" + str(profiles) + "/.", str(output)], timeout=30)
-            # The retained three-window profile family shares one capacity bound.
+            # The paired profile family shares the existing capacity bound.
             fingerprint(self.root / "profiles")
             manifest = verify_profile(output, self.args.candidate, container, self.profile_build_id)
             return {"status": "verified", "launchMonotonicSeconds": started,
@@ -137,7 +138,9 @@ class DiagnosticRun(acceptance.Run):
                 self.wait_app()
                 container, pid = self.inspected_target()
                 window.update(containerId=container, pid=pid, imageId=self.image)
-                prepared = self.prepare_capture(window, container) if enabled == "true" else None
+                # Sample both modes at the same point in each load window.
+                # Enabled-only stacks cannot explain the incremental CPU cost.
+                prepared = self.prepare_capture(window, container)
                 self.client("load", "--seconds", "60", "--rate", "5")
                 window["admissionWaitSeconds"] = quiet_admission(self.root, timeout=300, window=window, budget=budget)
                 window["countersBefore"] = self.counters()

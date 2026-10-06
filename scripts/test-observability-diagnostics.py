@@ -181,6 +181,14 @@ with tempfile.TemporaryDirectory() as directory:
         self.assertNotIn("withinBudget", card)
         for changed in [windows[:-1], [windows[0]] * 6]:
             self.assertEqual(evidence.diagnostic_card(CANDIDATE, {}, changed)["diagnosticStatus"], "unavailable")
+        # Without the disabled-mode stack, the collector cannot distinguish
+        # shared application work from work added by observability.
+        missing_disabled_profile = [{**window} for window in windows]
+        missing_disabled_profile[0].pop("profile")
+        self.assertEqual(
+            evidence.diagnostic_card(CANDIDATE, {}, missing_disabled_profile)["diagnosticStatus"],
+            "unavailable",
+        )
         windows[0]["load"]["completed"] = 1499
         self.assertEqual(evidence.diagnostic_card(CANDIDATE, {}, windows)["diagnosticStatus"], "unavailable")
 
