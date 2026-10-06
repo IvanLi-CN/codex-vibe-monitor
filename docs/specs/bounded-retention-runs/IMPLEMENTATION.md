@@ -94,6 +94,8 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 - 正式 Tier 4 四固定 lane + database-migration 只读审查在当前候选的普通源码/功能验证和适用视觉门禁完成后启动；合并前必须通过必需 Actions 检查及产物冒烟。按主人禁止不必要性能实验进入通用 PR 门禁的指令，性能预算及 CPU 诊断保留为 Actions 辅助检查，Build Artifacts 不再依赖其结果。本次交付不将历史开销失败、缺测或尚未完成的容量实测标为通过；后续性能验证独立记录。
 - Quota 候选排序使用专用 SQLite 连接，剩余任务预算限制锁等待，progress handler 在截止或关闭请求时中断实际查询；移除 handler 并关闭连接后才返回。准备月度文件复用任务剩余时间的超时兜底，未完成工作随 future 清理，已提交批次保留。回归通过固定回调取消、零准备预算及未完成 future 验证源行保留、连接释放和下一轮重新选取，不使用执行速度断言。
 
+- 运行完成度根据起点 cutoff/MAX(id) 范围的剩余 invocation 判定；选定批次已提交但该范围未清空时 overall 为 partial，core 保留自身结果。等待 parallel-work 覆盖属于可恢复待办；无进展的纯压力、连接池或写准入等待仍为 deferred。任务内详情、invocation、attempt 和 quota 转换排队写许可时不占池连接；获准后只非阻塞取连接，无可用连接则立即释放许可并按真实原因延期。身份读取的池等待受剩余期限及 shutdown 取消约束，提交后立即归还连接，防止两个资源之间双向等待。回归使用单连接池的持有/释放、手动 poll、取消信号和零期限验证状态，不断言 CPU 速度。
+
 ## Visual Evidence
 
 本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。

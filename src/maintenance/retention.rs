@@ -734,6 +734,14 @@ pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
         .await
 }
 
+#[cfg(test)]
+pub(crate) async fn retention_test_with_shutdown<F: Future>(
+    shutdown: CancellationToken,
+    work: F,
+) -> F::Output {
+    RETENTION_SHUTDOWN.scope(shutdown, work).await
+}
+
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
     let fingerprint = retention_error_fingerprint(error);
     let mut health = RETENTION_RECOVERY_HEALTH
@@ -1263,7 +1271,7 @@ pub(super) fn take_retention_micro_batch<T>(
     selected
 }
 
-pub(super) struct RetentionWriteAdmission {
+pub(crate) struct RetentionWriteAdmission {
     write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     p1_waiter_count: usize,
@@ -1318,6 +1326,102 @@ fn retention_write_coordinator_handle()
     #[cfg(not(test))]
     {
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+    }
+}
+
+pub(crate) async fn acquire_retention_pool_connection(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+) -> Result<Option<sqlx::pool::PoolConnection<Sqlite>>> {
+    if retention_run_budget_expired() {
+        retention_record_defer(operation, "retention_work_budget");
+        return Ok(None);
+    }
+    let shutdown = retention_run_shutdown_token();
+    let acquire = async {
+        if let Some(remaining) = retention_run_remaining_budget() {
+            match tokio::time::timeout(remaining, pool.acquire()).await {
+                Ok(result) => result.map(Some),
+                Err(_) => {
+                    retention_record_defer(operation, "retention_work_budget");
+                    Ok(None)
+                }
+            }
+        } else {
+            pool.acquire().await.map(Some)
+        }
+    };
+    let result = if let Some(shutdown) = shutdown.as_ref() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                return Ok(None);
+            }
+            result = acquire => result,
+        }
+    } else {
+        acquire.await
+    };
+    let connection = match result {
+        Ok(connection) => connection,
+        Err(sqlx::Error::PoolTimedOut) => {
+            retention_record_defer(operation, "sqlite_pool_wait");
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if retention_run_budget_expired()
+        || shutdown
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+    {
+        drop(connection);
+        retention_record_defer(
+            operation,
+            if retention_run_budget_expired() {
+                "retention_work_budget"
+            } else {
+                "shutdown"
+            },
+        );
+        return Ok(None);
+    }
+    Ok(connection)
+}
+
+pub(crate) async fn acquire_retention_write_connection(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+) -> Result<Option<(sqlx::pool::PoolConnection<Sqlite>, RetentionWriteAdmission)>> {
+    // Wait for the coordinator without holding a pool connection. Once admitted,
+    // take only an immediately available connection: neither resource may be
+    // retained while waiting for the other, including a P1 writer using the pool.
+    let Some(mut admission) = acquire_retention_write_admission(operation).await else {
+        return Ok(None);
+    };
+    if retention_run_budget_expired()
+        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+    {
+        admission.write_permit.revoke_fairness_admission();
+        drop(admission);
+        retention_record_defer(
+            operation,
+            if retention_run_budget_expired() {
+                "retention_work_budget"
+            } else {
+                "shutdown"
+            },
+        );
+        return Ok(None);
+    }
+    if let Some(connection) = pool.try_acquire() {
+        Ok(Some((connection, admission)))
+    } else {
+        admission.write_permit.revoke_fairness_admission();
+        drop(admission);
+        retention_record_defer(operation, "sqlite_pool_wait");
+        Ok(None)
     }
 }
 
@@ -1481,7 +1585,9 @@ impl RetentionRunSummary {
     pub(crate) fn completion(&self) -> &'static str {
         if self.fatal_error.is_some() {
             "failed"
-        } else if self.recoverable_failure {
+        } else if self.recoverable_failure
+            || self.wait_reason.as_deref() == Some("parallel_work_minute_coverage")
+        {
             "partial"
         } else if self.budget_exhausted || self.deferred {
             if self.touched_anything() {
@@ -1489,6 +1595,11 @@ impl RetentionRunSummary {
             } else {
                 "deferred"
             }
+        } else if self
+            .backlog_total
+            .is_some_and(|total| total.max(0) as u64 > self.invocation_rows_archived as u64)
+        {
+            "partial"
         } else {
             "completed"
         }
@@ -10779,6 +10890,50 @@ mod retention_summary_tests {
     use chrono::{TimeZone, Utc};
 
     use super::{RetentionRunSummary, retention_backlog_max_overdue_seconds};
+
+    #[test]
+    fn selected_batch_completion_does_not_complete_captured_backlog() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            invocation_rows_archived: 1_000,
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        assert_eq!(summary.core_completion(), "completed");
+        summary.invocation_rows_archived = 1_001;
+        assert_eq!(summary.completion(), "completed");
+        summary.invocation_rows_archived = 0;
+        assert_eq!(summary.completion(), "partial", "known pending work");
+        summary.backlog_total = Some(0);
+        assert_eq!(summary.completion(), "completed", "accurate empty scope");
+    }
+
+    #[test]
+    fn pending_coverage_is_partial_but_pure_admission_is_deferred() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            deferred: true,
+            wait_reason: Some("parallel_work_minute_coverage".to_string()),
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        for reason in [
+            "sqlite_pressure",
+            "sqlite_pool_wait",
+            "retention_write_admission",
+        ] {
+            summary.wait_reason = Some(reason.to_string());
+            assert_eq!(summary.completion(), "deferred", "pure admission: {reason}");
+        }
+        summary.invocation_rows_archived = 64;
+        assert_eq!(
+            summary.completion(),
+            "partial",
+            "committed progress remains"
+        );
+        summary.fatal_error = Some("archive failed".to_string());
+        assert_eq!(summary.completion(), "failed", "fatal error takes priority");
+    }
 
     #[test]
     fn recoverable_failure_is_partial_without_progress() {

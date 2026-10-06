@@ -134,7 +134,11 @@ pub(crate) async fn prune_old_invocation_details(
             if ids.is_empty() || retention_run_budget_expired() {
                 break;
             }
-            let mut source_connection = pool.acquire().await?;
+            let Some(mut source_connection) =
+                acquire_retention_pool_connection(pool, "invocation_detail_identity").await?
+            else {
+                return Ok((rows_pruned, archive_batches, raw_files_removed));
+            };
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
@@ -255,13 +259,13 @@ pub(crate) async fn prune_old_invocation_details(
                         ]
                     })
                     .collect::<Vec<_>>();
-                let Some(admission) =
-                    acquire_retention_write_admission("invocation_detail_prune").await
+                let Some((mut source_connection, admission)) =
+                    acquire_retention_write_connection(pool, "invocation_detail_prune").await?
                 else {
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
                 };
                 let execute_started = Instant::now();
-                let mut tx = pool.begin().await?;
+                let mut tx = source_connection.begin().await?;
                 upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
                 mark_archive_batch_historical_rollups_materialized_tx(
                     tx.as_mut(),
@@ -327,6 +331,7 @@ pub(crate) async fn prune_old_invocation_details(
                     had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                 let commit_started = Instant::now();
                 tx.commit().await?;
+                drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
                     admission.admission_mode(),
@@ -548,7 +553,16 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
-            let mut source_connection = pool.acquire().await?;
+            let Some(mut source_connection) =
+                acquire_retention_pool_connection(pool, "invocation_archive_identity").await?
+            else {
+                return Ok((
+                    rows_archived,
+                    archive_batches,
+                    raw_files_removed,
+                    prompt_cache_keys,
+                ));
+            };
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
@@ -687,7 +701,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .iter()
                     .map(invocation_archive_candidate_to_hourly_source_record)
                     .collect::<Vec<_>>();
-                let Some(admission) = acquire_retention_write_admission("invocation_archive").await
+                let Some((mut source_connection, admission)) =
+                    acquire_retention_write_connection(pool, "invocation_archive").await?
                 else {
                     return Ok((
                         rows_archived,
@@ -697,7 +712,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     ));
                 };
                 let execute_started = Instant::now();
-                let mut tx = pool.begin().await?;
+                let mut tx = source_connection.begin().await?;
                 // P2 normally advances this cursor before retention. Rows beyond it would be
                 // deleted before the regular replay can observe them, so materialize just those
                 // rows in this same archive transaction before claiming the archive is covered.
@@ -828,6 +843,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                 let commit_started = Instant::now();
                 tx.commit().await?;
+                drop(source_connection);
                 workload::record_processed_count(group.len());
                 retention_record_commit_with_reference_check!(
                     "invocation_archive",
@@ -1003,7 +1019,11 @@ pub(crate) async fn archive_timestamped_dataset(
             } else {
                 false
             };
-            let mut source_connection = pool.acquire().await?;
+            let Some(mut source_connection) =
+                acquire_retention_pool_connection(pool, "timestamped_archive_identity").await?
+            else {
+                return Ok((rows_archived, archive_batches, raw_files_removed));
+            };
             let source_identity =
                 archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids)
                     .await?;
@@ -1104,13 +1124,13 @@ pub(crate) async fn archive_timestamped_dataset(
                 } else {
                     Vec::new()
                 };
-                let Some(admission) =
-                    acquire_retention_write_admission("timestamped_archive").await
+                let Some((mut source_connection, admission)) =
+                    acquire_retention_write_connection(pool, "timestamped_archive").await?
                 else {
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let execute_started = Instant::now();
-                let mut tx = pool.begin().await?;
+                let mut tx = source_connection.begin().await?;
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
             )
@@ -1272,6 +1292,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 };
                 let commit_started = Instant::now();
                 tx.commit().await?;
+                drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "timestamped_archive",
                     admission.admission_mode(),

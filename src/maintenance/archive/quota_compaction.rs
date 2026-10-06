@@ -203,7 +203,14 @@ pub(crate) async fn compact_old_quota_snapshots(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let mut connection = pool.acquire().await?;
+            let Some(mut connection) = super::super::retention::acquire_retention_pool_connection(
+                pool,
+                "quota_archive_identity",
+            )
+            .await?
+            else {
+                return Ok((rows_archived, archive_batches));
+            };
             let identity = super::super::retention::archive_table_source_identity_sha256(
                 &mut connection,
                 spec,
@@ -275,14 +282,17 @@ pub(crate) async fn compact_old_quota_snapshots(
                 .zip(chunk_identities)
             {
                 let ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
-                let Some(admission) =
-                    super::super::retention::acquire_retention_write_admission("quota_compaction")
-                        .await
+                let Some((mut source_connection, admission)) =
+                    super::super::retention::acquire_retention_write_connection(
+                        pool,
+                        "quota_compaction",
+                    )
+                    .await?
                 else {
                     return Ok((rows_archived, archive_batches));
                 };
                 let execute_started = Instant::now();
-                let mut tx = pool.begin().await?;
+                let mut tx = source_connection.begin().await?;
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
             )
@@ -315,6 +325,7 @@ pub(crate) async fn compact_old_quota_snapshots(
                 delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
                 let commit_started = Instant::now();
                 tx.commit().await?;
+                drop(source_connection);
                 super::super::retention::retention_record_commit!(
                     "quota_compaction",
                     admission.admission_mode(),
