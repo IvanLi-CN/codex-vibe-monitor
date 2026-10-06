@@ -115,9 +115,14 @@ def require_observability_performance_contract(workflow: dict[str, Any]) -> None
     image_job = job_config(workflow, "observability-performance-image", "ci-pr.yml")
     require(performance_job.get("name") == "Observability Performance Budget" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
+    require_job_and_steps_fail_closed(
+        performance_job,
+        "ci-pr.yml.jobs.observability-performance",
+        non_blocking_steps=("Run candidate-bound runtime and performance acceptance",),
+    )
+    require_job_and_steps_fail_closed(job=image_job, where="ci-pr.yml.jobs.observability-performance-image")
     for name, job in [("observability-performance", performance_job), ("observability-performance-image", image_job)]:
         require(job.get("runs-on") == RUNNER_X64, f"{name} must use the fixed GitHub-hosted runner")
-        require_job_and_steps_fail_closed(job, f"ci-pr.yml.jobs.{name}")
     image_upload = uses_step_config(
         image_job,
         "Upload performance candidate image",
@@ -148,7 +153,19 @@ def require_observability_performance_contract(workflow: dict[str, Any]) -> None
         "observability performance must download the run-scoped image artifact",
     )
     acceptance = step_config(performance_job, "Run candidate-bound runtime and performance acceptance", "ci-pr.yml.jobs.observability-performance")
+    require(acceptance.get("id") == "acceptance", "performance acceptance step must expose its outcome")
+    require(acceptance.get("continue-on-error") is True, "resource-unavailable performance evidence must reach the classifier")
     require("--environment github-actions --suite full --seconds 300 --rate 5" in str(acceptance.get("run", "")), "performance gate must use the full fixed Actions acceptance contract")
+    classifier = step_config(performance_job, "Classify performance acceptance", "ci-pr.yml.jobs.observability-performance")
+    require(classifier.get("if") == "always()", "performance acceptance classifier must run after unavailable evidence")
+    classifier_env = require_mapping(classifier.get("env"), "ci-pr.yml performance acceptance classifier environment")
+    require(
+        classifier_env.get("ACCEPTANCE_OUTCOME") == "${{ steps.acceptance.outcome }}"
+        and 'python3 scripts/observability-acceptance/classify.py' in str(classifier.get("run", ""))
+        and '--root "$RUNNER_TEMP/observability-acceptance"' in str(classifier.get("run", ""))
+        and '--step-outcome "$ACCEPTANCE_OUTCOME"' in str(classifier.get("run", "")),
+        "performance acceptance classifier must consume the recorded step outcome and evidence root",
+    )
     upload = step_config(performance_job, "Upload performance acceptance evidence", "ci-pr.yml.jobs.observability-performance")
     require(upload.get("if") == "always()", "failed performance runs must preserve evidence")
     evidence = str(upload.get("with", {}).get("path", "")).splitlines()
@@ -499,6 +516,7 @@ def require_job_and_steps_fail_closed(
     job: dict[str, Any],
     where: str,
     best_effort_steps: tuple[str, ...] = (),
+    non_blocking_steps: tuple[str, ...] = (),
 ) -> None:
     require_fail_closed(job, where)
     steps = job.get("steps")
@@ -508,6 +526,8 @@ def require_job_and_steps_fail_closed(
         step_where = f"{where}.steps[{step.get('name', index)}]"
         if step.get("name") in best_effort_steps:
             require(step.get("continue-on-error") is True, f"{step_where}.continue-on-error must keep cache writes best-effort")
+        elif step.get("name") in non_blocking_steps:
+            require(step.get("continue-on-error") is True, f"{step_where}.continue-on-error must preserve unavailable performance evidence for classification")
         else:
             require_fail_closed(step, step_where)
 

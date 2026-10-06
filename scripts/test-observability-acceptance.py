@@ -16,6 +16,7 @@ sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
 import environment
 from run import Run
 import run as acceptance
+from classify import ClassificationError, classify_result
 spec = importlib.util.spec_from_file_location("performance_gate_contract", SOURCE / ".github/scripts/check_quality_gates_contract.py")
 contract = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = contract
@@ -308,6 +309,23 @@ class WorkflowGateTests(unittest.TestCase):
         step.pop("if")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
+    def test_resource_unavailability_requires_the_classifier(self):
+        workflow = copy.deepcopy(self.workflow)
+        steps = workflow["jobs"]["observability-performance"]["steps"]
+        steps[:] = [step for step in steps if step["name"] != "Classify performance acceptance"]
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_classifier_must_run_after_a_non_blocking_acceptance_step(self):
+        workflow = copy.deepcopy(self.workflow)
+        steps = workflow["jobs"]["observability-performance"]["steps"]
+        acceptance = next(step for step in steps if step["name"] == "Run candidate-bound runtime and performance acceptance")
+        acceptance["continue-on-error"] = False
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+        acceptance["continue-on-error"] = True
+        classifier = next(step for step in steps if step["name"] == "Classify performance acceptance")
+        classifier["if"] = "success()"
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
     def test_window_evidence_is_required_and_sensitive_artifacts_are_refused(self):
         for extra in [False, True]:
             workflow = copy.deepcopy(self.workflow)
@@ -323,6 +341,54 @@ class WorkflowGateTests(unittest.TestCase):
         step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Run candidate-bound runtime and performance acceptance")
         step["run"] = step["run"].replace("--seconds 300", "--seconds 60")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+
+class PerformanceDispositionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def write_case(self, status, scenarios):
+        (self.root / "empirical-card.json").write_text(json.dumps({"empirical_evidence_status": status}) + "\n")
+        (self.root / "scenarios.json").write_text(json.dumps(scenarios) + "\n")
+
+    @staticmethod
+    def passed_scenarios():
+        return {
+            "https-auth-query": {"status": "passed"},
+            "monitoring-fault-isolation": {"status": "passed"},
+            "original-process-cpu": {"status": "passed"},
+            "default-observability-ab": {
+                "status": "unavailable",
+                "error": "measured resource environment unavailable: pressure_exceeded",
+            },
+        }
+
+    def test_pressure_unavailable_is_neutral(self):
+        self.write_case("unavailable", self.passed_scenarios())
+        self.assertEqual(classify_result(self.root, "failure"), "neutral-unavailable")
+
+    def test_functional_failure_remains_blocking(self):
+        scenarios = self.passed_scenarios()
+        scenarios["https-auth-query"] = {"status": "failed", "error": "query mismatch"}
+        self.write_case("failed", scenarios)
+        with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_missing_or_invalid_measurement_evidence_remains_blocking(self):
+        scenarios = self.passed_scenarios()
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "measurement environment evidence is incomplete or invalid",
+        }
+        self.write_case("unavailable", scenarios)
+        with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_successful_acceptance_requires_successful_step(self):
+        scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}
+        self.write_case("passed", scenarios)
+        self.assertEqual(classify_result(self.root, "success"), "passed")
+        with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
 
 
 if __name__ == "__main__":

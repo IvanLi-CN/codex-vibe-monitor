@@ -1040,6 +1040,8 @@ jobs:
           sudo sysctl -w kernel.perf_event_paranoid=1
 
       - name: Run candidate-bound runtime and performance acceptance
+        id: acceptance
+        continue-on-error: true
         env:
           CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
           PYTHONDONTWRITEBYTECODE: "1"
@@ -1050,6 +1052,15 @@ jobs:
             --candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE" \
             --samply "$RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" \
             --environment github-actions --suite full --seconds 300 --rate 5
+
+      - name: Classify performance acceptance
+        if: always()
+        env:
+          ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
+        run: |
+          python3 scripts/observability-acceptance/classify.py \
+            --root "$RUNNER_TEMP/observability-acceptance" \
+            --step-outcome "$ACCEPTANCE_OUTCOME"
 
       - name: Upload performance acceptance evidence
         if: always()
