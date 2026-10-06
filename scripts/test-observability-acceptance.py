@@ -146,6 +146,8 @@ class ResourceAdmissionTests(unittest.TestCase):
                     window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
                     with environment.observe_resources(self.root, window): self.clock += 10
                     samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10})
+        (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
+        (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
         (self.root / "ab-samples.json").write_text(json.dumps(samples))
         environment.verify_measurement_evidence(self.root)
         path = self.root / "resource-observer.jsonl"
@@ -156,6 +158,15 @@ class ResourceAdmissionTests(unittest.TestCase):
         with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
         path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
         with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+
+
+class CpuIsolationTests(unittest.TestCase):
+    def test_layout_pins_app_and_leaves_helpers_on_runner_default_affinity(self):
+        self.assertEqual(environment.measurement_cpu_layout({3, 1, 2, 0}), {"app": "0", "auxiliary": "runner-default"})
+
+    def test_layout_requires_a_helper_cpu(self):
+        with self.assertRaisesRegex(ValueError, "at least two runner CPUs"):
+            environment.measurement_cpu_layout({0})
 
 
 class AdmissionTests(unittest.TestCase):
