@@ -4,6 +4,10 @@
 本目录是部署合同；101 的域名、镜像 digest、卷容量、认证与 perf 权限由上线任务验证。
 集成、Compose 部署、鉴权边界和排障顺序见[canonical solution](../../docs/solutions/performance/prometheus-grafana-compose-integration.md)。
 
+## 本地 Grafana 预览
+
+需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
+
 ## 应用配置
 
 ```dotenv
