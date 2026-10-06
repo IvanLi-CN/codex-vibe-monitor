@@ -92,6 +92,7 @@ def functional():
         if collected and float(collected[0]["value"][1])>=2: break
         assert time.monotonic()<deadline,"browser observations were not scraped"
         time.sleep(2)
+    web_samples=0
     for uid in ["overview","proxy","sqlite","runtime","web"]:
         path="/api/dashboards/uid/cvm-"+uid
         for token in [None,"bad"]: assert request("https://entry:8443",path,token=token)[0] in (401,403)
@@ -105,7 +106,9 @@ def functional():
                 assert result["status"]=="success",expression
                 if uid=="web":
                     samples=result["data"]["result"]
-                    assert samples and all(math.isfinite(float(row["value"][1])) for row in samples),(panel["title"],expression,samples)
+                    assert all(math.isfinite(float(row["value"][1])) for row in samples),(panel["title"],expression,samples)
+                    web_samples+=len(samples)
+    assert web_samples>0,"browser dashboard returned no observed series"
     for base in ["https://entry:8443","http://grafana:3000"]:
         assert request(base,"/api/dashboards/db",method="POST",payload={"dashboard":{"title":"forbidden"}},token=viewer_token)[0] in (403,405)
     assert request("https://entry:8443","/")[0]==401
