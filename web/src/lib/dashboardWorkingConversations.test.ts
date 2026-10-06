@@ -67,6 +67,8 @@ function createConversation(
       "2026-04-04T10:00:00Z",
     lastActivityAt:
       overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    firstInvocationAt: overrides.firstInvocationAt,
+    lastInvocationAt: overrides.lastInvocationAt,
     lastTerminalAt: hasLastTerminalAt ? (overrides.lastTerminalAt ?? null) : undefined,
     lastInFlightAt: hasLastInFlightAt ? (overrides.lastInFlightAt ?? null) : undefined,
     inFlightPhaseCounts: overrides.inFlightPhaseCounts ?? {
@@ -251,6 +253,31 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
     expect(cards[2]?.earlierInvocation).toBeNull();
     expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+  });
+
+  it("uses firstInvocationAt for the history anchor without changing live activity order", () => {
+    const response = createResponse([
+      createConversation(
+        "pck-first-invocation",
+        [
+          createPreview({
+            id: 41,
+            invokeId: "invoke-first-invocation",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T10:03:00Z",
+          firstInvocationAt: "2026-04-04T10:01:00Z",
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards[0]?.createdAtEpoch).toBe(Date.parse("2026-04-04T10:01:00Z"));
+    expect(cards[0]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:04:00Z"));
   });
 
   it("maps the three invocation slots in descending occurrence order", () => {

@@ -2925,6 +2925,8 @@ fn apply_working_conversation_terminal_delta(
     record: &PromptCacheTopicDelta,
     preview: &PromptCacheConversationInvocationPreviewResponse,
 ) {
+    let statistics_baseline_is_known_empty =
+        conversation.request_count == 0 && conversation.last_terminal_at.is_none();
     conversation.request_count = conversation.request_count.saturating_add(1);
     conversation.total_tokens = conversation
         .total_tokens
@@ -2933,29 +2935,69 @@ fn apply_working_conversation_terminal_delta(
     increment_optional_i64(
         &mut conversation.success_count,
         Some(i64::from(record.is_success)),
+        statistics_baseline_is_known_empty,
     );
     increment_optional_i64(
         &mut conversation.failure_count,
         Some(i64::from(!record.is_success)),
+        statistics_baseline_is_known_empty,
     );
-    increment_optional_i64(&mut conversation.input_tokens, record.input_tokens);
-    increment_optional_i64(&mut conversation.output_tokens, record.output_tokens);
+    increment_optional_i64(
+        &mut conversation.input_tokens,
+        record.input_tokens,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_i64(
+        &mut conversation.output_tokens,
+        record.output_tokens,
+        statistics_baseline_is_known_empty,
+    );
     increment_optional_i64(
         &mut conversation.cache_input_tokens,
         record.cache_input_tokens,
+        statistics_baseline_is_known_empty,
     );
     increment_optional_i64(
         &mut conversation.reported_cache_write_tokens,
         record.reported_cache_write_tokens,
+        statistics_baseline_is_known_empty,
     );
-    increment_optional_i64(&mut conversation.reasoning_tokens, record.reasoning_tokens);
-    increment_optional_f64(&mut conversation.cost_input, record.cost_input);
-    increment_optional_f64(&mut conversation.cost_cache_write, record.cost_cache_write);
-    increment_optional_f64(&mut conversation.cost_cache_read, record.cost_cache_read);
-    increment_optional_f64(&mut conversation.cost_output, record.cost_output);
-    increment_optional_f64(&mut conversation.cost_reasoning, record.cost_reasoning);
-    update_option_if_earlier(&mut conversation.first_invocation_at, &record.occurred_at);
-    update_option_if_newer(&mut conversation.last_invocation_at, &record.occurred_at);
+    increment_optional_i64(
+        &mut conversation.reasoning_tokens,
+        record.reasoning_tokens,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_f64(
+        &mut conversation.cost_input,
+        record.cost_input,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_f64(
+        &mut conversation.cost_cache_write,
+        record.cost_cache_write,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_f64(
+        &mut conversation.cost_cache_read,
+        record.cost_cache_read,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_f64(
+        &mut conversation.cost_output,
+        record.cost_output,
+        statistics_baseline_is_known_empty,
+    );
+    increment_optional_f64(
+        &mut conversation.cost_reasoning,
+        record.cost_reasoning,
+        statistics_baseline_is_known_empty,
+    );
+    if statistics_baseline_is_known_empty || conversation.first_invocation_at.is_some() {
+        update_option_if_earlier(&mut conversation.first_invocation_at, &record.occurred_at);
+    }
+    if statistics_baseline_is_known_empty || conversation.last_invocation_at.is_some() {
+        update_option_if_newer(&mut conversation.last_invocation_at, &record.occurred_at);
+    }
     update_option_if_newer(&mut conversation.last_terminal_at, &record.occurred_at);
 
     let account_group_key = resolve_prompt_cache_upstream_account_group_key(
@@ -3122,17 +3164,23 @@ fn update_option_if_earlier(current: &mut Option<String>, candidate: &str) -> bo
     }
 }
 
-fn increment_optional_i64(current: &mut Option<i64>, delta: Option<i64>) {
+fn increment_optional_i64(current: &mut Option<i64>, delta: Option<i64>, allow_initialize: bool) {
     let Some(delta) = delta else {
         return;
     };
+    if current.is_none() && !allow_initialize {
+        return;
+    }
     *current = Some(current.unwrap_or_default().saturating_add(delta));
 }
 
-fn increment_optional_f64(current: &mut Option<f64>, delta: Option<f64>) {
+fn increment_optional_f64(current: &mut Option<f64>, delta: Option<f64>, allow_initialize: bool) {
     let Some(delta) = delta else {
         return;
     };
+    if current.is_none() && !allow_initialize {
+        return;
+    }
     *current = Some(current.unwrap_or_default() + delta);
 }
 
@@ -10990,6 +11038,12 @@ fn apply_prompt_cache_records_to_payload(
         };
         recent.truncate(recent_limit);
 
+        let statistics_baseline_is_known_empty =
+            conversation.get("requestCount").and_then(Value::as_i64) == Some(0)
+                && conversation
+                    .get("lastTerminalAt")
+                    .and_then(Value::as_str)
+                    .is_none();
         if conversation
             .get("lastActivityAt")
             .and_then(Value::as_str)
@@ -11017,7 +11071,12 @@ fn apply_prompt_cache_records_to_payload(
                 {
                     conversation.insert("lastTerminalAt".to_string(), occurred_at.clone());
                 }
-                apply_prompt_cache_statistics_delta(conversation, record, &occurred_at);
+                apply_prompt_cache_statistics_delta(
+                    conversation,
+                    record,
+                    &occurred_at,
+                    statistics_baseline_is_known_empty,
+                );
                 apply_prompt_cache_account_delta(conversation, record, &occurred_at);
             }
             let points = conversation
@@ -11097,8 +11156,12 @@ fn increment_json_optional_i64(
     object: &mut serde_json::Map<String, Value>,
     field: &str,
     delta: Option<i64>,
+    allow_initialize: bool,
 ) {
-    if let Some(delta) = delta {
+    let Some(delta) = delta else {
+        return;
+    };
+    if allow_initialize || object.get(field).and_then(Value::as_i64).is_some() {
         increment_json_i64(object, field, delta);
     }
 }
@@ -11122,8 +11185,12 @@ fn increment_json_optional_f64(
     object: &mut serde_json::Map<String, Value>,
     field: &str,
     delta: Option<f64>,
+    allow_initialize: bool,
 ) {
-    if let Some(delta) = delta {
+    let Some(delta) = delta else {
+        return;
+    };
+    if allow_initialize || object.get(field).and_then(Value::as_f64).is_some() {
         increment_json_f64(object, field, delta);
     }
 }
@@ -11170,39 +11237,96 @@ fn apply_prompt_cache_statistics_delta(
     conversation: &mut serde_json::Map<String, Value>,
     record: &PromptCacheTopicDelta,
     occurred_at: &Value,
+    statistics_baseline_is_known_empty: bool,
 ) {
-    increment_json_i64(conversation, "successCount", i64::from(record.is_success));
-    increment_json_i64(conversation, "failureCount", i64::from(!record.is_success));
-    increment_json_optional_i64(conversation, "inputTokens", record.input_tokens);
-    increment_json_optional_i64(conversation, "outputTokens", record.output_tokens);
-    increment_json_optional_i64(conversation, "cacheInputTokens", record.cache_input_tokens);
+    increment_json_optional_i64(
+        conversation,
+        "successCount",
+        Some(i64::from(record.is_success)),
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_i64(
+        conversation,
+        "failureCount",
+        Some(i64::from(!record.is_success)),
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_i64(
+        conversation,
+        "inputTokens",
+        record.input_tokens,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_i64(
+        conversation,
+        "outputTokens",
+        record.output_tokens,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_i64(
+        conversation,
+        "cacheInputTokens",
+        record.cache_input_tokens,
+        statistics_baseline_is_known_empty,
+    );
     increment_json_optional_i64(
         conversation,
         "reportedCacheWriteTokens",
         record.reported_cache_write_tokens,
+        statistics_baseline_is_known_empty,
     );
-    increment_json_optional_i64(conversation, "reasoningTokens", record.reasoning_tokens);
-    increment_json_optional_f64(conversation, "costInput", record.cost_input);
-    increment_json_optional_f64(conversation, "costCacheWrite", record.cost_cache_write);
-    increment_json_optional_f64(conversation, "costCacheRead", record.cost_cache_read);
-    increment_json_optional_f64(conversation, "costOutput", record.cost_output);
-    increment_json_optional_f64(conversation, "costReasoning", record.cost_reasoning);
+    increment_json_optional_i64(
+        conversation,
+        "reasoningTokens",
+        record.reasoning_tokens,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_f64(
+        conversation,
+        "costInput",
+        record.cost_input,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_f64(
+        conversation,
+        "costCacheWrite",
+        record.cost_cache_write,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_f64(
+        conversation,
+        "costCacheRead",
+        record.cost_cache_read,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_f64(
+        conversation,
+        "costOutput",
+        record.cost_output,
+        statistics_baseline_is_known_empty,
+    );
+    increment_json_optional_f64(
+        conversation,
+        "costReasoning",
+        record.cost_reasoning,
+        statistics_baseline_is_known_empty,
+    );
 
     let occurred_at = occurred_at.as_str().unwrap_or_default();
-    if conversation
+    let first_invocation_at = conversation
         .get("firstInvocationAt")
-        .and_then(Value::as_str)
-        .is_none_or(|current| occurred_at < current)
+        .and_then(Value::as_str);
+    if (statistics_baseline_is_known_empty || first_invocation_at.is_some())
+        && first_invocation_at.is_none_or(|current| occurred_at < current)
     {
         conversation.insert(
             "firstInvocationAt".to_string(),
             Value::String(occurred_at.to_string()),
         );
     }
-    if conversation
-        .get("lastInvocationAt")
-        .and_then(Value::as_str)
-        .is_none_or(|current| occurred_at > current)
+    let last_invocation_at = conversation.get("lastInvocationAt").and_then(Value::as_str);
+    if (statistics_baseline_is_known_empty || last_invocation_at.is_some())
+        && last_invocation_at.is_none_or(|current| occurred_at > current)
     {
         conversation.insert(
             "lastInvocationAt".to_string(),
@@ -14155,6 +14279,31 @@ mod tests {
         crate::tests::complete_prompt_cache_conversation_materialization_for_test(&state.pool)
             .await;
 
+        let preexisting_occurred_at = format_naive(
+            (now - ChronoDuration::seconds(90))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let mut preexisting = dashboard_runtime_topology_live_record(&preexisting_occurred_at);
+        preexisting.id = 0;
+        preexisting.invoke_id = "subscription-preexisting-terminal".to_string();
+        preexisting.status = Some("success".to_string());
+        preexisting.live_phase = None;
+        preexisting.prompt_cache_key = Some("subscription-live-key".to_string());
+        preexisting.input_tokens = Some(1);
+        preexisting.output_tokens = Some(2);
+        preexisting.cache_input_tokens = Some(3);
+        preexisting.reported_cache_write_tokens = Some(4);
+        preexisting.reasoning_tokens = Some(5);
+        preexisting.total_tokens = Some(30);
+        preexisting.cost = Some(0.30);
+        preexisting.cost_input = Some(0.06);
+        preexisting.cost_cache_write = Some(0.07);
+        preexisting.cost_cache_read = Some(0.08);
+        preexisting.cost_output = Some(0.09);
+        preexisting.cost_reasoning = Some(0.10);
+        state.proxy_runtime_invocations.upsert(preexisting);
+
         let lease = hub
             .register_topic_subscribers(std::slice::from_ref(&topic))
             .await
@@ -14172,9 +14321,11 @@ mod tests {
             let payload = cached.snapshot_frame.payload_value();
             assert_eq!(payload["conversations"].as_array().map(Vec::len), Some(1));
             assert_eq!(
-                payload["conversations"][0]["requestCount"], 1,
-                "the production topic baseline must include the persisted fixture",
+                payload["conversations"][0]["requestCount"], 2,
+                "the production topic baseline must include persisted and preexisting runtime fixtures",
             );
+            assert_eq!(payload["conversations"][0]["successCount"], 2);
+            assert_eq!(payload["conversations"][0]["inputTokens"], 5);
         }
 
         let live_occurred_at = format_naive(
@@ -14234,7 +14385,7 @@ mod tests {
                         .and_then(|conversations| conversations.first())
                         .and_then(|conversation| conversation.get("requestCount"))
                         .and_then(Value::as_i64)
-                        == Some(2)
+                        == Some(3)
                         && cached.prompt_cache_pending_records.is_empty()
                         && !cached.prompt_cache_refresh_scheduled
                 };
@@ -14258,16 +14409,16 @@ mod tests {
             .and_then(|conversations| conversations.first())
             .expect("subscription conversation payload");
         assert_eq!(conversation["promptCacheKey"], "subscription-live-key");
-        assert_eq!(conversation["requestCount"], 2);
-        assert_eq!(conversation["totalTokens"], 70);
-        assert_eq!(conversation["successCount"], 2);
+        assert_eq!(conversation["requestCount"], 3);
+        assert_eq!(conversation["totalTokens"], 100);
+        assert_eq!(conversation["successCount"], 3);
         assert_eq!(conversation["failureCount"], 0);
-        assert_eq!(conversation["inputTokens"], 14);
-        assert_eq!(conversation["outputTokens"], 16);
-        assert_eq!(conversation["cacheInputTokens"], 18);
-        assert_eq!(conversation["reportedCacheWriteTokens"], 20);
-        assert_eq!(conversation["reasoningTokens"], 22);
-        assert!((conversation["costInput"].as_f64().unwrap() - 0.12).abs() < 1e-9);
+        assert_eq!(conversation["inputTokens"], 15);
+        assert_eq!(conversation["outputTokens"], 18);
+        assert_eq!(conversation["cacheInputTokens"], 21);
+        assert_eq!(conversation["reportedCacheWriteTokens"], 24);
+        assert_eq!(conversation["reasoningTokens"], 27);
+        assert!((conversation["costInput"].as_f64().unwrap() - 0.18).abs() < 1e-9);
         assert_ne!(
             conversation["firstInvocationAt"],
             conversation["lastInvocationAt"]
@@ -23075,6 +23226,33 @@ mod tests {
         assert_eq!(conversation["costReasoning"], 0.05);
         assert_eq!(conversation["totalCost"], 0.0);
 
+        let mut unknown_payload = serde_json::json!({
+            "conversations": [{
+                "promptCacheKey": "cache-key",
+                "requestCount": 10,
+                "totalTokens": 500,
+                "totalCost": 1.0,
+                "createdAt": "2026-08-01T09:00:00Z",
+                "lastActivityAt": "2026-08-08T09:00:00Z",
+                "lastTerminalAt": "2026-08-08T09:00:00Z",
+                "recentInvocations": [],
+                "last24hRequests": []
+            }]
+        });
+        let mut unknown_applied_terminal_ids = HashSet::new();
+        apply_prompt_cache_records_to_payload(
+            &topic,
+            &mut unknown_payload,
+            std::slice::from_ref(&delta),
+            &mut unknown_applied_terminal_ids,
+            0,
+        )
+        .expect("apply delta to unknown historical statistics");
+        let unknown_conversation = &unknown_payload["conversations"][0];
+        assert!(unknown_conversation.get("successCount").is_none());
+        assert!(unknown_conversation.get("inputTokens").is_none());
+        assert!(unknown_conversation.get("firstInvocationAt").is_none());
+
         let preview = delta.preview.clone().expect("sanitized preview");
         let mut working_state = phase_summary_test_state("cache-key");
         apply_working_conversation_terminal_delta(
@@ -23090,6 +23268,21 @@ mod tests {
         assert_eq!(working_conversation.cost_input, None);
         assert_eq!(working_conversation.cost_cache_write, Some(0.0));
         assert_eq!(working_conversation.cost_output, None);
+
+        let mut unknown_working_state = phase_summary_test_state("cache-key");
+        unknown_working_state.response.conversations[0].request_count = 10;
+        unknown_working_state.response.conversations[0].total_tokens = 500;
+        unknown_working_state.response.conversations[0].last_terminal_at =
+            Some("2026-08-08T09:00:00Z".to_string());
+        apply_working_conversation_terminal_delta(
+            &mut unknown_working_state.response.conversations[0],
+            &delta,
+            &preview,
+        );
+        let unknown_working_conversation = &unknown_working_state.response.conversations[0];
+        assert_eq!(unknown_working_conversation.success_count, None);
+        assert_eq!(unknown_working_conversation.input_tokens, None);
+        assert_eq!(unknown_working_conversation.first_invocation_at, None);
     }
 
     #[test]

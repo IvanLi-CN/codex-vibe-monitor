@@ -31,27 +31,32 @@
         "description": "The candidate remains within the approved additive prompt-cache conversation read contract and its frontend presentation and ordering consumers."
       },
       "reasoning": "Durable conversation identity remains independently visible, while aggregate fields stay absent until materialization makes them trustworthy and snapshot reads fail closed for newer materialized data. No existing response field or durable state meaning changes.",
-      "reassessed_at": "2026-10-07T02:44:53+08:00",
+      "reassessed_at": "2026-10-07T03:16:09+08:00",
       "evidence": [
         "src/api/slices/settings_models_and_cache.rs",
         "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/detail_queries.rs",
         "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/hydration.rs",
         "src/api/slices/subscriptions.rs",
+        "src/app_state.rs",
         "src/app_state/invocation_store.rs",
         "web/src/lib/api/core-foundation.ts",
         "web/src/lib/promptCacheLive.ts",
+        "web/src/features/prompt-cache/PromptCacheConversationTable.tsx",
+        "web/src/lib/dashboardWorkingConversations.ts",
         "web/src/pages/Live.prompt-cache.integration.test.tsx"
       ]
     },
     "verified": {
       "impact": "patch",
       "reasoning": "The focused backend regression covers persisted master statistics, delayed materialization, and snapshot fail-closed behavior. Frontend tests, typechecking, production build, and Storybook visual evidence cover optional-field absence, display, and count-mode ordering without changing existing selection semantics.",
-      "verified_at": "2026-10-07T02:44:53+08:00",
+      "verified_at": "2026-10-07T03:16:09+08:00",
       "evidence": [
         "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
         "src/api/slices/subscriptions.rs",
+        "src/app_state.rs",
         "src/app_state/invocation_store.rs",
         "web/src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
+        "web/src/lib/dashboardWorkingConversations.test.ts",
         "web/src/lib/promptCacheLive.test.ts",
         "web/src/lib/api.test.ts",
         "web/src/pages/Live.prompt-cache.integration.test.tsx",
@@ -66,11 +71,13 @@
         "cargo test prompt_cache_window_topic_materializes_live_statistics_delta -- --nocapture",
         "cd web && bunx vitest run src/pages/Live.prompt-cache.integration.test.tsx",
         "cd web && bunx vitest run src/lib/api.test.ts src/lib/promptCacheLive.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
-        "cd web && bun run typecheck:web",
+        "cd web && bunx vitest run src/lib/dashboardWorkingConversations.test.ts",
+        "bun run typecheck:web",
         "bun run lint:web",
         "cd web && bun run build",
         "cd web && bunx vitest run --project=storybook src/features/prompt-cache/PromptCacheConversationTable.stories.tsx",
-        "bash .github/scripts/test-live-quality-gates.sh"
+        "bash .github/scripts/test-live-quality-gates.sh",
+        "python3 .github/scripts/check_quality_gates_contract.py --repo-root . --declaration .github/quality-gates.json --metadata-script .github/scripts/metadata_gate.py --profile final"
       ],
       "status": "passed"
     }

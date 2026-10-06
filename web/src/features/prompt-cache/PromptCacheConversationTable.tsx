@@ -4994,6 +4994,20 @@ export function PromptCacheConversationTable({
     };
   }, [now, stats]);
 
+  const orderedConversations = useMemo(() => {
+    if (!stats || stats.selectionMode !== "count") return stats?.conversations ?? [];
+    return [...stats.conversations].sort((left, right) => {
+      const leftEpoch = parseEpoch(left.firstInvocationAt ?? left.createdAt);
+      const rightEpoch = parseEpoch(right.firstInvocationAt ?? right.createdAt);
+      if (leftEpoch == null && rightEpoch != null) return 1;
+      if (leftEpoch != null && rightEpoch == null) return -1;
+      if (leftEpoch != null && rightEpoch != null && leftEpoch !== rightEpoch) {
+        return rightEpoch - leftEpoch;
+      }
+      return 0;
+    });
+  }, [stats]);
+
   const chartHours = useMemo(() => {
     const rangeStartEpoch = parseEpoch(chartRangeOverride?.rangeStart ?? stats?.rangeStart ?? "");
     const rangeEndEpoch = parseEpoch(chartRangeOverride?.rangeEnd ?? stats?.rangeEnd ?? "");
@@ -5172,7 +5186,7 @@ export function PromptCacheConversationTable({
     <div className="space-y-2">
       <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
         <div className="space-y-3 p-3 sm:hidden">
-          {stats.conversations.map((conversation) => {
+          {orderedConversations.map((conversation) => {
             const firstInvocationLabel = formatDateLabel(
               conversation.firstInvocationAt ?? conversation.createdAt,
               dateFormatter,
@@ -5327,7 +5341,7 @@ export function PromptCacheConversationTable({
             </tr>
           </thead>
           <tbody className="divide-y divide-base-300/65">
-            {stats.conversations.map((conversation) => {
+            {orderedConversations.map((conversation) => {
               const isExpanded = expandedPromptCacheKeySet.has(conversation.promptCacheKey);
 
               return (

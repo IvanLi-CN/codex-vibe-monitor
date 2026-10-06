@@ -95,6 +95,124 @@ fn prompt_cache_conversation_statistics_visible_at_snapshot(
     }
 }
 
+fn prompt_cache_conversation_statistics_are_valid(
+    statistics: &PromptCacheConversationStatisticsRow,
+) -> bool {
+    [
+        statistics.success_count,
+        statistics.failure_count,
+        statistics.input_tokens,
+        statistics.output_tokens,
+        statistics.cache_input_tokens,
+        statistics.reported_cache_write_tokens,
+        statistics.reasoning_tokens,
+    ]
+    .into_iter()
+    .all(|value| value >= 0)
+        && [
+            statistics.cost_input,
+            statistics.cost_cache_write,
+            statistics.cost_cache_read,
+            statistics.cost_output,
+            statistics.cost_reasoning,
+        ]
+        .into_iter()
+        .all(|value| non_negative_finite_f64(Some(value)).is_some())
+}
+
+fn prompt_cache_conversation_statistics_are_visible(
+    statistics: &PromptCacheConversationStatisticsRow,
+    snapshot: Option<&PromptCacheConversationHydrationSnapshot<'_>>,
+) -> bool {
+    prompt_cache_conversation_statistics_are_valid(statistics)
+        && statistics.last_invocation_at.is_some()
+        && snapshot.is_none_or(|snapshot| {
+            prompt_cache_conversation_statistics_visible_at_snapshot(statistics, snapshot)
+        })
+}
+
+fn add_prompt_cache_statistics_i64(current: &mut i64, delta: Option<i64>) {
+    if let Some(delta) = non_negative_i64(delta) {
+        *current = current.saturating_add(delta);
+    }
+}
+
+fn add_prompt_cache_statistics_f64(current: &mut f64, delta: Option<f64>) {
+    let Some(delta) = non_negative_finite_f64(delta) else {
+        return;
+    };
+    let next = *current + delta;
+    if let Some(next) = non_negative_finite_f64(Some(next)) {
+        *current = next;
+    }
+}
+
+fn merge_prompt_cache_runtime_statistics(
+    statistics: &mut PromptCacheConversationStatisticsRow,
+    record: &ApiInvocation,
+) {
+    if prompt_cache_runtime_record_is_in_flight(record)
+        || !prompt_invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+    {
+        return;
+    }
+    let Some(projection) = PromptCacheRuntimeProjection::from_record(record) else {
+        return;
+    };
+    if prompt_invocation_status_is_success_like(
+        Some(&projection.preview.status),
+        projection.preview.error_message.as_deref(),
+    ) {
+        statistics.success_count = statistics.success_count.saturating_add(1);
+    } else {
+        statistics.failure_count = statistics.failure_count.saturating_add(1);
+    }
+    add_prompt_cache_statistics_i64(&mut statistics.input_tokens, projection.input_tokens);
+    add_prompt_cache_statistics_i64(&mut statistics.output_tokens, projection.output_tokens);
+    add_prompt_cache_statistics_i64(
+        &mut statistics.cache_input_tokens,
+        projection.cache_input_tokens,
+    );
+    add_prompt_cache_statistics_i64(
+        &mut statistics.reported_cache_write_tokens,
+        projection.reported_cache_write_tokens,
+    );
+    add_prompt_cache_statistics_i64(
+        &mut statistics.reasoning_tokens,
+        projection.reasoning_tokens,
+    );
+    add_prompt_cache_statistics_f64(&mut statistics.cost_input, projection.cost_input);
+    add_prompt_cache_statistics_f64(
+        &mut statistics.cost_cache_write,
+        projection.cost_cache_write,
+    );
+    add_prompt_cache_statistics_f64(&mut statistics.cost_cache_read, projection.cost_cache_read);
+    add_prompt_cache_statistics_f64(&mut statistics.cost_output, projection.cost_output);
+    add_prompt_cache_statistics_f64(&mut statistics.cost_reasoning, projection.cost_reasoning);
+    if statistics
+        .first_invocation_at
+        .as_deref()
+        .is_none_or(|current| projection.preview.occurred_at.as_str() < current)
+    {
+        statistics.first_invocation_at = Some(projection.preview.occurred_at.clone());
+    }
+    if statistics
+        .last_invocation_at
+        .as_deref()
+        .is_none_or(|current| projection.preview.occurred_at.as_str() > current)
+    {
+        statistics.last_invocation_at = Some(projection.preview.occurred_at.clone());
+    }
+    if projection.row_id > 0 {
+        statistics.last_invocation_id = Some(
+            statistics
+                .last_invocation_id
+                .unwrap_or_default()
+                .max(projection.row_id),
+        );
+    }
+}
+
 pub(crate) async fn hydrate_prompt_cache_conversations(
     state: &AppState,
     source_scope: InvocationSourceScope,
@@ -140,12 +258,23 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
         .iter()
         .map(|row| row.prompt_cache_key.clone())
         .collect::<Vec<_>>();
-    let conversation_statistics_by_key =
+    let mut conversation_statistics_by_key =
         query_prompt_cache_conversation_statistics(&mut *connection, &selected_keys)
             .await?
             .into_iter()
             .map(|row| (row.prompt_cache_key.clone(), row))
             .collect::<HashMap<_, _>>();
+    for record in runtime_overlay_records {
+        let Some(prompt_cache_key) = record.prompt_cache_key.as_deref() else {
+            continue;
+        };
+        let Some(statistics) = conversation_statistics_by_key.get_mut(prompt_cache_key) else {
+            continue;
+        };
+        if prompt_cache_conversation_statistics_are_visible(statistics, snapshot) {
+            merge_prompt_cache_runtime_statistics(statistics, record);
+        }
+    }
     let mut in_flight_phase_counts_by_key = HashMap::<String, InvocationPhaseCountsResponse>::new();
     for record in query_prompt_cache_in_flight_phase_records(
         &mut *connection,
@@ -511,12 +640,7 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
             let owner = encrypted_owner_rows_by_key.remove(&row.prompt_cache_key);
             let statistics = conversation_statistics_by_key.get(&row.prompt_cache_key);
             let statistics_visible = statistics.is_some_and(|statistics| {
-                statistics.last_invocation_at.is_some()
-                    && snapshot.is_none_or(|snapshot| {
-                        prompt_cache_conversation_statistics_visible_at_snapshot(
-                            statistics, snapshot,
-                        )
-                    })
+                prompt_cache_conversation_statistics_are_visible(statistics, snapshot)
             });
             let visible_statistics = statistics_visible.then_some(statistics).flatten();
             PromptCacheConversationResponse {

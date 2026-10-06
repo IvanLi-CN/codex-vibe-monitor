@@ -507,6 +507,34 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain('stroke="oklch(var(--color-primary) / 0.88)"');
   });
 
+  it("orders count-mode history by first invocation with a created-at fallback", () => {
+    const html = renderTable({
+      rangeStart: "2026-03-01T00:00:00Z",
+      rangeEnd: "2026-03-05T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-first-invocation-newer",
+          createdAt: "2026-03-01T00:00:00Z",
+          lastActivityAt: "2026-03-01T01:00:00Z",
+          firstInvocationAt: "2026-03-04T00:00:00Z",
+        }),
+        createConversation({
+          promptCacheKey: "pck-created-at-fallback",
+          createdAt: "2026-03-03T00:00:00Z",
+          lastActivityAt: "2026-03-03T01:00:00Z",
+        }),
+      ],
+    });
+
+    expect(html.indexOf("pck-first-invocation-newer")).toBeLessThan(
+      html.indexOf("pck-created-at-fallback"),
+    );
+  });
+
   it("shares the 24h token chart scale across visible conversations", () => {
     const stats: PromptCacheConversationsResponse = {
       rangeStart: "2026-03-02T00:00:00Z",

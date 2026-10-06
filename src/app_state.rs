@@ -23,7 +23,7 @@ use invocation_store::RuntimeInvocationStore;
 pub(crate) use invocation_store::{
     PromptCacheRuntimeProjection, RuntimeInvocationKey, RuntimeInvocationStoreRemoveOutcome,
     RuntimeInvocationStoreShutdownSummary, RuntimeInvocationStoreUpsertOutcome,
-    runtime_store_record_is_terminal,
+    non_negative_finite_f64, non_negative_i64, runtime_store_record_is_terminal,
 };
 
 #[derive(Debug, Clone)]

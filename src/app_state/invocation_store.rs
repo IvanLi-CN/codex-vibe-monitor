@@ -80,11 +80,11 @@ impl PromptCacheRuntimeProjection {
     }
 }
 
-fn non_negative_i64(value: Option<i64>) -> Option<i64> {
+pub(crate) fn non_negative_i64(value: Option<i64>) -> Option<i64> {
     value.map(|value| value.max(0))
 }
 
-fn non_negative_finite_f64(value: Option<f64>) -> Option<f64> {
+pub(crate) fn non_negative_finite_f64(value: Option<f64>) -> Option<f64> {
     value.and_then(|value| value.is_finite().then_some(value.max(0.0)))
 }
 
