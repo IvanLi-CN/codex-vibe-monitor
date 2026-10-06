@@ -772,6 +772,9 @@ jobs:
 
       - name: Upload PR smoke artifacts
         uses: actions/upload-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
+          overwrite: true
 
   build:
     name: Build Artifacts
@@ -790,6 +793,8 @@ jobs:
 
       - name: Download PR smoke artifacts
         uses: actions/download-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
 
       - name: Extract PR smoke artifacts
         run: mkdir -p .ci-smoke
