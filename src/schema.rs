@@ -652,7 +652,9 @@ pub(crate) fn prompt_cache_working_set_live_refresh_sql_for_key(
          WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = {key_expr}
              AND occurred_at >= datetime('now', '+8 hours', '-{PROMPT_CACHE_WORKING_SET_WINDOW_SECONDS} seconds')
          UNION ALL
-         SELECT * FROM codex_invocations NOT INDEXED WHERE id IN (
+         -- `id` is the row identity; let SQLite use its primary-key lookup for
+         -- the sparse older live rows instead of scanning the whole table.
+         SELECT * FROM codex_invocations WHERE id IN (
              SELECT invocation_id FROM invocation_in_progress_live
                  WHERE prompt_cache_key = {key_expr}
              UNION SELECT {current_id_expr}
@@ -2388,7 +2390,8 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
              'trg_codex_invocations_prompt_cache_working_set_update',
              'trg_codex_invocations_prompt_cache_working_set_delete')
          AND instr(sql, 'SELECT invocation_id FROM invocation_in_progress_live') > 0
-         AND instr(sql, 'INDEXED BY idx_codex_invocations_prompt_cache_key_occurred_at') > 0",
+         AND instr(sql, 'INDEXED BY idx_codex_invocations_prompt_cache_key_occurred_at') > 0
+         AND instr(sql, 'NOT INDEXED') = 0",
     )
     .fetch_one(pool)
     .await?;
