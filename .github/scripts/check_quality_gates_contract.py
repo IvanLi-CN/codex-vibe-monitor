@@ -164,6 +164,32 @@ def require_observability_performance_contract(workflow: dict[str, Any], build_j
             "performance evidence must include exactly the declared artifact whitelist")
 
 
+def require_pr_smoke_artifact_contract(smoke_job: dict[str, Any], build_job: dict[str, Any]) -> None:
+    upload = uses_step_config(
+        smoke_job,
+        "Upload PR smoke artifacts",
+        "actions/upload-artifact@v7",
+        "ci-pr.yml.jobs.build-pr-smoke-artifacts",
+    )
+    upload_with = require_mapping(upload.get("with"), "ci-pr.yml PR smoke artifact upload")
+    require(
+        upload_with.get("name") == "pr-smoke-artifacts-${{ github.run_id }}"
+        and upload_with.get("overwrite") is True,
+        "PR smoke artifact must be run-scoped and replace the prior attempt",
+    )
+    download = uses_step_config(
+        build_job,
+        "Download PR smoke artifacts",
+        "actions/download-artifact@v7",
+        "ci-pr.yml.jobs.build",
+    )
+    download_with = require_mapping(download.get("with"), "ci-pr.yml PR smoke artifact download")
+    require(
+        download_with.get("name") == "pr-smoke-artifacts-${{ github.run_id }}",
+        "Build Artifacts must download the run-scoped PR smoke artifact",
+    )
+
+
 def require_observability_diagnostic_contract(workflow: dict[str, Any]) -> None:
     job = job_config(workflow, "observability-diagnostics", "ci-pr.yml")
     require(job.get("name") == "Observability CPU Diagnosis"
@@ -1018,7 +1044,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "cargo-test-cache",
             "ci-pr.yml.jobs.build-pr-smoke-artifacts",
         )
-        step_config(smoke_artifact_job, "Upload PR smoke artifacts", "ci-pr.yml.jobs.build-pr-smoke-artifacts")
+        require_pr_smoke_artifact_contract(smoke_artifact_job, build_job)
         archive_job = job_config(workflow, "backend-test-archive", "ci-pr.yml")
         require(
             archive_job.get("name") == "Backend Test Archive Producer" and archive_job.get("name") in auxiliary_jobs,

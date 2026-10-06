@@ -83,6 +83,38 @@ fi
 
 grep -q "observability performance image artifact must be run-scoped and replace the prior attempt" "$tmp_dir/observability-artifact.log"
 
+smoke_artifact_repo="$tmp_dir/smoke-artifact-repo"
+mkdir -p "$smoke_artifact_repo"
+cp -R "$repo_root/.github" "$smoke_artifact_repo/.github"
+python3 - "$smoke_artifact_repo/.github/workflows/ci-pr.yml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+needle = """      - name: Upload PR smoke artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: pr-smoke-artifacts-${{ github.run_id }}
+"""
+replacement = needle.replace(
+    "pr-smoke-artifacts-${{ github.run_id }}",
+    "pr-smoke-artifacts-${{ github.run_id }}-${{ github.run_attempt }}",
+    1,
+)
+if text.count(needle) != 1:
+    raise SystemExit("expected one run-scoped PR smoke artifact upload")
+path.write_text(text.replace(needle, replacement, 1))
+PY
+
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$smoke_artifact_repo" --profile final >/dev/null 2>"$tmp_dir/smoke-artifact.log"; then
+  echo "expected attempt-scoped PR smoke artifact fixture to fail" >&2
+  exit 1
+fi
+
+grep -q "PR smoke artifact must be run-scoped and replace the prior attempt" "$tmp_dir/smoke-artifact.log"
+
 continue_error_repo="$tmp_dir/continue-error-repo"
 copy_repo_snapshot "$repo_root" "$continue_error_repo"
 

@@ -877,7 +877,7 @@ jobs:
       - name: Build PR smoke artifacts
         shell: bash
         env:
-          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}-${{ github.run_attempt }}
+          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}
         run: |
           set -euo pipefail
           rm -rf .ci-smoke
@@ -924,9 +924,10 @@ jobs:
       - name: Upload PR smoke artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: pr-smoke-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-smoke-artifacts-${{ github.run_id }}
           path: ${{ runner.temp }}/pr-smoke-artifacts.tar
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   observability-performance-image:
@@ -1179,7 +1180,7 @@ jobs:
       - name: Download PR smoke artifacts
         uses: actions/download-artifact@v7
         with:
-          name: pr-smoke-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          name: pr-smoke-artifacts-${{ github.run_id }}
           path: ${{ runner.temp }}/pr-smoke-artifacts
 
       - name: Extract PR smoke artifacts
@@ -1190,8 +1191,8 @@ jobs:
       - name: Build smoke image (linux/amd64, load)
         shell: bash
         env:
-          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}
+          APP_EFFECTIVE_VERSION: pr-${{ github.run_id }}
         run: |
           set -euo pipefail
           docker build \
@@ -1203,7 +1204,7 @@ jobs:
       - name: Smoke test image (linux/amd64)
         shell: bash
         env:
-          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}-${{ github.run_attempt }}
+          SMOKE_TAG: codex-vibe-monitor:pr-smoke-${{ github.run_id }}
+          SMOKE_CONTAINER_NAME: smoke-codex-vibe-monitor-pr-${{ github.run_id }}
           SMOKE_PLATFORM: ${{ env.PLATFORM_AMD64 }}
         run: ./.github/scripts/smoke-test-image.sh "$SMOKE_TAG"
