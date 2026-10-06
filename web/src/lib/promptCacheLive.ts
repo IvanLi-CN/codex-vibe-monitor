@@ -80,6 +80,24 @@ function parseOccurredAtEpoch(raw: string | null | undefined) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
+function mergePromptCacheInvocationTimestamp(
+  currentValue: string | null | undefined,
+  incomingValue: string | null | undefined,
+  direction: "earliest" | "latest",
+) {
+  const currentEpoch = parseOccurredAtEpoch(currentValue);
+  const incomingEpoch = parseOccurredAtEpoch(incomingValue);
+  const currentTimestamp = currentValue ?? undefined;
+  const incomingTimestamp = incomingValue ?? undefined;
+  if (incomingEpoch == null) return currentTimestamp;
+  if (currentEpoch == null) return incomingTimestamp;
+
+  if (direction === "earliest") {
+    return incomingEpoch < currentEpoch ? incomingTimestamp : currentTimestamp;
+  }
+  return incomingEpoch > currentEpoch ? incomingTimestamp : currentTimestamp;
+}
+
 function conversationFirstInvocationAt(
   conversation: Pick<PromptCacheConversation, "createdAt" | "firstInvocationAt">,
 ) {
@@ -529,12 +547,10 @@ function buildOptimisticUpstreamAccounts(
         ? record.upstreamAccountId
         : null;
     const upstreamAccountName = record.upstreamAccountName?.trim() || null;
-    const groupKey =
-      upstreamAccountId != null
-        ? `id:${upstreamAccountId}`
-        : upstreamAccountName != null
-          ? `name:${upstreamAccountName}`
-          : "unknown";
+    const groupKey = getPromptCacheUpstreamAccountGroupKey({
+      upstreamAccountId,
+      upstreamAccountName,
+    });
     const totalTokens =
       typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
         ? Math.max(0, record.totalTokens)
@@ -574,6 +590,168 @@ function buildOptimisticUpstreamAccounts(
     .slice(0, PROMPT_CACHE_UPSTREAM_ACCOUNT_LIMIT);
 }
 
+function getPromptCacheUpstreamAccountGroupKey(
+  account: Pick<
+    PromptCacheConversationUpstreamAccount,
+    "upstreamAccountId" | "upstreamAccountName"
+  >,
+) {
+  return account.upstreamAccountId != null
+    ? `id:${account.upstreamAccountId}`
+    : account.upstreamAccountName != null
+      ? `name:${account.upstreamAccountName}`
+      : "unknown";
+}
+
+function mergePromptCacheUpstreamAccounts(
+  current: PromptCacheConversationUpstreamAccount[],
+  liveRecords: ApiInvocation[],
+) {
+  const grouped = new Map<string, PromptCacheConversationUpstreamAccount>();
+  for (const account of current) {
+    grouped.set(getPromptCacheUpstreamAccountGroupKey(account), { ...account });
+  }
+
+  for (const liveAccount of buildOptimisticUpstreamAccounts(liveRecords)) {
+    const groupKey = getPromptCacheUpstreamAccountGroupKey(liveAccount);
+    const existing = grouped.get(groupKey);
+    if (!existing) {
+      grouped.set(groupKey, { ...liveAccount });
+      continue;
+    }
+
+    existing.requestCount += liveAccount.requestCount;
+    existing.totalTokens += liveAccount.totalTokens;
+    existing.totalCost += liveAccount.totalCost;
+    existing.lastActivityAt =
+      mergePromptCacheInvocationTimestamp(
+        existing.lastActivityAt,
+        liveAccount.lastActivityAt,
+        "latest",
+      ) ?? existing.lastActivityAt;
+  }
+
+  return Array.from(grouped.values())
+    .sort((left, right) => {
+      const lastActivityCompare =
+        (parseOccurredAtEpoch(right.lastActivityAt) ?? Number.MIN_SAFE_INTEGER) -
+        (parseOccurredAtEpoch(left.lastActivityAt) ?? Number.MIN_SAFE_INTEGER);
+      if (lastActivityCompare !== 0) return lastActivityCompare;
+      return (right.totalTokens ?? 0) - (left.totalTokens ?? 0);
+    })
+    .slice(0, PROMPT_CACHE_UPSTREAM_ACCOUNT_LIMIT);
+}
+
+function sumOptionalPromptCacheInvocationMetric(
+  records: ApiInvocation[],
+  read: (record: ApiInvocation) => number | null | undefined,
+) {
+  let hasValue = false;
+  const total = records.reduce((sum, record) => {
+    const value = read(record);
+    if (typeof value !== "number" || !Number.isFinite(value)) return sum;
+    hasValue = true;
+    return sum + Math.max(0, value);
+  }, 0);
+  return hasValue ? total : undefined;
+}
+
+function mergePromptCacheConversationLiveAggregates(
+  conversation: PromptCacheConversation,
+  liveRecords: ApiInvocation[],
+  authoritativePreviewRecords: ApiInvocation[],
+) {
+  const authoritativePreviewKeys = new Set(
+    authoritativePreviewRecords.map((record) => invocationStableKey(record)),
+  );
+  const aggregateRecords = mergeInvocationRecordCollections(liveRecords).filter(
+    (record) => !authoritativePreviewKeys.has(invocationStableKey(record)),
+  );
+  if (aggregateRecords.length === 0) return conversation;
+
+  const next = { ...conversation };
+  next.requestCount += aggregateRecords.length;
+  next.totalTokens += aggregateRecords.reduce((sum, record) => {
+    const totalTokens =
+      typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)
+        ? Math.max(0, record.totalTokens)
+        : 0;
+    return sum + totalTokens;
+  }, 0);
+  next.totalCost += aggregateRecords.reduce((sum, record) => {
+    const cost = typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : 0;
+    return sum + cost;
+  }, 0);
+
+  if (conversation.successCount != null) {
+    next.successCount =
+      conversation.successCount +
+      aggregateRecords.filter((record) => resolvePromptCacheInvocationOutcome(record) === "success")
+        .length;
+  }
+  if (conversation.failureCount != null) {
+    next.failureCount =
+      conversation.failureCount +
+      aggregateRecords.filter((record) => resolvePromptCacheInvocationOutcome(record) === "failure")
+        .length;
+  }
+
+  const optionalAggregateFields = [
+    "inputTokens",
+    "outputTokens",
+    "cacheInputTokens",
+    "reportedCacheWriteTokens",
+    "reasoningTokens",
+    "costInput",
+    "costCacheWrite",
+    "costCacheRead",
+    "costOutput",
+    "costReasoning",
+  ] as const;
+  for (const field of optionalAggregateFields) {
+    const currentValue = conversation[field];
+    const liveValue = sumOptionalPromptCacheInvocationMetric(
+      aggregateRecords,
+      (record) => record[field],
+    );
+    if (currentValue != null && liveValue != null) {
+      next[field] = currentValue + liveValue;
+    }
+  }
+
+  if (conversation.firstInvocationAt != null) {
+    const firstLiveInvocationAt = aggregateRecords.reduce<string | undefined>(
+      (earliest, record) =>
+        mergePromptCacheInvocationTimestamp(earliest, record.occurredAt, "earliest"),
+      undefined,
+    );
+    next.firstInvocationAt =
+      mergePromptCacheInvocationTimestamp(
+        conversation.firstInvocationAt,
+        firstLiveInvocationAt,
+        "earliest",
+      ) ?? conversation.firstInvocationAt;
+  }
+  if (conversation.lastInvocationAt != null) {
+    const lastLiveInvocationAt = aggregateRecords.reduce<string | undefined>(
+      (latest, record) => mergePromptCacheInvocationTimestamp(latest, record.occurredAt, "latest"),
+      undefined,
+    );
+    next.lastInvocationAt =
+      mergePromptCacheInvocationTimestamp(
+        conversation.lastInvocationAt,
+        lastLiveInvocationAt,
+        "latest",
+      ) ?? conversation.lastInvocationAt;
+  }
+  next.upstreamAccounts = mergePromptCacheUpstreamAccounts(
+    conversation.upstreamAccounts,
+    aggregateRecords,
+  );
+
+  return next;
+}
+
 function buildOptimisticConversation(
   promptCacheKey: string,
   liveRecords: ApiInvocation[],
@@ -589,24 +767,6 @@ function buildOptimisticConversation(
   const lastActivityAt = uniqueRecords
     .map((record) => record.occurredAt)
     .reduce((latest, occurredAt) => (latest == null || occurredAt > latest ? occurredAt : latest));
-  const sumOptionalMetric = (
-    read: (record: ApiInvocation) => number | null | undefined,
-  ): number | undefined => {
-    let hasValue = false;
-    const total = uniqueRecords.reduce((sum, record) => {
-      const value = read(record);
-      if (typeof value !== "number" || !Number.isFinite(value)) return sum;
-      hasValue = true;
-      return sum + Math.max(0, value);
-    }, 0);
-    return hasValue ? total : undefined;
-  };
-  const successCount = uniqueRecords.filter(
-    (record) => resolvePromptCacheInvocationOutcome(record) === "success",
-  ).length;
-  const failureCount = uniqueRecords.filter(
-    (record) => resolvePromptCacheInvocationOutcome(record) === "failure",
-  ).length;
   const firstInvocationAt = createdAtOverride?.trim() || derivedCreatedAt;
 
   return {
@@ -630,18 +790,43 @@ function buildOptimisticConversation(
     }, 0),
     createdAt: firstInvocationAt || new Date().toISOString(),
     lastActivityAt: lastActivityAt ?? new Date().toISOString(),
-    successCount,
-    failureCount,
-    inputTokens: sumOptionalMetric((record) => record.inputTokens),
-    outputTokens: sumOptionalMetric((record) => record.outputTokens),
-    cacheInputTokens: sumOptionalMetric((record) => record.cacheInputTokens),
-    reportedCacheWriteTokens: sumOptionalMetric((record) => record.reportedCacheWriteTokens),
-    reasoningTokens: sumOptionalMetric((record) => record.reasoningTokens),
-    costInput: sumOptionalMetric((record) => record.costInput),
-    costCacheWrite: sumOptionalMetric((record) => record.costCacheWrite),
-    costCacheRead: sumOptionalMetric((record) => record.costCacheRead),
-    costOutput: sumOptionalMetric((record) => record.costOutput),
-    costReasoning: sumOptionalMetric((record) => record.costReasoning),
+    inputTokens: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.inputTokens,
+    ),
+    outputTokens: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.outputTokens,
+    ),
+    cacheInputTokens: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.cacheInputTokens,
+    ),
+    reportedCacheWriteTokens: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.reportedCacheWriteTokens,
+    ),
+    reasoningTokens: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.reasoningTokens,
+    ),
+    costInput: sumOptionalPromptCacheInvocationMetric(uniqueRecords, (record) => record.costInput),
+    costCacheWrite: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.costCacheWrite,
+    ),
+    costCacheRead: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.costCacheRead,
+    ),
+    costOutput: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.costOutput,
+    ),
+    costReasoning: sumOptionalPromptCacheInvocationMetric(
+      uniqueRecords,
+      (record) => record.costReasoning,
+    ),
     firstInvocationAt: firstInvocationAt || null,
     lastInvocationAt: lastActivityAt ?? null,
     upstreamAccounts: buildOptimisticUpstreamAccounts(uniqueRecords),
@@ -660,15 +845,26 @@ export function mergePromptCacheConversationHistory(
 
   const next: PromptCacheConversationHistoryByKey = {};
   for (const conversation of stats.conversations) {
+    const previous = current[conversation.promptCacheKey];
     const history: PromptCacheConversationHistoryByKey[string] = {
       createdAt: conversation.createdAt,
       lastActivityAt: conversation.lastActivityAt,
     };
-    if (conversation.firstInvocationAt != null) {
-      history.firstInvocationAt = conversation.firstInvocationAt;
+    const firstInvocationAt = mergePromptCacheInvocationTimestamp(
+      previous?.firstInvocationAt,
+      conversation.firstInvocationAt,
+      "earliest",
+    );
+    if (firstInvocationAt != null) {
+      history.firstInvocationAt = firstInvocationAt;
     }
-    if (conversation.lastInvocationAt != null) {
-      history.lastInvocationAt = conversation.lastInvocationAt;
+    const lastInvocationAt = mergePromptCacheInvocationTimestamp(
+      previous?.lastInvocationAt,
+      conversation.lastInvocationAt,
+      "latest",
+    );
+    if (lastInvocationAt != null) {
+      history.lastInvocationAt = lastInvocationAt;
     }
     next[conversation.promptCacheKey] = history;
   }
@@ -858,8 +1054,15 @@ export function mergePromptCacheConversationsResponse(
       ),
     );
 
+    const withLiveAggregates = mergePromptCacheConversationLiveAggregates(
+      conversation,
+      liveRecords,
+      authoritativePreviewRecords,
+    );
+
     return {
       ...conversation,
+      ...withLiveAggregates,
       lastActivityAt:
         latestActivityEpoch > Number.MIN_SAFE_INTEGER
           ? new Date(latestActivityEpoch).toISOString()

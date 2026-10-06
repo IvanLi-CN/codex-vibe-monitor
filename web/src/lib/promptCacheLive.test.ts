@@ -241,14 +241,132 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     const conversation = merged?.conversations[0];
-    expect(conversation?.successCount).toBe(1);
-    expect(conversation?.failureCount).toBe(1);
+    expect(conversation?.successCount).toBeUndefined();
+    expect(conversation?.failureCount).toBeUndefined();
     expect(conversation?.inputTokens).toBe(200);
     expect(conversation?.outputTokens).toBe(40);
     expect(conversation?.reportedCacheWriteTokens).toBe(12);
     expect(conversation?.costReasoning).toBeCloseTo(0.2);
     expect(conversation?.firstInvocationAt).toBe("2026-03-10T02:30:00Z");
     expect(conversation?.lastInvocationAt).toBe("2026-03-10T02:40:00Z");
+  });
+
+  it("adds deduplicated live aggregates to an existing authoritative conversation", () => {
+    const authoritativeRecord = createLiveRecord({
+      id: 404,
+      invokeId: "invoke-authoritative-existing",
+      occurredAt: "2026-03-10T02:10:00Z",
+      promptCacheKey: "pck-existing-stats",
+      status: "completed",
+      upstreamAccountId: 7,
+      upstreamAccountName: "primary",
+    });
+    const liveRecord = createLiveRecord({
+      id: 405,
+      invokeId: "invoke-live-existing",
+      occurredAt: "2026-03-10T02:20:00Z",
+      promptCacheKey: "pck-existing-stats",
+      status: "failed",
+      failureClass: "service_failure",
+      upstreamAccountId: 7,
+      upstreamAccountName: "primary",
+      inputTokens: 40,
+      outputTokens: 20,
+      cacheInputTokens: 10,
+      reportedCacheWriteTokens: 4,
+      reasoningTokens: 2,
+      costInput: 0.01,
+      costCacheWrite: 0.02,
+      costCacheRead: 0.03,
+      costOutput: 0.04,
+      costReasoning: 0.05,
+    });
+    const merged = mergePromptCacheConversationsResponse(
+      createResponse([
+        createConversation("pck-existing-stats", {
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          successCount: 1,
+          failureCount: 0,
+          inputTokens: 80,
+          outputTokens: 30,
+          cacheInputTokens: 20,
+          reportedCacheWriteTokens: 5,
+          reasoningTokens: 3,
+          costInput: 0.1,
+          costCacheWrite: 0.2,
+          costCacheRead: 0.3,
+          costOutput: 0.4,
+          costReasoning: 0.5,
+          firstInvocationAt: "2026-03-10T02:00:00Z",
+          lastInvocationAt: "2026-03-10T02:10:00Z",
+          recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
+          upstreamAccounts: [
+            {
+              upstreamAccountId: 7,
+              upstreamAccountName: "primary",
+              requestCount: 1,
+              totalTokens: 100,
+              totalCost: 0.01,
+              lastActivityAt: "2026-03-10T02:10:00Z",
+            },
+          ],
+        }),
+      ]),
+      {
+        "pck-existing-stats": [authoritativeRecord, liveRecord],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    const conversation = merged?.conversations[0];
+    expect(conversation?.requestCount).toBe(2);
+    expect(conversation?.totalTokens).toBe(200);
+    expect(conversation?.totalCost).toBeCloseTo(0.02);
+    expect(conversation?.successCount).toBe(1);
+    expect(conversation?.failureCount).toBe(1);
+    expect(conversation?.inputTokens).toBe(120);
+    expect(conversation?.outputTokens).toBe(50);
+    expect(conversation?.cacheInputTokens).toBe(30);
+    expect(conversation?.reportedCacheWriteTokens).toBe(9);
+    expect(conversation?.reasoningTokens).toBe(5);
+    expect(conversation?.costReasoning).toBeCloseTo(0.55);
+    expect(conversation?.firstInvocationAt).toBe("2026-03-10T02:00:00Z");
+    expect(conversation?.lastInvocationAt).toBe("2026-03-10T02:20:00Z");
+    expect(conversation?.upstreamAccounts).toEqual([
+      {
+        upstreamAccountId: 7,
+        upstreamAccountName: "primary",
+        requestCount: 2,
+        totalTokens: 200,
+        totalCost: 0.02,
+        lastActivityAt: "2026-03-10T02:20:00Z",
+      },
+    ]);
+  });
+
+  it("leaves delayed outcome counts absent for an optimistic in-flight conversation", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      createResponse([]),
+      {
+        "pck-live-running": [
+          createLiveRecord({
+            id: 406,
+            invokeId: "invoke-live-running",
+            occurredAt: "2026-03-10T02:50:00Z",
+            promptCacheKey: "pck-live-running",
+            status: "running",
+          }),
+        ],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations[0]?.successCount).toBeUndefined();
+    expect(merged?.conversations[0]?.failureCount).toBeUndefined();
   });
 
   it("preserves the durable first-invocation time for a retained live conversation", () => {
@@ -852,6 +970,43 @@ describe("mergePromptCacheConversationsResponse", () => {
 });
 
 describe("mergePromptCacheConversationHistory", () => {
+  it("preserves durable invocation timestamps when a snapshot omits or regresses them", () => {
+    const current: PromptCacheConversationHistoryByKey = {
+      "pck-history": {
+        createdAt: "2026-03-10T01:00:00Z",
+        lastActivityAt: "2026-03-10T03:00:00Z",
+        firstInvocationAt: "2026-03-10T01:10:00Z",
+        lastInvocationAt: "2026-03-10T02:50:00Z",
+      },
+    };
+
+    const omitted = mergePromptCacheConversationHistory(
+      current,
+      createResponse([
+        createConversation("pck-history", {
+          createdAt: "2026-03-10T01:30:00Z",
+          lastActivityAt: "2026-03-10T02:00:00Z",
+        }),
+      ]),
+    );
+    expect(omitted["pck-history"]?.firstInvocationAt).toBe("2026-03-10T01:10:00Z");
+    expect(omitted["pck-history"]?.lastInvocationAt).toBe("2026-03-10T02:50:00Z");
+
+    const regressed = mergePromptCacheConversationHistory(
+      omitted,
+      createResponse([
+        createConversation("pck-history", {
+          createdAt: "2026-03-10T01:30:00Z",
+          lastActivityAt: "2026-03-10T02:00:00Z",
+          firstInvocationAt: "2026-03-10T01:20:00Z",
+          lastInvocationAt: "2026-03-10T02:10:00Z",
+        }),
+      ]),
+    );
+    expect(regressed["pck-history"]?.firstInvocationAt).toBe("2026-03-10T01:10:00Z");
+    expect(regressed["pck-history"]?.lastInvocationAt).toBe("2026-03-10T02:50:00Z");
+  });
+
   it("retains only the most recent inactive history entries within the configured bound", () => {
     const merged = mergePromptCacheConversationHistory(
       {
