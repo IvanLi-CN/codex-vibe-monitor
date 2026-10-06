@@ -1631,10 +1631,11 @@ impl RetentionRunSummary {
         if self.fatal_error.is_some() {
             "failed"
         } else if self.recoverable_failure
+            || self.budget_exhausted
             || self.wait_reason.as_deref() == Some("parallel_work_minute_coverage")
         {
             "partial"
-        } else if self.budget_exhausted || self.deferred {
+        } else if self.deferred {
             if self.touched_anything() {
                 "partial"
             } else {
@@ -10989,6 +10990,23 @@ mod retention_summary_tests {
         };
         assert_eq!(summary.completion(), "partial");
         assert_eq!(summary.core_completion(), "partial");
+    }
+
+    #[test]
+    fn timeout_without_committed_progress_is_partial_not_pure_admission() {
+        let mut summary = RetentionRunSummary {
+            backlog_total: Some(1_001),
+            budget_exhausted: true,
+            wait_reason: Some("retention_work_budget".to_string()),
+            ..RetentionRunSummary::default()
+        };
+        assert_eq!(summary.completion(), "partial");
+        summary.deferred = true;
+        assert_eq!(summary.completion(), "partial", "timeout wins over defer");
+        summary.backlog_total = None;
+        assert_eq!(summary.completion(), "partial", "unknown scope timed out");
+        summary.fatal_error = Some("archive failed".to_string());
+        assert_eq!(summary.completion(), "failed", "fatal error takes priority");
     }
 
     #[test]

@@ -98,6 +98,8 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 - 池连接归还由 SQLx 异步执行。写许可申请前在无许可状态下确认池可用并完成空闲连接归还，避免单连接池或刚提交微批次误报池满；随后仍不持连接排队、获准后只非阻塞取连接。确定性回归按 pool-ready 通知安排 P1 取走连接，验证反向等待不存在以及 readiness 竞争时释放许可延期。
 
+运行在首条提交前触发兜底超时也属于 overall partial，不能按无提交的纯准入延期处理；fatal 仍优先，纯压力/连接池/写准入等待且未超时仍为 deferred。完成度回归直接构造 budgetExhausted、deferred 和起点范围组合，覆盖未知范围及 fatal 优先，不执行计时或性能测量。
+
 ## Visual Evidence
 
 本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。
