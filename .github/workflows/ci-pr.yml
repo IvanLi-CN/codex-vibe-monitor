@@ -984,9 +984,10 @@ jobs:
       - name: Upload performance candidate image
         uses: actions/upload-artifact@v7
         with:
-          name: observability-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
   observability-performance:
@@ -1005,7 +1006,7 @@ jobs:
       - name: Download performance candidate image
         uses: actions/download-artifact@v7
         with:
-          name: observability-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image
 
       - name: Verify and load candidate image
@@ -1089,7 +1090,7 @@ jobs:
       - name: Download performance candidate image
         uses: actions/download-artifact@v7
         with:
-          name: observability-image-${{ github.run_id }}-${{ github.run_attempt }}
+          name: observability-image-${{ github.run_id }}
           path: ${{ runner.temp }}/observability-image
 
       - name: Verify and load candidate image

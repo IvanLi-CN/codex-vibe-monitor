@@ -879,6 +879,180 @@ async fn prompt_cache_materialization_status_does_not_report_complete_with_pendi
 }
 
 #[tokio::test]
+async fn prompt_cache_queue_event_wake_converges_past_idle_deadline() {
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[1]).await;
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = &maintenance.prompt_cache_materialization_control;
+    let generation = control.snapshot().expect("trusted control").generation;
+    let initial = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        Some(Duration::from_secs(3)),
+        &|| false,
+        control,
+        generation,
+    )
+    .await
+    .expect("complete the baseline materialization");
+    assert!(initial.complete);
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check baseline freshness")
+    );
+
+    let prompt_cache_key = "checkpoint-key-000";
+    let source_generation: i64 = sqlx::query_scalar(
+        "SELECT generation FROM prompt_cache_conversation_stats_generation_clock \
+         WHERE prompt_cache_key=?",
+    )
+    .bind(prompt_cache_key)
+    .fetch_one(&pool)
+    .await
+    .expect("load queue generation");
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key,generation) \
+         VALUES (?,?) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation",
+    )
+    .bind(prompt_cache_key)
+    .bind(source_generation)
+    .execute(&pool)
+    .await
+    .expect("enqueue a post-completion statistics refresh");
+    mark_prompt_cache_conversation_stats_stale(&pool)
+        .await
+        .expect("mark queued statistics stale");
+
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(Utc::now() + ChronoDuration::hours(6)))
+        .bind(StartupBackfillTask::PromptCacheConversationsMaterialization.name())
+        .execute(&maintenance.pool)
+        .await
+        .expect("seed future idle deadline");
+    let woken =
+        wake_prompt_cache_materialization_for_test(&maintenance, "test_terminal_queue_event")
+            .await
+            .expect("queue event should preempt idle deadline");
+    assert_eq!(woken, 1);
+    let progress = load_startup_backfill_progress_from_pool(
+        &maintenance.pool,
+        StartupBackfillTask::PromptCacheConversationsMaterialization.name(),
+    )
+    .await
+    .expect("load event-woken checkpoint");
+    assert!(progress.is_due(Utc::now()));
+    assert!(progress.next_run_after.is_none());
+
+    let completed = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        400,
+        Some(Duration::from_secs(3)),
+        &|| false,
+        control,
+        generation,
+    )
+    .await
+    .expect("drain the event-triggered refresh");
+    assert!(completed.complete);
+    let status =
+        load_prompt_cache_conversation_materialization_status(&pool, &maintenance.pool, control)
+            .await
+            .expect("load complete materialization status");
+    assert_eq!(status.queue_pending, 0);
+    assert_eq!(status.progress_percent, Some(100.0));
+    assert!(
+        prompt_cache_conversation_materialization_is_complete(&pool)
+            .await
+            .expect("check fresh statistics marker")
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(SELECT 1 FROM schema_refresh_migrations \
+             WHERE migration_name='prompt_cache_conversations_stats_v2')",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read statistics freshness marker"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_coordinator_retry_routes_as_non_pressure_and_wakes_on_event() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:18081").expect("valid upstream url"),
+    )
+    .await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let maintenance = MaintenanceStore::from_pool(state.pool.clone());
+    maintenance
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance schema");
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+        .bind(task_key)
+        .execute(&maintenance.pool)
+        .await
+        .expect("enable prompt-cache coordinator fixture");
+    maintenance
+        .initialize_prompt_cache_materialization_control(task_key, task.name())
+        .await
+        .expect("initialize prompt-cache coordinator control");
+    sqlx::query(
+        "UPDATE startup_backfill_progress
+         SET next_run_after=NULL, suspension_reason=NULL, last_status='idle', enabled=1
+         WHERE task_name=?",
+    )
+    .bind(task.name())
+    .execute(&state.pool)
+    .await
+    .expect("make prompt-cache task due");
+
+    clear_startup_backfill_task_scheduler_for_test(task);
+    let pressure_defer_count = startup_backfill_health_snapshot().pressure_defer_count;
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30));
+    let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+    let foreground_permit = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let outcome =
+        run_startup_backfill_task_if_due_with_store_for_test(&state, task, &gate, &maintenance)
+            .await
+            .expect("coordinator contention should return a deferred outcome");
+    assert!(outcome.is_pressure_deferred());
+    record_startup_backfill_task_outcome_for_test(task, outcome);
+    assert_eq!(
+        startup_backfill_health_snapshot().pressure_defer_count,
+        pressure_defer_count,
+        "coordinator priority must not increment database-pressure telemetry"
+    );
+    drop(foreground_permit);
+
+    let future_deadline = Utc::now() + ChronoDuration::hours(6);
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(future_deadline))
+        .bind(task.name())
+        .execute(&maintenance.pool)
+        .await
+        .expect("seed coordinator retry checkpoint");
+    let woken = wake_prompt_cache_materialization_with_store(
+        &maintenance,
+        "test_queue_event_after_coordinator_retry",
+    )
+    .await
+    .expect("queue event should preempt coordinator retry");
+    assert_eq!(woken, 1);
+    assert!(
+        load_startup_backfill_progress_from_pool(&maintenance.pool, task.name())
+            .await
+            .expect("load event-woken coordinator checkpoint")
+            .is_due(Utc::now())
+    );
+    clear_startup_backfill_task_scheduler_for_test(task);
+}
+
+#[tokio::test]
 async fn prompt_cache_materialization_repairs_complete_progress_counters() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

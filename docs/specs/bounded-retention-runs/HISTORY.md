@@ -8,12 +8,12 @@
 
 ## Replacements / Background
 
-ADR 0031 将归档文件批次与主库写批次区分，规定月份只决定目标文件、每轮完成自身选中批次和不依赖跨任务 staging。它细化 ADR 0027 的自动追赶：后续资格用于处理剩余 live rows，不用于延续上一轮中间状态。本轮新增 REQ-BRR-022..023 及 VER-BRR-012，50 倍新增速率与当前候选容量需要重新证明。
+ADR 0032 将归档文件批次与主库写批次区分，规定月份只决定目标文件、每轮完成自身选中批次和不依赖跨任务 staging。它细化 ADR 0027 的自动追赶：后续资格用于处理剩余 live rows，不用于延续上一轮中间状态。本轮新增 REQ-BRR-022..023 及 VER-BRR-012，50 倍新增速率与当前候选容量需要重新证明。
 
 本主题补充 retention 的运行预算、会话派生维护边界及任务观测，并不替代既有 archive 证明、保留策略、自主 raw 恢复或全局任务运维数据所有权。
 
 - [归档与保留](../9aucy-db-retention-archive/SPEC.md) 继续拥有归档/汇总证明及删除安全。
-- [自主恢复](../autonomous-retention-recovery/SPEC.md) 继续拥有 raw 恢复和 circuit breaker；ADR 0031 收窄 prepared continuation 在普通 retention 任务中的用途。
+- [自主恢复](../autonomous-retention-recovery/SPEC.md) 继续拥有 raw 恢复和 circuit breaker；ADR 0032 收窄 prepared continuation 在普通 retention 任务中的用途。
 - [ADR 0021](../../adr/0021-prompt-cache-background-materialization.md) 继续拥有精确统计的暂不可用读契约。
 - [ADR 0022](../../adr/0022-prompt-cache-adaptive-materialization.md) 保留自适应与操作控制，并由 ADR 0025 承接单 key 分页及跨提交续作语义。
 - [ADR 0023](../../adr/0023-task-operations-state-outside-main-database.md) 继续拥有独立维护库及异步观测。
@@ -22,6 +22,7 @@ ADR 0031 将归档文件批次与主库写批次区分，规定月份只决定�
 
 ## Related Changes
 
+- 同步 main 的 PR #1081（v4.0.2）后，保留 Prompt 缓存事件唤醒的启用控制、代次围栏及压力退避，以及按 run 绑定的性能镜像 artifact。主线新增 ADR 0031，本主题 ADR 改为 0032；任务批次、月度目标、删除证明和容量验收不变。旧基线上的 CI 和审查不能证明合入后的候选，需刷新当前 head 的证据。
 - PR #1079 的 `f7fa7ea9` 移除稀疏 ID 分支的 `NOT INDEXED` 并更新触发器定义识别。此前将该子句解释为强制全表扫描的判断已撤回：SQLite 仍可访问 rowid。改动仅作为待验证候选，SQL 结构断言不是性能证明；当前 Actions、历史有效预算失败及不稳定窗口分别绑定，根因保持未确认。查询注释和实施记录同步去除已撤回的因果描述。
 - PR #1079 的第二个 Repair Batch 补齐 `archiveBatches[].timeoutCount`，将未完成批次触发的执行期限按数据集/月归属，保留整轮兼容值及预算标志；增加确定性轻量回归和旧 JSON/准确零兼容验证。旧 manifest 拥有的隔离记录可能保留 degraded 诊断，作为观测限制记录，不改变删除保护或任务准入。
 - [PR #1079](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1079)：主人将本次停靠点改为 PR 合并，并明确暂不在本地运行 stateful profile，以其他验证及 GitHub Actions 必过检查完成交付。性能测试仅允许在 GitHub Actions，完整容量目标仍待独立验证；不声称 50 倍吞吐、24 小时归零或在线延迟不劣已签收。

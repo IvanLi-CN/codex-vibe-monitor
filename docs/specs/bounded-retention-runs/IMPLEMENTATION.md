@@ -108,4 +108,4 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 - [长期需求](SPEC.md)
 - [历史与此前容量限制](HISTORY.md)
-- [ADR 0031](../../adr/0031-retention-task-local-batches-and-monthly-archive-targets.md)
+- [ADR 0032](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)

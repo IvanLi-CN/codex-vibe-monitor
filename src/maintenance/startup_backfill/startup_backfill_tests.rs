@@ -32,6 +32,29 @@ async fn control_test_pool() -> SqlitePool {
     pool
 }
 
+async fn prompt_cache_materialization_test_store() -> crate::maintenance_store::MaintenanceStore {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect maintenance store test pool");
+    let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
+        .bind(task_key)
+        .execute(&store.pool)
+        .await
+        .expect("enable prompt-cache task fixture");
+    store
+        .initialize_prompt_cache_materialization_control(task_key, task.name())
+        .await
+        .expect("initialize prompt-cache control");
+    store
+}
+
 #[tokio::test]
 async fn disabled_proxy_cost_does_not_wake_new_catalog_rows() {
     let pool = control_test_pool().await;
@@ -202,6 +225,7 @@ fn scheduler_health_tracks_wakes_due_work_and_active_outcomes() {
         scheduler.drain_due_tasks(Utc::now()),
         vec![StartupBackfillTask::HistoricalRollups]
     );
+    scheduler.defer_for_pressure(StartupBackfillTask::HistoricalRollups, Utc::now());
     scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, false, true);
     let deferred = scheduler.health_snapshot();
     assert_eq!(deferred.state, "deferred");
@@ -238,26 +262,9 @@ async fn startup_pass_does_not_swallow_a_wake_before_the_wait_loop() {
 
 #[tokio::test]
 async fn prompt_cache_wake_respects_pressure_retry_deadline() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-        .await
-        .expect("connect maintenance store test pool");
-    let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
-    store
-        .initialize_schema_for_test()
-        .await
-        .expect("initialize maintenance store schema");
+    let store = prompt_cache_materialization_test_store().await;
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
     let task_name = task.name();
-    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
-    sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key=?")
-        .bind(task_key)
-        .execute(&store.pool)
-        .await
-        .expect("enable prompt-cache task fixture");
-    store
-        .initialize_prompt_cache_materialization_control(task_key, task_name)
-        .await
-        .expect("initialize prompt-cache control");
 
     let scheduler = StartupBackfillScheduler::default();
     scheduler.defer_for_pressure(task, Utc::now() + ChronoDuration::seconds(30));
@@ -299,6 +306,264 @@ async fn prompt_cache_wake_respects_pressure_retry_deadline() {
             .wake_generation,
         1
     );
+}
+
+#[tokio::test]
+async fn prompt_cache_queue_wake_preempts_coordinator_retry_deadline() {
+    let store = prompt_cache_materialization_test_store().await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let future_deadline = Utc::now() + ChronoDuration::hours(6);
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(future_deadline))
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed coordinator retry deadline");
+
+    let scheduler = StartupBackfillScheduler::default();
+    scheduler.defer_for_pressure(task, Utc::now() - ChronoDuration::seconds(1));
+    assert_eq!(
+        scheduler.take_pressure_deferred_tasks(Utc::now()),
+        vec![task]
+    );
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::from_secs(30));
+    let outcome = startup_backfill_coordinator_defer_outcome(&scheduler, task, &gate);
+    assert!(outcome.is_pressure_deferred());
+    assert!(!scheduler.has_future_pressure_deadline(task, Utc::now()));
+    scheduler.record_task_result(task, false, outcome.deferred);
+    assert_eq!(scheduler.health_snapshot().pressure_defer_count, 0);
+    assert_eq!(
+        wake_prompt_cache_materialization_with_scheduler(
+            &store,
+            "test_terminal_queue_event_after_coordinator_yield",
+            &scheduler,
+        )
+        .await
+        .expect("queue event should preempt coordinator retry"),
+        1
+    );
+    assert!(
+        load_startup_backfill_progress_from_pool(&store.pool, task.name())
+            .await
+            .expect("load coordinator-woken progress")
+            .is_due(Utc::now())
+    );
+}
+
+#[tokio::test]
+async fn prompt_cache_queue_wake_preempts_idle_deadline() {
+    let store = prompt_cache_materialization_test_store().await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let future_deadline = Utc::now() + ChronoDuration::hours(6);
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(future_deadline))
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed ordinary idle deadline");
+
+    let scheduler = StartupBackfillScheduler::default();
+    scheduler.record_next_due(task, future_deadline);
+    assert_eq!(
+        wake_prompt_cache_materialization_with_scheduler(
+            &store,
+            "test_terminal_queue_event",
+            &scheduler,
+        )
+        .await
+        .expect("wake past ordinary idle deadline"),
+        1
+    );
+
+    let progress = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("load event-woken progress");
+    assert!(progress.is_due(Utc::now()));
+    assert!(progress.next_run_after.is_none());
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+    assert_eq!(scheduler.drain_due_tasks(Utc::now()), vec![task]);
+}
+
+#[tokio::test]
+async fn prompt_cache_queue_wake_coalesces_concurrent_events() {
+    let store = Arc::new(prompt_cache_materialization_test_store().await);
+    let scheduler = Arc::new(StartupBackfillScheduler::default());
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(Utc::now() + ChronoDuration::hours(6)))
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed concurrent event deadline");
+
+    let mut wakes = Vec::new();
+    for _ in 0..8 {
+        let store = Arc::clone(&store);
+        let scheduler = Arc::clone(&scheduler);
+        wakes.push(tokio::spawn(async move {
+            wake_prompt_cache_materialization_with_scheduler(
+                &store,
+                "test_concurrent_terminal_queue_event",
+                &scheduler,
+            )
+            .await
+        }));
+    }
+    let mut total_woken = 0;
+    for wake in wakes {
+        total_woken += wake
+            .await
+            .expect("concurrent wake must not panic")
+            .expect("concurrent wake must succeed");
+    }
+
+    assert_eq!(total_woken, 1);
+    assert_eq!(scheduler.health_snapshot().wake_count, 1);
+    assert_eq!(
+        load_startup_backfill_progress_from_pool(&store.pool, task.name())
+            .await
+            .expect("load coalesced progress")
+            .wake_generation,
+        1
+    );
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+}
+
+#[tokio::test]
+async fn prompt_cache_queue_wake_survives_late_run_checkpoint() {
+    let store = prompt_cache_materialization_test_store().await;
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let future_deadline = Utc::now() + ChronoDuration::hours(6);
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(future_deadline))
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed late checkpoint deadline");
+    let before_event = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("load pre-event checkpoint");
+
+    assert_eq!(
+        wake_prompt_cache_materialization_with_scheduler(
+            &store,
+            "test_inflight_terminal_queue_event",
+            &scheduler,
+        )
+        .await
+        .expect("wake in-flight materialization"),
+        1
+    );
+    let generation = store
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized control")
+        .generation;
+    let _checkpoint_guard = store
+        .prompt_cache_materialization_control
+        .lock_current_generation(generation)
+        .await
+        .expect("admit late run checkpoint");
+    let checkpoint_deadline = format_utc_iso(future_deadline);
+    save_startup_backfill_progress_for_task(
+        &store.pool,
+        task,
+        task.name(),
+        before_event.wake_generation,
+        StartupBackfillProgressUpdate {
+            cursor_id: before_event.cursor_id,
+            scanned: before_event.last_scanned,
+            updated: before_event.last_updated,
+            zero_update_streak: before_event.zero_update_streak,
+            next_run_after: &checkpoint_deadline,
+            status: STARTUP_BACKFILL_STATUS_OK,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .expect("reconcile late run checkpoint");
+
+    let after_checkpoint = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("load reconciled checkpoint");
+    assert!(after_checkpoint.is_due(Utc::now()));
+    assert!(after_checkpoint.next_run_after.is_none());
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+}
+
+#[tokio::test]
+async fn prompt_cache_queue_wake_survives_coordinator_defer_checkpoint() {
+    let store = Arc::new(prompt_cache_materialization_test_store().await);
+    let scheduler = Arc::new(StartupBackfillScheduler::default());
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let future_deadline = Utc::now() + ChronoDuration::hours(6);
+    sqlx::query("UPDATE startup_backfill_progress SET next_run_after=? WHERE task_name=?")
+        .bind(format_utc_iso(future_deadline))
+        .bind(task.name())
+        .execute(&store.pool)
+        .await
+        .expect("seed coordinator checkpoint deadline");
+    let before_event = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("load pre-event coordinator checkpoint");
+    let generation = store
+        .prompt_cache_materialization_control
+        .snapshot()
+        .expect("initialized control")
+        .generation;
+    let checkpoint_guard = store
+        .prompt_cache_materialization_control
+        .lock_current_generation(generation)
+        .await
+        .expect("admit coordinator checkpoint");
+    let wake_store = Arc::clone(&store);
+    let wake_scheduler = Arc::clone(&scheduler);
+    let wake = tokio::spawn(async move {
+        wake_prompt_cache_materialization_with_scheduler(
+            &wake_store,
+            "test_queue_event_during_coordinator_checkpoint",
+            &wake_scheduler,
+        )
+        .await
+    });
+    tokio::task::yield_now().await;
+
+    let retry_after = format_utc_iso(future_deadline);
+    save_startup_backfill_progress_for_task(
+        &store.pool,
+        task,
+        task.name(),
+        before_event.wake_generation,
+        StartupBackfillProgressUpdate {
+            cursor_id: before_event.cursor_id,
+            scanned: before_event.last_scanned,
+            updated: before_event.last_updated,
+            zero_update_streak: before_event.zero_update_streak,
+            next_run_after: &retry_after,
+            status: STARTUP_BACKFILL_STATUS_IDLE,
+            suspension_reason: None,
+        },
+    )
+    .await
+    .expect("save coordinator retry checkpoint");
+    scheduler.defer_for_background_busy(task, future_deadline);
+    drop(checkpoint_guard);
+
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(1), wake)
+            .await
+            .expect("queue event should not remain behind coordinator retry")
+            .expect("queue event wake task must not panic")
+            .expect("queue event wake must succeed"),
+        1
+    );
+    let after_wake = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+        .await
+        .expect("load coordinator-reconciled checkpoint");
+    assert!(after_wake.is_due(Utc::now()));
+    assert!(after_wake.next_run_after.is_none());
+    assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
 }
 
 #[test]
@@ -487,6 +752,7 @@ fn coverage_repair_health_is_independent_from_historical_rollups() {
     let scheduler = StartupBackfillScheduler::default();
     scheduler.record_task_result(StartupBackfillTask::HistoricalRollups, true, false);
 
+    scheduler.defer_for_pressure(StartupBackfillTask::AccountActivityV2Coverage, Utc::now());
     scheduler.record_task_result(StartupBackfillTask::AccountActivityV2Coverage, false, true);
 
     let health = scheduler.health_snapshot();
