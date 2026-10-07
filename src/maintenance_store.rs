@@ -3952,11 +3952,10 @@ impl MaintenanceStore {
                     .active_runs
                     .iter()
                     .find(|active| active.task_key == task.task_key)
+                && active.phase != "waiting_resources"
             {
-                if active.phase != "waiting_resources" {
-                    summary.actual_started_at = Some(active.started_at.clone());
-                    summary.duration_ms = Some(active.elapsed_ms.min(i64::MAX as u64) as i64);
-                }
+                summary.actual_started_at = Some(active.started_at.clone());
+                summary.duration_ms = Some(active.elapsed_ms.min(i64::MAX as u64) as i64);
             }
             task.execution_observation = if task.last_execution.is_some() {
                 "observed".to_string()
@@ -4452,6 +4451,18 @@ impl MaintenanceStore {
 
 pub(crate) fn path(config: &AppConfig) -> PathBuf {
     config.maintenance_database_path()
+}
+
+#[cfg(test)]
+pub(crate) async fn ownership_test_store() -> MaintenanceStore {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_schema(&pool).await.unwrap();
+    seed_tasks(&pool).await.unwrap();
+    MaintenanceStore::from_pool(pool)
 }
 
 #[cfg(test)]
@@ -7227,16 +7238,4 @@ mod tests {
         .expect("read latest hourly retention observation");
         assert_eq!(latest, (0, None, Some(101)));
     }
-}
-
-#[cfg(test)]
-pub(crate) async fn ownership_test_store() -> MaintenanceStore {
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect("sqlite::memory:")
-        .await
-        .unwrap();
-    ensure_schema(&pool).await.unwrap();
-    seed_tasks(&pool).await.unwrap();
-    MaintenanceStore::from_pool(pool)
 }

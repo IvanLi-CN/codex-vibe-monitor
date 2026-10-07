@@ -32,10 +32,16 @@ def await_condition(predicate, timeout, message):
 
 def runtime_locks(root):
     handles = []
-    for database in [root / "business.sqlite", root / "maintenance.sqlite"]:
+    databases = sorted({(root / "business.sqlite").resolve(), (root / "maintenance.sqlite").resolve()})
+    pair_hash = hashlib.sha256()
+    for database in databases:
+        encoded = os.fsencode(database)
+        pair_hash.update(len(encoded).to_bytes(8, "big"))
+        pair_hash.update(encoded)
+    for database in databases:
         handle = Path(str(database.resolve()) + ".runtime.lock").open("w+")
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        handle.write("service:ownership-v1:ready")
+        handle.write(f"service:ownership-v1:ready:{pair_hash.hexdigest()}")
         handle.flush()
         handles.append(handle)
     return handles

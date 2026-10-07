@@ -1,8 +1,8 @@
 {
-  "status": "validation-in-progress",
+  "status": "validation-complete",
   "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
-  "codeCandidateSha": "e7bdd374c4e5ae3a797dcbb1f4ad1a6ba807e376",
-  "candidateBinarySha256": null,
+  "codeCandidateSha": "53e47c298ffb1992917a4d03f69857b007c3a943",
+  "candidateBinarySha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051",
   "passed": {
     "webUnit": {
       "files": 178,
@@ -22,14 +22,36 @@
     "rustSourceQuality": true,
     "ownerConfirmedVisualAssets": 6,
     "webSourceTree": "0a373efb5e98cbc4aedefce182093a84387b3aa8",
-    "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs."
+    "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs.",
+    "rustFmt": true,
+    "rustCheckAllTargetsAllFeatures": true,
+    "rustClippyAllTargetsAllFeatures": true,
+    "productionLinuxBuild": true,
+    "runtimeProcessFixture": true,
+    "namedOwnershipRegression": {
+      "passed": 11,
+      "failed": 0,
+      "ignored": 1
+    },
+    "backendProfiles": {
+      "lightweight": {
+        "passed": 1300,
+        "failed": 0
+      },
+      "statefulSqlite": {
+        "passed": 1451,
+        "failed": 0,
+        "rerunAfterTimingFlake": true
+      },
+      "archiveFileIo": {
+        "passed": 327,
+        "failed": 0
+      }
+    },
+    "releasedSources": 10,
+    "sourceInputFingerprint": "ad21f0b710e88fb908b70d3ee33d54d9dddb38cf515ddb468a8396c4b349010b"
   },
   "notPassed": [
-    "production-Linux-build-after-base-drift",
-    "runtime-process-fixture-after-base-drift",
-    "three-sequential-backend-resource-profiles",
-    "final-cargo-fmt-check-check-clippy",
-    "all-ten-released-sources-at-final-candidate",
     "formal-Tier-4-review",
     "live-PR-current-head-required-CI"
   ],
@@ -40,7 +62,7 @@
     "repairBatchesUsed": 0,
     "prCreated": false
   },
-  "recovery": "Normal admission restored the same session VM. Current mainline source was applied and hash-verified; Rust checks/build and the v4.1.2 fixture generation are running. The three profiles, process regression and ten-source upgrade use fresh output directories after compilation.",
+  "recovery": "Current candidate passed Linux build, runtime process fixture, named ownership regressions, all three backend resource profiles, ten published-source upgrades, and final Rust fmt/check/clippy. One stateful concurrency test had an initialization timing flake in the first full run and passed on the exact-test rerun and full profile rerun.",
   "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
   "retainedHistoricalEvidence": {
     "runtimeProcessFixture": "runtime-validation-results.json",
@@ -76,8 +98,9 @@
     "instance": "agent-vm-avm-9bc7b112e75e96a2",
     "generation": 3,
     "effectiveLease": true,
-    "leaseExpiresAt": "2026-10-07T15:13:42Z",
+    "leaseExpiresAt": "2026-10-07T16:13:42Z",
     "acquireOperationId": "5bee1e92-4e7c-49e4-883e-f6c53464b5ba",
-    "renewalOperationId": "0650f63c-ab8c-48b9-aa91-db92000064b2"
+    "renewalOperationId": "0650f63c-ab8c-48b9-aa91-db92000064b2",
+    "candidateBinarySha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
   }
 }

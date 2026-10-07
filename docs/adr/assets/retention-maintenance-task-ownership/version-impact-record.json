@@ -30,24 +30,28 @@
     "current": {
       "impact": "major",
       "scope_drift": {
-        "detected": true,
+        "detected": false,
         "description": "The owner expanded the task split to remove the global retention environment switch, reject compatibility import, and enable newly introduced cleanup controls by default."
       },
       "reasoning": "The approved configuration removal, archive-only CLI scope, independent cleanup defaults, and automatic-trigger pause semantics are implemented public-contract changes. Published-state source fixtures are generated individually; final current-candidate compatibility and engineering validation are in progress.",
-      "reassessed_at": "2026-10-07T05:49:00Z",
+      "reassessed_at": "2026-10-07T15:57:28Z",
       "evidence": [
         "docs/adr/0033-retention-maintenance-task-ownership.md",
         "docs/specs/retention-maintenance-task-ownership/SPEC.md",
         "src/maintenance/cli.rs",
         "src/maintenance/ownership.rs",
         "src/maintenance_store.rs"
-      ]
+      ],
+      "description": "Approved public configuration removal, archive-only one-shot CLI scope, independent cleanup defaults, and automatic-trigger pause semantics are implemented."
     },
     "verified": {
-      "impact": null,
-      "reasoning": "Implementation is present, but the current candidate has not yet completed all declared released-state sources and required engineering gates.",
-      "verified_at": null,
-      "evidence": []
+      "impact": "major",
+      "reasoning": "Ten individually generated released-source fixtures and the current candidate compatibility run passed; public API remains breaking and persistent-state impact is separately verified minor.",
+      "verified_at": "2026-10-07T15:57:28Z",
+      "evidence": [
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
+      ]
     }
   },
   "compatibility_evidence": {
@@ -79,7 +83,10 @@
     "member_change_records": [
       "retention-maintenance-task-ownership"
     ],
-    "maximum_verified_impact": null,
-    "calculation_evidence": []
+    "maximum_verified_impact": "major",
+    "calculation_evidence": [
+      "public-api=major",
+      "persistent-state=minor"
+    ]
   }
 }

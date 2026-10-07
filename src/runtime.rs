@@ -1294,13 +1294,11 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                             task_key.as_str(),
                             "invocation_identity_cleanup" | "raw_orphan_sweep"
                         )
-                    {
-                        if let Err(retry_error) = store
+                        && let Err(retry_error) = store
                             .record_owned_retry(&task_key, is_retention_write_deferred(&error))
                             .await
-                        {
-                            warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
-                        }
+                    {
+                        warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
                     }
                     (
                         SystemTaskStatus::Failed,
@@ -1686,46 +1684,44 @@ async fn run_managed_task_once_with_scoped_observation(
         if matches!(task_key, "invocation_identity_cleanup" | "raw_orphan_sweep")
             && !options.manual
             && !options.dry_run
+            && let Some(store) = crate::maintenance_store::global()
         {
-            if let Some(store) = crate::maintenance_store::global() {
-                if task_key == "raw_orphan_sweep"
-                    && (execution.completion == "deferred"
-                        || execution
-                            .details
-                            .get("failures")
-                            .and_then(Value::as_u64)
-                            .is_some_and(|count| count > 0))
-                {
-                    store
-                        .record_owned_retry_delay(
-                            task_key,
-                            execution.next_work_secs.unwrap_or(300),
-                            "raw_safety_retry",
-                        )
-                        .await?;
-                } else if execution.completion == "deferred" {
-                    store.record_owned_retry(task_key, true).await?;
-                } else if execution
-                    .details
-                    .get("failures")
-                    .and_then(Value::as_u64)
-                    .is_some_and(|count| count > 0)
-                {
-                    store.record_owned_retry(task_key, false).await?;
-                } else {
-                    store.clear_owned_retry(task_key).await?;
-                }
+            if task_key == "raw_orphan_sweep"
+                && (execution.completion == "deferred"
+                    || execution
+                        .details
+                        .get("failures")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|count| count > 0))
+            {
+                store
+                    .record_owned_retry_delay(
+                        task_key,
+                        execution.next_work_secs.unwrap_or(300),
+                        "raw_safety_retry",
+                    )
+                    .await?;
+            } else if execution.completion == "deferred" {
+                store.record_owned_retry(task_key, true).await?;
+            } else if execution
+                .details
+                .get("failures")
+                .and_then(Value::as_u64)
+                .is_some_and(|count| count > 0)
+            {
+                store.record_owned_retry(task_key, false).await?;
+            } else {
+                store.clear_owned_retry(task_key).await?;
             }
         }
         if !options.manual
             && !options.dry_run
             && let Some(retry) = execution.next_work_secs
+            && let Some(store) = crate::maintenance_store::global()
         {
-            if let Some(store) = crate::maintenance_store::global() {
-                store
-                    .schedule_owned_work(task_key, retry, "work_remaining")
-                    .await?;
-            }
+            store
+                .schedule_owned_work(task_key, retry, "work_remaining")
+                .await?;
         }
         return Ok(ManagedTaskExecution {
             summary: execution.summary,

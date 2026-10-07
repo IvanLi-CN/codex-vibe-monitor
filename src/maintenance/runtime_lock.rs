@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -6,6 +7,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 /// cannot establish independent writers. Lock files are stable and never unlinked.
 pub(crate) struct MaintenanceRuntimeLock {
     files: Vec<File>,
+    database_pair_id: String,
 }
 
 pub(crate) enum MaintenanceRuntimeRoute {
@@ -45,6 +47,15 @@ impl MaintenanceRuntimeLock {
             ];
             paths.sort();
             paths.dedup();
+            use std::os::unix::ffi::OsStrExt;
+            let mut pair_hash = Sha256::new();
+            for path in &paths {
+                let bytes = path.as_os_str().as_bytes();
+                pair_hash.update((bytes.len() as u64).to_be_bytes());
+                pair_hash.update(bytes);
+            }
+            let database_pair_id = format!("{:x}", pair_hash.finalize());
+            let ready_role = format!("service:ownership-v1:ready:{database_pair_id}");
             let mut files = Vec::new();
             let mut busy_roles = Vec::new();
             for path in paths {
@@ -70,15 +81,14 @@ impl MaintenanceRuntimeLock {
                 }
             }
             if busy_roles.is_empty() {
-                return Ok(MaintenanceRuntimeRoute::Offline(Self { files }));
+                return Ok(MaintenanceRuntimeRoute::Offline(Self {
+                    files,
+                    database_pair_id,
+                }));
             }
             // A partial acquisition, initialization, or another offline command is ambiguous.
             // Do not open/recover either database under that condition.
-            if allow_online
-                && files.is_empty()
-                && busy_roles
-                    .iter()
-                    .all(|role| role == "service:ownership-v1:ready")
+            if allow_online && files.is_empty() && busy_roles.iter().all(|role| role == &ready_role)
             {
                 Ok(MaintenanceRuntimeRoute::Online)
             } else {
@@ -90,6 +100,8 @@ impl MaintenanceRuntimeLock {
     }
 
     pub(crate) fn publish_role(&mut self, role: &str) -> Result<()> {
+        // Readiness belongs to the database pair, not merely to two busy files.
+        let role = format!("{role}:{}", self.database_pair_id);
         for file in &mut self.files {
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;

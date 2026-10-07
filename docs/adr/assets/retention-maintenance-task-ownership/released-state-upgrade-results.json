@@ -1,7 +1,7 @@
 {
-  "status": "passed-at-recorded-candidate",
-  "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11",
-  "note": "Nine independent released sources passed. Later prompt-materialization start-state repair is being validated; this is not final delivery readiness.",
+  "status": "passed-at-final-candidate",
+  "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051",
+  "sourceCount": 10,
   "results": [
     {
       "source": {
@@ -24,7 +24,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -47,7 +47,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -70,7 +70,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -93,7 +93,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -116,7 +116,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -139,7 +139,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -162,7 +162,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -185,7 +185,7 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     },
     {
       "source": {
@@ -232,7 +232,54 @@
         "no-startup-recovery",
         "interrupted-forward-reentry"
       ],
-      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
+    },
+    {
+      "source": {
+        "tag": "v4.1.2",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.2",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:e214af13f85b0e5888f0686de6b923972fda44cef01b1c2c1ff1f008131ea834",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "command": [
+          "docker",
+          "run",
+          "--rm",
+          "--network",
+          "none",
+          "-v",
+          "/workspace/worktrees/retention-ownership/release-fixtures/v4.1.2:/fixture",
+          "-e",
+          "DATABASE_PATH=/fixture/business.sqlite",
+          "-e",
+          "MAINTENANCE_DATABASE_PATH=/fixture/maintenance.sqlite",
+          "-e",
+          "ARCHIVE_DIR=/fixture/archives",
+          "-e",
+          "PROXY_RAW_DIR=/fixture/raw",
+          "-e",
+          "RETENTION_ENABLED=false",
+          "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.2",
+          "codex-vibe-monitor",
+          "maintenance",
+          "verify-archive-storage",
+          "--dry-run"
+        ],
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
     }
   ]
 }

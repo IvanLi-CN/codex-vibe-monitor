@@ -17,6 +17,10 @@ impl Drop for RuntimeOwnerChild {
 fn ownership_runtime_lock_child_fixture() {
     let mut config = test_config();
     config.database_path = PathBuf::from(std::env::var_os("CVM_TEST_RUNTIME_DATABASE").unwrap());
+    if std::env::var("CVM_TEST_RUNTIME_ROUTE_ASSERTION").as_deref() == Ok("unavailable") {
+        assert!(crate::maintenance::MaintenanceRuntimeLock::route(&config, true).is_err());
+        return;
+    }
     let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
         crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
     else {
@@ -78,6 +82,36 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
         crate::maintenance::MaintenanceRuntimeLock::route(&alias_config, true).unwrap(),
         crate::maintenance::MaintenanceRuntimeRoute::Online
     ));
+    let other_database = directory.join("other.sqlite");
+    let other_maintenance = directory.join("other.maintenance.sqlite");
+    let mut other = RuntimeOwnerChild(std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::archive_file_io::maintenance_runtime_ownership::ownership_runtime_lock_child_fixture", "--ignored"])
+        .env("CVM_TEST_RUNTIME_DATABASE", &other_database)
+        .env("MAINTENANCE_DATABASE_PATH", &other_maintenance)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn().unwrap());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !other_database.with_extension("ready").exists() {
+            assert!(other.0.try_wait().unwrap().is_none());
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mismatched = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "tests::archive_file_io::maintenance_runtime_ownership::ownership_runtime_lock_child_fixture", "--ignored"])
+        .env("CVM_TEST_RUNTIME_DATABASE", &config.database_path)
+        .env("MAINTENANCE_DATABASE_PATH", &other_maintenance)
+        .env("CVM_TEST_RUNTIME_ROUTE_ASSERTION", "unavailable")
+        .output().unwrap();
+    assert!(
+        mismatched.status.success(),
+        "mixed database owners were accepted: {}",
+        String::from_utf8_lossy(&mismatched.stderr)
+    );
+    drop(other);
     child.0.kill().unwrap();
     child.0.wait().unwrap();
     let route = crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap();
@@ -124,8 +158,7 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
     .await;
     assert!(
         result
-            .err()
-            .expect("cleanup must time out")
+            .expect_err("cleanup must time out")
             .to_string()
             .contains("work budget")
     );

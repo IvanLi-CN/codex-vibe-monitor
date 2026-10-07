@@ -2332,8 +2332,8 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             record_startup_backfill_pressure_error(gate, err);
         })?;
     let now = Utc::now();
-    if !progress.is_due(now)
-        && !(task == StartupBackfillTask::PromptCacheConversationsMaterialization
+    if !(progress.is_due(now)
+        || task == StartupBackfillTask::PromptCacheConversationsMaterialization
             && crate::maintenance::maintenance_execution_is_manual())
     {
         debug!(
