@@ -204,12 +204,13 @@ export function useManagedTaskTimeline() {
   }, []);
 
   useEffect(() => {
-    if (!topic.data) return;
-    desiredWatermark.current = Math.max(
-      desiredWatermark.current ?? topic.data.watermark,
-      topic.data.watermark,
-    );
-    if (stale.current) retryRequested.current = true;
+    if (topic.data) {
+      desiredWatermark.current = Math.max(
+        desiredWatermark.current ?? topic.data.watermark,
+        topic.data.watermark,
+      );
+      if (stale.current) retryRequested.current = true;
+    }
     void synchronize();
   }, [topic.data, synchronize]);
 
@@ -218,7 +219,7 @@ export function useManagedTaskTimeline() {
     coverage: snapshot?.coverage ?? [],
     watermark: snapshot?.watermark ?? null,
     error: topic.error ?? requestError,
-    isLoading: topic.isLoading || (topic.data != null && snapshot == null && requestError == null),
+    isLoading: snapshot == null && requestError == null,
     lastReceivedAt: topic.lastReceivedAt,
     refresh: topic.refresh,
   };

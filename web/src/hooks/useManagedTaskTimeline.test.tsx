@@ -127,6 +127,18 @@ afterEach(() => {
 });
 
 describe("useManagedTaskTimeline", () => {
+  it("loads and commits the HTTP baseline before the first SSE notice", async () => {
+    mocks.data = null;
+    mocks.fetchManagedTaskTimeline.mockResolvedValueOnce(page(10, [segment("cold-start", 1)]));
+
+    renderProbe();
+
+    await vi.waitFor(() => expect(mocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(current?.watermark).toBe(10));
+    expect(current?.segments).toEqual([expect.objectContaining({ segmentId: "cold-start" })]);
+    expect(current?.isLoading).toBe(false);
+  });
+
   it("commits a fixed-watermark baseline atomically and coalesces notices during paging", async () => {
     const secondBaselinePage = deferred<TaskTimelinePage>();
     mocks.fetchManagedTaskTimeline
