@@ -110,7 +110,6 @@ def classify_result(root: Path, step_outcome: str) -> str:
         print("Performance evidence unavailable because the raw median budget stayed within 5% but the hosted windows were unstable; preserving the unavailable card.")
         return "neutral-unavailable"
     raise ClassificationError("unavailable evidence did not preserve a valid environmental limitation")
-    return "neutral-unavailable"
 
 
 def main() -> int:
