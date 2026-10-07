@@ -419,6 +419,7 @@ class PerformanceDispositionTests(unittest.TestCase):
     def passed_scenarios():
         return {
             "https-auth-query": {"status": "passed"},
+            "tempo-cases-tenant": {"status": "passed"},
             "monitoring-fault-isolation": {"status": "passed"},
             "original-process-cpu": {"status": "passed"},
             "default-observability-ab": {

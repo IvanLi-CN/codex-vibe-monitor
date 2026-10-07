@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED_SCENARIOS = frozenset(
     {
         "https-auth-query",
+        "tempo-cases-tenant",
         "monitoring-fault-isolation",
         "original-process-cpu",
         "default-observability-ab",
