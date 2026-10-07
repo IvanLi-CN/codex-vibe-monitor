@@ -64,10 +64,10 @@
     "type": "fast-track",
     "stop": "merge-ready",
     "formalReviewLaunched": true,
-    "repairBatchesUsed": 1,
+    "repairBatchesUsed": 2,
     "prCreated": false
   },
-  "recovery": "Repair batch 1 and follow-up repair batch 2 closed formal review findings. Current candidate passed the ten-source upgrade validator, runtime lock process fixture including first-run and hard-link aliases, raw orphan dry-run accounting, Rust checks, and the CI contract check.",
+  "recovery": "Repair batch 1 and follow-up repair batch 2 closed formal review findings. Current candidate passed the ten-source upgrade validator, runtime lock process fixture including first-run and hard-link aliases, raw orphan dry-run accounting, Rust checks, and the CI contract check. The next candidate refresh covers offline CLI inode-lock promotion and order-independent hard-link identity.",
   "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
   "retainedHistoricalEvidence": {
     "runtimeProcessFixture": "runtime-validation-results.json",
@@ -106,6 +106,6 @@
     "leaseExpiresAt": "2026-10-07T18:59:11Z",
     "acquireOperationId": "c7ac3ea6-818b-444f-91b3-8f09492ee70a",
     "renewalOperationId": "dbd4aae6-04f2-48cb-ae80-a87134992e5d",
-    "candidateBinarySha256": "429d351685235c64fb76f4d52c4234d2b6f7a33d20bd010f3f07d15c4e4eb899"
+    "candidateBinarySha256": "5ac3f2d94be026d2d7bcbac95390bc09c3b7fc10fede2ada7b88e615ce62046c"
   }
 }

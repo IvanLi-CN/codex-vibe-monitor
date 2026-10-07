@@ -161,6 +161,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                 ensure_schema(&pool).await?;
                 initialize_invocation_identity_cleanup_state(&pool).await?;
                 let store = crate::maintenance_store::open(config).await?;
+                runtime_lock.refresh_inode_pair_lock()?;
                 maintenance_pool = Some(store.pool.clone());
                 store.migrate_legacy_state(&pool).await?;
                 store.apply_initial_task_defaults().await?;

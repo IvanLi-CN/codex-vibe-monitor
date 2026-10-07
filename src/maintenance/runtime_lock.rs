@@ -65,16 +65,21 @@ impl MaintenanceRuntimeLock {
             let mut busy_roles = Vec::new();
             let mut lock_paths = paths.clone();
             lock_paths.push(path_pair_lock_name);
-            let mut inode_hash = Sha256::new();
+            let mut inode_ids = Vec::new();
             let mut all_exist = true;
             for path in &paths {
                 use std::os::unix::fs::MetadataExt;
                 if let Ok(metadata) = std::fs::metadata(path) {
-                    inode_hash.update(metadata.dev().to_be_bytes());
-                    inode_hash.update(metadata.ino().to_be_bytes());
+                    inode_ids.push((metadata.dev(), metadata.ino()));
                 } else {
                     all_exist = false;
                 }
+            }
+            inode_ids.sort_unstable();
+            let mut inode_hash = Sha256::new();
+            for (device, inode) in inode_ids {
+                inode_hash.update(device.to_be_bytes());
+                inode_hash.update(inode.to_be_bytes());
             }
             let inode_pair_id = if all_exist {
                 Some(format!("{:x}", inode_hash.finalize()))

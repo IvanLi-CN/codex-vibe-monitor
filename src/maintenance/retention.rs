@@ -7014,12 +7014,14 @@ pub(crate) async fn run_managed_raw_orphan_sweep(
                     inspected_entries: Some(pass.inspected_entries),
                     referenced_skipped: Some(pass.referenced_skipped),
                     quarantined: Some(pass.quarantined),
-                    removed: Some(pass.removed),
-                    removed_bytes: Some(pass.removed_bytes),
+                    removed: (!dry_run).then_some(pass.removed),
+                    removed_bytes: (!dry_run).then_some(pass.removed_bytes),
                     schedule: Some(&updated),
-                    settled_pass: (!pass.deferred)
+                    settled_pass: (!dry_run && !pass.deferred)
                         .then(|| raw_orphan_sweep_settled_pass_snapshot(&pass)),
-                    nonzero_removal: raw_orphan_sweep_removal_snapshot(&pass),
+                    nonzero_removal: (!dry_run)
+                        .then(|| raw_orphan_sweep_removal_snapshot(&pass))
+                        .flatten(),
                     admission_stage: pass.admission_stage.as_deref(),
                     admission_cause: pass.admission_cause.as_deref(),
                     clear_admission: !pass.deferred,
