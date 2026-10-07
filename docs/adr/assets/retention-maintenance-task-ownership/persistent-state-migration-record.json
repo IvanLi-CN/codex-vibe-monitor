@@ -4,7 +4,7 @@
   "migration": {
     "description": "Introduce independent cleanup task controls without importing retired environment enablement",
     "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
-    "version_impact": "major",
+    "version_impact": "minor",
     "status": "implemented-validated"
   },
   "durable_state": {
@@ -66,7 +66,8 @@
       }
     ],
     "historical_data_backfill_or_transformation": [],
-    "historical_state_policy": "Retain old combined history and existing correctness cursors, quarantine facts, release-pending state, and failure backoff. Do not fabricate independent historical runs or reset pending recovery."
+    "historical_state_policy": "Retain old combined history and existing correctness cursors, quarantine facts, release-pending state, and failure backoff. Do not fabricate independent historical runs or reset pending recovery.",
+    "status": "validated"
   },
   "rollout_observability": {
     "operations_must_remain_separate": true,
@@ -97,7 +98,7 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "in-progress",
+    "status": "validated",
     "design_cases": [
       "New installations and newly introduced cleanup rows default to enabled.",
       "Old RETENTION_ENABLED=false and XY_RETENTION_ENABLED values have no effect and are not imported.",

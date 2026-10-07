@@ -5963,7 +5963,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         let Some(existing) = existing else {
             continue;
         };
-        if dry_run || !retention_raw_quarantine_due(&existing.quarantined_at) {
+        if !retention_raw_quarantine_due(&existing.quarantined_at) {
+            continue;
+        }
+
+        if dry_run {
+            result.removed = result.removed.saturating_add(1);
+            result.removed_bytes = result.removed_bytes.saturating_add(byte_size as u64);
             continue;
         }
 

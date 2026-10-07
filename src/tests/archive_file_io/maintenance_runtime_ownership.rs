@@ -39,6 +39,8 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     let directory = make_temp_test_dir("maintenance-runtime-process");
     let mut config = test_config();
     config.database_path = directory.join("business.sqlite");
+    fs::write(&config.database_path, b"business").unwrap();
+    fs::write(config.maintenance_database_path(), b"maintenance").unwrap();
     let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut offline) =
         crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap()
     else {
@@ -82,6 +84,23 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
         crate::maintenance::MaintenanceRuntimeLock::route(&alias_config, true).unwrap(),
         crate::maintenance::MaintenanceRuntimeRoute::Online
     ));
+    let hardlink_dir = directory.join("hardlinks");
+    fs::create_dir_all(&hardlink_dir).unwrap();
+    fs::write(&config.database_path, b"business").unwrap();
+    let maintenance_path = config.maintenance_database_path();
+    fs::write(&maintenance_path, b"maintenance").unwrap();
+    let hard_business = hardlink_dir.join("business.sqlite");
+    let hard_maintenance = hardlink_dir.join("business.maintenance.sqlite");
+    fs::hard_link(&config.database_path, &hard_business).unwrap();
+    fs::hard_link(&maintenance_path, &hard_maintenance).unwrap();
+    let mut hardlink_config = config.clone();
+    hardlink_config.database_path = hard_business;
+    unsafe { std::env::set_var("MAINTENANCE_DATABASE_PATH", &hard_maintenance) };
+    assert!(matches!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).unwrap(),
+        crate::maintenance::MaintenanceRuntimeRoute::Online
+    ));
+    unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
     let other_database = directory.join("other.sqlite");
     let other_maintenance = directory.join("other.maintenance.sqlite");
     let mut other = RuntimeOwnerChild(std::process::Command::new(std::env::current_exe().unwrap())

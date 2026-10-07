@@ -47,18 +47,29 @@ impl MaintenanceRuntimeLock {
             ];
             paths.sort();
             paths.dedup();
-            use std::os::unix::ffi::OsStrExt;
             let mut pair_hash = Sha256::new();
             for path in &paths {
-                let bytes = path.as_os_str().as_bytes();
-                pair_hash.update((bytes.len() as u64).to_be_bytes());
-                pair_hash.update(bytes);
+                use std::os::unix::fs::MetadataExt;
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    pair_hash.update(metadata.dev().to_be_bytes());
+                    pair_hash.update(metadata.ino().to_be_bytes());
+                } else {
+                    use std::os::unix::ffi::OsStrExt;
+                    let bytes = path.as_os_str().as_bytes();
+                    pair_hash.update((bytes.len() as u64).to_be_bytes());
+                    pair_hash.update(bytes);
+                }
             }
             let database_pair_id = format!("{:x}", pair_hash.finalize());
             let ready_role = format!("service:ownership-v1:ready:{database_pair_id}");
+            let pair_lock_name = std::env::temp_dir().join(format!(
+                "codex-vibe-monitor-runtime-{database_pair_id}.lock"
+            ));
             let mut files = Vec::new();
             let mut busy_roles = Vec::new();
-            for path in paths {
+            let mut lock_paths = paths.clone();
+            lock_paths.push(pair_lock_name);
+            for path in lock_paths {
                 let mut name = path.as_os_str().to_os_string();
                 name.push(".runtime.lock");
                 let mut file = OpenOptions::new()
@@ -88,7 +99,9 @@ impl MaintenanceRuntimeLock {
             }
             // A partial acquisition, initialization, or another offline command is ambiguous.
             // Do not open/recover either database under that condition.
-            if allow_online && files.is_empty() && busy_roles.iter().all(|role| role == &ready_role)
+            if allow_online
+                && busy_roles.iter().any(|role| role == &ready_role)
+                && busy_roles.iter().all(|role| role == &ready_role)
             {
                 Ok(MaintenanceRuntimeRoute::Online)
             } else {

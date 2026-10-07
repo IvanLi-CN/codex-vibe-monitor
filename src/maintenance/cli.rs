@@ -165,7 +165,7 @@ pub(crate) async fn run_owned_maintenance_cli(
                 store.migrate_legacy_state(&pool).await?;
                 store.apply_initial_task_defaults().await?;
                 // Only this selected owner is recovered; no other automatic maintenance is started.
-                sqlx::query("UPDATE managed_task_runs SET status='failed',finished_at=?,error_detail='offline runtime recovery' WHERE task_key=? AND status='running'")
+                sqlx::query("UPDATE managed_task_runs SET status='failed',finished_at=?,error_detail='offline runtime recovery' WHERE task_key=? AND status IN ('running','requested')")
                     .bind(format_utc_iso_millis(Utc::now())).bind(task_key).execute(&store.pool).await?;
                 let id = store.request_run_with_mode(task_key, dry_run).await?;
                 sqlx::query(
