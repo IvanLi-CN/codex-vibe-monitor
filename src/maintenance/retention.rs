@@ -404,7 +404,13 @@ pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<Retentio
 pub(crate) fn retention_archive_file_try_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
     #[cfg(unix)]
     {
-        retention_file_lock(path, libc::LOCK_EX, true)
+        match retention_file_lock(path, libc::LOCK_EX, true) {
+            Err(error) if error.to_string() == "archive directory lock busy" => {
+                retention_record_defer("archive_file_fence", "archive_directory_lock_busy");
+                Err(retention_write_deferred("archive_file_fence"))
+            }
+            result => result,
+        }
     }
     #[cfg(not(unix))]
     {
@@ -907,7 +913,7 @@ pub(super) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
     anyhow::Error::new(RetentionWriteDeferred { operation })
 }
 
-pub(super) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
+pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
     error.is::<RetentionWriteDeferred>() || error.is::<RawOrphanSweepAdmissionDeferred>()
 }
 

@@ -75,6 +75,8 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 对应回归位于 `retention_batch_admission.rs`、`retention_batch_wait.rs` 与 `retention_node_health_deltas.rs`：覆盖无资源持有的取消/压力等待、同次调用提交 1000 行且文件仅准备一次，以及准确参考、重试、key/bucket 变化和事务回滚。候选时间取 `invocation_max_days + 2`，不假定默认保留天数；归档 future 提前返回时测试立即失败并取消竞争 future，不以长时间等待替代结果断言。
 
+归档目录 fence 的非阻塞 busy 结果转换为现有 typed retention defer，保存 `archive_directory_lock_busy` 原因；文件发布与两个源转换路径共用这一分类。回归在首个 64 行提交后持有目录 fence，让同轮恢复尝试安全延期，确认剩余 936 行、文件摘要和已提交事实保持不变，且池连接与写许可都已释放。
+
 - 发布构建试验使用 1,270,000 条过期 invocation、1.2 倍 attempt、500,000 行倾斜 key、十个月份、约 3 KB payload、共享 raw 链接和稀疏孤儿，执行真实文件发布及主库转换。
 - 普通新增负载采用 30,000 invocation/day 与 36,000 attempt/day；基线与候选使用相同 fixture 和请求序列，各重复三次。请求按固定时钟独立发出，包含排队延迟并等待已发请求完成，不因慢写入跳过计划到达。窗口模式的负载发生器独立截止，避免旧基线的准入等待无限延长发压。cohort 计数使用现有覆盖索引，避免验收脚本扫描大行正文。要求真实固定 cohort 归零，不能仅按短时速率外推 24 小时。
 - `retention_task_local_service_rate_release_benchmark` 是独立的 GitHub Actions 发布构建长时试验，保持 ignored，不进入通用 PR 必过 profiles。单次命令最长 25 小时，其中容量计时上限 24 小时，额外时间仅用于建数和最终文件证明。每次保存逐轮 JSON、最终 cohort、实际文件摘要和在线延迟；其容量结论不由普通功能测试替代。
