@@ -2055,6 +2055,40 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
                 stop == PromptCacheMaterializationControlStop::GenerationChanged;
             return Ok(result);
         }
+        let identity_step = match prompt_cache_conversation_begin_control_step(
+            context.control,
+            context.control_generation,
+        ) {
+            Ok(step) => step,
+            Err(stop) => {
+                result.deferred = true;
+                result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+                result.control_generation_changed =
+                    stop == PromptCacheMaterializationControlStop::GenerationChanged;
+                return Ok(result);
+            }
+        };
+        {
+            let namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
+            let mut tx = context.pool.begin().await?;
+            let identity_exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE prompt_cache_key = ?1)",
+            )
+            .bind(prompt_cache_key)
+            .fetch_one(tx.as_mut())
+            .await?
+                != 0;
+            if !identity_exists {
+                create_prompt_cache_conversation_row_on_connection_with_exclusions(
+                    tx.as_mut(),
+                    prompt_cache_key,
+                    &namespace,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+        }
+        drop(identity_step);
         let started_at = Instant::now();
         let page = match refresh_prompt_cache_conversation_stats_bounded_page(
             context.pool,
