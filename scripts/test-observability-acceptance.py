@@ -473,6 +473,38 @@ class PerformanceDispositionTests(unittest.TestCase):
         self.assertEqual(classify_result(self.root, "success"), "passed")
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
 
+    def test_unstable_windows_are_neutral_only_when_raw_budget_is_within_limit(self):
+        scenarios = self.passed_scenarios()
+        report = {
+            "metrics": {
+                "cpuSecondsPerRequest": {"observedWithinBudget": True},
+                "p95Seconds": {"observedWithinBudget": True},
+            }
+        }
+        (self.root / "ab-summary.json").write_text(json.dumps(report) + "\n")
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "unstable measurement windows",
+        }
+        self.write_case("unavailable", scenarios)
+        self.assertEqual(classify_result(self.root, "failure"), "neutral-unavailable")
+
+    def test_unstable_windows_with_raw_budget_overrun_remain_blocking(self):
+        scenarios = self.passed_scenarios()
+        report = {
+            "metrics": {
+                "cpuSecondsPerRequest": {"observedWithinBudget": False},
+                "p95Seconds": {"observedWithinBudget": True},
+            }
+        }
+        (self.root / "ab-summary.json").write_text(json.dumps(report) + "\n")
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "unstable measurement windows",
+        }
+        self.write_case("unavailable", scenarios)
+        with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
 
 if __name__ == "__main__":
     unittest.main()

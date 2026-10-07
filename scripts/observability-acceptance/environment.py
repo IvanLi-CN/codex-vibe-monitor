@@ -344,7 +344,14 @@ def comparison_report(samples):
         baseline = statistics.median(metric[modes[0]]["values"])
         enabled = statistics.median(metric[modes[-1]]["values"])
         increase = enabled / baseline - 1
-        metric.update({"comparisonValid": valid, "increase": increase if valid else None, "withinBudget": valid and enabled <= baseline * 1.05})
+        observed_within_budget = enabled <= baseline * 1.05
+        metric.update({
+            "comparisonValid": valid,
+            "increase": increase if valid else None,
+            "observedIncrease": increase,
+            "observedWithinBudget": observed_within_budget,
+            "withinBudget": valid and observed_within_budget,
+        })
         if len(modes) == 3:
             metrics_only = statistics.median(metric["metrics"]["values"])
             metric["traceIncrement"] = enabled / metrics_only - 1 if valid else None
