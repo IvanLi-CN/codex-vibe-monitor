@@ -231,9 +231,9 @@ def trace_stats():
 def trace_cases():
     query_token=(ROOT/"tempo-query-token").read_text().strip()
     ingest_token=(ROOT/"tempo-ingest-token").read_text().strip()
-    def search(category):
+    def search(category, environment=None, instance=None):
         now=int(time.time())
-        return "/tempo/api/search?"+urllib.parse.urlencode({"q":case_query(category),"start":now-300,"end":now,"limit":3})
+        return "/tempo/api/search?"+urllib.parse.urlencode({"q":case_query(category, environment=environment, instance=instance),"start":now-300,"end":now,"limit":3})
     for token in [None, "invalid", ingest_token]:
         assert request("https://entry:8443",search("normal"),token=token)[0]==401
     for token in [None, "invalid", query_token]:
@@ -267,6 +267,11 @@ def trace_cases():
         assert time.monotonic()<deadline, "application traces are not searchable"
         time.sleep(1)
     actual_id=actual[0]["traceID"]
+    # Some Tempo builds omit a leading zero when serializing a trace ID. Keep
+    # the gateway's fixed 32-hex contract while normalizing that fixture-only
+    # representation before the detail lookup.
+    assert re.fullmatch(r"[a-f0-9]{31,32}", actual_id)
+    actual_id=actual_id.rjust(32, "0")
     deadline=time.monotonic()+15
     while True:
         actual_trace=ok("https://entry:8443","/tempo/api/v2/traces/"+actual_id,token=query_token,extra_headers={"X-Scope-OrgID":"other|cvm"})
@@ -287,12 +292,14 @@ def trace_cases():
         flags={"cvm.record":"response","cvm.endpoint":"responses","cvm.fixture":True,"cvm.outcome":"error" if category=="error" else "complete","cvm.status_class":"5xx" if category=="error" else "2xx","cvm.normal_candidate":category=="normal","cvm.slow":category=="slow","cvm.high_wait":category=="wait","cvm.retry":category=="retry"}
         duration=31_000_000_000 if category=="slow" else 300_000_000
         spans.append({"traceId":trace_id,"spanId":secrets.token_hex(8),"name":"cvm.proxy.response","kind":2,"startTimeUnixNano":str(now-duration),"endTimeUnixNano":str(now),"attributes":[attr(k,v) for k,v in flags.items()]})
-    payload={"resourceSpans":[{"resource":{"attributes":[attr("service.name","codex-vibe-monitor"),attr("deployment.environment.name","production"),attr("service.instance.id","primary")]},"scopeSpans":[{"scope":{"name":"cvm.synthetic.classified"},"spans":spans}]}]}
+    # Keep injected classification cases distinct from real application records.
+    # A valid limit=3 query can otherwise return other matching application traces.
+    payload={"resourceSpans":[{"resource":{"attributes":[attr("service.name","codex-vibe-monitor"),attr("deployment.environment.name","classification-fixture"),attr("service.instance.id","fixture")]},"scopeSpans":[{"scope":{"name":"cvm.synthetic.classified"},"spans":spans}]}]}
     assert request("https://entry:8443","/v1/traces",method="POST",payload=payload,token=ingest_token,extra_headers={"X-Scope-OrgID":"other"})[0]==200
     for category, trace_id in ids.items():
         deadline=time.monotonic()+15
         while True:
-            rows=ok("https://entry:8443",search(category),token=query_token).get("traces",[])
+            rows=ok("https://entry:8443",search(category, "classification-fixture", "fixture"),token=query_token).get("traces",[])
             if any(row["traceID"]==trace_id for row in rows): break
             assert time.monotonic()<deadline, "classified trace not searchable: "+category
             time.sleep(1)

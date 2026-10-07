@@ -22,6 +22,11 @@ def digest(paths):
     for path in paths: result.update(path.read_bytes())
     return result.hexdigest()
 
+def create_entry_certificate(private):
+    # OpenSSL's default self-signed certificate is a CA. Rustls correctly
+    # rejects a CA used as the HTTPS server's end-entity certificate.
+    execute(["openssl","req","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=entry","-addext","subjectAltName=DNS:entry","-addext","basicConstraints=critical,CA:FALSE","-addext","extendedKeyUsage=serverAuth","-keyout",str(private/"tls.key"),"-out",str(private/"tls.crt")],stderr=subprocess.DEVNULL)
+
 class Run:
     def __init__(self,args):
         self.args=args; self.source=Path(args.source).resolve();self.root=Path(args.run).resolve()
@@ -72,7 +77,7 @@ class Run:
         assert identity["Config"]["Labels"]["org.opencontainers.image.revision"]==self.args.candidate,"image does not match Candidate SHA"
         (self.root/"image-identity.json").write_text(json.dumps(identity,indent=2)+"\n")
     def configure(self):
-        execute(["openssl","req","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=entry","-addext","subjectAltName=DNS:entry","-keyout",str(self.private/"tls.key"),"-out",str(self.private/"tls.crt")],stderr=subprocess.DEVNULL)
+        create_entry_certificate(self.private)
         env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_SECRET_GID":str(os.getgid()),"CVM_TEMPO_QUERY_URL":"https://entry:8443/tempo","CVM_TEMPO_QUERY_TOKEN":(self.private/"tempo-query-token").read_text().strip(),"CVM_TEMPO_CA_PEM":(self.private/"tls.crt").read_text()}
         compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"--profile","traces-isolation","config","--format","json"],env=env))
         compose.pop("name",None);compose["networks"]={"monitoring":{}}

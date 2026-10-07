@@ -83,3 +83,12 @@ Mock-only `ui_demo` evidence uses the current implementation, including the reta
 ![Mobile Grafana entry](assets/observability-entry-mobile.png)
 ![Unconfigured Grafana](assets/observability-unconfigured.png)
 ![Task deep link](assets/observability-task.png)
+
+当前生命周期统计、分类案例和原生 Trace 瀑布图来自隔离 Grafana/Tempo synthetic preview；桌面视口为 1280×900，移动视口为 393×852，使用固定 UTC 时间窗和合成 fixture。六张截图均已向主人展示并确认准确；新路径相对于基线为 current-only，页面级 trim-only 预处理均无需裁剪。
+
+![Lifecycle statistics desktop](assets/lifecycle-stats-desktop.png)
+![Lifecycle statistics mobile](assets/lifecycle-stats-mobile.png)
+![Lifecycle cases desktop](assets/lifecycle-cases-desktop.png)
+![Lifecycle cases mobile](assets/lifecycle-cases-mobile.png)
+![Lifecycle waterfall desktop](assets/lifecycle-waterfall-desktop.png)
+![Lifecycle waterfall mobile](assets/lifecycle-waterfall-mobile.png)

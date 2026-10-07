@@ -29,6 +29,17 @@ def psi(cpu=0, io=0, memory=0):
 
 
 class ContainerMountTests(unittest.TestCase):
+    def test_https_entry_certificate_is_a_server_leaf_and_covers_its_hostname(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            acceptance.create_entry_certificate(private)
+            certificate = acceptance.execute(["openssl", "x509", "-in", str(private / "tls.crt"), "-noout", "-text"])
+            self.assertIn("CA:FALSE", certificate)
+            self.assertIn("TLS Web Server Authentication", certificate)
+            self.assertIn("DNS:entry", certificate)
+            result = acceptance.execute(["openssl", "verify", "-CAfile", str(private / "tls.crt"), "-purpose", "sslserver", "-verify_hostname", "entry", str(private / "tls.crt")])
+            self.assertTrue(result.endswith(": OK"))
+
     def execute_mounted(self, name):
         script = SOURCE / "scripts/observability-acceptance" / name
         namespace = {"__name__": "mounted_fixture", "__file__": "/work/" + name}
