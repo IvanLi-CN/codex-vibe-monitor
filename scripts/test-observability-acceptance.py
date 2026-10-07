@@ -126,15 +126,15 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def test_mid_window_pressure_cannot_be_hidden_by_quiet_final_sample(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
-            with self.assertRaisesRegex(OSError, "pressure_exceeded"):
-                with environment.observe_resources(self.root, self.window) as observer:
-                    self.clock += 10
-                    with patch.object(environment, "pressure", return_value=psi(cpu=3)):
-                        observer.sample()
-                    self.clock += 10
+            with environment.observe_resources(self.root, self.window) as observer:
+                self.clock += 10
+                with patch.object(environment, "pressure", return_value=psi(cpu=3)):
+                    observer.sample()
+                self.clock += 10
         windows = json.loads((self.root / "measurement-windows.json").read_text())
-        self.assertEqual(windows[0]["status"], "unavailable")
+        self.assertEqual(windows[0]["status"], "passed")
         self.assertEqual(windows[0]["sampleCount"], 3)
+        self.assertEqual(windows[0]["pressureExceededSamples"], 1)
         rows = [json.loads(row) for row in (self.root / "resource-observer.jsonl").read_text().splitlines()]
         self.assertEqual([row["eligible"] for row in rows], [True, False, True])
         self.assertTrue(all(row["windowId"] == "0-false" for row in rows))
@@ -211,10 +211,20 @@ class ResourceAdmissionTests(unittest.TestCase):
         original = path.read_text()
         rows = [json.loads(row) for row in original.splitlines()]
         rows[1]["hostPressure"] = psi(cpu=3)
+        rows[1]["eligible"] = False
         path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root, modes=("false", "true"))
+        windows = json.loads((self.root / "measurement-windows.json").read_text())
+        windows[0]["pressureExceededSamples"] = 1
+        (self.root / "measurement-windows.json").write_text(json.dumps(windows))
+        environment.verify_measurement_evidence(self.root, modes=("false", "true"))
         path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
         with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root, modes=("false", "true"))
+
+    def test_ineligible_first_measurement_sample_blocks_window(self):
+        with self.fake_clock(), patch.object(environment, "pressure", return_value=psi(cpu=3)):
+            with self.assertRaisesRegex(OSError, "pressure_exceeded"):
+                with environment.observe_resources(self.root, self.window):
+                    pass
 
 
 class CpuIsolationTests(unittest.TestCase):

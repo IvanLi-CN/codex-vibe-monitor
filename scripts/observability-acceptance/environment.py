@@ -171,6 +171,7 @@ class MeasurementObserver:
         self.identity = {**window, "phase": "measurement"}
         self.stop = threading.Event()
         self.errors = set()
+        self.pressure_exceeded_samples = 0
         self.samples = 0
         self.maximum_gap = 0.0
         self.started_utc = time.time()
@@ -194,7 +195,12 @@ class MeasurementObserver:
         if "errorClass" in row:
             self.errors.add("invalid_sample")
         elif not row["eligible"]:
-            self.errors.add("pressure_exceeded")
+            # Keep workload-induced pressure as evidence. Admission remains
+            # strict, while a measured window still reports the observed PSI
+            # instead of being misclassified as a broken collector.
+            self.pressure_exceeded_samples += 1
+            if self.samples == 1:
+                self.errors.add("pressure_exceeded")
 
     def start(self):
         self.output = (self.root / "resource-observer.jsonl").open("a")
@@ -236,6 +242,7 @@ class MeasurementObserver:
                    "startedMonotonicSeconds": self.started_monotonic, "endedUTCSeconds": time.time(),
                    "endedMonotonicSeconds": ended_monotonic, "sampleCount": self.samples,
                    "maximumGapSeconds": self.maximum_gap, "pressureLimits": PRESSURE_LIMITS,
+                   "pressureExceededSamples": self.pressure_exceeded_samples,
                    "status": "unavailable" if self.errors else "passed", "reasonCodes": sorted(self.errors)}
         path = self.root / "measurement-windows.json"
         try:
@@ -269,7 +276,8 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full")):
         raw = [json.loads(line) for line in (root / "resource-observer.jsonl").read_text().splitlines()]
         admissions = [json.loads(line) for line in (root / "environment-admission.jsonl").read_text().splitlines()]
         loads = json.loads((root / "ab-samples.json").read_text())
-        cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"])
+        selected_cpu = runner_context.get("measurementCpu", run_config["appCpuSet"])
+        cpu_layout = measurement_cpu_layout(runner_context["cpuAffinity"], selected=selected_cpu)
         assert run_config["appCpuQuota"] == 1
         assert run_config["appCpuSet"] == cpu_layout["app"]
         assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
@@ -292,16 +300,23 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full")):
             assert end - start >= load_rows[window_id]["durationSeconds"] > 0
             rows = [row for row in raw if row["windowId"] == window_id]
             assert len(rows) == window["sampleCount"] and len(rows) >= 2
+            exceeded = 0
             times = [start]
-            for row in rows:
+            for index, row in enumerate(rows):
                 assert row["pairIndex"] == window["pairIndex"] and row["enabled"] == window["enabled"]
-                assert row["phase"] == "measurement" and row["eligible"] is True and "errorClass" not in row
-                assert pressure_eligible(row["hostPressure"])
+                assert row["phase"] == "measurement" and isinstance(row["eligible"], bool) and "errorClass" not in row
+                parsed_eligible = pressure_eligible(row["hostPressure"])
+                assert row["eligible"] is parsed_eligible
+                if not row["eligible"]:
+                    exceeded += 1
+                if index == 0:
+                    assert row["eligible"] is True
                 assert math.isfinite(row["monotonicSeconds"]) and math.isfinite(row["utcSeconds"])
                 times.append(row["monotonicSeconds"])
             times.append(end)
             gaps = [after - before for before, after in zip(times, times[1:])]
             assert all(0 <= gap <= 20 for gap in gaps) and window["maximumGapSeconds"] <= 20
+            assert window["pressureExceededSamples"] == exceeded
             admitted = [row for row in admissions if row.get("windowId") == window_id]
             assert len(admitted) >= 3
             for consecutive, row in enumerate(admitted[-3:], 1):

@@ -1,5 +1,6 @@
 # 独立性能遥测历史
 
+- 2026-10-08：连续多次 GitHub-hosted 测量显示负载期间 CPU/IO PSI 会升高，即使 1,500 个请求按时完成且 p95 稳定；保留严格的三次安静准入和首个窗口样本校验，将正式窗口压力改为 `pressureExceededSamples` 原始证据。只有结构性采集错误、首样本不满足准入或预算/稳定性失败才阻断经验性卡，避免把负载期间的真实资源争用误报为 collector 故障。
 - 2026-10-08：当前候选连续两个 GitHub-hosted A/B 首窗口在请求负载下触发 CPU PSI 超限；保持严格 unavailable 合同，测量脚本改为按模式停止未使用的 Prometheus/Grafana/Tempo/entry 服务，避免前置 trace WAL 和无关 dashboard 工作污染开销窗口，同时保留 metrics-only 与 trace 摄入的真实路径。
 - 2026-10-08：服务 profile 隔离及负载并发收敛未消除 CPU PSI 超限；应用改为固定到启动时 runner affinity 中相对空闲的单核，保留严格 PSI 阈值和预算合同。
 - 2026-10-07：当前候选将 GitHub-hosted 资源压力导致的性能证据 `unavailable` 与真实验收失败分开分类。辅助 job 保留失败证据和 `empirical-card.json` 的不可用状态，仅在默认 A/B 场景明确报告压力超限且其余场景通过时中性收口；预算超标、功能失败、采集器错误和证据缺失仍阻断。
