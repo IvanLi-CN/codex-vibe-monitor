@@ -173,7 +173,7 @@ The owner selected workload counts for the background and approved adding reliab
 
 ## Current Candidate Evidence
 
-- The isolated Agent VM service loaded 13,440 total segments, including 13,120 synthetic intervals, in 27 HTTP pages with one fixed watermark and no duplicate segment IDs. A first-page row revised while page 2 was paused was returned once through `afterRevision` despite moving to the window boundary. After a service restart, an interval inserted during downtime was returned once from the reconnect watermark, and the next SSE notice advanced the client to the service watermark. The chart remained populated without a capacity warning throughout bootstrap and reconnect.
+- On the isolated Agent VM, the current candidate loaded 13,465 HTTP baseline segments, including all 13,120 synthetic intervals, in 27 fixed-watermark pages of at most 500 rows. While page 2 was held, `a3-fixture-02000` advanced from baseline watermark 230 to revision 239; after the browser reconnected to SSE, the `afterRevision` traversal advanced through watermarks 247 and 248, and the revised interval appeared exactly once in the expanded browser density group. The chart remained populated without a capacity or unavailable warning during bootstrap and reconnect.
 - The mock-only `ui_demo` renders the dense timeline at 1440x900 desktop and 393x852 mobile sizes; expanding a dense group exposes 94 runs with individual identities. The owner confirmed the stable desktop-dark, mobile-light, and expanded-detail screenshots on 2026-10-07 after theme transitions settled. The screenshots are `current-only` against the locked evidence base and are stored in the canonical Spec assets.
 
 ## Historical Verification
