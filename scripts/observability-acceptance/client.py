@@ -14,7 +14,7 @@ import time
 import re
 import secrets
 import sys
-shared = Path(__file__).resolve().parents[2] / "ops/observability"
+shared = Path(__file__).resolve().parent.parent.parent / "ops/observability"
 sys.path.insert(0, str(shared) if shared.is_dir() else "/observability")
 from tempo_access import case_query, CASE_PREDICATES
 import urllib.error

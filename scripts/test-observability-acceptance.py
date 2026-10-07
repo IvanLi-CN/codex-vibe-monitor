@@ -28,6 +28,24 @@ def psi(cpu=0, io=0, memory=0):
             for name, value in [("cpu", cpu), ("io", io), ("memory", memory)]}
 
 
+class ContainerMountTests(unittest.TestCase):
+    def execute_mounted(self, name):
+        script = SOURCE / "scripts/observability-acceptance" / name
+        namespace = {"__name__": "mounted_fixture", "__file__": "/work/" + name}
+        with patch.object(sys, "path", [str(SOURCE / "ops/observability"), *sys.path]):
+            exec(compile(script.read_text(), str(script), "exec"), namespace)
+        return namespace
+
+    def test_client_bootstrap_works_at_container_mount_depth(self):
+        namespace = self.execute_mounted("client.py")
+        self.assertTrue(callable(namespace["seed"]))
+
+    def test_peer_bootstrap_reaches_dispatch_at_container_mount_depth(self):
+        with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
+            with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):
+                self.execute_mounted("fixture.py")
+
+
 class ResourceAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
