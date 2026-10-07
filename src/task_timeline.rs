@@ -603,7 +603,7 @@ pub(crate) async fn timeline_page(
             reset_required = true;
             None
         }
-        Some(cursor) if cursor.after_started_at.is_none() && cursor.offset > 0 => {
+        Some(cursor) if cursor.after_started_at.is_none() => {
             reset_required = true;
             None
         }

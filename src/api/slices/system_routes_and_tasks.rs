@@ -2599,33 +2599,36 @@ mod managed_task_control_contract_tests {
         assert_eq!(delta["segments"][0]["segmentId"], "http-fixture-00001");
         assert_eq!(delta["segments"][0]["revision"], 502);
 
-        let legacy_cursor = URL_SAFE_NO_PAD.encode(
-            serde_json::to_vec(&serde_json::json!({
-                "from": first["windowStart"],
-                "to": first["windowEnd"],
-                "watermark": 501,
-                "offset": 500,
-                "afterRevision": null,
-                "expiresAt": format_utc_iso_millis(Utc::now() + ChronoDuration::minutes(5)),
-            }))
-            .expect("serialize legacy timeline cursor"),
-        );
-        let response = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri(format!("/timeline?cursor={legacy_cursor}&limit=500"))
-                    .body(Body::empty())
-                    .expect("legacy cursor request"),
-            )
-            .await
-            .expect("legacy cursor response");
-        assert_eq!(response.status(), axum::http::StatusCode::OK);
-        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("legacy cursor body");
-        let reset: Value = serde_json::from_slice(&body).expect("legacy cursor JSON");
-        assert_eq!(reset["resetRequired"], true);
-        assert_eq!(reset["segments"].as_array().map(Vec::len), Some(0));
+        for offset in [0, 500] {
+            let legacy_cursor = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "from": first["windowStart"],
+                    "to": first["windowEnd"],
+                    "watermark": 501,
+                    "offset": offset,
+                    "afterRevision": null,
+                    "expiresAt": format_utc_iso_millis(Utc::now() + ChronoDuration::minutes(5)),
+                }))
+                .expect("serialize legacy timeline cursor"),
+            );
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/timeline?cursor={legacy_cursor}&limit=500"))
+                        .body(Body::empty())
+                        .expect("legacy cursor request"),
+                )
+                .await
+                .expect("legacy cursor response");
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("legacy cursor body");
+            let reset: Value = serde_json::from_slice(&body).expect("legacy cursor JSON");
+            assert_eq!(reset["resetRequired"], true);
+            assert_eq!(reset["segments"].as_array().map(Vec::len), Some(0));
+        }
     }
 
     #[test]
