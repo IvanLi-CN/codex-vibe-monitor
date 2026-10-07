@@ -1,5 +1,39 @@
 use super::*;
 
+#[test]
+fn retention_final_summary_preserves_specific_stop_causes_and_budget_precedence() {
+    use crate::maintenance::RetentionRunSummary;
+
+    for reason in ["parallel_work_minute_coverage", "retention_work_budget"] {
+        let mut summary = RetentionRunSummary {
+            wait_reason: Some(reason.to_string()),
+            ..RetentionRunSummary::default()
+        };
+        summary.apply_recorded_defer_reason(Some("archive_directory_lock_busy".to_string()));
+        assert_eq!(summary.wait_reason.as_deref(), Some(reason));
+        assert!(summary.deferred);
+    }
+    let mut summary = RetentionRunSummary {
+        budget_exhausted: true,
+        ..RetentionRunSummary::default()
+    };
+    summary.apply_recorded_defer_reason(Some("archive_directory_lock_busy".to_string()));
+    assert_eq!(
+        summary.wait_reason.as_deref(),
+        Some("retention_work_budget")
+    );
+    let mut summary = RetentionRunSummary {
+        deferred: true,
+        wait_reason: Some("retention_write_admission".to_string()),
+        ..RetentionRunSummary::default()
+    };
+    summary.apply_recorded_defer_reason(None);
+    assert_eq!(
+        summary.wait_reason.as_deref(),
+        Some("retention_write_admission")
+    );
+}
+
 #[tokio::test]
 async fn retention_batch_timeout_metrics_attribute_only_unfinished_deadline_work() {
     use crate::maintenance::{

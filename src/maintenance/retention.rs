@@ -766,6 +766,19 @@ pub(crate) async fn retention_test_with_shutdown<F: Future>(
     RETENTION_SHUTDOWN.scope(shutdown, work).await
 }
 
+#[cfg(test)]
+pub(crate) async fn retention_test_with_recorded_defer_reason<F: Future>(
+    work: F,
+) -> (F::Output, Option<String>) {
+    RETENTION_RUN_DEFER_REASON
+        .scope(RefCell::new(None), async {
+            let result = work.await;
+            let reason = RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+            (result, reason)
+        })
+        .await
+}
+
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
     let fingerprint = retention_error_fingerprint(error);
     let mut health = RETENTION_RECOVERY_HEALTH
@@ -1515,6 +1528,23 @@ pub(crate) struct RetentionRunSummary {
 }
 
 impl RetentionRunSummary {
+    pub(crate) fn apply_recorded_defer_reason(&mut self, defer_reason: Option<String>) {
+        self.deferred |= defer_reason.is_some();
+        // Stage catches use a generic typed-admission placeholder. Publish the
+        // recorded cause without replacing an already specific stop reason.
+        if self.wait_reason.as_deref() == Some("retention_write_admission")
+            && defer_reason.is_some()
+        {
+            self.wait_reason = defer_reason;
+        } else if self.wait_reason.is_none() && (self.deferred || self.budget_exhausted) {
+            self.wait_reason = if self.budget_exhausted {
+                Some("retention_work_budget".to_string())
+            } else {
+                defer_reason
+            };
+        }
+    }
+
     pub(crate) fn processed_row_count(&self) -> u64 {
         self.invocation_details_pruned as u64
             + self.invocation_rows_archived as u64
@@ -8643,7 +8673,7 @@ async fn run_data_retention_maintenance_with_prompt_cache(
         )
         .await;
     result.map(|(mut summary, defer_reason)| {
-        summary.deferred |= defer_reason.is_some();
+        summary.apply_recorded_defer_reason(defer_reason);
         summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
         summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
         summary.timeout_count = Some(u64::from(summary.budget_exhausted));
@@ -8660,13 +8690,6 @@ async fn run_data_retention_maintenance_with_prompt_cache(
                         .committed_rows_per_second
                         .map(|service| service / arrival)
                 });
-        }
-        if summary.wait_reason.is_none() && (summary.deferred || summary.budget_exhausted) {
-            summary.wait_reason = if summary.budget_exhausted {
-                Some("retention_work_budget".to_string())
-            } else {
-                defer_reason
-            };
         }
         summary
     })

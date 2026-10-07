@@ -79,6 +79,8 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 后台准入被优先恢复 reservation 拒绝时，复用 P2 writer 的许可释放通知抑制，避免未执行 SQLite 工作的释放使任务自身的旧 generation 等待立即重试；真正的 reservation 释放仍递增 generation 并恢复本轮转换。确定性回归将协调器通知连接到注入的同一 gate，意外自唤醒立即取消并失败，正常路径验证没有通知、资源已释放及外部释放后恢复，不使用 CPU 或耗时阈值。
 
+最终运行摘要将通用 `retention_write_admission` 占位原因替换为该轮已记录的具体延期原因，保留已有具体停止原因和原预算优先规则。真实目录 fence 冲突回归捕获该轮记录并调用生产最终归并方法，确认持久运行结果使用 `archive_directory_lock_busy`；纯轻量回归验证预算、覆盖等待和缺失记录的兼容性。
+
 - 发布构建试验使用 1,270,000 条过期 invocation、1.2 倍 attempt、500,000 行倾斜 key、十个月份、约 3 KB payload、共享 raw 链接和稀疏孤儿，执行真实文件发布及主库转换。
 - 普通新增负载采用 30,000 invocation/day 与 36,000 attempt/day；基线与候选使用相同 fixture 和请求序列，各重复三次。请求按固定时钟独立发出，包含排队延迟并等待已发请求完成，不因慢写入跳过计划到达。窗口模式的负载发生器独立截止，避免旧基线的准入等待无限延长发压。cohort 计数使用现有覆盖索引，避免验收脚本扫描大行正文。要求真实固定 cohort 归零，不能仅按短时速率外推 24 小时。
 - `retention_task_local_service_rate_release_benchmark` 是独立的 GitHub Actions 发布构建长时试验，保持 ignored，不进入通用 PR 必过 profiles。单次命令最长 25 小时，其中容量计时上限 24 小时，额外时间仅用于建数和最终文件证明。每次保存逐轮 JSON、最终 cohort、实际文件摘要和在线延迟；其容量结论不由普通功能测试替代。

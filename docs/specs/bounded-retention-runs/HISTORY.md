@@ -61,6 +61,8 @@ ADR 0032 将归档文件批次与主库写批次区分，规定月份只决定�
 
 - 新基线审查发现后台 priority reservation 拒绝后，未开展 SQLite 工作的写许可释放会通知同一 gate，使任务等待自身旧 generation 时反复准入。归为第二批同 scope 修复，复用既有通知抑制并增加同 gate 的确定性 reservation 解除回归；不提升 retention 的调度优先级，stateful 仍只交 Actions 执行。
 
+- 最终合同审查发现目录 fence 的具体延期原因被阶段通用写准入占位遮蔽，进入运行结果及追赶状态时丢失真实原因。第三批同 scope 修复只在最终归并时替换该占位，保留预算与既有具体原因优先级；真实文件冲突和纯轻量摘要回归验证结果。
+
 - [长期需求](SPEC.md)
 - [具体方案](IMPLEMENTATION.md)
 

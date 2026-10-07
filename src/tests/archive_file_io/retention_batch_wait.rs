@@ -194,8 +194,9 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
                 ),
             ),
         );
+        let work = crate::maintenance::retention_test_with_recorded_defer_reason(work);
         let work = async {
-            let result = work.await;
+            let (result, defer_reason) = work.await;
             stopped.notify_one();
             let error = match result {
                 Err(error) => error,
@@ -204,6 +205,17 @@ async fn retention_selected_batch_defers_archive_fence_collision_without_deletin
             anyhow::ensure!(
                 crate::maintenance::is_retention_write_deferred(&error),
                 "fence collision became fatal: {error:#}"
+            );
+            let mut summary = crate::maintenance::RetentionRunSummary {
+                deferred: true,
+                wait_reason: Some("retention_write_admission".to_string()),
+                ..crate::maintenance::RetentionRunSummary::default()
+            };
+            summary.apply_recorded_defer_reason(defer_reason);
+            anyhow::ensure!(
+                summary.wait_reason.as_deref() == Some("archive_directory_lock_busy"),
+                "final run result lost the actual fence cause: {:?}",
+                summary.wait_reason
             );
             let remaining: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {dataset}"))
                 .fetch_one(&pool)
