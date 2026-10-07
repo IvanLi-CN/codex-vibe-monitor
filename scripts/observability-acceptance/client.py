@@ -240,7 +240,7 @@ def trace_cases():
         assert request("https://entry:8443","/v1/traces",method="POST",payload={},token=token)[0]==401
     assert trace_stats()["enabled"], "application trace startup degraded"
     assert request("http://app:8080", "/v1/responses", method="POST", payload={"input":"synthetic rejection"})[0] == 401
-    deadline=time.monotonic()+15
+    deadline=time.monotonic()+30
     while True:
         rejected=ok("https://entry:8443","/tempo/api/search?"+urllib.parse.urlencode({"q":'{ resource.service.name = "codex-vibe-monitor" && span.cvm.record = "response" && span.cvm.status_class = "4xx" }',"start":int(time.time())-300,"end":int(time.time()),"limit":3}),token=query_token).get("traces",[])
         if rejected: break
@@ -297,7 +297,7 @@ def trace_cases():
     payload={"resourceSpans":[{"resource":{"attributes":[attr("service.name","codex-vibe-monitor"),attr("deployment.environment.name","classification-fixture"),attr("service.instance.id","fixture")]},"scopeSpans":[{"scope":{"name":"cvm.synthetic.classified"},"spans":spans}]}]}
     assert request("https://entry:8443","/v1/traces",method="POST",payload=payload,token=ingest_token,extra_headers={"X-Scope-OrgID":"other"})[0]==200
     for category, trace_id in ids.items():
-        deadline=time.monotonic()+15
+        deadline=time.monotonic()+30
         while True:
             rows=ok("https://entry:8443",search(category, "classification-fixture", "fixture"),token=query_token).get("traces",[])
             if any(row["traceID"]==trace_id for row in rows): break

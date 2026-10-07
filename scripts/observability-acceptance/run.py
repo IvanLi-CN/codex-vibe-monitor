@@ -64,6 +64,7 @@ class Run:
             self.results[name]={"status":"passed","result":operation()}
         except Exception as error:
             self.results[name]={"status":"unavailable" if isinstance(error,(OSError,subprocess.TimeoutExpired)) else "failed","error":str(error)}
+            print(name+" error: "+str(error), flush=True)
         (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
         # A/B recreates the application; preserve each scenario's diagnostics first.
         with (self.root/(name+"-compose.log")).open("w") as log:
