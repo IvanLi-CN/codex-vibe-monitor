@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Split retention maintenance into four task owners and remove environmental enablement",
+    "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "major",
+      "reasoning": "Removing RETENTION_ENABLED and XY_RETENTION_ENABLED without reading or importing their old values breaks the published runtime configuration contract. The one-shot CLI changes from combined maintenance to archive-only; automatic-trigger pause permits explicit manual execution and does not truncate an admitted bounded run. New cleanup tasks default to automatically triggered. Persistent-state compatibility is assessed separately.",
+      "assessed_at": "2026-10-06T14:57:37Z",
+      "evidence": [
+        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "README.md",
+        "src/config.rs",
+        "src/maintenance_store.rs",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "major",
+      "scope_drift": {
+        "detected": true,
+        "description": "The owner expanded the task split to remove the global retention environment switch, reject compatibility import, and enable newly introduced cleanup controls by default."
+      },
+      "reasoning": "The owner confirmed the complete requirement Spec and accepted the associated ADR. Configuration removal, CLI scope, and trigger-control semantics are planned public-contract changes; implementation and released-state validation have not run.",
+      "reassessed_at": "2026-10-06T14:57:37Z",
+      "evidence": [
+        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+      ]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "No implementation or released-version compatibility validation has been performed.",
+      "verified_at": null,
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "breaking",
+      "planned_impact": "major",
+      "supported_consumer_range": "The new runtime contract uses managed task controls only; consumers relying on either removed environment variable must adopt those controls.",
+      "evidence": [
+        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "classification_status": "provisional",
+      "reasoning": "The planned state change introduces task controls and initialization facts while reusing business correctness state. Earlier-version readability and the supported source range have not been verified.",
+      "state_description": "Managed task controls, schedules, initialization marker, per-task run/timeline observations, conversation orphan cursor, raw reconciliation/quarantine/release-pending state, and hourly identity state.",
+      "source_program_compatibility_range": "Not yet declared from release artifacts. Source analysis uses repository baseline c0cc443baeb703e72ded361f3d4439633a31f7ce; this is not released-version compatibility evidence.",
+      "evidence": [
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "retention-maintenance-task-ownership"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}
