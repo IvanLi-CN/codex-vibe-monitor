@@ -234,6 +234,7 @@ describe("StickyKeyConversationTable", () => {
     expect(html.includes("Upstream Accounts") || html.includes("上游账号")).toBe(true);
     expect(html).toContain("Codex Pro - Tokyo");
     expect(html).toContain('data-chart-kind="keyed-conversation-sparkline"');
+    expect(html).not.toContain('data-testid="prompt-cache-conversation-statistics-pending"');
   });
 
   it("renders implicit filter notes for capped activity windows", () => {

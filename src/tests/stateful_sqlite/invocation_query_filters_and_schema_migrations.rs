@@ -1375,7 +1375,7 @@ async fn prompt_cache_conversation_read_snapshot_keeps_completeness_with_aggrega
 }
 
 #[tokio::test]
-async fn prompt_cache_subscription_baseline_fails_closed_while_refresh_queue_is_pending() {
+async fn prompt_cache_subscription_baseline_serves_current_while_refresh_queue_is_pending() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -1384,11 +1384,12 @@ async fn prompt_cache_subscription_baseline_fails_closed_while_refresh_queue_is_
         r#"
         INSERT INTO codex_invocations (
             invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-        ) VALUES ('pending-subscription-read', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        ) VALUES ('pending-subscription-read', ?3, ?1, 'success', 12, 0.25, ?2, '{}')
         "#,
     )
     .bind(SOURCE_PROXY)
     .bind(json!({"promptCacheKey": "pending-subscription-key"}).to_string())
+    .bind(db_occurred_at_lower_bound(Utc::now()))
     .execute(&state.pool)
     .await
     .expect("insert pending subscription invocation");
@@ -1404,17 +1405,31 @@ async fn prompt_cache_subscription_baseline_fails_closed_while_refresh_queue_is_
         .subscription_hub
         .prepare_connection(state.clone(), vec![descriptor], Vec::new())
         .await
-        .expect("prepare subscription unavailable envelope");
+        .expect("prepare current subscription snapshot with pending statistics");
     assert_eq!(prepared.outcomes.len(), 1);
     assert_eq!(
         prepared.outcomes[0].disposition,
-        TopicInitDisposition::Unavailable
+        TopicInitDisposition::SnapshotNoResume
     );
     assert_eq!(prepared.initial.len(), 1);
+    let payload = prepared.initial[0].frame.payload_value();
+    assert_eq!(
+        payload["conversations"]
+            .as_array()
+            .expect("current conversations")
+            .len(),
+        1
+    );
+    assert_eq!(
+        payload["conversations"][0]["promptCacheKey"],
+        "pending-subscription-key"
+    );
+    assert!(payload["conversations"][0]["successCount"].is_null());
 }
 
 #[tokio::test]
-async fn prompt_cache_conversation_reads_fail_closed_while_refresh_queue_is_pending() {
+async fn prompt_cache_conversation_reads_serve_current_but_gate_history_while_refresh_queue_is_pending()
+ {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
@@ -1423,24 +1438,55 @@ async fn prompt_cache_conversation_reads_fail_closed_while_refresh_queue_is_pend
         r#"
         INSERT INTO codex_invocations (
             invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-        ) VALUES ('pending-read-1', '2026-09-01 00:00:00', ?1, 'success', 12, 0.25, ?2, '{}')
+        ) VALUES ('pending-read-1', ?3, ?1, 'success', 12, 0.25, ?2, '{}')
         "#,
     )
     .bind(SOURCE_PROXY)
     .bind(json!({"promptCacheKey": "pending-read-key"}).to_string())
+    .bind(db_occurred_at_lower_bound(Utc::now()))
     .execute(&state.pool)
     .await
     .expect("insert pending prompt-cache invocation");
 
+    for (limit, activity_hours, activity_minutes, page_size) in [
+        (Some(20), None, None, None),
+        (None, Some(3), None, None),
+        (None, None, Some(5), Some(20)),
+    ] {
+        let Json(response) = crate::fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery {
+                limit,
+                activity_hours,
+                activity_minutes,
+                page_size,
+                cursor: None,
+                snapshot_at: None,
+                detail: None,
+                recent_invocation_limit: None,
+                blocked_binding_upstream_account_id: None,
+                blocked_binding_constraint_source: None,
+            }),
+        )
+        .await
+        .expect("current read should remain available before rollups and statistics settle");
+        assert_eq!(response.conversations.len(), 1);
+        let conversation = &response.conversations[0];
+        assert_eq!(conversation.prompt_cache_key, "pending-read-key");
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.total_tokens, 12);
+        assert_eq!(conversation.success_count, None);
+    }
+
     let error = crate::fetch_prompt_cache_conversations(
-        State(state),
+        State(state.clone()),
         Query(PromptCacheConversationsQuery {
-            limit: Some(20),
+            limit: None,
             activity_hours: None,
-            activity_minutes: None,
-            page_size: None,
+            activity_minutes: Some(5),
+            page_size: Some(20),
             cursor: None,
-            snapshot_at: None,
+            snapshot_at: Some(format_utc_iso_precise(Utc::now())),
             detail: None,
             recent_invocation_limit: None,
             blocked_binding_upstream_account_id: None,
@@ -1448,8 +1494,18 @@ async fn prompt_cache_conversation_reads_fail_closed_while_refresh_queue_is_pend
         }),
     )
     .await
-    .expect_err("aggregate read should fail closed while migration coverage is incomplete");
+    .expect_err("explicit historical snapshot should fail closed while coverage is incomplete");
     assert!(matches!(error, ApiError::Unavailable(_)));
+
+    state.pool.close().await;
+    assert!(
+        build_prompt_cache_conversations_response(
+            state.as_ref(),
+            PromptCacheConversationSelection::Count(20)
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]

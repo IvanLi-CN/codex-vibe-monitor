@@ -74,7 +74,7 @@ Current candidate quality and performance evidence must be refreshed after mainl
 
 - `ensure_schema()` creates the conversation master, indexes, mutation triggers, durable refresh queue, and `prompt_cache_conversation_migration_progress`; it does not scan historical invocations, so HTTP readiness is not held by historical data volume.
 - The `prompt_cache_conversations_materialization_v1` startup task runs in ordered `identity_backfill`, `identity_reconciliation`, `stats_rebuild`, and `queue_drain` phases. Identity backfill snapshots the maximum invocation row ID, paginates prompt-cache keys, and finishes with an uncursored missing-identity reconciliation. Identity phases commit identities, `cursor_key`, and the identity-key counter together, without scanning aggregate statistics. Statistics phases own the bounded source-page traversal; reruns are idempotent. Completed logical pages and empty phase transitions continue only within the original scan and elapsed-time budgets.
-- The `prompt_cache_conversations_v1` identity marker, `prompt_cache_conversations_stats_v2` freshness marker, complete migration phase, and empty durable refresh queue are required together. Aggregate prompt-cache reads and subscription baselines return the existing `ApiError::Unavailable` contract until all conditions hold; partial or zero-valued complete results are not published.
+- The `prompt_cache_conversations_v1` identity marker, `prompt_cache_conversations_stats_v2` freshness marker, complete migration phase, and empty durable refresh queue are required together for explicit historical snapshots. Current HTTP reads and dashboard subscription baselines serve the durable working set plus runtime overlay while materialization is pending; delayed aggregate fields remain optional or stale, without zero-valued placeholders.
 - The trigger-dependency upgrade adds only a completion-marker row and replaces existing trigger definitions in one `BEGIN IMMEDIATE` transaction. It does not add tables or columns, transform source rows, or change HTTP fields. Older readers may ignore the additive marker; rollback does not delete it or restore broad timing-only projection work.
 - Invocation triggers continue to enqueue affected keys and remove the freshness marker. New requests remain writable during migration, and failures, SQLite pressure, or process restarts leave durable checkpoints for later retry. Each identity batch or statistics page has a committed checkpoint. A partial statistics page preserves staging progress; only the final generation-consistent page publishes the aggregate and clears its queue generation. The outer statistics cursor advances after the required keys are complete; a priority waiter defers the next boundary after the current step commits.
 - The maintenance `managed_tasks.enabled` row is the prompt-cache task's only enablement authority. Its scheduler checkpoint is committed in the same maintenance-database transaction, then the in-memory generation is published before the control PATCH returns. A one-time maintenance metadata marker records whether this managed row existed before task seeding, so a pre-existing maintenance choice wins and a legacy business enable bit seeds only a genuinely new control. The business bit is not queried by the prompt-cache run path or synchronized. A short in-memory permit is acquired before each identity batch, statistics page, cursor update, and phase transition; it is released before/after the bounded business SQL step and never waits on the maintenance database.
@@ -94,6 +94,7 @@ Current candidate quality and performance evidence must be refreshed after mainl
   merge consumers preserve absent delayed fields, display the identity/token/cost breakdown, and
   use `firstInvocationAt` for count-mode history ordering while retaining live activity ordering
   for working conversations.
+- Current HTTP and dashboard SSE reads bypass only the global materialization-complete gate and reuse the durable working-set/runtime overlay merge, so runtime-only and in-flight rows remain visible while delayed statistics are absent or stale. Explicit historical `snapshotAt` reads keep the gate and snapshot boundary filtering.
 
 ## Delivery and Rollout Gates
 
@@ -138,6 +139,8 @@ fields are `public_api=patch`, while persistent-state impact is not applicable b
 existing master rows without schema or write-path changes. Final release identity follows live
 repository policy and candidate evidence.
 
+Current-read availability has a separate `assets/live-read-version-impact-record.json`: the verified public API impact is Patch, and persistent-state impact is not applicable because the fix reuses existing working-set and runtime reads without changing durable state.
+
 Place focused regressions in the matching backend resource bucket. Run named regressions and
 formatting checks appropriate to each package; use the documented resource-profile runner and
 shared testbox for heavy backend validation and non-test Linux replay. Reuse the existing
@@ -157,9 +160,11 @@ aggregate statistics. Production deployment and acceptance remain outside this l
 - `docs/adr/0029-conversation-invocation-range-reservations.md`
 - `docs/adr/0030-durable-hourly-invocation-prefixes.md`
 - `docs/adr/0031-prompt-cache-event-wake-priority.md`
+- `docs/adr/0033-prompt-cache-live-read-materialization-overlay.md`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-migration-record.json`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json`
 - `docs/specs/proxy-invocation-identity/assets/pr2-version-impact-record.json`
+- `docs/specs/proxy-invocation-identity/assets/live-read-version-impact-record.json`
 - `docs/specs/proxy-invocation-identity/assets/version-impact-record.json`
 
 ## References

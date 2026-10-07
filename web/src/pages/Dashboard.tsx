@@ -55,6 +55,7 @@ export default function DashboardPage() {
   } = usePromptCacheConversationRoute();
   const {
     cards,
+    hasDelayedStatistics,
     totalMatched,
     hasMore,
     isLoading: workingCardsLoading,
@@ -195,6 +196,7 @@ export default function DashboardPage() {
       <DashboardWorkingConversationsSection
         activeRange={activeRange}
         cards={cards}
+        hasDelayedStatistics={hasDelayedStatistics}
         totalMatched={totalMatched}
         hasMore={hasMore}
         recentPreviewLimit={recentPreviewLimit}

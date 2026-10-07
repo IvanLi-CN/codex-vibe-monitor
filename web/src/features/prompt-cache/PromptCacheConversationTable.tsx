@@ -80,7 +80,10 @@ import { chartBaseTokens, chartStatusTokens, metricAccent } from "../../lib/char
 import { resolvePromptCacheInvocationOutcome } from "../../lib/conversationRequestPoint";
 import { invocationStableKey } from "../../lib/invocation";
 import { mergeInvocationRecordCollections } from "../../lib/invocationLiveMerge";
-import { buildInvocationFromPromptCachePreview } from "../../lib/promptCacheLive";
+import {
+  buildInvocationFromPromptCachePreview,
+  hasPromptCacheConversationDelayedStatistics,
+} from "../../lib/promptCacheLive";
 import type { ThemeMode } from "../../theme";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import {
@@ -102,6 +105,7 @@ interface PromptCacheConversationTableProps {
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   keyColumnLabel?: string;
   emptyLabel?: string;
+  showDelayedStatisticsNotice?: boolean;
   historyQueryForConversationKey?: (conversationKey: string) => Partial<InvocationRecordsQuery>;
 }
 
@@ -4928,6 +4932,7 @@ export function PromptCacheConversationTable({
   onOpenUpstreamAccount,
   keyColumnLabel,
   emptyLabel,
+  showDelayedStatisticsNotice = true,
   historyQueryForConversationKey,
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
@@ -5053,6 +5058,7 @@ export function PromptCacheConversationTable({
   const chartInteractionHint = t("live.chart.tooltip.instructions");
   const resolvedKeyColumnLabel = keyColumnLabel ?? t("live.conversations.table.promptCacheKey");
   const resolvedEmptyLabel = emptyLabel ?? t("live.conversations.empty");
+  const hasDelayedStatistics = hasPromptCacheConversationDelayedStatistics(stats);
   const chartAriaLabel = t("live.conversations.chartAria", {
     hours: chartHours,
   });
@@ -5184,6 +5190,11 @@ export function PromptCacheConversationTable({
 
   return (
     <div className="space-y-2">
+      {showDelayedStatisticsNotice && hasDelayedStatistics ? (
+        <Alert variant="info" data-testid="prompt-cache-conversation-statistics-pending">
+          <span>{t("live.conversations.statisticsPending")}</span>
+        </Alert>
+      ) : null}
       <div className="overflow-hidden rounded-xl border border-base-300/75 bg-base-100/55">
         <div className="space-y-3 p-3 sm:hidden">
           {orderedConversations.map((conversation) => {

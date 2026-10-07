@@ -37,6 +37,7 @@
   invocation fields to the prompt-cache conversation response. The Live table and dashboard
   consumers preserve the existing selection semantics while using the durable first invocation
   timestamp for count-mode history ordering; production acceptance remains a separate gate.
+- Current HTTP and dashboard SSE working-conversation reads now reuse the durable working-set and runtime overlay while background materialization is incomplete. Delayed aggregate fields remain optional or stale and the UI explains their freshness without hiding the list; explicit historical snapshots retain the materialization gate and boundary filtering.
 
 ## Related Changes
 

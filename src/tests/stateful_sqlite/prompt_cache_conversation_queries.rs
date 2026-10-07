@@ -3496,8 +3496,17 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
             .upsert(api_invocation_from_runtime_record(&running_record));
     }
 
-    let Json(response) = fetch_prompt_cache_conversations(
-        State(state),
+    sqlx::query(
+        "INSERT OR REPLACE INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) \
+         VALUES (?1)",
+    )
+    .bind("memory-overlay-running-1")
+    .execute(&state.pool)
+    .await
+    .expect("queue prompt-cache statistics refresh");
+
+    let Json(response) = crate::fetch_prompt_cache_conversations(
+        State(state.clone()),
         Query(PromptCacheConversationsQuery {
             limit: None,
             activity_hours: None,
@@ -3523,6 +3532,7 @@ async fn prompt_cache_conversations_activity_minutes_paginated_overlays_memory_r
         .collect::<HashSet<_>>();
 
     assert_eq!(response.total_matched, Some(5));
+    assert_eq!(response.conversations.len(), prompt_cache_keys.len());
     assert!(prompt_cache_keys.contains("memory-overlay-terminal-1"));
     assert!(prompt_cache_keys.contains("memory-overlay-terminal-2"));
     for index in 0..3 {

@@ -42,8 +42,13 @@ import {
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-      <div className="app-shell-boundary">{children}</div>
+    <div
+      data-visual-evidence-surface="dashboard-working-conversations"
+      className="min-h-screen bg-base-200 p-7 text-base-content"
+    >
+      <div data-visual-evidence-target="dashboard-working-conversations-target">
+        <div className="app-shell-boundary">{children}</div>
+      </div>
     </div>
   );
 }
@@ -3656,6 +3661,16 @@ export const CurrentAndPrevious: Story = {
     await expect(usageHit).toHaveAttribute("data-summary-tone", "warning");
     await expect(usageCost).toHaveAttribute("data-summary-tone", "warning");
     await expect(currentSlot).not.toHaveTextContent(/RQ |UP |ED |TT /);
+  },
+};
+
+export const DelayedStatistics: Story = {
+  args: {
+    activeRange: "today",
+    cards: buildCards(currentAndPreviousResponse),
+    hasDelayedStatistics: true,
+    isLoading: false,
+    error: null,
   },
 };
 

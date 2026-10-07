@@ -7,14 +7,6 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     Query(params): Query<PromptCacheConversationsQuery>,
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     let request = resolve_prompt_cache_conversations_request(params)?;
-    if !prompt_cache_conversation_materialization_is_complete(&state.pool)
-        .await
-        .map_err(ApiError::from)?
-    {
-        return Err(ApiError::unavailable(anyhow!(
-            "prompt-cache conversation history is still materializing"
-        )));
-    }
     let response = if request.uses_legacy_cache() {
         let response =
             fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
