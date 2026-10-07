@@ -262,6 +262,7 @@
 - Method: actual supported/unsupported capability and collector fixtures for successful counterless attempts, observed zero, partial commit followed by failure, no eligible work, cancelled observation, malformed/legacy samples and every relevant trigger path; task-specific work-item and unit checks.
 - covers: `REQ-TASK-OPS-019`, `REQ-TASK-OPS-020`
 - Pass condition: unsupported, unobserved, no-run, legacy-unknown, gap and error states are distinct; known outcomes remain visible; supported observations survive persistence and rendering; reliable per-task collectors reuse real work boundaries, preserve committed work once, record zero only with proof, and do not introduce chart-only scans or fabricate mixed-unit counts.
+
 ### VER-TASK-OPS-016
 
 - Method: Rust HTTP/SSE transport tests, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
@@ -290,6 +291,28 @@
   - `./assets/task-operations-runtime-mobile-393x852.png`
   - `./assets/task-operations-sse-connecting-desktop.png`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
+
+### Managed Task Timeline — 13,120 Interval Regression
+
+- source_type: `ui_demo`
+- target_program: `vite_web_demo`
+- capture_scope: `browser-viewport`
+- viewport_strategy: `ui-demo-source + devtools-emulate`
+- requested_viewport: `1440x900` and `393x852`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- sensitive_exclusion: `N/A`
+- comparison_base: `130c357c043a3449512a25cd82643fc5a8ca02df`
+- comparison: `current-only`; the locked baseline has no images at the new exact destination paths
+- rendered_candidate: `123e11086c804050bb9dc4241d8157e6a54283e0`
+- owner_confirmation: confirmed in chat on 2026-10-07 ("确认。")
+- submission_gate: `approved`
+- state: demo timeline rendered 13,120 intervals across 27 pages with no unavailable warning; desktop dark, mobile light, and an expanded 94-run dense group with inspectable run IDs
+- validation: `web/src/demo/event-handlers.test.ts` asserts 13,120 unique intervals across 27 fixed-watermark pages
+- images:
+  - ![Managed task timeline, desktop dark, 13,120 intervals](./assets/task-operations-timeline-13120-desktop-dark.png)
+  - ![Managed task timeline, mobile light, 393x852 viewport](./assets/task-operations-timeline-13120-mobile-393x852.png)
+  - ![Managed task timeline, expanded dense group with run IDs](./assets/task-operations-timeline-dense-group-details-desktop.png)
 
 ### Task Workload Trend Charts — Desktop
 
