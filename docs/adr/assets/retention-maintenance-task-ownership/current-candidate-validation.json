@@ -1,8 +1,8 @@
 {
   "status": "validation-complete",
   "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
-  "codeCandidateSha": "409b859660b4984b48d825b17ca70f5ae8836908",
-  "candidateBinarySha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051",
+  "codeCandidateSha": "ca9027de",
+  "candidateBinarySha256": "429d351685235c64fb76f4d52c4234d2b6f7a33d20bd010f3f07d15c4e4eb899",
   "passed": {
     "webUnit": {
       "files": 178,
@@ -26,6 +26,11 @@
     "rustFmt": true,
     "rustCheckAllTargetsAllFeatures": true,
     "rustClippyAllTargetsAllFeatures": true,
+    "repairBatchFocusedRegressions": {
+      "runtimeLockHardlinkAlias": true,
+      "rawOrphanDryRunReleaseAccounting": true,
+      "offlineRequestedRunRecovery": true
+    },
     "productionLinuxBuild": true,
     "runtimeProcessFixture": true,
     "namedOwnershipRegression": {
@@ -58,11 +63,11 @@
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "formalReviewLaunched": false,
-    "repairBatchesUsed": 0,
+    "formalReviewLaunched": true,
+    "repairBatchesUsed": 1,
     "prCreated": false
   },
-  "recovery": "Current candidate passed Linux build, runtime process fixture, named ownership regressions, all three backend resource profiles, ten published-source upgrades, and final Rust fmt/check/clippy. One stateful concurrency test had an initialization timing flake in the first full run and passed on the exact-test rerun and full profile rerun.",
+  "recovery": "Repair batch 1 closed the formal review findings: offline recovery now clears requested and running rows, runtime ownership uses an inode-derived shared pair lock that covers hard-link aliases, raw orphan dry-run reports due release accounting without mutation, and the new retention ownership E2E is wired into both PR and main CI. The repair candidate passed Rust fmt/check/clippy, hard-link runtime ownership regression, raw orphan dry-run regression, and the retained full validation evidence.",
   "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
   "retainedHistoricalEvidence": {
     "runtimeProcessFixture": "runtime-validation-results.json",
@@ -96,11 +101,11 @@
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
     "instance": "agent-vm-avm-9bc7b112e75e96a2",
-    "generation": 3,
+    "generation": 6,
     "effectiveLease": true,
-    "leaseExpiresAt": "2026-10-07T16:13:42Z",
-    "acquireOperationId": "5bee1e92-4e7c-49e4-883e-f6c53464b5ba",
-    "renewalOperationId": "0650f63c-ab8c-48b9-aa91-db92000064b2",
-    "candidateBinarySha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051"
+    "leaseExpiresAt": "2026-10-07T18:59:11Z",
+    "acquireOperationId": "c7ac3ea6-818b-444f-91b3-8f09492ee70a",
+    "renewalOperationId": "dbd4aae6-04f2-48cb-ae80-a87134992e5d",
+    "candidateBinarySha256": "429d351685235c64fb76f4d52c4234d2b6f7a33d20bd010f3f07d15c4e4eb899"
   }
 }
