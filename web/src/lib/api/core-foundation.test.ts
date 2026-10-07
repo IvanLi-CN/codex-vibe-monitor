@@ -62,6 +62,28 @@ describe("fetchManagedTaskTimeline response contract", () => {
     ["invalid cursor", { nextCursor: 42 }],
     ["invalid watermark", { watermark: "7" }],
     ["invalid segment", { segments: [{ ...validPage.segments[0], revision: undefined }] }],
+    [
+      "invalid segment finish timestamp",
+      { segments: [{ ...validPage.segments[0], finishedAt: "bad" }] },
+    ],
+    [
+      "invalid segment retry timestamp",
+      { segments: [{ ...validPage.segments[0], retryAt: "bad" }] },
+    ],
+    [
+      "invalid coverage end timestamp",
+      {
+        coverage: [
+          {
+            sessionId: "session-1",
+            startedAt: "2026-10-06T23:00:00Z",
+            lastSeenAt: "2026-10-06T23:01:00Z",
+            endedAt: "bad",
+            droppedEvents: 0,
+          },
+        ],
+      },
+    ],
   ])("rejects a 200 response with %s instead of accepting a partial page", async (_label, changes) => {
     vi.stubGlobal(
       "fetch",

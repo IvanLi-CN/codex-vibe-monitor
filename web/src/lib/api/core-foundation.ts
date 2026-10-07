@@ -6280,6 +6280,8 @@ function isTaskTimelineTimestamp(value: unknown): value is string {
 function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null {
   const payload = asRecord(raw);
   const revision = normalizeFiniteNumber(payload?.revision);
+  const finishedAt = payload?.finishedAt;
+  const retryAt = payload?.retryAt;
   if (
     !payload ||
     typeof payload.segmentId !== "string" ||
@@ -6295,6 +6297,8 @@ function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null 
     revision == null ||
     !Number.isSafeInteger(revision) ||
     revision < 0 ||
+    (finishedAt != null && !isTaskTimelineTimestamp(finishedAt)) ||
+    (retryAt != null && !isTaskTimelineTimestamp(retryAt)) ||
     (payload.kind !== "execution" && payload.kind !== "deferral" && payload.kind !== "coverage_gap")
   ) {
     return null;
@@ -6306,13 +6310,13 @@ function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null 
     title: payload.title,
     startedAt: payload.startedAt,
     lastObservedAt: payload.lastObservedAt,
-    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    finishedAt: typeof finishedAt === "string" ? finishedAt : null,
     durationMs: normalizeFiniteNumber(payload.durationMs) ?? null,
     status: payload.status,
     triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : null,
     executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
     reason: typeof payload.reason === "string" ? payload.reason : null,
-    retryAt: typeof payload.retryAt === "string" ? payload.retryAt : null,
+    retryAt: typeof retryAt === "string" ? retryAt : null,
     activeChildTaskKey:
       typeof payload.activeChildTaskKey === "string" ? payload.activeChildTaskKey : null,
     activeChildTitle:
@@ -6326,12 +6330,14 @@ function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null 
 function normalizeTaskTimelineCoverage(raw: unknown): TaskTimelineCoverage | null {
   const payload = asRecord(raw);
   const droppedEvents = normalizeFiniteNumber(payload?.droppedEvents);
+  const endedAt = payload?.endedAt;
   if (
     !payload ||
     typeof payload.sessionId !== "string" ||
     payload.sessionId.length === 0 ||
     !isTaskTimelineTimestamp(payload.startedAt) ||
     !isTaskTimelineTimestamp(payload.lastSeenAt) ||
+    (endedAt != null && !isTaskTimelineTimestamp(endedAt)) ||
     droppedEvents == null ||
     !Number.isSafeInteger(droppedEvents) ||
     droppedEvents < 0
@@ -6342,7 +6348,7 @@ function normalizeTaskTimelineCoverage(raw: unknown): TaskTimelineCoverage | nul
     sessionId: payload.sessionId,
     startedAt: payload.startedAt,
     lastSeenAt: payload.lastSeenAt,
-    endedAt: typeof payload.endedAt === "string" ? payload.endedAt : null,
+    endedAt: typeof endedAt === "string" ? endedAt : null,
     droppedEvents,
   };
 }
