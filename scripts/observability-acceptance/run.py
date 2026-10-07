@@ -241,6 +241,7 @@ class Run:
                 self.compose("stop","app")
         report=comparison_report(samples)
         (self.root/"ab-summary.json").write_text(json.dumps(report,indent=2)+"\n")
+        print("ab-summary: "+json.dumps(report,sort_keys=True,separators=(",",":")),flush=True)
         assert all(metric[mode]["stable"] for metric in report["metrics"].values() for mode in ["off","metrics","full"]),"unstable measurement windows"
         assert all(metric["withinBudget"] for metric in report["metrics"].values()),"5% observability budget exceeded"
         return report
