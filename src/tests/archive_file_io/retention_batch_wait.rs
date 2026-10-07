@@ -7,7 +7,8 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
         let (pool, mut config, temp_dir) =
             retention_test_pool_and_config("batch-slot-resume").await;
         config.retention_batch_rows = 1_000;
-        let occurred_at = shanghai_local_days_ago(40, 12, 0, 0);
+        let occurred_at =
+            shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
         let dataset = if attempts {
             "pool_upstream_request_attempts"
         } else {
@@ -59,6 +60,14 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
                 ),
             ),
         );
+        let work = async {
+            let committed = work.await?;
+            anyhow::ensure!(
+                committed == 1_000,
+                "selected batch returned before its commit probe"
+            );
+            Ok::<_, anyhow::Error>(committed)
+        };
         let competitor = async {
             probe.committed.notified().await;
             let remaining: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {dataset}"))
@@ -96,10 +105,11 @@ async fn retention_selected_batch_resumes_after_background_competition_without_r
             drop(foreground);
             drop(owner);
             drop(p1);
-            (digest, inode)
+            Ok::<_, anyhow::Error>((digest, inode))
         };
-        let (result, identity) = tokio::join!(work, competitor);
-        assert_eq!(result.expect("same task resumes its selected batch"), 1_000);
+        let (committed, identity) =
+            tokio::try_join!(work, competitor).expect("same task resumes its selected batch");
+        assert_eq!(committed, 1_000);
         assert_eq!(sha256_hex_file(&target).expect("final digest"), identity.0);
         #[cfg(unix)]
         {
