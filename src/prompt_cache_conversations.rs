@@ -1894,13 +1894,39 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
     context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
 ) -> Result<PromptCacheConversationMaterializationRun> {
-    let prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT prompt_cache_key FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
-         ORDER BY prompt_cache_key LIMIT ?1"
-    ))
-    .bind(context.page_limit as i64)
-    .fetch_all(context.pool)
-    .await?;
+    // Two indexed seeks form a circular queue. This cursor records admission, not
+    // completion: queued work remains durable even if its source page fails.
+    let (seek, limit_placeholder) = if progress.cursor_key.is_some() {
+        ("WHERE prompt_cache_key > ?1", "?2")
+    } else {
+        ("", "?1")
+    };
+    let keys_sql = format!(
+        "SELECT prompt_cache_key,enqueued_at FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
+         {seek} ORDER BY prompt_cache_key LIMIT {limit_placeholder}"
+    );
+    let mut query = sqlx::query_as(&keys_sql);
+    if let Some(cursor) = progress.cursor_key.as_deref() {
+        query = query.bind(cursor);
+    }
+    let mut prompt_cache_keys: Vec<(String, String)> = query
+        .bind(context.page_limit as i64)
+        .fetch_all(context.pool)
+        .await?;
+    if let Some(cursor) = progress.cursor_key.as_deref()
+        && prompt_cache_keys.len() < context.page_limit
+    {
+        let remaining = context.page_limit - prompt_cache_keys.len();
+        let wrapped: Vec<(String, String)> = sqlx::query_as(&format!(
+            "SELECT prompt_cache_key,enqueued_at FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
+             WHERE prompt_cache_key <= ?1 ORDER BY prompt_cache_key LIMIT ?2"
+        ))
+        .bind(cursor)
+        .bind(remaining as i64)
+        .fetch_all(context.pool)
+        .await?;
+        prompt_cache_keys.extend(wrapped);
+    }
     if prompt_cache_keys.is_empty() {
         if (context.should_yield)() {
             return Ok(PromptCacheConversationMaterializationRun {
@@ -1942,6 +1968,10 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
             mark_prompt_cache_conversation_completed_keys_on_connection(tx.as_mut()).await?;
             mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
             tx.commit().await?;
+            info!(
+                queue_pending = 0,
+                "prompt-cache statistics queue drained and freshness published"
+            );
             return Ok(PromptCacheConversationMaterializationRun {
                 phase: PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE.to_string(),
                 complete: true,
@@ -1966,14 +1996,135 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
         });
     }
 
-    run_prompt_cache_conversation_adaptive_key_batches(
-        context,
-        PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
-        progress.source_max_invocation_id,
-        false,
-        &prompt_cache_keys,
-    )
-    .await
+    let oldest_selected_enqueue_age_ms = prompt_cache_keys
+        .iter()
+        .filter_map(|(_, enqueued_at)| DateTime::parse_from_rfc3339(enqueued_at).ok())
+        .map(|enqueued_at| {
+            (Utc::now() - enqueued_at.with_timezone(&Utc))
+                .num_milliseconds()
+                .max(0)
+        })
+        .max();
+    info!(
+        queue_pending_lower_bound = prompt_cache_keys.len(),
+        backlog_sample_full = prompt_cache_keys.len() == context.page_limit,
+        oldest_selected_enqueue_age_ms,
+        cursor_fingerprint = progress
+            .cursor_key
+            .as_deref()
+            .map(prompt_cache_key_fingerprint),
+        "prompt-cache statistics fair queue selected"
+    );
+    let mut result = PromptCacheConversationMaterializationRun {
+        phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
+        hit_scan_limit: true,
+        ..Default::default()
+    };
+    let mut continuation_reason = None;
+    let mut pending: VecDeque<&String> = prompt_cache_keys.iter().map(|(key, _)| key).collect();
+    let mut visited = HashSet::new();
+    while let Some(prompt_cache_key) = pending.pop_front() {
+        if prompt_cache_conversation_materialization_budget_exhausted(
+            context.started_at,
+            context.max_elapsed,
+        ) {
+            result.deferred = true;
+            result.defer_reason = Some("stats_budget_exhausted");
+            return Ok(result);
+        }
+        if (context.should_yield)() {
+            result.deferred = true;
+            result.defer_reason = Some("coordinator_priority");
+            return Ok(result);
+        }
+        // Commit the next rotation before attempting potentially interrupted SQL.
+        // Failure here starts no page; failure afterwards cannot lose the queue item.
+        if let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
+            context.pool,
+            PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
+            progress.source_max_invocation_id,
+            Some(prompt_cache_key),
+            context.control,
+            context.control_generation,
+        )
+        .await?
+        {
+            result.deferred = true;
+            result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+            result.control_generation_changed =
+                stop == PromptCacheMaterializationControlStop::GenerationChanged;
+            return Ok(result);
+        }
+        let started_at = Instant::now();
+        let page = match refresh_prompt_cache_conversation_stats_bounded_page(
+            context.pool,
+            prompt_cache_key,
+            context.control,
+            context.control_generation,
+            PromptCacheStatsPageOptions {
+                checkpoint_source_max_invocation_id: None,
+                run_deadline: context
+                    .max_elapsed
+                    .map(|budget| context.started_at + budget),
+            },
+        )
+        .await
+        {
+            Ok(page) => page,
+            Err(error) if prompt_cache_statistics_budget_error(&error) => {
+                PromptCacheStatsPageOutcome::BudgetExhausted.into()
+            }
+            Err(error) => return Err(error),
+        };
+        result.scanned += u64::from(page.visited && visited.insert(prompt_cache_key));
+        result.updated +=
+            u64::from(page.committed && page.outcome == PromptCacheStatsPageOutcome::Complete);
+        result.batch_count += u64::from(page.visited);
+        result.last_batch_size = usize::from(page.visited);
+        result.max_batch_size = result.max_batch_size.max(result.last_batch_size);
+        result.batch_elapsed_ms = result
+            .batch_elapsed_ms
+            .saturating_add(started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            rows_read = page.rows_read,
+            committed = page.committed,
+            outcome = ?page.outcome,
+            "prompt-cache statistics queue quantum finished"
+        );
+        match page.outcome {
+            PromptCacheStatsPageOutcome::Complete => {}
+            PromptCacheStatsPageOutcome::Pending => {
+                // Every selected peer gets its quantum before this key continues.
+                pending.push_back(prompt_cache_key);
+            }
+            PromptCacheStatsPageOutcome::GenerationChanged => {
+                continuation_reason = Some("stats_generation_changed");
+            }
+            outcome => {
+                result.deferred = true;
+                result.defer_reason = match outcome {
+                    PromptCacheStatsPageOutcome::BudgetExhausted => Some("stats_budget_exhausted"),
+                    PromptCacheStatsPageOutcome::Disabled => Some("operator_disabled"),
+                    PromptCacheStatsPageOutcome::Unavailable => {
+                        Some("maintenance_database_unavailable")
+                    }
+                    PromptCacheStatsPageOutcome::ControlGenerationChanged => None,
+                    _ => unreachable!(),
+                };
+                result.control_generation_changed =
+                    outcome == PromptCacheStatsPageOutcome::ControlGenerationChanged;
+                return Ok(result);
+            }
+        }
+        if !pending.is_empty() {
+            tokio::time::sleep(PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE).await;
+        }
+    }
+    result.page_complete = true;
+    result.deferred = continuation_reason.is_some();
+    result.defer_reason = continuation_reason;
+    Ok(result)
 }
 
 fn prompt_cache_conversation_never_yields() -> bool {
@@ -3056,6 +3207,12 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         }
     };
     if source_generation_changed {
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            source_generation = expected_generation,
+            restart_cursor_id = 0,
+            "prompt-cache statistics staging restarted after generation change"
+        );
         connection.close_on_drop();
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,
@@ -3176,6 +3333,14 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            previous_generation = expected_generation,
+            source_generation = next_generation,
+            discarded_rows = page.len(),
+            restart_cursor_id = 0,
+            "prompt-cache statistics source changed before page publication"
+        );
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,
             rows_read: page.len(),

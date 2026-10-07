@@ -1,5 +1,9 @@
 # Proxy Invocation Identity History
 
+## Fair Statistics Queue Scheduling
+
+Lexicographic queue selection previously restarted at the same hot key after each source-generation change, starving later keys. Queue drain now interprets its existing phase-local cursor as durable admission order and wraps through pending keys with one source page per quantum. Stable pending keys continue in fair rounds within the remaining run budget; changed-generation keys yield that run without stopping their peers. An admitted key remains queued until its generation-consistent final publication. Admission failures start no page, page failures preserve staging and queue state, and later attempts resume after the admitted key. Earlier 4.1.x readers ignore the queue cursor and accept the unchanged schema/staging representation; re-entry requires no DDL, encoding conversion, or historical backfill. Statistics rebuild retains the continuous completed-prefix decision from ADR 0028. Compatibility and durable-state evidence are isolated in `assets/fair-queue-version-impact-record.json` and `assets/fair-queue-state-migration-record.json`.
+
 > This file records topic-local compatibility and lifecycle context. The durable decision rationale remains in `docs/adr/0020-proxy-invocation-identity.md`.
 
 ## Lifecycle / Compatibility
