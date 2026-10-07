@@ -50,12 +50,49 @@ def pressure():
 PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
 
 
-def measurement_cpu_layout(affinity):
+def measurement_cpu_layout(affinity, selected=None):
     """Pin the app to one runner CPU and leave helpers on runner-default affinity."""
     cpus = sorted({int(cpu) for cpu in affinity})
     if len(cpus) < 2 or any(cpu < 0 for cpu in cpus):
         raise ValueError("performance acceptance requires at least two runner CPUs for isolation")
-    return {"app": str(cpus[0]), "auxiliary": "runner-default"}
+    if selected is None:
+        selected = cpus[0]
+    selected = int(selected)
+    if selected not in cpus:
+        raise ValueError("selected measurement CPU is outside runner affinity")
+    return {"app": str(selected), "auxiliary": "runner-default"}
+
+
+def _cpu_busy_ticks():
+    values = {}
+    for line in Path("/proc/stat").read_text().splitlines():
+        match = re.match(r"^cpu(\d+)\s+([0-9 ]+)$", line)
+        if match:
+            fields = [int(value) for value in match.group(2).split()]
+            if len(fields) >= 5:
+                values[int(match.group(1))] = (sum(fields), fields[3] + fields[4])
+    return values
+
+
+def select_measurement_cpu(affinity):
+    """Choose the least busy allowed CPU using a short pre-run sample."""
+    cpus = sorted({int(cpu) for cpu in affinity})
+    if len(cpus) < 2 or any(cpu < 0 for cpu in cpus):
+        raise ValueError("performance acceptance requires at least two runner CPUs for isolation")
+    try:
+        before = _cpu_busy_ticks()
+        time.sleep(0.2)
+        after = _cpu_busy_ticks()
+        loads = {}
+        for cpu in cpus:
+            total_before, idle_before = before[cpu]
+            total_after, idle_after = after[cpu]
+            total_delta = total_after - total_before
+            busy_delta = (total_after - idle_after) - (total_before - idle_before)
+            loads[cpu] = busy_delta / total_delta if total_delta > 0 else 1.0
+        return str(min(cpus, key=lambda cpu: (loads[cpu], cpu)))
+    except (KeyError, OSError, ValueError):
+        return str(cpus[0])
 
 
 def pressure_eligible(raw):

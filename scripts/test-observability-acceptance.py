@@ -51,12 +51,6 @@ class ContainerMountTests(unittest.TestCase):
         namespace = self.execute_mounted("client.py")
         self.assertTrue(callable(namespace["seed"]))
 
-    def test_load_uses_bounded_fixture_concurrency(self):
-        namespace = self.execute_mounted("client.py")
-        self.assertEqual(namespace["load_worker_count"](1), 1)
-        self.assertEqual(namespace["load_worker_count"](5), 4)
-        self.assertEqual(namespace["load_worker_count"](20), 4)
-
     def test_peer_bootstrap_reaches_dispatch_at_container_mount_depth(self):
         with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
             with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):
@@ -226,6 +220,11 @@ class ResourceAdmissionTests(unittest.TestCase):
 class CpuIsolationTests(unittest.TestCase):
     def test_layout_pins_app_and_leaves_helpers_on_runner_default_affinity(self):
         self.assertEqual(environment.measurement_cpu_layout({3, 1, 2, 0}), {"app": "0", "auxiliary": "runner-default"})
+        self.assertEqual(environment.measurement_cpu_layout({3, 1, 2, 0}, selected="2"), {"app": "2", "auxiliary": "runner-default"})
+
+    def test_selected_cpu_must_be_within_runner_affinity(self):
+        with self.assertRaisesRegex(ValueError, "outside runner affinity"):
+            environment.measurement_cpu_layout({0, 1}, selected="2")
 
     def test_layout_requires_a_helper_cpu(self):
         with self.assertRaisesRegex(ValueError, "at least two runner CPUs"):

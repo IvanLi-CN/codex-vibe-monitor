@@ -13,7 +13,7 @@ import shutil
 import subprocess
 import sys
 import time
-from environment import AdmissionBudget, actions_context, comparison_report, measurement_cpu_layout, observe_resources, quiet_admission, verify_measurement_evidence
+from environment import AdmissionBudget, actions_context, comparison_report, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -51,7 +51,12 @@ class Run:
             raise ValueError("acceptance run must be inside the exact Agent Directory")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*",args.agent) or not re.fullmatch(r"[a-f0-9]{40}",args.candidate):
             raise ValueError("invalid agent or candidate identity")
-        self.cpu_layout=measurement_cpu_layout(self.context["cpuAffinity"]) if self.suite=="full" else None
+        if self.suite=="full":
+            selected_cpu=select_measurement_cpu(self.context["cpuAffinity"])
+            self.context["measurementCpu"]=selected_cpu
+            self.cpu_layout=measurement_cpu_layout(self.context["cpuAffinity"], selected=selected_cpu)
+        else:
+            self.cpu_layout=None
         self.project="testbox-"+args.agent+"-"+hashlib.sha256(str(self.root).encode()).hexdigest()[:16]
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
