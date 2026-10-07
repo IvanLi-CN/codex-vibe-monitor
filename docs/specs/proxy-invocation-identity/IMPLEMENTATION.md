@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: Materialization, long-wait isolation, and allocation-range correction implemented
+- Implementation: Materialization, long-wait isolation, allocation-range correction, and PR2 public API/frontend integration implemented
 - Lifecycle: active
 - Catalog note: Durable backend identity, allocation, persistence, and retention contract.
 
@@ -86,7 +86,14 @@ Current candidate quality and performance evidence must be refreshed after mainl
 - Statistics rebuild now persists the outer cursor with each final conversation-page transaction instead of waiting for the whole logical key batch. This resumes 2.85.1 empty-cursor/partial-staging databases directly, bounds repeat work to the unfinished key, and leaves source mutations behind the cursor for queue drain. Queue-drain publication continues to rely on deletion of its matching generation. Incomplete stats/queue ETA is `null`; complete ETA is zero. Page traces identify conversations only by fingerprint and include generation, source snapshot, page cursor, rows read, staged count, and completion state.
 - Earlier adaptive-batch controlled representative SQLite acceptance passed with 3 trials over 4,000 keys and 40,000 invocations: fixed median 129812 ms versus adaptive median 103232 ms; foreground p95 251 us versus 266 us and p99 622 us versus 613 us. The ignored fixture is an explicit empirical acceptance command rather than the unrelated summary-scale CI selector.
 - Existing invocation IDs remain readable as historical rows; new HTTP proxy capture uses the compact contract, while no new WebSocket invocation IDs are created after ADR 0020.
-- PR2 public response fields and frontend consumers are intentionally deferred.
+- PR2 exposes the durable prompt-cache conversation identity and materialized aggregate breakdowns
+  through additive optional fields on `GET /api/stats/prompt-cache-conversations`. Hydration reads
+  the master row for selected keys on the same SQLite connection and keeps snapshot statistics
+  fail-closed when the materialized last invocation is newer than the snapshot boundary.
+- The web API normalizer, Live prompt-cache table, dashboard working-conversation mapper, and live
+  merge consumers preserve absent delayed fields, display the identity/token/cost breakdown, and
+  use `firstInvocationAt` for count-mode history ordering while retaining live activity ordering
+  for working conversations.
 
 ## Delivery and Rollout Gates
 
@@ -126,7 +133,10 @@ Migration and release-impact records are
 `assets/allocation-range-version-impact-record.json`. They distinguish focused compatibility
 verification from full candidate service and delivery gates. The verified compatibility impact is
 Minor because durable ownership changes the supported writer contract; public response fields
-remain compatible. Final release identity follows live repository policy and candidate evidence.
+remain compatible. PR2 has a separate `assets/pr2-version-impact-record.json`: its additive read
+fields are `public_api=patch`, while persistent-state impact is not applicable because it reads
+existing master rows without schema or write-path changes. Final release identity follows live
+repository policy and candidate evidence.
 
 Place focused regressions in the matching backend resource bucket. Run named regressions and
 formatting checks appropriate to each package; use the documented resource-profile runner and
@@ -135,11 +145,8 @@ materialization scenarios and their latency/completion limits; extend evidence w
 operation counts, range commit/publication, cache sizing, crash recovery, rollover, and cleanup.
 Historical acceptance locators above do not certify the new allocator candidate.
 
-PR2 may begin only after the deployed backend candidate is confirmed to allocate cache-hit IDs
-without sequence database operations, recover without ID reuse, keep cache/cleanup behavior within
-the locked bounds, and converge to complete conversation statistics with an empty refresh queue.
-PR2 then updates public API and frontend consumers to use persisted conversation identity and
-delayed aggregate statistics. PR2 and production acceptance remain outside this backend delivery.
+PR2 updates public API and frontend consumers to use persisted conversation identity and delayed
+aggregate statistics. Production deployment and acceptance remain outside this local delivery.
 
 ## Related Changes
 
@@ -152,6 +159,7 @@ delayed aggregate statistics. PR2 and production acceptance remain outside this 
 - `docs/adr/0031-prompt-cache-event-wake-priority.md`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-migration-record.json`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json`
+- `docs/specs/proxy-invocation-identity/assets/pr2-version-impact-record.json`
 - `docs/specs/proxy-invocation-identity/assets/version-impact-record.json`
 
 ## References

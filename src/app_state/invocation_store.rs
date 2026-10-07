@@ -41,6 +41,16 @@ pub(crate) struct PromptCacheRuntimeProjection {
     pub(crate) prompt_cache_key: Option<String>,
     pub(crate) sticky_key: Option<String>,
     pub(crate) preview: PromptCacheConversationInvocationPreviewResponse,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reported_cache_write_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) cost_input: Option<f64>,
+    pub(crate) cost_cache_write: Option<f64>,
+    pub(crate) cost_cache_read: Option<f64>,
+    pub(crate) cost_output: Option<f64>,
+    pub(crate) cost_reasoning: Option<f64>,
 }
 
 impl PromptCacheRuntimeProjection {
@@ -49,13 +59,33 @@ impl PromptCacheRuntimeProjection {
             normalize_trimmed_optional_string_local(record.prompt_cache_key.clone());
         let sticky_key = normalize_trimmed_optional_string_local(record.sticky_key.clone());
         let preview_key = prompt_cache_key.clone().or_else(|| sticky_key.clone())?;
+        let mut preview = prompt_cache_invocation_preview_from_runtime_record(record, preview_key);
+        preview.cost = non_negative_finite_f64(record.cost);
         Some(Self {
             row_id: record.id,
             prompt_cache_key,
             sticky_key,
-            preview: prompt_cache_invocation_preview_from_runtime_record(record, preview_key),
+            preview,
+            input_tokens: non_negative_i64(record.input_tokens),
+            output_tokens: non_negative_i64(record.output_tokens),
+            cache_input_tokens: non_negative_i64(record.cache_input_tokens),
+            reported_cache_write_tokens: non_negative_i64(record.reported_cache_write_tokens),
+            reasoning_tokens: non_negative_i64(record.reasoning_tokens),
+            cost_input: non_negative_finite_f64(record.cost_input),
+            cost_cache_write: non_negative_finite_f64(record.cost_cache_write),
+            cost_cache_read: non_negative_finite_f64(record.cost_cache_read),
+            cost_output: non_negative_finite_f64(record.cost_output),
+            cost_reasoning: non_negative_finite_f64(record.cost_reasoning),
         })
     }
+}
+
+pub(crate) fn non_negative_i64(value: Option<i64>) -> Option<i64> {
+    value.map(|value| value.max(0))
+}
+
+pub(crate) fn non_negative_finite_f64(value: Option<f64>) -> Option<f64> {
+    value.and_then(|value| value.is_finite().then_some(value.max(0.0)))
 }
 
 #[derive(Debug, Clone, Copy)]

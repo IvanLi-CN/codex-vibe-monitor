@@ -1486,6 +1486,21 @@ const stats: PromptCacheConversationsResponse = {
       totalCost: 0.403,
       createdAt: "2026-03-27T03:12:32.000Z",
       lastActivityAt: "2026-03-27T03:14:47.000Z",
+      conversationId: "K7mQ2a",
+      successCount: 13,
+      failureCount: 2,
+      inputTokens: 502400,
+      outputTokens: 281654,
+      cacheInputTokens: 182200,
+      reportedCacheWriteTokens: 44100,
+      reasoningTokens: 78400,
+      costInput: 0.142,
+      costCacheWrite: 0.046,
+      costCacheRead: 0.071,
+      costOutput: 0.098,
+      costReasoning: 0.046,
+      firstInvocationAt: "2026-03-26T07:14:00.000Z",
+      lastInvocationAt: "2026-03-27T03:14:47.000Z",
       upstreamAccounts: [
         {
           upstreamAccountId: 11,
@@ -1885,8 +1900,11 @@ const meta = {
       <MemoryRouter>
         <I18nProvider>
           <StorybookPromptCacheAccountMock>
-            <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-              <main className="app-shell-boundary space-y-4">
+            <div
+              data-visual-evidence-surface
+              className="min-h-screen bg-base-200 px-7 py-7 text-base-content"
+            >
+              <main data-visual-evidence-target className="app-shell-boundary space-y-4">
                 <h2 className="text-xl font-semibold">对话</h2>
                 <Story />
               </main>
@@ -1907,6 +1925,26 @@ export const Populated: Story = {
     stats,
     isLoading: false,
     error: null,
+  },
+  globals: {
+    viewport: {
+      value: "desktop1280",
+      isRotated: false,
+    },
+  },
+};
+
+export const PopulatedMobile: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    viewport: {
+      value: "mobile393",
+      isRotated: false,
+    },
   },
 };
 

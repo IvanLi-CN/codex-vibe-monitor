@@ -1975,6 +1975,21 @@ export interface PromptCacheConversation {
   lastActivityAt: string;
   lastTerminalAt?: string | null;
   lastInFlightAt?: string | null;
+  conversationId?: string | null;
+  successCount?: number;
+  failureCount?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheInputTokens?: number;
+  reportedCacheWriteTokens?: number;
+  reasoningTokens?: number;
+  costInput?: number;
+  costCacheWrite?: number;
+  costCacheRead?: number;
+  costOutput?: number;
+  costReasoning?: number;
+  firstInvocationAt?: string | null;
+  lastInvocationAt?: string | null;
   inFlightPhaseCounts?: InvocationPhaseCounts | null;
   cursor?: string | null;
   hasEncryptedSessionOwner: boolean;
@@ -4044,6 +4059,26 @@ function normalizePromptCacheConversation(raw: unknown): PromptCacheConversation
     lastActivityAt: typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
     lastTerminalAt: typeof payload.lastTerminalAt === "string" ? payload.lastTerminalAt : null,
     lastInFlightAt: typeof payload.lastInFlightAt === "string" ? payload.lastInFlightAt : null,
+    conversationId:
+      typeof payload.conversationId === "string" && payload.conversationId.trim()
+        ? payload.conversationId.trim()
+        : null,
+    successCount: normalizeFiniteNumber(payload.successCount),
+    failureCount: normalizeFiniteNumber(payload.failureCount),
+    inputTokens: normalizeFiniteNumber(payload.inputTokens),
+    outputTokens: normalizeFiniteNumber(payload.outputTokens),
+    cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens),
+    reportedCacheWriteTokens: normalizeFiniteNumber(payload.reportedCacheWriteTokens),
+    reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens),
+    costInput: normalizeFiniteNumber(payload.costInput),
+    costCacheWrite: normalizeFiniteNumber(payload.costCacheWrite),
+    costCacheRead: normalizeFiniteNumber(payload.costCacheRead),
+    costOutput: normalizeFiniteNumber(payload.costOutput),
+    costReasoning: normalizeFiniteNumber(payload.costReasoning),
+    firstInvocationAt:
+      typeof payload.firstInvocationAt === "string" ? payload.firstInvocationAt : null,
+    lastInvocationAt:
+      typeof payload.lastInvocationAt === "string" ? payload.lastInvocationAt : null,
     inFlightPhaseCounts: normalizeInvocationPhaseCounts(payload.inFlightPhaseCounts) ?? {
       queued: 0,
       requesting: 0,

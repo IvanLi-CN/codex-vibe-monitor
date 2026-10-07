@@ -21,7 +21,7 @@
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24385,
+      "line_budget": 24378,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -147,7 +147,7 @@
     {
       "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
       "role": "test_helper",
-      "line_budget": 6322,
+      "line_budget": 5541,
       "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
     },
     {
