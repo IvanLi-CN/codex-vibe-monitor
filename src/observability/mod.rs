@@ -167,10 +167,12 @@ impl ObservabilityRuntime {
             traces.report(self);
         }
         let mut output = self.handle.render();
-        output.push_str(&format!(
-            "# TYPE cvm_metric_series_dropped_total counter\ncvm_metric_series_dropped_total {}\n",
-            self.series.dropped()
-        ));
+        let dropped = self.series.dropped();
+        if dropped > 0 {
+            output.push_str(&format!(
+                "# TYPE cvm_metric_series_dropped_total counter\ncvm_metric_series_dropped_total {dropped}\n"
+            ));
+        }
         if self.cpu_valid.load(Ordering::Acquire) {
             output.push_str("# TYPE cvm_process_cpu_seconds_total counter\n");
             for (mode, value) in [
