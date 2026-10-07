@@ -3064,6 +3064,21 @@ describe("account pool frontend API helpers", () => {
               totalCost: 0.12,
               createdAt: "2026-03-10T22:00:00Z",
               lastActivityAt: "2026-03-10T23:00:00Z",
+              conversationId: "abc123",
+              successCount: 1,
+              failureCount: 1,
+              inputTokens: 18,
+              outputTokens: 12,
+              cacheInputTokens: 6,
+              reportedCacheWriteTokens: 2,
+              reasoningTokens: 3,
+              costInput: 0.01,
+              costCacheWrite: 0.02,
+              costCacheRead: 0.03,
+              costOutput: 0.04,
+              costReasoning: 0.05,
+              firstInvocationAt: "2026-03-10T22:00:00Z",
+              lastInvocationAt: "2026-03-10T23:00:00Z",
               manualBinding: {
                 bindingKind: "upstreamAccount",
                 groupName: null,
@@ -3140,6 +3155,14 @@ describe("account pool frontend API helpers", () => {
     expect(response.implicitFilter.kind).toBe("cappedTo50");
     expect(response.implicitFilter.filteredCount).toBe(7);
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
+    expect(response.conversations[0]?.conversationId).toBe("abc123");
+    expect(response.conversations[0]?.successCount).toBe(1);
+    expect(response.conversations[0]?.failureCount).toBe(1);
+    expect(response.conversations[0]?.inputTokens).toBe(18);
+    expect(response.conversations[0]?.reportedCacheWriteTokens).toBe(2);
+    expect(response.conversations[0]?.costReasoning).toBe(0.05);
+    expect(response.conversations[0]?.firstInvocationAt).toBe("2026-03-10T22:00:00Z");
+    expect(response.conversations[0]?.lastInvocationAt).toBe("2026-03-10T23:00:00Z");
     expect(response.conversations[0]?.manualBinding).toEqual({
       bindingKind: "upstreamAccount",
       groupName: null,

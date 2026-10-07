@@ -1,6 +1,99 @@
 use super::*;
 use sqlx::Executor;
 
+fn invocation_prompt_cache_key_expr_sql(alias: &str) -> String {
+    format!(
+        "CASE WHEN json_valid({alias}.payload) THEN TRIM(CAST(json_extract({alias}.payload, '$.promptCacheKey') AS TEXT)) END"
+    )
+}
+
+pub(crate) async fn query_prompt_cache_conversation_statistics<'e, E>(
+    executor: E,
+    selected_keys: &[String],
+) -> Result<Vec<PromptCacheConversationStatisticsRow>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if selected_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let invocation_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT c.prompt_cache_key, c.conversation_id, c.created_at, c.success_count, c.failure_count, \
+                c.input_tokens, c.output_tokens, c.cache_input_tokens, c.reported_cache_write_tokens, \
+                c.reasoning_tokens, c.cost_input, c.cost_cache_write, c.cost_cache_read, c.cost_output, \
+                c.cost_reasoning, c.first_invocation_at, c.last_invocation_at, \
+                (SELECT MAX(i.id) FROM codex_invocations AS i \
+                 WHERE {invocation_prompt_cache_key_expr} = c.prompt_cache_key) AS last_invocation_id \
+         FROM prompt_cache_conversations AS c WHERE c.prompt_cache_key IN (",
+    ));
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") ORDER BY c.prompt_cache_key ASC");
+
+    query
+        .build_query_as::<PromptCacheConversationStatisticsRow>()
+        .fetch_all(executor)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_statistics_keys_with_invisible_invocations<
+    'e,
+    E,
+>(
+    executor: E,
+    selected_keys: &[String],
+    snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
+) -> Result<HashSet<String>>
+where
+    E: Executor<'e, Database = Sqlite>,
+{
+    if selected_keys.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let invocation_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("i");
+    let snapshot_filter = PromptCacheConversationSnapshotFilter {
+        snapshot_upper_bound: snapshot.snapshot_upper_bound.to_string(),
+        snapshot_created_at_upper_bound: snapshot
+            .snapshot_created_at_upper_bound
+            .map(str::to_string),
+        snapshot_boundary_row_id_ceiling: snapshot.snapshot_boundary_row_id_ceiling,
+    };
+    let mut query = QueryBuilder::<Sqlite>::new(format!(
+        "SELECT DISTINCT {invocation_prompt_cache_key_expr} AS prompt_cache_key \
+         FROM codex_invocations AS i WHERE {invocation_prompt_cache_key_expr} IN (",
+    ));
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(") AND NOT ");
+    push_snapshot_invocation_visibility_clause(
+        &mut query,
+        "i.occurred_at",
+        "i.id",
+        "i.created_at",
+        Some(&snapshot_filter),
+    );
+
+    Ok(query
+        .build_query_as::<(String,)>()
+        .fetch_all(executor)
+        .await?
+        .into_iter()
+        .map(|(key,)| key)
+        .collect())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromptCacheInFlightPhaseRecord {
     pub(crate) identity: String,

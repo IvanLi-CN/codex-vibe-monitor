@@ -5,7 +5,8 @@
 ## Lifecycle / Compatibility
 
 - Introduced as a backend-only identity boundary. Existing invocation rows remain historical input and are not rewritten.
-- Public API and frontend consumers are intentionally reserved for a follow-up contract.
+- Public API and frontend consumers were reserved for a follow-up contract and are now covered by
+  the additive PR2 read integration described in `IMPLEMENTATION.md`.
 
 ## Replacements / Background
 
@@ -32,6 +33,10 @@
 
 - Bound maintenance checkpoint finalization and wake persistence to the committed control generation, preserving newer pause/resume checkpoints and scheduler wakes across late results.
 - Cooperative coordinator-priority yields for prompt-cache materialization now retain ordinary retry deadlines that queue events can preempt; active database-pressure defers retain their retry boundary.
+- PR2 adds optional durable conversation identity, success/failure, token, cost, and first/last
+  invocation fields to the prompt-cache conversation response. The Live table and dashboard
+  consumers preserve the existing selection semantics while using the durable first invocation
+  timestamp for count-mode history ordering; production acceptance remains a separate gate.
 
 ## Related Changes
 

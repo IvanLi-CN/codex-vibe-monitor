@@ -203,7 +203,7 @@ function buildPendingCardModel(
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
     manualBinding: conversation.manualBinding ?? null,
-    createdAtEpoch: parseEpoch(conversation.createdAt),
+    createdAtEpoch: parseEpoch(conversation.firstInvocationAt ?? conversation.createdAt),
     currentInvocation,
     previousInvocation,
     earlierInvocation,
