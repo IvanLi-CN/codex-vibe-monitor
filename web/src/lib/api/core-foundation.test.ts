@@ -3,6 +3,7 @@ import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
   fetchManagedTask,
+  fetchManagedTaskTimeline,
   fetchSystemStatus,
   fetchSystemStorage,
   normalizePoolRoutingSelectionAudit,
@@ -11,6 +12,68 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("fetchManagedTaskTimeline response contract", () => {
+  const validPage = {
+    observedAt: "2026-10-07T00:00:00Z",
+    windowStart: "2026-10-06T12:00:00Z",
+    windowEnd: "2026-10-07T00:00:00Z",
+    watermark: 7,
+    segments: [
+      {
+        segmentId: "run-1",
+        kind: "execution",
+        taskKey: "retention_archive",
+        title: "Retention archive",
+        startedAt: "2026-10-06T23:00:00Z",
+        lastObservedAt: "2026-10-06T23:01:00Z",
+        finishedAt: "2026-10-06T23:01:00Z",
+        durationMs: 60_000,
+        status: "success",
+        sessionId: "session-1",
+        revision: 7,
+      },
+    ],
+    coverage: [],
+    nextCursor: "cursor-1",
+    resetRequired: false,
+  };
+
+  it("returns a complete normalized page without changing its pagination cursor", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(validPage), { status: 200 })),
+    );
+
+    const page = await fetchManagedTaskTimeline({ limit: 500 });
+
+    expect(page).toMatchObject({
+      watermark: 7,
+      nextCursor: "cursor-1",
+      resetRequired: false,
+      segments: [expect.objectContaining({ segmentId: "run-1", revision: 7 })],
+    });
+  });
+
+  it.each([
+    ["missing segments", { segments: undefined }],
+    ["missing cursor", { nextCursor: undefined }],
+    ["invalid cursor", { nextCursor: 42 }],
+    ["invalid watermark", { watermark: "7" }],
+    ["invalid segment", { segments: [{ ...validPage.segments[0], revision: undefined }] }],
+  ])("rejects a 200 response with %s instead of accepting a partial page", async (_label, changes) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ ...validPage, ...changes }), { status: 200 }),
+      ),
+    );
+
+    await expect(fetchManagedTaskTimeline({ limit: 500 })).rejects.toThrow(
+      "Invalid managed task timeline response",
+    );
+  });
 });
 
 describe("retention throughput optional contract", () => {
