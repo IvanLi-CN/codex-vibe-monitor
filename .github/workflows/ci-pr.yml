@@ -996,7 +996,7 @@ jobs:
     needs: observability-performance-image
     # A fresh VM measures the prebuilt image; no compiler or parallel suite shares it.
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 100
     steps:
       - name: Checkout performance candidate
         uses: actions/checkout@v7

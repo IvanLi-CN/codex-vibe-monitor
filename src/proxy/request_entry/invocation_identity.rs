@@ -59,7 +59,7 @@ impl Drop for PoolInvocationCleanupGuard {
         let recovery_trigger = self.recovery_trigger;
         let prompt_cache_key = self.prompt_cache_key.take();
         let namespace = self.namespace.take();
-        tokio::spawn(async move {
+        crate::observability::diagnostics::spawn(async move {
             if let Err(err) = recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key(
                 state.as_ref(),
                 selector,

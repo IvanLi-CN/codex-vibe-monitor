@@ -127,12 +127,34 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "passed" and row["sampleCount"] == 2 for row in windows))
         self.assertTrue(all(row["endedMonotonicSeconds"] - row["startedMonotonicSeconds"] == 10 for row in windows))
 
+    def test_nine_windows_require_real_trace_ingestion_without_drops(self):
+        samples = {mode: [] for mode in ("off", "metrics", "full")}
+        budget = environment.AdmissionBudget()
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", return_value=psi()):
+            for index in range(3):
+                for mode in samples:
+                    window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
+                    window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
+                    with environment.observe_resources(self.root, window): self.clock += 10
+                    samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10,
+                        "traceEvidence": {"enabled": True, "searchableTrace": True, "exportedSpans": 10, "failedSpans": 0, "droppedSpans": 0}})
+        (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
+        (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
+        path = self.root / "ab-samples.json"
+        path.write_text(json.dumps(samples))
+        environment.verify_measurement_evidence(self.root)
+        for key, value in [("enabled", False), ("searchableTrace", False), ("exportedSpans", 0), ("failedSpans", 1), ("droppedSpans", 1)]:
+            changed = copy.deepcopy(samples); changed["full"][1]["traceEvidence"][key] = value
+            path.write_text(json.dumps(changed))
+            with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+
     def test_raw_measurement_evidence_must_exist_even_with_successful_scenarios(self):
         run = object.__new__(Run)
         run.root = self.root; run.source = SOURCE; run.args = SimpleNamespace(candidate="a" * 40)
         run.context = {"evidenceLocator": "https://github.com/owner/repo/actions/runs/123/attempts/2"}
         run.suite = "full"
-        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
+        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
         self.assertFalse(run.finish())
         self.assertEqual(json.loads((self.root / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
 
@@ -150,15 +172,15 @@ class ResourceAdmissionTests(unittest.TestCase):
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
         (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
         (self.root / "ab-samples.json").write_text(json.dumps(samples))
-        environment.verify_measurement_evidence(self.root)
+        environment.verify_measurement_evidence(self.root, modes=("false", "true"))
         path = self.root / "resource-observer.jsonl"
         original = path.read_text()
         rows = [json.loads(row) for row in original.splitlines()]
         rows[1]["hostPressure"] = psi(cpu=3)
         path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root, modes=("false", "true"))
         path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
-        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root, modes=("false", "true"))
 
 
 class CpuIsolationTests(unittest.TestCase):
@@ -224,6 +246,17 @@ class ComparisonTests(unittest.TestCase):
     def samples(self, enabled_cpu=1.04, enabled_p95=1.04):
         return {"false": [{"cpuSecondsPerRequest": 1.0, "p95Seconds": 1.0} for _ in range(3)], "true": [{"cpuSecondsPerRequest": enabled_cpu, "p95Seconds": enabled_p95} for _ in range(3)]}
 
+    def test_three_modes_share_one_budget_and_report_trace_increment(self):
+        samples = {mode: [{"cpuSecondsPerRequest": value, "p95Seconds": value} for _ in range(3)]
+                   for mode, value in [("off", 1.0), ("metrics", 1.04), ("full", 1.06)]}
+        report = environment.comparison_report(samples)
+        for metric in report["metrics"].values():
+            self.assertTrue(metric["comparisonValid"])
+            self.assertFalse(metric["withinBudget"])
+            self.assertAlmostEqual(metric["traceIncrement"], 1.06 / 1.04 - 1)
+        samples["metrics"][2]["p95Seconds"] = 2.0
+        self.assertFalse(environment.comparison_report(samples)["metrics"]["p95Seconds"]["comparisonValid"])
+
     def test_both_stable_metrics_must_fit_budget(self):
         report = environment.comparison_report(self.samples())
         self.assertTrue(all(metric["withinBudget"] for metric in report["metrics"].values()))
@@ -264,7 +297,7 @@ class CertificateTests(unittest.TestCase):
             run.args = SimpleNamespace(candidate="a" * 40)
             run.context = None
             run.suite = "runtime"
-            run.results = {name: {"status": "passed"} for name in ["https-auth-query", "monitoring-fault-isolation", "original-process-cpu"]}
+            run.results = {name: {"status": "passed"} for name in ["https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu"]}
             self.assertTrue(run.finish())
             self.assertTrue((run.root / "runtime-card.json").exists())
             self.assertFalse((run.root / "empirical-card.json").exists())

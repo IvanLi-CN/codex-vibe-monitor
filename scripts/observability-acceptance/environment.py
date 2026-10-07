@@ -205,7 +205,7 @@ class MeasurementObserver:
             windows = json.loads(path.read_text()) if path.exists() else []
         except (ValueError, UnicodeError) as error:
             raise OSError("invalid measurement window evidence") from error
-        if not isinstance(windows, list) or len(windows) >= 6 or any(not isinstance(row, dict) or row.get("windowId") == summary["windowId"] for row in windows):
+        if not isinstance(windows, list) or len(windows) >= 9 or any(not isinstance(row, dict) or row.get("windowId") == summary["windowId"] for row in windows):
             raise OSError("invalid measurement window evidence")
         windows.append(summary)
         path.write_text(json.dumps(windows, indent=2) + "\n")
@@ -223,8 +223,8 @@ def observe_resources(root, window):
         observer.finish()
 
 
-def verify_measurement_evidence(root):
-    """Admit only six complete windows with independently readable quiet samples."""
+def verify_measurement_evidence(root, modes=("off", "metrics", "full")):
+    """Admit only the complete mode/round windows with independently readable quiet samples."""
     try:
         run_config = json.loads((root / "run-config.json").read_text())
         runner_context = json.loads((root / "runner-context.json").read_text())
@@ -236,10 +236,12 @@ def verify_measurement_evidence(root):
         assert run_config["appCpuQuota"] == 1
         assert run_config["appCpuSet"] == cpu_layout["app"]
         assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
-        expected = {f"{index}-{mode}" for index in range(3) for mode in ("false", "true")}
-        assert len(windows) == 6 and {row["windowId"] for row in windows} == expected
+        expected = {f"{index}-{mode}" for index in range(3) for mode in modes}
+        assert len(windows) == 3 * len(modes) and {row["windowId"] for row in windows} == expected
         assert {row["windowId"] for row in raw} == expected
-        assert set(loads) == {"false", "true"} and all(len(rows) == 3 for rows in loads.values())
+        assert set(loads) == set(modes) and all(len(rows) == 3 for rows in loads.values())
+        if "full" in modes:
+            assert all(row["traceEvidence"]["enabled"] and row["traceEvidence"]["searchableTrace"] and row["traceEvidence"]["exportedSpans"] > 0 and row["traceEvidence"]["failedSpans"] == 0 and row["traceEvidence"]["droppedSpans"] == 0 for row in loads["full"])
         load_rows = {row["windowId"]: row for rows in loads.values() for row in rows}
         assert set(load_rows) == expected
         assert sum(window["admissionWaitSeconds"] for window in windows) <= 900
@@ -274,19 +276,25 @@ def verify_measurement_evidence(root):
 
 
 def comparison_report(samples):
+    modes = ("off", "metrics", "full") if set(samples) == {"off", "metrics", "full"} else ("false", "true")
+    if set(samples) != set(modes):
+        raise ValueError("unexpected observation modes")
     metrics = {}
     for key in ("cpuSecondsPerRequest", "p95Seconds"):
         metric = {}
-        for enabled in ("false", "true"):
+        for enabled in modes:
             values = [row[key] for row in samples[enabled]]
             if len(values) != 3 or any(value <= 0 for value in values):
                 raise ValueError("performance acceptance needs three complete positive windows per mode")
             cv = statistics.pstdev(values) / statistics.mean(values)
             metric[enabled] = {"values": values, "cv": cv, "stable": cv <= 0.05}
-        valid = all(metric[mode]["stable"] for mode in ("false", "true"))
-        baseline = statistics.median(metric["false"]["values"])
-        enabled = statistics.median(metric["true"]["values"])
+        valid = all(metric[mode]["stable"] for mode in modes)
+        baseline = statistics.median(metric[modes[0]]["values"])
+        enabled = statistics.median(metric[modes[-1]]["values"])
         increase = enabled / baseline - 1
         metric.update({"comparisonValid": valid, "increase": increase if valid else None, "withinBudget": valid and enabled <= baseline * 1.05})
+        if len(modes) == 3:
+            metrics_only = statistics.median(metric["metrics"]["values"])
+            metric["traceIncrement"] = enabled / metrics_only - 1 if valid else None
         metrics[key] = metric
     return {"stabilityLimit": 0.05, "overheadLimit": 0.05, "metrics": metrics}

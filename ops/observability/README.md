@@ -1,12 +1,12 @@
 # 外部性能观测
 
-应用只在内存累计指标，Prometheus 抓取并保留历史，Grafana 提供图表和告警。
+应用在内存累计指标及有界轻量请求诊断，Prometheus 保留聚合历史，Tempo 保存诊断链路，Grafana 提供统计、案例、瀑布图和告警。
 本目录是部署合同；101 的域名、镜像 digest、卷容量、认证与 perf 权限由上线任务验证。
 集成、Compose 部署、鉴权边界和排障顺序见[canonical solution](../../docs/solutions/performance/prometheus-grafana-compose-integration.md)。
 
 ## 本地 Grafana 预览
 
-需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
+需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
 ## 应用配置
 
@@ -16,6 +16,12 @@ METRICS_BIND=0.0.0.0:9091
 METRICS_TOKEN_FILE=/run/secrets/metrics-token
 OBSERVABILITY_READ_TOKEN_FILE=/run/secrets/observability-read-token
 GRAFANA_PUBLIC_URL=https://grafana.example.com
+# Optional traces; master OBSERVABILITY_ENABLED=false disables these too.
+OBSERVABILITY_TRACES_ENABLED=false
+OBSERVABILITY_OTLP_TRACES_ENDPOINT=https://observability.example.com/v1/traces
+OBSERVABILITY_OTLP_TOKEN_FILE=/run/secrets/tempo-ingest-token
+OBSERVABILITY_ENVIRONMENT=production
+OBSERVABILITY_INSTANCE=primary
 ```
 
 两个 Token 必须不同，secret 文件只挂载给所需服务。应用与监控 Compose
@@ -54,7 +60,9 @@ service account，隔离其他数据源；OSS Viewer 不等于企业版逐数据
 
 - `GET /api/datasources/uid/cvm-prometheus`
 - `GET /api/datasources/proxy/uid/cvm-prometheus/api/v1/query` 与 `query_range`
-- `GET /api/dashboards/uid/cvm-{overview,proxy,sqlite,runtime,web}`
+- `GET /api/dashboards/uid/cvm-{overview,proxy,sqlite,runtime,web,proxy-cases}`
+- `GET /api/datasources/proxy/uid/cvm-tempo/api/search`：只允许 `tempo_access.py` 定义的五种固定查询及合法 service/environment/instance/endpoint 筛选，limit ≤3、窗口 ≤24h。
+- `GET /api/datasources/proxy/uid/cvm-tempo/api/v2/traces/<32位小写十六进制TraceID>`：无其他查询参数。
 
 使用 gcx 时按锁定版本实际请求追加必要只读资源/查询路径，POST 仅开放真正查询入口。
 不要整站 bypass。验收有效 Token 返回 JSON、无效/缺失 Token 拒绝、写入拒绝，
@@ -66,6 +74,20 @@ curl+jq 可通过固定 proxy 路径查询；将 Bearer header 放在权限 0600
 使用 `curl --config <private-config> --fail --get --data-urlencode 'query=up{job="cvm-app"}' <Grafana-HTTPS>/api/datasources/proxy/uid/cvm-prometheus/api/v1/query | jq`。
 应用报告使用另一个 Token，CLI 的 `server/sql/functions` 分支只访问固定白名单。
 Agent 排查顺序见[项目 Skill](../../.agents/skills/performance-investigation/SKILL.md)。
+
+## Tempo 共享接入与隔离配置
+
+`OBSERVABILITY_TRACES_ENABLED` 默认 false。开启时 endpoint 必须是无凭据、无 query/fragment 的完整 HTTPS `/v1/traces` URL；凭据仅从挂载的私密文件读取，不能写入 URL、日志或仓库。SDK 使用 0.33.0、OTLP/HTTP protobuf、有界后台 batch，不安装全局 tracing 日志层、不接受入站 baggage，也不导出任意资源属性。禁用重定向及环境代理，HTTP 超时 2 秒且不重试；SDK queue 2048、batch 128、间隔 1 秒、关闭 flush 最多 2 秒、HTTP body ≤1MiB。初始化或导出失败仅令 tracing degraded；能力接口只报告本地状态，不查询 Tempo 或改变 `/health`。
+
+环境和实例值为 1..64 位 ASCII 字母数字或 `._:-`，默认 unknown，部署时须与 Prometheus target 的 environment/instance 标签一致。应用 span 只含固定 service、environment、instance、endpoint、phase、resource、数值耗时和有限状态；请求/账号/用户身份、IP、原始 URL、正文、凭据、SQL 参数及日志字段不导出。随机 TraceID 与业务 invocation ID 独立，每请求最多 64 spans、64KiB 保守预算、8 个详细 attempts 和 8 个选定等待区间，最多 1024 活跃上下文；丢弃和截断由质量指标及 root 属性说明。
+
+本轮 `compose.yml --profile traces-isolation` 固定 Tempo 3.1.0 与 image digest，只用于隔离运行。`tempo.yml` 关闭 metrics-generator、service graphs、MCP 和跨租户查询，CVM tenant 为 cvm、留存 24h，Tempo 所有 WAL、blocks、调度工作目录及临时文件共用 512MiB tmpfs；CPU 1、内存 2GiB、摄入 512KiB/s、burst 1MiB、单 trace 摄入 128KiB、查询并发 2／超时 5s。数据可在重建后消失，留存清理有延迟；这些不是正式环境容量或磁盘配额承诺。
+
+共享入口由现有受信任 HTTPS 认证入口承载。`tempo-gateway.conf.example` 提供摄入与查询两套私密凭据 map，认证后固定覆盖 `X-Scope-OrgID: cvm`，不信任调用者 tenant，不暴露 Tempo 3200/4318 公网端口。摄入凭据不能查链路，查询凭据不能摄入；Grafana 的 `cvm-tempo` datasource 使用平台查询身份（环境变量 CVM_TEMPO_QUERY_URL/CVM_TEMPO_QUERY_TOKEN/CVM_TEMPO_CA_PEM），普通机器 Viewer 仍由 Grafana organization 与公共固定路径白名单隔离。私网 Grafana 查询允许原生 TraceQL，但 Tempo 全局仍限制窗口和结果数；NGINX 示例不是完整正式入口部署。本轮 CI 使用同一合同的隔离 HTTPS fixture 验证，正式入口、凭据分组、存储、容量与接入其他项目均留给后续部署任务。
+
+`scripts/cvm-observe cases --category normal|slow|wait|retry|error --minutes 30 [--environment production --instance primary --endpoint responses]` 返回每类最多 3 个候选；`scripts/cvm-observe trace --trace-id <32位小写十六进制>` 获取原生 trace JSON。CLI 需要从完整仓库运行，复用 `tempo_access.py` 的固定查询定义。采集覆盖正常容量内全量，正常案例仅从 TraceID 哈希 1/16 标记集合检索，Tempo first-match 结果不能当作总体统计或稳定随机样本。
+
+统计页 `cvm-proxy` 跳转 `cvm-proxy-cases` 时保留 UTC 窗口和筛选，案例页手动刷新，每类最多 3 条，选定 TraceID 展开原生瀑布图。响应时长以 response root 为准，trace 总 duration 可以包含后续落盘；root 的 persistence=pending 和 export_completeness=unknown 不证明丢失，晚到 span 可在下一次查询出现。无案例、未完整、截断、导出丢失或超过 24h 窗口须结合提示、质量计数和样本数解释，不能当作业务零。
 
 ## CPU 采样与符号
 

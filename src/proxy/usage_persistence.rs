@@ -435,7 +435,11 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_from_curso
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>> {
-    let mut conn = pool.acquire().await?;
+    let mut conn = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.acquire(),
+    )
+    .await?;
     backfill_pool_upstream_request_attempt_public_ids_on_connection(
         &mut conn,
         start_after_id,
@@ -1306,7 +1310,11 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope(
     pool: &Pool<Sqlite>,
     scope: PoolAttemptRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredPoolAttemptRow>> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let recovered =
         recover_pool_upstream_request_attempts_with_scope_tx(tx.as_mut(), scope).await?;
     tx.commit().await?;
@@ -1573,7 +1581,11 @@ pub(crate) async fn recover_stale_pool_upstream_request_attempt_candidates(
     compact_started_before: &str,
     default_started_before: &str,
 ) -> Result<Vec<RecoveredPoolAttemptRow>> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let recovered = recover_stale_pool_upstream_request_attempt_candidates_tx(
         tx.as_mut(),
         candidate_ids,
@@ -1609,7 +1621,11 @@ pub(crate) async fn recover_proxy_invocations_with_scope(
     pool: &Pool<Sqlite>,
     scope: ProxyInvocationRecoveryScope<'_>,
 ) -> Result<Vec<RecoveredInvocationRow>> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let rows = recover_proxy_invocations_with_scope_tx(tx.as_mut(), scope).await?;
     tx.commit().await?;
     Ok(rows)
@@ -1754,7 +1770,11 @@ pub(crate) async fn load_persisted_api_invocation(
     invoke_id: &str,
     occurred_at: &str,
 ) -> Result<ApiInvocation> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let invocation = load_persisted_api_invocation_tx(tx.as_mut(), invoke_id, occurred_at).await?;
     tx.commit().await?;
     Ok(invocation)
@@ -2074,7 +2094,11 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
             .await;
         let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
         let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-        let mut tx = state.pool.begin().await?;
+        let mut tx = crate::observability::diagnostics::wait(
+            crate::observability::diagnostics::Resource::DbPool,
+            state.pool.begin(),
+        )
+        .await?;
         let recovered_attempts = match pending_attempt_record.attempt_id {
             Some(attempt_id) => {
                 recover_pool_upstream_request_attempts_with_scope_tx(
@@ -2224,7 +2248,11 @@ pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
             .await;
         let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
         let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-        let mut tx = state.pool.begin().await?;
+        let mut tx = crate::observability::diagnostics::wait(
+            crate::observability::diagnostics::Resource::DbPool,
+            state.pool.begin(),
+        )
+        .await?;
         let stale_candidates = load_stale_pool_upstream_request_attempt_candidate_rows_tx(
             tx.as_mut(),
             &responses_started_before,
@@ -3959,6 +3987,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     .sqlite_batch_writer
                     .enqueue_terminal(BatchedTerminalInvocationWrite {
                         enqueued_at: None,
+                        diagnostic: crate::observability::diagnostics::current()
+                            .map(|c| c.persistence()),
                         record,
                         capture_started: None,
                         raw_capture: false,
@@ -4047,7 +4077,11 @@ pub(crate) async fn persist_proxy_capture_runtime_record_core(
     record: ProxyCaptureRecord,
     write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let persisted =
         persist_proxy_capture_runtime_record_tx(tx.as_mut(), record, write_derived_inline).await?;
     tx.commit().await?;
@@ -4714,30 +4748,32 @@ pub(crate) fn spawn_raw_payload_file_write(
                 });
             }
         };
-        return PendingRawPayloadWrite::Task(tokio::spawn(async move {
-            let mut spool = spool;
-            if let Err(err) = spool.append(&bytes_for_spool) {
-                reservation.finish(0);
-                return RawPayloadMeta {
-                    path: None,
-                    size_bytes: bytes_for_spool.len() as i64,
-                    truncated: true,
-                    truncated_reason: Some(if err.to_string().contains("capacity") {
-                        "capture_unavailable:spool_capacity".to_string()
-                    } else {
-                        "capture_unavailable:spool_write_failed".to_string()
-                    }),
-                    write_fence: None,
-                };
-            }
-            let meta = spool.finish(bytes_for_spool.len() as i64).await;
-            reservation.finish(raw_payload_stored_bytes(&meta));
-            meta
-        }));
+        return PendingRawPayloadWrite::Task(crate::observability::diagnostics::spawn(
+            async move {
+                let mut spool = spool;
+                if let Err(err) = spool.append(&bytes_for_spool) {
+                    reservation.finish(0);
+                    return RawPayloadMeta {
+                        path: None,
+                        size_bytes: bytes_for_spool.len() as i64,
+                        truncated: true,
+                        truncated_reason: Some(if err.to_string().contains("capacity") {
+                            "capture_unavailable:spool_capacity".to_string()
+                        } else {
+                            "capture_unavailable:spool_write_failed".to_string()
+                        }),
+                        write_fence: None,
+                    };
+                }
+                let meta = spool.finish(bytes_for_spool.len() as i64).await;
+                reservation.finish(raw_payload_stored_bytes(&meta));
+                meta
+            },
+        ));
     }
 
     let config = state.config.clone();
-    PendingRawPayloadWrite::Task(tokio::spawn(async move {
+    PendingRawPayloadWrite::Task(crate::observability::diagnostics::spawn(async move {
         // Queue behind the bounded CPU writer pool instead of dropping an enabled capture.
         let permit = semaphore
             .acquire_owned()
@@ -4784,7 +4820,7 @@ pub(crate) fn spawn_raw_payload_snapshot_write(
             let semaphore = state.proxy_raw_async_semaphore.clone();
             let invoke_id = invoke_id.to_string();
             let source_path = temp_file.path.clone();
-            PendingRawPayloadWrite::Task(tokio::spawn(async move {
+            PendingRawPayloadWrite::Task(crate::observability::diagnostics::spawn(async move {
                 let _temp_file_guard = temp_file;
                 let _permit = semaphore
                     .acquire_owned()
@@ -5597,7 +5633,7 @@ async fn replay_raw_overflow_spool_segments(
                 }),
         );
     }
-    let writer = tokio::spawn(async move {
+    let writer = crate::observability::diagnostics::spawn(async move {
         write_bounded_streaming_raw_payload_to_file(
             path,
             replay_config.proxy_raw_max_bytes,

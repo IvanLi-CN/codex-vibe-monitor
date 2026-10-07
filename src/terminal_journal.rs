@@ -1074,6 +1074,7 @@ impl TerminalJournal {
                 );
                 let write = BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    diagnostic: None,
                     capture_started: entry.capture_elapsed_ms.and_then(|elapsed_ms| {
                         Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
                     }),
@@ -1446,6 +1447,7 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
         .map(
             |((invoke_id, occurred_at, raw_capture), record)| BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: *raw_capture,
                 // Shutdown recovery has the same post-restart sequence boundary as journal
@@ -1750,6 +1752,7 @@ mod tests {
             crate::tests::test_proxy_capture_record("shutdown-recovery-1", "2026-07-29T00:00:00Z");
         let terminal = BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            diagnostic: None,
             record: record.clone(),
             capture_started: None,
             raw_capture: false,

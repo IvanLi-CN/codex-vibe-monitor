@@ -107,6 +107,9 @@ pub(crate) async fn proxy_openai_v1_common(
     peer_ip: Option<IpAddr>,
     downstream_transport: Option<DownstreamTransportObserver>,
 ) -> Response {
+    let diagnostic_auth_route = crate::observability::diagnostics::phase(
+        crate::observability::diagnostics::Phase::AuthRoute,
+    );
     let proxy_request_id = next_proxy_request_id();
     let started_at = Instant::now();
     let request_content_length = headers
@@ -309,6 +312,9 @@ pub(crate) async fn proxy_openai_v1_common(
         route_context_elapsed = route_context_started.elapsed().as_millis() as u64,
         "proxy route context resolved"
     );
+    if let Some(guard) = diagnostic_auth_route {
+        guard.complete();
+    }
     let pool_route_active = true;
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
 
@@ -1565,7 +1571,7 @@ impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
         let pending_attempt_record = self.pending_attempt_record.clone();
         let first_byte_observed = self.first_byte_observed;
         let terminal_outcome_observed = self.terminal_outcome_observed;
-        tokio::spawn(async move {
+        crate::observability::diagnostics::spawn(async move {
             if let Err(err) = recover_guard_dropped_pool_early_phase_orphan(
                 state.as_ref(),
                 pending_attempt_record,

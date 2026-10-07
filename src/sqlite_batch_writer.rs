@@ -353,6 +353,7 @@ pub(crate) struct BatchedInvocationDerivedWrites {
 #[derive(Debug, Clone)]
 pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) enqueued_at: Option<Instant>,
+    pub(crate) diagnostic: Option<Arc<crate::observability::diagnostics::PersistenceTicket>>,
     pub(crate) record: ProxyCaptureRecord,
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
@@ -567,6 +568,13 @@ impl PendingBatch {
                             .dashboard_terminal_sequence
                             .or(existing.dashboard_terminal_sequence);
                         let mut terminal = terminal;
+                        match (&existing.diagnostic, &terminal.diagnostic) {
+                            (Some(old), Some(new)) if !Arc::ptr_eq(old, new) => {
+                                old.finish("coalesced_unavailable", false)
+                            }
+                            (Some(old), None) => terminal.diagnostic = Some(old.clone()),
+                            _ => {}
+                        }
                         terminal.dashboard_terminal_sequence = preserved_sequence;
                         terminal
                             .terminal_projection_event_ids
@@ -1343,22 +1351,44 @@ impl SqliteBatchWriter {
             };
         }
 
+        let diagnostic_priority = terminal.diagnostic.as_ref().map(|d| {
+            d.context
+                .waiting(crate::observability::diagnostics::Resource::TerminalPriority)
+        });
         let _p1_priority_guard = self
             .p1_priority_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if let Some(guard) = diagnostic_priority {
+            guard.complete();
+        }
         let recovery_terminal = terminal.clone();
+        let diagnostic_journal = terminal.diagnostic.as_ref().map(|d| {
+            d.context
+                .waiting(crate::observability::diagnostics::Resource::JournalLock)
+        });
         let journal = self
             .terminal_journal
             .lock()
             .ok()
             .and_then(|mut journal| {
+                if let Some(guard) = diagnostic_journal {
+                    guard.complete();
+                }
                 journal.as_mut().map(|journal| {
-                    journal.append(
+                    let append = terminal.diagnostic.as_ref().map(|d| {
+                        d.context
+                            .phase(crate::observability::diagnostics::Phase::JournalAppend)
+                    });
+                    let outcome = journal.append(
                         &terminal.record,
                         terminal.raw_capture,
                         terminal.capture_started,
-                    )
+                    );
+                    if let Some(guard) = append {
+                        guard.complete();
+                    }
+                    outcome
                 })
             })
             .unwrap_or(TerminalJournalAppendOutcome {
@@ -3169,9 +3199,22 @@ pub(crate) async fn flush_pending_batch(
     let p1_batch = batch.take_p1_terminals();
     if !p1_batch.is_empty() {
         let transaction_id = format!("p1-{}", started.elapsed().as_nanos());
+        let diagnostic_admission = crate::observability::diagnostics::SharedBatch::begin(
+            p1_batch
+                .terminal_invocations
+                .values()
+                .filter_map(|t| t.diagnostic.as_ref()),
+            p1_batch.terminal_invocations.len(),
+        );
         let permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
             .await;
+        let admission_context = diagnostic_admission.coordinator_admitted();
+        for terminal in p1_batch.terminal_invocations.values() {
+            if let Some(ticket) = &terminal.diagnostic {
+                ticket.context.reference_batch(admission_context.clone());
+            }
+        }
         let lock_wait_ms = permit.lock_wait().as_millis() as u64;
         let execute_started = Instant::now();
         let initial_result = flush_pending_batch_inner(
@@ -3684,6 +3727,8 @@ pub(crate) async fn flush_pending_batch_inner(
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
+        let mut diagnostic_batch = crate::observability::diagnostics::SharedBatch::begin(
+            batch.terminal_invocations.values().filter_map(|t| t.diagnostic.as_ref()), batch.terminal_invocations.len());
         let pool_started = Instant::now();
         let connection_result = pool.acquire().await;
         if let Some(m) = observability {
@@ -3694,6 +3739,7 @@ pub(crate) async fn flush_pending_batch_inner(
             );
         }
         let mut connection = connection_result?;
+        diagnostic_batch.pool_acquired();
         let execute_started = Instant::now();
         let execute_result: Result<()> = async {
         let mut terminal_tx = connection.begin().await?;
@@ -3827,6 +3873,10 @@ pub(crate) async fn flush_pending_batch_inner(
             );
         }
         execute_result?;
+        let diagnostic_batch_context = diagnostic_batch.committed();
+        for terminal in batch.terminal_invocations.values() {
+            if let Some(diagnostic) = &terminal.diagnostic { diagnostic.finish_with_batch("committed", batch.terminal_invocations.len() > 1, diagnostic_batch_context.clone()); }
+        }
         drop(connection);
         if let Some(m) = observability {
             m.counter(
@@ -4746,6 +4796,7 @@ mod tests {
         let request_info = RequestCaptureInfo::default();
         BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            diagnostic: None,
             record: build_running_proxy_capture_record(
                 invoke_id,
                 "2026-07-01 10:00:00",
@@ -4789,6 +4840,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -4865,6 +4917,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: Some(1),
@@ -4987,6 +5040,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
                 // Terminal journal replay uses the reserved post-restart marker rather than an
@@ -5055,6 +5109,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    diagnostic: None,
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -5833,6 +5888,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    diagnostic: None,
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -5938,6 +5994,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -6045,6 +6102,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 record: crate::tests::test_proxy_capture_record(
                     "flush-now-coordinator-p2",
                     "2026-08-10 12:00:00",
@@ -6119,6 +6177,7 @@ mod tests {
         );
         assert!(journal.defer_write(BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            diagnostic: None,
             record,
             capture_started: None,
             raw_capture: true,
@@ -6200,6 +6259,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,

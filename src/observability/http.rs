@@ -70,6 +70,8 @@ struct RequestLifetime {
     method: &'static str,
     started: Instant,
     finished: bool,
+    diagnostic: Option<super::diagnostics::DiagnosticContext>,
+    status_class: &'static str,
 }
 impl RequestLifetime {
     fn finish(&mut self, outcome: &'static str) {
@@ -77,6 +79,9 @@ impl RequestLifetime {
             return;
         }
         self.finished = true;
+        if let Some(context) = &self.diagnostic {
+            context.finish_response(outcome, self.status_class);
+        }
         self.metrics.duration(
             "cvm_http_body_duration_seconds",
             &[("route", self.route), ("method", self.method)],
@@ -113,6 +118,12 @@ impl HttpBody for ObservedBody {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let result = Pin::new(&mut self.inner).poll_frame(cx);
+        if let Poll::Ready(Some(Ok(frame))) = &result
+            && frame.data_ref().is_some_and(|data| !data.is_empty())
+            && let Some(context) = &self.lifetime.diagnostic
+        {
+            context.milestone("first_byte");
+        }
         match &result {
             Poll::Ready(None) => self.lifetime.finish("complete"),
             Poll::Ready(Some(Err(_))) => self.lifetime.finish("error"),
@@ -155,8 +166,25 @@ pub(crate) async fn observability_http_middleware(
         method,
         started,
         finished: false,
+        diagnostic: request
+            .uri()
+            .path()
+            .starts_with("/v1/")
+            .then(|| {
+                super::diagnostics::DiagnosticContext::begin(
+                    metrics.clone(),
+                    super::diagnostics::endpoint(request.uri().path()),
+                )
+            })
+            .flatten(),
+        status_class: "unknown",
     };
-    let response = next.run(request).await;
+    if request.method() != Method::POST
+        && let Some(context) = &lifetime.diagnostic
+    {
+        context.ttft_applicable(false);
+    }
+    let response = super::diagnostics::scope(lifetime.diagnostic.clone(), next.run(request)).await;
     let class = match response.status().as_u16() / 100 {
         1 => "1xx",
         2 => "2xx",
@@ -164,6 +192,10 @@ pub(crate) async fn observability_http_middleware(
         4 => "4xx",
         _ => "5xx",
     };
+    lifetime.status_class = class;
+    if let Some(context) = &lifetime.diagnostic {
+        context.milestone("head");
+    }
     metrics.counter(
         "cvm_http_requests_total",
         &[
@@ -228,11 +260,16 @@ mod tests {
         ObservedBody {
             inner: body,
             lifetime: RequestLifetime {
+                diagnostic: super::super::diagnostics::DiagnosticContext::begin(
+                    metrics.clone(),
+                    "responses",
+                ),
                 metrics,
                 route: "/v1/responses",
                 method: "POST",
                 started: Instant::now(),
                 finished: false,
+                status_class: "2xx",
             },
         }
     }
@@ -274,6 +311,12 @@ mod tests {
             &["method=\"POST\"", "route=\"/v1/responses\""],
             "1",
         );
+        assert_sample(
+            &rendered,
+            "cvm_request_response_ends_total",
+            &["endpoint=\"responses\"", "outcome=\"complete\""],
+            "1",
+        );
     }
 
     #[tokio::test]
@@ -302,6 +345,12 @@ mod tests {
                 &rendered,
                 "cvm_http_body_ends_total",
                 &[&format!("outcome=\"{outcome}\""), "route=\"/v1/responses\""],
+                "1",
+            );
+            assert_sample(
+                &rendered,
+                "cvm_request_response_ends_total",
+                &[&format!("outcome=\"{outcome}\""), "endpoint=\"responses\""],
                 "1",
             );
         }

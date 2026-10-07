@@ -51,3 +51,7 @@
 - The retired writer source is identical in v2.86.2 and v3.0.0; schema-v1 DDL stays frozen.
 - Accept only a pinned v3 image and matching stopped writer; reject v2 direct skips and v4 sources before file operations.
 - Update migration/SemVer/operations records and regression fixtures together; Actions and fresh Tier 4 evidence must bind the changed candidate.
+
+## 请求诊断架构
+
+主人确认服务端入口至响应 body 终结、关联异步落盘旁路、全部 HTTP 代理端点、正常容量内全量轻量记录及 24h 链路留存。ADR 0033 允许独立外部诊断 trace，ADR 0034 选定可共享的 Tempo 与 OTel/OTLP；Prometheus 保持聚合历史职责。实施与隔离验证由一个 PR 交付，正式环境部署、合并和发布不在该交付授权中；计划不写入主题 Spec。

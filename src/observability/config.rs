@@ -6,6 +6,8 @@ pub(crate) struct ObservabilityConfig {
     pub(crate) metrics_bind: SocketAddr,
     pub(crate) grafana_public_url: Option<Url>,
     #[serde(skip)]
+    pub(crate) traces: super::traces::TraceConfig,
+    #[serde(skip)]
     pub(crate) scrape_token: Option<Arc<str>>,
     #[serde(skip)]
     pub(crate) read_token: Option<Arc<str>>,
@@ -26,6 +28,7 @@ impl Default for ObservabilityConfig {
             enabled: false,
             metrics_bind: "127.0.0.1:9091".parse().expect("static bind"),
             grafana_public_url: None,
+            traces: super::traces::TraceConfig::default(),
             scrape_token: None,
             read_token: None,
         }
@@ -80,6 +83,7 @@ impl ObservabilityConfig {
             enabled,
             metrics_bind,
             grafana_public_url,
+            traces: super::traces::TraceConfig::from_env(enabled),
             scrape_token,
             read_token,
         };

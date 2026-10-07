@@ -44,7 +44,7 @@ class Run:
         (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g"},indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
-        for name in ["metrics-token","read-token","grafana-admin-password"]:
+        for name in ["metrics-token","read-token","grafana-admin-password","tempo-ingest-token","tempo-query-token"]:
             path=self.private/name;path.write_text(secrets.token_hex(32));path.chmod(0o640)
         self.data=self.root/"data";self.data.mkdir()
         self.data.chmod(0o770)
@@ -73,17 +73,17 @@ class Run:
         (self.root/"image-identity.json").write_text(json.dumps(identity,indent=2)+"\n")
     def configure(self):
         execute(["openssl","req","-x509","-newkey","rsa:2048","-nodes","-days","1","-subj","/CN=entry","-addext","subjectAltName=DNS:entry","-keyout",str(self.private/"tls.key"),"-out",str(self.private/"tls.crt")],stderr=subprocess.DEVNULL)
-        env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_SECRET_GID":str(os.getgid())}
-        compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"config","--format","json"],env=env))
+        env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_SECRET_GID":str(os.getgid()),"CVM_TEMPO_QUERY_URL":"https://entry:8443/tempo","CVM_TEMPO_QUERY_TOKEN":(self.private/"tempo-query-token").read_text().strip(),"CVM_TEMPO_CA_PEM":(self.private/"tls.crt").read_text()}
+        compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"--profile","traces-isolation","config","--format","json"],env=env))
         compose.pop("name",None);compose["networks"]={"monitoring":{}}
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
-            service["cap_drop"]=["ALL"];service.pop("ports",None)
+            service["cap_drop"]=["ALL"];service.pop("ports",None);service.pop("profiles",None)
             # Keep helpers runner-managed; pinning them can create host PSI pressure.
         fixture=self.source/"scripts/observability-acceptance"
-        common={"image":"python:3.12-alpine","user":f"{os.getuid()}:{os.getgid()}","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.private)+":/private"]}
+        common={"image":"python:3.12-alpine","user":f"{os.getuid()}:{os.getgid()}","cap_drop":["ALL"],"networks":["monitoring"],"volumes":[str(fixture)+":/work:ro",str(self.source/"ops/observability")+":/observability:ro",str(self.private)+":/private"]}
         compose["services"].update({
-            "app":{"image":self.image,"user":f"0:{os.getgid()}","cap_drop":["ALL"],"cpus":2,"mem_limit":"1g","networks":{"monitoring":{"aliases":["codex-vibe-monitor"]}},"volumes":[str(self.data)+":/srv/app/data",str(self.private/"metrics-token")+":/run/secrets/metrics-token:ro",str(self.private/"read-token")+":/run/secrets/read-token:ro"],"environment":{"DATABASE_PATH":"/srv/app/data/codex_vibe_monitor.db","HTTP_BIND":"0.0.0.0:8080","METRICS_BIND":"0.0.0.0:9091","METRICS_TOKEN_FILE":"/run/secrets/metrics-token","OBSERVABILITY_READ_TOKEN_FILE":"/run/secrets/read-token","GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_ENABLED":"true","UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET":"synthetic-testbox-encryption-secret","RUST_LOG":"warn"}},
+            "app":{"image":self.image,"user":f"0:{os.getgid()}","cap_drop":["ALL"],"cpus":2,"mem_limit":"1g","networks":{"monitoring":{"aliases":["codex-vibe-monitor"]}},"volumes":[str(self.data)+":/srv/app/data",str(self.private/"metrics-token")+":/run/secrets/metrics-token:ro",str(self.private/"read-token")+":/run/secrets/read-token:ro",str(self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro",str(self.private/"tls.crt")+":/run/secrets/tempo-ca.crt:ro"],"environment":{"DATABASE_PATH":"/srv/app/data/codex_vibe_monitor.db","HTTP_BIND":"0.0.0.0:8080","METRICS_BIND":"0.0.0.0:9091","METRICS_TOKEN_FILE":"/run/secrets/metrics-token","OBSERVABILITY_READ_TOKEN_FILE":"/run/secrets/read-token","GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_ENABLED":"true","OBSERVABILITY_TRACES_ENABLED":"true","OBSERVABILITY_OTLP_TRACES_ENDPOINT":"https://entry:8443/v1/traces","OBSERVABILITY_OTLP_TOKEN_FILE":"/run/secrets/tempo-ingest-token","SSL_CERT_FILE":"/run/secrets/tempo-ca.crt","OBSERVABILITY_ENVIRONMENT":"production","OBSERVABILITY_INSTANCE":"primary","UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET":"synthetic-testbox-encryption-secret","RUST_LOG":"warn"}},
             "mock-upstream":{**common,"command":["python","/work/fixture.py","upstream"]},
             "entry":{**common,"command":["python","/work/fixture.py","https"]},
             "client":{**common,"command":["sleep","infinity"]},
@@ -108,7 +108,7 @@ class Run:
         raise TimeoutError("application readiness timeout")
     def start(self):
         # Pull before any measured window, including the client image used by exec.
-        self.compose("pull","prometheus","grafana","mock-upstream","entry","client",timeout=600)
+        self.compose("pull","prometheus","grafana","tempo","mock-upstream","entry","client",timeout=600)
         self.compose("up","-d",timeout=180);self.wait_app()
         self.client("seed")
         deadline=time.monotonic()+120
@@ -121,9 +121,9 @@ class Run:
         self.client("browser_seed")
         self.client("load","--seconds","40","--rate",str(self.args.rate))
     def isolation(self):
-        self.compose("stop","prometheus","grafana")
+        self.compose("stop","prometheus","grafana","tempo")
         result=self.client("load","--seconds","10","--rate",str(self.args.rate))
-        self.compose("up","-d","prometheus","grafana");return result
+        self.compose("up","-d","prometheus","grafana","tempo");return result
     def cpu(self):
         # Export symbols from this exact running image before attaching its original process.
         symbols=self.root/"cpu/symbols";symbols.mkdir(parents=True);symbols.chmod(0o770)
@@ -179,17 +179,18 @@ class Run:
         # Stop before snapshotting, then use the same seeded state and offered load every round.
         self.compose("stop","app")
         baseline=self.root/"baseline-data";shutil.copytree(self.data,baseline)
-        samples={"false":[],"true":[]}
+        samples={"off":[],"metrics":[],"full":[]}
         admission_budget=AdmissionBudget()
         for index in range(3):
-            for enabled in ["false","true"] if index%2==0 else ["true","false"]:
+            for enabled in (["off","metrics","full"] if index%2==0 else ["full","metrics","off"]):
                 directory=self.root/f"ab-{index}-{enabled}";shutil.copytree(baseline,directory);directory.chmod(0o770)
                 # The cap-free app uses the host's group for its synthetic state.
                 for path in directory.rglob("*"):
                     assert not path.is_symlink(),"unexpected symlink in synthetic A/B state"
                     path.chmod(0o770 if path.is_dir() else 0o660)
                 app=self.definition["services"]["app"]
-                app["environment"]["OBSERVABILITY_ENABLED"]=enabled
+                app["environment"]["OBSERVABILITY_ENABLED"]="false" if enabled=="off" else "true"
+                app["environment"]["OBSERVABILITY_TRACES_ENABLED"]="true" if enabled=="full" else "false"
                 app["volumes"][0]=str(directory)+":/srv/app/data"
                 self.compose_file.write_text(json.dumps(self.definition,indent=2))
                 self.compose("up","-d","app");self.wait_app()
@@ -203,6 +204,10 @@ class Run:
                     result["cpuSecondsPerRequest"]=(self.cpu_usec()-before)/1e6/result["completed"]
                     result["cpuCores"]=result["cpuSecondsPerRequest"]*self.args.rate
                     result["windowId"]=window["windowId"]
+                    if enabled=="full":
+                        result["traceEvidence"]=self.client("trace_stats")
+                        assert result["traceEvidence"]["enabled"] and result["traceEvidence"]["exportedSpans"]>0, "full mode did not export real application traces"
+                        assert result["traceEvidence"]["failedSpans"]==0 and result["traceEvidence"]["droppedSpans"]==0, "trace loss cannot establish the budget"
                     samples[enabled].append(result)
                     (self.root/"ab-samples.json").write_text(json.dumps(samples,indent=2))
                 assert result["cpuCores"]<1.5,"saturated load cannot establish observability overhead"
@@ -210,11 +215,11 @@ class Run:
                 self.compose("stop","app")
         report=comparison_report(samples)
         (self.root/"ab-summary.json").write_text(json.dumps(report,indent=2)+"\n")
-        assert all(metric[mode]["stable"] for metric in report["metrics"].values() for mode in ["false","true"]),"unstable measurement windows"
+        assert all(metric[mode]["stable"] for metric in report["metrics"].values() for mode in ["off","metrics","full"]),"unstable measurement windows"
         assert all(metric["withinBudget"] for metric in report["metrics"].values()),"5% observability budget exceeded"
         return report
     def finish(self):
-        expected={"https-auth-query","monitoring-fault-isolation","original-process-cpu"}
+        expected={"https-auth-query","tempo-cases-tenant","monitoring-fault-isolation","original-process-cpu"}
         if self.suite=="full": expected.add("default-observability-ab")
         success=all(row["status"]=="passed" for row in self.results.values()) and set(self.results)==expected
         if success and self.suite=="full":
@@ -225,7 +230,7 @@ class Run:
                 (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
                 success=False
         status="passed" if success else "unavailable" if any(row["status"]=="unavailable" for row in self.results.values()) else "failed"
-        card={"empirical_acceptance":"required","empirical_acceptance_rationale":"GitHub-hosted exact-image runtime and default CPU/request plus p95 overhead acceptance." if self.suite=="full" else "Runtime integration only; this card does not certify the performance budget.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))),"evidence_locator":self.context["evidenceLocator"] if self.context else str(self.root)}
+        card={"empirical_acceptance":"required","empirical_acceptance_rationale":"GitHub-hosted exact-image runtime and default CPU/request plus p95 overhead acceptance." if self.suite=="full" else "Runtime integration only; this card does not certify the performance budget.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md",self.source/"docs/adr/0033-external-request-diagnostic-traces.md",self.source/"docs/adr/0034-shared-tempo-request-tracing.md",self.source/"docs/design/request-lifecycle-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))+[self.source/"ops/observability/tempo_access.py",self.source/"ops/observability/tempo.yml",self.source/"ops/observability/compose.yml",self.source/"ops/observability/grafana/provisioning/datasources/tempo.yml"]),"evidence_locator":self.context["evidenceLocator"] if self.context else str(self.root)}
         (self.root/("empirical-card.json" if self.suite=="full" else "runtime-card.json")).write_text(json.dumps(card,indent=2)+"\n")
         return success
 
@@ -242,6 +247,7 @@ def main():
     try:
         run.build();run.configure();run.start()
         run.checkpoint("https-auth-query",lambda:run.client("functional"))
+        run.checkpoint("tempo-cases-tenant",lambda:run.client("trace_cases"))
         run.checkpoint("monitoring-fault-isolation",run.isolation)
         run.checkpoint("original-process-cpu",run.cpu)
         if args.suite=="full": run.checkpoint("default-observability-ab",run.overhead)

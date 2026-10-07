@@ -11,6 +11,12 @@ import ssl
 import socket
 import threading
 import time
+import re
+import secrets
+import sys
+shared = Path(__file__).resolve().parents[2] / "ops/observability"
+sys.path.insert(0, str(shared) if shared.is_dir() else "/observability")
+from tempo_access import case_query, CASE_PREDICATES
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -83,6 +89,11 @@ def functional():
     capabilities=ok("http://app:8080","/api/system/observability")
     assert not any("token" in key.lower() for key in capabilities)
     assert capabilities["grafanaConnectivity"]=="unknown"
+    assert {"enabled", "state", "grafanaPublicUrl", "grafanaConnectivity", "hotpath", "dashboards", "datasourceUid", "variables"} <= set(capabilities)
+    assert set(capabilities["tracing"]) == {"enabled", "state", "datasourceUid", "caseDashboardUid"}
+    assert capabilities["tracing"]["enabled"] is True
+    assert capabilities["tracing"]["datasourceUid"] == "cvm-tempo"
+    assert capabilities["tracing"]["caseDashboardUid"] == "cvm-proxy-cases"
     # A second bounded batch after one minute creates real counter/histogram deltas.
     time.sleep(max(0,60-(time.time()-float((ROOT/"browser-seeded-at").read_text()))))
     browser_batch()
@@ -101,7 +112,7 @@ def functional():
         for panel in dashboard["panels"]:
             for target in panel.get("targets",[]):
                 expression=target["expr"]
-                for name,value in [("$__rate_interval","1m"),("$__range_s","1800"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$endpoint","responses|chat_completions"),("$task_key",".*"),("$lock_label",".*"),("$page",".*"),("$device",".*")]: expression=expression.replace(name,value)
+                for name,value in [("$__rate_interval","1m"),("$__range_s","1800"),("$__range","30m"),("$service","codex-vibe-monitor"),("$environment","production"),("$instance","primary"),("$endpoint","responses|chat_completions"),("$phase","request_read"),("$resource","sqlite_coordinator"),("$task_key",".*"),("$lock_label",".*"),("$page",".*"),("$device",".*")]: expression=expression.replace(name,value)
                 result=ok("https://entry:8443","/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?"+urllib.parse.urlencode({"query":expression}),token=viewer_token)
                 assert result["status"]=="success",expression
                 if uid=="web":
@@ -131,6 +142,9 @@ def functional():
         "proxyCompletions":"sum(cvm_proxy_invocations_total{outcome=\"success\"})",
         "upstreamAttempts":"sum(cvm_proxy_upstream_attempts_total)",
         "bodyP95":"histogram_quantile(0.95,sum by (le)(rate(cvm_http_body_duration_seconds_bucket{route=\"/v1/responses\"}[1m])))",
+        "requestDiagnostics":"sum(cvm_request_response_duration_seconds_count{endpoint=\"responses\"})",
+        "requestWaitDenominator":"sum(cvm_request_local_wait_seconds_count{endpoint=\"responses\"})",
+        "requestPhaseEvents":"sum(cvm_request_stage_seconds_count)",
         "poolP95":"histogram_quantile(0.95,sum by (le)(rate(cvm_sqlite_pool_acquire_duration_seconds_bucket[1m])))",
         "sqlP95":"histogram_quantile(0.95,sum(rate(hotpath_sql_duration_seconds[1m])))",
         "sqlSamples":"sum(histogram_count(increase(hotpath_sql_duration_seconds[1m])))",
@@ -206,8 +220,88 @@ def load(seconds,rate):
     assert all(item[0]==200 for item in results),{"statuses":{str(status):sum(item[0]==status for item in results) for status,_ in results}}
     return {"offered":seconds*rate,"completed":len(results),"dashboardSubscriptions":1,"durationSeconds":time.perf_counter()-started,"p95Seconds":durations[math.ceil(len(durations)*0.95)-1]}
 
+def trace_stats():
+    enabled=ok("http://app:8080","/api/system/observability")["tracing"]
+    status,body=request("http://app:9091","/metrics",token=(ROOT/"metrics-token").read_text().strip())
+    assert status==200
+    def counter(name):
+        return sum(float(value) for value in re.findall(r"^"+name+r"(?:\{[^}]*\})? (\d+(?:\.\d+)?)$",body.decode(),re.M))
+    return {"enabled":enabled["enabled"] and enabled["state"]=="enabled", "exportedSpans":counter("cvm_trace_exported_spans_total"), "failedSpans":counter("cvm_trace_export_failed_spans_total"), "droppedSpans":counter("cvm_trace_queue_dropped_spans_total")+counter("cvm_diagnostic_dropped_total")+counter("cvm_metric_series_dropped_total"), "searchableTrace": bool(ok("https://entry:8443", "/tempo/api/search?"+urllib.parse.urlencode({"q":'{ resource.service.name = "codex-vibe-monitor" && span.cvm.record = "response" && span.cvm.status_class = "2xx" }', "start":int(time.time())-300,"end":int(time.time()),"limit":1}), token=(ROOT/"tempo-query-token").read_text().strip()).get("traces"))}
+
+def trace_cases():
+    query_token=(ROOT/"tempo-query-token").read_text().strip()
+    ingest_token=(ROOT/"tempo-ingest-token").read_text().strip()
+    def search(category):
+        now=int(time.time())
+        return "/tempo/api/search?"+urllib.parse.urlencode({"q":case_query(category),"start":now-300,"end":now,"limit":3})
+    for token in [None, "invalid", ingest_token]:
+        assert request("https://entry:8443",search("normal"),token=token)[0]==401
+    for token in [None, "invalid", query_token]:
+        assert request("https://entry:8443","/v1/traces",method="POST",payload={},token=token)[0]==401
+    assert trace_stats()["enabled"], "application trace startup degraded"
+    assert request("http://app:8080", "/v1/responses", method="POST", payload={"input":"synthetic rejection"})[0] == 401
+    deadline=time.monotonic()+15
+    while True:
+        rejected=ok("https://entry:8443","/tempo/api/search?"+urllib.parse.urlencode({"q":'{ resource.service.name = "codex-vibe-monitor" && span.cvm.record = "response" && span.cvm.status_class = "4xx" }',"start":int(time.time())-300,"end":int(time.time()),"limit":3}),token=query_token).get("traces",[])
+        if rejected: break
+        assert time.monotonic()<deadline, "pre-auth rejection trace is missing"
+        time.sleep(1)
+    rejection=ok("https://entry:8443","/tempo/api/v2/traces/"+rejected[0]["traceID"],token=query_token)
+    def response_roots(node):
+        if isinstance(node, dict):
+            if node.get("name") == "cvm.proxy.response": yield node
+            for child in node.values(): yield from response_roots(child)
+        elif isinstance(node, list):
+            for child in node: yield from response_roots(child)
+    roots=list(response_roots(rejection))
+    assert len(roots)==1
+    attributes={a["key"]:a["value"] for a in roots[0]["attributes"]}
+    assert int(attributes["cvm.attempts"]["intValue"]) == 0
+    assert attributes["cvm.ttft_state"]["stringValue"] == "not_applicable"
+    assert "invoke_id" not in json.dumps(rejection)
+    # Search actual application records before injecting classified synthetic fixtures.
+    deadline=time.monotonic()+20
+    while True:
+        actual=ok("https://entry:8443","/tempo/api/search?"+urllib.parse.urlencode({"q":'{ resource.service.name = "codex-vibe-monitor" && span.cvm.record = "response" && span.cvm.status_class = "2xx" }',"start":int(time.time())-300,"end":int(time.time()),"limit":3}),token=query_token).get("traces",[])
+        if actual: break
+        assert time.monotonic()<deadline, "application traces are not searchable"
+        time.sleep(1)
+    actual_id=actual[0]["traceID"]
+    deadline=time.monotonic()+15
+    while True:
+        actual_trace=ok("https://entry:8443","/tempo/api/v2/traces/"+actual_id,token=query_token,extra_headers={"X-Scope-OrgID":"other|cvm"})
+        text=json.dumps(actual_trace)
+        if "cvm.terminal.enqueue_to_commit" in text: break
+        assert time.monotonic()<deadline, "late persistence export did not arrive"
+        time.sleep(1)
+    assert "cvm.proxy.response" in text
+    assert "cvm.terminal.enqueue_to_commit" in text, "late persistence correlation missing"
+    assert not any(secret in text for secret in [POOL_TOKEN,"synthetic-upstream-token","resp_fixture","invoke_id","prompt_cache_key"])
+    # These model offline scenarios to test classification, not application timing or overhead.
+    now=time.time_ns(); ids={}; spans=[]
+    def attr(key,value):
+        kind="boolValue" if isinstance(value,bool) else "intValue" if isinstance(value,int) else "stringValue"
+        return {"key":key,"value":{kind:str(value) if kind=="intValue" else value}}
+    for category in CASE_PREDICATES:
+        trace_id=secrets.token_hex(16); ids[category]=trace_id
+        flags={"cvm.record":"response","cvm.endpoint":"responses","cvm.fixture":True,"cvm.outcome":"error" if category=="error" else "complete","cvm.status_class":"5xx" if category=="error" else "2xx","cvm.normal_candidate":category=="normal","cvm.slow":category=="slow","cvm.high_wait":category=="wait","cvm.retry":category=="retry"}
+        duration=31_000_000_000 if category=="slow" else 300_000_000
+        spans.append({"traceId":trace_id,"spanId":secrets.token_hex(8),"name":"cvm.proxy.response","kind":2,"startTimeUnixNano":str(now-duration),"endTimeUnixNano":str(now),"attributes":[attr(k,v) for k,v in flags.items()]})
+    payload={"resourceSpans":[{"resource":{"attributes":[attr("service.name","codex-vibe-monitor"),attr("deployment.environment.name","production"),attr("service.instance.id","primary")]},"scopeSpans":[{"scope":{"name":"cvm.synthetic.classified"},"spans":spans}]}]}
+    assert request("https://entry:8443","/v1/traces",method="POST",payload=payload,token=ingest_token,extra_headers={"X-Scope-OrgID":"other"})[0]==200
+    for category, trace_id in ids.items():
+        deadline=time.monotonic()+15
+        while True:
+            rows=ok("https://entry:8443",search(category),token=query_token).get("traces",[])
+            if any(row["traceID"]==trace_id for row in rows): break
+            assert time.monotonic()<deadline, "classified trace not searchable: "+category
+            time.sleep(1)
+        expanded=ok("https://entry:8443","/tempo/api/v2/traces/"+trace_id,token=query_token)
+        assert "cvm.proxy.response" in json.dumps(expanded)
+    return {"applicationTrace":"search-and-late-persistence-verified", "preAuthRejection":"no-attempt-or-business-identity", "classifiedFixtures":list(ids), "tenant":"credential-assigned", "unauthorizedRoles":"rejected"}
+
 if __name__ == "__main__":
-    parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","browser_seed","functional","load"])
+    parser=argparse.ArgumentParser();parser.add_argument("mode",choices=["seed","ready","viewer","browser_seed","functional","load","trace_stats","trace_cases"])
     parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=20)
     args=parser.parse_args()
     result=load(args.seconds,args.rate) if args.mode=="load" else globals()[args.mode]()

@@ -345,6 +345,9 @@ pub(crate) async fn run() -> Result<()> {
     let shutdown = CancellationToken::new();
     let process_started_at_utc = Utc::now();
     let observability = ObservabilityRuntime::new(config.observability.enabled);
+    observability
+        .initialize_traces(config.observability.traces.clone())
+        .await;
 
     observability.start_exporter(&config.observability, shutdown.clone());
 
@@ -2252,6 +2255,8 @@ pub(crate) async fn drain_runtime_after_shutdown(
 
     state.xray_supervisor.lock().await.shutdown_all().await;
     crate::task_timeline::drain_after_shutdown().await;
+    let traces = state.observability.trace_runtime();
+    let _ = tokio::task::spawn_blocking(move || traces.shutdown()).await;
     info!("shutdown complete");
 
     Ok(())

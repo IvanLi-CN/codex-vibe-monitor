@@ -32,7 +32,7 @@ pub(crate) async fn observability_capabilities(
     State(state): State<Arc<AppState>>,
 ) -> Json<serde_json::Value> {
     Json(
-        json!({"enabled":state.observability.enabled,"state":state.observability.state(),"grafanaPublicUrl":state.config.observability.grafana_public_url,"grafanaConnectivity":"unknown","hotpath":cfg!(feature="hotpath"),"dashboards":["cvm-overview","cvm-proxy","cvm-sqlite","cvm-runtime","cvm-web"],"datasourceUid":"cvm-prometheus","variables":["service","environment","instance","task_key"]}),
+        json!({"enabled":state.observability.enabled,"state":state.observability.state(),"grafanaPublicUrl":state.config.observability.grafana_public_url,"grafanaConnectivity":"unknown","hotpath":cfg!(feature="hotpath"),"dashboards":["cvm-overview","cvm-proxy","cvm-sqlite","cvm-runtime","cvm-web"],"datasourceUid":"cvm-prometheus","variables":["service","environment","instance","task_key"],"tracing":{"enabled":state.observability.trace_runtime().enabled,"state":state.observability.trace_runtime().state(),"datasourceUid":"cvm-tempo","caseDashboardUid":"cvm-proxy-cases"}}),
     )
 }
 pub(crate) async fn hotpath_report(

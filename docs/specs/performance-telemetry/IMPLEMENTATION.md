@@ -1,5 +1,17 @@
 # 外部性能观测实现
 
+## 请求生命周期与链路覆盖
+
+`src/observability/diagnostics.rs` 在内存中管理独立随机 trace 身份和单调/UTC 基准；最外层 HTTP middleware 在鉴权、路由及 CORS 处理之前建立上下文，body 包装器在 EOF、error 或 Drop 终结一次。显式 task-local scope 与代理自有 spawn 传播上下文，业务 `StageTimings`、SQLite schema 和 terminal journal 格式保留。Responses、Chat Completions、Compact、`/v1/alpha/search`、图像生成/编辑以及其他 `/v1/*` 请求均有入口与响应结束；非适用 TTFT 明确标记，未见有效 delta 的成功文本流不补零。
+
+`src/observability/traces.rs` 使用显式白名单 OTel spans、标准 SDK 后台 batch 与私密 HTTPS OTLP transport；没有全局 tracing 日志 layer、自动资源探测或入站 baggage。配置/导出失败、活跃上下文、详细记录、队列及指标系列上限均有独立降级或损失信号；本地 tracing 状态不依赖 Tempo 查询。每请求 64 spans/64KiB、详细 attempts 8、最长已结束等待 8、上下文 1024，SDK queue 2048/batch 128，网络和 shutdown 各有 2 秒边界。
+
+前台 coordinator、DB API 获取、账户容量、退避、channel 背压及终态 priority/journal lock 等待由真实区间产生。响应 root 的本地等待并集不包含响应结束之后的落盘旁路，开放等待保留响应窗口内下界；终态命令仅增加内存 ticket。入队至 commit 逐命令终结一次，同批 coordinator/pool/execute 只记录一次共享工作并用 links 关联；coalesced/replay 缺少原上下文时不伪造业务身份。详细信号及分母见 [METRICS.md](METRICS.md)。
+
+隔离配置复用 `ops/observability/compose.yml` 和 acceptance fixture，固定 Tempo 3.1.0 digest、tenant cvm、24h 留存及单一 512MiB tmpfs；摄入/查询身份分别认证后覆盖 tenant header。Grafana provision `cvm-tempo` 与 `cvm-proxy-cases`，统计页新增阶段/等待分布与同窗统计，案例页五类各最多 3 条且手动刷新。已有 synthetic preview 提供合成统计和五类 trace 瀑布，无正式数据。正式环境存储、凭据、容量、主机资源及上线效果尚未验证。
+
+生命周期、等待并集、晚到 commit、shared batch/replay、白名单、有界丢弃与 exporter 失败有定向 Rust 回归；Python 回归覆盖固定查询/权限、九窗口实测证据和单一 5% 预算。全工程检查及当前 SHA 的运行、性能证据由既有 CI 提供；在实际渲染、当前候选 Actions 实测卡和正式审查完成前，不能将配置或单元测试结果当作完整验收通过。
+
 ## PR 检查与性能验收边界
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR

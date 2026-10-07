@@ -11,13 +11,16 @@ Implementation status: Not started
 | 数据 / 能力                           | 唯一职责方                | 边界                                                          |
 | ------------------------------------- | ------------------------- | ------------------------------------------------------------- |
 | 聚合性能指标历史                      | Prometheus                | 应用不保存第二份指标历史，不查询它来完成业务请求              |
+| 请求诊断链路历史                      | 共享 Tempo                | 保存有界个体区间和关联关系，CVM 留存 24 小时                  |
 | 性能图表与告警                        | Grafana                   | 正式图表、变量、数据源和规则由仓库 provisioning 管理          |
 | 函数、规范化 SQL、路由、选定锁诊断    | 进程内 hotpath-rs         | 提供实时归因及私网 Prometheus 导出，不承担历史数据库          |
 | CPU 调用栈与火焰图                    | 按需 samply + 成熟查看器  | SSH 对运行实例限时 attach，文件短期保存，无常驻 profiler 服务 |
 | 调用、费用、token、终态与任务执行记录 | 现有业务持久化            | 主库、任务库、TerminalJournal、raw/archive 不属于退役的性能库 |
 | 浏览器体验                            | 新浏览器适配器 + 应用 SDK | 低频、固定分类、有界上报，不保存用户性能明细                  |
 
-首期不引入 Loki、Tempo、Pyroscope、OTel Collector、额外 Alertmanager 或自研火焰图界面。核心外部常驻服务只有 Prometheus、Grafana；采样工具和受限 SSH 命令不增加 daemon。Grafana 的内部配置库属于其产品实现，不是本项目保留的性能 SQLite。
+首期不引入 Loki、Pyroscope、独立 OTel Collector、额外 Alertmanager 或自研火焰图界面。核心外部常驻服务为 Prometheus、Grafana 和共享 Tempo；采样工具和受限 SSH 命令不增加 daemon。Grafana 的内部配置库属于其产品实现，不是本项目保留的性能 SQLite。
+
+针对完整下游请求的资源等待归因与个体案例分析，[ADR 0033](../adr/0033-external-request-diagnostic-traces.md) 扩展上述服务数量边界，[ADR 0034](../adr/0034-shared-tempo-request-tracing.md) 选择共享 Tempo、OpenTelemetry/OTLP 与首期 SDK 有界异步批量导出，由 Grafana 展示并与 Prometheus 统计关联。CVM 为首个接入项目，链路正常容量内全量轻量记录、保留 24 小时，界面展示少量分类案例；共享平台与应用边界、容量核验见 [请求生命周期观测设计](request-lifecycle-observability.md)。该扩展保留聚合指标、业务事实与 CPU 诊断各自的职责。
 
 ## 项目内业务与采集链路
 
