@@ -302,9 +302,9 @@
 - margin_policy: `trim_only`
 - evidence_surface: `page`
 - sensitive_exclusion: `N/A`
-- comparison_base: `130c357c043a3449512a25cd82643fc5a8ca02df`
+- comparison_base: `8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3`
 - comparison: `current-only`; the locked baseline has no images at the new exact destination paths
-- rendered_candidate: `123e11086c804050bb9dc4241d8157e6a54283e0`
+- rendered_candidate: `caf933ab46e9e6471e24ed6c93f1c69031466289`
 - owner_confirmation: confirmed in chat on 2026-10-07 ("确认。")
 - submission_gate: `approved`
 - state: demo timeline rendered 13,120 intervals across 27 pages with no unavailable warning; desktop dark, mobile light, and an expanded 94-run dense group with inspectable run IDs
