@@ -46,6 +46,7 @@
       "evidence": [
         "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
         "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
+        "src/tests/stateful_sqlite/prompt_cache_live_reads.rs",
         "src/api/slices/subscriptions.rs",
         "web/src/lib/promptCacheLive.test.ts",
         "web/src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
