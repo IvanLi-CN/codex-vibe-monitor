@@ -27,6 +27,10 @@ fn ownership_runtime_lock_child_fixture() {
         panic!("child must own the runtime");
     };
     owner.publish_role("service:ownership-v1:ready").unwrap();
+    fs::write(&config.database_path, b"business").unwrap();
+    fs::write(config.maintenance_database_path(), b"maintenance").unwrap();
+    owner.refresh_inode_pair_lock().unwrap();
+    owner.publish_role("service:ownership-v1:ready").unwrap();
     fs::write(config.database_path.with_extension("ready"), b"ready").unwrap();
     // stdin closure ends the fixture normally; the parent guard also handles failure.
     let mut input = String::new();
@@ -39,8 +43,6 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     let directory = make_temp_test_dir("maintenance-runtime-process");
     let mut config = test_config();
     config.database_path = directory.join("business.sqlite");
-    fs::write(&config.database_path, b"business").unwrap();
-    fs::write(config.maintenance_database_path(), b"maintenance").unwrap();
     let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut offline) =
         crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap()
     else {

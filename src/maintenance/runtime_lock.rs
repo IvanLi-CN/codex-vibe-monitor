@@ -8,6 +8,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 pub(crate) struct MaintenanceRuntimeLock {
     files: Vec<File>,
     database_pair_id: String,
+    pair_lock_count: usize,
+    database_paths: Vec<PathBuf>,
 }
 
 pub(crate) enum MaintenanceRuntimeRoute {
@@ -47,28 +49,48 @@ impl MaintenanceRuntimeLock {
             ];
             paths.sort();
             paths.dedup();
-            let mut pair_hash = Sha256::new();
+            let mut path_hash = Sha256::new();
             for path in &paths {
-                use std::os::unix::fs::MetadataExt;
-                if let Ok(metadata) = std::fs::metadata(path) {
-                    pair_hash.update(metadata.dev().to_be_bytes());
-                    pair_hash.update(metadata.ino().to_be_bytes());
-                } else {
-                    use std::os::unix::ffi::OsStrExt;
-                    let bytes = path.as_os_str().as_bytes();
-                    pair_hash.update((bytes.len() as u64).to_be_bytes());
-                    pair_hash.update(bytes);
-                }
+                use std::os::unix::ffi::OsStrExt;
+                let bytes = path.as_os_str().as_bytes();
+                path_hash.update((bytes.len() as u64).to_be_bytes());
+                path_hash.update(bytes);
             }
-            let database_pair_id = format!("{:x}", pair_hash.finalize());
+            let database_pair_id = format!("{:x}", path_hash.finalize());
             let ready_role = format!("service:ownership-v1:ready:{database_pair_id}");
-            let pair_lock_name = std::env::temp_dir().join(format!(
+            let path_pair_lock_name = std::env::temp_dir().join(format!(
                 "codex-vibe-monitor-runtime-{database_pair_id}.lock"
             ));
             let mut files = Vec::new();
             let mut busy_roles = Vec::new();
             let mut lock_paths = paths.clone();
-            lock_paths.push(pair_lock_name);
+            lock_paths.push(path_pair_lock_name);
+            let mut inode_hash = Sha256::new();
+            let mut all_exist = true;
+            for path in &paths {
+                use std::os::unix::fs::MetadataExt;
+                if let Ok(metadata) = std::fs::metadata(path) {
+                    inode_hash.update(metadata.dev().to_be_bytes());
+                    inode_hash.update(metadata.ino().to_be_bytes());
+                } else {
+                    all_exist = false;
+                }
+            }
+            let inode_pair_id = if all_exist {
+                Some(format!("{:x}", inode_hash.finalize()))
+            } else {
+                None
+            };
+            if let Some(inode_pair_id) = inode_pair_id.as_deref() {
+                let inode_pair_lock = std::env::temp_dir().join(format!(
+                    "codex-vibe-monitor-runtime-inode-{inode_pair_id}.lock"
+                ));
+                lock_paths.push(inode_pair_lock);
+            }
+            let inode_ready_role = inode_pair_id
+                .as_deref()
+                .map(|id| format!("service:ownership-v1:ready:{id}"));
+            let pair_lock_count = lock_paths.len() - paths.len();
             for path in lock_paths {
                 let mut name = path.as_os_str().to_os_string();
                 name.push(".runtime.lock");
@@ -95,13 +117,21 @@ impl MaintenanceRuntimeLock {
                 return Ok(MaintenanceRuntimeRoute::Offline(Self {
                     files,
                     database_pair_id,
+                    pair_lock_count,
+                    database_paths: paths,
                 }));
             }
             // A partial acquisition, initialization, or another offline command is ambiguous.
             // Do not open/recover either database under that condition.
             if allow_online
-                && busy_roles.iter().any(|role| role == &ready_role)
-                && busy_roles.iter().all(|role| role == &ready_role)
+                && busy_roles
+                    .iter()
+                    .any(|role| role == "service:ownership-v1:ready")
+                && busy_roles.iter().all(|role| {
+                    role == "service:ownership-v1:ready"
+                        || role == &ready_role
+                        || inode_ready_role.as_deref() == Some(role)
+                })
             {
                 Ok(MaintenanceRuntimeRoute::Online)
             } else {
@@ -114,12 +144,59 @@ impl MaintenanceRuntimeLock {
 
     pub(crate) fn publish_role(&mut self, role: &str) -> Result<()> {
         // Readiness belongs to the database pair, not merely to two busy files.
-        let role = format!("{role}:{}", self.database_pair_id);
-        for file in &mut self.files {
+        let path_role = format!("{role}:{}", self.database_pair_id);
+        let path_file_count = self.files.len() - self.pair_lock_count;
+        for file in &mut self.files[..path_file_count] {
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
-            file.write_all(role.as_bytes())?;
+            file.write_all(path_role.as_bytes())?;
             file.sync_data()?;
+        }
+        for file in &mut self.files[path_file_count..] {
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(b"service:ownership-v1:ready")?;
+            file.sync_data()?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn refresh_inode_pair_lock(&mut self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            use std::os::unix::fs::MetadataExt;
+            if self.pair_lock_count > 1 {
+                return Ok(());
+            }
+            let mut inode_hash = Sha256::new();
+            for path in &self.database_paths {
+                let metadata = std::fs::metadata(path)
+                    .with_context(|| format!("database path is not ready: {}", path.display()))?;
+                inode_hash.update(metadata.dev().to_be_bytes());
+                inode_hash.update(metadata.ino().to_be_bytes());
+            }
+            let inode_pair_id = format!("{:x}", inode_hash.finalize());
+            let lock_path = std::env::temp_dir().join(format!(
+                "codex-vibe-monitor-runtime-inode-{inode_pair_id}.lock"
+            ));
+            let mut name = lock_path.as_os_str().to_os_string();
+            name.push(".runtime.lock");
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(false)
+                .read(true)
+                .write(true)
+                .open(PathBuf::from(name))?;
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return Err(std::io::Error::last_os_error().into());
+            }
+            file.set_len(0)?;
+            file.seek(SeekFrom::Start(0))?;
+            file.write_all(b"service:ownership-v1:ready")?;
+            file.sync_data()?;
+            self.files.push(file);
+            self.pair_lock_count += 1;
         }
         Ok(())
     }

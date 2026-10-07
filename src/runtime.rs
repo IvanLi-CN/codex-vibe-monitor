@@ -320,6 +320,7 @@ pub(crate) async fn run() -> Result<()> {
             return Ok(());
         }
         if crate::maintenance_store::global().is_some() {
+            runtime_lock.refresh_inode_pair_lock()?;
             runtime_lock.publish_role("service:ownership-v1:ready")?;
         }
 
