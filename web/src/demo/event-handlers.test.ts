@@ -34,7 +34,10 @@ describe("demo topic payloads", () => {
     const [catalog, runtime, timeline, workload] = await Promise.all([
       resolveDemoTopicPayload({ topic: "system.managed-tasks.catalog" }, requestUrl),
       resolveDemoTopicPayload({ topic: "system.managed-tasks.runtime" }, requestUrl),
-      resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),
+      resolveDemoTopicPayload(
+        { topic: "system.managed-tasks.timeline", params: { schemaVersion: "2" } },
+        requestUrl,
+      ),
       resolveDemoTopicPayload(
         {
           topic: "system.managed-tasks.workload",
@@ -93,6 +96,12 @@ describe("demo topic payloads", () => {
 
     expect(ids.size).toBe(13_120);
     expect(pageCount).toBe(27);
+  });
+
+  it("keeps unversioned timeline demo subscriptions on the bounded v1 contract", async () => {
+    await expect(
+      resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),
+    ).rejects.toThrow("managed task timeline exceeds the bounded SSE snapshot capacity");
   });
 
   it("keeps model routing subscription filters in the demo snapshot", async () => {

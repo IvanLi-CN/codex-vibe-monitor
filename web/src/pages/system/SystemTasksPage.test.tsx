@@ -242,6 +242,7 @@ describe("SystemTasksPage", () => {
     });
     expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
       topic: "system.managed-tasks.timeline",
+      params: { schemaVersion: "2" },
     });
     expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
       topic: "system.managed-tasks.catalog",

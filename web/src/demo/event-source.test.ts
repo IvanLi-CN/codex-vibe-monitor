@@ -141,7 +141,7 @@ describe("DemoTopicEventSource", () => {
     });
     const topics = [
       { topic: "system.managed-tasks.runtime" },
-      { topic: "system.managed-tasks.timeline" },
+      { topic: "system.managed-tasks.timeline", params: { schemaVersion: "2" } },
     ];
     const encodedTopics = btoa(JSON.stringify(topics));
     const source = new DemoTopicEventSource(`/events?topics=${encodedTopics}`);

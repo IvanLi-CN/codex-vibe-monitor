@@ -93,6 +93,7 @@ function mergeTimelineSegments(
 export function useManagedTaskTimeline() {
   const topic = useSubscriptionTopic<TaskTimelineRevision>({
     topic: "system.managed-tasks.timeline",
+    params: { schemaVersion: "2" },
   });
   const [snapshot, setSnapshot] = useState<TimelineSnapshot | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);

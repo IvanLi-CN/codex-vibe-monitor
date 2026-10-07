@@ -29,6 +29,7 @@ const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
 const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
+const MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT: usize = 10_000;
 const UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -3756,6 +3757,7 @@ enum SubscriptionTopic {
     ManagedTaskCatalog,
     ManagedTaskRuntime,
     ManagedTaskTimeline,
+    ManagedTaskTimelineV2,
     ManagedTaskDetail {
         task_key: String,
     },
@@ -6512,6 +6514,24 @@ impl SubscriptionHub {
             } else {
                 ((None, false), None)
             };
+        let timeline_baseline =
+            if emit_live && matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
+                self.state
+                    .lock()
+                    .await
+                    .topics
+                    .get(&topic_key)
+                    .filter(|cached| !cached.dirty)
+                    .and_then(|cached| {
+                        cached
+                            .snapshot_payload
+                            .get("watermark")
+                            .and_then(Value::as_i64)
+                            .map(|revision| (cached.snapshot_payload.clone(), revision))
+                    })
+            } else {
+                None
+            };
         let (mut built_payload, prompt_cache_build, parallel_work_build) = if is_prompt_cache_topic
         {
             let (payload, build) = self
@@ -6524,7 +6544,34 @@ impl SubscriptionHub {
                 .await?;
             (payload, None, Some(build))
         } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
-            let payload = match build_managed_task_timeline_topic_payload().await {
+            let after_revision = timeline_baseline.as_ref().map(|(_, revision)| *revision);
+            let event_payload =
+                match build_managed_task_timeline_topic_payload(after_revision).await {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        self.clear_managed_task_refresh_schedule(&topic_key).await;
+                        return Err(error);
+                    }
+                };
+            let payload = if let Some((previous, _)) = &timeline_baseline {
+                let snapshot_payload =
+                    match merge_managed_task_timeline_payload(previous, &event_payload) {
+                        Ok(payload) => payload,
+                        Err(error) => {
+                            self.clear_managed_task_refresh_schedule(&topic_key).await;
+                            return Err(error);
+                        }
+                    };
+                BuiltSubscriptionTopicPayload::JsonDelta {
+                    snapshot_payload,
+                    event_payload,
+                }
+            } else {
+                BuiltSubscriptionTopicPayload::Json(event_payload)
+            };
+            (payload, None, None)
+        } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimelineV2) {
+            let payload = match build_managed_task_timeline_revision_topic_payload().await {
                 Ok(payload) => payload,
                 Err(error) => {
                     self.clear_managed_task_refresh_schedule(&topic_key).await;
@@ -8262,6 +8309,7 @@ fn is_managed_task_refresh_topic(topic: &SubscriptionTopic) -> bool {
         SubscriptionTopic::ManagedTaskCatalog
             | SubscriptionTopic::ManagedTaskRuntime
             | SubscriptionTopic::ManagedTaskTimeline
+            | SubscriptionTopic::ManagedTaskTimelineV2
             | SubscriptionTopic::ManagedTaskDetail { .. }
             | SubscriptionTopic::ManagedTaskWorkload { .. }
     )
@@ -12246,6 +12294,7 @@ pub(crate) async fn topic_sse_stream(
                 SubscriptionTopic::ManagedTaskCatalog
                     | SubscriptionTopic::ManagedTaskRuntime
                     | SubscriptionTopic::ManagedTaskTimeline
+                    | SubscriptionTopic::ManagedTaskTimelineV2
                     | SubscriptionTopic::ManagedTaskDetail { .. }
                     | SubscriptionTopic::ManagedTaskWorkload { .. }
             )
@@ -12465,6 +12514,7 @@ impl SubscriptionTopic {
             | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
+            | Self::ManagedTaskTimelineV2
             | Self::ManagedTaskDetail { .. }
             | Self::ManagedTaskWorkload { .. }
             | Self::InvocationWindow { .. }
@@ -12562,6 +12612,7 @@ impl SubscriptionTopic {
             | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
+            | Self::ManagedTaskTimelineV2
             | Self::ManagedTaskDetail { .. }
             | Self::ManagedTaskWorkload { .. } => Vec::new(),
             Self::PromptCacheWindow { .. } => vec![
@@ -12614,7 +12665,15 @@ impl SubscriptionTopic {
             "quota.current" => Ok(Self::QuotaCurrent),
             "system.managed-tasks.catalog" => Ok(Self::ManagedTaskCatalog),
             "system.managed-tasks.runtime" => Ok(Self::ManagedTaskRuntime),
-            "system.managed-tasks.timeline" => Ok(Self::ManagedTaskTimeline),
+            "system.managed-tasks.timeline" => {
+                match parse_i64_param(params, "schemaVersion", Some(1))? {
+                    1 => Ok(Self::ManagedTaskTimeline),
+                    2 => Ok(Self::ManagedTaskTimelineV2),
+                    _ => Err(ApiError::bad_request(anyhow!(
+                        "managed task timeline schemaVersion must be 1 or 2"
+                    ))),
+                }
+            }
             "system.managed-tasks.detail" => Ok(Self::ManagedTaskDetail {
                 task_key: parse_required_text_param(params, "taskKey")?,
             }),
@@ -12815,6 +12874,10 @@ impl SubscriptionTopic {
                     params: BTreeMap::new(),
                 }
             }
+            Self::ManagedTaskTimelineV2 => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: btree_map_from_pairs([("schemaVersion", "2".to_string())]),
+            },
             Self::ManagedTaskDetail { task_key } => SubscriptionTopicDescriptor {
                 topic: self.name().to_string(),
                 params: btree_map_from_pairs([("taskKey", task_key.clone())]),
@@ -13096,6 +13159,7 @@ impl SubscriptionTopic {
             Self::ManagedTaskCatalog => "system.managed-tasks.catalog",
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime",
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline",
+            Self::ManagedTaskTimelineV2 => "system.managed-tasks.timeline",
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail",
             Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
@@ -13131,7 +13195,8 @@ impl SubscriptionTopic {
             Self::QuotaCurrent => "quota.current/v1".to_string(),
             Self::ManagedTaskCatalog => "system.managed-tasks.catalog/v1".to_string(),
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
-            Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v2".to_string(),
+            Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
+            Self::ManagedTaskTimelineV2 => "system.managed-tasks.timeline/v2".to_string(),
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail/v1".to_string(),
             Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
@@ -13204,6 +13269,7 @@ impl SubscriptionTopic {
                     | Self::ManagedTaskCatalog
                     | Self::ManagedTaskRuntime
                     | Self::ManagedTaskTimeline
+                    | Self::ManagedTaskTimelineV2
                     | Self::ManagedTaskDetail { .. }
                     | Self::ManagedTaskWorkload { .. }
                     | Self::PromptCacheConversationBindingCurrent { .. }
@@ -13281,7 +13347,75 @@ impl SubscriptionTopic {
     }
 }
 
-async fn build_managed_task_timeline_topic_payload() -> Result<Value, ApiError> {
+async fn build_managed_task_timeline_topic_payload(
+    after_revision: Option<i64>,
+) -> Result<Value, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    managed_task_timeline_page_payload(store, after_revision).await
+}
+
+async fn managed_task_timeline_page_payload(
+    store: &crate::maintenance_store::MaintenanceStore,
+    after_revision: Option<i64>,
+) -> Result<Value, ApiError> {
+    let window_end = Utc::now();
+    let window_start = window_end - ChronoDuration::hours(12);
+    let from = format_utc_iso_millis(window_start);
+    let to = format_utc_iso_millis(window_end);
+    let mut page = crate::task_timeline::timeline_page(
+        store,
+        None,
+        after_revision,
+        Some(&from),
+        Some(&to),
+        None,
+        500,
+    )
+    .await
+    .map_err(ApiError::from)?;
+    let mut segments = std::mem::take(&mut page.segments);
+    let mut cursor = page.next_cursor.take();
+    while let Some(next_cursor) = cursor {
+        let next = crate::task_timeline::timeline_page(
+            store,
+            Some(&next_cursor),
+            None,
+            None,
+            None,
+            None,
+            500,
+        )
+        .await
+        .map_err(ApiError::from)?;
+        if next.reset_required {
+            return Err(ApiError::unavailable(anyhow!(
+                "managed task timeline pagination expired; a fresh snapshot is required"
+            )));
+        }
+        segments.extend(next.segments);
+        cursor = next.next_cursor;
+        if segments.len() > MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT
+            || (segments.len() == MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT && cursor.is_some())
+        {
+            return Err(ApiError::unavailable(anyhow!(
+                "managed task timeline exceeds the bounded SSE snapshot capacity"
+            )));
+        }
+    }
+    page.segments = segments;
+    page.next_cursor = None;
+    let mut payload = serde_json::to_value(page)?;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("replace".to_string(), Value::Bool(after_revision.is_none()));
+    }
+    Ok(payload)
+}
+
+async fn build_managed_task_timeline_revision_topic_payload() -> Result<Value, ApiError> {
     let Some(store) = crate::maintenance_store::global() else {
         return Err(ApiError::unavailable(anyhow!(
             "maintenance database unavailable"
@@ -13298,6 +13432,80 @@ async fn managed_task_timeline_revision_payload(
         "watermark": watermark,
         "observedAt": format_utc_iso_millis(Utc::now()),
     }))
+}
+
+fn merge_managed_task_timeline_payload(
+    previous: &Value,
+    update: &Value,
+) -> Result<Value, ApiError> {
+    if update.get("replace").and_then(Value::as_bool) != Some(false) {
+        return Ok(update.clone());
+    }
+    let previous_segments = previous
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            ApiError::unavailable(anyhow!("cached task timeline snapshot is invalid"))
+        })?;
+    let update_segments = update
+        .get("segments")
+        .and_then(Value::as_array)
+        .ok_or_else(|| ApiError::unavailable(anyhow!("task timeline delta is invalid")))?;
+    let window_start = update
+        .get("windowStart")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let window_end = update
+        .get("windowEnd")
+        .and_then(Value::as_str)
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .map(|value| value.with_timezone(&Utc));
+    let mut by_id = HashMap::<String, Value>::new();
+    for segment in previous_segments.iter().chain(update_segments) {
+        let Some(id) = segment.get("segmentId").and_then(Value::as_str) else {
+            return Err(ApiError::unavailable(anyhow!(
+                "task timeline segment identity is missing"
+            )));
+        };
+        by_id.insert(id.to_string(), segment.clone());
+    }
+    let mut segments = by_id
+        .into_values()
+        .filter(|segment| {
+            let started_at = segment
+                .get("startedAt")
+                .and_then(Value::as_str)
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            let ended_at = segment
+                .get("finishedAt")
+                .and_then(Value::as_str)
+                .or_else(|| segment.get("lastObservedAt").and_then(Value::as_str))
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .map(|value| value.with_timezone(&Utc));
+            match (window_start, window_end, started_at, ended_at) {
+                (Some(start), Some(end), Some(segment_start), Some(segment_end)) => {
+                    segment_start <= end && segment_end >= start
+                }
+                _ => true,
+            }
+        })
+        .collect::<Vec<_>>();
+    segments.sort_by(|left, right| {
+        left.get("startedAt")
+            .and_then(Value::as_str)
+            .cmp(&right.get("startedAt").and_then(Value::as_str))
+    });
+    let mut merged = update.clone();
+    let Some(object) = merged.as_object_mut() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "task timeline delta is invalid"
+        )));
+    };
+    object.insert("segments".to_string(), Value::Array(segments));
+    object.insert("replace".to_string(), Value::Bool(true));
+    Ok(merged)
 }
 
 impl RuntimeMutation {
@@ -13396,7 +13604,9 @@ fn managed_task_change_matches_topic(
         crate::task_timeline::TaskObservationChange::Timeline => {
             matches!(
                 topic,
-                SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskTimeline
+                SubscriptionTopic::ManagedTaskCatalog
+                    | SubscriptionTopic::ManagedTaskTimeline
+                    | SubscriptionTopic::ManagedTaskTimelineV2
             )
         }
         crate::task_timeline::TaskObservationChange::Workload(task_key) => match topic {
@@ -21564,7 +21774,7 @@ mod tests {
             ),
             (
                 "system.managed-tasks.timeline",
-                "system.managed-tasks.timeline/v2",
+                "system.managed-tasks.timeline/v1",
             ),
             (
                 "system.managed-tasks.catalog",
@@ -21584,6 +21794,38 @@ mod tests {
             assert_eq!(topic.schema_epoch(), epoch);
             assert!(topic.runtime_topic_dependencies().is_empty());
         }
+
+        let timeline_v2_descriptor = SubscriptionTopicDescriptor {
+            topic: "system.managed-tasks.timeline".to_string(),
+            params: btree_map_from_pairs([("schemaVersion", "2".to_string())]),
+        };
+        let timeline_v2 = SubscriptionTopic::from_descriptor(&timeline_v2_descriptor)
+            .expect("versioned timeline topic should parse");
+        assert_eq!(timeline_v2.descriptor(), timeline_v2_descriptor);
+        assert_eq!(
+            timeline_v2.schema_epoch(),
+            "system.managed-tasks.timeline/v2"
+        );
+        assert_ne!(
+            SubscriptionTopic::ManagedTaskTimeline
+                .cache_key()
+                .expect("legacy timeline topic cache key"),
+            timeline_v2
+                .cache_key()
+                .expect("versioned timeline topic cache key")
+        );
+        assert_eq!(
+            timeline_v2.class(),
+            SubscriptionTopicClass::BoundedColdHydrate
+        );
+        assert!(timeline_v2.runtime_topic_dependencies().is_empty());
+        assert!(
+            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
+                topic: "system.managed-tasks.timeline".to_string(),
+                params: btree_map_from_pairs([("schemaVersion", "3".to_string())]),
+            })
+            .is_err()
+        );
 
         let detail_descriptor = SubscriptionTopicDescriptor {
             topic: "system.managed-tasks.detail".to_string(),
@@ -21647,6 +21889,7 @@ mod tests {
     fn managed_task_observation_changes_refresh_only_the_matching_sse_topic() {
         let runtime = SubscriptionTopic::ManagedTaskRuntime;
         let timeline = SubscriptionTopic::ManagedTaskTimeline;
+        let timeline_v2 = SubscriptionTopic::ManagedTaskTimelineV2;
         let catalog = SubscriptionTopic::ManagedTaskCatalog;
         let detail = SubscriptionTopic::ManagedTaskDetail {
             task_key: "retention_archive".to_string(),
@@ -21663,6 +21906,7 @@ mod tests {
         assert!(managed_task_change_matches_topic(&Runtime, &catalog));
         assert!(!managed_task_change_matches_topic(&Timeline, &runtime));
         assert!(managed_task_change_matches_topic(&Timeline, &timeline));
+        assert!(managed_task_change_matches_topic(&Timeline, &timeline_v2));
         assert!(managed_task_change_matches_topic(&Timeline, &catalog));
         assert!(managed_task_change_matches_topic(
             &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
@@ -21693,6 +21937,7 @@ mod tests {
             SubscriptionTopic::ManagedTaskCatalog,
             SubscriptionTopic::ManagedTaskRuntime,
             SubscriptionTopic::ManagedTaskTimeline,
+            SubscriptionTopic::ManagedTaskTimelineV2,
             SubscriptionTopic::ManagedTaskDetail {
                 task_key: "retention_archive".to_string(),
             },
@@ -21726,7 +21971,7 @@ mod tests {
         )
         .await;
         let hub = state.subscription_hub.clone();
-        let topic = SubscriptionTopic::ManagedTaskTimeline;
+        let topic = SubscriptionTopic::ManagedTaskTimelineV2;
         let topic_key = topic.cache_key().expect("managed task timeline key");
         let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
         cached.dirty = true;
@@ -21798,6 +22043,11 @@ mod tests {
         transaction.commit().await.expect("commit timeline fixture");
 
         let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+        assert!(
+            managed_task_timeline_page_payload(&store, None)
+                .await
+                .is_err()
+        );
         let payload = managed_task_timeline_revision_payload(&store)
             .await
             .expect("timeline revision notification should not aggregate segment rows");

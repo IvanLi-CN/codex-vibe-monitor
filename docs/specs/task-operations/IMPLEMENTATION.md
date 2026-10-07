@@ -10,7 +10,7 @@
 - Lifecycle: active
 - Catalog extension: `REQ-TASK-OPS-015..020` is implemented in the current candidate. The catalog list now carries bounded latest-run summaries, visible rows lazy-load a task-scoped 24-hour P/D/C background capped at 200 identities, detail history remains capped at 100, and unsupported, unknown, gap, empty, and request-failure states retain distinct reasons. Mock Storybook evidence covers loaded, empty, failure, and `mobile393` states; canonical catalog assets are owner-approved.
 - Catalog note: Runtime snapshots remain process-local, while execution identity and historical intervals are persisted in the maintenance SQLite database and merged by execution UID when both sources overlap.
-- Requirements coverage: `REQ-TASK-OPS-010..020` and the same-row header placement under `REQ-TASK-OPS-013` are implemented. Header-alignment validation and catalog evidence acceptance are recorded separately below. The keyset concurrency regression, HTTP transport route regression, and focused Web synchronization suite pass locally; the current repair candidate is being rebuilt and exercised against the isolated Agent VM service and browser scenario.
+- Requirements coverage: `REQ-TASK-OPS-010..020` and the same-row header placement under `REQ-TASK-OPS-013` are implemented. Header-alignment validation and catalog evidence acceptance are recorded separately below. The keyset concurrency regression, HTTP transport route regression, focused Web synchronization suite, and isolated Agent VM service/browser scenario pass for the current source candidate.
 
 ## Implementation Coverage
 
@@ -173,7 +173,9 @@ The owner selected workload counts for the background and approved adding reliab
 
 ## Current Candidate Evidence
 
-- The isolated Agent VM run at code candidate `8ff6def321542babb4ff64cd0673cf15dff1ef3c` loaded 13,120 synthetic intervals through 27 fixed-watermark HTTP pages of at most 500 rows. While page 2 was held, `a3-fixture-02001` advanced from revision 26 beyond baseline watermark 385 to revision 386; after an SSE reconnect, `afterRevision=385` returned that revision once. The 13,119 baseline rows and one delta produced all 13,120 intervals; expanding a 107-run browser density group showed the updated identity once, with no unavailable or observation-gap alert.
+- Timeline compatibility keeps unversioned SSE subscriptions on the prior v1 interval snapshot/delta contract and opts the built-in page into marker-only v2 with `schemaVersion: "2"`; both versions receive persisted timeline revisions. The v1 10,000-segment bound remains unchanged, while v2 uses fixed-watermark HTTP paging.
+- The isolated Agent VM service loaded 13,120 synthetic intervals through 27 fixed-watermark HTTP pages of at most 500 rows. While the baseline was staged after page 1, `a3-fixture-00161` advanced from revision 13134 beyond baseline watermark 13383 to revision 13384; `afterRevision=13383` returned it once, and merging that delta retained 13,120 unique IDs. After service restart, the v2 SSE reconnect watermark was 13391 and matched maintenance-store metadata; its payload contained only `watermark` and `observedAt`.
+- For browser integration, the disposable fixture timestamps were shifted forward six minutes after the rolling window advanced, preserving all intervals and their spacing. The live page then read all 13,120 fixture IDs in its fixed 12-hour window; including service-generated records, HTTP returned 13,587 unique segments over 28 pages, while the SVG represented 13,565 executions in 2,028 inspectable groups. The page showed no unavailable or observation-gap warning.
 - The mock-only `ui_demo` renders the dense timeline at 1440x900 desktop and 393x852 mobile sizes; expanding a dense group exposes 94 runs with individual identities. The owner confirmed the stable desktop-dark, mobile-light, and expanded-detail screenshots on 2026-10-07 after theme transitions settled. The screenshots are `current-only` against the locked evidence base and are stored in the canonical Spec assets.
 
 ## Historical Verification
@@ -198,6 +200,7 @@ The evidence below records earlier implementation candidates and is not current-
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
 - `docs/adr/0026-durable-task-execution-and-deferral-timelines.md`
 - `docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md`
+- `docs/adr/0030-versioned-managed-task-timeline-sse-compatibility.md`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 
 ## References
