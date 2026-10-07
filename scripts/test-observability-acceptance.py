@@ -51,6 +51,12 @@ class ContainerMountTests(unittest.TestCase):
         namespace = self.execute_mounted("client.py")
         self.assertTrue(callable(namespace["seed"]))
 
+    def test_load_uses_bounded_fixture_concurrency(self):
+        namespace = self.execute_mounted("client.py")
+        self.assertEqual(namespace["load_worker_count"](1), 1)
+        self.assertEqual(namespace["load_worker_count"](5), 4)
+        self.assertEqual(namespace["load_worker_count"](20), 4)
+
     def test_peer_bootstrap_reaches_dispatch_at_container_mount_depth(self):
         with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
             with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):

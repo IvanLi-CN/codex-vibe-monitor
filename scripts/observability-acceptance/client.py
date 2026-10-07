@@ -165,6 +165,10 @@ def functional():
     assert len(up)==2 and all(float(row["value"][1])==1 for row in up),up
     return {"httpsAuth":"passed","dashboards":5,"queries":"passed","reportBounds":"passed","series":float(series[0]["value"][1]),"observations":observations}
 
+def load_worker_count(rate):
+    return min(4, max(1, rate))
+
+
 def load(seconds,rate):
     def once(sequence):
         started=time.perf_counter()
@@ -204,7 +208,10 @@ def load(seconds,rate):
     reader=threading.Thread(target=drain,daemon=True);reader.start()
     started=time.perf_counter(); work=[]
     try:
-        with ThreadPoolExecutor(max_workers=16) as executor:
+        # The acceptance rate is five requests per second and the fixture's
+        # upstream delay is 20ms. Four workers provide ample headroom while
+        # avoiding a large runnable-thread population on hosted runners.
+        with ThreadPoolExecutor(max_workers=load_worker_count(rate)) as executor:
             for sequence in range(seconds*rate):
                 delay=started+sequence/rate-time.perf_counter()
                 if delay>0: time.sleep(delay)
