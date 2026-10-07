@@ -16,9 +16,12 @@ mod archive_quota_compaction;
 mod archive_task_work;
 #[path = "archive/writers.rs"]
 mod archive_writers;
+#[path = "archive/node_health_deltas.rs"]
+mod node_health_deltas;
 
 pub(crate) use archive_cleanup::*;
 pub(crate) use archive_hourly_rollups::*;
 pub(crate) use archive_manifest::*;
 pub(crate) use archive_quota_compaction::*;
 pub(crate) use archive_writers::*;
+pub(crate) use node_health_deltas::*;

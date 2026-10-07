@@ -329,11 +329,12 @@ pub(super) async fn prepare_summary_proof(
     outcome: &ArchiveBatchOutcome,
     pages: Vec<TaskArchiveSnapshotPage>,
 ) -> Result<Option<VerifiedSummaryArchiveSnapshot>> {
-    let Some(admission) = acquire_retention_write_admission("archive_snapshot_manifest").await
+    let Some((mut connection, admission)) =
+        acquire_retention_batch_write_connection(pool, "archive_snapshot_manifest").await?
     else {
         return Ok(None);
     };
-    let mut transaction = pool.begin().await?;
+    let mut transaction = connection.begin().await?;
     stage_invocation_archive_batch_manifest(transaction.as_mut(), outcome).await?;
     let batch_id = load_archive_batch_id_for_file_tx(
         transaction.as_mut(),
@@ -343,13 +344,15 @@ pub(super) async fn prepare_summary_proof(
     )
     .await?;
     transaction.commit().await?;
+    drop(connection);
     drop(admission);
     for (index, page) in pages.into_iter().enumerate() {
-        let Some(admission) = acquire_retention_write_admission("archive_snapshot_page").await
+        let Some((mut connection, admission)) =
+            acquire_retention_batch_write_connection(pool, "archive_snapshot_page").await?
         else {
             return Ok(None);
         };
-        let mut transaction = pool.begin().await?;
+        let mut transaction = connection.begin().await?;
         // Older digests are no longer the identity of the canonical file. Replace only this
         // page, keeping each write short and preventing one full copy per task from piling up.
         sqlx::query(
@@ -373,6 +376,7 @@ pub(super) async fn prepare_summary_proof(
         )
         .await?;
         transaction.commit().await?;
+        drop(connection);
         drop(admission);
     }
     // Pages are not deletion authority until the complete semantic proof is checked. Reads

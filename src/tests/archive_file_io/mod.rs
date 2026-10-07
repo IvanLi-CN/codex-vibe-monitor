@@ -12,6 +12,7 @@ mod raw_compression_budget;
     reason = "Mock reservation logs intentionally stay locked until async assertions observe requests."
 )]
 mod raw_payload_retention_and_compression;
+mod retention_batch_wait;
 mod retention_capacity_benchmark;
 mod retention_service_rate_benchmark;
 mod retention_task_local_batches;

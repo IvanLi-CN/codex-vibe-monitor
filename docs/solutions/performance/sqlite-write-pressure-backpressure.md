@@ -65,6 +65,8 @@
 - shutdown drain 也要按写入等级处理。P0/P1 terminal 主事实、路由正确性与审计事实可以尽力 drain；P2 running runtime snapshot 不应在停机时绕过 pressure gate 强制逐条写回 SQLite，否则优雅停机会反向制造写锁尖峰。
 - scheduler preflight 不应占用稀缺后台槽位：enabled/due/progress 这类轻量判定应先完成，只有确定任务 due 且要执行重后台工作时才进入 gate。
 - 对恢复语义敏感的维护任务可以只针对 `BackgroundBusy` 做短预算等待，避免和同 tick 的其他后台任务形成稳定饥饿；`PressureCooldown` 仍应立即 fail-soft skip。
+- 已经完成文件准备的 task-local retention 批次遇到 `BackgroundBusy` 时，应在本轮截止内等待 eligibility 通知再申请准入，避免每轮只提交一个短事务并重做文件。等待前释放写许可、池连接和文件 fence；池可用性探测返回完成后再排写协调器，获得许可后只尝试非阻塞连接获取，竞争失败便释放许可重试。取消的优先 reservation 也必须发布 eligibility 通知。重新取得文件 fence 后复核 artifact 摘要和数据库证明，不能将等待前的删除授权直接沿用。
+- 月度归档缓存的精确小时统计可以在选定批次首个事务建立基准，后续事务仅按当前 cache identities 的旧、新贡献做差量，并与源转换一起提交。重试、bucket/key 移动和回滚必须准确；不能为了每 64 行源转换反复重建整个月缓存，也不能仅累加新记录而忽略旧贡献。
 
 ### 3. 查询热点先补索引
 

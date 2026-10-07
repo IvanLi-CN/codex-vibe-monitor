@@ -110,18 +110,24 @@ pub(crate) struct DbBackgroundPermit {
 #[derive(Debug)]
 struct DbBackgroundPriorityWaiter {
     priority_waiters: Arc<AtomicU64>,
+    eligibility: Arc<DbPressureEligibility>,
 }
 
 impl DbBackgroundPriorityWaiter {
-    fn register(priority_waiters: Arc<AtomicU64>) -> Self {
+    fn register(priority_waiters: Arc<AtomicU64>, eligibility: Arc<DbPressureEligibility>) -> Self {
         priority_waiters.fetch_add(1, Ordering::AcqRel);
-        Self { priority_waiters }
+        Self {
+            priority_waiters,
+            eligibility,
+        }
     }
 }
 
 impl Drop for DbBackgroundPriorityWaiter {
     fn drop(&mut self) {
         self.priority_waiters.fetch_sub(1, Ordering::AcqRel);
+        self.eligibility.generation.fetch_add(1, Ordering::AcqRel);
+        self.eligibility.notify.notify_waiters();
     }
 }
 
@@ -355,6 +361,7 @@ impl DbPressureGate {
         DbBackgroundPriorityReservation {
             _waiter: Some(DbBackgroundPriorityWaiter::register(
                 self.priority_waiters.clone(),
+                self.eligibility.clone(),
             )),
         }
     }
@@ -803,6 +810,22 @@ mod tests {
             .expect("eligibility waiter should wake")
             .expect("eligibility waiter should not panic");
         assert!(next_generation > observed);
+    }
+
+    #[tokio::test]
+    async fn eligibility_wait_wakes_when_priority_reservation_is_cancelled() {
+        let gate = DbPressureGate::new(1, Duration::from_secs(30));
+        let reservation = gate.reserve_priority_background();
+        let generation = gate.eligibility_generation();
+        let mut waiting = Box::pin(gate.wait_for_eligibility_change(generation));
+        assert!(futures_util::poll!(waiting.as_mut()).is_pending());
+        assert_eq!(
+            gate.try_begin_background("ordinary").unwrap_err(),
+            DbPressureDenyReason::BackgroundBusy
+        );
+        drop(reservation);
+        assert!(futures_util::poll!(waiting.as_mut()).is_ready());
+        assert!(gate.try_begin_background("ordinary").is_ok());
     }
 
     #[tokio::test]
