@@ -304,7 +304,7 @@
 - sensitive_exclusion: `N/A`
 - comparison_base: `d8aa9e7ffec8d24b499e93db633486827a87ba7c`
 - comparison: `current-only`; the locked baseline has no images at the new exact destination paths
-- rendered_candidate: `caf933ab46e9e6471e24ed6c93f1c69031466289`
+- rendered_candidate: `3d449f6d`
 - owner_confirmation: confirmed in chat on 2026-10-07 ("没问题。")
 - submission_gate: `approved`
 - state: demo timeline rendered 13,120 intervals across 27 pages with no unavailable warning; desktop dark, mobile light, and an expanded 94-run dense group with inspectable run IDs
