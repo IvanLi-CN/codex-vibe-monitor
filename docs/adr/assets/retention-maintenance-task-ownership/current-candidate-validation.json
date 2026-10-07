@@ -1,8 +1,8 @@
 {
   "status": "validation-complete",
   "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
-  "codeCandidateSha": "ca9027de",
-  "candidateBinarySha256": "429d351685235c64fb76f4d52c4234d2b6f7a33d20bd010f3f07d15c4e4eb899",
+  "codeCandidateSha": "e5cabad2",
+  "candidateBinarySha256": "5ac3f2d94be026d2d7bcbac95390bc09c3b7fc10fede2ada7b88e615ce62046c",
   "passed": {
     "webUnit": {
       "files": 178,
@@ -67,7 +67,7 @@
     "repairBatchesUsed": 1,
     "prCreated": false
   },
-  "recovery": "Repair batch 1 closed the formal review findings: offline recovery now clears requested and running rows, runtime ownership uses an inode-derived shared pair lock that covers hard-link aliases, raw orphan dry-run reports due release accounting without mutation, and the new retention ownership E2E is wired into both PR and main CI. The repair candidate passed Rust fmt/check/clippy, hard-link runtime ownership regression, raw orphan dry-run regression, and the retained full validation evidence.",
+  "recovery": "Repair batch 1 and follow-up repair batch 2 closed formal review findings. Current candidate passed the ten-source upgrade validator, runtime lock process fixture including first-run and hard-link aliases, raw orphan dry-run accounting, Rust checks, and the CI contract check.",
   "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
   "retainedHistoricalEvidence": {
     "runtimeProcessFixture": "runtime-validation-results.json",
