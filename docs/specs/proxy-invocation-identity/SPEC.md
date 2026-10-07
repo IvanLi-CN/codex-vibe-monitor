@@ -205,10 +205,7 @@ than their snapshot boundary while retaining the stable conversation identity.
   asset captures the complete responsive surface at `393px` width.
 - Evidence assets: [desktop](assets/pr2-prompt-cache-conversations-desktop-1280.png)
   and [mobile](assets/pr2-prompt-cache-conversations-mobile-393.png).
-- Preflight: both source-managed surfaces contain their targets, use an opaque
-  natural theme background, satisfy the computed margin contract, and have no
-  horizontal overflow. Inner UI comparison is unchanged; only the evidence
-  surface margin was normalized after mainline synchronization.
+- Preflight: both source-managed surfaces contain their targets, use an opaque natural theme background, satisfy the computed margin contract, and have no horizontal overflow. The confirmed candidate captures the single-column statistics layout on desktop and the complete wrapped breakdown on mobile.
 
 ## References
 

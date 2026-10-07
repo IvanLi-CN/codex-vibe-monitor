@@ -81,6 +81,17 @@ fn prompt_cache_conversation_statistics_visible_at_snapshot(
     statistics: &PromptCacheConversationStatisticsRow,
     snapshot: &PromptCacheConversationHydrationSnapshot<'_>,
 ) -> bool {
+    if let Some(created_at_upper_bound) = snapshot.snapshot_created_at_upper_bound {
+        let (Some(created_at), Some(created_at_upper_bound)) = (
+            parse_to_utc_datetime(&statistics.created_at),
+            parse_to_utc_datetime(created_at_upper_bound),
+        ) else {
+            return false;
+        };
+        if created_at > created_at_upper_bound {
+            return false;
+        }
+    }
     let Some(last_invocation_at) = statistics.last_invocation_at.as_deref() else {
         return false;
     };
@@ -117,7 +128,7 @@ fn prompt_cache_conversation_statistics_are_valid(
             statistics.cost_reasoning,
         ]
         .into_iter()
-        .all(|value| non_negative_finite_f64(Some(value)).is_some())
+        .all(|value| value.is_finite() && value >= 0.0)
 }
 
 fn prompt_cache_conversation_statistics_are_visible(
@@ -264,6 +275,16 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
             .into_iter()
             .map(|row| (row.prompt_cache_key.clone(), row))
             .collect::<HashMap<_, _>>();
+    let statistics_hidden_by_snapshot = if let Some(snapshot) = snapshot {
+        query_prompt_cache_conversation_statistics_keys_with_invisible_invocations(
+            &mut *connection,
+            &selected_keys,
+            snapshot,
+        )
+        .await?
+    } else {
+        HashSet::new()
+    };
     for record in runtime_overlay_records {
         let Some(prompt_cache_key) = record.prompt_cache_key.as_deref() else {
             continue;
@@ -271,7 +292,9 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
         let Some(statistics) = conversation_statistics_by_key.get_mut(prompt_cache_key) else {
             continue;
         };
-        if prompt_cache_conversation_statistics_are_visible(statistics, snapshot) {
+        if !statistics_hidden_by_snapshot.contains(prompt_cache_key)
+            && prompt_cache_conversation_statistics_are_visible(statistics, snapshot)
+        {
             merge_prompt_cache_runtime_statistics(statistics, record);
         }
     }
@@ -640,7 +663,8 @@ pub(crate) async fn hydrate_prompt_cache_conversations_on_connection(
             let owner = encrypted_owner_rows_by_key.remove(&row.prompt_cache_key);
             let statistics = conversation_statistics_by_key.get(&row.prompt_cache_key);
             let statistics_visible = statistics.is_some_and(|statistics| {
-                prompt_cache_conversation_statistics_are_visible(statistics, snapshot)
+                !statistics_hidden_by_snapshot.contains(&row.prompt_cache_key)
+                    && prompt_cache_conversation_statistics_are_visible(statistics, snapshot)
             });
             let visible_statistics = statistics_visible.then_some(statistics).flatten();
             PromptCacheConversationResponse {

@@ -182,7 +182,7 @@ pub(crate) fn runtime_prompt_cache_overlay_keys(
         .collect()
 }
 
-fn runtime_prompt_cache_overlay_identity(record: &ApiInvocation) -> String {
+pub(crate) fn runtime_prompt_cache_overlay_identity(record: &ApiInvocation) -> String {
     format!("{}\0{}", record.invoke_id, record.occurred_at)
 }
 
@@ -448,6 +448,30 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key(
     recent_invocation_limit: i64,
     blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
 ) -> Result<Option<PromptCacheConversationResponse>, ApiError> {
+    Ok(
+        hydrate_working_prompt_cache_conversation_for_key_with_terminal_identities(
+            state,
+            source_scope,
+            prompt_cache_key,
+            _range_end,
+            range_start_bound,
+            recent_invocation_limit,
+            blocked_binding_filter,
+        )
+        .await?
+        .0,
+    )
+}
+
+pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key_with_terminal_identities(
+    state: &AppState,
+    source_scope: InvocationSourceScope,
+    prompt_cache_key: &str,
+    _range_end: DateTime<Utc>,
+    range_start_bound: &str,
+    recent_invocation_limit: i64,
+    blocked_binding_filter: Option<&PromptCacheConversationBlockedBindingFilter>,
+) -> Result<(Option<PromptCacheConversationResponse>, HashSet<String>), ApiError> {
     // A bounded key hydrate repairs the current in-memory projection. Pin every durable read to
     // one transaction-local boundary so a P1 commit cannot be present in the working aggregate
     // yet absent from its details after the runtime overlay is deduplicated.
@@ -461,6 +485,14 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key(
     .filter(|record| record.prompt_cache_key.as_deref() == Some(prompt_cache_key))
     .collect::<Vec<_>>();
     let mut transaction = state.pool.begin().await?;
+    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+        .await
+        .map_err(ApiError::from)?
+    {
+        return Err(ApiError::unavailable(anyhow!(
+            "prompt-cache conversation history is still materializing"
+        )));
+    }
     let hydration_snapshot_at = Utc::now();
     let snapshot_hour_start_epoch = align_bucket_epoch(hydration_snapshot_at.timestamp(), 3_600, 0);
     let snapshot_hour_start_bound = db_occurred_at_lower_bound(
@@ -511,7 +543,7 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key(
     }
     if aggregates.is_empty() {
         transaction.commit().await?;
-        return Ok(None);
+        return Ok((None, HashSet::new()));
     }
     apply_prompt_cache_lifecycle_aggregate_totals_on_connection(
         transaction.as_mut(),
@@ -544,8 +576,16 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key(
     .await?
     .into_iter()
     .next();
+    let terminal_identities = runtime_overlay_records
+        .iter()
+        .filter(|record| {
+            !prompt_cache_runtime_record_is_in_flight(record)
+                && prompt_invocation_status_counts_toward_terminal_totals(record.status.as_deref())
+        })
+        .map(runtime_prompt_cache_overlay_identity)
+        .collect();
     transaction.commit().await?;
-    Ok(response)
+    Ok((response, terminal_identities))
 }
 
 pub(crate) async fn query_working_prompt_cache_conversation_candidate_keys(
@@ -925,8 +965,17 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
     let display_limit = selection.display_limit();
     let runtime_overlay_records =
         runtime_prompt_cache_overlay_records(state, source_scope, &range_start_bound, None);
+    let transient_runtime_overlay_records =
+        transient_runtime_prompt_cache_overlay_records_on_connection(
+            &mut *connection,
+            source_scope,
+            None,
+            &runtime_overlay_records,
+        )
+        .await
+        .map_err(|error| anyhow!("failed to filter persisted prompt-cache overlays: {error:?}"))?;
 
-    let (aggregates, active_filtered_count) = match selection {
+    let (mut aggregates, active_filtered_count) = match selection {
         PromptCacheConversationSelection::Count(limit) => {
             let aggregates = query_prompt_cache_conversation_aggregates(
                 &mut *connection,
@@ -969,22 +1018,6 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
                 display_limit,
             )
             .await?;
-            let mut aggregates = merge_runtime_prompt_cache_aggregates(
-                aggregates,
-                &runtime_overlay_records,
-                None,
-                display_limit,
-            );
-            apply_prompt_cache_lifecycle_aggregate_totals_on_connection(
-                &mut *connection,
-                source_scope,
-                &mut aggregates,
-                &runtime_overlay_records,
-                None,
-                None,
-                None,
-            )
-            .await?;
             let matched_count = query_working_prompt_cache_conversation_count(
                 &mut *connection,
                 &range_start_bound,
@@ -1011,6 +1044,22 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
             )
         }
     };
+    aggregates = merge_runtime_prompt_cache_aggregates(
+        aggregates,
+        &transient_runtime_overlay_records,
+        None,
+        display_limit,
+    );
+    apply_prompt_cache_lifecycle_aggregate_totals_on_connection(
+        &mut *connection,
+        source_scope,
+        &mut aggregates,
+        &transient_runtime_overlay_records,
+        None,
+        None,
+        None,
+    )
+    .await?;
     let implicit_filter = selection.implicit_filter(active_filtered_count);
 
     if aggregates.is_empty() {
@@ -1038,7 +1087,7 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
         PromptCacheConversationDetailLevel::Full,
         recent_invocation_limit,
         None,
-        &runtime_overlay_records,
+        &transient_runtime_overlay_records,
     )
     .await?;
 

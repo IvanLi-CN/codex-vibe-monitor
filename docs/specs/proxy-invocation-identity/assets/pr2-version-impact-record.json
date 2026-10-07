@@ -31,11 +31,12 @@
         "description": "The candidate remains within the approved additive prompt-cache conversation read contract and its frontend presentation and ordering consumers."
       },
       "reasoning": "Durable conversation identity remains independently visible, while aggregate fields stay absent until materialization makes them trustworthy and snapshot reads fail closed for newer materialized data. No existing response field or durable state meaning changes.",
-      "reassessed_at": "2026-10-07T03:16:09+08:00",
+      "reassessed_at": "2026-10-07T11:07:22+08:00",
       "evidence": [
         "src/api/slices/settings_models_and_cache.rs",
         "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/detail_queries.rs",
         "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/hydration.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/response.rs",
         "src/api/slices/subscriptions.rs",
         "src/app_state.rs",
         "src/app_state/invocation_store.rs",
@@ -48,11 +49,13 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The focused backend regression covers persisted master statistics, delayed materialization, and snapshot fail-closed behavior. Frontend tests, typechecking, production build, and Storybook visual evidence cover optional-field absence, display, and count-mode ordering without changing existing selection semantics.",
-      "verified_at": "2026-10-07T03:16:09+08:00",
+      "reasoning": "The focused backend regression covers persisted master statistics, mixed durable/runtime totals, interleaved snapshot creation visibility, delayed materialization, bounded hydration identity registration, cold-start terminal replay, and snapshot fail-closed behavior. Frontend tests, typechecking, production build, and Storybook visual evidence cover optional-field absence, display, count-mode ordering, and the confirmed responsive layout without changing existing selection semantics.",
+      "verified_at": "2026-10-07T11:07:22+08:00",
       "evidence": [
         "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
         "src/api/slices/subscriptions.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/response.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/detail_queries.rs",
         "src/app_state.rs",
         "src/app_state/invocation_store.rs",
         "web/src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
@@ -72,6 +75,8 @@
         "cd web && bunx vitest run src/pages/Live.prompt-cache.integration.test.tsx",
         "cd web && bunx vitest run src/lib/api.test.ts src/lib/promptCacheLive.test.ts src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
         "cd web && bunx vitest run src/lib/dashboardWorkingConversations.test.ts",
+        "cd web && bun run test",
+        "cd web && bun run test-storybook",
         "bun run typecheck:web",
         "bun run lint:web",
         "cd web && bun run build",

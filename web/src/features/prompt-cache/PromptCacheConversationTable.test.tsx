@@ -98,6 +98,15 @@ function renderTable(stats: PromptCacheConversationsResponse) {
   );
 }
 
+function expectSummaryMetric(html: string, label: string, value: string) {
+  const parsed = new DOMParser().parseFromString(html, "text/html");
+  const found = Array.from(parsed.querySelectorAll("span")).some((node) => {
+    if (node.textContent !== label) return false;
+    return node.parentElement?.textContent?.includes(value) ?? false;
+  });
+  expect(found, `${label} should render ${value}`).toBe(true);
+}
+
 function formatZhDateTime(raw: string) {
   return new Intl.DateTimeFormat("zh-CN", {
     month: "2-digit",
@@ -494,6 +503,12 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("失败");
     expect(html).toContain("输入");
     expect(html).toContain("缓存写入");
+    expectSummaryMetric(html, "成功", "10");
+    expectSummaryMetric(html, "失败", "2");
+    expectSummaryMetric(html, "输入", "2,100");
+    expectSummaryMetric(html, "缓存输入", "450");
+    expectSummaryMetric(html, "缓存写入", "120");
+    expectSummaryMetric(html, "推理成本", "US$0.1645");
     expect(html).toContain("Prompt Cache Key");
     expect(html).toContain("24 小时 Token 累计");
     expect(html).toContain("sm:hidden");
@@ -517,22 +532,31 @@ describe("PromptCacheConversationTable", () => {
       implicitFilter: { kind: null, filteredCount: 0 },
       conversations: [
         createConversation({
+          promptCacheKey: "pck-created-at-fallback",
+          createdAt: "2026-03-03T00:00:00Z",
+          lastActivityAt: "2026-03-03T01:00:00Z",
+        }),
+        createConversation({
           promptCacheKey: "pck-first-invocation-newer",
           createdAt: "2026-03-01T00:00:00Z",
           lastActivityAt: "2026-03-01T01:00:00Z",
           firstInvocationAt: "2026-03-04T00:00:00Z",
         }),
-        createConversation({
-          promptCacheKey: "pck-created-at-fallback",
-          createdAt: "2026-03-03T00:00:00Z",
-          lastActivityAt: "2026-03-03T01:00:00Z",
-        }),
       ],
     });
 
-    expect(html.indexOf("pck-first-invocation-newer")).toBeLessThan(
-      html.indexOf("pck-created-at-fallback"),
-    );
+    const desktopStart = html.indexOf('<tbody class="divide-y divide-base-300/65">');
+    expect(desktopStart).toBeGreaterThan(0);
+    const mobileStart = html.indexOf('class="space-y-3 p-3 sm:hidden"');
+    expect(mobileStart).toBeGreaterThan(0);
+    const firstKeyBefore = (start: number, end: number) =>
+      html.indexOf("pck-first-invocation-newer", start) <
+        html.indexOf("pck-created-at-fallback", start) &&
+      html.indexOf("pck-first-invocation-newer", start) < end &&
+      html.indexOf("pck-created-at-fallback", start) < end;
+
+    expect(firstKeyBefore(mobileStart, desktopStart)).toBe(true);
+    expect(firstKeyBefore(desktopStart, html.length)).toBe(true);
   });
 
   it("shares the 24h token chart scale across visible conversations", () => {

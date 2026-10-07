@@ -1665,6 +1665,7 @@ pub(crate) struct PromptCacheConversationAggregateRow {
 pub(crate) struct PromptCacheConversationStatisticsRow {
     pub(crate) prompt_cache_key: String,
     pub(crate) conversation_id: String,
+    pub(crate) created_at: String,
     pub(crate) success_count: i64,
     pub(crate) failure_count: i64,
     pub(crate) input_tokens: i64,

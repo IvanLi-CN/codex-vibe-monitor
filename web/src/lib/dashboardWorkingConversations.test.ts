@@ -210,6 +210,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
         ],
         {
           createdAt: "2026-04-04T10:03:00Z",
+          firstInvocationAt: "2026-04-04T10:03:00Z",
         },
       ),
       createConversation("pck-running-only", [
@@ -238,21 +239,21 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
         ],
         {
           createdAt: "2026-04-04T10:02:00Z",
+          firstInvocationAt: "2026-04-04T10:05:00Z",
         },
       ),
     ]);
 
-    const cards = mapPromptCacheConversationsToDashboardCards(response);
+    const cards = mapPromptCacheConversationsToDashboardCards(response, { limit: 2 });
 
     expect(cards.map((card) => card.promptCacheKey)).toEqual([
       "pck-terminal-late",
-      "pck-terminal-early",
       "pck-running-only",
     ]);
-    expect(cards[2]?.currentInvocation.displayStatus).toBe("running");
-    expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
-    expect(cards[2]?.earlierInvocation).toBeNull();
-    expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+    expect(cards[1]?.currentInvocation.displayStatus).toBe("running");
+    expect(cards[1]?.previousInvocation?.displayStatus).toBe("completed");
+    expect(cards[1]?.earlierInvocation).toBeNull();
+    expect(cards[1]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
   });
 
   it("uses firstInvocationAt for the history anchor without changing live activity order", () => {

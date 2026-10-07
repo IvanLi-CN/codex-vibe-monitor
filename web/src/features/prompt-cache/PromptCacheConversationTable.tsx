@@ -922,13 +922,13 @@ function SummaryBlock({
         </div>
       ))}
       {detailItems.length > 0 ? (
-        <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-1 border-t border-base-300/60 pt-1.5">
+        <div className="grid min-w-0 grid-cols-1 gap-y-1 border-t border-base-300/60 pt-1.5">
           {detailItems.map((item) => (
             <div
               key={item.label}
               className="flex min-w-0 items-center justify-between gap-1 text-[10px]"
             >
-              <span className="min-w-0 truncate text-base-content/55" title={item.label}>
+              <span className="min-w-0 break-words text-base-content/55" title={item.label}>
                 {item.label}
               </span>
               <span className="shrink-0 text-right font-medium tabular-nums">{item.value}</span>
