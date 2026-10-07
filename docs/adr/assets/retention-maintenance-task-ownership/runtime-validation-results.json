@@ -1,0 +1,45 @@
+{
+  "candidateSha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
+  "source": {
+    "tag": "v4.1.1",
+    "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+    "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:1c39b027b039414515a99c4af84301bd1d0e2857fdf0bddb00dce3ecf7695795",
+    "generator": "released maintenance verify-archive-storage --dry-run",
+    "command": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "-v",
+      "/workspace/worktrees/retention-ownership/release-fixtures/v4.1.1:/fixture",
+      "-e",
+      "DATABASE_PATH=/fixture/business.sqlite",
+      "-e",
+      "MAINTENANCE_DATABASE_PATH=/fixture/maintenance.sqlite",
+      "-e",
+      "ARCHIVE_DIR=/fixture/archives",
+      "-e",
+      "PROXY_RAW_DIR=/fixture/raw",
+      "-e",
+      "RETENTION_ENABLED=false",
+      "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+      "codex-vibe-monitor",
+      "maintenance",
+      "verify-archive-storage",
+      "--dry-run"
+    ],
+    "exitCode": 0
+  },
+  "status": "passed",
+  "claims": [
+    "online-cli-does-not-initialize-unavailable-store",
+    "online-three-read-only-scopes",
+    "online-archive-only",
+    "four-paused-manual-owners",
+    "cli-page-request-competition",
+    "no-startup-recovery",
+    "no-manual-continuation",
+    "graceful-lock-release"
+  ]
+}

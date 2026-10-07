@@ -63,7 +63,7 @@ def validate_online(candidate, source, target, port):
         connection.execute("UPDATE managed_tasks SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL")
         controls = connection.execute("SELECT task_key,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at FROM managed_tasks WHERE task_key IN (?,?,?,?) ORDER BY task_key", UPGRADE.OWNERS).fetchall()
         baseline_run_id = connection.execute("SELECT COALESCE(MAX(id),0) FROM managed_task_runs").fetchone()[0]
-    environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
+    environment = dict(os.environ, DATABASE_PATH=str(target / "business.sqlite"), MAINTENANCE_DATABASE_PATH=str(target / "maintenance.sqlite"), ARCHIVE_DIR=str(target / "archives"), PROXY_RAW_DIR=str(target / "raw"), HTTP_BIND=f"127.0.0.1:{port}", OPENAI_UPSTREAM_BASE_URL="http://127.0.0.1:1/", OBSERVABILITY_ENABLED="false", RUST_LOG="warn", RETENTION_ENABLED="invalid-retired-value", XY_RETENTION_ENABLED="false")
     (target / "raw").mkdir(exist_ok=True)
     with (target / "daemon.log").open("w") as daemon_log:
         daemon = subprocess.Popen([str(candidate)], env=environment, stdout=daemon_log, stderr=subprocess.STDOUT)

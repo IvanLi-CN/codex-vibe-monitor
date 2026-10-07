@@ -57,6 +57,37 @@
       "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:d06c9ce81d5933328b505252136bc606c67ee3517854265f03dc4748c428c2b8",
       "generator": "released maintenance verify-archive-storage --dry-run",
       "exitCode": 0
+    },
+    {
+      "tag": "v4.1.1",
+      "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+      "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:1c39b027b039414515a99c4af84301bd1d0e2857fdf0bddb00dce3ecf7695795",
+      "generator": "released maintenance verify-archive-storage --dry-run",
+      "command": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "-v",
+        "/workspace/worktrees/retention-ownership/release-fixtures/v4.1.1:/fixture",
+        "-e",
+        "DATABASE_PATH=/fixture/business.sqlite",
+        "-e",
+        "MAINTENANCE_DATABASE_PATH=/fixture/maintenance.sqlite",
+        "-e",
+        "ARCHIVE_DIR=/fixture/archives",
+        "-e",
+        "PROXY_RAW_DIR=/fixture/raw",
+        "-e",
+        "RETENTION_ENABLED=false",
+        "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+        "codex-vibe-monitor",
+        "maintenance",
+        "verify-archive-storage",
+        "--dry-run"
+      ],
+      "exitCode": 0
     }
   ]
 }

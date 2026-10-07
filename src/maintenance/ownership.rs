@@ -109,14 +109,17 @@ pub(crate) async fn execute_owned_maintenance(
             {
                 observation.mark_work_started();
             }
-            let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
-                context.pool,
-                context.config,
-                Some(options.dry_run),
-                Some(context.shutdown),
-                context.circuit,
-                None,
-                observation,
+            // Keep the archive state machine off the cleanup/dispatcher futures' inline frames.
+            let summary = Box::pin(
+                run_data_retention_maintenance_with_circuit_and_prompt_cache(
+                    context.pool,
+                    context.config,
+                    Some(options.dry_run),
+                    Some(context.shutdown),
+                    context.circuit,
+                    None,
+                    observation,
+                ),
             )
             .await?;
             let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);

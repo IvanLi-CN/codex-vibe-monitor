@@ -66,7 +66,7 @@
       "classification_status": "provisional",
       "reasoning": "Additive maintenance retry state, missing cleanup controls/plans, and a new business cleanup scope preserve existing formats. The proposed persistent-state Minor requires the candidate to read all declared earlier-Minor source states; it does not promise earlier programs can read the new state. Final current-candidate forward-upgrade results remain pending.",
       "state_description": "Managed task controls, schedules, initialization marker, per-task run/timeline observations, conversation orphan cursor, raw reconciliation/quarantine/release-pending state, and hourly identity state.",
-      "source_program_compatibility_range": "Individual released sources v4.0.0 through v4.0.6 and v4.1.0; baseline origin/main=v4.1.0 at 130c357c043a3449512a25cd82643fc5a8ca02df. All eight published fixtures were generated; no final verified source-range claim yet.",
+      "source_program_compatibility_range": "Individual released sources v4.0.0 through v4.0.6, v4.1.0 and v4.1.1; current development base origin/main at 8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3 after an authorized unpublished rebase. All nine published fixtures were generated individually; final current-candidate source-range validation is pending.",
       "evidence": [
         "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json",
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json",

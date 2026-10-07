@@ -19,7 +19,8 @@
         "v4.0.4",
         "v4.0.5",
         "v4.0.6",
-        "v4.1.0"
+        "v4.1.0",
+        "v4.1.1"
       ],
       "to_program_version": "th/retention-maintenance-boundaries implementation candidate; final commit and upgrade evidence pending",
       "direct_major_skips_supported": false
@@ -121,7 +122,9 @@
     "evidence": [
       "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
       "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
-      "scripts/validate-retention-maintenance-upgrade.py"
+      "scripts/validate-retention-maintenance-upgrade.py",
+      "scripts/generate-retention-maintenance-release-fixtures.py",
+      "scripts/validate-retention-maintenance-runtime.py"
     ]
   }
 }

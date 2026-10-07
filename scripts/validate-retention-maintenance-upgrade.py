@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 
-VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0"]
+VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1"]
 OWNERS = ["retention_archive", "invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cache_materialization"]
 
 
@@ -82,6 +82,12 @@ def validate_source(candidate, source, target):
         assert rows == [(0, 420), (0, 420)], rows
         records = connection.execute("SELECT task_key,details FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
         assert all(json.loads(details).get("ownerScope") == key and json.loads(details).get("ownershipVersion") == 1 for key, details in records)
+        observations = connection.execute("SELECT details,actual_started_at,actual_finished_at,actual_duration_ms FROM managed_task_runs WHERE trigger_kind='manual' AND details IS NOT NULL").fetchall()
+        for details, actual_started, actual_finished, duration in observations:
+            expected_start = json.loads(details).get("actualStartedAt")
+            if expected_start is not None:
+                assert actual_started == expected_start and actual_finished >= actual_started and duration >= 0
+        assert connection.execute("SELECT COUNT(*) FROM managed_task_work_runs").fetchone()[0] >= len(records), "offline CLI must persist its workload observations before releasing runtime locks"
     # Inject a genuine initialization failure, then resume the same database forward.
     with sqlite3.connect(target / "maintenance.sqlite") as connection:
         connection.execute("DELETE FROM maintenance_metadata WHERE key='retention_maintenance_ownership_v1'")

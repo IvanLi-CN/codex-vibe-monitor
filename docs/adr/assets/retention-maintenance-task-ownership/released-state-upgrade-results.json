@@ -1,0 +1,238 @@
+{
+  "status": "passed-at-recorded-candidate",
+  "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11",
+  "note": "Nine independent released sources passed. Later prompt-materialization start-state repair is being validated; this is not final delivery readiness.",
+  "results": [
+    {
+      "source": {
+        "tag": "v4.0.0",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.0",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:d35338fcfe392e7c153db9ac9de766785fb20442a4fc50dbc4e83b3612e5f676",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.1",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.1",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:edf5c2c6b50ef9ea48b041b3db65053f2163034a12f67357ea66de14a29b0ff2",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.2",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.2",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:b468978d470936bba4b9ee3ce30e35c01405288c696c96fc90898ab7524fe37a",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.3",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.3",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:a0a5f056040634edf0af604a73351bedc113cb8556b6ac1f4f4db3c8b91e5836",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.4",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.4",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:9596834432f0d3d84cb0a16f7d6bfc4f4dbb1431065a137a398ae4ee3c4920ea",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.5",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.5",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:facd402a5453a1ad06d270ef912cbf02b46c82074b4a76acff9be5094bcef394",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.0.6",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.0.6",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:11dba1a719bf80825f98496c362e0c60233695f0a0df0ec00ac93b02302abaf1",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.1.0",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.0",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:d06c9ce81d5933328b505252136bc606c67ee3517854265f03dc4748c428c2b8",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    },
+    {
+      "source": {
+        "tag": "v4.1.1",
+        "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+        "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:1c39b027b039414515a99c4af84301bd1d0e2857fdf0bddb00dce3ecf7695795",
+        "generator": "released maintenance verify-archive-storage --dry-run",
+        "command": [
+          "docker",
+          "run",
+          "--rm",
+          "--network",
+          "none",
+          "-v",
+          "/workspace/worktrees/retention-ownership/release-fixtures/v4.1.1:/fixture",
+          "-e",
+          "DATABASE_PATH=/fixture/business.sqlite",
+          "-e",
+          "MAINTENANCE_DATABASE_PATH=/fixture/maintenance.sqlite",
+          "-e",
+          "ARCHIVE_DIR=/fixture/archives",
+          "-e",
+          "PROXY_RAW_DIR=/fixture/raw",
+          "-e",
+          "RETENTION_ENABLED=false",
+          "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.1",
+          "codex-vibe-monitor",
+          "maintenance",
+          "verify-archive-storage",
+          "--dry-run"
+        ],
+        "exitCode": 0
+      },
+      "status": "passed",
+      "claims": [
+        "controls-preserved",
+        "new-defaults",
+        "retired-environment-ignored",
+        "three-preview-scopes-read-only",
+        "explicit-real-mode",
+        "archive-only",
+        "protected-identities",
+        "paused-manual",
+        "no-startup-recovery",
+        "interrupted-forward-reentry"
+      ],
+      "candidateSha256": "15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11"
+    }
+  ]
+}

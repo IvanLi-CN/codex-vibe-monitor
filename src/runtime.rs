@@ -1638,7 +1638,12 @@ async fn run_managed_task_once_with_observation(
         options,
         crate::with_managed_task_observation(
             observation.clone(),
-            run_managed_task_once_with_scoped_observation(state, task_key, run_id, observation),
+            Box::pin(run_managed_task_once_with_scoped_observation(
+                state,
+                task_key,
+                run_id,
+                observation,
+            )),
         ),
     )
     .await?;
@@ -1664,7 +1669,7 @@ async fn run_managed_task_once_with_scoped_observation(
     ) {
         let options = maintenance_execution_options();
         let raw_traversal = managed_raw_traversal();
-        let execution = execute_owned_maintenance(
+        let execution = Box::pin(execute_owned_maintenance(
             OwnedMaintenanceContext {
                 pool: &state.pool,
                 config: &state.config,
@@ -1676,7 +1681,7 @@ async fn run_managed_task_once_with_scoped_observation(
             task_key,
             options,
             Some(observation.clone()),
-        )
+        ))
         .await?;
         if matches!(task_key, "invocation_identity_cleanup" | "raw_orphan_sweep")
             && !options.manual

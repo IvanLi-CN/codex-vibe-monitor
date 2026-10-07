@@ -1303,6 +1303,12 @@ pub(crate) async fn mark_startup_backfill_running(
     let Some(pool) = startup_backfill_progress_pool(pool) else {
         return Ok(());
     };
+    if task_name == StartupBackfillTask::PromptCacheConversationsMaterialization.name() {
+        return prompt_cache_control::mark_prompt_cache_materialization_running(
+            pool, task_name, cursor_id,
+        )
+        .await;
+    }
     let now = format_utc_iso(Utc::now());
     sqlx::query(
         r#"

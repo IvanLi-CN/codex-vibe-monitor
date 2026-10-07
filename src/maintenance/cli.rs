@@ -173,8 +173,9 @@ pub(crate) async fn run_owned_maintenance_cli(
                 )
                 .bind(id)
                 .execute(&store.pool)
-                .await?;
-                crate::maintenance_store::set_global(Arc::new(store.clone()));
+            .await?;
+            crate::maintenance_store::set_global(Arc::new(store.clone()));
+            crate::task_timeline::start_recorder(Arc::new(store.clone())).await;
                 task_lease = Some(crate::maintenance_store::try_acquire_task_execution(task_key)
                     .context("maintenance owner already running")?);
                 let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
@@ -264,6 +265,7 @@ pub(crate) async fn run_owned_maintenance_cli(
             }
             .await;
             // Initialization failures must drain workers too, before either execution lock drops.
+            crate::task_timeline::drain_after_shutdown().await;
             pool.close().await;
             if let Some(maintenance_pool) = maintenance_pool {
                 maintenance_pool.close().await;

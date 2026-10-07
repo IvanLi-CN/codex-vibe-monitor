@@ -1,6 +1,43 @@
 use super::*;
 
 #[tokio::test]
+async fn ownership_manual_materialization_start_preserves_paused_schedule() {
+    let store = crate::maintenance_store::ownership_test_store().await;
+    store.apply_initial_task_defaults().await.unwrap();
+    store
+        .set_enabled("prompt_cache_materialization", false)
+        .await
+        .unwrap();
+    let task_name = StartupBackfillTask::PromptCacheConversationsMaterialization.name();
+    sqlx::query("INSERT INTO startup_backfill_progress(task_name,next_run_after,next_probe_at,suspension_reason,enabled) VALUES(?,'2099-01-01T00:00:00Z','2099-01-02T00:00:00Z','operator_disabled',0)")
+        .bind(task_name).execute(&store.pool).await.unwrap();
+    let before: (Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT next_run_after,next_probe_at,suspension_reason,enabled FROM startup_backfill_progress WHERE task_name=?",
+    ).bind(task_name).fetch_one(&store.pool).await.unwrap();
+    crate::maintenance::with_maintenance_execution_options(
+        crate::maintenance::MaintenanceExecutionOptions {
+            manual: true,
+            admitted: true,
+            dry_run: false,
+        },
+        crate::maintenance::mark_startup_backfill_running(&store.pool, task_name, 0),
+    )
+    .await
+    .unwrap();
+    let after: (Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+        "SELECT next_run_after,next_probe_at,suspension_reason,enabled FROM startup_backfill_progress WHERE task_name=?",
+    ).bind(task_name).fetch_one(&store.pool).await.unwrap();
+    assert_eq!(after, before);
+    let status: String =
+        sqlx::query_scalar("SELECT last_status FROM startup_backfill_progress WHERE task_name=?")
+            .bind(task_name)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "running");
+}
+
+#[tokio::test]
 async fn ownership_initialization_preserves_controls_and_recovers_interrupted_schedule_write() {
     let store = crate::maintenance_store::ownership_test_store().await;
     store.apply_initial_task_defaults().await.unwrap();
