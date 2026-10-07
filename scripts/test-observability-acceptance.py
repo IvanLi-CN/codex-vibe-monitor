@@ -65,6 +65,11 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.clock = 100.0
         self.window = {"windowId": "0-false", "pairIndex": 0, "enabled": "false"}
 
+    def test_measurement_service_profiles_keep_only_required_observers_running(self):
+        self.assertEqual(acceptance.measurement_services("off"), {"prometheus": False, "grafana": False, "tempo": False, "entry": False})
+        self.assertEqual(acceptance.measurement_services("metrics"), {"prometheus": True, "grafana": False, "tempo": False, "entry": False})
+        self.assertEqual(acceptance.measurement_services("full"), {"prometheus": True, "grafana": False, "tempo": True, "entry": True})
+
     def sleep(self, seconds):
         self.assertLessEqual(seconds, 20)
         self.clock += seconds

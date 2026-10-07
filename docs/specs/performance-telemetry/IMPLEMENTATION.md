@@ -221,6 +221,7 @@ backend-test 镜像保留 Prometheus 配置，供标签长度回归编译时读�
 同时检查完成窗口不积压，CPU/请求与 p95 的 5% 上限不变。
 A/B 每个开关状态先以同一负载预热 60 秒，覆盖两个完整的资源采样周期；
 速率、预热与测量时长保存在候选运行的 `run-config.json`，便于复现。
+正式窗口按模式停止未使用的观测服务：off 不启动 Prometheus、Grafana、Tempo 或 entry，metrics-only 只启动 Prometheus，metrics+trace 启动 Prometheus、Tempo 和 entry，Grafana 始终停止；这避免把前置 Tempo WAL 处理和无关 dashboard 工作计入 PSI，同时保留完整 trace 摄入验证。
 容器采样的 perf ring-buffer 需要足够 memlock 预算和 IPC_LOCK，采样容器限定为 256 MiB；
 A/B 的每份合成数据副本给予应用固定 GID 写权限，避免无 capability 的应用将
 宿主复制出的文件误作只读库。监控停机场景已有 50/50 请求正常完成的运行证据，

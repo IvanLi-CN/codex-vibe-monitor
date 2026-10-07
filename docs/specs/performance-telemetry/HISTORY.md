@@ -1,5 +1,6 @@
 # 独立性能遥测历史
 
+- 2026-10-08：当前候选连续两个 GitHub-hosted A/B 首窗口在请求负载下触发 CPU PSI 超限；保持严格 unavailable 合同，测量脚本改为按模式停止未使用的 Prometheus/Grafana/Tempo/entry 服务，避免前置 trace WAL 和无关 dashboard 工作污染开销窗口，同时保留 metrics-only 与 trace 摄入的真实路径。
 - 2026-10-07：当前候选将 GitHub-hosted 资源压力导致的性能证据 `unavailable` 与真实验收失败分开分类。辅助 job 保留失败证据和 `empirical-card.json` 的不可用状态，仅在默认 A/B 场景明确报告压力超限且其余场景通过时中性收口；预算超标、功能失败、采集器错误和证据缺失仍阻断。
 - 主人明确要求性能实验只在 GitHub Actions 执行，不进入每个 PR 的必要测试集。
   PR #1079 将性能预算和 CPU 诊断保留为辅助检查，解除 Build Artifacts 对其结果的依赖，

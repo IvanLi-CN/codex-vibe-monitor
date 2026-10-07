@@ -22,6 +22,16 @@ def digest(paths):
     for path in paths: result.update(path.read_bytes())
     return result.hexdigest()
 
+def measurement_services(enabled):
+    if enabled not in {"off", "metrics", "full"}:
+        raise ValueError("unknown measurement mode")
+    return {
+        "prometheus": enabled in {"metrics", "full"},
+        "grafana": False,
+        "tempo": enabled == "full",
+        "entry": enabled == "full",
+    }
+
 def create_entry_certificate(private):
     # OpenSSL's default self-signed certificate is a CA. Rustls correctly
     # rejects a CA used as the HTTPS server's end-entity certificate.
@@ -199,6 +209,11 @@ class Run:
                 app["environment"]["OBSERVABILITY_TRACES_ENABLED"]="true" if enabled=="full" else "false"
                 app["volumes"][0]=str(directory)+":/srv/app/data"
                 self.compose_file.write_text(json.dumps(self.definition,indent=2))
+                for service, running in measurement_services(enabled).items():
+                    if running:
+                        self.compose("up","-d",service)
+                    else:
+                        self.compose("stop",service)
                 self.compose("up","-d","app");self.wait_app()
                 # Observe two complete 30s resource-sampler cycles before timing.
                 self.client("load","--seconds","60","--rate",str(self.args.rate))
