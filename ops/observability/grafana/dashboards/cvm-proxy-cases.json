@@ -174,7 +174,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
                   }
                 ]
               }
@@ -231,7 +231,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
                   }
                 ]
               }
@@ -288,7 +288,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
                   }
                 ]
               }
@@ -345,7 +345,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
                   }
                 ]
               }
@@ -402,7 +402,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
                   }
                 ]
               }
