@@ -87,13 +87,18 @@ function segment(segmentId: string, revision: number): TaskTimelineSegment {
 function page(
   watermark: number,
   segments: TaskTimelineSegment[],
-  options: { nextCursor?: string | null; resetRequired?: boolean } = {},
+  options: {
+    nextCursor?: string | null;
+    resetRequired?: boolean;
+    windowStart?: string;
+    windowEnd?: string;
+  } = {},
 ): TaskTimelinePage {
   const now = Date.now();
   return {
     observedAt: new Date(now).toISOString(),
-    windowStart: new Date(now - 12 * 60 * 60 * 1000).toISOString(),
-    windowEnd: new Date(now).toISOString(),
+    windowStart: options.windowStart ?? new Date(now - 12 * 60 * 60 * 1000).toISOString(),
+    windowEnd: options.windowEnd ?? new Date(now).toISOString(),
     watermark,
     segments,
     coverage: [],
@@ -141,18 +146,30 @@ describe("useManagedTaskTimeline", () => {
 
   it("commits a fixed-watermark baseline atomically and coalesces notices during paging", async () => {
     const secondBaselinePage = deferred<TaskTimelinePage>();
+    const fixedWindow = {
+      windowStart: new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString(),
+      windowEnd: new Date().toISOString(),
+    };
     mocks.fetchManagedTaskTimeline
-      .mockResolvedValueOnce(page(10, [segment("run-one", 1)], { nextCursor: "baseline-next" }))
+      .mockResolvedValueOnce(
+        page(10, [segment("run-one", 1)], { ...fixedWindow, nextCursor: "baseline-next" }),
+      )
       .mockImplementationOnce(() => secondBaselinePage.promise)
-      .mockResolvedValueOnce(page(12, [segment("run-one", 11)], { nextCursor: "delta-next" }))
-      .mockResolvedValueOnce(page(12, [segment("run-one", 12), segment("run-two", 12)]));
+      .mockResolvedValueOnce(
+        page(12, [segment("run-one", 11)], { ...fixedWindow, nextCursor: "delta-next" }),
+      )
+      .mockResolvedValueOnce(
+        page(12, [segment("run-one", 12), segment("run-two", 12)], fixedWindow),
+      );
 
     renderProbe();
     await vi.waitFor(() => expect(mocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(2));
     expect(current).toMatchObject({ segments: [], coverage: [], watermark: null });
-    expect(mocks.fetchManagedTaskTimeline.mock.calls[0][0]).toEqual(
-      expect.objectContaining({ limit: 500, from: expect.any(String), to: expect.any(String) }),
-    );
+    expect(mocks.fetchManagedTaskTimeline.mock.calls[0][0]).toEqual({
+      windowHours: 12,
+      afterRevision: undefined,
+      limit: 500,
+    });
     expect(mocks.fetchManagedTaskTimeline.mock.calls[1][0]).toEqual({
       cursor: "baseline-next",
       limit: 500,
@@ -170,9 +187,12 @@ describe("useManagedTaskTimeline", () => {
     });
     await vi.waitFor(() => expect(current?.watermark).toBe(12));
 
-    expect(mocks.fetchManagedTaskTimeline.mock.calls[2][0]).toEqual(
-      expect.objectContaining({ afterRevision: 10, limit: 500 }),
-    );
+    expect(mocks.fetchManagedTaskTimeline.mock.calls[2][0]).toEqual({
+      from: fixedWindow.windowStart,
+      to: fixedWindow.windowEnd,
+      afterRevision: 10,
+      limit: 500,
+    });
     expect(mocks.fetchManagedTaskTimeline.mock.calls[3][0]).toEqual({
       cursor: "delta-next",
       limit: 500,

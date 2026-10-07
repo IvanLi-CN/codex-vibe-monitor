@@ -14,7 +14,7 @@
 - `生效计划`: worker 默认规则与维护库自定义覆盖合并后的可展示策略，包含来源、触发机制和编辑能力。
 - 待执行请求、准入延后任务、任务执行区间、任务标识色和任务让行状态采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
 - 任务工作量趋势、任务待处理量、本次发现量、本次处理量、任务计量范围和固定清理存量采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。页面图例统一使用“待处理量 / 本次发现 / 本次处理”。
-- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors and bounded latest-run summaries. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark pages of at most 500 segments and `afterRevision` incremental updates; an expired cursor returns `resetRequired` so the client can resynchronize. `GET /api/system/managed-tasks/{task_key}/workload?windowHours=24&limit=200` reads the task-scoped workload window with limit validation and shared HTTP/SSE semantics. `system.managed-tasks.catalog/v1` and `system.managed-tasks.workload/v1` publish the list and visible-row revisions. Existing task detail interfaces and control `PATCH` retain their prior fields and behavior.
+- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors and bounded latest-run summaries. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark keyset pages of at most 500 segments and `afterRevision` incremental updates; `windowHours=12` lets the server choose a rolling window after reading its watermark, and every cursor page reuses the returned bounds. An expired or legacy offset cursor returns `resetRequired` so the client can resynchronize. `GET /api/system/managed-tasks/{task_key}/workload?windowHours=24&limit=200` reads the task-scoped workload window with limit validation and shared HTTP/SSE semantics. `system.managed-tasks.catalog/v1` and `system.managed-tasks.workload/v1` publish the list and visible-row revisions. Existing task detail interfaces and control `PATCH` retain their prior fields and behavior.
 
 ## Requirements
 
@@ -59,9 +59,9 @@
 - 时间图 MUST 使用紧凑多泳道，按执行区间的重叠关系分配行；行不固定归属某个任务。同一任务的多次运行使用同色独立区间，同时发生的运行不得互相遮蔽。
 - 前端 MUST 每秒本地推进时间轴、当前时间标记和仍在执行的色条终点；执行状态以后台观测为准，本地计时不得制造结束结果或继续延伸已知过期的运行观测。页面恢复前台时立即校准，图表的每秒更新不得要求每秒重新获取目录或整段历史。
 - 当前执行、dispatcher 队列与准入等待 MUST 通过 SSE 主题传输：连接时提供当前快照，后续运行边界和等待变化通过事件推送；它们不得依赖固定周期的 HTTP 轮询。任务目录是静态配置，可独立按需通过 HTTP 读取。
-- 执行时间线区间 MUST 通过 `GET /api/system/managed-tasks/timeline` 的固定水位游标分页加载，每页最多 500 条；后续修订 MUST 通过 `afterRevision` 分页读取。一次基线或增量遍历的所有页 MUST 共用固定的 RFC 3339 `from` / `to`，并只在整轮完整后提交。已过期游标 MUST 丢弃未完成遍历并重启基线。
+- 执行时间线区间 MUST 通过 `GET /api/system/managed-tasks/timeline` 的固定水位 keyset 游标分页加载，每页最多 500 条；游标顺序 MUST 为稳定的 `(startedAt, segmentId)`，以免较早页中的区间修订后移动出水位结果集并跳过后续区间。后续修订 MUST 通过 `afterRevision` 分页读取。一次基线或增量遍历的所有页 MUST 共用固定的 RFC 3339 `from` / `to`；所有 `afterRevision` 页 MUST 复用已提交基线的 `from` / `to`，只有游标重置并启动新基线时才选择新的窗口。整轮完整后方可提交；`windowHours=12` MUST 由服务端先读取水位、再选定滚动窗口，避免浏览器时钟决定已提交水位的时间边界。已过期或不含 keyset 位置的旧 offset 游标 MUST 丢弃未完成遍历并重启基线。
 - `system.managed-tasks.timeline` SSE MUST 使用 `/v2` schema epoch，且只发送维护库 `watermark` 与 `observedAt`，作为 HTTP 增量读取通知；SSE MUST NOT 包含或聚合区间数据。客户端 MUST 先建立 SSE 订阅，再立即独立读取完整 HTTP 基线，不得等待首个 SSE 水位通知；基线期间及增量读取期间到达的修订通知 MUST 合并至目标水位，按 `segmentId` 保留最高 `revision`，并在追平通知水位前继续读取。SSE 重连后的水位通知 MUST 补回断线期间错过的修订。
-- 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
+- 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。成功提交 HTTP 基线后，即使首个 SSE 水位通知尚未到达，也 MUST 将其视为已知快照而不提示时间线不可用。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
 - SSE 静默期间，前端 MUST 继续推进可见当前时间以及连接仍有效的运行/等待时长，不得把“没有新事件”误判为无任务或失联。SSE 断开时 MUST 显示连接状态与最后确认时间；短暂重连窗口后冻结开放状态的外推并标记为未知，重连快照恢复后立即校准。
 - 色条详情 MUST 提供任务名称、触发来源、真实起止时间、实际执行用时与结果；缺少的历史字段保持未知。短于实时刷新周期的任务也须能由执行边界记录进入历史；极短区间的可见标记不得改变原始耗时。
 - 已结束区间 MUST 保留成功、失败、取消或其他已观测结果的区别，不得只展示成功记录。共享一个执行实例的父子任务不得画成两个并行任务；当前子任务身份须在对应实例详情中可辨认。
@@ -265,9 +265,9 @@
 
 ### VER-TASK-OPS-016
 
-- Method: Rust HTTP/SSE transport tests, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
+- Method: Rust HTTP/SSE transport tests including revision during a keyset traversal, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-009`
-- Pass condition: the HTTP baseline starts immediately after subscribing and commits even before the first SSE marker; all baseline rows load in 500-row fixed-watermark pages; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired cursors restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
+- Pass condition: the HTTP baseline starts immediately after subscribing and commits even before the first SSE marker; all baseline rows load in 500-row fixed-watermark keyset pages even if an earlier row is revised during pagination; server-selected 12-hour bounds remain fixed within each traversal; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired and legacy offset cursors restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
 
 ## Related ADRs
 
@@ -302,10 +302,10 @@
 - margin_policy: `trim_only`
 - evidence_surface: `page`
 - sensitive_exclusion: `N/A`
-- comparison_base: `8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3`
+- comparison_base: `d8aa9e7ffec8d24b499e93db633486827a87ba7c`
 - comparison: `current-only`; the locked baseline has no images at the new exact destination paths
 - rendered_candidate: `caf933ab46e9e6471e24ed6c93f1c69031466289`
-- owner_confirmation: confirmed in chat on 2026-10-07 ("确认。")
+- owner_confirmation: confirmed in chat on 2026-10-07 ("没问题。")
 - submission_gate: `approved`
 - state: demo timeline rendered 13,120 intervals across 27 pages with no unavailable warning; desktop dark, mobile light, and an expanded 94-run dense group with inspectable run IDs
 - validation: `web/src/demo/event-handlers.test.ts` asserts 13,120 unique intervals across 27 fixed-watermark pages

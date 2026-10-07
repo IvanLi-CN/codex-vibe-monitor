@@ -2746,12 +2746,16 @@ impl MaintenanceStore {
         to: &str,
         watermark: i64,
         after_revision: Option<i64>,
-        offset: u64,
+        after: Option<(&str, &str)>,
         limit: usize,
     ) -> Result<Vec<TimelineSegment>> {
-        let rows = sqlx::query_as::<_, TimelineSegment>("SELECT segment_id,kind,task_key,title,started_at,last_observed_at,finished_at,duration_ms,status,trigger_kind,execution_class,reason,retry_at,active_child_task_key,active_child_title,managed_run_id,session_id,revision FROM task_timeline_segments WHERE started_at<=? AND COALESCE(finished_at,last_observed_at)>=? AND revision<=? AND (? IS NULL OR revision>?) ORDER BY started_at,segment_id LIMIT ? OFFSET ?")
+        let rows = sqlx::query_as::<_, TimelineSegment>("SELECT segment_id,kind,task_key,title,started_at,last_observed_at,finished_at,duration_ms,status,trigger_kind,execution_class,reason,retry_at,active_child_task_key,active_child_title,managed_run_id,session_id,revision FROM task_timeline_segments WHERE started_at<=? AND COALESCE(finished_at,last_observed_at)>=? AND revision<=? AND (? IS NULL OR revision>?) AND (? IS NULL OR started_at>? OR (started_at=? AND segment_id>?)) ORDER BY started_at,segment_id LIMIT ?")
             .bind(to).bind(from).bind(watermark).bind(after_revision).bind(after_revision)
-            .bind(limit.min(500) as i64).bind(offset.min(i64::MAX as u64) as i64)
+            .bind(after.map(|position| position.0))
+            .bind(after.map(|position| position.0))
+            .bind(after.map(|position| position.0))
+            .bind(after.map(|position| position.1))
+            .bind(limit.min(500) as i64)
             .fetch_all(&self.pool).await?;
         Ok(rows)
     }
@@ -4762,13 +4766,13 @@ mod tests {
             .await
             .expect("write timeline paging rows");
 
-        let first = crate::task_timeline::timeline_page(&store, None, None, None, None, 2)
+        let first = crate::task_timeline::timeline_page(&store, None, None, None, None, None, 2)
             .await
             .expect("read first fixed-watermark page");
         assert_eq!(first.segments.len(), 2);
         let cursor = first.next_cursor.clone().expect("first page cursor");
         let second =
-            crate::task_timeline::timeline_page(&store, Some(&cursor), None, None, None, 2)
+            crate::task_timeline::timeline_page(&store, Some(&cursor), None, None, None, None, 2)
                 .await
                 .expect("read second fixed-watermark page");
         assert_eq!(second.segments.len(), 1);
@@ -4796,6 +4800,7 @@ mod tests {
             &store,
             None,
             Some(first.watermark),
+            None,
             None,
             None,
             500,

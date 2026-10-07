@@ -238,6 +238,7 @@ export default function SystemTasksPage(): JSX.Element {
   const timelineTopic = useManagedTaskTimeline();
   const timeline = timelineTopic.segments;
   const coverage = timelineTopic.coverage;
+  const timelineWatermark = timelineTopic.watermark;
   const runtime = runtimeTopic.data;
   const sseStatus = useSseStatus();
   const connectionLostAt = useRef<number | null>(null);
@@ -540,7 +541,10 @@ export default function SystemTasksPage(): JSX.Element {
           <Alert variant="warning">
             时间线同步暂不可用，保留最后一次完整区间：{timelineTopic.error}
           </Alert>
-        ) : timelineTopic.lastReceivedAt == null && !loading && !timelineTopic.isLoading ? (
+        ) : timelineWatermark == null &&
+          timelineTopic.lastReceivedAt == null &&
+          !loading &&
+          !timelineTopic.isLoading ? (
           <Alert variant="warning">尚无可用的时间线记录，当前区间会以观测缺口呈现。</Alert>
         ) : null}
 

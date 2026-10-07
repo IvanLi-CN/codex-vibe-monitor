@@ -6357,6 +6357,7 @@ export async function fetchManagedTaskTimeline(
   query: {
     from?: string;
     to?: string;
+    windowHours?: number;
     cursor?: string;
     afterRevision?: number;
     limit?: number;

@@ -20,7 +20,7 @@ const streamMocks = vi.hoisted(() => ({
   useSseStatus: vi.fn(),
   requestImmediateReconnect: vi.fn(),
   runtimeLastReceivedAt: 0,
-  timelineLastReceivedAt: 0,
+  timelineLastReceivedAt: 0 as number | null,
   runtimeData: null as unknown,
   timelineData: null as unknown,
   runtimeRefresh: vi.fn(),
@@ -249,7 +249,7 @@ describe("SystemTasksPage", () => {
     expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
     expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
     expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 500, from: expect.any(String), to: expect.any(String) }),
+      expect.objectContaining({ limit: 500, windowHours: 12 }),
     );
     expect(host?.textContent).toContain("数据保留与归档");
     expect(host?.textContent).toContain("正在执行");
@@ -269,6 +269,16 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("固定间隔");
     expect(host?.textContent).toContain("手动");
     expect(host?.textContent).toContain("已停用");
+  });
+
+  it("does not report an empty timeline after an HTTP baseline arrives before SSE", async () => {
+    streamMocks.timelineData = null;
+    streamMocks.timelineLastReceivedAt = null;
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1));
+    await flushEffects();
+
+    expect(host?.textContent).not.toContain("尚无可用的时间线记录");
   });
 
   it("combines enabled and trigger filters without hiding the running area", async () => {

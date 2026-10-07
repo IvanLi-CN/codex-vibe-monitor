@@ -56,6 +56,17 @@ describe("fetchManagedTaskTimeline response contract", () => {
     });
   });
 
+  it("requests a server-selected rolling window without client timestamps", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(validPage), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchManagedTaskTimeline({ windowHours: 12, afterRevision: 7, limit: 500 });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/system/managed-tasks/timeline?windowHours=12&afterRevision=7&limit=500",
+    );
+  });
+
   it.each(["null", "absent"])("accepts %s optional timeline timestamps", async (presence) => {
     const segmentWithOptionalTimestamps: Record<string, unknown> = {
       ...validPage.segments[0],

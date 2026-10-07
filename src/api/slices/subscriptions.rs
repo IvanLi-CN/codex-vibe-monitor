@@ -21813,6 +21813,7 @@ mod tests {
         let mut cursor = None;
         let mut loaded = 0;
         let mut page_count = 0;
+        let mut baseline_ids = HashSet::new();
         loop {
             let page = crate::task_timeline::timeline_page(
                 &store,
@@ -21820,6 +21821,7 @@ mod tests {
                 None,
                 Some(&from),
                 Some(&to),
+                None,
                 500,
             )
             .await
@@ -21828,24 +21830,49 @@ mod tests {
             assert_eq!(page.window_start, from);
             assert_eq!(page.window_end, to);
             loaded += page.segments.len();
+            baseline_ids.extend(
+                page.segments
+                    .iter()
+                    .map(|segment| segment.segment_id.clone()),
+            );
             page_count += 1;
             cursor = page.next_cursor;
+            if page_count == 1 {
+                let mut mutation = store.pool.begin().await.expect("begin page mutation");
+                sqlx::query(
+                    "UPDATE maintenance_metadata SET value=? WHERE key='task_timeline_revision'",
+                )
+                .bind((SEGMENT_COUNT + 1).to_string())
+                .execute(&mut *mutation)
+                .await
+                .expect("advance revision between baseline pages");
+                sqlx::query(
+                    "UPDATE task_timeline_segments SET revision=? WHERE segment_id='fixture-00001'",
+                )
+                .bind((SEGMENT_COUNT + 1) as i64)
+                .execute(&mut *mutation)
+                .await
+                .expect("revise an earlier baseline row between pages");
+                mutation.commit().await.expect("commit page mutation");
+            }
             if cursor.is_none() {
                 break;
             }
         }
         assert_eq!(loaded, SEGMENT_COUNT);
         assert_eq!(page_count, 27);
+        assert_eq!(baseline_ids.len(), SEGMENT_COUNT);
+        assert!(baseline_ids.contains("fixture-00501"));
 
         sqlx::query("UPDATE maintenance_metadata SET value=? WHERE key='task_timeline_revision'")
-            .bind((SEGMENT_COUNT + 1).to_string())
+            .bind((SEGMENT_COUNT + 2).to_string())
             .execute(&store.pool)
             .await
             .expect("advance timeline revision");
         sqlx::query("INSERT INTO task_timeline_segments (segment_id,kind,task_key,title,started_at,last_observed_at,status,trigger_kind,session_id,revision) VALUES ('fixture-delta','execution','retention_archive','Retention archive',?,?, 'success','interval','fixture-session',?)")
             .bind(&observed_at)
             .bind(&observed_at)
-            .bind((SEGMENT_COUNT + 1) as i64)
+            .bind((SEGMENT_COUNT + 2) as i64)
             .execute(&store.pool)
             .await
             .expect("insert timeline revision delta");
@@ -21855,13 +21882,19 @@ mod tests {
             Some(SEGMENT_COUNT as i64),
             Some(&from),
             Some(&to),
+            None,
             500,
         )
         .await
         .expect("read revision delta after the complete baseline");
-        assert_eq!(delta.watermark, (SEGMENT_COUNT + 1) as i64);
-        assert_eq!(delta.segments.len(), 1);
-        assert_eq!(delta.segments[0].segment_id, "fixture-delta");
+        assert_eq!(delta.watermark, (SEGMENT_COUNT + 2) as i64);
+        assert_eq!(delta.segments.len(), 2);
+        let delta_ids = delta
+            .segments
+            .iter()
+            .map(|segment| segment.segment_id.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(delta_ids, HashSet::from(["fixture-00001", "fixture-delta"]));
         assert!(delta.next_cursor.is_none());
     }
 

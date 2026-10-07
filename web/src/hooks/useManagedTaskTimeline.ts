@@ -4,7 +4,7 @@ import { fetchManagedTaskTimeline } from "../lib/api";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
 const TIMELINE_PAGE_SIZE = 500;
-const TIMELINE_WINDOW_MS = 12 * 60 * 60 * 1000;
+const TIMELINE_WINDOW_HOURS = 12;
 
 interface TaskTimelineRevision {
   watermark: number;
@@ -15,6 +15,8 @@ interface TimelineSnapshot {
   watermark: number;
   segments: TaskTimelineSegment[];
   coverage: TaskTimelineCoverage[];
+  from: string;
+  to: string;
 }
 
 interface TimelinePageBatch {
@@ -26,27 +28,20 @@ interface TimelinePageBatch {
   resetRequired: boolean;
 }
 
-function timelineWindow(now: number) {
-  const to = new Date(now).toISOString();
-  return {
-    from: new Date(now - TIMELINE_WINDOW_MS).toISOString(),
-    to,
-  };
-}
-
 async function readTimelinePages(
-  window: { from: string; to: string },
   afterRevision?: number,
+  window?: Pick<TimelineSnapshot, "from" | "to">,
 ): Promise<TimelinePageBatch> {
   const segments: TaskTimelineSegment[] = [];
   let coverage: TaskTimelineCoverage[] = [];
   let page: TaskTimelinePage = await fetchManagedTaskTimeline({
-    ...window,
+    ...(window ? { from: window.from, to: window.to } : { windowHours: TIMELINE_WINDOW_HOURS }),
     afterRevision,
     limit: TIMELINE_PAGE_SIZE,
   });
+  const bounds = window ?? { from: page.windowStart, to: page.windowEnd };
   if (page.resetRequired) {
-    return { ...window, watermark: page.watermark, segments, coverage, resetRequired: true };
+    return { ...bounds, watermark: page.watermark, segments, coverage, resetRequired: true };
   }
   const watermark = page.watermark;
   segments.push(...page.segments);
@@ -55,7 +50,7 @@ async function readTimelinePages(
     page = await fetchManagedTaskTimeline({ cursor: page.nextCursor, limit: TIMELINE_PAGE_SIZE });
     if (page.resetRequired) {
       return {
-        ...window,
+        ...bounds,
         watermark: page.watermark,
         segments: [],
         coverage: [],
@@ -68,7 +63,7 @@ async function readTimelinePages(
     segments.push(...page.segments);
     coverage = page.coverage;
   }
-  return { ...window, watermark, segments, coverage, resetRequired: false };
+  return { ...bounds, watermark, segments, coverage, resetRequired: false };
 }
 
 function mergeTimelineSegments(
@@ -128,7 +123,7 @@ export function useManagedTaskTimeline() {
     try {
       while (mounted.current) {
         if (appliedWatermark.current == null) {
-          const batch = await readTimelinePages(timelineWindow(Date.now()));
+          const batch = await readTimelinePages();
           if (batch.resetRequired) {
             cursorResets += 1;
             if (cursorResets > 3) throw new Error("Timeline snapshot cursor repeatedly expired");
@@ -138,6 +133,8 @@ export function useManagedTaskTimeline() {
             watermark: batch.watermark,
             segments: batch.segments,
             coverage: batch.coverage,
+            from: batch.from,
+            to: batch.to,
           };
           if (!mounted.current) return;
           committed.current = next;
@@ -152,7 +149,10 @@ export function useManagedTaskTimeline() {
         const target = desiredWatermark.current ?? appliedWatermark.current;
         if (target <= appliedWatermark.current && !retryRequested.current) break;
 
-        const batch = await readTimelinePages(timelineWindow(Date.now()), appliedWatermark.current);
+        const batch = await readTimelinePages(
+          appliedWatermark.current,
+          committed.current ?? undefined,
+        );
         if (batch.resetRequired) {
           cursorResets += 1;
           if (cursorResets > 3) {
@@ -171,6 +171,8 @@ export function useManagedTaskTimeline() {
             batch.to,
           ),
           coverage: batch.coverage,
+          from: batch.from,
+          to: batch.to,
         };
         if (!mounted.current) return;
         committed.current = next;
