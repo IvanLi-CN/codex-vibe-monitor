@@ -43,6 +43,12 @@ use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+#[path = "retention/batch_admission.rs"]
+mod batch_admission;
+pub(crate) use batch_admission::acquire_retention_batch_write_connection;
+#[cfg(test)]
+pub(crate) use batch_admission::{BatchCommitProbe, RETENTION_TEST_BATCH_COMMIT};
+
 pub(crate) use task_runner::run_data_retention_maintenance_best_effort;
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
 
@@ -395,6 +401,23 @@ pub(super) fn retention_task_work_directory_lock(path: &Path) -> Result<Retentio
     }
 }
 
+pub(crate) fn retention_archive_file_try_lock(path: &Path) -> Result<RetentionArchiveFileLock> {
+    #[cfg(unix)]
+    {
+        match retention_file_lock(path, libc::LOCK_EX, true) {
+            Err(error) if error.to_string() == "archive directory lock busy" => {
+                retention_record_defer("archive_file_fence", "archive_directory_lock_busy");
+                Err(retention_write_deferred("archive_file_fence"))
+            }
+            result => result,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        retention_archive_file_lock(path)
+    }
+}
+
 pub(crate) fn retention_archive_parent_identity(path: &Path) -> Option<String> {
     let parent = path.parent()?;
     let metadata = fs::metadata(parent).ok()?;
@@ -743,6 +766,19 @@ pub(crate) async fn retention_test_with_shutdown<F: Future>(
     RETENTION_SHUTDOWN.scope(shutdown, work).await
 }
 
+#[cfg(test)]
+pub(crate) async fn retention_test_with_recorded_defer_reason<F: Future>(
+    work: F,
+) -> (F::Output, Option<String>) {
+    RETENTION_RUN_DEFER_REASON
+        .scope(RefCell::new(None), async {
+            let result = work.await;
+            let reason = RETENTION_RUN_DEFER_REASON.with(|reason| reason.borrow().clone());
+            (result, reason)
+        })
+        .await
+}
+
 fn retention_recovery_record_failure(stage: &'static str, error: &anyhow::Error) {
     let fingerprint = retention_error_fingerprint(error);
     let mut health = RETENTION_RECOVERY_HEALTH
@@ -890,7 +926,7 @@ pub(super) fn retention_write_deferred(operation: &'static str) -> anyhow::Error
     anyhow::Error::new(RetentionWriteDeferred { operation })
 }
 
-pub(super) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
+pub(crate) fn is_retention_write_deferred(error: &anyhow::Error) -> bool {
     error.is::<RetentionWriteDeferred>() || error.is::<RawOrphanSweepAdmissionDeferred>()
 }
 
@@ -1395,122 +1431,13 @@ pub(crate) async fn acquire_retention_write_connection(
     pool: &Pool<Sqlite>,
     operation: &'static str,
 ) -> Result<Option<(sqlx::pool::PoolConnection<Sqlite>, RetentionWriteAdmission)>> {
-    #[cfg(test)]
-    let deny_reason = RETENTION_TEST_DB_PRESSURE_GATE
-        .try_with(|gate| gate.background_deny_reason())
-        .unwrap_or_else(|_| crate::db_pressure::global_db_pressure_gate().background_deny_reason());
-    #[cfg(not(test))]
-    let deny_reason = crate::db_pressure::global_db_pressure_gate().background_deny_reason();
-    if let Some(reason) = deny_reason {
-        retention_record_defer(operation, reason);
-        return Ok(None);
-    }
-    // SQLx returns connections asynchronously. Wait for pool readiness and finish
-    // returning this idle connection before requesting the coordinator, otherwise
-    // an uncontended pool can look exhausted after every committed chunk.
-    let Some(mut connection) = acquire_retention_pool_connection(pool, operation).await? else {
-        return Ok(None);
-    };
-    let release = connection.return_to_pool();
-    let release = async {
-        if let Some(remaining) = retention_run_remaining_budget() {
-            tokio::time::timeout(remaining, release).await.is_ok()
-        } else {
-            release.await;
-            true
-        }
-    };
-    let returned = if let Some(shutdown) = retention_run_shutdown_token() {
-        tokio::select! {
-            biased;
-            _ = shutdown.cancelled() => {
-                retention_record_defer(operation, "shutdown");
-                return Ok(None);
-            }
-            returned = release => returned,
-        }
-    } else {
-        release.await
-    };
-    drop(connection);
-    if !returned {
-        retention_record_defer(operation, "retention_work_budget");
-        return Ok(None);
-    }
-    #[cfg(test)]
-    let _ = RETENTION_TEST_WRITE_CONNECTION_POOL_READY.try_with(|ready| ready.notify_one());
-    // Wait for the coordinator without holding a pool connection. Once admitted,
-    // take only an immediately available connection: neither resource may be
-    // retained while waiting for the other, including a P1 writer using the pool.
-    let Some(mut admission) = acquire_retention_write_admission(operation).await else {
-        return Ok(None);
-    };
-    if retention_run_budget_expired()
-        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
-    {
-        admission.write_permit.revoke_fairness_admission();
-        drop(admission);
-        retention_record_defer(
-            operation,
-            if retention_run_budget_expired() {
-                "retention_work_budget"
-            } else {
-                "shutdown"
-            },
-        );
-        return Ok(None);
-    }
-    if let Some(connection) = pool.try_acquire() {
-        Ok(Some((connection, admission)))
-    } else {
-        admission.write_permit.revoke_fairness_admission();
-        drop(admission);
-        retention_record_defer(operation, "sqlite_pool_wait");
-        Ok(None)
-    }
+    batch_admission::acquire_write_connection(pool, operation, false).await
 }
 
 pub(super) async fn acquire_retention_write_admission(
     operation: &'static str,
 ) -> Option<RetentionWriteAdmission> {
-    #[cfg(test)]
-    let test_pressure_gate = RETENTION_TEST_DB_PRESSURE_GATE
-        .try_with(std::sync::Arc::clone)
-        .ok();
-    #[cfg(not(test))]
-    let test_pressure_gate: Option<std::sync::Arc<crate::db_pressure::DbPressureGate>> = None;
-    let pressure_gate = match test_pressure_gate.as_deref() {
-        Some(gate) => gate,
-        None => crate::db_pressure::global_db_pressure_gate(),
-    };
-    if let Some(reason) = pressure_gate.background_deny_reason() {
-        retention_record_defer(operation, reason);
-        return None;
-    }
-    if retention_run_budget_expired() {
-        retention_record_defer(operation, "retention_work_budget");
-        return None;
-    }
-    let (mut write_permit, coordinator_snapshot) =
-        acquire_retention_write_coordinator(operation).await?;
-    if retention_run_budget_expired() {
-        retention_record_defer(operation, "retention_work_budget");
-        drop(write_permit);
-        return None;
-    }
-    match pressure_gate.try_begin_background(operation) {
-        Ok(pressure_permit) => Some(RetentionWriteAdmission {
-            write_permit,
-            _pressure_permit: pressure_permit,
-            p1_waiter_count: coordinator_snapshot.p1_waiter_count,
-        }),
-        Err(reason) => {
-            retention_record_defer(operation, reason);
-            write_permit.revoke_fairness_admission();
-            drop(write_permit);
-            None
-        }
-    }
+    batch_admission::acquire_write_admission(operation, false).await
 }
 
 async fn acquire_retention_write_coordinator(
@@ -1601,6 +1528,23 @@ pub(crate) struct RetentionRunSummary {
 }
 
 impl RetentionRunSummary {
+    pub(crate) fn apply_recorded_defer_reason(&mut self, defer_reason: Option<String>) {
+        self.deferred |= defer_reason.is_some();
+        // Stage catches use a generic typed-admission placeholder. Publish the
+        // recorded cause without replacing an already specific stop reason.
+        if self.wait_reason.as_deref() == Some("retention_write_admission")
+            && defer_reason.is_some()
+        {
+            self.wait_reason = defer_reason;
+        } else if self.wait_reason.is_none() && (self.deferred || self.budget_exhausted) {
+            self.wait_reason = if self.budget_exhausted {
+                Some("retention_work_budget".to_string())
+            } else {
+                defer_reason
+            };
+        }
+    }
+
     pub(crate) fn processed_row_count(&self) -> u64 {
         self.invocation_details_pruned as u64
             + self.invocation_rows_archived as u64
@@ -8729,7 +8673,7 @@ async fn run_data_retention_maintenance_with_prompt_cache(
         )
         .await;
     result.map(|(mut summary, defer_reason)| {
-        summary.deferred |= defer_reason.is_some();
+        summary.apply_recorded_defer_reason(defer_reason);
         summary.work_budget_ms = Some(RETENTION_WORK_BUDGET.as_millis() as u64);
         summary.elapsed_ms = Some(run_started_at.elapsed().as_millis() as u64);
         summary.timeout_count = Some(u64::from(summary.budget_exhausted));
@@ -8746,13 +8690,6 @@ async fn run_data_retention_maintenance_with_prompt_cache(
                         .committed_rows_per_second
                         .map(|service| service / arrival)
                 });
-        }
-        if summary.wait_reason.is_none() && (summary.deferred || summary.budget_exhausted) {
-            summary.wait_reason = if summary.budget_exhausted {
-                Some("retention_work_budget".to_string())
-            } else {
-                defer_reason
-            };
         }
         summary
     })

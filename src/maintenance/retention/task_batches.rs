@@ -655,7 +655,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
             archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            let archive_lock =
+                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
                 break;
             }
@@ -666,6 +667,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             if actual_archive_sha256 != archive_outcome.sha256 {
                 bail!("retention task-local archive artifact changed before publication");
             }
+            drop(archive_lock);
             let Some(proof) =
                 batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
                     .await
@@ -702,7 +704,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .map(invocation_archive_candidate_to_hourly_source_record)
                     .collect::<Vec<_>>();
                 let Some((mut source_connection, admission)) =
-                    acquire_retention_write_connection(pool, "invocation_archive").await?
+                    acquire_retention_batch_write_connection(pool, "invocation_archive").await?
                 else {
                     return Ok((
                         rows_archived,
@@ -711,6 +713,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prompt_cache_keys,
                     ));
                 };
+                let archive_lock =
+                    retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
+                if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
+                {
+                    bail!("task-local invocation artifact changed while awaiting admission");
+                }
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 // P2 normally advances this cursor before retention. Rows beyond it would be
@@ -767,8 +775,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                 }
                 upsert_invocation_rollups(tx.as_mut(), group).await?;
+                // The file fence is released between chunks. Recheck pages and manifest in
+                // the source transaction after any admission wait or concurrent rewrite.
+                store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
                 if chunk_index == 0 {
-                    store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
                     mark_archive_batch_historical_rollups_materialized_tx(
                         tx.as_mut(),
                         spec.dataset,
@@ -874,7 +884,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 retention_recovery_record_progress();
                 raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
+                drop(archive_lock);
                 drop(admission);
+                #[cfg(test)]
+                batch_admission::pause_after_first_chunk(committed_rows).await;
             }
             if committed_rows > 0 {
                 archive_batches += 1;
@@ -1084,7 +1097,8 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            let archive_lock =
+                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
                 break;
             }
@@ -1095,6 +1109,7 @@ pub(crate) async fn archive_timestamped_dataset(
             if actual_sha256 != archive_outcome.sha256 {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             }
+            drop(archive_lock);
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
             for (group, chunk_identity) in
@@ -1125,10 +1140,16 @@ pub(crate) async fn archive_timestamped_dataset(
                     Vec::new()
                 };
                 let Some((mut source_connection, admission)) =
-                    acquire_retention_write_connection(pool, "timestamped_archive").await?
+                    acquire_retention_batch_write_connection(pool, "timestamped_archive").await?
                 else {
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
+                let archive_lock =
+                    retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
+                if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
+                {
+                    bail!("task-local timestamped artifact changed while awaiting admission");
+                }
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
@@ -1177,16 +1198,12 @@ pub(crate) async fn archive_timestamped_dataset(
                             &archive_outcome.file_path,
                         )
                         .await?;
-                    cache_pool_upstream_node_health_archive_rows_from_live_ids_tx(
-                        tx.as_mut(),
-                        &archive_outcome.file_path,
-                        &ids,
-                    )
-                    .await?;
-                    refresh_pool_upstream_node_health_hourly_archive_rows_from_cache_tx(
+                    cache_pool_node_health_batch_chunk_tx(
                         tx.as_mut(),
                         archive_batch_id,
                         &archive_outcome.file_path,
+                        &ids,
+                        committed_rows == 0,
                     )
                     .await?;
                     if archive_file_contains_only_new_rows
@@ -1315,12 +1332,16 @@ pub(crate) async fn archive_timestamped_dataset(
                     committed_rows += group.len();
                     raw_files_removed +=
                         delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
+                    drop(archive_lock);
                     drop(admission);
                 } else {
+                    drop(archive_lock);
                     drop(admission);
                     rows_archived += group.len();
                     committed_rows += group.len();
                 }
+                #[cfg(test)]
+                batch_admission::pause_after_first_chunk(committed_rows).await;
             }
             if committed_rows > 0 {
                 archive_batches += 1;

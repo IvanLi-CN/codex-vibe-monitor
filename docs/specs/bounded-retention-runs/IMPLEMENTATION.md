@@ -71,6 +71,16 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 ## Verification
 
+批次准入优化针对线上 v4.1.0 的真实瓶颈：已选 1000 行但后台槽短暂占用导致本轮通常只提交 0–64 行，并重复承担月度文件成本。选定批次的文件发布、Summary 页及源转换在本轮截止内等待资格通知，释放写许可和池连接后重新申请；纯前置巡检仍可立即延期。上游节点健康归档缓存每个批次首个事务建立精确小时统计，后续事务按旧、新缓存记录的差量更新，避免每 64 行重建全月。普通回归使用确定性通知、手动 poll 和准确聚合参考，不测试 CPU 速度。stateful profile 只在 GitHub Actions 执行；容量目标继续由独立 Actions 实测与上线后只读观测确认，本次 PR 不将短时改进声明为已达成 50 倍或 24 小时目标。
+
+对应回归位于 `retention_batch_admission.rs`、`retention_batch_wait.rs` 与 `retention_node_health_deltas.rs`：覆盖无资源持有的取消/压力等待、同次调用提交 1000 行且文件仅准备一次，以及准确参考、重试、key/bucket 变化和事务回滚。候选时间取 `invocation_max_days + 2`，不假定默认保留天数；归档 future 提前返回时测试立即失败并取消竞争 future，不以长时间等待替代结果断言。
+
+归档目录 fence 的非阻塞 busy 结果转换为现有 typed retention defer，保存 `archive_directory_lock_busy` 原因；文件发布与两个源转换路径共用这一分类。回归在首个 64 行提交后持有目录 fence，让同轮恢复尝试安全延期，确认剩余 936 行、文件摘要和已提交事实保持不变，且池连接与写许可都已释放。
+
+后台准入被优先恢复 reservation 拒绝时，复用 P2 writer 的许可释放通知抑制，避免未执行 SQLite 工作的释放使任务自身的旧 generation 等待立即重试；真正的 reservation 释放仍递增 generation 并恢复本轮转换。确定性回归将协调器通知连接到注入的同一 gate，意外自唤醒立即取消并失败，正常路径验证没有通知、资源已释放及外部释放后恢复，不使用 CPU 或耗时阈值。
+
+最终运行摘要将通用 `retention_write_admission` 占位原因替换为该轮已记录的具体延期原因，保留已有具体停止原因和原预算优先规则。真实目录 fence 冲突回归捕获该轮记录并调用生产最终归并方法，确认持久运行结果使用 `archive_directory_lock_busy`；纯轻量回归验证预算、覆盖等待和缺失记录的兼容性。
+
 - 发布构建试验使用 1,270,000 条过期 invocation、1.2 倍 attempt、500,000 行倾斜 key、十个月份、约 3 KB payload、共享 raw 链接和稀疏孤儿，执行真实文件发布及主库转换。
 - 普通新增负载采用 30,000 invocation/day 与 36,000 attempt/day；基线与候选使用相同 fixture 和请求序列，各重复三次。请求按固定时钟独立发出，包含排队延迟并等待已发请求完成，不因慢写入跳过计划到达。窗口模式的负载发生器独立截止，避免旧基线的准入等待无限延长发压。cohort 计数使用现有覆盖索引，避免验收脚本扫描大行正文。要求真实固定 cohort 归零，不能仅按短时速率外推 24 小时。
 - `retention_task_local_service_rate_release_benchmark` 是独立的 GitHub Actions 发布构建长时试验，保持 ignored，不进入通用 PR 必过 profiles。单次命令最长 25 小时，其中容量计时上限 24 小时，额外时间仅用于建数和最终文件证明。每次保存逐轮 JSON、最终 cohort、实际文件摘要和在线延迟；其容量结论不由普通功能测试替代。

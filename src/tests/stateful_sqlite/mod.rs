@@ -129,6 +129,8 @@ mod record_budget;
 mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;
 mod retention_admission_deadline;
+mod retention_batch_admission;
+mod retention_node_health_deltas;
 mod retention_scale_benchmark;
 #[expect(
     clippy::await_holding_lock,

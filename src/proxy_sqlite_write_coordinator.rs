@@ -10,6 +10,11 @@ use tokio_util::sync::CancellationToken;
 pub(crate) const PROXY_SQLITE_WRITE_COORDINATOR_MODE_ENV: &str =
     "PROXY_SQLITE_WRITE_COORDINATOR_MODE";
 
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_BACKGROUND_ELIGIBILITY_NOTIFY: Arc<dyn Fn() + Send + Sync>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProxySqliteWriteClass {
     P1Terminal,
@@ -543,6 +548,13 @@ impl Drop for ProxySqliteWritePermit {
         }
         self.coordinator.notify.notify_waiters();
         if self.notify_background_eligibility {
+            #[cfg(test)]
+            if TEST_BACKGROUND_ELIGIBILITY_NOTIFY
+                .try_with(|notify| notify())
+                .is_ok()
+            {
+                return;
+            }
             crate::db_pressure::global_db_pressure_gate().notify_background_eligibility();
         }
     }

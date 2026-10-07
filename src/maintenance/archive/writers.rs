@@ -1078,7 +1078,7 @@ async fn prepare_task_month_snapshot_pages(
 }
 
 async fn clear_legacy_archive_replacement_journal(
-    pool: &Pool<Sqlite>,
+    connection: &mut SqliteConnection,
     dataset: &str,
     month_key: &str,
     final_file_path: &Path,
@@ -1098,7 +1098,7 @@ async fn clear_legacy_archive_replacement_journal(
     .bind(dataset)
     .bind(&final_file_path)
     .bind(&staged_file_path)
-    .execute(pool)
+    .execute(&mut *connection)
     .await;
     let _ = sqlx::query(
         "UPDATE archive_batches
@@ -1110,7 +1110,7 @@ async fn clear_legacy_archive_replacement_journal(
     .bind(month_key)
     .bind(&final_file_path)
     .bind(&staged_file_path)
-    .execute(pool)
+    .execute(&mut *connection)
     .await;
 }
 
@@ -1123,7 +1123,20 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     expected_existing_sha256: Option<&str>,
     replacement_sha256: &str,
 ) -> Result<()> {
-    let _archive_lock = super::super::retention::retention_archive_file_lock(final_file_path)?;
+    let Some((mut source_connection, admission)) =
+        super::super::retention::acquire_retention_batch_write_connection(
+            pool,
+            "legacy_archive_file_publish",
+        )
+        .await?
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "legacy_archive_file_publish",
+        ));
+    };
+    // Queue without a file lock. Once admitted, take only a nonblocking directory fence and
+    // recheck the prepared file's predecessor before replacement.
+    let _archive_lock = super::super::retention::retention_archive_file_try_lock(final_file_path)?;
     // Cleanup finalization holds the same SQLite writer lock while it verifies and removes a
     // pending file. Keep reactivation and rename inside that lock so the two file operations
     // cannot interleave across processes.
@@ -1137,21 +1150,13 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             "legacy archive changed while it was being prepared; retry required"
         ));
     }
-    let Some(admission) =
-        super::super::retention::acquire_retention_write_admission("legacy_archive_file_publish")
-            .await
-    else {
-        return Err(super::super::retention::retention_write_deferred(
-            "legacy_archive_file_publish",
-        ));
-    };
     let existing_staged_path = match sqlx::query_scalar::<_, Option<String>>(
         "SELECT staged_file_path FROM retention_prepared_archives
          WHERE dataset = ?1 AND file_path = ?2 AND state = 'preparing'",
     )
     .bind(dataset)
     .bind(final_file_path.to_string_lossy().to_string())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *source_connection)
     .await
     {
         Ok(value) => value.flatten(),
@@ -1170,7 +1175,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
     .bind(dataset)
     .bind(month_key)
     .bind(final_file_path.to_string_lossy().to_string())
-    .fetch_optional(pool)
+    .fetch_optional(&mut *source_connection)
     .await?
     .flatten();
     if existing_archive_staged_path.is_some() {
@@ -1196,7 +1201,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(path.to_string_lossy().to_string())
         .bind(dataset)
         .bind(final_file_path.to_string_lossy().to_string())
-        .execute(pool)
+        .execute(&mut *source_connection)
         .await?;
         sqlx::query(
             "UPDATE archive_batches
@@ -1207,14 +1212,14 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(dataset)
         .bind(month_key)
         .bind(final_file_path.to_string_lossy().to_string())
-        .execute(pool)
+        .execute(&mut *source_connection)
         .await?;
         Some(path)
     } else {
         None
     };
     let execute_started = Instant::now();
-    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let mut tx = source_connection.begin_with("BEGIN IMMEDIATE").await?;
     if let Some(backup_path) = backup_path.as_deref() {
         fs::hard_link(final_file_path, backup_path).with_context(|| {
             format!(
@@ -1257,7 +1262,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             let _ = fs::rename(backup_path, final_file_path);
         }
         clear_legacy_archive_replacement_journal(
-            pool,
+            &mut source_connection,
             dataset,
             month_key,
             final_file_path,
@@ -1273,7 +1278,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
             let _ = fs::rename(backup_path, final_file_path);
         }
         clear_legacy_archive_replacement_journal(
-            pool,
+            &mut source_connection,
             dataset,
             month_key,
             final_file_path,
@@ -1310,7 +1315,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(dataset)
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(backup_path.to_string_lossy().to_string())
-        .execute(pool)
+        .execute(&mut *source_connection)
         .await?;
         sqlx::query(
             "UPDATE archive_batches
@@ -1322,7 +1327,7 @@ async fn replace_legacy_archive_file_with_cleanup_serialization(
         .bind(month_key)
         .bind(final_file_path.to_string_lossy().to_string())
         .bind(backup_path.to_string_lossy().to_string())
-        .execute(pool)
+        .execute(&mut *source_connection)
         .await?;
     }
     super::super::retention::retention_record_commit!(
