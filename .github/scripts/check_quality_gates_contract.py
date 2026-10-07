@@ -1028,7 +1028,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "  bun run test:e2e -- --workers=1 --output=test-results/records-overlay records-filter-overlay.spec.ts || records_status=$?",
                 "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-demo \\",
                 "  bun run test:e2e -- --workers=1 --output=test-results/demo-runtime demo-runtime.spec.ts || demo_status=$?",
-                "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \\",
+                "E2E_BASE_URL=http://127.0.0.1:60083 PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-retention-ownership \\",
                 "  bun run test:e2e -- --workers=1 --output=test-results/retention-ownership retention-maintenance-ownership.spec.ts || retention_status=$?",
                 "PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report-dashboard \\",
                 "  bun run test:e2e -- --workers=1 --output=test-results/dashboard-working-conversations dashboard-working-conversations-layout.spec.ts || dashboard_status=$?",

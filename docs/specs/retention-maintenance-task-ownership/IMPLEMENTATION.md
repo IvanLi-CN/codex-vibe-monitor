@@ -19,10 +19,10 @@
 
 - 已通过：命名 Rust 初始化／暂停／重试／身份分页和预演／跨进程运行态锁／查询超时连接关闭围栏回归，共 7 项；1 项子进程辅助测试仅由父测试调用。
 - 已通过：Web 类型、lint、构建，最新主干完整 Web 单测 178 文件、1811 测试（6 跳过），相关 Storybook 72 项，以及桌面／移动端和 demo 路由 Playwright 12 项；Web 源码树及依赖在最新主干同步前后完全一致，保留对应结果与六张已确认图片。
-- 已通过：当前候选二进制 SHA-256 `429d351685235c64fb76f4d52c4234d2b6f7a33d20bd010f3f07d15c4e4eb899` 完成十个已发布来源的升级、三项只读预演、暂停后显式真实运行、身份保护、观测持久化及初始化中断前向恢复，见 [升级结果](../../adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json)。
-- 已通过：当前主干包含默认线程栈、手动物化开始状态和数据库路径对准入修正后，实际服务／CLI／页面进程竞争验证通过，见 [运行态结果](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json)。覆盖维护库不可用、不执行启动恢复、四项暂停后手动运行、不安排自动接续、重复准入保护和退出释放双运行态锁。
-- 进行中：当前主干新增归档批次准入修复，已保留新逻辑并接入任务观测；正在重编译并刷新运行态、三个顺序资源 profile、Rust 格式／check／clippy 及全部十来源升级。本会话原 VM 已正常恢复，未完成或失效结果不作当前候选通过处理。
-- `VER-RMO-001` 至 `VER-RMO-008` 的完整证据映射待当前候选验证结束后同步；当前尚无正式 review 或 PR Ready 结论。恢复锚点及已通过／未通过门禁见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。
+- 已通过：当前候选二进制 SHA-256 `5ac3f2d94be026d2d7bcbac95390bc09c3b7fc10fede2ada7b88e615ce62046c` 完成十个已发布来源的升级、三项只读预演、暂停后显式真实运行、身份保护、观测持久化及初始化中断前向恢复，见 [升级结果](../../adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json)。
+- 已通过：当前候选完成首次启动、服务在线、CLI 离线与 hard-link 别名的运行态锁回归；完整服务／CLI／页面竞争证据仍保留在 [历史运行态结果](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json)，不作为当前候选 digest 证明。
+- 进行中：当前候选已完成 Rust 格式／check／clippy、十来源升级和质量门禁合同检查；正在收敛最终复审与 PR 当前 head 必要 CI。
+- `VER-RMO-001` 至 `VER-RMO-008` 的实现证据已映射到当前候选验证卡；当前尚无 PR Ready 结论。恢复锚点及已通过／未通过门禁见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。
 
 ## Visual Evidence
 
