@@ -2,37 +2,37 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add per-task workload capabilities and durable run samples, revisioned detail updates, and evidence-based workload charts with Retention backlog history.",
-    "release_unit_description": "Task operations API and additive maintenance-store workload migration, including recent-100 run trends and responsive Retention backlog Tabs.",
+    "description": "Move managed task timeline intervals from SSE rows to fixed-watermark HTTP pages and afterRevision deltas, with marker-only SSE v2 notifications.",
+    "release_unit_description": "Managed task timeline API and SSE v2 contract, including fixed-watermark HTTP paging and revision catch-up.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
     "allowed_impacts": ["patch", "minor", "major"],
     "planned": {
-      "impact": "minor",
-      "reasoning": "Measurement capabilities, workload trend fields, and the task-key detail SSE topic are additive. The maintenance-store sample table is forward-only and idempotent; legacy request-time, duration, task controls, and colors retain their existing meanings and values.",
+      "impact": "major",
+      "reasoning": "The timeline SSE schema epoch changes from v1 interval rows to v2 revision markers, so consumers of the old payload must migrate to HTTP pages. The persisted timeline schema and existing task controls, colors, request timestamps, and duration semantics are unchanged.",
       "assessed_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md", "docs/specs/task-operations/persistent-state-migration.json"]
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md", "docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md", "docs/specs/task-operations/persistent-state-migration.json"]
     },
     "current": {
-      "impact": "minor",
-      "scope_drift": {"detected": false, "description": "The workload requirements extend the same task-operations topic with additive response fields, a task-key SSE detail topic, and an idempotent maintenance-store sample table; no scheduling or task-admission behavior changes."},
-      "reasoning": "The migration adds workload sample identity, sequence, state, and serialized metric coverage without reconstructing historical values. Existing controls, colors, request timestamps, duration semantics, and legacy history are preserved.",
-      "reassessed_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/specs/task-operations/persistent-state-migration.json", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md"]
+      "impact": "major",
+      "scope_drift": {"detected": true, "description": "This candidate changes the public timeline SSE payload from interval snapshots/deltas to a v2 revision marker; consumers of the v1 payload must migrate to the HTTP timeline endpoint."},
+      "reasoning": "The timeline SSE schema epoch changes to /v2 and removes segment rows from notifications, which is a breaking public API change. The maintenance-store schema, control columns, and legacy history semantics are unchanged by this transport change.",
+      "reassessed_at": "2026-10-04T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md", "docs/specs/task-operations/persistent-state-migration.json"]
     },
     "verified": {
-      "impact": "minor",
-      "reasoning": "The additive detail contract and idempotent sample-table migration preserve old task controls, colors, request-time fields, and unknown legacy metrics.",
-      "verified_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/persistent-state-migration.json", "cargo fmt --all -- --check", "cargo check --locked --all-targets --all-features", "backend lightweight/stateful-sqlite/archive-file-io profiles"]
+      "impact": "major",
+      "reasoning": "Transport tests verify the v2 marker-only SSE contract and unchanged paginated HTTP response; the public SSE payload change is intentionally breaking while persistent-state compatibility remains at the prior minor level.",
+      "verified_at": "2026-10-04T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md", "cargo test managed_task_timeline_transport_pages_more_than_ten_thousand_rows -- --nocapture"]
     }
   },
   "compatibility_evidence": {
     "public_api": {
-      "change": "compatible",
-      "supported_consumer_range": "Same-major consumers remain compatible with legacy task fields and enabled-only PATCH requests; measurementCapabilities, workloadTrend, and the taskKey-scoped detail SSE topic are additive, and absent historical metrics remain unknown. Public API impact is minor because the release adds new response fields and a topic.",
-      "evidence": ["docs/specs/task-operations/SPEC.md"]
+      "change": "breaking",
+      "supported_consumer_range": "Consumers that expect interval rows in system.managed-tasks.timeline/v1 must migrate to schema epoch /v2 and load interval rows through the paginated HTTP timeline endpoint; workload response fields and enabled-only task updates remain compatible additions.",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md"]
     },
     "persistent_state": {
       "applicable": true,
@@ -43,7 +43,7 @@
   },
   "release_unit": {
     "member_change_records": ["docs/specs/task-operations/persistent-state-migration.json"],
-    "maximum_verified_impact": "minor",
-    "calculation_evidence": ["verified public_api=minor", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=minor"]
+    "maximum_verified_impact": "major",
+    "calculation_evidence": ["verified public_api=major", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=major"]
   }
 }

@@ -1722,8 +1722,11 @@ function TaskPageSseFixture({ children }: { children: ReactNode }) {
         ],
         [
           { topic: "system.managed-tasks.timeline" },
-          "system.managed-tasks.timeline/v1",
-          STORYBOOK_TASK_TIMELINE,
+          "system.managed-tasks.timeline/v2",
+          {
+            watermark: STORYBOOK_TASK_TIMELINE.watermark,
+            observedAt: STORYBOOK_TASK_TIMELINE.observedAt,
+          },
           1,
         ],
       ] as const) {

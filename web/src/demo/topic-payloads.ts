@@ -97,11 +97,13 @@ export async function resolveDemoTopicPayload(
         `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
       ) as Promise<ManagedTaskDetail>;
     }
-    case "system.managed-tasks.timeline":
-      return requestTopicPayload(
+    case "system.managed-tasks.timeline": {
+      const page = (await requestTopicPayload(
         requestUrl,
-        "/api/system/managed-tasks/timeline",
-      ) as Promise<TaskTimelinePage>;
+        "/api/system/managed-tasks/timeline?limit=1",
+      )) as TaskTimelinePage;
+      return { watermark: page.watermark, observedAt: page.observedAt };
+    }
     case "stats.summary.current": {
       const search = topicSearchParams(descriptor);
       return requestTopicPayload(requestUrl, `/api/stats?${search.toString()}`);

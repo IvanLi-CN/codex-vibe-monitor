@@ -29,7 +29,6 @@ const SUBSCRIPTION_DEFAULT_INVOCATION_LIMIT: i64 = 20;
 const SUBSCRIPTION_CONVERSATION_HISTORY_LIMIT: i64 = 50;
 const SUBSCRIPTION_CONVERSATION_OPERATION_LIMIT: usize = 20;
 const SUBSCRIPTION_CONVERSATION_OVERVIEW_MAX_RECORDS: usize = 1_000;
-const MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT: usize = 10_000;
 const UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const DASHBOARD_NETWORK_RECENT_TOPIC_PUSH_INTERVAL: Duration = Duration::from_secs(1);
@@ -6513,24 +6512,6 @@ impl SubscriptionHub {
             } else {
                 ((None, false), None)
             };
-        let timeline_baseline =
-            if emit_live && matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
-                self.state
-                    .lock()
-                    .await
-                    .topics
-                    .get(&topic_key)
-                    .filter(|cached| !cached.dirty)
-                    .and_then(|cached| {
-                        cached
-                            .snapshot_payload
-                            .get("watermark")
-                            .and_then(Value::as_i64)
-                            .map(|revision| (cached.snapshot_payload.clone(), revision))
-                    })
-            } else {
-                None
-            };
         let (mut built_payload, prompt_cache_build, parallel_work_build) = if is_prompt_cache_topic
         {
             let (payload, build) = self
@@ -6543,32 +6524,14 @@ impl SubscriptionHub {
                 .await?;
             (payload, None, Some(build))
         } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimeline) {
-            let after_revision = timeline_baseline.as_ref().map(|(_, revision)| *revision);
-            let event_payload =
-                match build_managed_task_timeline_topic_payload(after_revision).await {
-                    Ok(payload) => payload,
-                    Err(error) => {
-                        self.clear_managed_task_refresh_schedule(&topic_key).await;
-                        return Err(error);
-                    }
-                };
-            let payload = if let Some((previous, _)) = &timeline_baseline {
-                let snapshot_payload =
-                    match merge_managed_task_timeline_payload(previous, &event_payload) {
-                        Ok(payload) => payload,
-                        Err(error) => {
-                            self.clear_managed_task_refresh_schedule(&topic_key).await;
-                            return Err(error);
-                        }
-                    };
-                BuiltSubscriptionTopicPayload::JsonDelta {
-                    snapshot_payload,
-                    event_payload,
+            let payload = match build_managed_task_timeline_topic_payload().await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.clear_managed_task_refresh_schedule(&topic_key).await;
+                    return Err(error);
                 }
-            } else {
-                BuiltSubscriptionTopicPayload::Json(event_payload)
             };
-            (payload, None, None)
+            (BuiltSubscriptionTopicPayload::Json(payload), None, None)
         } else {
             let payload = match topic.build_cached_payload(state.clone()).await {
                 Ok(payload) => payload,
@@ -13168,7 +13131,7 @@ impl SubscriptionTopic {
             Self::QuotaCurrent => "quota.current/v1".to_string(),
             Self::ManagedTaskCatalog => "system.managed-tasks.catalog/v1".to_string(),
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
-            Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
+            Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v2".to_string(),
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail/v1".to_string(),
             Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
@@ -13318,131 +13281,23 @@ impl SubscriptionTopic {
     }
 }
 
-async fn build_managed_task_timeline_topic_payload(
-    after_revision: Option<i64>,
-) -> Result<Value, ApiError> {
+async fn build_managed_task_timeline_topic_payload() -> Result<Value, ApiError> {
     let Some(store) = crate::maintenance_store::global() else {
         return Err(ApiError::unavailable(anyhow!(
             "maintenance database unavailable"
         )));
     };
-    let window_end = Utc::now();
-    let window_start = window_end - ChronoDuration::hours(12);
-    let from = format_utc_iso_millis(window_start);
-    let to = format_utc_iso_millis(window_end);
-    let mut page = crate::task_timeline::timeline_page(
-        store,
-        None,
-        after_revision,
-        Some(&from),
-        Some(&to),
-        500,
-    )
-    .await
-    .map_err(ApiError::from)?;
-    let mut segments = std::mem::take(&mut page.segments);
-    let mut cursor = page.next_cursor.take();
-    while let Some(next_cursor) = cursor {
-        let next =
-            crate::task_timeline::timeline_page(store, Some(&next_cursor), None, None, None, 500)
-                .await
-                .map_err(ApiError::from)?;
-        if next.reset_required {
-            return Err(ApiError::unavailable(anyhow!(
-                "managed task timeline pagination expired; a fresh snapshot is required"
-            )));
-        }
-        segments.extend(next.segments);
-        cursor = next.next_cursor;
-        if segments.len() > MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT
-            || (segments.len() == MANAGED_TASK_TIMELINE_TOPIC_SEGMENT_LIMIT && cursor.is_some())
-        {
-            return Err(ApiError::unavailable(anyhow!(
-                "managed task timeline exceeds the bounded SSE snapshot capacity"
-            )));
-        }
-    }
-    page.segments = segments;
-    page.next_cursor = None;
-    let mut payload = serde_json::to_value(page)?;
-    if let Some(object) = payload.as_object_mut() {
-        object.insert("replace".to_string(), Value::Bool(after_revision.is_none()));
-    }
-    Ok(payload)
+    managed_task_timeline_revision_payload(store).await
 }
 
-fn merge_managed_task_timeline_payload(
-    previous: &Value,
-    update: &Value,
+async fn managed_task_timeline_revision_payload(
+    store: &crate::maintenance_store::MaintenanceStore,
 ) -> Result<Value, ApiError> {
-    if update.get("replace").and_then(Value::as_bool) != Some(false) {
-        return Ok(update.clone());
-    }
-    let previous_segments = previous
-        .get("segments")
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            ApiError::unavailable(anyhow!("cached task timeline snapshot is invalid"))
-        })?;
-    let update_segments = update
-        .get("segments")
-        .and_then(Value::as_array)
-        .ok_or_else(|| ApiError::unavailable(anyhow!("task timeline delta is invalid")))?;
-    let window_start = update
-        .get("windowStart")
-        .and_then(Value::as_str)
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc));
-    let window_end = update
-        .get("windowEnd")
-        .and_then(Value::as_str)
-        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-        .map(|value| value.with_timezone(&Utc));
-    let mut by_id = HashMap::<String, Value>::new();
-    for segment in previous_segments.iter().chain(update_segments) {
-        let Some(id) = segment.get("segmentId").and_then(Value::as_str) else {
-            return Err(ApiError::unavailable(anyhow!(
-                "task timeline segment identity is missing"
-            )));
-        };
-        by_id.insert(id.to_string(), segment.clone());
-    }
-    let mut segments = by_id
-        .into_values()
-        .filter(|segment| {
-            let started_at = segment
-                .get("startedAt")
-                .and_then(Value::as_str)
-                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                .map(|value| value.with_timezone(&Utc));
-            let ended_at = segment
-                .get("finishedAt")
-                .and_then(Value::as_str)
-                .or_else(|| segment.get("lastObservedAt").and_then(Value::as_str))
-                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
-                .map(|value| value.with_timezone(&Utc));
-            match (window_start, window_end, started_at, ended_at) {
-                (Some(start), Some(end), Some(segment_start), Some(segment_end)) => {
-                    segment_start <= end && segment_end >= start
-                }
-                _ => true,
-            }
-        })
-        .collect::<Vec<_>>();
-    segments.sort_by(|left, right| {
-        left.get("startedAt")
-            .and_then(Value::as_str)
-            .cmp(&right.get("startedAt").and_then(Value::as_str))
-    });
-    let mut merged = update.clone();
-    let Some(object) = merged.as_object_mut() else {
-        return Err(ApiError::unavailable(anyhow!(
-            "task timeline delta is invalid"
-        )));
-    };
-    object.insert("segments".to_string(), Value::Array(segments));
-    object.insert("replace".to_string(), Value::Bool(true));
-    Ok(merged)
+    let watermark = store.timeline_revision().await.map_err(ApiError::from)?;
+    Ok(serde_json::json!({
+        "watermark": watermark,
+        "observedAt": format_utc_iso_millis(Utc::now()),
+    }))
 }
 
 impl RuntimeMutation {
@@ -21709,7 +21564,7 @@ mod tests {
             ),
             (
                 "system.managed-tasks.timeline",
-                "system.managed-tasks.timeline/v1",
+                "system.managed-tasks.timeline/v2",
             ),
             (
                 "system.managed-tasks.catalog",
@@ -21900,80 +21755,114 @@ mod tests {
         );
     }
 
-    #[test]
-    fn managed_task_timeline_sse_delta_preserves_and_replaces_cached_segments() {
-        let previous = json!({
-            "watermark": 2,
-            "windowStart": "2026-10-01T01:00:00.000Z",
-            "windowEnd": "2026-10-01T12:00:00.000Z",
-            "segments": [
-                {
-                    "segmentId": "keep-and-update",
-                    "startedAt": "2026-10-01T02:00:00.000Z",
-                    "finishedAt": "2026-10-01T03:00:00.000Z",
-                    "revision": 1
-                },
-                {
-                    "segmentId": "expired",
-                    "startedAt": "2026-09-30T20:00:00.000Z",
-                    "finishedAt": "2026-09-30T21:00:00.000Z",
-                    "revision": 1
-                }
-            ],
-            "coverage": [{"sessionId": "old-session"}]
-        });
-        let update = json!({
-            "replace": false,
-            "watermark": 4,
-            "windowStart": "2026-10-01T03:00:00.000Z",
-            "windowEnd": "2026-10-01T15:00:00.000Z",
-            "segments": [
-                {
-                    "segmentId": "keep-and-update",
-                    "startedAt": "2026-10-01T02:00:00.000Z",
-                    "finishedAt": "2026-10-01T04:00:00.000Z",
-                    "revision": 3
-                },
-                {
-                    "segmentId": "new-segment",
-                    "startedAt": "2026-10-01T14:00:00.000Z",
-                    "finishedAt": "2026-10-01T14:10:00.000Z",
-                    "revision": 4
-                }
-            ],
-            "coverage": [{"sessionId": "new-session"}]
-        });
+    #[tokio::test]
+    async fn managed_task_timeline_transport_pages_more_than_ten_thousand_rows() {
+        const SEGMENT_COUNT: usize = 13_120;
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect timeline transport fixture");
+        sqlx::query("CREATE TABLE maintenance_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create timeline metadata fixture");
+        sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES ('task_timeline_revision',?,?)")
+            .bind(SEGMENT_COUNT.to_string())
+            .bind("2026-10-04T00:00:00.000Z")
+            .execute(&pool)
+            .await
+            .expect("seed timeline revision");
+        sqlx::query("CREATE TABLE task_timeline_segments (segment_id TEXT PRIMARY KEY,kind TEXT NOT NULL,task_key TEXT NOT NULL,title TEXT NOT NULL,started_at TEXT NOT NULL,last_observed_at TEXT NOT NULL,finished_at TEXT,duration_ms INTEGER,status TEXT NOT NULL,trigger_kind TEXT,execution_class TEXT,reason TEXT,retry_at TEXT,active_child_task_key TEXT,active_child_title TEXT,managed_run_id INTEGER,session_id TEXT NOT NULL,revision INTEGER NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create timeline segment fixture");
+        sqlx::query("CREATE TABLE task_timeline_coverage (session_id TEXT PRIMARY KEY,started_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,ended_at TEXT,dropped_events INTEGER NOT NULL DEFAULT 0)")
+            .execute(&pool)
+            .await
+            .expect("create timeline coverage fixture");
 
-        let merged = merge_managed_task_timeline_payload(&previous, &update)
-            .expect("timeline delta should merge into the cached snapshot");
-        let segments = merged
-            .get("segments")
-            .and_then(Value::as_array)
-            .expect("merged segments");
-        assert_eq!(merged.get("replace").and_then(Value::as_bool), Some(true));
-        assert_eq!(merged.get("watermark").and_then(Value::as_i64), Some(4));
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].get("revision").and_then(Value::as_i64), Some(3));
-        assert_eq!(
-            segments[1].get("segmentId").and_then(Value::as_str),
-            Some("new-segment")
-        );
-        assert_eq!(merged["coverage"][0]["sessionId"], "new-session");
+        let now = Utc::now();
+        let observed_at = format_utc_iso_millis(now - ChronoDuration::minutes(1));
+        let mut transaction = pool.begin().await.expect("begin timeline fixture");
+        for revision in 1..=SEGMENT_COUNT {
+            sqlx::query("INSERT INTO task_timeline_segments (segment_id,kind,task_key,title,started_at,last_observed_at,status,trigger_kind,session_id,revision) VALUES (?, 'execution','retention_archive','Retention archive',?,?, 'success','interval','fixture-session',?)")
+                .bind(format!("fixture-{revision:05}"))
+                .bind(&observed_at)
+                .bind(&observed_at)
+                .bind(revision as i64)
+                .execute(&mut *transaction)
+                .await
+                .expect("insert timeline fixture segment");
+        }
+        transaction.commit().await.expect("commit timeline fixture");
 
-        let delta = BuiltSubscriptionTopicPayload::JsonDelta {
-            event_payload: update.clone(),
-            snapshot_payload: merged.clone(),
-        };
+        let store = crate::maintenance_store::MaintenanceStore::from_pool(pool);
+        let payload = managed_task_timeline_revision_payload(&store)
+            .await
+            .expect("timeline revision notification should not aggregate segment rows");
         assert_eq!(
-            delta.serialize(None, None, None).expect("serialize delta"),
-            serde_json::to_vec(&update).expect("encode event delta")
+            payload.get("watermark").and_then(Value::as_i64),
+            Some(SEGMENT_COUNT as i64)
         );
-        assert_eq!(
-            delta
-                .serialize_snapshot(None, None, None)
-                .expect("serialize full cached snapshot"),
-            serde_json::to_vec(&merged).expect("encode full snapshot")
-        );
+        assert!(payload.get("observedAt").and_then(Value::as_str).is_some());
+        assert_eq!(payload.as_object().map(serde_json::Map::len), Some(2));
+
+        let from = format_utc_iso_millis(now - ChronoDuration::hours(12));
+        let to = format_utc_iso_millis(now);
+        let mut cursor = None;
+        let mut loaded = 0;
+        let mut page_count = 0;
+        loop {
+            let page = crate::task_timeline::timeline_page(
+                &store,
+                cursor.as_deref(),
+                None,
+                Some(&from),
+                Some(&to),
+                500,
+            )
+            .await
+            .expect("read fixed-watermark timeline page");
+            assert_eq!(page.watermark, SEGMENT_COUNT as i64);
+            assert_eq!(page.window_start, from);
+            assert_eq!(page.window_end, to);
+            loaded += page.segments.len();
+            page_count += 1;
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(loaded, SEGMENT_COUNT);
+        assert_eq!(page_count, 27);
+
+        sqlx::query("UPDATE maintenance_metadata SET value=? WHERE key='task_timeline_revision'")
+            .bind((SEGMENT_COUNT + 1).to_string())
+            .execute(&store.pool)
+            .await
+            .expect("advance timeline revision");
+        sqlx::query("INSERT INTO task_timeline_segments (segment_id,kind,task_key,title,started_at,last_observed_at,status,trigger_kind,session_id,revision) VALUES ('fixture-delta','execution','retention_archive','Retention archive',?,?, 'success','interval','fixture-session',?)")
+            .bind(&observed_at)
+            .bind(&observed_at)
+            .bind((SEGMENT_COUNT + 1) as i64)
+            .execute(&store.pool)
+            .await
+            .expect("insert timeline revision delta");
+        let delta = crate::task_timeline::timeline_page(
+            &store,
+            None,
+            Some(SEGMENT_COUNT as i64),
+            Some(&from),
+            Some(&to),
+            500,
+        )
+        .await
+        .expect("read revision delta after the complete baseline");
+        assert_eq!(delta.watermark, (SEGMENT_COUNT + 1) as i64);
+        assert_eq!(delta.segments.len(), 1);
+        assert_eq!(delta.segments[0].segment_id, "fixture-delta");
+        assert!(delta.next_cursor.is_none());
     }
 
     #[test]

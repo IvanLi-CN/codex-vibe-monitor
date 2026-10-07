@@ -15,7 +15,7 @@
 - The task-overview requirements extend this boundary with separately labelled queued requests and admission-deferred tasks, stable identity colors, and a compact execution timeline whose lanes follow overlap rather than task identity. The deferral row concerns task admission rather than general runtime health; independent worker policies remain independent.
 - ADR 0026 records the accepted persistent observation boundary: background collection continues without an open page, recent intervals survive service restart, and missing coverage remains explicit rather than reconstructed from request times or aggregate metrics.
 - The task execution chart's visible rolling window is 12 hours. The timeline API continues to support windows up to 24 hours, and shortening the presentation window does not reduce persisted history retention.
-- Live runtime and timeline data use dedicated SSE topics: snapshots seed the page and task-observation changes publish bounded runtime updates and revision deltas. The browser advances the visible clock between events and presents connecting, reconnecting, and disabled states; after the observation grace period it freezes open state and labels it unknown.
+- Live runtime data uses dedicated SSE snapshots; the timeline topic uses schema epoch `/v2` and carries only `watermark` and `observedAt`. The browser loads interval rows through fixed-watermark HTTP pages and `afterRevision` deltas without fixed-period polling, stages baseline pages before commit, and coalesces revision notices received while paging. The browser advances the visible clock between events and presents connecting, reconnecting, and disabled states; after the observation grace period it freezes open state and labels it unknown.
 - The implemented task-detail chart region combines recent-100 run metrics and Retention's seven-day backlog with Tabs, rendered empty chart frames and persistent legends. Per-task capabilities separate complete pending population, discovered eligible candidates and committed work; absent measures remain absent.
 - The two existing workload views use the shared segmented control and short labels “次数 / 时间”. The latter denotes Retention's seven-day backlog; this naming does not introduce another run-hour filtering mode. Mock runs conserve pending work across arrivals and committed processing, retain zero-commit and partial-commit failures, and do not infer processing from a skipped attempt.
 - The owner requires the workload-chart header to place “运行趋势” at the left and the view Tabs at the right of the same row across desktop and mobile. Keeping only the Tab labels on one row does not satisfy this placement requirement; the heading and control must share the row to preserve chart space.
@@ -23,7 +23,8 @@
 - Workload samples use the asynchronous maintenance recorder, remain independent of page lifetime, and protect each task's latest 100 attempts and unconfirmed running sample. Historical attempts retain their identity while unsupported metrics stay unknown. Detail SSE carries revisioned workload snapshots; stale sequences are ignored and recorder gaps are shown.
 - Root and child in-memory overlays retain active attempts and prune previous terminal samples when a new attempt begins. Coverage repair records each successfully committed bucket before continuing; later failure or cancellation preserves those confirmed counts in its final asynchronous snapshot.
 - Processing speed uses at most 20 complete ended attempts and actual wall-clock span. Backlog estimates require at least five fresh same-range exact snapshots within 24 hours, a 60-second minimum span, positive net decline, enabled task state, and no coverage gap. Skips contribute zero only to the rate window and do not fabricate chart metrics or actual start times.
-- The public response additions and maintenance-store workload table are forward-compatible; the API and durable-state compatibility impact is minor. Existing request-time and duration meanings, task configuration, and stored colors remain unchanged.
+- The public workload response additions and maintenance-store workload table are forward-compatible. The timeline SSE payload is intentionally breaking at schema epoch `/v2`; legacy interval-row consumers must use the paginated HTTP endpoint. Existing request-time and duration meanings, task configuration, and stored colors remain unchanged.
+- ADR 0029 supersedes ADR 0026's timeline interval delivery choice only. Continuous background collection, maintenance-store ownership, restart behavior, retention, and explicit missing-coverage semantics remain unchanged.
 
 ## Current Delivery Facts
 
@@ -44,6 +45,7 @@
 
 - `docs/adr/0024-task-runtime-observation-and-effective-schedules.md`
 - `docs/adr/0026-durable-task-execution-and-deferral-timelines.md`
+- `docs/adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
 - `docs/specs/task-operations/assets/version-impact-record.json`
 

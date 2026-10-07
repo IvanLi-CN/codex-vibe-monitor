@@ -16,6 +16,7 @@ const AXIS_LABEL_WIDTH = 70;
 const AXIS_HEIGHT = 34;
 const LANE_HEIGHT = 17;
 const MIN_BAR_WIDTH = 3;
+const DENSITY_GROUP_MIN_WIDTH = 7;
 const COVERAGE_HEARTBEAT_MAX_AGE_MS = 60_000;
 
 type ExecutionBar = {
@@ -36,7 +37,7 @@ type Band = {
 
 type DensityGroup = {
   key: string;
-  taskKey: string;
+  taskKey: string | null;
   lane: number;
   members: ExecutionBar[];
   startMs: number;
@@ -458,37 +459,56 @@ export function TaskTimelineChart({
   const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
   const timeAxisHours =
     chartWidth < 220 ? [0, 12] : chartWidth < 520 ? [0, 6, 12] : TIME_AXIS_HOURS;
-  const executionDensityGroups = new Map<string, DensityGroup>();
+  const executionDensityGroups: DensityGroup[] = [];
   const singleExecutionBars: ExecutionBar[] = [];
+  const barsByLane = new Map<number, ExecutionBar[]>();
   for (const bar of executionBars) {
-    const width = Math.max(MIN_BAR_WIDTH, x(bar.endMs) - x(bar.startMs));
-    if (width > 4) {
-      singleExecutionBars.push(bar);
-      continue;
-    }
-    const densityKey = `${bar.lane}:${bar.segment.taskKey}:${Math.floor(x(bar.startMs))}`;
-    const group = executionDensityGroups.get(densityKey);
-    if (group) {
-      group.members.push(bar);
-      group.startMs = Math.min(group.startMs, bar.startMs);
-      group.endMs = Math.max(group.endMs, bar.endMs);
-    } else {
-      executionDensityGroups.set(densityKey, {
-        key: densityKey,
-        taskKey: bar.segment.taskKey,
-        lane: bar.lane,
-        members: [bar],
-        startMs: bar.startMs,
-        endMs: bar.endMs,
-      });
-    }
+    const laneBars = barsByLane.get(bar.lane) ?? [];
+    laneBars.push(bar);
+    barsByLane.set(bar.lane, laneBars);
   }
-  const densityGroups = [...executionDensityGroups.values()].filter(
-    (group) => group.members.length > 1,
-  );
-  for (const group of executionDensityGroups.values()) {
-    if (group.members.length === 1) singleExecutionBars.push(group.members[0]);
+  for (const [lane, laneBars] of barsByLane) {
+    laneBars.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+    let members: ExecutionBar[] = [];
+    let groupStartMs = 0;
+    let groupEndMs = 0;
+    const finishGroup = () => {
+      if (members.length === 1) {
+        singleExecutionBars.push(members[0]);
+      } else if (members.length > 1) {
+        const taskKey = members[0].segment.taskKey;
+        executionDensityGroups.push({
+          key: `${lane}:${members[0].segment.segmentId}`,
+          taskKey: members.every((member) => member.segment.taskKey === taskKey) ? taskKey : null,
+          lane,
+          members,
+          startMs: groupStartMs,
+          endMs: groupEndMs,
+        });
+      }
+      members = [];
+    };
+
+    for (const bar of laneBars) {
+      const barX = x(bar.startMs);
+      const groupStartX = x(groupStartMs);
+      const groupEndX = x(groupEndMs);
+      const groupWidth = members.length > 1 ? DENSITY_GROUP_MIN_WIDTH : MIN_BAR_WIDTH;
+      const visibleGroupEndX = members.length
+        ? Math.max(groupEndX, groupStartX + groupWidth)
+        : Number.NEGATIVE_INFINITY;
+      if (members.length > 0 && barX > visibleGroupEndX) finishGroup();
+      if (members.length === 0) {
+        groupStartMs = bar.startMs;
+        groupEndMs = bar.endMs;
+      } else {
+        groupEndMs = Math.max(groupEndMs, bar.endMs);
+      }
+      members.push(bar);
+    }
+    finishGroup();
   }
+  const densityGroups = executionDensityGroups;
 
   const selectedDescription = selectedExecutions
     ? `${selectedExecutions.length} 次任务执行`
@@ -699,14 +719,21 @@ export function TaskTimelineChart({
             {densityGroups.map((group) => {
               const barX = x(group.startMs);
               const barY = AXIS_HEIGHT + group.lane * LANE_HEIGHT + 3;
-              const width = Math.max(7, x(group.endMs) - barX);
-              const color = managedTaskColor(taskByKey.get(group.taskKey), dark);
+              const width = Math.max(DENSITY_GROUP_MIN_WIDTH, x(group.endMs) - barX);
+              const color = group.taskKey
+                ? managedTaskColor(taskByKey.get(group.taskKey), dark)
+                : dark
+                  ? "#94a3b8"
+                  : "#64748b";
               const outcome = aggregateOutcome(group.members);
               const appearance = outcomeAppearance(outcome.status, dark);
+              const groupTitle = group.taskKey
+                ? (taskByKey.get(group.taskKey)?.title ?? group.taskKey)
+                : "多任务";
               return (
                 <g
                   key={group.key}
-                  aria-label={`${group.members.length} 次${taskByKey.get(group.taskKey)?.title ?? group.taskKey}执行；${outcome.summary}；选择查看详情`}
+                  aria-label={`${group.members.length} 次${groupTitle}执行；${outcome.summary}；选择查看详情`}
                   className="cursor-pointer outline-none focus-visible:opacity-75"
                   onClick={() => {
                     setSelectedExecutions(group.members);
@@ -837,6 +864,11 @@ export function TaskTimelineChart({
                     />
                     <span className="truncate">{bar.segment.title}</span>
                   </Link>
+                  <div className="mt-1 break-all font-mono text-[11px] leading-relaxed text-base-content/55">
+                    {bar.segment.managedRunId != null
+                      ? `运行 ID #${bar.segment.managedRunId}`
+                      : `区间 ID ${bar.segment.segmentId}`}
+                  </div>
                   <div className="mt-1 text-xs leading-relaxed text-base-content/65">
                     触发：{bar.segment.triggerKind ?? "未知"} · 实际开始：
                     {exactTime(timestamp(bar.segment.startedAt, nowMs))} · 实际结束：
