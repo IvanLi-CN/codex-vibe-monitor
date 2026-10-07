@@ -51,6 +51,14 @@ class ContainerMountTests(unittest.TestCase):
         namespace = self.execute_mounted("client.py")
         self.assertTrue(callable(namespace["seed"]))
 
+    def test_tempo_trace_ids_restore_omitted_leading_zero(self):
+        namespace = self.execute_mounted("client.py")
+        self.assertEqual(namespace["normalized_trace_id"]("1" * 30), "00" + "1" * 30)
+        self.assertEqual(namespace["normalized_trace_id"]("1" * 31), "0" + "1" * 31)
+        self.assertEqual(namespace["normalized_trace_id"]("2" * 32), "2" * 32)
+        with self.assertRaises(AssertionError):
+            namespace["normalized_trace_id"]("1" * 33)
+
     def test_peer_bootstrap_reaches_dispatch_at_container_mount_depth(self):
         with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
             with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):

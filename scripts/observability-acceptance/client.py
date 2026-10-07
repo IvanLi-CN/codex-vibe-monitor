@@ -42,6 +42,11 @@ def ok(base,path,**kwargs):
     assert status in (200,201),(path,status)
     return json.loads(body)
 
+def normalized_trace_id(value):
+    """Normalize Tempo's omission of one or more trace ID leading zeros."""
+    assert isinstance(value,str) and re.fullmatch(r"[a-f0-9]{1,32}",value), value
+    return value.rjust(32,"0")
+
 def seed():
     ok("http://app:8080","/api/pool/routing-settings",method="PUT",payload={"apiKey":POOL_TOKEN})
     ok("http://app:8080","/api/pool/upstream-accounts/api-keys",method="POST",payload={"displayName":"Observability fixture","apiKey":"synthetic-upstream-token","boundProxyKeys":["__direct__"],"upstreamBaseUrl":"http://mock-upstream:18080/"})
@@ -246,7 +251,7 @@ def trace_cases():
         if rejected: break
         assert time.monotonic()<deadline, "pre-auth rejection trace is missing"
         time.sleep(1)
-    rejection=ok("https://entry:8443","/tempo/api/v2/traces/"+rejected[0]["traceID"],token=query_token)
+    rejection=ok("https://entry:8443","/tempo/api/v2/traces/"+normalized_trace_id(rejected[0]["traceID"]),token=query_token)
     def response_roots(node):
         if isinstance(node, dict):
             if node.get("name") == "cvm.proxy.response": yield node
@@ -266,12 +271,7 @@ def trace_cases():
         if actual: break
         assert time.monotonic()<deadline, "application traces are not searchable"
         time.sleep(1)
-    actual_id=actual[0]["traceID"]
-    # Some Tempo builds omit a leading zero when serializing a trace ID. Keep
-    # the gateway's fixed 32-hex contract while normalizing that fixture-only
-    # representation before the detail lookup.
-    assert re.fullmatch(r"[a-f0-9]{31,32}", actual_id)
-    actual_id=actual_id.rjust(32, "0")
+    actual_id=normalized_trace_id(actual[0]["traceID"])
     deadline=time.monotonic()+15
     while True:
         actual_trace=ok("https://entry:8443","/tempo/api/v2/traces/"+actual_id,token=query_token,extra_headers={"X-Scope-OrgID":"other|cvm"})
@@ -300,7 +300,7 @@ def trace_cases():
         deadline=time.monotonic()+30
         while True:
             rows=ok("https://entry:8443",search(category, "classification-fixture", "fixture"),token=query_token).get("traces",[])
-            if any(row["traceID"]==trace_id for row in rows): break
+            if any(normalized_trace_id(row["traceID"])==trace_id for row in rows): break
             assert time.monotonic()<deadline, "classified trace not searchable: "+category
             time.sleep(1)
         expanded=ok("https://entry:8443","/tempo/api/v2/traces/"+trace_id,token=query_token)
