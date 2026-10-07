@@ -59,6 +59,8 @@ ADR 0032 将归档文件批次与主库写批次区分，规定月份只决定�
 - Tier 4 首轮审查将非阻塞目录 fence 占用的错误分类归为同一修复批次：瞬时占用沿用可恢复延期，不作为致命失败；补充恢复时目录 fence 竞争的确定性归档回归。
 - main 合入 Prompt 会话统计 PR #1086 后，交付基线同步到 `8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3`，在合并结果上刷新验证与 Tier 4 证据；本次归档准入和差量统计契约及延期的容量目标保持原定义。
 
+- 新基线审查发现后台 priority reservation 拒绝后，未开展 SQLite 工作的写许可释放会通知同一 gate，使任务等待自身旧 generation 时反复准入。归为第二批同 scope 修复，复用既有通知抑制并增加同 gate 的确定性 reservation 解除回归；不提升 retention 的调度优先级，stateful 仍只交 Actions 执行。
+
 - [长期需求](SPEC.md)
 - [具体方案](IMPLEMENTATION.md)
 

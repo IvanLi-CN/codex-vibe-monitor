@@ -168,6 +168,14 @@ pub(super) async fn acquire_write_admission(
             }
             Err(reason) => {
                 write_permit.revoke_fairness_admission();
+                if matches!(
+                    reason,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+                ) {
+                    // No SQLite work ran. Our own permit release must not wake the
+                    // old-generation wait while a recovery reservation still blocks us.
+                    write_permit.suppress_background_eligibility_wakeup();
+                }
                 drop(write_permit);
                 if wait_for_busy
                     && matches!(
