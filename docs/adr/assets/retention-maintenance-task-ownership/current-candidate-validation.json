@@ -1,11 +1,9 @@
 {
-  "status": "blocked",
-  "baseSha": "8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3",
-  "codeCandidateSha": "b3ee119417739f096f6f3df467cae533f32a91cc",
-  "candidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
+  "status": "validation-in-progress",
+  "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
+  "codeCandidateSha": "e7bdd374c4e5ae3a797dcbb1f4ad1a6ba807e376",
+  "candidateBinarySha256": null,
   "passed": {
-    "productionLinuxBuild": true,
-    "runtimeProcessFixture": "runtime-validation-results.json",
     "webUnit": {
       "files": 178,
       "passed": 1811,
@@ -23,34 +21,18 @@
     "webBuild": true,
     "rustSourceQuality": true,
     "ownerConfirmedVisualAssets": 6,
-    "releasedStateUpgradeAtEarlierCandidate": "released-state-upgrade-results.json",
-    "finalCandidateCompletedSourcesBeforeRetrieval": [
-      "v4.0.0",
-      "v4.0.1",
-      "v4.0.2"
-    ]
+    "webSourceTree": "0a373efb5e98cbc4aedefce182093a84387b3aa8",
+    "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs."
   },
   "notPassed": [
+    "production-Linux-build-after-base-drift",
+    "runtime-process-fixture-after-base-drift",
     "three-sequential-backend-resource-profiles",
     "final-cargo-fmt-check-check-clippy",
-    "all-nine-sources-at-final-candidate",
+    "all-ten-released-sources-at-final-candidate",
     "formal-Tier-4-review",
     "live-PR-current-head-required-CI"
   ],
-  "blocker": {
-    "code": "agent-vm-draining-lease-expired",
-    "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
-    "instance": "agent-vm-avm-9bc7b112e75e96a2",
-    "generation": 2,
-    "leaseExpiredAt": "2026-10-07T06:23:28Z",
-    "observedState": "cached-stopped-no-effective-lease",
-    "clientControlProtocol": 4,
-    "renewalOperationId": "7cad289f-92a9-4ac3-8397-1c6246d804b2",
-    "admissionReason": "draining",
-    "reacquireOperationId": "fadf09c0-80a2-4c84-a89b-ee638f95b368",
-    "reacquireResult": "draining: new leases are refused",
-    "observedAt": "2026-10-07T06:29:32Z"
-  },
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
@@ -58,5 +40,44 @@
     "repairBatchesUsed": 0,
     "prCreated": false
   },
-  "recovery": "Use normal admission to reacquire this session VM once draining ends; preserve incomplete run directories and use fresh output directories. Do not bypass control or run heavy host checks without new owner authorization."
+  "recovery": "Normal admission restored the same session VM. Current mainline source was applied and hash-verified; Rust checks/build and the v4.1.2 fixture generation are running. The three profiles, process regression and ten-source upgrade use fresh output directories after compilation.",
+  "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
+  "retainedHistoricalEvidence": {
+    "runtimeProcessFixture": "runtime-validation-results.json",
+    "releasedStateUpgradeAtEarlierCandidate": "released-state-upgrade-results.json",
+    "finalCandidateCompletedSourcesBeforeRetrieval": [
+      "v4.0.0",
+      "v4.0.1",
+      "v4.0.2"
+    ]
+  },
+  "previousBlocker": {
+    "code": "agent-vm-memory-pressure-admission-refused",
+    "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
+    "instance": "agent-vm-avm-9bc7b112e75e96a2",
+    "generation": 2,
+    "leaseExpiredAt": "2026-10-07T06:23:28Z",
+    "observedState": "cached-stopped-no-effective-lease",
+    "clientControlProtocol": 4,
+    "renewalOperationId": "7cad289f-92a9-4ac3-8397-1c6246d804b2",
+    "admissionReason": "memory_pressure",
+    "reacquireOperationId": "fa27d744-5331-449c-9064-abb27bea5fd2",
+    "reacquireResult": "memory_pressure: CT memory headroom is below the admission threshold",
+    "observedAt": "2026-10-07T14:26:36Z",
+    "previousCode": "agent-vm-draining-lease-expired",
+    "memory": {
+      "availableBytes": 3217981440,
+      "thresholdBytes": 3435973837,
+      "limitBytes": 34359738368
+    }
+  },
+  "runtime": {
+    "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
+    "instance": "agent-vm-avm-9bc7b112e75e96a2",
+    "generation": 3,
+    "effectiveLease": true,
+    "leaseExpiresAt": "2026-10-07T15:13:42Z",
+    "acquireOperationId": "5bee1e92-4e7c-49e4-883e-f6c53464b5ba",
+    "renewalOperationId": "0650f63c-ab8c-48b9-aa91-db92000064b2"
+  }
 }

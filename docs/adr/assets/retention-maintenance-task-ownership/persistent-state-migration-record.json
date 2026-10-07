@@ -5,7 +5,7 @@
     "description": "Introduce independent cleanup task controls without importing retired environment enablement",
     "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
     "version_impact": "major",
-    "status": "implemented-validation-blocked"
+    "status": "implemented-validation-in-progress"
   },
   "durable_state": {
     "description": "Existing archive/materialization controls, additive identity/raw cleanup controls, separate inspection/catch-up/safety retry eligibility, ownership initialization marker, durable hourly cleanup scope, and existing archive/raw correctness proofs.",
@@ -20,7 +20,8 @@
         "v4.0.5",
         "v4.0.6",
         "v4.1.0",
-        "v4.1.1"
+        "v4.1.1",
+        "v4.1.2"
       ],
       "to_program_version": "th/retention-maintenance-boundaries implementation candidate; final commit and upgrade evidence pending",
       "direct_major_skips_supported": false
@@ -96,7 +97,7 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "blocked-agent-vm-draining",
+    "status": "in-progress",
     "design_cases": [
       "New installations and newly introduced cleanup rows default to enabled.",
       "Old RETENTION_ENABLED=false and XY_RETENTION_ENABLED values have no effect and are not imported.",
