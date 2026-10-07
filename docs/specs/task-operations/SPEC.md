@@ -61,7 +61,7 @@
 - 当前执行、dispatcher 队列与准入等待 MUST 通过 SSE 主题传输：连接时提供当前快照，后续运行边界和等待变化通过事件推送；它们不得依赖固定周期的 HTTP 轮询。任务目录是静态配置，可独立按需通过 HTTP 读取。
 - 执行时间线区间 MUST 通过 `GET /api/system/managed-tasks/timeline` 的固定水位游标分页加载，每页最多 500 条；后续修订 MUST 通过 `afterRevision` 分页读取。一次基线或增量遍历的所有页 MUST 共用固定的 RFC 3339 `from` / `to`，并只在整轮完整后提交。已过期游标 MUST 丢弃未完成遍历并重启基线。
 - `system.managed-tasks.timeline` SSE MUST 使用 `/v2` schema epoch，且只发送维护库 `watermark` 与 `observedAt`，作为 HTTP 增量读取通知；SSE MUST NOT 包含或聚合区间数据。客户端 MUST 先建立 SSE 订阅，再读取完整基线；基线期间及增量读取期间到达的修订通知 MUST 合并至目标水位，按 `segmentId` 保留最高 `revision`，并在追平通知水位前继续读取。SSE 重连后的水位通知 MUST 补回断线期间错过的修订。
-- 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。任务执行时间线不得依赖固定周期 HTTP 轮询。
+- 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
 - SSE 静默期间，前端 MUST 继续推进可见当前时间以及连接仍有效的运行/等待时长，不得把“没有新事件”误判为无任务或失联。SSE 断开时 MUST 显示连接状态与最后确认时间；短暂重连窗口后冻结开放状态的外推并标记为未知，重连快照恢复后立即校准。
 - 色条详情 MUST 提供任务名称、触发来源、真实起止时间、实际执行用时与结果；缺少的历史字段保持未知。短于实时刷新周期的任务也须能由执行边界记录进入历史；极短区间的可见标记不得改变原始耗时。
 - 已结束区间 MUST 保留成功、失败、取消或其他已观测结果的区别，不得只展示成功记录。共享一个执行实例的父子任务不得画成两个并行任务；当前子任务身份须在对应实例详情中可辨认。
@@ -267,7 +267,7 @@
 
 - Method: Rust HTTP/SSE transport tests, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-009`
-- Pass condition: all baseline rows load in 500-row fixed-watermark pages; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired cursors restart the baseline; HTTP failure retains the last complete timeline and marks it stale; more than 10,000 intervals do not produce an unavailable timeline.
+- Pass condition: all baseline rows load in 500-row fixed-watermark pages; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired cursors restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
 
 ## Related ADRs
 
