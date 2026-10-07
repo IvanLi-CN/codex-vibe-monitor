@@ -1,0 +1,62 @@
+{
+  "status": "blocked",
+  "baseSha": "8dbd27a1a0d173d1b3067dfbcb7b24f3e4873ac3",
+  "codeCandidateSha": "b3ee119417739f096f6f3df467cae533f32a91cc",
+  "candidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
+  "passed": {
+    "productionLinuxBuild": true,
+    "runtimeProcessFixture": "runtime-validation-results.json",
+    "webUnit": {
+      "files": 178,
+      "passed": 1811,
+      "skipped": 6
+    },
+    "storybook": {
+      "files": 2,
+      "passed": 72
+    },
+    "playwright": {
+      "passed": 12
+    },
+    "webTypecheck": true,
+    "webLint": true,
+    "webBuild": true,
+    "rustSourceQuality": true,
+    "ownerConfirmedVisualAssets": 6,
+    "releasedStateUpgradeAtEarlierCandidate": "released-state-upgrade-results.json",
+    "finalCandidateCompletedSourcesBeforeRetrieval": [
+      "v4.0.0",
+      "v4.0.1",
+      "v4.0.2"
+    ]
+  },
+  "notPassed": [
+    "three-sequential-backend-resource-profiles",
+    "final-cargo-fmt-check-check-clippy",
+    "all-nine-sources-at-final-candidate",
+    "formal-Tier-4-review",
+    "live-PR-current-head-required-CI"
+  ],
+  "blocker": {
+    "code": "agent-vm-draining-lease-expired",
+    "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
+    "instance": "agent-vm-avm-9bc7b112e75e96a2",
+    "generation": 2,
+    "leaseExpiredAt": "2026-10-07T06:23:28Z",
+    "observedState": "cached-stopped-no-effective-lease",
+    "clientControlProtocol": 4,
+    "renewalOperationId": "7cad289f-92a9-4ac3-8397-1c6246d804b2",
+    "admissionReason": "draining",
+    "reacquireOperationId": "fadf09c0-80a2-4c84-a89b-ee638f95b368",
+    "reacquireResult": "draining: new leases are refused",
+    "observedAt": "2026-10-07T06:29:32Z"
+  },
+  "flow": {
+    "type": "fast-track",
+    "stop": "merge-ready",
+    "formalReviewLaunched": false,
+    "repairBatchesUsed": 0,
+    "prCreated": false
+  },
+  "recovery": "Use normal admission to reacquire this session VM once draining ends; preserve incomplete run directories and use fresh output directories. Do not bypass control or run heavy host checks without new owner authorization."
+}

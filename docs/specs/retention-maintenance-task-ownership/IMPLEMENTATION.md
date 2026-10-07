@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现，验证与交付进行中。
+- Implementation: 已实现；剩余验证与交付被 Agent VM 正常准入拒绝阻断。
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
 
@@ -13,7 +13,7 @@
 - `REQ-RMO-007`, `REQ-RMO-008`, `REQ-RMO-009`：沿用归档源转换／统计失效／刷新入队事务；身份使用实际运行管理器和资源准入，新增小时 scope 以删除与游标同事务提交。查询超时后 SQLite 连接关闭完成前保留身份围栏；raw 保留隔离、文件身份、库存与 release-pending 保护。
 - `REQ-RMO-010`：CLI 在业务初始化和启动恢复前选择在线请求或离线独占路由。运行态锁分别绑定规范化业务库与维护库路径；在线不初始化控制或回收活跃运行，离线只执行指定任务并在释放锁前关闭连接池。三个预演使用局部扫描状态，不改业务删除、正式游标或释放事实。
 - `REQ-RMO-011`, `REQ-RMO-012`：新记录包含职责版本、scope 与 dry-run，计量分离调用行、对话、小时、文件及字节，缺测保持未知。新增目录和详情、自动触发文案、暂停时立即运行、归档关联入口及旧组合历史标识。资源等待与实际开始分开记录，保留旧历史口径。
-- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。九个发布镜像均已生成独立来源夹具并在记录的候选通过升级；最新物化开始状态修复与最终工程验证尚待完成。
+- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。九个发布镜像均已生成独立来源夹具并在记录的候选通过升级；最新物化开始状态修复已通过实际进程验证，最终工程验证尚待完成。
 
 ## Verification
 
@@ -21,8 +21,8 @@
 - 已通过：Web 类型、lint、构建，最新主干完整 Web 单测 178 文件、1811 测试（6 跳过），相关 Storybook 72 项，以及桌面／移动端和 demo 路由 Playwright 12 项；均已在当前主干基线刷新。
 - 已通过：九个已发布来源在二进制 SHA-256 `15945b3a53712b0d40fb806fe2b1a72561ad9c20dc7a1152873e5a35db285b11` 完成升级、三项只读预演、暂停后显式真实运行、身份保护、观测持久化及初始化中断前向恢复，见 [升级结果](../../adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json)。后续物化开始状态修复仍须刷新适用验证；此结果不代表最终交付就绪。
 - 已通过：修复默认线程栈下归档调用链溢出和手动物化开始状态后，实际服务／CLI／页面进程竞争验证通过，见 [运行态结果](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json)。覆盖维护库不可用、不执行启动恢复、四项暂停后手动运行、不安排自动接续、重复准入保护和退出释放双运行态锁。
-- 进行中：共享 backend runner 的三个顺序资源 profile、最终 Rust 检查、最终候选全部发布状态升级验证。上述进行中项目不构成已验收结论。
-- `VER-RMO-001` 至 `VER-RMO-008` 的完整证据映射待当前候选验证结束后同步；当前无正式 review 或 PR Ready 结论。
+- 被阻断：共享 backend runner 的三个顺序资源 profile、最终 Rust 格式／check／clippy 和最终候选全部九来源重测。VM 续约被 `draining` 拒绝后于 2026-10-07T06:23:28Z 到期停止；正常恢复同一 VM 也返回 `draining: new leases are refused`。最终候选已取回 v4.0.0–v4.0.2 的完成结果，未完成来源和重型检查不作通过处理。
+- `VER-RMO-001` 至 `VER-RMO-008` 的完整证据映射待当前候选验证结束后同步；当前无正式 review 或 PR Ready 结论。恢复锚点及已通过／未通过门禁见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。
 
 ## Visual Evidence
 

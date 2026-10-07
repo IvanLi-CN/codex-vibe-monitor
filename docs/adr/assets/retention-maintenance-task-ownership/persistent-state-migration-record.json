@@ -5,7 +5,7 @@
     "description": "Introduce independent cleanup task controls without importing retired environment enablement",
     "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
     "version_impact": "major",
-    "status": "implemented-validation-in-progress"
+    "status": "implemented-validation-blocked"
   },
   "durable_state": {
     "description": "Existing archive/materialization controls, additive identity/raw cleanup controls, separate inspection/catch-up/safety retry eligibility, ownership initialization marker, durable hourly cleanup scope, and existing archive/raw correctness proofs.",
@@ -96,7 +96,7 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "in-progress",
+    "status": "blocked-agent-vm-draining",
     "design_cases": [
       "New installations and newly introduced cleanup rows default to enabled.",
       "Old RETENTION_ENABLED=false and XY_RETENTION_ENABLED values have no effect and are not imported.",
@@ -124,7 +124,8 @@
       "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
       "scripts/validate-retention-maintenance-upgrade.py",
       "scripts/generate-retention-maintenance-release-fixtures.py",
-      "scripts/validate-retention-maintenance-runtime.py"
+      "scripts/validate-retention-maintenance-runtime.py",
+      "docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json"
     ]
   }
 }
