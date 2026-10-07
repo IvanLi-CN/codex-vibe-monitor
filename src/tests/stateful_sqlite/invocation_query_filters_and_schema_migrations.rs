@@ -1498,6 +1498,24 @@ async fn prompt_cache_conversation_reads_serve_current_but_gate_history_while_re
     assert!(matches!(error, ApiError::Unavailable(_)));
 
     state.pool.close().await;
+    let error = crate::fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+            activity_minutes: None,
+            page_size: None,
+            cursor: None,
+            snapshot_at: None,
+            detail: None,
+            recent_invocation_limit: None,
+            blocked_binding_upstream_account_id: None,
+            blocked_binding_constraint_source: None,
+        }),
+    )
+    .await
+    .expect_err("warm legacy cache must not conceal a closed database pool");
+    assert!(matches!(error, ApiError::Internal(_)));
     assert!(
         build_prompt_cache_conversations_response(
             state.as_ref(),

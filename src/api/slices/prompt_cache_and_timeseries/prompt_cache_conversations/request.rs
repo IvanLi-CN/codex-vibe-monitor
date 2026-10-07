@@ -8,6 +8,11 @@ pub(crate) async fn fetch_prompt_cache_conversations(
 ) -> Result<Json<PromptCacheConversationsResponse>, ApiError> {
     let request = resolve_prompt_cache_conversations_request(params)?;
     let response = if request.uses_legacy_cache() {
+        // Cached current reads tolerate pending materialization, but must still
+        // propagate failures reading the database/control state.
+        prompt_cache_conversation_materialization_is_complete(&state.pool)
+            .await
+            .map_err(ApiError::from)?;
         let response =
             fetch_prompt_cache_conversations_cached(state.as_ref(), request.selection).await?;
         match request.detail_level {

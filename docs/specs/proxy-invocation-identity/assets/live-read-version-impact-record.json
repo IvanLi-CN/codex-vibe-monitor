@@ -40,8 +40,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Stateful SQLite regressions pass for all 1445 tests, including current HTTP/SSE availability during queued refresh, historical gating and database failures. Lightweight coverage passes 1294 tests under guest root and its two permission-negative tests pass with DAC bypass capabilities removed. Frontend focused regressions verify absent/stale statistics, visible rows and exclusion of unrelated Sticky Key notices.",
-      "verified_at": "2026-10-07T18:57:30Z",
+      "reasoning": "Initial Stateful SQLite coverage passes all 1445 tests and Lightweight coverage passes 1294 tests plus two permission-negative rechecks without DAC bypass capabilities. The final cache-failure repair passes the targeted HTTP regression for queued refresh, explicit historical gating and warm-cache database failure, followed by fresh format, locked check and Clippy. Frontend render inputs are unchanged; focused regressions verify absent/stale statistics, visible rows and Sticky Key notice exclusion.",
+      "verified_at": "2026-10-07T19:53:30Z",
       "status": "passed",
       "evidence": [
         "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
@@ -54,6 +54,7 @@
         "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite",
         "bash .github/scripts/run-backend-tests.sh --profile lightweight",
         "setpriv --bounding-set=-dac_override,-dac_read_search bash .github/scripts/run-backend-tests.sh --profile lightweight --test-filter 'test(search_raw_script_reports_plain_file_read_errors) or test(search_raw_script_reports_find_enumeration_errors)'",
+        "cargo test prompt_cache_conversation_reads_serve_current_but_gate_history_while_refresh_queue_is_pending -- --nocapture",
         "cargo fmt --all -- --check",
         "cargo check --locked --all-targets --all-features",
         "cargo clippy --locked --all-targets --all-features -- -D warnings"
