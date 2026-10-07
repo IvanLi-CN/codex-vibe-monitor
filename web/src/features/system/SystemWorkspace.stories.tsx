@@ -436,7 +436,7 @@ const STORYBOOK_NEXT_INSPECTION_AT = new Date(STORYBOOK_TASK_NOW + 60 * 60_000).
 
 const STORYBOOK_RETENTION_TASK_DETAIL: ManagedTaskDetail = {
   task: {
-    ...STORYBOOK_MANAGED_TASKS[0],
+    ...STORYBOOK_MANAGED_TASKS.find((task) => task.taskKey === "retention_archive")!,
     measurementCapabilities: {
       pending: {
         supported: true,
@@ -916,7 +916,41 @@ function storybookManagedTaskDetail(
   return {
     task: { ...task, ...override },
     progress: null,
-    recentRuns: [],
+    recentRuns: ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+      ? [
+          {
+            id: 91,
+            status: "success",
+            triggerKind: "manual",
+            startedAt: "2026-06-22T09:27:00Z",
+            finishedAt: "2026-06-22T09:27:02Z",
+            durationMs: 2000,
+            completion: "partial",
+            coreCompletion: null,
+            details:
+              taskKey === "invocation_identity_cleanup"
+                ? {
+                    ownershipVersion: 1,
+                    ownerScope: taskKey,
+                    dryRun: true,
+                    conversationIdentitiesChecked: 32,
+                    conversationIdentitiesReleased: 8,
+                    hourPrefixesChecked: 32,
+                    hourPrefixesReleased: 4,
+                    coverage: "bounded_scan",
+                  }
+                : {
+                    ownershipVersion: 1,
+                    ownerScope: taskKey,
+                    dryRun: false,
+                    filesChecked: 32,
+                    filesReleased: 3,
+                    bytesReleased: 65536,
+                    coverage: "bounded_scan",
+                  },
+          },
+        ]
+      : [],
   };
 }
 
@@ -1467,9 +1501,26 @@ function buildSystemWorkspaceRequestHandler(
           ],
         };
       }
-      return jsonResponse(
-        clone(storybookManagedTaskDetail(taskKey, managedTaskOverrides.get(taskKey))),
+      const response = clone(
+        storybookManagedTaskDetail(taskKey, managedTaskOverrides.get(taskKey)),
       );
+      if (
+        [
+          "retention_archive",
+          "invocation_identity_cleanup",
+          "raw_orphan_sweep",
+          "prompt_cache_materialization",
+        ].includes(taskKey)
+      ) {
+        response.recentRuns.unshift({
+          id: 92,
+          triggerKind: "manual",
+          status: "requested",
+          startedAt: "2026-06-22T09:28:30.000Z",
+          details: { ownershipVersion: 1, ownerScope: taskKey, dryRun: false },
+        });
+      }
+      return jsonResponse(response);
     }
 
     if (url.pathname === "/api/stats/invocation-timeline" && method === "GET") {
@@ -2489,7 +2540,7 @@ export const Tasks: Story = {
     await expect(canvasElement.ownerDocument.defaultView?.innerWidth).toBe(1440);
     await expect(canvas.findByRole("heading", { name: "任务运维" })).resolves.toBeVisible();
     await expect(canvas.findByTestId("system-tasks-list")).resolves.toBeVisible();
-    await expect(canvas.findAllByText("最近一次执行")).resolves.toHaveLength(37);
+    await expect(canvas.findAllByText("最近一次执行")).resolves.toHaveLength(39);
     const retentionSparkline = await canvas.findByTestId(
       "task-workload-sparkline-retention_archive",
     );
@@ -3376,5 +3427,59 @@ export const ModelsSyncZeroResults: Story = {
     await expect(dialog.getBoundingClientRect().height).toBeGreaterThanOrEqual(560);
     await expect(dialog.getBoundingClientRect().height).toBeLessThanOrEqual(viewportHeight - 8);
     await expect(page.getByRole("button", { name: "取消" })).toBeVisible();
+  },
+};
+
+export const IdentityCleanupPaused: Story = {
+  render: () => renderWorkspace("/system/tasks/invocation_identity_cleanup"),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("heading", { name: "调用身份清理" })).resolves.toBeVisible();
+    await expect(canvas.findByText(/只读预演/)).resolves.toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "暂停自动触发" }));
+    await expect(canvas.findByRole("button", { name: "恢复自动触发" })).resolves.toBeVisible();
+    await expect(canvas.getByRole("button", { name: "立即运行" })).toBeEnabled();
+    await userEvent.click(canvas.getByRole("button", { name: "立即运行" }));
+    await waitFor(() => expect(canvas.getByRole("button", { name: "运行中" })).toBeDisabled());
+  },
+};
+
+export const RawOrphanSweepDetail: Story = {
+  render: () => renderWorkspace("/system/tasks/raw_orphan_sweep"),
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("heading", { name: "Raw 孤儿文件清理" })).resolves.toBeVisible();
+    await expect(canvas.findByText(/65536 字节/)).resolves.toBeVisible();
+    await expect(canvas.findByText(/总体剩余量未知/)).resolves.toBeVisible();
+  },
+};
+
+export const RetentionTaskOwnedHistory: Story = {
+  ...RetentionTaskDetail,
+  parameters: {
+    retentionTaskDetailOverride: (() => {
+      const detail = retentionTaskDetailForState("completed");
+      const legacy = clone(detail.recentRuns[0]);
+      detail.recentRuns.unshift({
+        ...legacy,
+        id: 99,
+        details: { ownershipVersion: 1, ownerScope: "retention_archive", dryRun: false },
+        coreCompletion: "completed",
+      });
+      if (detail.progress)
+        detail.progress.stages = detail.progress.stages?.filter(
+          (stage) => stage.name === "archive",
+        );
+      return detail;
+    })(),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.findByRole("link", { name: "调用身份清理" })).resolves.toBeVisible();
+    await expect(canvas.findByRole("link", { name: "Raw 孤儿文件清理" })).resolves.toBeVisible();
+    await expect(canvas.findByText(/旧版组合范围/)).resolves.toBeVisible();
+    await expect(canvas.findByText(/实际运行 · 本任务范围/)).resolves.toBeVisible();
   },
 };

@@ -14,6 +14,21 @@ afterEach(() => {
 afterAll(() => server.close());
 
 describe("demo MSW handlers", () => {
+  it("matches root API routes while allowing API source modules to load in embedded demos", async () => {
+    const handler = apiHandlers[1];
+    await expect(
+      handler.test({ request: new Request("http://demo.invalid/api/system/tasks") }),
+    ).resolves.toBe(true);
+    await expect(
+      handler.test({ request: new Request("http://demo.invalid/src/lib/api/types.ts") }),
+    ).resolves.toBe(false);
+    await expect(
+      handler.test({
+        request: new Request("http://demo.invalid/codex-vibe-monitor/demo/src/lib/api/types.ts"),
+      }),
+    ).resolves.toBe(false);
+  });
+
   it("serves the checked-in release version without exposing demo-only labels", async () => {
     const response = await fetch("http://demo.invalid/api/version");
     expect(response.ok).toBe(true);
@@ -545,7 +560,7 @@ describe("demo MSW handlers", () => {
       executionClass?: string | null;
     }>;
 
-    expect(tasks).toHaveLength(37);
+    expect(tasks).toHaveLength(39);
     expect(tasks.filter((task) => task.taskKey.startsWith("startup_backfill.")).length).toBe(16);
     expect(tasks.filter((task) => task.isManual).length).toBe(6);
     expect(tasks.map((task) => task.taskKey)).toEqual(
@@ -1079,4 +1094,31 @@ describe("demo MSW handlers", () => {
 
     await expect(fetch("http://demo.invalid/api/stats/summary")).rejects.toThrow();
   });
+});
+
+it.each([
+  "retention_archive",
+  "prompt_cache_materialization",
+  "invocation_identity_cleanup",
+  "raw_orphan_sweep",
+])("allows an explicit request while %s automatic triggering is paused", async (key) => {
+  const control = await fetch(`http://demo.invalid/api/system/managed-tasks/${key}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: false }),
+  });
+  expect(control.ok).toBe(true);
+  const paused = await control.json();
+  expect(paused.task.enabled).toBe(false);
+  const request = await fetch(`http://demo.invalid/api/system/managed-tasks/${key}/run`, {
+    method: "POST",
+  });
+  expect(request.ok).toBe(true);
+  const accepted = await request.json();
+  expect(accepted.task.enabled).toBe(false);
+  expect(accepted.recentRuns[0].triggerKind).toBe("manual");
+  const duplicate = await fetch(`http://demo.invalid/api/system/managed-tasks/${key}/run`, {
+    method: "POST",
+  });
+  expect(duplicate.status).toBe(409);
 });

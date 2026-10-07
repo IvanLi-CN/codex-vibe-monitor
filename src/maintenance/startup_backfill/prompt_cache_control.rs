@@ -37,6 +37,8 @@ pub(super) async fn save_prompt_cache_materialization_progress(
         ON CONFLICT(task_name) DO UPDATE SET
             cursor_id = excluded.cursor_id,
             next_run_after = CASE
+                WHEN ?12=1 OR EXISTS(SELECT 1 FROM managed_tasks WHERE task_key='prompt_cache_materialization' AND enabled=0)
+                    THEN startup_backfill_progress.next_run_after
                 WHEN startup_backfill_progress.wake_generation > ?11
                     THEN NULL
                 ELSE excluded.next_run_after
@@ -47,11 +49,15 @@ pub(super) async fn save_prompt_cache_materialization_progress(
             last_updated = excluded.last_updated,
             last_status = excluded.last_status,
             suspension_reason = CASE
+                WHEN ?12=1 OR EXISTS(SELECT 1 FROM managed_tasks WHERE task_key='prompt_cache_materialization' AND enabled=0)
+                    THEN startup_backfill_progress.suspension_reason
                 WHEN startup_backfill_progress.wake_generation > ?11
                     THEN NULL
                 ELSE excluded.suspension_reason
             END,
             next_probe_at = CASE
+                WHEN ?12=1 OR EXISTS(SELECT 1 FROM managed_tasks WHERE task_key='prompt_cache_materialization' AND enabled=0)
+                    THEN startup_backfill_progress.next_probe_at
                 WHEN startup_backfill_progress.wake_generation > ?11
                     THEN NULL
                 ELSE excluded.next_probe_at
@@ -73,6 +79,7 @@ pub(super) async fn save_prompt_cache_materialization_progress(
         None
     })
     .bind(i64::try_from(expected_wake_generation).unwrap_or(i64::MAX))
+    .bind(crate::maintenance::maintenance_execution_is_manual())
     .execute(pool)
     .await?;
     Ok(())
@@ -105,7 +112,9 @@ pub(super) async fn persist_prompt_cache_materialization_defer(
         },
     )
     .await?;
-    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    if !crate::maintenance::maintenance_execution_is_manual() {
+        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+    }
     info!(
         task = task.log_label(),
         task_name,

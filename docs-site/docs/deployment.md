@@ -55,7 +55,7 @@ services:
 | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                      | 不是转发到默认 OpenAI 上游时                 |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定首次初始化默认值         | 想让新库第一次启动时默认打开该开关时         |
 | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定密钥       | 需要账号池写能力时                           |
-| `RETENTION_ENABLED` / `ARCHIVE_DIR`                    | 后台归档与离线目录                       | 想长期运行并控制主库体积或外置归档卷时       |
+| 任务页自动触发开关 / `ARCHIVE_DIR`                     | 后台归档与离线目录                       | 想长期运行并控制主库体积或外置归档卷时       |
 
 ## 网关与暴露面
 

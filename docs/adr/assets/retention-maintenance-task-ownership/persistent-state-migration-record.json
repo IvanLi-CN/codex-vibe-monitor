@@ -5,22 +5,45 @@
     "description": "Introduce independent cleanup task controls without importing retired environment enablement",
     "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
     "version_impact": "major",
-    "status": "planned"
+    "status": "implemented-validation-in-progress"
   },
   "durable_state": {
-    "description": "Existing archive/materialization controls, new identity/raw cleanup controls, their schedules and initialization marker, and existing business cleanup checkpoints and ownership proofs.",
+    "description": "Existing archive/materialization controls, additive identity/raw cleanup controls, separate inspection/catch-up/safety retry eligibility, ownership initialization marker, durable hourly cleanup scope, and existing archive/raw correctness proofs.",
     "storage_implementation": "SQLite maintenance store for operational controls and observations; existing business SQLite and archive/raw stores for correctness state.",
     "source_compatibility_range": {
-      "from_program_versions": "Release source range must be declared and tested before delivery; repository baseline analysis alone does not establish it.",
-      "to_program_version": "Unassigned implementation candidate",
+      "from_program_versions": [
+        "v4.0.0",
+        "v4.0.1",
+        "v4.0.2",
+        "v4.0.3",
+        "v4.0.4",
+        "v4.0.5",
+        "v4.0.6",
+        "v4.1.0"
+      ],
+      "to_program_version": "th/retention-maintenance-boundaries implementation candidate; final commit and upgrade evidence pending",
       "direct_major_skips_supported": false
     }
   },
   "database_migration": {
     "applicable": true,
-    "ddl_structural_changes": [],
-    "structural_change_assessment": "No new business schema is required by the agreed split. Complete the existing maintenance-store schema initialization before task-control initialization; any additional DDL introduced by implementation must be recorded separately.",
+    "ddl_structural_changes": [
+      {
+        "id": "maintenance-owner-retry-state",
+        "description": "Idempotently create maintenance_owner_retry_state(task_key PRIMARY KEY,failure_count,next_eligible_at,reason) in the maintenance database; no existing deployed migration is edited.",
+        "order": 0
+      }
+    ],
+    "structural_change_assessment": "One additive maintenance table; no business table format changes. Existing business cleanup-state table receives an additional invocation_hour_prefixes scope before automatic admission.",
     "dml_changes": [
+      {
+        "id": "initialize-hour-prefix-scope",
+        "description": "INSERT OR IGNORE invocation_hour_prefixes in the existing business orphan-cleanup state table; formal cursor remains unchanged during previews.",
+        "order": 0,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": true
+      },
       {
         "id": "initialize-cleanup-controls",
         "description": "Idempotently introduce enabled-by-default cleanup controls and their own schedules, preserving every existing task control and administrator override. Do not read, reject, or import RETENTION_ENABLED or XY_RETENTION_ENABLED.",
@@ -47,6 +70,8 @@
     "operations_must_remain_separate": true,
     "operation_sequence": [
       "existing-schema-initialization",
+      "maintenance-owner-retry-state",
+      "initialize-hour-prefix-scope",
       "initialize-cleanup-controls",
       "record-task-ownership-initialization",
       "admit-task-owners"
@@ -70,7 +95,7 @@
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
-    "status": "not-run",
+    "status": "in-progress",
     "design_cases": [
       "New installations and newly introduced cleanup rows default to enabled.",
       "Old RETENTION_ENABLED=false and XY_RETENTION_ENABLED values have no effect and are not imported.",
@@ -92,6 +117,11 @@
         "Verify forward repair of interrupted initialization and work.",
         "Classify public and persistent-state impacts separately; this record contains no verified compatibility claim."
       ]
-    }
+    },
+    "evidence": [
+      "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+      "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+      "scripts/validate-retention-maintenance-upgrade.py"
+    ]
   }
 }

@@ -457,12 +457,26 @@ PY
   cargo build --locked --manifest-path "$repo_root/Cargo.toml" --target-dir "$target_dir"
 
   DATABASE_PATH="$database_path" \
+  MAINTENANCE_DATABASE_PATH="$runtime_dir/maintenance.sqlite" \
+  ARCHIVE_DIR="$archive_dir" \
+  PROXY_RAW_DIR="$runtime_dir/proxy-raw" \
+  XRAY_RUNTIME_DIR="$runtime_dir/xray" \
+  XRAY_BINARY=/bin/false \
+  "$binary_path" --retention-dry-run >"$runtime_dir/maintenance-init.log" 2>&1
+  python3 - "$runtime_dir/maintenance.sqlite" <<'PY'
+import sqlite3
+import sys
+with sqlite3.connect(sys.argv[1]) as connection:
+    connection.execute("UPDATE managed_tasks SET enabled=0,next_trigger_at=NULL,next_catchup_at=NULL WHERE task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')")
+PY
+
+  DATABASE_PATH="$database_path" \
+  MAINTENANCE_DATABASE_PATH="$runtime_dir/maintenance.sqlite" \
   ARCHIVE_DIR="$archive_dir" \
   PROXY_RAW_DIR="$runtime_dir/proxy-raw" \
   XRAY_RUNTIME_DIR="$runtime_dir/xray" \
   XRAY_BINARY=/bin/false \
   HTTP_BIND=127.0.0.1:18080 \
-  RETENTION_ENABLED=false \
   POLL_INTERVAL_SECS=86400 \
   UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS=86400 \
   OPENAI_UPSTREAM_BASE_URL=http://127.0.0.1:9 \

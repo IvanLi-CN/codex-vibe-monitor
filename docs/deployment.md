@@ -146,7 +146,7 @@ labels:
 - `UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS`：一次性 OAuth 登录会话 TTL；默认 10 分钟。
 - `UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` / `UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS`：后台账号保活与配额同步主频默认值回退 / 提前刷新窗口。运行期实际使用的主频、次频与主层账号上限由 Web `号池 -> 上游账号 -> 高级路由与同步设置` 持久化到 SQLite；缺失 DB 字段时默认回退为 `300 / 1800 / 100`。对 `deactivated_workspace` / `upstream_http_402` / `upstream_rejected` 这类明确上游拒绝账号，维护调度会额外施加 6 小时 `cooldown_until`，并跳过同轮 browser-UA fallback retry；升级后仍处于窗口内的 legacy 空字段行会在 maintenance pass 中自动补齐。
 - `UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS`：上游账号 `5 小时 / 7 天` 历史样本保留天数。
-- `RETENTION_ENABLED`：是否启用后台 retention/archive 维护任务，默认 `false`，上线时需要显式开启。
+- 后台归档、调用身份清理和 raw 孤儿文件清理由系统任务页分别控制自动触发，默认启用；暂停后仍可手动运行。环境变量 `RETENTION_ENABLED` 与 `XY_RETENTION_ENABLED` 已退出配置，遗留值无效。
 - `RETENTION_DRY_RUN`：全局 dry-run 开关；开启后 maintenance 只输出计划与计数，不删除数据。
 - `RETENTION_INTERVAL_SECS`：常驻 maintenance 执行间隔；默认按小时调度。
 - `RETENTION_BATCH_ROWS`：单批处理上限；用于降低 SQLite 长事务与锁表风险。

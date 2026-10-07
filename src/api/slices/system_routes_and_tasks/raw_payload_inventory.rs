@@ -388,13 +388,9 @@ async fn refresh_system_raw_payload_metrics_inventory_inner(state: &AppState) ->
             .saturating_sub(deltas.1.unsigned_abs().min(i64::MAX as u64) as i64) as u64
     };
     let retention_health = retention_recovery_health_snapshot();
-    let expired_backlog_count = if state.config.retention_enabled {
-        retention_health
-            .expired_backlog_count
-            .map(|value| value as u64)
-    } else {
-        Some(0)
-    };
+    let expired_backlog_count = retention_health
+        .expired_backlog_count
+        .map(|value| value as u64);
     if !state.raw_capture_circuit.update_inventory_if_current(
         inventory_generation,
         accounting_generation,

@@ -13,20 +13,20 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 
 ## 第一次部署，先决定这些
 
-| 关注点         | 关键变量                                                | 默认值                                                 | 什么时候该改                                        |
-| -------------- | ------------------------------------------------------- | ------------------------------------------------------ | --------------------------------------------------- |
-| 应用监听地址   | `HTTP_BIND`                                             | 本地默认 `127.0.0.1:8080`；运行镜像默认 `0.0.0.0:8080` | 本地开发、容器部署或反向代理拓扑不同时              |
-| 数据库存放位置 | `DATABASE_PATH`                                         | `codex_vibe_monitor.db`                                | 想把 SQLite 和归档放到持久化卷时                    |
-| 维护状态库     | `MAINTENANCE_DATABASE_PATH`                             | 主库同目录的 `.maintenance.sqlite`                     | 想把任务状态库单独放置时                            |
-| 原始 payload   | `PROXY_RAW_DIR`                                         | `proxy_raw_payloads`                                   | 想把代理 request/response 文件放到独立持久化卷时    |
-| 离线归档       | `ARCHIVE_DIR`                                           | `archives`                                             | 想把历史归档文件放到独立持久化卷时                  |
-| Xray runtime   | `XRAY_RUNTIME_DIR`                                      | `.codex/xray-forward`（相对进程工作目录）              | 想调整 Xray 状态与配置目录时                        |
-| 性能观测       | `OBSERVABILITY_ENABLED`                                 | `true`                                                 | A/B 或故障时关闭观测，不影响业务                    |
-| 指标私网监听   | `METRICS_BIND`、`METRICS_TOKEN_FILE`                    | `127.0.0.1:9091`                                       | 容器用监控私网，非 loopback 必须配 Token 文件       |
-| 诊断与图表     | `OBSERVABILITY_READ_TOKEN_FILE`、`GRAFANA_PUBLIC_URL`   | 无                                                     | 配置独立只读诊断 Token 和 Grafana HTTPS 入口        |
-| 上游代理目标   | `OPENAI_UPSTREAM_BASE_URL`                              | OpenAI 官方默认地址                                    | 你接的是自建兼容上游或其他转发层时                  |
-| 账号池写能力   | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                   | 无                                                     | 只要你要新增账号、改账号或用 OAuth 登录，就必须配置 |
-| 数据保留与归档 | `RETENTION_ENABLED`、`ARCHIVE_DIR`、各类 retention 天数 | 默认偏保守、默认不开启后台维护                         | 想长期运行并控制主库体积时                          |
+| 关注点         | 关键变量                                               | 默认值                                                 | 什么时候该改                                        |
+| -------------- | ------------------------------------------------------ | ------------------------------------------------------ | --------------------------------------------------- |
+| 应用监听地址   | `HTTP_BIND`                                            | 本地默认 `127.0.0.1:8080`；运行镜像默认 `0.0.0.0:8080` | 本地开发、容器部署或反向代理拓扑不同时              |
+| 数据库存放位置 | `DATABASE_PATH`                                        | `codex_vibe_monitor.db`                                | 想把 SQLite 和归档放到持久化卷时                    |
+| 维护状态库     | `MAINTENANCE_DATABASE_PATH`                            | 主库同目录的 `.maintenance.sqlite`                     | 想把任务状态库单独放置时                            |
+| 原始 payload   | `PROXY_RAW_DIR`                                        | `proxy_raw_payloads`                                   | 想把代理 request/response 文件放到独立持久化卷时    |
+| 离线归档       | `ARCHIVE_DIR`                                          | `archives`                                             | 想把历史归档文件放到独立持久化卷时                  |
+| Xray runtime   | `XRAY_RUNTIME_DIR`                                     | `.codex/xray-forward`（相对进程工作目录）              | 想调整 Xray 状态与配置目录时                        |
+| 性能观测       | `OBSERVABILITY_ENABLED`                                | `true`                                                 | A/B 或故障时关闭观测，不影响业务                    |
+| 指标私网监听   | `METRICS_BIND`、`METRICS_TOKEN_FILE`                   | `127.0.0.1:9091`                                       | 容器用监控私网，非 loopback 必须配 Token 文件       |
+| 诊断与图表     | `OBSERVABILITY_READ_TOKEN_FILE`、`GRAFANA_PUBLIC_URL`  | 无                                                     | 配置独立只读诊断 Token 和 Grafana HTTPS 入口        |
+| 上游代理目标   | `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 官方默认地址                                    | 你接的是自建兼容上游或其他转发层时                  |
+| 账号池写能力   | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | 无                                                     | 只要你要新增账号、改账号或用 OAuth 登录，就必须配置 |
+| 数据保留与归档 | 任务页自动触发开关、`ARCHIVE_DIR`、各类 retention 天数 | 四项维护任务默认自动启用，可独立暂停                   | 想长期运行并控制主库体积时                          |
 
 如果你只是先把服务跑起来，通常先确认上表这 4 到 5 项就够了。
 
@@ -35,7 +35,7 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 - 只想先接流量、看面板：`HTTP_BIND`、`DATABASE_PATH` 基本就会先决定。
 - 不是转到默认 OpenAI 上游：再补 `OPENAI_UPSTREAM_BASE_URL`。
 - 需要写入 Account Pool：必须提前准备 `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`。
-- 需要长期跑并控制主库体积：再补 `RETENTION_ENABLED`、`ARCHIVE_DIR` 和各类 retention 窗口。
+- 需要长期跑并控制主库体积：配置任务页自动触发开关、`ARCHIVE_DIR` 和各类 retention 窗口。
 
 ## 需要账号池写能力时，再看这些
 
@@ -53,7 +53,7 @@ description: 先覆盖首次部署真正要决定的参数，再说明账号池�
 
 ## 需要长期运行时，尽早决定这些
 
-- `RETENTION_ENABLED`
+- 系统任务页分别控制归档、调用身份清理、raw 孤儿文件清理和 Prompt 缓存物化的自动触发；暂停仍允许手动执行。
 - `RETENTION_DRY_RUN`
 - `RETENTION_INTERVAL_SECS`
 - `RETENTION_BATCH_ROWS`

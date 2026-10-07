@@ -67,7 +67,7 @@ function workloadHandler(
 const meta = {
   title: "System/TaskWorkloadSparkline",
   component: TaskWorkloadSparkline,
-  tags: ["autodocs"],
+  tags: ["autodocs", "test"],
   parameters: { layout: "padded" },
   decorators: [
     (Story: () => ReactNode) => (
@@ -102,10 +102,28 @@ export const Loaded: Story = {
       "aria-busy",
       "false",
     );
-    await expect(canvasElement.querySelector("svg")).not.toBeNull();
+    await waitFor(() => expect(canvasElement.querySelector("svg")).not.toBeNull());
     await userEvent.click(canvas.getByRole("button", { name: "查看运行计量" }));
     await expect(canvas.getByRole("dialog", { name: /运行计量详情/ })).toHaveTextContent(
       "触发时间：",
+    );
+  },
+};
+
+export const BackgroundRow: Story = {
+  args: { task, dark: false, mode: "background" },
+  render: (args) => (
+    <div className="relative grid gap-3 bg-base-100 px-4 py-4 md:grid-cols-5">
+      <TaskWorkloadSparkline {...args} />
+      <h3 className="relative z-10 font-semibold">{args.task.title}</h3>
+    </div>
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const control = await canvas.findByRole("button", { name: "查看运行计量" });
+    const title = canvas.getByRole("heading", { name: task.title });
+    await expect(control.getBoundingClientRect().bottom).toBeLessThanOrEqual(
+      title.getBoundingClientRect().top,
     );
   },
 };
@@ -120,7 +138,7 @@ export const LoadedMobile: Story = {
       "aria-busy",
       "false",
     );
-    await expect(canvasElement.querySelector("svg")).not.toBeNull();
+    await waitFor(() => expect(canvasElement.querySelector("svg")).not.toBeNull());
   },
 };
 
@@ -147,7 +165,7 @@ export const SingleSample: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/P /)).toBeVisible());
-    await expect(canvasElement.querySelectorAll("circle")).toHaveLength(3);
+    await waitFor(() => expect(canvasElement.querySelectorAll("circle")).toHaveLength(3));
   },
 };
 

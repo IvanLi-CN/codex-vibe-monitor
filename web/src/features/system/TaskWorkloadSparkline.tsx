@@ -607,7 +607,7 @@ export function TaskWorkloadSparkline({
       <div
         className={
           backgroundMode
-            ? "pointer-events-none absolute inset-x-3 top-2 z-20 flex justify-end"
+            ? "relative z-20 flex min-w-0 justify-end md:col-span-5"
             : "relative z-10 flex min-h-12 items-start justify-between gap-2 text-[11px]"
         }
       >

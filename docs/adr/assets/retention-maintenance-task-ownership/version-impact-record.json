@@ -33,16 +33,19 @@
         "detected": true,
         "description": "The owner expanded the task split to remove the global retention environment switch, reject compatibility import, and enable newly introduced cleanup controls by default."
       },
-      "reasoning": "The owner confirmed the complete requirement Spec and accepted the associated ADR. Configuration removal, CLI scope, and trigger-control semantics are planned public-contract changes; implementation and released-state validation have not run.",
-      "reassessed_at": "2026-10-06T14:57:37Z",
+      "reasoning": "The approved configuration removal, archive-only CLI scope, independent cleanup defaults, and automatic-trigger pause semantics are implemented public-contract changes. Published-state source fixtures are generated individually; final current-candidate compatibility and engineering validation are in progress.",
+      "reassessed_at": "2026-10-07T05:49:00Z",
       "evidence": [
         "docs/adr/0033-retention-maintenance-task-ownership.md",
-        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md",
+        "src/maintenance/cli.rs",
+        "src/maintenance/ownership.rs",
+        "src/maintenance_store.rs"
       ]
     },
     "verified": {
       "impact": null,
-      "reasoning": "No implementation or released-version compatibility validation has been performed.",
+      "reasoning": "Implementation is present, but the current candidate has not yet completed all declared released-state sources and required engineering gates.",
       "verified_at": null,
       "evidence": []
     }
@@ -61,11 +64,14 @@
       "applicable": true,
       "planned_impact": "minor",
       "classification_status": "provisional",
-      "reasoning": "The planned state change introduces task controls and initialization facts while reusing business correctness state. Earlier-version readability and the supported source range have not been verified.",
+      "reasoning": "Additive maintenance retry state, missing cleanup controls/plans, and a new business cleanup scope preserve existing formats. The proposed persistent-state Minor requires the candidate to read all declared earlier-Minor source states; it does not promise earlier programs can read the new state. Final current-candidate forward-upgrade results remain pending.",
       "state_description": "Managed task controls, schedules, initialization marker, per-task run/timeline observations, conversation orphan cursor, raw reconciliation/quarantine/release-pending state, and hourly identity state.",
-      "source_program_compatibility_range": "Not yet declared from release artifacts. Source analysis uses repository baseline c0cc443baeb703e72ded361f3d4439633a31f7ce; this is not released-version compatibility evidence.",
+      "source_program_compatibility_range": "Individual released sources v4.0.0 through v4.0.6 and v4.1.0; baseline origin/main=v4.1.0 at 130c357c043a3449512a25cd82643fc5a8ca02df. All eight published fixtures were generated; no final verified source-range claim yet.",
       "evidence": [
-        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json",
+        "scripts/validate-retention-maintenance-upgrade.py",
+        "scripts/validate-retention-maintenance-runtime.py"
       ]
     }
   },
