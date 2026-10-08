@@ -9,11 +9,73 @@ import type {
 import {
   buildInvocationFromPromptCachePreview,
   buildPromptCachePreviewFromInvocation,
+  hasPromptCacheConversationDelayedStatistics,
   mergePromptCacheConversationHistory,
   mergePromptCacheConversationsResponse,
   type PromptCacheConversationHistoryByKey,
   reconcilePromptCacheLiveRecordMap,
 } from "./promptCacheLive";
+
+describe("hasPromptCacheConversationDelayedStatistics", () => {
+  it("flags a working set row whose optional aggregate statistics are not ready", () => {
+    expect(
+      hasPromptCacheConversationDelayedStatistics({
+        conversations: [createConversation("pck-pending")],
+      }),
+    ).toBe(true);
+  });
+
+  it("does not flag a row with a materialized zero success count", () => {
+    expect(
+      hasPromptCacheConversationDelayedStatistics({
+        conversations: [createConversation("pck-complete", { successCount: 0 })],
+      }),
+    ).toBe(false);
+  });
+
+  it("flags stale statistics until the latest terminal invocation is materialized", () => {
+    const conversation = createConversation("pck-stale", {
+      successCount: 1,
+      lastInvocationAt: "2026-03-10T01:00:00Z",
+      recentInvocations: [
+        createPreview({
+          id: 2,
+          invokeId: "latest-terminal",
+          occurredAt: "2026-03-10T02:00:00Z",
+          status: "completed",
+        }),
+      ],
+    });
+    expect(hasPromptCacheConversationDelayedStatistics({ conversations: [conversation] })).toBe(
+      true,
+    );
+    conversation.lastInvocationAt = "2026-03-10T02:00:00Z";
+    expect(hasPromptCacheConversationDelayedStatistics({ conversations: [conversation] })).toBe(
+      false,
+    );
+  });
+
+  it("does not treat a newer in-flight invocation as stale terminal statistics", () => {
+    expect(
+      hasPromptCacheConversationDelayedStatistics({
+        conversations: [
+          createConversation("pck-running", {
+            successCount: 1,
+            lastInvocationAt: "2026-03-10T01:00:00Z",
+            recentInvocations: [
+              createPreview({
+                id: 2,
+                invokeId: "latest-running",
+                occurredAt: "2026-03-10T02:00:00Z",
+                status: "running",
+              }),
+            ],
+          }),
+        ],
+      }),
+    ).toBe(false);
+  });
+});
 
 function createRequestPoint(
   overrides: Partial<PromptCacheConversationRequestPoint> & {
@@ -51,6 +113,8 @@ function createConversation(
     totalCost: overrides.totalCost ?? 0.01,
     createdAt: overrides.createdAt ?? "2026-03-10T01:00:00Z",
     lastActivityAt: overrides.lastActivityAt ?? "2026-03-10T02:00:00Z",
+    successCount: overrides.successCount,
+    lastInvocationAt: overrides.lastInvocationAt,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations: overrides.recentInvocations ?? [],
     last24hRequests: overrides.last24hRequests ?? [],

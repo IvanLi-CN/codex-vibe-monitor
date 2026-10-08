@@ -80,6 +80,44 @@ pub(crate) fn append_working_set_blocked_binding_filter<'a>(
     query.push(")");
 }
 
+fn append_current_prompt_cache_conversation_keys<'a>(
+    query: &mut QueryBuilder<'a, Sqlite>,
+    range_start_bound: &'a str,
+    source_scope: InvocationSourceScope,
+) {
+    query.push(
+        "SELECT DISTINCT prompt_cache_key FROM prompt_cache_rollup_hourly WHERE last_seen_at >= ",
+    );
+    query.push_bind(range_start_bound);
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query.push(" UNION SELECT prompt_cache_key FROM prompt_cache_working_set_live WHERE ");
+    match source_scope {
+        InvocationSourceScope::All => {
+            query.push("source_scope_all = 1");
+            append_working_set_freshness_filter(
+                query,
+                range_start_bound,
+                "last_activity_at",
+                "last_terminal_at",
+                "last_in_flight_at",
+            );
+        }
+        InvocationSourceScope::ProxyOnly => {
+            query.push("source_scope_proxy_only = 1");
+            append_working_set_freshness_filter(
+                query,
+                range_start_bound,
+                "proxy_last_activity_at",
+                "proxy_last_terminal_at",
+                "proxy_last_in_flight_at",
+            );
+        }
+    }
+}
+
 pub(crate) async fn query_prompt_cache_conversation_aggregates<'e, E>(
     executor: E,
     range_start_bound: &str,
@@ -89,20 +127,10 @@ pub(crate) async fn query_prompt_cache_conversation_aggregates<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "WITH active AS (\
-            SELECT prompt_cache_key, MIN(first_seen_at) AS first_seen_24h \
-             FROM prompt_cache_rollup_hourly \
-             WHERE last_seen_at >= ",
-    );
-    query.push_bind(range_start_bound);
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-
+    let mut query = QueryBuilder::<Sqlite>::new("WITH active AS (");
+    append_current_prompt_cache_conversation_keys(&mut query, range_start_bound, source_scope);
     query.push(
-        " GROUP BY prompt_cache_key\
-         ), aggregates AS (\
+        " ), aggregates AS (\
             SELECT prompt_cache_key, \
                  SUM(request_count) AS request_count, \
                  SUM(total_tokens) AS total_tokens, \
@@ -117,15 +145,27 @@ where
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
+    let (working_created_at, working_last_activity_at) = match source_scope {
+        InvocationSourceScope::All => ("working.created_at", "working.last_activity_at"),
+        InvocationSourceScope::ProxyOnly => {
+            ("working.proxy_created_at", "working.proxy_last_activity_at")
+        }
+    };
     query
-        .push(
+        .push(format!(
             " GROUP BY prompt_cache_key\
          ) \
-         SELECT prompt_cache_key, request_count, total_tokens, total_cost, created_at, last_activity_at \
-         FROM aggregates \
-         ORDER BY created_at DESC, prompt_cache_key DESC \
+         SELECT active.prompt_cache_key, \
+                COALESCE(aggregates.request_count, 0) AS request_count, \
+                COALESCE(aggregates.total_tokens, 0) AS total_tokens, \
+                COALESCE(aggregates.total_cost, 0.0) AS total_cost, \
+                COALESCE(aggregates.created_at, {working_created_at}) AS created_at, \
+                COALESCE(aggregates.last_activity_at, {working_last_activity_at}) AS last_activity_at \
+         FROM active LEFT JOIN aggregates USING (prompt_cache_key) \
+         LEFT JOIN prompt_cache_working_set_live AS working USING (prompt_cache_key) \
+         ORDER BY created_at DESC, active.prompt_cache_key DESC \
          LIMIT ",
-        )
+        ))
         .push_bind(limit);
 
     query
@@ -143,16 +183,9 @@ pub(crate) async fn query_active_prompt_cache_conversation_count<'e, E>(
 where
     E: Executor<'e, Database = Sqlite>,
 {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT COUNT(DISTINCT prompt_cache_key) AS count \
-         FROM prompt_cache_rollup_hourly \
-         WHERE last_seen_at >= ",
-    );
-    query.push_bind(range_start_bound);
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
+    let mut query = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) AS count FROM (");
+    append_current_prompt_cache_conversation_keys(&mut query, range_start_bound, source_scope);
+    query.push(")");
 
     let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
     Ok(count)
@@ -365,20 +398,11 @@ where
         return Ok(0);
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "WITH active AS (\
-            SELECT DISTINCT prompt_cache_key \
-         FROM prompt_cache_rollup_hourly \
-         WHERE last_seen_at >= ",
-    );
-    query.push_bind(range_start_bound);
-
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
+    let mut query = QueryBuilder::<Sqlite>::new("WITH active AS (");
+    append_current_prompt_cache_conversation_keys(&mut query, range_start_bound, source_scope);
 
     query.push(
-        " ), history AS (\
+        " ), history_candidates AS (\
             SELECT prompt_cache_key, MIN(first_seen_at) AS created_at \
              FROM prompt_cache_rollup_hourly",
     );
@@ -387,9 +411,17 @@ where
         query.push(" WHERE source = ").push_bind(SOURCE_PROXY);
     }
 
+    query.push(" GROUP BY prompt_cache_key UNION ALL SELECT prompt_cache_key, ");
+    match source_scope {
+        InvocationSourceScope::All => {
+            query.push("created_at FROM prompt_cache_working_set_live WHERE source_scope_all = 1");
+        }
+        InvocationSourceScope::ProxyOnly => {
+            query.push("proxy_created_at FROM prompt_cache_working_set_live WHERE source_scope_proxy_only = 1");
+        }
+    }
     query.push(
-        " GROUP BY prompt_cache_key\
-         ), ranked AS (\
+        " ), history AS (SELECT prompt_cache_key, MIN(created_at) AS created_at FROM history_candidates GROUP BY prompt_cache_key), ranked AS (\
             SELECT history.prompt_cache_key, \
                    CASE WHEN active.prompt_cache_key IS NULL THEN 0 ELSE 1 END AS is_active, \
                    ROW_NUMBER() OVER (\
