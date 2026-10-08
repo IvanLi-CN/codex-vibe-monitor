@@ -138,6 +138,8 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 - [Task operations outside the main database](../../adr/0023-task-operations-state-outside-main-database.md)
 - [Task runtime observation and effective schedules](../../adr/0024-task-runtime-observation-and-effective-schedules.md)
 - [Retention core and conversation-derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
+- [Task timeline HTTP pagination and SSE revision](../../adr/0029-managed-task-timeline-http-pagination-and-sse-revision.md)
+- [Versioned task timeline SSE compatibility](../../adr/0030-versioned-managed-task-timeline-sse-compatibility.md)
 - [Retention task-local batches and monthly targets](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
 - [Independent maintenance task ownership](../../adr/0034-retention-maintenance-task-ownership.md)
 
