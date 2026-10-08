@@ -10,6 +10,8 @@
 
 ## Implementation Coverage
 
+Queue drain uses the existing migration progress `cursor_key` as a circular admission checkpoint, with indexed seeks after the checkpoint and around the beginning. Each admitted key receives one bounded source page per round. Stable pending keys return after their selected peers and continue within the remaining run budget, counting once as visited keys; generation resets yield the affected key for that run. Generation changes and budget exhaustion retain the existing 15-second continuation deadline. Admission commits separately before source work, preserving fair selection after failure without treating admission as aggregate completion. Rebuild still uses the continuous final-publication checkpoint. Queue selection logs a bounded backlog lower bound and oldest selected enqueue age; quantum, restart, retry/deadline, and empty-queue publication events use fingerprints and counts. Focused regressions live in `prompt_cache_materialization_control.rs`, `startup_backfill_tests.rs`, and the archive/file-I/O `prompt_cache_control_file_lock.rs`.
+
 主线 range reservation 的服务验收已转移到 `shared-testbox-proxy-runtime-acceptance`
 及 `proxy-long-wait-loadgen.py`：保留预热、100 ms cold refusal 可见性、range probes、
 crash recovery 和 older-reader reservation 比较；不读取退役性能库。终态入队同时

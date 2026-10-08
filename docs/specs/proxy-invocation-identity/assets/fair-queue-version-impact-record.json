@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Bound hot-key statistics work and persist circular queue admission order with private scheduler diagnostics.",
+    "release_unit_description": "Prompt-cache statistics queue scheduling",
+    "affected_contracts": [
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "No public API change; existing same-Minor readers accept the unchanged schema and ignore the phase-local queue cursor.",
+      "assessed_at": "2026-10-07T22:45:00+08:00",
+      "evidence": [
+        "docs/specs/proxy-invocation-identity/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "Queue drain scheduling, private diagnostics, regressions and associated contracts only."
+      },
+      "reasoning": "Rebuild publication and generation fencing remain unchanged; the queue cursor cannot remove or complete any work.",
+      "reassessed_at": "2026-10-07T22:45:00+08:00",
+      "evidence": [
+        "src/prompt_cache_conversations.rs",
+        "docs/specs/proxy-invocation-identity/assets/fair-queue-state-migration-record.json"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Pending current-candidate regression and quality validation.",
+      "verified_at": null,
+      "status": "pending",
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "none",
+      "supported_consumer_range": "Existing 4.x consumers; no response field, live-read behavior, request handler or allocator change.",
+      "evidence": [
+        "git diff --name-only"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Unchanged durable queue/staging encodings; the existing queue-drain cursor records admission without changing the rebuild cursor.",
+      "source_program_compatibility_range": "4.1.0, 4.1.1 and 4.1.2, supported current 4.1.x; prior queue readers ignore this cursor.",
+      "evidence": [
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs",
+        "src/tests/archive_file_io/prompt_cache_control_file_lock.rs"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/proxy-invocation-identity/assets/fair-queue-version-impact-record.json"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}
