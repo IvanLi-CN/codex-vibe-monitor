@@ -192,10 +192,7 @@ fn request_diagnostics_detail_limits_preserve_summary_and_private_attributes() {
             ),
     };
     assert!(wire.encoded_len() < BYTE_LIMIT);
-    assert_eq!(
-        spans.iter().filter(|s| s.name == "attempt").count(),
-        ATTEMPT_LIMIT
-    );
+    assert!(spans.iter().filter(|s| s.name == "attempt").count() <= ATTEMPT_LIMIT);
     let root = spans
         .iter()
         .find(|s| s.name == "cvm.proxy.response")

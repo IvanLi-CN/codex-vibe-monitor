@@ -650,18 +650,19 @@ impl DiagnosticContext {
             let random_candidate = sample_bucket == 0;
             // Select one deterministic category per request. Root spans retain the full
             // lightweight record; only the selected category receives waterfall children.
-            let detailed = truncated
-                || if outcome != "complete" {
-                    sample_bucket == 1
-                } else if attempts > 1 {
-                    sample_bucket == 2
-                } else if wait_total >= Duration::from_millis(250) {
-                    sample_bucket == 3
-                } else if at >= Duration::from_secs(30) {
-                    sample_bucket == 4
-                } else {
-                    random_candidate
-                };
+            let detailed = if truncated {
+                false
+            } else if outcome != "complete" {
+                sample_bucket == 1
+            } else if attempts > 1 {
+                sample_bucket == 2
+            } else if wait_total >= Duration::from_millis(250) {
+                sample_bucket == 3
+            } else if at >= Duration::from_secs(30) {
+                sample_bucket == 4
+            } else {
+                random_candidate
+            };
             if detailed {
                 for interval in phases {
                     self.emit(
