@@ -1015,30 +1015,36 @@ impl SharedBatch {
         size: usize,
     ) -> Self {
         let mut tracer = None;
-        let mut links = Vec::with_capacity(16);
-        for ticket in tickets.take(16) {
-            tracer = ticket.context.0.traces.tracer.clone();
-            if let Some(parent) = ticket.context.state().parent.clone() {
-                links.push(opentelemetry::trace::Link::with_context(parent));
+        let mut links = Vec::new();
+        if size > 1 {
+            links.reserve(16);
+            for ticket in tickets.take(16) {
+                tracer = ticket.context.0.traces.tracer.clone();
+                if let Some(parent) = ticket.context.state().parent.clone() {
+                    links.push(opentelemetry::trace::Link::with_context(parent));
+                }
             }
         }
         let utc = SystemTime::now();
         let started = Instant::now();
-        let span = tracer.as_ref().map(|tracer| {
-            tracer.build_with_context(
-                tracer
-                    .span_builder("cvm.terminal.shared_batch")
-                    .with_start_time(utc)
-                    .with_links(links)
-                    .with_attributes([
-                        KeyValue::new("cvm.record", "shared_batch"),
-                        KeyValue::new("cvm.batch_size", size as i64),
-                        KeyValue::new("cvm.links_truncated", size > 16),
-                        KeyValue::new("cvm.lower_bound", true),
-                    ]),
-                &OtelContext::new(),
-            )
-        });
+        let span = (size > 1)
+            .then_some(tracer.as_ref())
+            .flatten()
+            .map(|tracer| {
+                tracer.build_with_context(
+                    tracer
+                        .span_builder("cvm.terminal.shared_batch")
+                        .with_start_time(utc)
+                        .with_links(links)
+                        .with_attributes([
+                            KeyValue::new("cvm.record", "shared_batch"),
+                            KeyValue::new("cvm.batch_size", size as i64),
+                            KeyValue::new("cvm.links_truncated", size > 16),
+                            KeyValue::new("cvm.lower_bound", true),
+                        ]),
+                    &OtelContext::new(),
+                )
+            });
         Self {
             span,
             tracer,
