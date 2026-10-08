@@ -22,6 +22,13 @@ const task: ManagedTask = {
   displayColorLight: "#c2410c",
   displayColorDark: "#f59e0b",
 };
+const secondTask: ManagedTask = {
+  ...task,
+  taskKey: "long_term_projection",
+  title: "长期统计投影",
+  displayColorLight: "#15803d",
+  displayColorDark: "#4ade80",
+};
 
 const segment = (id: string, startMs: number, endMs: number): TaskTimelineSegment => ({
   segmentId: id,
@@ -99,6 +106,7 @@ class ChartResizeObserverMock {
 
 function renderChart(props: {
   nowMs: number;
+  tasks?: ManagedTask[];
   executions?: TaskTimelineSegment[];
   activeRuns?: CurrentTaskExecution[];
   runtimeFresh?: boolean;
@@ -121,7 +129,7 @@ function renderChart(props: {
       root?.render(
         <MemoryRouter>
           <TaskTimelineChart
-            tasks={[task]}
+            tasks={props.tasks ?? [task]}
             executions={props.executions ?? []}
             activeRuns={props.activeRuns ?? []}
             coverage={props.coverage ?? []}
@@ -412,6 +420,64 @@ describe("TaskTimelineChart", () => {
     act(() => aggregate?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(host?.textContent).toContain("8 次任务执行");
     expect(host?.textContent).toContain("数据保留与归档");
+    expect(host?.textContent).toContain("区间 ID dense-7");
     expect(host?.querySelectorAll("ul.divide-y li")).toHaveLength(8);
+  });
+
+  it("keeps interleaved tasks in one inspectable density group", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      tasks: [task, secondTask],
+      executions: Array.from({ length: 10 }, (_, index) => {
+        const start = nowMs - 15_000 + index * 100;
+        const run = segment(`mixed-dense-${index}`, start, start + 30);
+        return index % 2 === 0
+          ? { ...run, managedRunId: index + 100 }
+          : { ...run, taskKey: secondTask.taskKey, title: secondTask.title };
+      }),
+    });
+
+    const groups = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].getAttribute("aria-label")).toContain("10 次多任务执行");
+    expect(groups[0].querySelector("rect")?.getAttribute("fill")).toBe("#64748b");
+
+    act(() => groups[0].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    expect(host?.querySelectorAll("ul.divide-y li")).toHaveLength(10);
+    expect(host?.textContent).toContain(task.title);
+    expect(host?.textContent).toContain(secondTask.title);
+    expect(host?.textContent).toContain("运行 ID #100");
+    expect(host?.textContent).toContain("区间 ID mixed-dense-9");
+  });
+
+  it("merges adjacent density buckets when their hit areas overlap", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const chartWidth = 354;
+    const windowStart = nowMs - 12 * 60 * 60 * 1000;
+    const startAtPixel = (pixel: number) =>
+      windowStart + (pixel / chartWidth) * 12 * 60 * 60 * 1000;
+
+    renderChart({
+      nowMs,
+      chartWidth,
+      executions: [100.2, 100.8, 101.2, 101.8].map((pixel, index) => {
+        const start = startAtPixel(pixel);
+        return segment(`adjacent-dense-${index}`, start, start + 30);
+      }),
+    });
+
+    const groups = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].getAttribute("aria-label")).toContain("4 次");
+
+    act(() => groups[0].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+
+    const details = Array.from(host?.querySelectorAll("ul.divide-y li") ?? []);
+    const identities = details.map((item) => item.textContent?.match(/区间 ID ([^\s]+)/)?.[1]);
+    expect(details).toHaveLength(4);
+    expect(new Set(identities).size).toBe(4);
+    expect(host?.textContent).toContain("区间 ID adjacent-dense-3");
   });
 });

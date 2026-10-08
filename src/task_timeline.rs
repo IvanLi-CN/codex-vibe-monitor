@@ -326,7 +326,12 @@ pub(crate) struct TimelineCursor {
     pub(crate) from: String,
     pub(crate) to: String,
     pub(crate) watermark: i64,
+    // Retained so cursors from the previous offset-based implementation still decode.
     pub(crate) offset: u64,
+    #[serde(default)]
+    pub(crate) after_started_at: Option<String>,
+    #[serde(default)]
+    pub(crate) after_segment_id: Option<String>,
     pub(crate) after_revision: Option<i64>,
     pub(crate) expires_at: String,
 }
@@ -587,49 +592,83 @@ pub(crate) async fn timeline_page(
     after_revision: Option<i64>,
     from: Option<&str>,
     to: Option<&str>,
+    window_hours: Option<i64>,
     limit: usize,
 ) -> anyhow::Result<TaskTimelinePage> {
-    let now = Utc::now();
+    let cursor_checked_at = Utc::now();
     let decoded_cursor = cursor.map(decode_cursor).transpose()?;
     let mut reset_required = false;
     let cursor = match decoded_cursor {
-        Some(cursor) if DateTimeString::is_expired(&cursor.expires_at, now) => {
+        Some(cursor) if DateTimeString::is_expired(&cursor.expires_at, cursor_checked_at) => {
+            reset_required = true;
+            None
+        }
+        Some(cursor) if cursor.after_started_at.is_none() => {
             reset_required = true;
             None
         }
         cursor => cursor,
     };
-    let (window_start, window_end, watermark, offset, delta_from) = if let Some(cursor) = cursor {
+    let (
+        window_start,
+        window_end,
+        watermark,
+        offset,
+        after_started_at,
+        after_segment_id,
+        delta_from,
+        observed_at,
+    ) = if let Some(cursor) = cursor {
         validate_decoded_cursor(&cursor)?;
+        let observed_at = format_utc_iso_millis(Utc::now());
         (
             cursor.from,
             cursor.to,
             cursor.watermark,
             cursor.offset,
+            cursor.after_started_at,
+            cursor.after_segment_id,
             cursor.after_revision,
+            observed_at,
         )
     } else {
+        anyhow::ensure!(
+            window_hours.is_none() || (from.is_none() && to.is_none()),
+            "timeline windowHours cannot be combined with from or to"
+        );
+        let hours = window_hours.unwrap_or(24);
+        anyhow::ensure!(
+            (1..=24).contains(&hours),
+            "timeline windowHours must be between one and 24"
+        );
+        let watermark = store.timeline_revision().await?;
+        let now = Utc::now();
         let end = to
             .map(str::to_string)
             .unwrap_or_else(|| format_utc_iso_millis(now));
         let end_at = chrono::DateTime::parse_from_rfc3339(&end)?.with_timezone(&Utc);
         let start = from
             .map(str::to_string)
-            .unwrap_or_else(|| format_utc_iso_millis(end_at - chrono::Duration::hours(24)));
-        let watermark = store.timeline_revision().await?;
+            .unwrap_or_else(|| format_utc_iso_millis(end_at - chrono::Duration::hours(hours)));
         (
             start,
             end,
             watermark,
             0,
+            None,
+            None,
             after_revision.filter(|revision| *revision >= 0),
+            format_utc_iso_millis(now),
         )
     };
     if reset_required {
         let watermark = store.timeline_revision().await?;
+        let now = Utc::now();
         return Ok(TaskTimelinePage {
             observed_at: format_utc_iso_millis(now),
-            window_start: format_utc_iso_millis(now - chrono::Duration::hours(24)),
+            window_start: format_utc_iso_millis(
+                now - chrono::Duration::hours(window_hours.unwrap_or(24)),
+            ),
             window_end: format_utc_iso_millis(now),
             watermark,
             segments: Vec::new(),
@@ -644,7 +683,7 @@ pub(crate) async fn timeline_page(
             &window_end,
             watermark,
             delta_from,
-            offset,
+            after_started_at.as_deref().zip(after_segment_id.as_deref()),
             limit,
         )
         .await?;
@@ -654,14 +693,16 @@ pub(crate) async fn timeline_page(
             to: window_end.clone(),
             watermark,
             offset: offset.saturating_add(limit as u64),
+            after_started_at: segments.last().map(|segment| segment.started_at.clone()),
+            after_segment_id: segments.last().map(|segment| segment.segment_id.clone()),
             after_revision: delta_from,
-            expires_at: format_utc_iso_millis(now + chrono::Duration::minutes(10)),
+            expires_at: format_utc_iso_millis(cursor_checked_at + chrono::Duration::minutes(10)),
         })?)
     } else {
         None
     };
     Ok(TaskTimelinePage {
-        observed_at: format_utc_iso_millis(now),
+        observed_at,
         window_start,
         window_end,
         watermark,
@@ -709,6 +750,20 @@ fn validate_decoded_cursor(cursor: &TimelineCursor) -> anyhow::Result<()> {
         cursor.offset <= 1_000_000,
         "timeline cursor offset is invalid"
     );
+    ensure!(
+        cursor.after_started_at.is_some() == cursor.after_segment_id.is_some(),
+        "timeline cursor position is invalid"
+    );
+    if let Some(started_at) = cursor.after_started_at.as_deref() {
+        chrono::DateTime::parse_from_rfc3339(started_at)?;
+        ensure!(
+            cursor
+                .after_segment_id
+                .as_deref()
+                .is_some_and(|segment_id| !segment_id.is_empty()),
+            "timeline cursor segment id is invalid"
+        );
+    }
     if let Some(revision) = cursor.after_revision {
         ensure!(revision >= 0, "timeline cursor revision is invalid");
     }
