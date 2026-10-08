@@ -1,6 +1,182 @@
 use super::*;
 
 #[cfg(unix)]
+#[tokio::test]
+async fn ownership_runtime_sqlite_open_rejects_replacement_before_initialization() {
+    for maintenance in [false, true] {
+        let directory = make_temp_test_dir("maintenance-runtime-pre-open");
+        let mut config = test_config();
+        config.database_path = directory.join("business.sqlite");
+        fs::write(&config.database_path, b"").unwrap();
+        fs::write(config.maintenance_database_path(), b"").unwrap();
+        let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
+            crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
+        else {
+            panic!("offline owner required");
+        };
+        let target = if maintenance {
+            config.maintenance_database_path()
+        } else {
+            config.database_path.clone()
+        };
+        let options = owner
+            .sqlite_connect_options(
+                &target,
+                SqliteConnectOptions::new().journal_mode(SqliteJournalMode::Wal),
+            )
+            .unwrap();
+        let replacement = directory.join("replacement.sqlite");
+        fs::write(&replacement, b"").unwrap();
+        fs::rename(&target, directory.join("displaced.sqlite")).unwrap();
+        fs::rename(replacement, &target).unwrap();
+        assert!(owner.refresh_inode_pair_lock().is_err());
+        assert!(owner.publish_role("service:ownership-v1:ready").is_err());
+        assert!(SqliteConnection::connect_with(&options).await.is_err());
+        assert!(
+            fs::read(&target).unwrap().is_empty(),
+            "no header or schema write before rejection"
+        );
+        assert!(!target.with_extension("sqlite-wal").exists());
+        assert!(!target.with_extension("sqlite-shm").exists());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ownership_runtime_sqlite_open_checks_native_handle_after_path_restoration() {
+    for maintenance in [false, true] {
+        let directory = make_temp_test_dir("maintenance-runtime-native-open");
+        let mut config = test_config();
+        config.database_path = directory.join("business.sqlite");
+        let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
+            crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
+        else {
+            panic!("offline owner required");
+        };
+        let target = if maintenance {
+            config.maintenance_database_path()
+        } else {
+            config.database_path.clone()
+        };
+        let options = owner
+            .sqlite_connect_options(
+                &target,
+                SqliteConnectOptions::new().journal_mode(SqliteJournalMode::Wal),
+            )
+            .unwrap();
+        let replacement = directory.join("replacement.sqlite");
+        fs::write(&replacement, b"").unwrap();
+        crate::maintenance::replace_during_next_open(target.clone(), replacement.clone());
+        assert!(
+            SqliteConnection::connect_with(&options).await.is_err(),
+            "native SQLite inode differs even after the held path is restored"
+        );
+        owner.refresh_inode_pair_lock().unwrap();
+        assert!(fs::read(&target).unwrap().is_empty());
+        assert!(
+            fs::read(replacement).unwrap().is_empty(),
+            "no journal/header initialization on the unowned inode"
+        );
+        let connection = SqliteConnection::connect_with(&options).await.unwrap();
+        connection.close().await.unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ownership_runtime_sqlite_open_guards_new_pool_connections_and_lease_end() {
+    let directory = make_temp_test_dir("maintenance-runtime-pool-open");
+    let mut config = test_config();
+    config.database_path = directory.join("business.sqlite");
+    let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
+        crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
+    else {
+        panic!("offline owner required");
+    };
+    let options = owner
+        .sqlite_connect_options(
+            &config.database_path,
+            SqliteConnectOptions::new().journal_mode(SqliteJournalMode::Wal),
+        )
+        .unwrap();
+    let pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(options.clone())
+        .await
+        .unwrap();
+    let original = pool.acquire().await.unwrap();
+    let displaced = directory.join("displaced.sqlite");
+    fs::rename(&config.database_path, &displaced).unwrap();
+    fs::write(&config.database_path, b"").unwrap();
+    assert!(
+        SqliteConnection::connect_with(&pool.connect_options())
+            .await
+            .is_err()
+    );
+    assert!(fs::read(&config.database_path).unwrap().is_empty());
+    fs::remove_file(&config.database_path).unwrap();
+    fs::rename(&displaced, &config.database_path).unwrap();
+    let second = SqliteConnection::connect_with(&pool.connect_options())
+        .await
+        .unwrap();
+    second.close().await.unwrap();
+    drop(original);
+    pool.close().await;
+    drop(owner);
+    assert!(
+        SqliteConnection::connect_with(&options).await.is_err(),
+        "cached options cannot outlive runtime ownership"
+    );
+    assert!(
+        matches!(
+            crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap(),
+            crate::maintenance::MaintenanceRuntimeRoute::Offline(_)
+        ),
+        "weak VFS registration must not retain database locks"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn ownership_runtime_sqlite_open_preserves_archive_attach_and_rejects_new_hardlinks() {
+    let directory = make_temp_test_dir("maintenance-runtime-attach-open");
+    let mut config = test_config();
+    config.database_path = directory.join("business.sqlite");
+    let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
+        crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
+    else {
+        panic!("offline owner required");
+    };
+    let options = owner
+        .sqlite_connect_options(
+            &config.database_path,
+            SqliteConnectOptions::new()
+                .create_if_missing(true)
+                .journal_mode(SqliteJournalMode::Wal),
+        )
+        .unwrap();
+    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+    let archive = directory.join("archive.sqlite");
+    sqlx::query("ATTACH DATABASE ? AS archive_db")
+        .bind(archive.to_string_lossy().as_ref())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE archive_db.proof (id INTEGER)")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    sqlx::query("DETACH DATABASE archive_db")
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    connection.close().await.unwrap();
+    fs::hard_link(&config.database_path, directory.join("hardlink.sqlite")).unwrap();
+    assert!(owner.refresh_inode_pair_lock().is_err());
+    assert!(SqliteConnection::connect_with(&options).await.is_err());
+}
+
+#[cfg(unix)]
 struct RuntimeOwnerChild(std::process::Child);
 
 #[cfg(unix)]

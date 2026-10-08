@@ -1544,16 +1544,30 @@ async fn recent_runs_for_workload_compatibility(
     Ok(query.fetch_all(pool).await?)
 }
 
-pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
+pub(crate) async fn open_owned(
+    config: &AppConfig,
+    runtime_lock: &mut crate::maintenance::MaintenanceRuntimeLock,
+) -> Result<MaintenanceStore> {
+    let options = runtime_lock.sqlite_connect_options(
+        &config.maintenance_database_path(),
+        maintenance_connect_options(config)?,
+    )?;
+    open_with_options(options).await
+}
+
+fn maintenance_connect_options(config: &AppConfig) -> Result<SqliteConnectOptions> {
     let database_path = config.maintenance_database_path();
     if let Some(parent) = database_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        std::fs::create_dir_all(parent)?;
     }
     let url = format!("sqlite://{}", database_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&url)?
+    Ok(SqliteConnectOptions::from_str(&url)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(2));
+        .busy_timeout(Duration::from_secs(2)))
+}
+
+async fn open_with_options(options: SqliteConnectOptions) -> Result<MaintenanceStore> {
     let pool = SqlitePoolOptions::new()
         .max_connections(3)
         .connect_with(options)

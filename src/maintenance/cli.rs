@@ -148,19 +148,23 @@ pub(crate) async fn run_owned_maintenance_cli(
         }
         MaintenanceRuntimeRoute::Offline(mut runtime_lock) => {
             runtime_lock.publish_role("cli:ownership-v1")?;
-            let pool = SqlitePoolOptions::new()
-                .max_connections(3)
-                .connect_with(build_sqlite_connect_options(
+            let options = runtime_lock.sqlite_connect_options(
+                &config.database_path,
+                build_sqlite_connect_options(
                     &config.database_url(),
                     Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
-                )?)
+                )?,
+            )?;
+            let pool = SqlitePoolOptions::new()
+                .max_connections(3)
+                .connect_with(options)
                 .await?;
             let mut maintenance_pool = None;
             let mut task_lease = None;
             let outcome = async {
                 ensure_schema(&pool).await?;
                 initialize_invocation_identity_cleanup_state(&pool).await?;
-                let store = crate::maintenance_store::open(config).await?;
+                let store = crate::maintenance_store::open_owned(config, &mut runtime_lock).await?;
                 runtime_lock.refresh_inode_pair_lock()?;
                 maintenance_pool = Some(store.pool.clone());
                 store.migrate_legacy_state(&pool).await?;

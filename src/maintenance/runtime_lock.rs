@@ -3,15 +3,45 @@ use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
+#[cfg(unix)]
+mod sqlite_vfs;
+
+struct RuntimeDatabaseFiles {
+    paths: Vec<PathBuf>,
+    files: Vec<File>,
+}
+
+impl RuntimeDatabaseFiles {
+    fn validate(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            for (path, file) in self.paths.iter().zip(&self.files) {
+                let held = file.metadata()?;
+                let current = std::fs::metadata(path)?;
+                anyhow::ensure!(
+                    held.nlink() == 1
+                        && current.nlink() == 1
+                        && (held.dev(), held.ino()) == (current.dev(), current.ino()),
+                    "maintenance unavailable: database path or journal ownership changed"
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Lock both physical database paths, so aliases or a partially shared data directory
 /// cannot establish independent writers. Lock files are stable and never unlinked.
 pub(crate) struct MaintenanceRuntimeLock {
     files: Vec<File>,
     // Database descriptors are lifetime-locked, but never receive protocol markers.
-    _database_files: Vec<File>,
+    database_files: Arc<RuntimeDatabaseFiles>,
     database_pair_id: String,
     pair_lock_count: usize,
+    inode_pair_id: Option<String>,
     database_paths: Vec<PathBuf>,
+    guarded_vfs: Option<String>,
 }
 
 pub(crate) enum MaintenanceRuntimeRoute {
@@ -149,10 +179,15 @@ impl MaintenanceRuntimeLock {
                 }
                 let mut owner = Self {
                     files,
-                    _database_files: database_files,
+                    database_files: Arc::new(RuntimeDatabaseFiles {
+                        paths: paths.clone(),
+                        files: database_files,
+                    }),
                     database_pair_id,
                     pair_lock_count,
+                    inode_pair_id,
                     database_paths: paths,
+                    guarded_vfs: None,
                 };
                 // Files and all identity locks exist before the caller may initialize SQLite.
                 owner.refresh_inode_pair_lock()?;
@@ -183,6 +218,7 @@ impl MaintenanceRuntimeLock {
     }
 
     pub(crate) fn publish_role(&mut self, role: &str) -> Result<()> {
+        self.database_files.validate()?;
         // Readiness belongs to the database pair, not merely to two busy files.
         let path_role = format!("{role}:{}", self.database_pair_id);
         let path_file_count = self.files.len() - self.pair_lock_count;
@@ -206,13 +242,12 @@ impl MaintenanceRuntimeLock {
         {
             use std::os::fd::AsRawFd;
             use std::os::unix::fs::MetadataExt;
-            if self.pair_lock_count > 1 {
-                return Ok(());
-            }
+            // Revalidate even when the inode-pair protocol lock already exists. Its
+            // name is no proof that the paths still resolve to our held descriptors.
+            self.database_files.validate()?;
             let mut inode_ids = Vec::with_capacity(self.database_paths.len());
-            for path in &self.database_paths {
-                let metadata = std::fs::metadata(path)
-                    .with_context(|| format!("database path is not ready: {}", path.display()))?;
+            for file in &self.database_files.files {
+                let metadata = file.metadata()?;
                 inode_ids.push((metadata.dev(), metadata.ino()));
             }
             inode_ids.sort_unstable();
@@ -222,6 +257,13 @@ impl MaintenanceRuntimeLock {
                 inode_hash.update(inode.to_be_bytes());
             }
             let inode_pair_id = format!("{:x}", inode_hash.finalize());
+            if let Some(acquired) = &self.inode_pair_id {
+                anyhow::ensure!(
+                    acquired == &inode_pair_id,
+                    "maintenance unavailable: database inode changed during lock acquisition"
+                );
+                return Ok(());
+            }
             let lock_path = std::env::temp_dir().join(format!(
                 "codex-vibe-monitor-runtime-inode-{inode_pair_id}.lock"
             ));
@@ -242,10 +284,42 @@ impl MaintenanceRuntimeLock {
             file.sync_data()?;
             self.files.push(file);
             self.pair_lock_count += 1;
+            self.inode_pair_id = Some(inode_pair_id);
         }
         Ok(())
     }
+
+    pub(crate) fn sqlite_connect_options(
+        &mut self,
+        path: &Path,
+        options: SqliteConnectOptions,
+    ) -> Result<SqliteConnectOptions> {
+        self.database_files.validate()?;
+        let normalized = normalized_database_path(path)?;
+        anyhow::ensure!(
+            self.database_paths.contains(&normalized),
+            "maintenance unavailable: database path is outside the runtime lease"
+        );
+        #[cfg(unix)]
+        {
+            if self.guarded_vfs.is_none() {
+                self.guarded_vfs = Some(sqlite_vfs::register(&self.database_files)?);
+            }
+            // Pin the canonical spelling, including for later pooled connections.
+            Ok(options
+                .filename(normalized)
+                .vfs(self.guarded_vfs.clone().expect("registered guarded VFS")))
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = options;
+            bail!("maintenance runtime locking is unavailable on this platform");
+        }
+    }
 }
+
+#[cfg(all(test, unix))]
+pub(crate) use sqlite_vfs::replace_during_next_open;
 
 impl Drop for MaintenanceRuntimeLock {
     fn drop(&mut self) {

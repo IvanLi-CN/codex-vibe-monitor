@@ -216,6 +216,7 @@ pub(crate) async fn run() -> Result<()> {
         &database_url,
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )?;
+    let connect_opts = runtime_lock.sqlite_connect_options(&config.database_path, connect_opts)?;
     let db_connect_started_at = Instant::now();
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -229,7 +230,7 @@ pub(crate) async fn run() -> Result<()> {
         let schema_started_at = Instant::now();
         ensure_schema(&pool).await?;
         initialize_invocation_identity_cleanup_state(&pool).await?;
-        let _maintenance_store = match crate::maintenance_store::open(&config).await {
+        let _maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
             Ok(store) => {
                 maintenance_pool = Some(store.pool.clone());
                 if let Err(error) = store.migrate_legacy_state(&pool).await {
