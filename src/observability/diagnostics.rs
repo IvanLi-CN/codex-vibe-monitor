@@ -10,6 +10,7 @@ const SPAN_LIMIT: usize = 64;
 const BYTE_LIMIT: usize = 64 * 1024;
 const WAIT_LIMIT: usize = 8;
 const ATTEMPT_LIMIT: usize = 8;
+const PHASE_INTERVAL_LIMIT: usize = 32;
 
 tokio::task_local! { static CURRENT: Option<DiagnosticContext>; }
 pub(crate) fn current() -> Option<DiagnosticContext> {
@@ -74,6 +75,33 @@ impl Resource {
         }
     }
 }
+const WAIT_COUNT_KEYS: [&str; 7] = [
+    "cvm.wait.sqlite_coordinator.count",
+    "cvm.wait.db_pool.count",
+    "cvm.wait.account_capacity.count",
+    "cvm.wait.retry_backoff.count",
+    "cvm.wait.downstream_channel.count",
+    "cvm.wait.terminal_priority.count",
+    "cvm.wait.journal_lock.count",
+];
+const WAIT_SUM_KEYS: [&str; 7] = [
+    "cvm.wait.sqlite_coordinator.sum_ms",
+    "cvm.wait.db_pool.sum_ms",
+    "cvm.wait.account_capacity.sum_ms",
+    "cvm.wait.retry_backoff.sum_ms",
+    "cvm.wait.downstream_channel.sum_ms",
+    "cvm.wait.terminal_priority.sum_ms",
+    "cvm.wait.journal_lock.sum_ms",
+];
+const WAIT_MAX_KEYS: [&str; 7] = [
+    "cvm.wait.sqlite_coordinator.max_ms",
+    "cvm.wait.db_pool.max_ms",
+    "cvm.wait.account_capacity.max_ms",
+    "cvm.wait.retry_backoff.max_ms",
+    "cvm.wait.downstream_channel.max_ms",
+    "cvm.wait.terminal_priority.max_ms",
+    "cvm.wait.journal_lock.max_ms",
+];
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Phase {
     RequestRead,
@@ -296,6 +324,13 @@ struct WaitInterval {
     end: Duration,
     lower_bound: bool,
 }
+#[derive(Clone, Copy)]
+struct PhaseInterval {
+    phase: Phase,
+    start: Duration,
+    end: Duration,
+    lower_bound: bool,
+}
 impl WaitInterval {
     fn duration(self) -> Duration {
         self.end.saturating_sub(self.start)
@@ -337,6 +372,7 @@ struct State {
     wait_union: IntervalUnion,
     phase_union: IntervalUnion,
     longest: Vec<WaitInterval>,
+    phases: Vec<PhaseInterval>,
     spans: usize,
     bytes: usize,
     truncated: bool,
@@ -422,6 +458,7 @@ impl DiagnosticContext {
                 wait_union: IntervalUnion::default(),
                 phase_union: IntervalUnion::default(),
                 longest: Vec::with_capacity(WAIT_LIMIT),
+                phases: Vec::with_capacity(PHASE_INTERVAL_LIMIT),
                 spans: 1,
                 bytes: 4096,
                 truncated: false,
@@ -455,7 +492,10 @@ impl DiagnosticContext {
             self.0.metric_handles.milestones[index].record(elapsed.as_secs_f64());
         }
     }
-    fn emit(&self, name: &'static str, start: Duration, end: Duration, attributes: Vec<KeyValue>) {
+    fn emit<I>(&self, name: &'static str, start: Duration, end: Duration, attributes: I)
+    where
+        I: IntoIterator<Item = KeyValue>,
+    {
         self.emit_linked(name, start, end, attributes, Vec::new());
     }
     pub(crate) fn reference_batch(&self, batch: Option<SpanContext>) {
@@ -478,7 +518,7 @@ impl DiagnosticContext {
         name: &'static str,
         start: Duration,
         end: Duration,
-        attributes: Vec<KeyValue>,
+        attributes: impl IntoIterator<Item = KeyValue>,
         links: Vec<opentelemetry::trace::Link>,
     ) {
         let Some(tracer) = self.0.traces.tracer.as_ref() else {
@@ -526,6 +566,7 @@ impl DiagnosticContext {
             mut root,
             waits,
             longest,
+            phases,
             wait_total,
             unattributed,
             attempts,
@@ -551,6 +592,7 @@ impl DiagnosticContext {
                 state.root.take(),
                 waits,
                 std::mem::take(&mut state.longest),
+                std::mem::take(&mut state.phases),
                 state.wait_union.at(at),
                 at.saturating_sub(state.phase_union.at(at)),
                 state.attempts,
@@ -593,20 +635,38 @@ impl DiagnosticContext {
                 self.0.metric_handles.wait_over_100ms[resource.index()].increment(1);
             }
         }
-        for interval in longest {
-            self.emit(
-                "cvm.resource.wait",
-                interval.start,
-                interval.end,
-                vec![
-                    KeyValue::new("cvm.resource", interval.resource.name()),
-                    KeyValue::new("cvm.lower_bound", interval.lower_bound),
-                    KeyValue::new("cvm.selected_interval", true),
-                ],
-            );
-        }
         if let Some(root) = root.as_mut() {
             let random_candidate = root.span_context().trace_id().to_bytes()[0] & 15 == 0;
+            let detailed = random_candidate
+                || outcome != "complete"
+                || attempts > 1
+                || wait_total >= Duration::from_millis(250)
+                || at >= Duration::from_secs(30);
+            if detailed {
+                for interval in phases {
+                    self.emit(
+                        interval.phase.name(),
+                        interval.start,
+                        interval.end,
+                        [
+                            KeyValue::new("cvm.phase", interval.phase.name()),
+                            KeyValue::new("cvm.lower_bound", interval.lower_bound),
+                        ],
+                    );
+                }
+                for interval in longest {
+                    self.emit(
+                        "cvm.resource.wait",
+                        interval.start,
+                        interval.end,
+                        [
+                            KeyValue::new("cvm.resource", interval.resource.name()),
+                            KeyValue::new("cvm.lower_bound", interval.lower_bound),
+                            KeyValue::new("cvm.selected_interval", true),
+                        ],
+                    );
+                }
+            }
             for kv in [
                 KeyValue::new("cvm.outcome", outcome),
                 KeyValue::new("cvm.status_class", status_class),
@@ -642,7 +702,10 @@ impl DiagnosticContext {
                         "not_applicable"
                     },
                 ),
-                KeyValue::new("cvm.export_completeness", "unknown"),
+                KeyValue::new(
+                    "cvm.export_completeness",
+                    if detailed { "detailed" } else { "summary" },
+                ),
             ] {
                 root.set_attribute(kv);
             }
@@ -657,15 +720,15 @@ impl DiagnosticContext {
             for resource in Resource::ALL {
                 let stats = waits[resource.index()];
                 root.set_attribute(KeyValue::new(
-                    format!("cvm.wait.{}.count", resource.name()),
+                    WAIT_COUNT_KEYS[resource.index()],
                     stats.count as i64,
                 ));
                 root.set_attribute(KeyValue::new(
-                    format!("cvm.wait.{}.sum_ms", resource.name()),
+                    WAIT_SUM_KEYS[resource.index()],
                     stats.sum.as_secs_f64() * 1000.0,
                 ));
                 root.set_attribute(KeyValue::new(
-                    format!("cvm.wait.{}.max_ms", resource.name()),
+                    WAIT_MAX_KEYS[resource.index()],
                     stats.max.as_secs_f64() * 1000.0,
                 ));
             }
@@ -773,6 +836,24 @@ impl Drop for Guard {
                 {
                     state.longest[index] = interval;
                 }
+            } else if self.detail && self.context.0.traces.tracer.is_some() {
+                if state.phases.len() < PHASE_INTERVAL_LIMIT {
+                    if let Kind::Phase(phase) = self.kind {
+                        state.phases.push(PhaseInterval {
+                            phase,
+                            start: self.start,
+                            end,
+                            lower_bound: !self.complete,
+                        });
+                    }
+                } else if !state.truncated {
+                    state.truncated = true;
+                    self.context.0.metrics.counter(
+                        "cvm_diagnostic_dropped_total",
+                        &[("reason", "phase_limit")],
+                        1,
+                    );
+                }
             }
         }
         drop(state);
@@ -796,12 +877,12 @@ impl Drop for Guard {
             }
             Kind::Phase(phase) => {
                 self.context.0.metric_handles.stages[phase.index()].record(duration.as_secs_f64());
-                if self.detail {
+                if self.detail && self.context.0.traces.tracer.is_some() {
                     self.context.emit(
                         phase.name(),
                         self.start,
                         end,
-                        vec![
+                        [
                             KeyValue::new("cvm.phase", phase.name()),
                             KeyValue::new("cvm.lower_bound", !self.complete),
                         ],
@@ -886,21 +967,23 @@ impl PersistenceTicket {
                 duration,
             );
         }
-        self.context.emit_linked(
-            "cvm.terminal.enqueue_to_commit",
-            self.start,
-            end,
-            vec![
-                KeyValue::new("cvm.record", "persistence"),
-                KeyValue::new("cvm.outcome", outcome),
-                KeyValue::new("cvm.shared_batch", shared_batch),
-                KeyValue::new("cvm.exclusive_cost", false),
-            ],
-            batch
-                .into_iter()
-                .map(opentelemetry::trace::Link::with_context)
-                .collect(),
-        );
+        if self.context.0.traces.tracer.is_some() {
+            self.context.emit_linked(
+                "cvm.terminal.enqueue_to_commit",
+                self.start,
+                end,
+                [
+                    KeyValue::new("cvm.record", "persistence"),
+                    KeyValue::new("cvm.outcome", outcome),
+                    KeyValue::new("cvm.shared_batch", shared_batch),
+                    KeyValue::new("cvm.exclusive_cost", false),
+                ],
+                batch
+                    .into_iter()
+                    .map(opentelemetry::trace::Link::with_context)
+                    .collect(),
+            );
+        }
     }
 }
 impl Drop for PersistenceTicket {
