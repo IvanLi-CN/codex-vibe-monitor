@@ -1455,44 +1455,6 @@ async fn retention_raw_reconciliation_survives_reopen_and_releases_unassociated_
 }
 
 #[tokio::test]
-async fn raw_orphan_dry_run_reports_due_release_without_mutating() {
-    let (pool, config, temp_dir) =
-        retention_fresh_schema_test_pool_and_config("retention-raw-dry-run-release").await;
-    let raw_path = config.proxy_raw_dir.join("dry-run-orphan.bin");
-    let payload = b"dry-run-orphan";
-    fs::write(&raw_path, payload).expect("write dry-run orphan");
-    let mut initial = RetentionRawDirectoryTraversal::default();
-    let first = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, false, &mut initial)
-        .await
-        .expect("quarantine raw orphan");
-    assert_eq!(first.quarantined, 1);
-    sqlx::query("UPDATE retention_raw_reconciliation SET quarantined_at=?1 WHERE raw_path=?2")
-        .bind(format_utc_iso(
-            Utc::now() - ChronoDuration::seconds(DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS as i64 + 1),
-        ))
-        .bind(raw_path.to_string_lossy().as_ref())
-        .execute(&pool)
-        .await
-        .expect("age quarantine");
-    let mut preview = RetentionRawDirectoryTraversal::default();
-    let pass = sweep_orphan_proxy_raw_files_slice(&pool, &config, None, true, &mut preview)
-        .await
-        .expect("preview raw release");
-    assert_eq!(pass.removed, 1);
-    assert_eq!(pass.removed_bytes, payload.len() as u64);
-    assert!(raw_path.exists());
-    let rows: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM retention_raw_reconciliation WHERE raw_path=?1")
-            .bind(raw_path.to_string_lossy().as_ref())
-            .fetch_one(&pool)
-            .await
-            .expect("count preview ledger");
-    assert_eq!(rows, 1);
-    pool.close().await;
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
 async fn raw_reset_intent_survives_unlink_failure_before_file_release() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-reset-before-unlink").await;

@@ -160,7 +160,7 @@ impl MaintenanceRuntimeLock {
         for file in &mut self.files[path_file_count..] {
             file.set_len(0)?;
             file.seek(SeekFrom::Start(0))?;
-            file.write_all(b"service:ownership-v1:ready")?;
+            file.write_all(role.as_bytes())?;
             file.sync_data()?;
         }
         Ok(())
@@ -174,12 +174,17 @@ impl MaintenanceRuntimeLock {
             if self.pair_lock_count > 1 {
                 return Ok(());
             }
-            let mut inode_hash = Sha256::new();
+            let mut inode_ids = Vec::with_capacity(self.database_paths.len());
             for path in &self.database_paths {
                 let metadata = std::fs::metadata(path)
                     .with_context(|| format!("database path is not ready: {}", path.display()))?;
-                inode_hash.update(metadata.dev().to_be_bytes());
-                inode_hash.update(metadata.ino().to_be_bytes());
+                inode_ids.push((metadata.dev(), metadata.ino()));
+            }
+            inode_ids.sort_unstable();
+            let mut inode_hash = Sha256::new();
+            for (device, inode) in inode_ids {
+                inode_hash.update(device.to_be_bytes());
+                inode_hash.update(inode.to_be_bytes());
             }
             let inode_pair_id = format!("{:x}", inode_hash.finalize());
             let lock_path = std::env::temp_dir().join(format!(
@@ -187,7 +192,7 @@ impl MaintenanceRuntimeLock {
             ));
             let mut name = lock_path.as_os_str().to_os_string();
             name.push(".runtime.lock");
-            let mut file = OpenOptions::new()
+            let file = OpenOptions::new()
                 .create(true)
                 .truncate(false)
                 .read(true)
@@ -197,8 +202,8 @@ impl MaintenanceRuntimeLock {
                 return Err(std::io::Error::last_os_error().into());
             }
             file.set_len(0)?;
-            file.seek(SeekFrom::Start(0))?;
-            file.write_all(b"service:ownership-v1:ready")?;
+            // The new identity lock is unavailable until the caller publishes its role.
+            // Acquiring it must not advertise an initializing service or offline CLI as ready.
             file.sync_data()?;
             self.files.push(file);
             self.pair_lock_count += 1;

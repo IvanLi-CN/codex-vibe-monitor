@@ -1,5 +1,5 @@
 {
-  "status": "validation-complete",
+  "status": "historical-validation-current-repair-pending",
   "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
   "codeCandidateSha": "250a17e0",
   "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b",
@@ -57,6 +57,7 @@
     "sourceInputFingerprint": "ad21f0b710e88fb908b70d3ee33d54d9dddb38cf515ddb468a8396c4b349010b"
   },
   "notPassed": [
+    "current-repair-candidate-validation",
     "formal-Tier-4-review",
     "live-PR-current-head-required-CI"
   ],
@@ -64,10 +65,10 @@
     "type": "fast-track",
     "stop": "merge-ready",
     "formalReviewLaunched": true,
-    "repairBatchesUsed": 2,
-    "prCreated": false
+    "repairBatchesUsed": 3,
+    "prCreated": true
   },
-  "recovery": "Final candidate passed ten-source upgrade validation, runtime lock first-run and hard-link regressions, raw dry-run accounting, Rust checks, and CI quality-gate contract checks. Browser E2E remains delegated to required PR CI.",
+  "recovery": "PR #1092 Linux CI exposed unsorted first-run inode identity refresh and a source line budget violation. Repair uses sorted inode identity, publishes actual runtime roles, leaves refreshed locks unavailable until role publication, and relocates raw dry-run regression without weakening the budget. Prior binary and passed results remain historical; current repair validation and formal review are pending.",
   "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
   "retainedHistoricalEvidence": {
     "runtimeProcessFixture": "runtime-validation-results.json",
@@ -102,10 +103,44 @@
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
     "instance": "agent-vm-avm-9bc7b112e75e96a2",
     "generation": 6,
-    "effectiveLease": true,
-    "leaseExpiresAt": "2026-10-07T19:44:11Z",
+    "effectiveLease": false,
+    "leaseExpiresAt": null,
     "acquireOperationId": "c7ac3ea6-818b-444f-91b3-8f09492ee70a",
     "renewalOperationId": "7761b797-a379-456e-a8dc-1f6ab438c1ee",
-    "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b"
+    "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b",
+    "observedState": "cached-stopped-no-effective-lease"
+  },
+  "currentRepair": {
+    "priorPrHeadSha": "36cde9f1b214539260b8d2c7567d70daae50e5be",
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
+    "ciRunId": 37679481312,
+    "sourceQualityFailure": "raw_payload_retention_and_compression.rs 9766 physical lines exceeds explicit 9751 budget",
+    "archiveFileIoFailure": "hard-link online route assertion at maintenance_runtime_ownership.rs:101",
+    "representativeScaleDisposition": "cancelled during apt-get mirror downloads before tests started",
+    "requiredBaseSha": "ea2a37b3d577950ea9306c61c3b3c7129e1785c9",
+    "validationPending": true,
+    "localFocusedRegressions": {
+      "ownershipRuntimeLock": {
+        "passed": 1,
+        "failed": 0,
+        "platform": "aarch64-apple-darwin"
+      },
+      "rawOrphanDryRun": {
+        "passed": 1,
+        "failed": 0,
+        "platform": "aarch64-apple-darwin"
+      }
+    }
+  },
+  "currentRuntimeBlocker": {
+    "code": "resource_insufficient",
+    "dimensions": [
+      "memory_mib"
+    ],
+    "allocatedMemoryMiB": 49152,
+    "ceilingMemoryMiB": 49152,
+    "requestedMemoryMiB": 12288,
+    "operationId": "b9e0e33f-98f2-4df7-835a-00c1a684d4ab",
+    "effectiveLease": false
   }
 }

@@ -26,7 +26,9 @@ fn ownership_runtime_lock_child_fixture() {
     else {
         panic!("child must own the runtime");
     };
-    owner.publish_role("service:ownership-v1:ready").unwrap();
+    owner
+        .publish_role("service:ownership-v1:initializing")
+        .unwrap();
     fs::write(&config.database_path, b"business").unwrap();
     fs::write(config.maintenance_database_path(), b"maintenance").unwrap();
     owner.refresh_inode_pair_lock().unwrap();
@@ -135,12 +137,27 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     drop(other);
     child.0.kill().unwrap();
     child.0.wait().unwrap();
-    let route = crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap();
+    let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut recovered) =
+        crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap()
+    else {
+        panic!("dead service must release the runtime");
+    };
+    unsafe { std::env::set_var("MAINTENANCE_DATABASE_PATH", &hard_maintenance) };
+    recovered
+        .publish_role("service:ownership-v1:initializing")
+        .unwrap();
+    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err());
+    recovered.publish_role("cli:ownership-v1").unwrap();
+    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err());
+    recovered
+        .publish_role("service:ownership-v1:ready")
+        .unwrap();
     assert!(matches!(
-        route,
-        crate::maintenance::MaintenanceRuntimeRoute::Offline(_)
+        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).unwrap(),
+        crate::maintenance::MaintenanceRuntimeRoute::Online
     ));
-    drop(route);
+    unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
+    drop(recovered);
     assert!(directory.join("business.sqlite.runtime.lock").exists());
     cleanup_temp_test_dir(&directory);
 }
