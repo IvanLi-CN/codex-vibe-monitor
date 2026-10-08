@@ -4038,6 +4038,20 @@ interface DashboardWorkingConversationAnchorCardElement extends HTMLElement {
   __dashboardWorkingConversationAnchorKey?: string;
 }
 
+function buildDashboardWorkingConversationCardIdentity(
+  promptCacheKey: string,
+  conversationId: string,
+) {
+  return JSON.stringify([promptCacheKey, conversationId]);
+}
+
+function buildDashboardWorkingConversationCardAnchorKey(
+  promptCacheKey: string,
+  occurrence: number,
+) {
+  return JSON.stringify([promptCacheKey, occurrence]);
+}
+
 type DashboardVisibleAnchorKind = "conversation" | "upstreamAccount";
 
 interface DashboardVisibleAnchorTarget {
@@ -4708,6 +4722,19 @@ export function DashboardWorkingConversationsSection({
       ),
     [cards, conversationSort],
   );
+  const cardAnchorKeys = useMemo(() => {
+    const occurrences = new Map<string, number>();
+    const keys = new Map<DashboardWorkingConversationCardModel, string>();
+    for (const card of sortedCards) {
+      const occurrence = occurrences.get(card.promptCacheKey) ?? 0;
+      occurrences.set(card.promptCacheKey, occurrence + 1);
+      keys.set(
+        card,
+        buildDashboardWorkingConversationCardAnchorKey(card.promptCacheKey, occurrence),
+      );
+    }
+    return keys;
+  }, [sortedCards]);
   const rows = useMemo(
     () => chunkDashboardWorkingConversationRows(sortedCards, columnCount),
     [columnCount, sortedCards],
@@ -5826,6 +5853,11 @@ export function DashboardWorkingConversationsSection({
                           card.currentInvocation.tone,
                           card.currentInvocation.displayStatus,
                         );
+                        const cardIdentity = buildDashboardWorkingConversationCardIdentity(
+                          card.promptCacheKey,
+                          card.conversationId,
+                        );
+                        const cardAnchorKey = cardAnchorKeys.get(card) ?? cardIdentity;
                         const isCardSelected = selectedPromptCacheKeySet.has(card.promptCacheKey);
                         const displayConversationId = card.conversationId;
                         const currentStatusLabel = currentStatusMeta.labelKey
@@ -5846,12 +5878,12 @@ export function DashboardWorkingConversationsSection({
 
                         return (
                           <article
-                            key={card.promptCacheKey}
+                            key={cardIdentity}
                             ref={(node) => {
                               if (!node) return;
                               (
                                 node as DashboardWorkingConversationAnchorCardElement
-                              ).__dashboardWorkingConversationAnchorKey = card.promptCacheKey;
+                              ).__dashboardWorkingConversationAnchorKey = cardAnchorKey;
                             }}
                             data-testid="dashboard-working-conversation-card"
                             data-conversation-id={displayConversationId}

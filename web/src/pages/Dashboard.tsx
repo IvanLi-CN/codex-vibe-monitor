@@ -104,10 +104,20 @@ export default function DashboardPage() {
       setSelectedConversation(null);
       return;
     }
-    setSelectedConversation((current) =>
-      current?.key === promptCacheConversationKey ? current : null,
+    const conversationIds = new Set(
+      cards
+        .filter((card) => card.promptCacheKey === promptCacheConversationKey)
+        .map((card) => card.conversationId.trim())
+        .filter(Boolean),
     );
-  }, [promptCacheConversationKey]);
+    const conversationLabel =
+      conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
+    setSelectedConversation((current) => {
+      if (current?.key !== promptCacheConversationKey) return null;
+      if (current.label === conversationLabel) return current;
+      return { key: promptCacheConversationKey, label: conversationLabel };
+    });
+  }, [cards, promptCacheConversationKey]);
 
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();

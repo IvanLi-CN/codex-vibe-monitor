@@ -619,7 +619,11 @@ describe("DashboardInvocationDetailDrawer", () => {
     });
     await flushAsyncWork();
 
-    expect(document.body.textContent ?? "").not.toContain("conversation-first");
+    const drawerText = document.body.textContent ?? "";
+    expect(drawerText).toContain("conversation-second");
+    expect(drawerText).toContain("invoke-drawer-second");
+    expect(drawerText).not.toContain("conversation-first");
+    expect(drawerText).not.toContain("invoke-drawer-first");
   });
 
   it("renders interrupted status with the dedicated recovery badge", async () => {

@@ -2702,6 +2702,77 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
+  it("keeps duplicate prompt cache cards distinct when their order changes", () => {
+    const initialResponse = createResponse([
+      createConversation(
+        "pck-duplicate-card",
+        [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-duplicate-a",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ],
+        { conversationId: "conv-duplicate-a" },
+      ),
+      createConversation(
+        "pck-duplicate-card",
+        [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-duplicate-b",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "running",
+          }),
+        ],
+        { conversationId: "conv-duplicate-b" },
+      ),
+    ]);
+
+    renderSection(initialResponse);
+
+    const readCardConversationIds = () =>
+      Array.from(
+        host?.querySelectorAll<HTMLElement>(
+          '[data-testid="dashboard-working-conversation-card"]',
+        ) ?? [],
+      ).map((card) => card.getAttribute("data-conversation-id"));
+
+    expect(readCardConversationIds()).toEqual(["conv-duplicate-a", "conv-duplicate-b"]);
+
+    rerenderSection(
+      createResponse([
+        createConversation(
+          "pck-duplicate-card",
+          [
+            createPreview({
+              id: 3,
+              invokeId: "invoke-duplicate-a",
+              occurredAt: "2026-04-04T10:03:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-a" },
+        ),
+        createConversation(
+          "pck-duplicate-card",
+          [
+            createPreview({
+              id: 4,
+              invokeId: "invoke-duplicate-b",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-b" },
+        ),
+      ]),
+    );
+
+    expect(readCardConversationIds()).toEqual(["conv-duplicate-b", "conv-duplicate-a"]);
+  });
+
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
     upstreamAccountActivityMock.data = {
       range: "today",

@@ -468,6 +468,17 @@ function render(ui: React.ReactNode, initialEntry = "/dashboard") {
   });
 }
 
+function rerender(ui: React.ReactNode, initialEntry = "/dashboard") {
+  act(() => {
+    root?.render(
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <LocationProbe />
+        {ui}
+      </MemoryRouter>,
+    );
+  });
+}
+
 function installSnapshotRuntimeMock() {
   hookMocks.useDashboardOverviewSnapshotRuntime.mockReturnValue({
     status: {
@@ -1151,6 +1162,45 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
     ).toBe("99");
+  });
+
+  it("refreshes the conversation drawer label when the persisted id changes for the same key", () => {
+    installSummaryMocks();
+    const initialCard = createWorkingConversationCard();
+    const updatedCard = { ...initialCard, conversationId: "EFGH34" };
+    let currentCards = [initialCard];
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />);
+
+    const openConversationButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation"]',
+    );
+    if (!(openConversationButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation trigger");
+    }
+    act(() => {
+      openConversationButton.click();
+    });
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+
+    currentCards = [updatedCard];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("EFGH34");
   });
 
   it("opens the shared drawer on the routing tab and keeps the tab in the URL", () => {
