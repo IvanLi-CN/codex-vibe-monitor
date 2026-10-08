@@ -201,8 +201,13 @@ impl ObservabilityRuntime {
             .clone()
     }
     fn http_inflight(&self) -> &metrics::Gauge {
-        self.http_inflight
-            .get_or_init(|| self.register_gauge(Key::from_name("cvm_http_inflight")))
+        self.http_inflight.get_or_init(|| {
+            if self.enabled {
+                self.register_gauge(Key::from_name("cvm_http_inflight"))
+            } else {
+                metrics::Gauge::noop()
+            }
+        })
     }
     fn http_metrics(
         &self,

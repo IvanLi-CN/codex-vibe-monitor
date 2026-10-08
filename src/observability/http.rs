@@ -112,18 +112,26 @@ impl HttpMetricHandles {
     }
     fn header_duration(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
         self.header_duration.get_or_init(|| {
-            metrics.register_histogram(ObservabilityRuntime::key(
-                "cvm_http_header_duration_seconds",
-                &[("route", self.route), ("method", self.method)],
-            ))
+            if metrics.enabled {
+                metrics.register_histogram(ObservabilityRuntime::key(
+                    "cvm_http_header_duration_seconds",
+                    &[("route", self.route), ("method", self.method)],
+                ))
+            } else {
+                metrics::Histogram::noop()
+            }
         })
     }
     fn body_duration(&self, metrics: &ObservabilityRuntime) -> &metrics::Histogram {
         self.body_duration.get_or_init(|| {
-            metrics.register_histogram(ObservabilityRuntime::key(
-                "cvm_http_body_duration_seconds",
-                &[("route", self.route), ("method", self.method)],
-            ))
+            if metrics.enabled {
+                metrics.register_histogram(ObservabilityRuntime::key(
+                    "cvm_http_body_duration_seconds",
+                    &[("route", self.route), ("method", self.method)],
+                ))
+            } else {
+                metrics::Histogram::noop()
+            }
         })
     }
     fn request(
@@ -136,14 +144,18 @@ impl HttpMetricHandles {
             .position(|candidate| *candidate == status_class)
             .map(|index| {
                 self.requests[index].get_or_init(|| {
-                    metrics.register_counter(ObservabilityRuntime::key(
-                        "cvm_http_requests_total",
-                        &[
-                            ("route", self.route),
-                            ("method", self.method),
-                            ("status_class", status_class),
-                        ],
-                    ))
+                    if metrics.enabled {
+                        metrics.register_counter(ObservabilityRuntime::key(
+                            "cvm_http_requests_total",
+                            &[
+                                ("route", self.route),
+                                ("method", self.method),
+                                ("status_class", status_class),
+                            ],
+                        ))
+                    } else {
+                        metrics::Counter::noop()
+                    }
                 })
             })
     }
@@ -157,10 +169,14 @@ impl HttpMetricHandles {
             .position(|candidate| *candidate == outcome)
             .map(|index| {
                 self.body_ends[index].get_or_init(|| {
-                    metrics.register_counter(ObservabilityRuntime::key(
-                        "cvm_http_body_ends_total",
-                        &[("route", self.route), ("outcome", outcome)],
-                    ))
+                    if metrics.enabled {
+                        metrics.register_counter(ObservabilityRuntime::key(
+                            "cvm_http_body_ends_total",
+                            &[("route", self.route), ("outcome", outcome)],
+                        ))
+                    } else {
+                        metrics::Counter::noop()
+                    }
                 })
             })
     }
