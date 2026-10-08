@@ -10,6 +10,7 @@ struct RuntimeDatabaseFiles {
     paths: Vec<PathBuf>,
     files: Vec<File>,
     online_ready: Option<std::sync::Mutex<Vec<(PathBuf, File, String)>>>,
+    sqlite_sidecars: std::sync::Mutex<std::collections::HashMap<PathBuf, (u64, u64)>>,
 }
 
 impl RuntimeDatabaseFiles {
@@ -59,6 +60,19 @@ impl RuntimeDatabaseFiles {
                     );
                 }
             }
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    fn validate_file_identity(&self, path: &Path, expected: Option<(u64, u64)>) -> Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        if let Some(expected) = expected {
+            let current = std::fs::metadata(path)?;
+            anyhow::ensure!(
+                (current.dev(), current.ino()) == expected,
+                "maintenance unavailable: SQLite file identity changed"
+            );
         }
         Ok(())
     }
@@ -195,6 +209,10 @@ impl MaintenanceRuntimeLock {
                     .open(PathBuf::from(&name))?;
                 // SAFETY: flock receives an owned, live file descriptor and valid operation flags.
                 if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+                    // A crashed owner may leave a ready marker. Revoke it on
+                    // each acquisition, before the remaining locks can be busy.
+                    file.set_len(0)?;
+                    file.sync_data()?;
                     files.push(file);
                 } else {
                     let error = std::io::Error::last_os_error();
@@ -238,6 +256,7 @@ impl MaintenanceRuntimeLock {
                         paths: paths.clone(),
                         files: database_files,
                         online_ready: None,
+                        sqlite_sidecars: std::sync::Mutex::default(),
                     }),
                     database_pair_id,
                     pair_lock_count,
@@ -289,6 +308,7 @@ impl MaintenanceRuntimeLock {
                         paths,
                         files: database_files,
                         online_ready: Some(std::sync::Mutex::new(busy_files)),
+                        sqlite_sidecars: std::sync::Mutex::default(),
                     }),
                     guarded_vfs: None,
                 };

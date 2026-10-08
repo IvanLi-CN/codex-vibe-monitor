@@ -1572,14 +1572,24 @@ async fn open_with_options(options: SqliteConnectOptions) -> Result<MaintenanceS
         .max_connections(3)
         .connect_with(options)
         .await?;
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&pool)
-        .await?;
-    ensure_schema(&pool).await?;
-    record_prompt_cache_materialization_control_origin(&pool).await?;
-    seed_tasks(&pool).await?;
-    ensure_task_colors(&pool).await?;
-    Ok(MaintenanceStore::from_pool(pool))
+    let outcome = async {
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+        ensure_schema(&pool).await?;
+        record_prompt_cache_materialization_control_origin(&pool).await?;
+        seed_tasks(&pool).await?;
+        ensure_task_colors(&pool).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match outcome {
+        Ok(()) => Ok(MaintenanceStore::from_pool(pool)),
+        Err(error) => {
+            pool.close().await;
+            Err(error)
+        }
+    }
 }
 
 /// Online maintenance clients may only connect to an initialized observation store.

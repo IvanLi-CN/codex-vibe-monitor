@@ -147,10 +147,17 @@ async fn ownership_runtime_sqlite_open_guards_new_pool_connections_and_lease_end
         .connect_with(options.clone())
         .await
         .unwrap();
-    let original = pool.acquire().await.unwrap();
+    let mut original = pool.acquire().await.unwrap();
     let displaced = directory.join("displaced.sqlite");
     fs::rename(&config.database_path, &displaced).unwrap();
     fs::write(&config.database_path, b"").unwrap();
+    assert!(
+        sqlx::query("CREATE TABLE replaced_connection_guard (id INTEGER)")
+            .execute(&mut *original)
+            .await
+            .is_err(),
+        "an already-open connection must fail closed after its database path is replaced"
+    );
     assert!(
         SqliteConnection::connect_with(&pool.connect_options())
             .await
@@ -407,6 +414,10 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     };
     let mut canonical_config = config.clone();
     canonical_config.database_path = alias.join("..").join("business.sqlite");
+    assert!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&canonical_config, true).is_err(),
+        "a new offline owner must clear a crashed service's ready markers before returning"
+    );
     recovered
         .publish_role("service:ownership-v1:initializing")
         .unwrap();

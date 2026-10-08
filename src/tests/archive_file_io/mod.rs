@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod archive_backfill_and_materialization;
 mod gpt6_cache_write_migration;
+mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
 mod prompt_cache_control_file_lock;
 mod raw_compression_budget;

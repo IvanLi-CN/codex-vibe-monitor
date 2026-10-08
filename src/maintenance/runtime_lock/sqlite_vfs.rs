@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
+mod io_guard;
+
 struct Registration {
     base: usize,
     proof: Weak<RuntimeDatabaseFiles>,
@@ -52,7 +54,7 @@ pub(super) fn register(proof: &Arc<RuntimeDatabaseFiles>) -> Result<String> {
         );
         let wrapper = Box::new(ffi::sqlite3_vfs {
             iVersion: (*base).iVersion,
-            szOsFile: (*base).szOsFile,
+            szOsFile: std::mem::size_of::<io_guard::GuardedFile>() as c_int,
             mxPathname: (*base).mxPathname,
             // SQLite mutates this list link during concurrent registration. Read
             // only the original VFS's immutable ABI fields, never copy pNext.
@@ -60,7 +62,7 @@ pub(super) fn register(proof: &Arc<RuntimeDatabaseFiles>) -> Result<String> {
             zName: CString::new(name.clone())?.into_raw(),
             pAppData: (*base).pAppData,
             xOpen: Some(open),
-            xDelete: (*base).xDelete,
+            xDelete: Some(delete),
             xAccess: (*base).xAccess,
             xFullPathname: Some(full_pathname),
             xDlOpen: (*base).xDlOpen,
@@ -105,6 +107,48 @@ unsafe fn filename(name: *const c_char) -> Option<PathBuf> {
     // SAFETY: the SQLite callback supplies a live, NUL-terminated filename.
     let bytes = unsafe { CStr::from_ptr(name) }.to_bytes();
     Some(Path::new(std::ffi::OsStr::from_bytes(bytes)).to_path_buf())
+}
+
+fn owned_sidecar(proof: &RuntimeDatabaseFiles, path: &Path) -> bool {
+    proof.paths.iter().any(|database| {
+        ["-wal", "-journal"].iter().any(|suffix| {
+            let mut name = database.as_os_str().to_os_string();
+            name.push(suffix);
+            path == Path::new(&name)
+        })
+    })
+}
+
+unsafe extern "C" fn delete(vfs: *mut ffi::sqlite3_vfs, name: *const c_char, sync: c_int) -> c_int {
+    let Some((base, proof)) = registration(vfs) else {
+        return ffi::SQLITE_IOERR_DELETE;
+    };
+    if proof.validate().is_err() {
+        return ffi::SQLITE_IOERR_DELETE;
+    }
+    let path = unsafe { filename(name) };
+    let Ok(mut sidecars) = proof.sqlite_sidecars.lock() else {
+        return ffi::SQLITE_IOERR_DELETE;
+    };
+    if let Some(path) = &path
+        && let Some(identity) = sidecars.get(path)
+        && proof.validate_file_identity(path, Some(*identity)).is_err()
+    {
+        return ffi::SQLITE_IOERR_DELETE;
+    }
+    unsafe {
+        let base = base as *mut ffi::sqlite3_vfs;
+        let rc = (*base)
+            .xDelete
+            .map(|delete| delete(base, name, sync))
+            .unwrap_or(ffi::SQLITE_IOERR_DELETE);
+        if rc == ffi::SQLITE_OK
+            && let Some(path) = path
+        {
+            sidecars.remove(&path);
+        }
+        rc
+    }
 }
 
 unsafe extern "C" fn full_pathname(
@@ -155,13 +199,24 @@ unsafe extern "C" fn open(
     if proof.validate().is_err() {
         return ffi::SQLITE_CANTOPEN;
     }
+    if let Some(path) = unsafe { filename(name) }
+        && owned_sidecar(&proof, &path)
+    {
+        let Ok(sidecars) = proof.sqlite_sidecars.lock() else {
+            return ffi::SQLITE_CANTOPEN;
+        };
+        if let Some(identity) = sidecars.get(&path)
+            && proof
+                .validate_file_identity(&path, Some(*identity))
+                .is_err()
+        {
+            return ffi::SQLITE_CANTOPEN;
+        }
+    }
     // SAFETY: SQLite allocates the original VFS's szOsFile; the delegated open
     // initializes its methods. On guard failure close once and clear pMethods.
     unsafe {
         let base = base as *mut ffi::sqlite3_vfs;
-        let Some(callback) = (*base).xOpen else {
-            return ffi::SQLITE_CANTOPEN;
-        };
         // The test seam swaps only this test's file around the native open, then
         // restores the original path so metadata checks alone cannot catch it.
         #[cfg(test)]
@@ -186,7 +241,7 @@ unsafe extern "C" fn open(
         {
             return ffi::SQLITE_CANTOPEN;
         }
-        let rc = callback(base, name, file, flags, output_flags);
+        let rc = io_guard::wrap_open(base, &proof, name, file, flags, output_flags);
         #[cfg(test)]
         let restored = replacement.as_ref().zip(displaced.as_ref()).is_none_or(
             |((path, replacement), displaced)| {
@@ -202,12 +257,13 @@ unsafe extern "C" fn open(
             && filename(name).is_some_and(|path| proof.paths.contains(&path));
         let valid = if guarded {
             let mut moved: c_int = 1;
-            (*(*file).pMethods)
+            let native = io_guard::native(file);
+            (*(*native).pMethods)
                 .xFileControl
                 .context("Unix SQLite file identity control unavailable")
                 .map(|control| {
                     control(
-                        file,
+                        native,
                         ffi::SQLITE_FCNTL_HAS_MOVED,
                         (&mut moved as *mut c_int).cast(),
                     ) == ffi::SQLITE_OK
