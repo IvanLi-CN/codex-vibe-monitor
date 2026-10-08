@@ -155,6 +155,7 @@ export const SingleSample: Story = {
     if (!marker) throw new Error("Single-sample chart marker is missing");
     await expect(marker).toHaveAttribute("vector-effect", "non-scaling-stroke");
     await expect(marker).toHaveAttribute("stroke-linecap", "round");
+    await expect(marker).toHaveAttribute("stroke-width", "4");
   },
 };
 

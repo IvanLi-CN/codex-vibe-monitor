@@ -582,7 +582,7 @@ export function TaskWorkloadSparkline({
                   d={`M ${point.x.toFixed(2)},${point.y.toFixed(2)} h ${markerDelta.toFixed(2)}`}
                   fill="none"
                   stroke={color}
-                  strokeWidth={backgroundMode ? 2.6 : 4}
+                  strokeWidth={backgroundMode ? 3.4 : 4}
                   strokeLinecap="round"
                   vectorEffect="non-scaling-stroke"
                 />
