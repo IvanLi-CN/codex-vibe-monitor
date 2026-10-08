@@ -20,7 +20,7 @@ function StorySurface({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Account Pool/Pages/Upstream Account Create/Mailbox Chip",
+  title: "Account Pool/Components/OAuth Mailbox Chip",
   component: OauthMailboxChip,
   tags: ["autodocs"],
   decorators: [
