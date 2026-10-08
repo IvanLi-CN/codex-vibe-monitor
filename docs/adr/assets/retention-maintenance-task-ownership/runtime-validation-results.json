@@ -1,34 +1,10 @@
 {
-  "candidateSha256": "80b34c95026bd893e1bdb8f7b6ee2924b3509408331820a2ddee9bb53d8ff051",
+  "candidateSha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
   "source": {
-    "tag": "v4.1.2",
-    "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.2",
-    "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:e214af13f85b0e5888f0686de6b923972fda44cef01b1c2c1ff1f008131ea834",
+    "tag": "v4.2.2",
+    "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.2.2",
+    "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:001c9b1a06167fde31594f278c8f5049821a9a97750f6f902148b1657710a823",
     "generator": "released maintenance verify-archive-storage --dry-run",
-    "command": [
-      "docker",
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "-v",
-      "/workspace/worktrees/retention-ownership/release-fixtures/v4.1.2:/fixture",
-      "-e",
-      "DATABASE_PATH=/fixture/business.sqlite",
-      "-e",
-      "MAINTENANCE_DATABASE_PATH=/fixture/maintenance.sqlite",
-      "-e",
-      "ARCHIVE_DIR=/fixture/archives",
-      "-e",
-      "PROXY_RAW_DIR=/fixture/raw",
-      "-e",
-      "RETENTION_ENABLED=false",
-      "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.2",
-      "codex-vibe-monitor",
-      "maintenance",
-      "verify-archive-storage",
-      "--dry-run"
-    ],
     "exitCode": 0
   },
   "status": "passed",
@@ -41,5 +17,8 @@
     "no-startup-recovery",
     "no-manual-continuation",
     "graceful-lock-release"
-  ]
+  ],
+  "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
+  "codeCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
+  "binaryLocalPath": ".codex/evidence/retention-maintenance/repair3/candidate-repair3"
 }

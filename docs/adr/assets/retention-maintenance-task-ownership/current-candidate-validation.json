@@ -1,255 +1,251 @@
 {
-  "status": "historical-validation-current-repair-pending",
-  "baseSha": "ac9bdfda97c79c666448db2b38eb6131d2c92d15",
-  "codeCandidateSha": "cc2e6c433e967577a0449e92bbe5771ccd26f02c",
-  "candidateBinarySha256": null,
-  "passed": {
-    "webUnit": {
-      "files": 179,
-      "passed": 1838,
-      "skipped": 6
-    },
-    "webTypecheck": true,
-    "webLint": true,
-    "webBuild": true,
-    "rustSourceQuality": true,
-    "ownerConfirmedVisualAssets": 6,
-    "sourceInputFingerprint": "c27f83124cd0a41a0d480dd23ce7b38966a9a9eb2767ef8f87e40121fa37faf9",
-    "storybook": {
-      "files": 3,
-      "passed": 72
-    },
-    "playwright": {
-      "passed": 12
-    },
-    "backendProfiles": {
-      "lightweight": {
-        "passed": 1302,
-        "failed": 0,
-        "profileSeconds": 402,
-        "testSeconds": 381.123
-      }
-    },
-    "backendTestContract": true
-  },
-  "notPassed": [
-    "current-repair-candidate-validation",
-    "formal-Tier-4-review",
-    "live-PR-current-head-required-CI"
-  ],
+  "schemaVersion": 1,
+  "status": "local-validation-passed-formal-review-and-live-ci-pending",
+  "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
+  "codeCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
+  "sourceRustTree": "ba4ac3afd3e0986586a3aa84c4b38d2a08d44cb8",
+  "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
+  "sourceInputFingerprint": "3cbe33e7af8e6bcf5b7a7346f7a172eaef97d54f59386507cb42a3d50da2613b",
+  "sourceInputCount": 260,
+  "candidateBinarySha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "formalReviewLaunched": true,
     "repairBatchesUsed": 3,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
-  "recovery": "PR #1092 Linux CI exposed unsorted first-run inode identity refresh and a source line budget violation. Repair uses sorted inode identity, publishes actual runtime roles, leaves refreshed locks unavailable until role publication, and relocates raw dry-run regression without weakening the budget. Prior binary and passed results remain historical; current repair validation and formal review are pending.",
-  "priorPassedCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
-  "retainedHistoricalEvidence": {
-    "runtimeProcessFixture": "runtime-validation-results.json",
-    "releasedStateUpgradeAtEarlierCandidate": "released-state-upgrade-results.json",
-    "finalCandidateCompletedSourcesBeforeRetrieval": [
-      "v4.0.0",
-      "v4.0.1",
-      "v4.0.2"
+  "passed": {
+    "rustSourceQuality": true,
+    "qualityGatesContract": true,
+    "backendTestContract": true,
+    "rustFmt": true,
+    "ownerConfirmedVisualAssets": 6,
+    "backendProfiles": {
+      "lightweight": {
+        "passed": 1302,
+        "failed": 0,
+        "testSeconds": 381.123,
+        "profileSeconds": 402
+      },
+      "statefulSqlite": {
+        "passed": 1457,
+        "failed": 0,
+        "testSeconds": 300.533,
+        "profileSeconds": 311
+      },
+      "archiveFileIo": {
+        "passed": 329,
+        "failed": 0,
+        "testSeconds": 156.419,
+        "profileSeconds": 172
+      }
+    },
+    "linuxRuntimeLockRegression": true,
+    "linuxRawDryRunReleaseAccounting": true,
+    "archiveRepairFocused": {
+      "passed": 3,
+      "failed": 0
+    },
+    "rustCheckAllTargetsAllFeatures": true,
+    "rustClippyAllTargetsAllFeatures": true,
+    "webTypecheck": true,
+    "webLint": true,
+    "webLintDiagnostics": {
+      "errors": 0,
+      "warnings": 92,
+      "exitCode": 0
+    },
+    "productionLinuxBuild": true,
+    "webUnit": {
+      "files": 179,
+      "passed": 1838,
+      "skipped": 6,
+      "seconds": 173.18
+    },
+    "webBuild": true,
+    "storybook": {
+      "files": 3,
+      "passed": 14,
+      "seconds": 14.98
+    },
+    "runtimeProcessFixture": true,
+    "releasedSources": 14,
+    "playwright": {
+      "passed": 12,
+      "failed": 0,
+      "workers": 1,
+      "retries": 0
+    }
+  },
+  "backendEvidenceBinding": {
+    "priorRustTree": "95af4b60a35ba18d947ee3c377f581d697448d61",
+    "retainedProfiles": [
+      "lightweight",
+      "statefulSqlite"
+    ],
+    "rustDelta": [
+      "src/tests/archive_file_io/raw_payload_retention_and_compression.rs: atomic replacement inode in one archive fixture"
+    ],
+    "scopeProof": "No production or lightweight/stateful fixture inputs changed; mainline sync changes only documentation and Storybook inputs. Original assertions, budgets, thresholds and profile filters remain intact.",
+    "lightweightExecution": "whole shared runner and descendants pinned to guest CPU 5",
+    "statefulExecution": "6 test threads; distinct guest CPU lease per test; checkpoint/projection fixtures use exclusive configured execution slots",
+    "statefulRunnerCommit": "ae8e56d3f7688c40ac214b2f06bffd5deb67899b",
+    "archiveExecution": "same CPU lease runner with bounded 30-second slot admission before original test starts",
+    "archiveRunnerSha256": "af3c5efc430e66e4b3757f0c2472cb62c1524266ef1b9f1bac5040a7f493efbe",
+    "permissionTests": "Linux setpriv drops dac_override/dac_read_search",
+    "logs": [
+      "repair3-final-lightweight.log",
+      "repair3-final-stateful-sqlite.log",
+      "repair3-final-archive-file-io.log",
+      "repair3-archive-identity-slot-focused.log"
     ]
   },
-  "previousBlocker": {
-    "code": "agent-vm-memory-pressure-admission-refused",
-    "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
-    "instance": "agent-vm-avm-9bc7b112e75e96a2",
-    "generation": 2,
-    "leaseExpiredAt": "2026-10-07T06:23:28Z",
-    "observedState": "cached-stopped-no-effective-lease",
-    "clientControlProtocol": 4,
-    "renewalOperationId": "7cad289f-92a9-4ac3-8397-1c6246d804b2",
-    "admissionReason": "memory_pressure",
-    "reacquireOperationId": "fa27d744-5331-449c-9064-abb27bea5fd2",
-    "reacquireResult": "memory_pressure: CT memory headroom is below the admission threshold",
-    "observedAt": "2026-10-07T14:26:36Z",
-    "previousCode": "agent-vm-draining-lease-expired",
-    "memory": {
-      "availableBytes": 3217981440,
-      "thresholdBytes": 3435973837,
-      "limitBytes": 34359738368
-    }
-  },
+  "pending": [
+    "formalTier4Review",
+    "livePrCurrentHeadCi"
+  ],
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
-    "instance": "agent-vm-avm-9bc7b112e75e96a2",
     "generation": 7,
-    "effectiveLease": true,
-    "leaseExpiresAt": "2026-10-08T06:01:32Z",
-    "acquireOperationId": "13489049-791d-42ea-a78d-b242e7e4e88a",
-    "renewalOperationId": "b38ae822-a2b4-4afa-b7b1-c1b88ce41d1d",
-    "candidateBinarySha256": null,
-    "observedState": "running-current-candidate-validation"
+    "leaseExpiresAt": "2026-10-08T07:46:32Z",
+    "memoryMiB": 8192,
+    "cpu": 8,
+    "cargoBuildJobs": 1
   },
   "currentRepair": {
-    "priorPrHeadSha": "36cde9f1b214539260b8d2c7567d70daae50e5be",
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
-    "ciRunId": 37679481312,
-    "sourceQualityFailure": "raw_payload_retention_and_compression.rs 9766 physical lines exceeds explicit 9751 budget",
-    "archiveFileIoFailure": "hard-link online route assertion at maintenance_runtime_ownership.rs:101",
-    "representativeScaleDisposition": "cancelled during apt-get mirror downloads before tests started",
-    "requiredBaseSha": "ac9bdfda97c79c666448db2b38eb6131d2c92d15",
-    "validationPending": true,
-    "localFocusedRegressions": {
-      "ownershipRuntimeLock": {
-        "passed": 1,
-        "failed": 0,
-        "platform": "aarch64-apple-darwin"
-      },
-      "rawOrphanDryRun": {
-        "passed": 1,
-        "failed": 0,
-        "platform": "aarch64-apple-darwin"
-      }
-    },
-    "codeRepairSha": "98b7316bb83c8f5e1fe9dbb0b31e77368017b5e1",
-    "mainlineSyncSha": "7a47fe555c1f3dbb7b7b940c7d42b6f2bb0961e5",
-    "visualEvidenceRetained": "Timeline pagination changes are outside the selected catalog-row capture surfaces. Desktop/mobile mock catalog captures were rechecked; task rows, controls, plans and units remain visually unchanged. Four detail components and their styles are unchanged. Six owner-confirmed canonical assets remain applicable.",
-    "historicalCiRequiredContextsPassed": 13,
-    "historicalCiHead": "1c7241d94a6950aa1f5290d729b3488bd01c336f",
-    "supersededLocalValidation": "lightweight passed; remaining old-base profiles cancelled by the agent after base drift. Full validation restarted on the signed merged candidate.",
+    "publishedHeadSha": "1c7241d94a6950aa1f5290d729b3488bd01c336f",
+    "declaredReleasedSourceCount": 14,
     "runtimeProtocolRepair": "Acquire both actual database inode flocks before SQLite initialization; publish actual initialization/CLI/ready roles; online admission requires the canonical path-pair and current inode proofs. Reject hardlink aliases, offline multi-link databases, mixed pairs and replaced database inodes before opening SQLite.",
     "webFixtureStabilization": "Preload lazy detail modules outside interaction assertions and await rendered binding state; product behavior and production deadlines unchanged.",
-    "validationFailuresRetained": [
-      "lightweight: one existing 1-second bootstrap interleave fixture missed its stage under shared load; focused shared-runner regression passed",
-      "Web initial full run: two asynchronous tooltip/binding assertions failed; both focused regressions passed",
-      "Web low-worker full run: a different lazy tooltip interaction timed out; three test-only fixture fixes now undergoing full validation",
-      "Current unchanged-source full lightweight run: 1297 passed, five existing summary-projection timing tests failed under approximately 48% CPU steal. Exact cold-bootstrap regression passed unchanged when isolated."
-    ],
-    "webDependencyLayoutRepair": "Storybook could not load its setup file through an external dependency cache symlink; restored physical dependency directories inside the VM source workspace and reran browser validation.",
-    "fairQueueMainlinePreservation": "Retained mainline durable circular admission, bounded peer quanta, source fences, diagnostics and regressions while applying automatic-round pause semantics. Signed sync changes no Rust source inputs from the validated source manifest.",
-    "declaredReleasedSourceCount": 13,
-    "cpuResizeAdmission": {
-      "operationId": "2beb8383-9ab2-4e97-b58e-5fa98b983cbd",
-      "applied": false,
-      "code": "memory_pressure",
-      "availableBytes": 2455836672,
-      "thresholdBytes": 3435973837
+    "mainlineFairQueuePreserved": true,
+    "pageLevelStoriesRemovalPreserved": true,
+    "retainedFailedDiagnostics": true,
+    "productionAssertionsAndLimitsUnchanged": true,
+    "parallelRustCheck": "Cancelled at 169MiB available guest memory; restarted serially on unchanged source",
+    "releasedFixtureRetry": "One retry after VM registry HTTPS recovered from TCP timeout to 401",
+    "generatedReleasedSources": 14
+  },
+  "empiricalAcceptance": {
+    "disposition": "not_required",
+    "reason": "Deterministic SQLite/file/process/mock fixtures cover behavior; production empirical thresholds are unnecessary"
+  },
+  "historicalEvidence": {
+    "directory": ".codex/evidence/retention-maintenance/repair3/historical-pre-repair/",
+    "priorCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
+    "note": "Earlier binary/runtime/upgrade/Web results are historical and cannot establish final candidate readiness"
+  },
+  "visualEvidence": {
+    "source": "mock-only ui_demo",
+    "ownerConfirmedAssets": 6,
+    "currentComparison": "consistent",
+    "renderInputsAfterMainlineStoriesRemoval": "unchanged; no product component, route, style or fixture changed"
+  },
+  "productionBuildSettings": {
+    "command": "cargo build --locked",
+    "CARGO_PROFILE_DEV_DEBUG": 0,
+    "CARGO_BUILD_JOBS": 1,
+    "features": "default (hotpath)",
+    "mode": "real program, not cfg(test)",
+    "seconds": 209
+  },
+  "validationSupportInputFingerprint": "d1e2814f2520b96d35be90ef48338609b3875943a0fd4ee5fd7fa6448ed66805",
+  "webInputCount": 644,
+  "validatedAt": "2026-10-08T07:51:00.578639+00:00",
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair3",
+  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair3/candidate-repair3",
+  "webInputFingerprint": "aa4e512848dab78a79915568cef428a848f84e498db9683eb14c0a866b982ae6",
+  "acceptanceEvidence": {
+    "VER-RMO-001": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+        "src/tests/archive_file_io/retention_task_local_batches.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json"
+      ]
     },
-    "memoryRightSizing": {
-      "operationId": "c234794c-0439-42ce-a791-28e2573ef1d9",
-      "applied": true,
-      "memoryMiB": 8192,
-      "guestContinuityVerified": true,
-      "nativeAttempts": 2,
-      "firstAttempt": "shrinking-balloon timeout",
-      "secondAttempt": "guarded completion succeeded"
+    "VER-RMO-002": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "src/tests/lightweight/forward_proxy_config_and_storage.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
+      ]
     },
-    "cpuRightSizing": {
-      "operationId": "7ca79c00-a750-428f-aa4f-7d085d108675",
-      "applied": true,
-      "cpu": 12,
-      "memoryMiB": 8192,
-      "restartAfterAllGuestTestsTerminal": true,
-      "retryAfterObservableStateChange": true,
-      "sourceAndAssertionsUnchanged": true
+    "VER-RMO-003": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/lightweight/retention_maintenance_controls.rs",
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json"
+      ]
     },
-    "projectionSchedulingDiagnosis": {
-      "config": ".config/nextest.toml",
-      "threadsRequired": "num-test-threads",
-      "status": "focused-passed-full-profiles-pending",
-      "isolatedCpu12Memory8GiB": {
-        "passed": 1,
-        "failed": 10
-      },
-      "conclusion": "All eleven exact failures pass unchanged with the test process pinned to one guest CPU. vCPU count changes and exclusive slots alone did not resolve the slow path; retain failed diagnostics and validate full profiles with the observed execution topology.",
-      "singleGuestCpu": {
-        "cpuAffinity": "5",
-        "passed": 11,
-        "failed": 0,
-        "testSeconds": 17.583,
-        "profileCommandSeconds": 25
-      }
+    "VER-RMO-004": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+        "src/maintenance/ownership.rs"
+      ]
     },
-    "statefulSchedulingDiagnosis": {
-      "singleGuestCpu": {
-        "cpuAffinity": "5",
-        "profileStatus": "cancelled-after-demonstrated-100ms-allocation-failures",
-        "failedSelectors": [
-          "invocation_ranges_cold_admission_does_not_wait_for_unrelated_tail_return",
-          "invocation_ranges_parallel_issuance_is_unique"
-        ]
-      },
-      "testAssertionsAndProductionLimitsUnchanged": true,
-      "nextStep": "Verify exact cold admission with all eight guest CPUs, then one full profile retry after the execution topology changes."
+    "VER-RMO-005": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
+        "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+        "src/prompt_cache_conversations/invocation_ranges/lifecycle.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
+      ]
+    },
+    "VER-RMO-006": {
+      "status": "passed",
+      "evidence": [
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+        "src/tests/archive_file_io/retention_task_local_batches.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
+        "docs/adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json"
+      ]
+    },
+    "VER-RMO-007": {
+      "status": "passed",
+      "evidence": [
+        "web/src/pages/system/SystemTasksPage.test.tsx",
+        "web/tests/e2e/retention-maintenance-ownership.spec.ts",
+        "web/tests/e2e/retention-throughput.spec.ts",
+        "web/src/features/system/RetentionRunThroughput.stories.tsx",
+        "web/src/features/system/TaskTimelineChart.stories.tsx",
+        "web/src/features/system/TaskWorkloadSparkline.stories.tsx"
+      ]
+    },
+    "VER-RMO-008": {
+      "status": "passed",
+      "evidence": [
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
+        "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+        "scripts/validate-retention-maintenance-upgrade.py",
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
+      ]
     }
   },
-  "priorValidation": {
-    "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
-    "codeCandidateSha": "250a17e0",
-    "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b",
-    "passed": {
-      "webUnit": {
-        "files": 178,
-        "passed": 1811,
-        "skipped": 6
-      },
-      "storybook": {
-        "files": 2,
-        "passed": 72
-      },
-      "playwright": {
-        "passed": 12
-      },
-      "webTypecheck": true,
-      "webLint": true,
-      "webBuild": true,
-      "rustSourceQuality": true,
-      "ownerConfirmedVisualAssets": 6,
-      "webSourceTree": "0a373efb5e98cbc4aedefce182093a84387b3aa8",
-      "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs.",
-      "rustFmt": true,
-      "rustCheckAllTargetsAllFeatures": true,
-      "rustClippyAllTargetsAllFeatures": true,
-      "repairBatchFocusedRegressions": {
-        "runtimeLockHardlinkAlias": true,
-        "rawOrphanDryRunReleaseAccounting": true,
-        "offlineRequestedRunRecovery": true
-      },
-      "productionLinuxBuild": true,
-      "runtimeProcessFixture": true,
-      "namedOwnershipRegression": {
-        "passed": 11,
-        "failed": 0,
-        "ignored": 1
-      },
-      "backendProfiles": {
-        "lightweight": {
-          "passed": 1300,
-          "failed": 0
-        },
-        "statefulSqlite": {
-          "passed": 1451,
-          "failed": 0,
-          "rerunAfterTimingFlake": true
-        },
-        "archiveFileIo": {
-          "passed": 327,
-          "failed": 0
-        }
-      },
-      "releasedSources": 10,
-      "sourceInputFingerprint": "ad21f0b710e88fb908b70d3ee33d54d9dddb38cf515ddb468a8396c4b349010b"
-    }
-  },
-  "sourceRustTree": "95af4b60a35ba18d947ee3c377f581d697448d61",
-  "sourceWebTree": "e352311b912402a2bd869630dd5c993fc454bc63",
-  "resolvedCapacityBlocker": {
-    "code": "resource_insufficient",
-    "dimensions": [
-      "memory_mib"
-    ],
-    "allocatedMemoryMiB": 49152,
-    "ceilingMemoryMiB": 49152,
-    "requestedMemoryMiB": 12288,
-    "operationId": "b9e0e33f-98f2-4df7-835a-00c1a684d4ab",
-    "effectiveLease": false,
-    "resolvedByAcquireOperationId": "13489049-791d-42ea-a78d-b242e7e4e88a"
+  "logSha256": {
+    "repair3-final-lightweight.log": "56a240ccad696c72a2972590ae9b376dcd585c9d576015fb02ee6f501678e1d4",
+    "repair3-final-stateful-sqlite.log": "d0382c6ac39267ac62f9b85cbf9cd3d1bfcf3f36f6be1c31138b207b6ff0aa2d",
+    "repair3-final-archive-file-io.log": "4febf0c0792f85de6662906055f30a942a8c2650bc5d3bffb7e3f0f472428992",
+    "repair3-current-rustfmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repair3-current-check-serial.log": "25a3aae7468b18463bd9a7372de9d0a02e29d63d03c428a0125121a40b2add2f",
+    "repair3-current-clippy-serial.log": "779bfa21c9a4ed49a954dc9c4b6dccb2f72a9798eb77e797893c4e948f54ec54",
+    "repair3-current-web-typecheck.log": "6e94b57663577cbb86d242c66afaabbf0a5aff17a5a04d8366f273d12e45e624",
+    "repair3-current-web-lint.log": "dfcddf3de8bfa7c17806762ce2e37dd96358ab6d3be17c525db8caec631488e4",
+    "repair3-current-web-unit.log": "8e81424c93dc7ec33a7eb9ea50c3120a53cf39d77fd0b66195908ef6063e3add",
+    "repair3-current-web-build.log": "476c5d02be78db3707dea30586163c4d5b09208f8a6555fa4d379a949a4fd726",
+    "repair3-current-storybook.log": "ae817fb21d1dd7fb5e41fa079d531080147189fe8739975db6582c257ac9b9e7",
+    "repair3-current-e2e.log": "f7532407a14187c7c4a16a6f986e7a16da3093c8280362609c9b4d9ca67d1ae0",
+    "repair3-current-production-build-debug0.log": "8a9aa60e57450df2d32cc45fbd95ea2c5dc261f9185e5632b667c8b783f6ed3b",
+    "repair3-current-upgrade.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
+    "repair3-current-runtime.log": "fa58a2ceabf8a19d24b02fe71e9107e5965ad23c602032df520dbde9e43d40a4"
   }
 }

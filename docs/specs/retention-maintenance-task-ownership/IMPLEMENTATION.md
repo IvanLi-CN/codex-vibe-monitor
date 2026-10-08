@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；PR #1092 的 CI 修复与主干同步正在进行，本会话 VM 已在容量释放后恢复，最终验证与交付尚未完成。
+- Implementation: 已实现；本地工程、十四来源升级和实际进程验证全部通过，PR #1092 的最终 Tier 4 审查与当前 head CI 尚未完成。
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
 
@@ -13,17 +13,18 @@
 - `REQ-RMO-007`, `REQ-RMO-008`, `REQ-RMO-009`：沿用归档源转换／统计失效／刷新入队事务；身份使用实际运行管理器和资源准入，新增小时 scope 以删除与游标同事务提交。查询超时后 SQLite 连接关闭完成前保留身份围栏；raw 保留隔离、文件身份、库存与 release-pending 保护。
 - `REQ-RMO-010`：CLI 在业务初始化和启动恢复前选择在线请求或离线独占路由。运行态锁同时绑定规范化数据库路径对、当前数据库 inode 对与两个数据库文件本身；在线请求必须确认路径对和当前 inode 的 ready 证明一致，初始化、离线 CLI、混配数据库对、替换 inode 与 hard-link 别名均在打开 SQLite 前拒绝。离线多链接数据库返回不可用，避免不同日志路径写同一数据库。在线不初始化控制或回收活跃运行，离线只执行指定任务并在释放锁前关闭连接池。三个预演使用局部扫描状态，不改业务删除、正式游标或释放事实。
 - `REQ-RMO-011`, `REQ-RMO-012`：新记录包含职责版本、scope 与 dry-run，计量分离调用行、对话、小时、文件及字节，缺测保持未知。新增目录和详情、自动触发文案、暂停时立即运行、归档关联入口及旧组合历史标识。资源等待与实际开始分开记录，保留旧历史口径。
-- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终候选的十四来源升级、进程安全验证和 Tier 4 复审尚在收敛。
+- `REQ-RMO-013`：新增维护库重试状态表及业务小时清理 scope；既有迁移保持不变。直接升级来源逐一覆盖 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2，不以版本等价假设共用来源。最终 Linux 二进制的十四来源升级和进程安全验证已通过，Tier 4 复审待完成。
 
 ## Verification
 
-- 当前源码输入：Rust 树 `95af4b60a35ba18d947ee3c377f581d697448d61`，Web 树 `cdc5b1814dfd6e5c8b5fa6820cd94ad825f019a7`；260 个 Rust／构建输入已在会话 VM 逐项核对，指纹为 `c27f83124cd0a41a0d480dd23ce7b38966a9a9eb2767ef8f87e40121fa37faf9`。
-- 主干 workload marker 合并前已通过：Web 类型、lint、构建；完整单测 179 文件、1838 测试（6 跳过），相关 Storybook 3 文件／72 测试，桌面／移动端与 demo 路由 Playwright 12 测试。测试夹具预先加载懒模块并等待实际渲染状态，未改变产品交互或生产阈值。
-- 已通过：会话 Linux VM 中共享 runner 的 lightweight 组 1302/1302，源码质量门禁、质量门禁合同与后端测试脚本合同。SQLite 组 1457/1457 已通过；archive/file-I/O 组与 Rust fmt/check/clippy 的最终结果待补充。
-- Linux 计时诊断：增加 vCPU 和 nextest 独占执行槽均未消除共享宿主资源下的既有 projection 计时失败；将测试进程及子进程固定到单个来宾 CPU 后，11 个原失败测试全部通过，lightweight 完整组通过。保留失败日志，所有原断言和生产时限不变；SQLite 组维持六测试并行，以标准 Cargo target runner 将每个真实测试进程固定到独立来宾 CPU；七项原失败均在原断言下通过。统计检查点夹具在整组负载下仍未于既有恢复预算完成，隔离执行通过，现为该 150ms／3s 预算夹具配置独占执行槽，SQLite 完整组已通过。归档组的三项失败已定位：两项尚未进入测试便因短暂占用的 CPU 槽被拒绝，现增加有界资源准入等待；文件身份替换夹具改为原子替换 inode，避免文件系统时间戳精度使原地写入仍保持旧身份。三项原回归全部通过，归档完整组待刷新；生产删除保护与计时阈值保持不变。
-- 运行态修复统一路径／inode 锁排序，在 SQLite 初始化前持有实际数据库文件锁，并发布初始化、CLI 与 ready 角色。新升级与服务／CLI／页面竞争结果必须绑定最终候选二进制 digest；旧结果只保留为历史，不充当当前证明。
-- 六张 mock-only 页面图片已获主人确认；主干合并后再次核对任务行、控制、计划、计量及详情，图中相关页面行为与呈现保持一致。新主干的统计公平队列、分页及实时 overlay 合同保留。
-- `VER-RMO-001` 至 `VER-RMO-008` 的实现证据映射到 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。当前尚未满足 PR Ready；必须完成十四来源升级、进程验证、Tier 4 审查及 PR 当前 head CI。
+- 验证代码候选为 `0c631537a57925c52b3bae04678dcac6c9213944`，主干基线为 `ed00c68fed0975aaf0617981db8ad7fd75ce1a1f`。Rust 树为 `ba4ac3afd3e0986586a3aa84c4b38d2a08d44cb8`，Web 树为 `343c2bcbfd8cc034a8576ce446acf62df098f189`；260 个 Rust／构建输入、644 个 Web 输入及验证脚本／配置／依赖清单已在会话 Linux VM 逐项核对，指纹见验证卡。随后的证据提交只修改文档，实际二进制和程序输入保持对应关系。
+- 后端共享 runner 三个资源组按顺序通过：lightweight 1302/1302、stateful-sqlite 1457/1457、archive-file-io 329/329。Rust fmt、`cargo check --locked --all-targets --all-features`、`cargo clippy --locked --all-targets --all-features -- -D warnings`、源码质量与质量／后端测试脚本合同通过。
+- Web 类型检查、lint 与构建通过；完整单测 179 文件／1838 通过／6 跳过，相关组件 Storybook 3 文件／14 状态通过，mock-only demo 的桌面／移动端与路由 Playwright 12/12 通过且未启用重试。lint 退出成功，保留 92 项 warning 事实，不宣称无诊断。
+- 真实 Linux 程序使用 `cargo build --locked`、单编译进程和 `CARGO_PROFILE_DEV_DEBUG=0`，保留默认 hotpath features。二进制 SHA-256 为 `70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34`，取回后再次核对一致。十四个独立发布来源全部完成升级、重复初始化、只读预演、暂停时真实手动入口、归档职责隔离、受保护身份及中断后的前向重入；[升级结果](../../adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json) 的所有来源绑定该摘要。
+- [实际进程验证](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json) 使用 v4.2.2 来源及同一二进制，八项声明全部通过：在线 CLI 不初始化不可用维护库、三种只读职责、归档独占范围、四项暂停后的手动运行、CLI／页面竞争、无启动恢复、无手动自动接续及优雅关闭后的锁释放。Linux 命名运行态锁与 raw 预演释放计量回归包含在通过的 archive/file-I/O 组中。
+- Linux 计时诊断保留原失败日志与断言。轻量组把共享 runner 及其进程树固定到一个来宾 CPU；SQLite 与归档组维持原 profile 并行度，通过标准 Cargo target runner 为每个真实测试进程租用独立来宾 CPU，保留原二进制、argv 和退出状态。projection 与统计检查点的真实时限夹具配置独占执行槽；短暂存活的子进程仍持有 CPU 槽时，在测试计时开始前最多等待 30 秒。SQLite 全组通过后，Rust 输入仅改动一个归档夹具为原子替换 inode；其余分组保留证明的范围与 Git 差异可核对。生产阈值未放宽。
+- 主干的公平统计队列、分页、实时 overlay、单样本 workload marker 与整页 Storybook 清理均已保留。整页状态与交互由 mock-only demo 覆盖，吞吐、时间线及 workload marker 由组件 Storybook 覆盖。六张页面图片已获主人确认；主干同步后核对相关产品组件、路由、样式和 demo 输入，当前视觉比较一致。
+- `VER-RMO-001` 至 `VER-RMO-008` 的证据映射、各输入指纹与日志摘要见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。本地验证门禁通过；正式 Tier 4 审查和同一 PR 最终 head CI 在证据快照时仍待完成，不将旧 PR head 的成功结果视为当前交付证明。
 
 ## Visual Evidence
 
@@ -40,8 +41,8 @@
 
 - 公开配置移除、一次性入口范围及自动触发控制语义按 breaking／major 记录；持久状态影响单独评估，不由公开合同的 Major 自动决定。
 - 直接来源逐一为 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2；各来源由对应发布镜像独立生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。更早 Major 必须先中间升级，不支持多版本同时写入。
-- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `34595ae78bbd13e361e549389939ffee3580d452`，保留主干统计公平队列及其回归，不重写已发布历史。
-- 必须完成最终候选工程检查、发布来源升级、Tier 4 只读审查及同一 PR 当前 head 的必要 CI，才可宣告 Step 5C Ready。
+- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `ed00c68fed0975aaf0617981db8ad7fd75ce1a1f`，保留主干统计公平队列及其回归，不重写已发布历史。
+- 最终候选工程检查、十四来源升级与进程验证已完成；必须完成 Tier 4 只读审查及同一 PR 当前 head 的必要 CI，才可宣告 Step 5C Ready。
 
 ## References
 
