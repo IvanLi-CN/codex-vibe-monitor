@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "status": "local-validation-passed-formal-review-and-live-ci-pending",
   "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
-  "codeCandidateSha": "2fcfc7cf611b27ac35a39e522627fcea9ec226ad",
-  "sourceRustTree": "9088a6fc3916d465b2df61d1a77c9741450c9b77",
+  "codeCandidateSha": "cbd51fab0c4f63935fc4be9c91d076bbc3d6d2ea",
+  "sourceRustTree": "3a887ffff0965b62f87efae9d8cf8eeae68851a6",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "81e534876aa138f191ed945baff32d17849596ea344b8172c265ccd74ad426e9",
   "sourceInputCount": 261,
-  "candidateBinarySha256": "a403bbdfe19fe5e703e9def02ad321952e83c9db3110a9ca8aac86b6e3cd6522",
+  "candidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e",
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 4,
+    "repairBatchesUsed": 5,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -36,9 +36,7 @@
       },
       "archiveFileIo": {
         "passed": 334,
-        "failed": 0,
-        "testSeconds": 98.212,
-        "profileSeconds": 103
+        "failed": 0
       }
     },
     "linuxRuntimeLockRegression": true,
@@ -78,9 +76,8 @@
       "retries": 0
     },
     "sqliteNativeOpenFocused": {
-      "passed": 5,
-      "failed": 0,
-      "testSeconds": 0.03
+      "passed": 6,
+      "failed": 0
     },
     "docsSiteBuild": true,
     "docsLint": true
@@ -123,15 +120,13 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
-    "publishedHeadSha": "1c7241d94a6950aa1f5290d729b3488bd01c336f",
-    "ownerAuthorizedRepairBatch": 4,
-    "approvedAtHead": "bf02dc4f13c0ef6a94873ec61d780550f132b3f9",
-    "runtimeProtocolRepair": "Guard both locked database path/descriptor identities at native SQLite VFS pathname/open boundaries and verify the actual native file with SQLITE_FCNTL_HAS_MOVED before journal/schema initialization. Pooled connections retain the guard; process-lived VFS registrations hold weak lock proofs; concurrent registration copies only immutable native ABI fields.",
-    "retainedFailedDiagnostics": true,
+    "ownerAuthorizedRepairBatch": 5,
+    "ownerMessage": "允许",
+    "previousCandidateSha": "892c19387a0703d75c8fcf111f8ef420de2b59de",
+    "fixedFinding": "Online route proof now persists descriptors and ready marker files through guarded VFS connection, request and polling; pool closes before proof release.",
+    "newFocusedRegression": "ownership_runtime_lock_routes_online_and_recovers_process_death_without_unlinking",
     "productionAssertionsAndLimitsUnchanged": true,
-    "generatedReleasedSources": 14,
-    "initialPermissionProfileFailure": "1300 passed, 2 failed under root DAC override; restored the prior validated capability restriction, then both exact cases and full lightweight passed.",
-    "initialClippyFailure": "Equivalent cfg(test) nested condition rejected by collapsible_if; replaced with let-chain; final exact check and Clippy passed."
+    "candidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e"
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
@@ -160,9 +155,9 @@
   },
   "validationSupportInputFingerprint": "d1e2814f2520b96d35be90ef48338609b3875943a0fd4ee5fd7fa6448ed66805",
   "webInputCount": 644,
-  "validatedAt": "2026-10-08T09:32:38.305586+00:00",
-  "evidenceLocator": ".codex/evidence/retention-maintenance/repair4",
-  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair4/candidate-repair4",
+  "validatedAt": "2026-10-08T12:29:39Z",
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair5",
+  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair5/candidate-repair5",
   "webInputFingerprint": "aa4e512848dab78a79915568cef428a848f84e498db9683eb14c0a866b982ae6",
   "acceptanceEvidence": {
     "VER-RMO-001": {
@@ -263,7 +258,14 @@
     "runtime-final.log": "57a11e14a5b9d2a9342ac450feee3fdf4882aaae605599e19735e7765b5b6d2c",
     "rust-clippy-final.log": "085256bb790cc20b96809070f09ad14a150acab9b8950741fb4407a8590fbc3b",
     "lightweight-final.log": "febc3b68340a0a7e7f0fedf866b77dcb7729db73154fc785fa6f9d6c7eb81475",
-    "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937"
+    "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937",
+    "archive-file-io.log": "35a67bb0b9b9ecc8bace03b6977a014df62f5271eee0e3b4a174feef8f6b6b56",
+    "clippy.log": "42e5d84a90ab00981345e90f1aa09679baf5f4aee9c0b1ca370a33661ab53e6c",
+    "runtime-focused.log": "2b227dc3560c1606cbde2187c63904aebc4223f98c3f25e5a00bcf799466fd02",
+    "runtime.log": "bcce27f134306a01aedbac743fb4ef354310d70dcb46f30c18521e8a1b0e1f87",
+    "check.log": "c8081992a3b03d51a6fb80cf9bb2320198df1cf9465e17ef26ed0267703b28a8",
+    "build.log": "00597d8e4817e84af4d715b774e2efee57809320f36fa86c7c81db5f97b83a84",
+    "repair5-upgrade-results.json": "f6461420759123bac41cf62b33ede2389f5ef3cf193fc0b17bc8f57fa7299a6f"
   },
   "webEvidenceBinding": {
     "sourceCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
