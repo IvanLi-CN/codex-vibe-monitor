@@ -7,16 +7,14 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit
-  `edb6d8624b1713619c32caa050e397f0aded79b4`, 38 current explicit file
-  budgets (20 production and 18 test/helper), and 119 standalone suppression
-  declarations. The immutable preparation production/test-helper counts remain
-  32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 36 current explicit file budgets (19 production and 17 test/helper), and 118 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
   `.github/workflows/ci-main.yml` delegate Rust source quality to the same
   runner while retaining the existing lint job name and check topology.
+
+The prompt-cache conversation query governance extraction removes `src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs` from the selected inventory after reducing it to 10 lines, reuses the existing 1,402-line `snapshots.rs`, and assigns the other stateful tests to `metadata_and_history.rs` (1,536 lines), `statistics.rs` (617), `activity_windows.rs` (923), `pagination.rs` (681), `runtime_and_cache.rs` (903), and `test_support.rs` (16). It registers `response_payload_content_encodings.rs` (85 lines) in lightweight and `payload_metadata_backfills.rs` (593 lines) in archive/file I/O. The 60 existing tests remain exactly once with their identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup; the only fixture deduplication is the three identical count-mode row inserters, and the two parent wrappers now live in private `test_support.rs`. The final policy state is 36 entries (19 production and 17 test/helper) with 118 suppressions and immutable preparation counts 32/23.
 
 The provisioning-scope extraction moves six contiguous stateful SQLite tests
 from physical lines 768 through 1,400 of
@@ -341,10 +339,8 @@ overlays, parallel-work responses, and test resource buckets remain unchanged.
 
 ## Inventory Contract
 
-The policy has 20 `production` entries above the 2,500-line destination target
-and 18 `test_helper` entries above the 3,000-line destination target. Each
-`line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 38 paths; a long path absent from the inventory is
+The policy has 19 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
+The checker only reads those 36 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no

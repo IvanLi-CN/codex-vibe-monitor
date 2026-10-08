@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 37,
+    "inventory_entries": 36,
     "suppression_entries": 118
   },
   "loc_targets": {
@@ -143,12 +143,6 @@
       "role": "test_helper",
       "line_budget": 23829,
       "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
-    },
-    {
-      "path": "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
-      "role": "test_helper",
-      "line_budget": 5541,
-      "next_module_workstream": "Split prompt-cache conversation query fixtures by activity, metadata, pagination, and snapshots."
     },
     {
       "path": "src/tests/stateful_sqlite/proxy_broadcast_and_runtime_harness.rs",

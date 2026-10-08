@@ -5,6 +5,7 @@ pub(crate) use super::*;
 
 mod archive_backfill_and_materialization;
 mod gpt6_cache_write_migration;
+mod payload_metadata_backfills;
 mod prompt_cache_control_file_lock;
 mod raw_compression_budget;
 #[expect(
