@@ -111,40 +111,41 @@ pub(crate) async fn run_owned_maintenance_cli(
 ) -> Result<()> {
     let route = MaintenanceRuntimeLock::route(config, true)?;
     match route {
-        MaintenanceRuntimeRoute::Online => {
-            let store = crate::maintenance_store::connect_existing(config).await
+        MaintenanceRuntimeRoute::Online(mut runtime) => {
+            let store = crate::maintenance_store::connect_existing(config, &mut runtime).await
                 .context("maintenance unavailable: cannot connect to the running service's maintenance store")?;
-            let id = store.request_run_with_mode(task_key, dry_run).await?;
-            let deadline = Instant::now() + Duration::from_secs(15 * 60);
-            loop {
-                let row: (String, Option<String>, Option<String>) = sqlx::query_as(
-                    "SELECT status,details,error_detail FROM managed_task_runs WHERE id=?",
-                )
-                .bind(id)
-                .fetch_one(&store.pool)
-                .await?;
-                if !matches!(row.0.as_str(), "requested" | "running") {
-                    if !matches!(row.0.as_str(), "success" | "skipped") {
-                        bail!(
-                            "maintenance request {id} ended with {}: {}",
-                            row.0,
-                            row.2.as_deref().unwrap_or("see task history")
-                        );
+            let outcome = async {
+                runtime.validate()?;
+                let id = store.request_run_with_mode(task_key, dry_run).await?;
+                let deadline = Instant::now() + Duration::from_secs(15 * 60);
+                loop {
+                    runtime.validate()?;
+                    let row: (String, Option<String>, Option<String>) = sqlx::query_as(
+                        "SELECT status,details,error_detail FROM managed_task_runs WHERE id=?",
+                    )
+                    .bind(id)
+                    .fetch_one(&store.pool)
+                    .await?;
+                    if !matches!(row.0.as_str(), "requested" | "running") {
+                        if !matches!(row.0.as_str(), "success" | "skipped") {
+                            bail!(
+                                "maintenance request {id} ended with {}: {}",
+                                row.0,
+                                row.2.as_deref().unwrap_or("see task history")
+                            );
+                        }
+                        println!("{}", row.1.unwrap_or_else(|| "{}".to_string()));
+                        return Ok(());
                     }
-                    println!("{}", row.1.unwrap_or_else(|| "{}".to_string()));
-                    return Ok(());
+                    if Instant::now() >= deadline {
+                        bail!("maintenance request {id} is still pending; inspect task history");
+                    }
+                    sleep(Duration::from_millis(250)).await;
                 }
-                if Instant::now() >= deadline {
-                    bail!("maintenance request {id} is still pending; inspect task history");
-                }
-                if !matches!(
-                    MaintenanceRuntimeLock::route(config, true)?,
-                    MaintenanceRuntimeRoute::Online
-                ) {
-                    bail!("maintenance unavailable: service stopped before request {id} completed");
-                }
-                sleep(Duration::from_millis(250)).await;
             }
+            .await;
+            store.pool.close().await;
+            outcome
         }
         MaintenanceRuntimeRoute::Offline(mut runtime_lock) => {
             runtime_lock.publish_role("cli:ownership-v1")?;

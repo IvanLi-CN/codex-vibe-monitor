@@ -294,13 +294,33 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     })
     .await
     .unwrap();
-    assert!(matches!(
-        crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap(),
-        crate::maintenance::MaintenanceRuntimeRoute::Online
-    ));
-    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&config, false).is_err());
     let maintenance_path = config.maintenance_database_path();
     let displaced_maintenance = directory.join("displaced-maintenance.sqlite");
+    let crate::maintenance::MaintenanceRuntimeRoute::Online(mut online) =
+        crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap()
+    else {
+        panic!("ready service must route online");
+    };
+    online
+        .sqlite_connect_options(
+            &config.maintenance_database_path(),
+            SqliteConnectOptions::new().create_if_missing(false),
+        )
+        .unwrap();
+    fs::rename(&maintenance_path, &displaced_maintenance).unwrap();
+    fs::write(&maintenance_path, b"replacement").unwrap();
+    assert!(
+        online
+            .sqlite_connect_options(
+                &config.maintenance_database_path(),
+                SqliteConnectOptions::new().create_if_missing(false),
+            )
+            .is_err(),
+        "online clients must reject a maintenance inode replaced after routing"
+    );
+    fs::remove_file(&maintenance_path).unwrap();
+    fs::rename(&displaced_maintenance, &maintenance_path).unwrap();
+    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&config, false).is_err());
     fs::rename(&maintenance_path, &displaced_maintenance).unwrap();
     fs::write(&maintenance_path, b"replacement").unwrap();
     assert!(
@@ -315,7 +335,7 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     alias_config.database_path = alias.join("..").join("business.sqlite");
     assert!(matches!(
         crate::maintenance::MaintenanceRuntimeLock::route(&alias_config, true).unwrap(),
-        crate::maintenance::MaintenanceRuntimeRoute::Online
+        crate::maintenance::MaintenanceRuntimeRoute::Online(_)
     ));
     let hardlink_dir = directory.join("hardlinks");
     fs::create_dir_all(&hardlink_dir).unwrap();
@@ -398,7 +418,7 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
         .unwrap();
     assert!(matches!(
         crate::maintenance::MaintenanceRuntimeLock::route(&canonical_config, true).unwrap(),
-        crate::maintenance::MaintenanceRuntimeRoute::Online
+        crate::maintenance::MaintenanceRuntimeRoute::Online(_)
     ));
     unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
     drop(recovered);

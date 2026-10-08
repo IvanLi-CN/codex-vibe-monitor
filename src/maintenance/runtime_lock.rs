@@ -9,6 +9,7 @@ mod sqlite_vfs;
 struct RuntimeDatabaseFiles {
     paths: Vec<PathBuf>,
     files: Vec<File>,
+    online_ready: Option<std::sync::Mutex<Vec<(PathBuf, File, String)>>>,
 }
 
 impl RuntimeDatabaseFiles {
@@ -25,6 +26,38 @@ impl RuntimeDatabaseFiles {
                         && (held.dev(), held.ino()) == (current.dev(), current.ino()),
                     "maintenance unavailable: database path or journal ownership changed"
                 );
+            }
+            if let Some(online_ready) = &self.online_ready {
+                use std::os::fd::AsRawFd;
+                use std::os::unix::fs::FileExt;
+                let locks = online_ready
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("maintenance online proof lock poisoned"))?;
+                for (path, file, expected) in locks.iter() {
+                    let held = file.metadata()?;
+                    let current = std::fs::metadata(path)?;
+                    anyhow::ensure!(
+                        (held.dev(), held.ino()) == (current.dev(), current.ino()),
+                        "maintenance unavailable: service protocol file changed"
+                    );
+                    // These descriptors observe the daemon's locks. Never keep an
+                    // acquired lock or clear its marker, even when the daemon exits.
+                    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0
+                    {
+                        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+                        bail!("maintenance unavailable: service runtime lock was released");
+                    }
+                    anyhow::ensure!(
+                        std::io::Error::last_os_error().kind() == std::io::ErrorKind::WouldBlock,
+                        "maintenance unavailable: cannot verify service runtime lock"
+                    );
+                    let mut bytes = [0; 512];
+                    let length = file.read_at(&mut bytes, 0)?;
+                    anyhow::ensure!(
+                        &bytes[..length] == expected.as_bytes(),
+                        "maintenance unavailable: service is no longer ready"
+                    );
+                }
             }
         }
         Ok(())
@@ -46,7 +79,27 @@ pub(crate) struct MaintenanceRuntimeLock {
 
 pub(crate) enum MaintenanceRuntimeRoute {
     Offline(MaintenanceRuntimeLock),
-    Online,
+    Online(MaintenanceOnlineRuntime),
+}
+
+/// Pins the online client's file identities without owning the daemon's flocks.
+pub(crate) struct MaintenanceOnlineRuntime {
+    database_files: Arc<RuntimeDatabaseFiles>,
+    guarded_vfs: Option<String>,
+}
+
+impl MaintenanceOnlineRuntime {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.database_files.validate()
+    }
+
+    pub(crate) fn sqlite_connect_options(
+        &mut self,
+        path: &Path,
+        options: SqliteConnectOptions,
+    ) -> Result<SqliteConnectOptions> {
+        guarded_connect_options(&self.database_files, &mut self.guarded_vfs, path, options)
+    }
 }
 
 fn normalized_database_path(path: &Path) -> Result<PathBuf> {
@@ -95,6 +148,7 @@ impl MaintenanceRuntimeLock {
             ));
             let mut files = Vec::new();
             let mut busy_roles = Vec::new();
+            let mut busy_files = Vec::new();
             let mut lock_paths = paths.clone();
             lock_paths.push(path_pair_lock_name);
             let mut inode_ids = Vec::new();
@@ -138,7 +192,7 @@ impl MaintenanceRuntimeLock {
                     .truncate(false)
                     .read(true)
                     .write(true)
-                    .open(PathBuf::from(name))?;
+                    .open(PathBuf::from(&name))?;
                 // SAFETY: flock receives an owned, live file descriptor and valid operation flags.
                 if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
                     files.push(file);
@@ -149,7 +203,8 @@ impl MaintenanceRuntimeLock {
                     }
                     let mut role = String::new();
                     file.read_to_string(&mut role)?;
-                    busy_roles.push(role);
+                    busy_roles.push(role.clone());
+                    busy_files.push((PathBuf::from(name), file, role));
                 }
             }
             if busy_roles.is_empty() {
@@ -182,6 +237,7 @@ impl MaintenanceRuntimeLock {
                     database_files: Arc::new(RuntimeDatabaseFiles {
                         paths: paths.clone(),
                         files: database_files,
+                        online_ready: None,
                     }),
                     database_pair_id,
                     pair_lock_count,
@@ -208,7 +264,36 @@ impl MaintenanceRuntimeLock {
                         || inode_ready_role.as_deref() == Some(role)
                 })
             {
-                Ok(MaintenanceRuntimeRoute::Online)
+                use std::os::unix::fs::MetadataExt;
+                let database_files: Vec<File> = paths
+                    .iter()
+                    .map(File::open)
+                    .collect::<std::io::Result<_>>()?;
+                let mut held_ids = database_files
+                    .iter()
+                    .map(|file| file.metadata().map(|m| (m.dev(), m.ino())))
+                    .collect::<std::io::Result<Vec<_>>>()?;
+                held_ids.sort_unstable();
+                let mut held_hash = Sha256::new();
+                for (device, inode) in held_ids {
+                    held_hash.update(device.to_be_bytes());
+                    held_hash.update(inode.to_be_bytes());
+                }
+                let held_pair_id = format!("{:x}", held_hash.finalize());
+                anyhow::ensure!(
+                    inode_pair_id.as_deref() == Some(held_pair_id.as_str()),
+                    "maintenance unavailable: online database inode changed during routing"
+                );
+                let online = MaintenanceOnlineRuntime {
+                    database_files: Arc::new(RuntimeDatabaseFiles {
+                        paths,
+                        files: database_files,
+                        online_ready: Some(std::sync::Mutex::new(busy_files)),
+                    }),
+                    guarded_vfs: None,
+                };
+                online.validate()?;
+                Ok(MaintenanceRuntimeRoute::Online(online))
             } else {
                 bail!(
                     "maintenance unavailable: runtime is busy or its protocol cannot be confirmed"
@@ -294,27 +379,35 @@ impl MaintenanceRuntimeLock {
         path: &Path,
         options: SqliteConnectOptions,
     ) -> Result<SqliteConnectOptions> {
-        self.database_files.validate()?;
-        let normalized = normalized_database_path(path)?;
-        anyhow::ensure!(
-            self.database_paths.contains(&normalized),
-            "maintenance unavailable: database path is outside the runtime lease"
-        );
-        #[cfg(unix)]
-        {
-            if self.guarded_vfs.is_none() {
-                self.guarded_vfs = Some(sqlite_vfs::register(&self.database_files)?);
-            }
-            // Pin the canonical spelling, including for later pooled connections.
-            Ok(options
-                .filename(normalized)
-                .vfs(self.guarded_vfs.clone().expect("registered guarded VFS")))
+        guarded_connect_options(&self.database_files, &mut self.guarded_vfs, path, options)
+    }
+}
+
+fn guarded_connect_options(
+    proof: &Arc<RuntimeDatabaseFiles>,
+    guarded_vfs: &mut Option<String>,
+    path: &Path,
+    options: SqliteConnectOptions,
+) -> Result<SqliteConnectOptions> {
+    proof.validate()?;
+    let normalized = normalized_database_path(path)?;
+    anyhow::ensure!(
+        proof.paths.contains(&normalized),
+        "maintenance unavailable: database path is outside the runtime proof"
+    );
+    #[cfg(unix)]
+    {
+        if guarded_vfs.is_none() {
+            *guarded_vfs = Some(sqlite_vfs::register(proof)?);
         }
-        #[cfg(not(unix))]
-        {
-            let _ = options;
-            bail!("maintenance runtime locking is unavailable on this platform");
-        }
+        Ok(options
+            .filename(normalized)
+            .vfs(guarded_vfs.clone().expect("registered guarded VFS")))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = options;
+        bail!("maintenance runtime locking is unavailable on this platform");
     }
 }
 

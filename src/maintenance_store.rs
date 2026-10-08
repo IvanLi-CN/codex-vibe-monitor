@@ -1584,23 +1584,37 @@ async fn open_with_options(options: SqliteConnectOptions) -> Result<MaintenanceS
 
 /// Online maintenance clients may only connect to an initialized observation store.
 /// In particular they must never run seed/default/recovery code in the daemon's store.
-pub(crate) async fn connect_existing(config: &AppConfig) -> Result<MaintenanceStore> {
-    let options = SqliteConnectOptions::new()
-        .filename(config.maintenance_database_path())
-        .create_if_missing(false)
-        .busy_timeout(Duration::from_secs(2));
+pub(crate) async fn connect_existing(
+    config: &AppConfig,
+    runtime: &mut crate::maintenance::MaintenanceOnlineRuntime,
+) -> Result<MaintenanceStore> {
+    let options = runtime.sqlite_connect_options(
+        &config.maintenance_database_path(),
+        SqliteConnectOptions::new()
+            .create_if_missing(false)
+            .busy_timeout(Duration::from_secs(2)),
+    )?;
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
         .connect_with(options)
         .await?;
-    let ready: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM maintenance_metadata WHERE key=? AND value='applied')",
-    )
-    .bind(OWNERSHIP_INITIALIZATION_MARKER)
-    .fetch_one(&pool)
-    .await?;
-    if !ready {
-        return Err(anyhow!("maintenance controls are not initialized"));
+    let outcome = async {
+        let ready: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM maintenance_metadata WHERE key=? AND value='applied')",
+        )
+        .bind(OWNERSHIP_INITIALIZATION_MARKER)
+        .fetch_one(&pool)
+        .await?;
+        if !ready {
+            return Err(anyhow!("maintenance controls are not initialized"));
+        }
+        runtime.validate()?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = outcome {
+        pool.close().await;
+        return Err(error);
     }
     Ok(MaintenanceStore::from_pool(pool))
 }
