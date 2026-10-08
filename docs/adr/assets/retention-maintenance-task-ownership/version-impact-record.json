@@ -28,13 +28,13 @@
       ]
     },
     "current": {
-      "impact": "major",
+      "impact": "minor",
       "scope_drift": {
         "detected": false,
-        "description": "The owner expanded the task split to remove the global retention environment switch, reject compatibility import, and enable newly introduced cleanup controls by default."
+        "description": "The owner clarified temporary configuration is outside the compatibility promise and approved Minor/stable continuation; no implementation scope changed."
       },
-      "reasoning": "Approved public configuration removal, archive-only one-shot CLI scope and automatic-trigger controls are breaking changes. Persistent state is an additive Minor change verified against all fourteen declared released sources.",
-      "reassessed_at": "2026-10-08T15:43:32.296919Z",
+      "reasoning": "The owner excludes the temporary RETENTION_ENABLED and XY_RETENTION_ENABLED switches from the supported compatibility contract. Published deployment documentation describes the existing one-shot flags as archive operations and does not promise ancillary orphan cleanup. Archive flags, task identifiers, URLs and existing history remain usable; independent cleanup commands and automatic-trigger controls are additive. The documented narrowing of incidental cleanup is intentional, not a claim of identical legacy execution. Supported durable v4.x states upgrade through additive initialization.",
+      "reassessed_at": "2026-10-08T17:56:36.690753+00:00",
       "evidence": [
         "docs/adr/0034-retention-maintenance-task-ownership.md",
         "docs/specs/retention-maintenance-task-ownership/SPEC.md",
@@ -43,12 +43,12 @@
         "src/maintenance_store.rs",
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
       ],
-      "description": "Approved public configuration removal, archive-only one-shot CLI scope, independent cleanup defaults, and automatic-trigger pause semantics are implemented."
+      "description": "Owner-approved compatibility-boundary clarification; implementation and persistent-state contracts unchanged."
     },
     "verified": {
-      "impact": "major",
-      "reasoning": "All fourteen individually generated sources passed on binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51; the public contract remains Major and the additive persistent-state impact is separately verified Minor.",
-      "verified_at": "2026-10-08T15:43:32.296919Z",
+      "impact": "minor",
+      "reasoning": "The owner excludes the temporary RETENTION_ENABLED and XY_RETENTION_ENABLED switches from the supported compatibility contract. Published deployment documentation describes the existing one-shot flags as archive operations and does not promise ancillary orphan cleanup. Archive flags, task identifiers, URLs and existing history remain usable; independent cleanup commands and automatic-trigger controls are additive. The documented narrowing of incidental cleanup is intentional, not a claim of identical legacy execution. Supported durable v4.x states upgrade through additive initialization. Fourteen individually generated released sources passed on the byte-identical production binary recorded in the existing validation evidence.",
+      "verified_at": "2026-10-08T17:56:36.690753+00:00",
       "evidence": [
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
         "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
@@ -57,12 +57,14 @@
   },
   "compatibility_evidence": {
     "public_api": {
-      "change": "breaking",
-      "planned_impact": "major",
-      "supported_consumer_range": "The new runtime contract uses managed task controls only; consumers relying on either removed environment variable must adopt those controls.",
+      "change": "compatible",
+      "planned_impact": "minor",
+      "supported_consumer_range": "Supported v4.x archive CLI flags, existing task identifiers/URLs and history consumers. Temporary retention enablement environment switches and undocumented ancillary orphan cleanup are outside this compatibility promise.",
       "evidence": [
         "docs/adr/0034-retention-maintenance-task-ownership.md",
-        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md",
+        "docs/deployment.md",
+        "docs/specs/retention-maintenance-task-ownership/HISTORY.md"
       ]
     },
     "persistent_state": {
@@ -85,10 +87,10 @@
     "member_change_records": [
       "retention-maintenance-task-ownership"
     ],
-    "maximum_verified_impact": "major",
+    "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "public-api=major",
-      "persistent-state=minor"
+      "public-api=minor; owner-confirmed temporary-config exclusion and documented archive CLI scope",
+      "persistent-state=minor; fourteen individually generated released sources"
     ]
   }
 }
