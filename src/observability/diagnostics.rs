@@ -87,6 +87,20 @@ pub(crate) enum Phase {
     Finalize,
 }
 impl Phase {
+    const ALL: [Self; 9] = [
+        Self::RequestRead,
+        Self::RequestParse,
+        Self::AuthRoute,
+        Self::Attempt,
+        Self::Connect,
+        Self::UpstreamHead,
+        Self::Forward,
+        Self::JournalAppend,
+        Self::Finalize,
+    ];
+    fn index(self) -> usize {
+        self as usize
+    }
     fn name(self) -> &'static str {
         match self {
             Self::RequestRead => "request_read",
@@ -99,6 +113,162 @@ impl Phase {
             Self::JournalAppend => "journal_append",
             Self::Finalize => "finalize",
         }
+    }
+}
+pub(super) const ENDPOINT_COUNT: usize = 7;
+pub(super) fn endpoint_index(endpoint: &'static str) -> usize {
+    match endpoint {
+        "responses" => 0,
+        "chat_completions" => 1,
+        "compact" => 2,
+        "search" => 3,
+        "image_generation" => 4,
+        "image_edits" => 5,
+        _ => 6,
+    }
+}
+
+pub(super) struct RequestMetricHandles {
+    response_duration: metrics::Histogram,
+    local_wait: metrics::Histogram,
+    unattributed: metrics::Histogram,
+    response_ends: [metrics::Counter; 3],
+    resource_wait: [metrics::Histogram; 7],
+    wait_affected: [metrics::Counter; 7],
+    wait_over_100ms: [metrics::Counter; 7],
+    resource_events: [metrics::Histogram; 7],
+    resource_event_outcomes: [[metrics::Counter; 2]; 7],
+    stages: [metrics::Histogram; 9],
+    milestones: [metrics::Histogram; 3],
+    persistence: [metrics::Histogram; 3],
+}
+impl RequestMetricHandles {
+    pub(super) fn new(metrics: &ObservabilityRuntime, endpoint: &'static str) -> Self {
+        let counter = |name: &'static str, labels: Vec<(&'static str, &'static str)>| {
+            metrics.register_counter(ObservabilityRuntime::key(name, &labels))
+        };
+        let histogram = |name: &'static str, labels: Vec<(&'static str, &'static str)>| {
+            metrics.register_histogram(ObservabilityRuntime::key(name, &labels))
+        };
+        let response_duration = histogram(
+            "cvm_request_response_duration_seconds",
+            vec![("endpoint", endpoint)],
+        );
+        let local_wait = histogram(
+            "cvm_request_local_wait_seconds",
+            vec![("endpoint", endpoint)],
+        );
+        let unattributed = histogram(
+            "cvm_request_unattributed_seconds",
+            vec![("endpoint", endpoint)],
+        );
+        let response_ends = std::array::from_fn(|index| {
+            let outcome = ["complete", "error", "cancelled"][index];
+            counter(
+                "cvm_request_response_ends_total",
+                vec![("endpoint", endpoint), ("outcome", outcome)],
+            )
+        });
+        let resource_wait = std::array::from_fn(|index| {
+            histogram(
+                "cvm_request_resource_wait_seconds",
+                vec![
+                    ("endpoint", endpoint),
+                    ("resource", Resource::ALL[index].name()),
+                ],
+            )
+        });
+        let wait_affected = std::array::from_fn(|index| {
+            counter(
+                "cvm_request_wait_affected_total",
+                vec![
+                    ("endpoint", endpoint),
+                    ("resource", Resource::ALL[index].name()),
+                ],
+            )
+        });
+        let wait_over_100ms = std::array::from_fn(|index| {
+            counter(
+                "cvm_request_wait_over_100ms_total",
+                vec![
+                    ("endpoint", endpoint),
+                    ("resource", Resource::ALL[index].name()),
+                ],
+            )
+        });
+        let resource_events = std::array::from_fn(|index| {
+            histogram(
+                "cvm_resource_wait_event_seconds",
+                vec![("resource", Resource::ALL[index].name())],
+            )
+        });
+        let resource_event_outcomes = std::array::from_fn(|index| {
+            std::array::from_fn(|outcome_index| {
+                let outcome = ["complete", "cancelled"][outcome_index];
+                counter(
+                    "cvm_resource_wait_events_total",
+                    vec![
+                        ("resource", Resource::ALL[index].name()),
+                        ("outcome", outcome),
+                    ],
+                )
+            })
+        });
+        let stages = std::array::from_fn(|index| {
+            let phase = Phase::ALL[index];
+            histogram(
+                "cvm_request_stage_seconds",
+                vec![("endpoint", endpoint), ("phase", phase.name())],
+            )
+        });
+        let milestones = std::array::from_fn(|index| {
+            let milestone = ["head", "first_byte", "model_delta"][index];
+            histogram(
+                "cvm_request_milestone_seconds",
+                vec![("endpoint", endpoint), ("milestone", milestone)],
+            )
+        });
+        let persistence = std::array::from_fn(|index| {
+            let outcome = [
+                "committed",
+                "association_unavailable",
+                "coalesced_unavailable",
+            ][index];
+            histogram(
+                "cvm_request_persistence_seconds",
+                vec![("endpoint", endpoint), ("outcome", outcome)],
+            )
+        });
+        Self {
+            response_duration,
+            local_wait,
+            unattributed,
+            response_ends,
+            resource_wait,
+            wait_affected,
+            wait_over_100ms,
+            resource_events,
+            resource_event_outcomes,
+            stages,
+            milestones,
+            persistence,
+        }
+    }
+    fn response_end(&self, outcome: &'static str) -> Option<&metrics::Counter> {
+        ["complete", "error", "cancelled"]
+            .iter()
+            .position(|candidate| *candidate == outcome)
+            .map(|index| &self.response_ends[index])
+    }
+    fn persistence_histogram(&self, outcome: &'static str) -> Option<&metrics::Histogram> {
+        [
+            "committed",
+            "association_unavailable",
+            "coalesced_unavailable",
+        ]
+        .iter()
+        .position(|candidate| *candidate == outcome)
+        .map(|index| &self.persistence[index])
     }
 }
 #[derive(Clone, Copy, Default)]
@@ -167,6 +337,7 @@ struct State {
 }
 struct Inner {
     metrics: Arc<ObservabilityRuntime>,
+    metric_handles: Arc<RequestMetricHandles>,
     traces: Arc<super::traces::TraceRuntime>,
     started: Instant,
     utc: SystemTime,
@@ -211,6 +382,7 @@ impl DiagnosticContext {
         }
         let started = Instant::now();
         let utc = SystemTime::now();
+        let metric_handles = metrics.request_metrics(endpoint);
         let root = traces.tracer.as_ref().map(|tracer| {
             tracer.build_with_context(
                 tracer
@@ -227,6 +399,7 @@ impl DiagnosticContext {
         let parent = root.as_ref().map(|s| s.span_context().clone());
         Some(Self(Arc::new(Inner {
             metrics,
+            metric_handles,
             traces,
             started,
             utc,
@@ -269,11 +442,7 @@ impl DiagnosticContext {
         if state.ended.is_none() && state.milestones[index].is_none() {
             let elapsed = self.at();
             state.milestones[index] = Some(elapsed);
-            self.0.metrics.duration(
-                "cvm_request_milestone_seconds",
-                &[("endpoint", self.0.endpoint), ("milestone", name)],
-                elapsed,
-            );
+            self.0.metric_handles.milestones[index].record(elapsed.as_secs_f64());
         }
     }
     fn emit(&self, name: &'static str, start: Duration, end: Duration, attributes: Vec<KeyValue>) {
@@ -382,37 +551,36 @@ impl DiagnosticContext {
                 state.ttft_applicable,
             )
         };
-        let labels = [("endpoint", self.0.endpoint)];
         self.0
-            .metrics
-            .duration("cvm_request_response_duration_seconds", &labels, at);
+            .metric_handles
+            .response_duration
+            .record(at.as_secs_f64());
         self.0
-            .metrics
-            .duration("cvm_request_local_wait_seconds", &labels, wait_total);
+            .metric_handles
+            .local_wait
+            .record(wait_total.as_secs_f64());
         self.0
-            .metrics
-            .duration("cvm_request_unattributed_seconds", &labels, unattributed);
-        self.0.metrics.counter(
-            "cvm_request_response_ends_total",
-            &[("endpoint", self.0.endpoint), ("outcome", outcome)],
-            1,
-        );
+            .metric_handles
+            .unattributed
+            .record(unattributed.as_secs_f64());
+        if let Some(counter) = self.0.metric_handles.response_end(outcome) {
+            counter.increment(1);
+        } else {
+            self.0.metrics.counter(
+                "cvm_request_response_ends_total",
+                &[("endpoint", self.0.endpoint), ("outcome", outcome)],
+                1,
+            );
+        }
         for resource in Resource::ALL {
             let stats = waits[resource.index()];
-            let labels = [("endpoint", self.0.endpoint), ("resource", resource.name())];
             // Include zeros once per observed request, so affected/request denominators agree.
-            self.0
-                .metrics
-                .duration("cvm_request_resource_wait_seconds", &labels, stats.sum);
+            self.0.metric_handles.resource_wait[resource.index()].record(stats.sum.as_secs_f64());
             if stats.count + u64::from(stats.active) > 0 {
-                self.0
-                    .metrics
-                    .counter("cvm_request_wait_affected_total", &labels, 1);
+                self.0.metric_handles.wait_affected[resource.index()].increment(1);
             }
             if stats.sum > Duration::from_millis(100) {
-                self.0
-                    .metrics
-                    .counter("cvm_request_wait_over_100ms_total", &labels, 1);
+                self.0.metric_handles.wait_over_100ms[resource.index()].increment(1);
             }
         }
         for interval in longest {
@@ -598,36 +766,16 @@ impl Drop for Guard {
             }
         }
         drop(state);
-        let labels = [("endpoint", self.context.0.endpoint)];
         match self.kind {
             Kind::Wait(resource) => {
-                self.context.0.metrics.duration(
-                    "cvm_resource_wait_event_seconds",
-                    &[("resource", resource.name())],
-                    duration,
-                );
-                self.context.0.metrics.counter(
-                    "cvm_resource_wait_events_total",
-                    &[
-                        ("resource", resource.name()),
-                        (
-                            "outcome",
-                            if self.complete {
-                                "complete"
-                            } else {
-                                "cancelled"
-                            },
-                        ),
-                    ],
-                    1,
-                );
+                self.context.0.metric_handles.resource_events[resource.index()]
+                    .record(duration.as_secs_f64());
+                self.context.0.metric_handles.resource_event_outcomes[resource.index()]
+                    [usize::from(!self.complete)]
+                .increment(1);
             }
             Kind::Phase(phase) => {
-                self.context.0.metrics.duration(
-                    "cvm_request_stage_seconds",
-                    &[("endpoint", labels[0].1), ("phase", phase.name())],
-                    duration,
-                );
+                self.context.0.metric_handles.stages[phase.index()].record(duration.as_secs_f64());
                 if self.detail {
                     self.context.emit(
                         phase.name(),
@@ -708,11 +856,16 @@ impl PersistenceTicket {
         }
         let end = self.context.at();
         self.context.state().persistence = outcome;
-        self.context.0.metrics.duration(
-            "cvm_request_persistence_seconds",
-            &[("endpoint", self.context.0.endpoint), ("outcome", outcome)],
-            end.saturating_sub(self.start),
-        );
+        let duration = end.saturating_sub(self.start);
+        if let Some(histogram) = self.context.0.metric_handles.persistence_histogram(outcome) {
+            histogram.record(duration.as_secs_f64());
+        } else {
+            self.context.0.metrics.duration(
+                "cvm_request_persistence_seconds",
+                &[("endpoint", self.context.0.endpoint), ("outcome", outcome)],
+                duration,
+            );
+        }
         self.context.emit_linked(
             "cvm.terminal.enqueue_to_commit",
             self.start,

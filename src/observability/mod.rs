@@ -53,6 +53,8 @@ pub(crate) struct ObservabilityRuntime {
     browser_limiter: std::sync::Mutex<browser::BrowserLimiter>,
     report_limiter: std::sync::Mutex<reports::ReportLimiter>,
     traces: std::sync::OnceLock<Arc<traces::TraceRuntime>>,
+    request_metrics:
+        [std::sync::OnceLock<Arc<diagnostics::RequestMetricHandles>>; diagnostics::ENDPOINT_COUNT],
     series: limits::SeriesBudget,
 }
 impl std::fmt::Debug for ObservabilityRuntime {
@@ -111,6 +113,7 @@ impl ObservabilityRuntime {
             browser_limiter: std::sync::Mutex::new(browser::BrowserLimiter::default()),
             report_limiter: std::sync::Mutex::new(reports::ReportLimiter::default()),
             traces: std::sync::OnceLock::new(),
+            request_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
             series: limits::SeriesBudget::default(),
         })
     }
@@ -190,6 +193,12 @@ impl ObservabilityRuntime {
     pub(crate) fn trace_runtime(&self) -> Arc<traces::TraceRuntime> {
         self.traces
             .get_or_init(traces::TraceRuntime::disabled)
+            .clone()
+    }
+    fn request_metrics(&self, endpoint: &'static str) -> Arc<diagnostics::RequestMetricHandles> {
+        let index = diagnostics::endpoint_index(endpoint);
+        self.request_metrics[index]
+            .get_or_init(|| Arc::new(diagnostics::RequestMetricHandles::new(self, endpoint)))
             .clone()
     }
     pub(crate) async fn initialize_traces(&self, config: traces::TraceConfig) {
