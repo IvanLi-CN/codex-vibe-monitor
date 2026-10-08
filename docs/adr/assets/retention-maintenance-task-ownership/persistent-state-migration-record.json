@@ -122,7 +122,7 @@
         "Declare and test durable source state from the immediately preceding Major.",
         "Reject direct multi-Major skips or require explicit intermediate upgrades.",
         "Verify forward repair of interrupted initialization and work.",
-        "Public contract impact is verified Major; persistent-state compatibility is separately verified Minor by all fourteen released-source upgrades and interrupted forward reentry."
+        "The current release is Minor after the owner-confirmed supported-consumer clarification; persistent-state compatibility is independently verified Minor by all fourteen released-source upgrades and interrupted forward reentry. The generic Major requirements do not change the current release classification."
       ]
     },
     "evidence": [
