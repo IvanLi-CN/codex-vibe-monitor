@@ -1,5 +1,5 @@
 {
-  "candidateSha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
+  "candidateSha256": "a403bbdfe19fe5e703e9def02ad321952e83c9db3110a9ca8aac86b6e3cd6522",
   "source": {
     "tag": "v4.2.2",
     "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.2.2",
@@ -19,6 +19,6 @@
     "graceful-lock-release"
   ],
   "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
-  "codeCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
-  "binaryLocalPath": ".codex/evidence/retention-maintenance/repair3/candidate-repair3"
+  "codeCandidateSha": "2fcfc7cf611b27ac35a39e522627fcea9ec226ad",
+  "binaryLocalPath": ".codex/evidence/retention-maintenance/repair4/candidate-repair4"
 }

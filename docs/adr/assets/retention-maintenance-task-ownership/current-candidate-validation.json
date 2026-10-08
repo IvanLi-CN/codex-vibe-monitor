@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "status": "local-validation-passed-formal-review-and-live-ci-pending",
   "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
-  "codeCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
-  "sourceRustTree": "ba4ac3afd3e0986586a3aa84c4b38d2a08d44cb8",
+  "codeCandidateSha": "2fcfc7cf611b27ac35a39e522627fcea9ec226ad",
+  "sourceRustTree": "9088a6fc3916d465b2df61d1a77c9741450c9b77",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
-  "sourceInputFingerprint": "3cbe33e7af8e6bcf5b7a7346f7a172eaef97d54f59386507cb42a3d50da2613b",
-  "sourceInputCount": 260,
-  "candidateBinarySha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
+  "sourceInputFingerprint": "81e534876aa138f191ed945baff32d17849596ea344b8172c265ccd74ad426e9",
+  "sourceInputCount": 261,
+  "candidateBinarySha256": "a403bbdfe19fe5e703e9def02ad321952e83c9db3110a9ca8aac86b6e3cd6522",
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 3,
+    "repairBatchesUsed": 4,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -25,20 +25,20 @@
       "lightweight": {
         "passed": 1302,
         "failed": 0,
-        "testSeconds": 381.123,
-        "profileSeconds": 402
+        "testSeconds": 282.943,
+        "profileSeconds": 289
       },
       "statefulSqlite": {
         "passed": 1457,
         "failed": 0,
-        "testSeconds": 300.533,
-        "profileSeconds": 311
+        "testSeconds": 315.674,
+        "profileSeconds": 323
       },
       "archiveFileIo": {
-        "passed": 329,
+        "passed": 334,
         "failed": 0,
-        "testSeconds": 156.419,
-        "profileSeconds": 172
+        "testSeconds": 98.212,
+        "profileSeconds": 103
       }
     },
     "linuxRuntimeLockRegression": true,
@@ -76,29 +76,36 @@
       "failed": 0,
       "workers": 1,
       "retries": 0
-    }
+    },
+    "sqliteNativeOpenFocused": {
+      "passed": 5,
+      "failed": 0,
+      "testSeconds": 0.03
+    },
+    "docsSiteBuild": true,
+    "docsLint": true
   },
   "backendEvidenceBinding": {
-    "priorRustTree": "95af4b60a35ba18d947ee3c377f581d697448d61",
+    "sourceCandidateSha": "66a5692914956b32ac8a1aee1140372a8cbcec4f",
     "retainedProfiles": [
       "lightweight",
       "statefulSqlite"
     ],
     "rustDelta": [
-      "src/tests/archive_file_io/raw_payload_retention_and_compression.rs: atomic replacement inode in one archive fixture"
+      "src/maintenance/runtime_lock/sqlite_vfs.rs: copy immutable VFS ABI fields and equivalent cfg(test) condition",
+      "src/tests/archive_file_io/maintenance_runtime_ownership.rs: concurrent native VFS registration regression"
     ],
-    "scopeProof": "No production or lightweight/stateful fixture inputs changed; mainline sync changes only documentation and Storybook inputs. Original assertions, budgets, thresholds and profile filters remain intact.",
+    "scopeProof": "The post-66a56929 delta affects native VFS registration and archive/file-I/O tests only. Lightweight/stateful profiles have no owned runtime/VFS registration callers, and their test inputs remain unchanged. Archive 334/334 runs on immutable-field copy; the later Clippy-only cfg(test) conditional collapse is equivalent and its five focused tests pass again on final source.",
     "lightweightExecution": "whole shared runner and descendants pinned to guest CPU 5",
-    "statefulExecution": "6 test threads; distinct guest CPU lease per test; checkpoint/projection fixtures use exclusive configured execution slots",
-    "statefulRunnerCommit": "ae8e56d3f7688c40ac214b2f06bffd5deb67899b",
-    "archiveExecution": "same CPU lease runner with bounded 30-second slot admission before original test starts",
+    "statefulExecution": "6 threads, distinct guest CPU lease per test, configured exclusive checkpoint/projection slots",
+    "archiveExecution": "distinct guest CPU lease per test, bounded 30-second slot admission",
     "archiveRunnerSha256": "af3c5efc430e66e4b3757f0c2472cb62c1524266ef1b9f1bac5040a7f493efbe",
-    "permissionTests": "Linux setpriv drops dac_override/dac_read_search",
+    "permissionTests": "setpriv --bounding-set=-dac_override,-dac_read_search",
     "logs": [
-      "repair3-final-lightweight.log",
-      "repair3-final-stateful-sqlite.log",
-      "repair3-final-archive-file-io.log",
-      "repair3-archive-identity-slot-focused.log"
+      "lightweight-final.log",
+      "stateful-sqlite-final.log",
+      "archive-file-io-final.log",
+      "runtime-open-final.log"
     ]
   },
   "pending": [
@@ -108,39 +115,40 @@
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
     "generation": 7,
-    "leaseExpiresAt": "2026-10-08T07:46:32Z",
-    "memoryMiB": 8192,
+    "leaseExpiresAt": "2026-10-08T09:46:32Z",
+    "memoryMiB": 4096,
     "cpu": 8,
-    "cargoBuildJobs": 1
+    "cargoBuildJobs": 1,
+    "compilerPeakAllocationMiB": 12288
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
     "publishedHeadSha": "1c7241d94a6950aa1f5290d729b3488bd01c336f",
-    "declaredReleasedSourceCount": 14,
-    "runtimeProtocolRepair": "Acquire both actual database inode flocks before SQLite initialization; publish actual initialization/CLI/ready roles; online admission requires the canonical path-pair and current inode proofs. Reject hardlink aliases, offline multi-link databases, mixed pairs and replaced database inodes before opening SQLite.",
-    "webFixtureStabilization": "Preload lazy detail modules outside interaction assertions and await rendered binding state; product behavior and production deadlines unchanged.",
-    "mainlineFairQueuePreserved": true,
-    "pageLevelStoriesRemovalPreserved": true,
+    "ownerAuthorizedRepairBatch": 4,
+    "approvedAtHead": "bf02dc4f13c0ef6a94873ec61d780550f132b3f9",
+    "runtimeProtocolRepair": "Guard both locked database path/descriptor identities at native SQLite VFS pathname/open boundaries and verify the actual native file with SQLITE_FCNTL_HAS_MOVED before journal/schema initialization. Pooled connections retain the guard; process-lived VFS registrations hold weak lock proofs; concurrent registration copies only immutable native ABI fields.",
     "retainedFailedDiagnostics": true,
     "productionAssertionsAndLimitsUnchanged": true,
-    "parallelRustCheck": "Cancelled at 169MiB available guest memory; restarted serially on unchanged source",
-    "releasedFixtureRetry": "One retry after VM registry HTTPS recovered from TCP timeout to 401",
-    "generatedReleasedSources": 14
+    "generatedReleasedSources": 14,
+    "initialPermissionProfileFailure": "1300 passed, 2 failed under root DAC override; restored the prior validated capability restriction, then both exact cases and full lightweight passed.",
+    "initialClippyFailure": "Equivalent cfg(test) nested condition rejected by collapsible_if; replaced with let-chain; final exact check and Clippy passed."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
     "reason": "Deterministic SQLite/file/process/mock fixtures cover behavior; production empirical thresholds are unnecessary"
   },
   "historicalEvidence": {
-    "directory": ".codex/evidence/retention-maintenance/repair3/historical-pre-repair/",
-    "priorCandidateBinarySha256": "87a0e3a50d17aa1b5aa02e7d52b4a931e633b9f539fd1bc75b4ce870a5e47d98",
-    "note": "Earlier binary/runtime/upgrade/Web results are historical and cannot establish final candidate readiness"
+    "directory": ".codex/evidence/retention-maintenance/repair4",
+    "priorCandidateBinarySha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
+    "files": "historical-*.json",
+    "note": "Prior Rust/binary/upgrade/runtime results remain historical; unchanged Web evidence is retained with exact source/support hash and directly inspectable Git delta."
   },
   "visualEvidence": {
     "source": "mock-only ui_demo",
     "ownerConfirmedAssets": 6,
     "currentComparison": "consistent",
-    "renderInputsAfterMainlineStoriesRemoval": "unchanged; no product component, route, style or fixture changed"
+    "renderInputsAfterMainlineStoriesRemoval": "unchanged; no product component, route, style or fixture changed",
+    "retentionProof": "No Web, demo, component, route, style or Web validation support input changed between 0c631537 and the current code candidate; six owner-confirmed mock-only images remain current."
   },
   "productionBuildSettings": {
     "command": "cargo build --locked",
@@ -148,13 +156,13 @@
     "CARGO_BUILD_JOBS": 1,
     "features": "default (hotpath)",
     "mode": "real program, not cfg(test)",
-    "seconds": 209
+    "seconds": 215.29
   },
   "validationSupportInputFingerprint": "d1e2814f2520b96d35be90ef48338609b3875943a0fd4ee5fd7fa6448ed66805",
   "webInputCount": 644,
-  "validatedAt": "2026-10-08T07:51:00.578639+00:00",
-  "evidenceLocator": ".codex/evidence/retention-maintenance/repair3",
-  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair3/candidate-repair3",
+  "validatedAt": "2026-10-08T09:32:38.305586+00:00",
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair4",
+  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair4/candidate-repair4",
   "webInputFingerprint": "aa4e512848dab78a79915568cef428a848f84e498db9683eb14c0a866b982ae6",
   "acceptanceEvidence": {
     "VER-RMO-001": {
@@ -232,20 +240,48 @@
     }
   },
   "logSha256": {
-    "repair3-final-lightweight.log": "56a240ccad696c72a2972590ae9b376dcd585c9d576015fb02ee6f501678e1d4",
-    "repair3-final-stateful-sqlite.log": "d0382c6ac39267ac62f9b85cbf9cd3d1bfcf3f36f6be1c31138b207b6ff0aa2d",
-    "repair3-final-archive-file-io.log": "4febf0c0792f85de6662906055f30a942a8c2650bc5d3bffb7e3f0f472428992",
-    "repair3-current-rustfmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "repair3-current-check-serial.log": "25a3aae7468b18463bd9a7372de9d0a02e29d63d03c428a0125121a40b2add2f",
-    "repair3-current-clippy-serial.log": "779bfa21c9a4ed49a954dc9c4b6dccb2f72a9798eb77e797893c4e948f54ec54",
     "repair3-current-web-typecheck.log": "6e94b57663577cbb86d242c66afaabbf0a5aff17a5a04d8366f273d12e45e624",
     "repair3-current-web-lint.log": "dfcddf3de8bfa7c17806762ce2e37dd96358ab6d3be17c525db8caec631488e4",
     "repair3-current-web-unit.log": "8e81424c93dc7ec33a7eb9ea50c3120a53cf39d77fd0b66195908ef6063e3add",
     "repair3-current-web-build.log": "476c5d02be78db3707dea30586163c4d5b09208f8a6555fa4d379a949a4fd726",
     "repair3-current-storybook.log": "ae817fb21d1dd7fb5e41fa079d531080147189fe8739975db6582c257ac9b9e7",
     "repair3-current-e2e.log": "f7532407a14187c7c4a16a6f986e7a16da3093c8280362609c9b4d9ca67d1ae0",
-    "repair3-current-production-build-debug0.log": "8a9aa60e57450df2d32cc45fbd95ea2c5dc261f9185e5632b667c8b783f6ed3b",
-    "repair3-current-upgrade.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
-    "repair3-current-runtime.log": "fa58a2ceabf8a19d24b02fe71e9107e5965ad23c602032df520dbde9e43d40a4"
+    "rust-check-final.log": "4ac225733f7389ade8c848c8bcb851bfc818f7423fc6594093d37a42e9298262",
+    "runtime-open-focused-final.log": "2cc26f3fa18d56869586628bbd1d0916944ae6fb9300d1e17a6215f5bc3077d9",
+    "lightweight-initial-root-capabilities.log": "d985176a568b355f479ecdf68ed84eb2915925a4e8aa3a673f69ee0551b53ff4",
+    "rust-fmt-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "production-build-final.log": "00f99cc5043ace69c836539857753531c0a497e355db672a12ff1a9952f361b9",
+    "permission-focused.log": "863884cc36e4e99099e75e24c472405e8d38907f40585a8c09cc8fd9c5cd9985",
+    "archive-file-io-final.log": "2b33036fedef52919f48b6b6001a118bfd0f56a1bef035d7c3756ee1a3a16b38",
+    "runtime-open-final.log": "4a2f53118036f54f25bd4e5c949914c4350afa1d11bd64b9d6af2ede0132c62a",
+    "runtime-open-focused-initial.log": "066e80e099ab26cfddf25bdfa3d1d177620229d2689182a3dded79a8665b1da2",
+    "rust-clippy-initial.log": "5c5e936c69d2784494c4f8c8976c8dd5d059e1d163d90061dbe0f355330fd647",
+    "spec-drift-pre-final.log": "6de0bf6f7815ad70fd6e04e67a49d280cdeedadb44e8efb342c8d7a68a9bb1a8",
+    "archive-file-io-before-immutable-vfs-copy.log": "ca7652506c355c091c451881f307966bf99f20d24521044e87925384c834ff7f",
+    "stateful-sqlite-final.log": "0e1b48fcf1b8e93a42f72a6679019f92aafdb1817ee28c71d42fd88df17b981e",
+    "upgrade-final.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
+    "runtime-final.log": "57a11e14a5b9d2a9342ac450feee3fdf4882aaae605599e19735e7765b5b6d2c",
+    "rust-clippy-final.log": "085256bb790cc20b96809070f09ad14a150acab9b8950741fb4407a8590fbc3b",
+    "lightweight-final.log": "febc3b68340a0a7e7f0fedf866b77dcb7729db73154fc785fa6f9d6c7eb81475",
+    "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937"
+  },
+  "webEvidenceBinding": {
+    "sourceCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
+    "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
+    "inputCount": 644,
+    "scopeProof": "Current Web input manifest and eight validation support inputs are byte-identical; unchanged 1838 unit, 14 component Storybook, 12 Playwright, typecheck/lint/build evidence is retained.",
+    "evidenceLocator": ".codex/evidence/retention-maintenance/repair3"
+  },
+  "docsEvidenceBinding": {
+    "sourceCandidateSha": "2fcfc7cf611b27ac35a39e522627fcea9ec226ad",
+    "trackedInputCount": 12,
+    "changedMarkdownPages": [
+      "docs-site/docs/index.md",
+      "docs-site/docs/troubleshooting.md",
+      "docs-site/docs/deployment.md"
+    ],
+    "command": "cd docs-site && DOCS_BASE=/codex-vibe-monitor/ bun run build",
+    "vmInputsVerified": true,
+    "log": "docs-build-final.log"
   }
 }

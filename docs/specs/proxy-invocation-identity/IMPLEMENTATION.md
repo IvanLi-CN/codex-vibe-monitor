@@ -10,6 +10,8 @@
 
 ## Implementation Coverage
 
+Owned service and offline-maintenance SQLite connections pin the lifetime-locked canonical database names and verify their descriptor identities at the Unix VFS open boundary before initialization. Native-handle moved-file checks also reject a different opened inode after the original path has been restored. Later pooled connections inherit the guard; weak proof references do not extend runtime locks beyond pool closure. Identity allocation, source-generation and release-fence policies remain governed by this Spec.
+
 Queue drain uses the existing migration progress `cursor_key` as a circular admission checkpoint, with indexed seeks after the checkpoint and around the beginning. Each admitted key receives one bounded source page per round. Stable pending keys return after their selected peers and continue within the remaining run budget, counting once as visited keys; generation resets yield the affected key for that run. Generation changes and budget exhaustion retain the existing 15-second continuation deadline. Admission commits separately before source work, preserving fair selection after failure without treating admission as aggregate completion. Rebuild still uses the continuous final-publication checkpoint. Queue selection logs a bounded backlog lower bound and oldest selected enqueue age; quantum, restart, retry/deadline, and empty-queue publication events use fingerprints and counts. Focused regressions live in `prompt_cache_materialization_control.rs`, `startup_backfill_tests.rs`, and the archive/file-I/O `prompt_cache_control_file_lock.rs`.
 
 主线 range reservation 的服务验收已转移到 `shared-testbox-proxy-runtime-acceptance`

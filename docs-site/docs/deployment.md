@@ -99,7 +99,7 @@ healthcheck:
 - 性能指标默认写入 `DATABASE_PATH` 同目录的独立文件；指标库只保存有界聚合数据，可按备份策略排除。指标库初始化或写入失败时，代理与 `/health` 不依赖它继续工作。
 - `ARCHIVE_DIR` 与 `PROXY_RAW_DIR` 使用相对路径时，会锚定到 `DATABASE_PATH` 父目录；可用绝对路径把两类目录分别放到独立卷。
 - 系统状态页的项目存储总体积扫描数据目录及外置 raw、archive、数据库与 Xray runtime，并对文件系统对象统一去重。外置数据库只计数据库及 WAL/SHM/journal，不包含父目录中的无关文件。
-- 如果你开启 retention / archive，备份时不要只看主库，还要把 archive 目录一起纳入。
+- 归档默认自动启用，备份时不要只看主库，还要把 archive 目录一起纳入；可在系统任务页暂停自动触发。
 - 镜像本身是无状态的，真正需要你保住的是 SQLite 与相关落盘目录。
 
 ## Account Pool 与 OAuth 部署备注
