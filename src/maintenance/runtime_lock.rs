@@ -69,10 +69,12 @@ impl MaintenanceRuntimeLock {
             lock_paths.push(path_pair_lock_name);
             let mut inode_ids = Vec::new();
             let mut all_exist = true;
+            let mut hardlinked_database = false;
             for path in &paths {
                 use std::os::unix::fs::MetadataExt;
                 if let Ok(metadata) = std::fs::metadata(path) {
                     inode_ids.push((metadata.dev(), metadata.ino()));
+                    hardlinked_database |= metadata.nlink() > 1;
                 } else {
                     all_exist = false;
                 }
@@ -121,6 +123,12 @@ impl MaintenanceRuntimeLock {
                 }
             }
             if busy_roles.is_empty() {
+                // SQLite journals are named after the database path. With multiple hard links,
+                // an offline caller cannot establish which name owns crash-recovery state.
+                anyhow::ensure!(
+                    !hardlinked_database,
+                    "maintenance unavailable: hard-linked database journal ownership is ambiguous"
+                );
                 let mut database_files = Vec::with_capacity(paths.len());
                 for path in &paths {
                     let file = OpenOptions::new()
@@ -153,6 +161,9 @@ impl MaintenanceRuntimeLock {
             // A partial acquisition, initialization, or another offline command is ambiguous.
             // Do not open/recover either database under that condition.
             if allow_online
+                && all_exist
+                && files.is_empty()
+                && busy_roles.iter().any(|role| role == &ready_role)
                 && busy_roles
                     .iter()
                     .any(|role| role == "service:ownership-v1:ready")

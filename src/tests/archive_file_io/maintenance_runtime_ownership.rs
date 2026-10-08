@@ -80,6 +80,16 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
         crate::maintenance::MaintenanceRuntimeRoute::Online
     ));
     assert!(crate::maintenance::MaintenanceRuntimeLock::route(&config, false).is_err());
+    let maintenance_path = config.maintenance_database_path();
+    let displaced_maintenance = directory.join("displaced-maintenance.sqlite");
+    fs::rename(&maintenance_path, &displaced_maintenance).unwrap();
+    fs::write(&maintenance_path, b"replacement").unwrap();
+    assert!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&config, true).is_err(),
+        "ready path markers must not admit a replaced database inode"
+    );
+    fs::remove_file(&maintenance_path).unwrap();
+    fs::rename(&displaced_maintenance, &maintenance_path).unwrap();
     let alias = directory.join("alias");
     fs::create_dir_all(&alias).unwrap();
     let mut alias_config = config.clone();
@@ -91,7 +101,6 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     let hardlink_dir = directory.join("hardlinks");
     fs::create_dir_all(&hardlink_dir).unwrap();
     fs::write(&config.database_path, b"business").unwrap();
-    let maintenance_path = config.maintenance_database_path();
     fs::write(&maintenance_path, b"maintenance").unwrap();
     let hard_business = hardlink_dir.join("business.sqlite");
     let hard_maintenance = hardlink_dir.join("business.maintenance.sqlite");
@@ -100,10 +109,10 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     let mut hardlink_config = config.clone();
     hardlink_config.database_path = hard_business;
     unsafe { std::env::set_var("MAINTENANCE_DATABASE_PATH", &hard_maintenance) };
-    assert!(matches!(
-        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).unwrap(),
-        crate::maintenance::MaintenanceRuntimeRoute::Online
-    ));
+    assert!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err(),
+        "hard-link aliases must not open a separate SQLite journal while online"
+    );
     unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
     let other_database = directory.join("other.sqlite");
     let other_maintenance = directory.join("other.maintenance.sqlite");
@@ -145,23 +154,31 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     drop(other);
     child.0.kill().unwrap();
     child.0.wait().unwrap();
+    assert!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err(),
+        "offline recovery must reject ambiguous hard-link journal ownership"
+    );
+    fs::remove_file(&hardlink_config.database_path).unwrap();
+    fs::remove_file(&hard_maintenance).unwrap();
+    fs::remove_file(&hard_other_maintenance).unwrap();
     let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut recovered) =
         crate::maintenance::MaintenanceRuntimeLock::route(&config, true).unwrap()
     else {
         panic!("dead service must release the runtime");
     };
-    unsafe { std::env::set_var("MAINTENANCE_DATABASE_PATH", &hard_maintenance) };
+    let mut canonical_config = config.clone();
+    canonical_config.database_path = alias.join("..").join("business.sqlite");
     recovered
         .publish_role("service:ownership-v1:initializing")
         .unwrap();
-    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err());
+    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&canonical_config, true).is_err());
     recovered.publish_role("cli:ownership-v1").unwrap();
-    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err());
+    assert!(crate::maintenance::MaintenanceRuntimeLock::route(&canonical_config, true).is_err());
     recovered
         .publish_role("service:ownership-v1:ready")
         .unwrap();
     assert!(matches!(
-        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).unwrap(),
+        crate::maintenance::MaintenanceRuntimeLock::route(&canonical_config, true).unwrap(),
         crate::maintenance::MaintenanceRuntimeRoute::Online
     ));
     unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
