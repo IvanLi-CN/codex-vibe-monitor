@@ -129,15 +129,16 @@ pub(super) fn endpoint_index(endpoint: &'static str) -> usize {
 }
 
 pub(super) struct RequestMetricHandles {
+    endpoint: &'static str,
     response_duration: metrics::Histogram,
     local_wait: metrics::Histogram,
     unattributed: metrics::Histogram,
-    response_ends: [metrics::Counter; 3],
+    response_ends: [std::sync::OnceLock<metrics::Counter>; 3],
     resource_wait: [metrics::Histogram; 7],
     wait_affected: [metrics::Counter; 7],
     wait_over_100ms: [metrics::Counter; 7],
     resource_events: [metrics::Histogram; 7],
-    resource_event_outcomes: [[metrics::Counter; 2]; 7],
+    resource_event_outcomes: [[std::sync::OnceLock<metrics::Counter>; 2]; 7],
     stages: [metrics::Histogram; 9],
     milestones: [metrics::Histogram; 3],
     persistence: [metrics::Histogram; 3],
@@ -162,13 +163,6 @@ impl RequestMetricHandles {
             "cvm_request_unattributed_seconds",
             vec![("endpoint", endpoint)],
         );
-        let response_ends = std::array::from_fn(|index| {
-            let outcome = ["complete", "error", "cancelled"][index];
-            counter(
-                "cvm_request_response_ends_total",
-                vec![("endpoint", endpoint), ("outcome", outcome)],
-            )
-        });
         let resource_wait = std::array::from_fn(|index| {
             histogram(
                 "cvm_request_resource_wait_seconds",
@@ -202,18 +196,6 @@ impl RequestMetricHandles {
                 vec![("resource", Resource::ALL[index].name())],
             )
         });
-        let resource_event_outcomes = std::array::from_fn(|index| {
-            std::array::from_fn(|outcome_index| {
-                let outcome = ["complete", "cancelled"][outcome_index];
-                counter(
-                    "cvm_resource_wait_events_total",
-                    vec![
-                        ("resource", Resource::ALL[index].name()),
-                        ("outcome", outcome),
-                    ],
-                )
-            })
-        });
         let stages = std::array::from_fn(|index| {
             let phase = Phase::ALL[index];
             histogram(
@@ -240,25 +222,53 @@ impl RequestMetricHandles {
             )
         });
         Self {
+            endpoint,
             response_duration,
             local_wait,
             unattributed,
-            response_ends,
+            response_ends: std::array::from_fn(|_| std::sync::OnceLock::new()),
             resource_wait,
             wait_affected,
             wait_over_100ms,
             resource_events,
-            resource_event_outcomes,
+            resource_event_outcomes: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::sync::OnceLock::new())
+            }),
             stages,
             milestones,
             persistence,
         }
     }
-    fn response_end(&self, outcome: &'static str) -> Option<&metrics::Counter> {
+    fn response_end(
+        &self,
+        metrics: &ObservabilityRuntime,
+        outcome: &'static str,
+    ) -> Option<&metrics::Counter> {
         ["complete", "error", "cancelled"]
             .iter()
             .position(|candidate| *candidate == outcome)
-            .map(|index| &self.response_ends[index])
+            .map(|index| {
+                self.response_ends[index].get_or_init(|| {
+                    metrics.register_counter(ObservabilityRuntime::key(
+                        "cvm_request_response_ends_total",
+                        &[("endpoint", self.endpoint), ("outcome", outcome)],
+                    ))
+                })
+            })
+    }
+    fn resource_event_outcome(
+        &self,
+        metrics: &ObservabilityRuntime,
+        resource: Resource,
+        outcome: &'static str,
+    ) -> &metrics::Counter {
+        let outcome_index = usize::from(outcome == "cancelled");
+        self.resource_event_outcomes[resource.index()][outcome_index].get_or_init(|| {
+            metrics.register_counter(ObservabilityRuntime::key(
+                "cvm_resource_wait_events_total",
+                &[("resource", resource.name()), ("outcome", outcome)],
+            ))
+        })
     }
     fn persistence_histogram(&self, outcome: &'static str) -> Option<&metrics::Histogram> {
         [
@@ -563,7 +573,7 @@ impl DiagnosticContext {
             .metric_handles
             .unattributed
             .record(unattributed.as_secs_f64());
-        if let Some(counter) = self.0.metric_handles.response_end(outcome) {
+        if let Some(counter) = self.0.metric_handles.response_end(&self.0.metrics, outcome) {
             counter.increment(1);
         } else {
             self.0.metrics.counter(
@@ -770,9 +780,19 @@ impl Drop for Guard {
             Kind::Wait(resource) => {
                 self.context.0.metric_handles.resource_events[resource.index()]
                     .record(duration.as_secs_f64());
-                self.context.0.metric_handles.resource_event_outcomes[resource.index()]
-                    [usize::from(!self.complete)]
-                .increment(1);
+                self.context
+                    .0
+                    .metric_handles
+                    .resource_event_outcome(
+                        &self.context.0.metrics,
+                        resource,
+                        if self.complete {
+                            "complete"
+                        } else {
+                            "cancelled"
+                        },
+                    )
+                    .increment(1);
             }
             Kind::Phase(phase) => {
                 self.context.0.metric_handles.stages[phase.index()].record(duration.as_secs_f64());
