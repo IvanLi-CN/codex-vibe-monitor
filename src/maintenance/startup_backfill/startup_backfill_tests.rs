@@ -385,6 +385,64 @@ async fn prompt_cache_queue_wake_preempts_idle_deadline() {
 }
 
 #[tokio::test]
+async fn prompt_cache_fair_queue_continuation_retains_fifteen_second_retry_and_event_wake() {
+    for reason in [
+        "stats_page_pending",
+        "stats_generation_changed",
+        "stats_budget_exhausted",
+    ] {
+        let store = prompt_cache_materialization_test_store().await;
+        let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+        let now = Utc::now();
+        let retry_at = now + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+        assert_eq!((retry_at - now).num_seconds(), 15);
+        let deadline = format_utc_iso(retry_at);
+        save_prompt_cache_materialization_progress(
+            &store.pool,
+            task.name(),
+            StartupBackfillProgressUpdate {
+                cursor_id: 0,
+                scanned: 3,
+                updated: 2,
+                zero_update_streak: 0,
+                next_run_after: &deadline,
+                status: STARTUP_BACKFILL_STATUS_IDLE,
+                suspension_reason: Some(reason),
+            },
+            0,
+        )
+        .await
+        .unwrap();
+        let progress = load_startup_backfill_progress_from_pool(&store.pool, task.name())
+            .await
+            .unwrap();
+        assert!(!progress.is_due(now));
+        assert!(progress.is_due(retry_at + ChronoDuration::seconds(1)));
+        assert_eq!(progress.suspension_reason.as_deref(), Some(reason));
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.record_next_due(task, retry_at);
+        assert!(scheduler.drain_due_tasks(now).is_empty());
+        assert_eq!(
+            wake_prompt_cache_materialization_with_scheduler(
+                &store,
+                "test_fair_queue_event",
+                &scheduler
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        assert_eq!(scheduler.drain_woken_tasks(), vec![task]);
+        assert!(
+            load_startup_backfill_progress_from_pool(&store.pool, task.name())
+                .await
+                .unwrap()
+                .is_due(Utc::now())
+        );
+    }
+}
+
+#[tokio::test]
 async fn prompt_cache_queue_wake_coalesces_concurrent_events() {
     let store = Arc::new(prompt_cache_materialization_test_store().await);
     let scheduler = Arc::new(StartupBackfillScheduler::default());

@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Persist fair queue admission order in the existing phase-local cursor; retain generation-fenced source-page staging and completion.",
+    "release_unit_description": "Prompt-cache statistics queue scheduling",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "Existing prompt-cache refresh queue, staging, migration progress and freshness marker.",
+    "storage_implementation": "SQLite; no new schema object, column, trigger, migration identity or encoding.",
+    "source_compatibility_range": {
+      "from_program_versions": "4.1.0, 4.1.1 and 4.1.2 (current supported 4.1.x materialization state)",
+      "to_program_version": "next 4.1.x patch",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": false,
+    "ddl_structural_changes": [],
+    "dml_changes": [
+      {
+        "id": "queue-admission",
+        "description": "Commit phase-local circular admission cursor before a bounded source-page attempt; completion still deletes only the fenced queue generation atomically with aggregate publication.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "queue-admission",
+      "generation-fenced-source-page",
+      "empty-queue-freshness-publication"
+    ],
+    "progress_signals": [
+      "queue_pending_lower_bound",
+      "oldest_selected_enqueue_age_ms",
+      "fingerprinted cursor and quantum outcome",
+      "generation restart/discarded rows",
+      "bounded retry reason/deadline",
+      "queue drained and freshness published"
+    ],
+    "pause_points": [
+      "before each admission",
+      "before each registered source page",
+      "between committed pages"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward repair reads existing queue and staging, then resumes circular scheduling; earlier same-Minor readers ignore the queue cursor and retain lexicographic selection without skipping pending work",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "4.1.x fixture with existing queue/staging/cursor resumes through source changes, schema re-entry and control restart",
+        "admission failure starts no page; page publication failure preserves queue and staging",
+        "real SQLite file-lock/reopen preserves progress and reaches exact complete totals",
+        "earlier readers use unchanged queue/staging columns and ignore queue-drain cursor",
+        "public API and allocator remain unchanged"
+      ],
+      "status": "pending"
+    }
+  }
+}
