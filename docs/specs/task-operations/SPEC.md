@@ -390,6 +390,24 @@
   - ![Task catalog workload background, row](./assets/task-catalog-workload-background-row.png)
   - ![Task catalog workload background, mobile](./assets/task-catalog-workload-background-mobile-393x852.png)
 
+### Task Workload Sparkline Markers — Online Candidate
+
+- source_type: `ui_demo`
+- target_program: `vite_web_demo`
+- capture_scope: `element`
+- viewport_strategy: `devtools-emulate`
+- requested_viewport: `1440x900`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- sensitive_exclusion: `N/A`
+- state: live task-directory rows rendered from the online read-only data path
+- rendered_candidate: `4e7415f051d2e2ba43b1b368d95289345c13f52b`
+- owner_confirmation: confirmed in chat for the current visual evidence and merge continuation on 2026-10-08
+- submission_gate: `approved`
+- images:
+  - ![Online raw payload metrics inventory workload row](./assets/task-workload-sparkline-online-raw-payload-metrics-inventory.png)
+  - ![Online retention archive workload row](./assets/task-workload-sparkline-online-retention-archive.png)
+
 ## References
 
 - `./IMPLEMENTATION.md`

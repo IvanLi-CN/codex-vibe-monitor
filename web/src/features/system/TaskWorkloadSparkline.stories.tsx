@@ -162,10 +162,18 @@ export const LoadFailure: Story = {
 
 export const SingleSample: Story = {
   args: { task: singleSampleTask, dark: false },
+  tags: ["test"],
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await waitFor(() => expect(canvas.getByText(/P /)).toBeVisible());
-    await waitFor(() => expect(canvasElement.querySelectorAll("circle")).toHaveLength(3));
+    await waitFor(() =>
+      expect(canvasElement.querySelectorAll('[data-chart-marker="point"]')).toHaveLength(3),
+    );
+    const marker = canvasElement.querySelector('[data-chart-marker="point"]');
+    if (!marker) throw new Error("Single-sample chart marker is missing");
+    await expect(marker).toHaveAttribute("vector-effect", "non-scaling-stroke");
+    await expect(marker).toHaveAttribute("stroke-linecap", "round");
+    await expect(marker).toHaveAttribute("stroke-width", "4");
   },
 };
 

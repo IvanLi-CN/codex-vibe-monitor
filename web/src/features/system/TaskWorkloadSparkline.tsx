@@ -553,6 +553,8 @@ export function TaskWorkloadSparkline({
         ).flatMap(([metric, color, fillOpacity, strokeWidth]) =>
           paths[metric].flatMap((path) => {
             const pathKey = `${metric}-${path.firstX}-${path.lastX}-${path.points.length}`;
+            const point = path.points[0];
+            const markerDelta = point.x >= 319.99 ? -0.01 : 0.01;
             return [
               path.points.length > 1 ? (
                 <path
@@ -569,15 +571,20 @@ export function TaskWorkloadSparkline({
                   fill="none"
                   stroke={color}
                   strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   vectorEffect="non-scaling-stroke"
                 />
               ) : (
-                <circle
+                <path
                   key={`${pathKey}-point`}
-                  cx={path.points[0].x}
-                  cy={path.points[0].y}
-                  r="2.2"
-                  fill={color}
+                  data-chart-marker="point"
+                  d={`M ${point.x.toFixed(2)},${point.y.toFixed(2)} h ${markerDelta.toFixed(2)}`}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={backgroundMode ? 3.4 : 4}
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
                 />
               ),
             ];
