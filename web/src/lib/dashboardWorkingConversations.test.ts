@@ -96,6 +96,15 @@ function createResponse(
   };
 }
 
+function legacyShortHashForTest(value: string): string {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0").toUpperCase().slice(0, 6);
+}
+
 describe("mapPromptCacheConversationsToDashboardCards", () => {
   it("uses the persisted conversation id without deriving one from the prompt cache key", () => {
     const response = createResponse([
@@ -173,10 +182,16 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
   });
 
   it("preserves distinct persisted ids for keys that collided in legacy short ids", () => {
+    const firstPromptCacheKey = "pck-collision-2662";
+    const secondPromptCacheKey = "pck-collision-10988";
+
+    expect(legacyShortHashForTest(firstPromptCacheKey)).toBe(
+      legacyShortHashForTest(secondPromptCacheKey),
+    );
+
     const response = createResponse([
       createConversation(
-        // These keys share the former FNV-1a six-character display hash.
-        "pck-collision-2662",
+        firstPromptCacheKey,
         [
           createPreview({
             id: 1,
@@ -188,7 +203,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
         { conversationId: "conv-alpha" },
       ),
       createConversation(
-        "pck-collision-10988",
+        secondPromptCacheKey,
         [
           createPreview({
             id: 2,

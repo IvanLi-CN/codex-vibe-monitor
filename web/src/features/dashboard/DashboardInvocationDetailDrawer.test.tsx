@@ -125,6 +125,16 @@ async function waitFor(check: () => boolean, timeoutMs = 1000) {
   throw new Error("timed out waiting for async UI state");
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
     id: number;
@@ -567,9 +577,11 @@ describe("DashboardInvocationDetailDrawer", () => {
       ...createSelection(secondRecord),
       conversationId: "conversation-second",
     };
+    const firstLookup = createDeferred<InvocationRecordsResponse>();
+    const secondLookup = createDeferred<InvocationRecordsResponse>();
     apiMocks.fetchInvocationRecords
-      .mockResolvedValueOnce(createRecordsResponse([firstRecord]))
-      .mockResolvedValueOnce(createRecordsResponse([secondRecord]));
+      .mockReturnValueOnce(firstLookup.promise)
+      .mockReturnValueOnce(secondLookup.promise);
 
     render(
       <DashboardInvocationDetailDrawer
@@ -580,8 +592,7 @@ describe("DashboardInvocationDetailDrawer", () => {
       />,
     );
 
-    await waitFor(() => (document.body.textContent ?? "").includes("工作流时间线"));
-    expect(document.body.textContent ?? "").toContain("conversation-first");
+    await waitFor(() => apiMocks.fetchInvocationRecords.mock.calls.length === 1);
 
     act(() => {
       root?.render(
@@ -594,7 +605,20 @@ describe("DashboardInvocationDetailDrawer", () => {
       );
     });
 
+    await waitFor(() => apiMocks.fetchInvocationRecords.mock.calls.length === 2);
+
+    await act(async () => {
+      secondLookup.resolve(createRecordsResponse([secondRecord]));
+      await secondLookup.promise;
+    });
     await waitFor(() => (document.body.textContent ?? "").includes("conversation-second"));
+
+    await act(async () => {
+      firstLookup.resolve(createRecordsResponse([firstRecord]));
+      await firstLookup.promise;
+    });
+    await flushAsyncWork();
+
     expect(document.body.textContent ?? "").not.toContain("conversation-first");
   });
 
