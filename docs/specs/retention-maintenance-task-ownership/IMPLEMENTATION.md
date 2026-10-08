@@ -17,10 +17,10 @@
 
 ## Verification
 
-- 当前源码输入：Rust 树 `95af4b60a35ba18d947ee3c377f581d697448d61`，Web 树 `e352311b912402a2bd869630dd5c993fc454bc63`；260 个 Rust／构建输入已在会话 VM 逐项核对，指纹为 `c27f83124cd0a41a0d480dd23ce7b38966a9a9eb2767ef8f87e40121fa37faf9`。
-- 已通过：Web 类型、lint、构建；完整单测 179 文件、1838 测试（6 跳过），相关 Storybook 3 文件／72 测试，桌面／移动端与 demo 路由 Playwright 12 测试。测试夹具预先加载懒模块并等待实际渲染状态，未改变产品交互或生产阈值。
-- 已通过：会话 Linux VM 中共享 runner 的 lightweight 组 1302/1302，源码质量门禁、质量门禁合同与后端测试脚本合同。SQLite 与 archive/file-I/O 组、Rust fmt/check/clippy 的当前结果待补充。
-- Linux 计时诊断：增加 vCPU 和 nextest 独占执行槽均未消除共享宿主资源下的既有 projection 计时失败；将测试进程及子进程固定到单个来宾 CPU 后，11 个原失败测试全部通过，lightweight 完整组通过。保留失败日志，所有原断言和生产时限不变；SQLite 组维持六测试并行，以标准 Cargo target runner 将每个真实测试进程固定到独立来宾 CPU；七项原失败均在原断言下通过。统计检查点夹具在整组负载下仍未于既有恢复预算完成，隔离执行通过，现为该 150ms／3s 预算夹具配置独占执行槽，完整组待刷新。文件／归档组仍待验证。
+- 当前源码输入：Rust 树 `95af4b60a35ba18d947ee3c377f581d697448d61`，Web 树 `cdc5b1814dfd6e5c8b5fa6820cd94ad825f019a7`；260 个 Rust／构建输入已在会话 VM 逐项核对，指纹为 `c27f83124cd0a41a0d480dd23ce7b38966a9a9eb2767ef8f87e40121fa37faf9`。
+- 主干 workload marker 合并前已通过：Web 类型、lint、构建；完整单测 179 文件、1838 测试（6 跳过），相关 Storybook 3 文件／72 测试，桌面／移动端与 demo 路由 Playwright 12 测试。测试夹具预先加载懒模块并等待实际渲染状态，未改变产品交互或生产阈值。
+- 已通过：会话 Linux VM 中共享 runner 的 lightweight 组 1302/1302，源码质量门禁、质量门禁合同与后端测试脚本合同。SQLite 组 1457/1457 已通过；archive/file-I/O 组与 Rust fmt/check/clippy 的最终结果待补充。
+- Linux 计时诊断：增加 vCPU 和 nextest 独占执行槽均未消除共享宿主资源下的既有 projection 计时失败；将测试进程及子进程固定到单个来宾 CPU 后，11 个原失败测试全部通过，lightweight 完整组通过。保留失败日志，所有原断言和生产时限不变；SQLite 组维持六测试并行，以标准 Cargo target runner 将每个真实测试进程固定到独立来宾 CPU；七项原失败均在原断言下通过。统计检查点夹具在整组负载下仍未于既有恢复预算完成，隔离执行通过，现为该 150ms／3s 预算夹具配置独占执行槽，SQLite 完整组已通过。归档组的三项失败已定位：两项尚未进入测试便因短暂占用的 CPU 槽被拒绝，现增加有界资源准入等待；文件身份替换夹具改为原子替换 inode，避免文件系统时间戳精度使原地写入仍保持旧身份。三项原回归全部通过，归档完整组待刷新；生产删除保护与计时阈值保持不变。
 - 运行态修复统一路径／inode 锁排序，在 SQLite 初始化前持有实际数据库文件锁，并发布初始化、CLI 与 ready 角色。新升级与服务／CLI／页面竞争结果必须绑定最终候选二进制 digest；旧结果只保留为历史，不充当当前证明。
 - 六张 mock-only 页面图片已获主人确认；主干合并后再次核对任务行、控制、计划、计量及详情，图中相关页面行为与呈现保持一致。新主干的统计公平队列、分页及实时 overlay 合同保留。
 - `VER-RMO-001` 至 `VER-RMO-008` 的实现证据映射到 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。当前尚未满足 PR Ready；必须完成十四来源升级、进程验证、Tier 4 审查及 PR 当前 head CI。
@@ -40,7 +40,7 @@
 
 - 公开配置移除、一次性入口范围及自动触发控制语义按 breaking／major 记录；持久状态影响单独评估，不由公开合同的 Major 自动决定。
 - 直接来源逐一为 v4.0.0 至 v4.0.6、v4.1.0 至 v4.1.3、v4.2.0 至 v4.2.2；各来源由对应发布镜像独立生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。更早 Major 必须先中间升级，不支持多版本同时写入。
-- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `ac9bdfda97c79c666448db2b38eb6131d2c92d15`，保留主干统计公平队列及其回归，不重写已发布历史。
+- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始，按已授权同步合同保留备份并对齐主干；已发布后仅使用签名合并提交，当前基线为 `34595ae78bbd13e361e549389939ffee3580d452`，保留主干统计公平队列及其回归，不重写已发布历史。
 - 必须完成最终候选工程检查、发布来源升级、Tier 4 只读审查及同一 PR 当前 head 的必要 CI，才可宣告 Step 5C Ready。
 
 ## References

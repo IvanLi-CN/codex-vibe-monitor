@@ -2094,7 +2094,10 @@ async fn retention_raw_reconciliation_resets_wrong_identity_without_release() {
         .execute(&pool)
         .await
         .expect("age original quarantine row");
-    fs::write(&raw_path, b"replacement-identity").expect("replace raw file contents");
+    let replacement_path = config.proxy_raw_dir.join("identity-replacement.tmp");
+    fs::write(&replacement_path, b"replacement-identity").expect("write replacement inode");
+    // Timestamp resolution must not decide whether this fixture changes identity.
+    fs::rename(&replacement_path, &raw_path).expect("atomically replace raw file identity");
     sqlx::query(
         "UPDATE retention_recovery_cursors SET cursor = '' WHERE scope = 'raw_payload_files'",
     )
