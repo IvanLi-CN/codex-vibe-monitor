@@ -1,61 +1,9 @@
 {
   "status": "historical-validation-current-repair-pending",
-  "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
-  "codeCandidateSha": "250a17e0",
-  "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b",
-  "passed": {
-    "webUnit": {
-      "files": 178,
-      "passed": 1811,
-      "skipped": 6
-    },
-    "storybook": {
-      "files": 2,
-      "passed": 72
-    },
-    "playwright": {
-      "passed": 12
-    },
-    "webTypecheck": true,
-    "webLint": true,
-    "webBuild": true,
-    "rustSourceQuality": true,
-    "ownerConfirmedVisualAssets": 6,
-    "webSourceTree": "0a373efb5e98cbc4aedefce182093a84387b3aa8",
-    "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs.",
-    "rustFmt": true,
-    "rustCheckAllTargetsAllFeatures": true,
-    "rustClippyAllTargetsAllFeatures": true,
-    "repairBatchFocusedRegressions": {
-      "runtimeLockHardlinkAlias": true,
-      "rawOrphanDryRunReleaseAccounting": true,
-      "offlineRequestedRunRecovery": true
-    },
-    "productionLinuxBuild": true,
-    "runtimeProcessFixture": true,
-    "namedOwnershipRegression": {
-      "passed": 11,
-      "failed": 0,
-      "ignored": 1
-    },
-    "backendProfiles": {
-      "lightweight": {
-        "passed": 1300,
-        "failed": 0
-      },
-      "statefulSqlite": {
-        "passed": 1451,
-        "failed": 0,
-        "rerunAfterTimingFlake": true
-      },
-      "archiveFileIo": {
-        "passed": 327,
-        "failed": 0
-      }
-    },
-    "releasedSources": 10,
-    "sourceInputFingerprint": "ad21f0b710e88fb908b70d3ee33d54d9dddb38cf515ddb468a8396c4b349010b"
-  },
+  "baseSha": "ea2a37b3d577950ea9306c61c3b3c7129e1785c9",
+  "codeCandidateSha": "80fd1835e698dc3530d4e78e7c06f634281effc3",
+  "candidateBinarySha256": null,
+  "passed": {},
   "notPassed": [
     "current-repair-candidate-validation",
     "formal-Tier-4-review",
@@ -130,7 +78,10 @@
         "failed": 0,
         "platform": "aarch64-apple-darwin"
       }
-    }
+    },
+    "codeRepairSha": "7b8c5106",
+    "mainlineSyncSha": "80fd1835e698dc3530d4e78e7c06f634281effc3",
+    "visualEvidenceRetained": "Retention task pages, mock fixtures, shared shell/styles and task translation keys are unchanged by mainline sync; only unrelated dashboard/conversation translations were added. Six owner-confirmed retention page images remain applicable."
   },
   "currentRuntimeBlocker": {
     "code": "resource_insufficient",
@@ -142,5 +93,63 @@
     "requestedMemoryMiB": 12288,
     "operationId": "b9e0e33f-98f2-4df7-835a-00c1a684d4ab",
     "effectiveLease": false
+  },
+  "priorValidation": {
+    "baseSha": "d8aa9e7ffec8d24b499e93db633486827a87ba7c",
+    "codeCandidateSha": "250a17e0",
+    "candidateBinarySha256": "c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b",
+    "passed": {
+      "webUnit": {
+        "files": 178,
+        "passed": 1811,
+        "skipped": 6
+      },
+      "storybook": {
+        "files": 2,
+        "passed": 72
+      },
+      "playwright": {
+        "passed": 12
+      },
+      "webTypecheck": true,
+      "webLint": true,
+      "webBuild": true,
+      "rustSourceQuality": true,
+      "ownerConfirmedVisualAssets": 6,
+      "webSourceTree": "0a373efb5e98cbc4aedefce182093a84387b3aa8",
+      "webEvidenceRetentionReason": "Web tree and dependency inputs are identical across the current mainline rebase; the retained Web checks and six owner-confirmed assets use unchanged render inputs.",
+      "rustFmt": true,
+      "rustCheckAllTargetsAllFeatures": true,
+      "rustClippyAllTargetsAllFeatures": true,
+      "repairBatchFocusedRegressions": {
+        "runtimeLockHardlinkAlias": true,
+        "rawOrphanDryRunReleaseAccounting": true,
+        "offlineRequestedRunRecovery": true
+      },
+      "productionLinuxBuild": true,
+      "runtimeProcessFixture": true,
+      "namedOwnershipRegression": {
+        "passed": 11,
+        "failed": 0,
+        "ignored": 1
+      },
+      "backendProfiles": {
+        "lightweight": {
+          "passed": 1300,
+          "failed": 0
+        },
+        "statefulSqlite": {
+          "passed": 1451,
+          "failed": 0,
+          "rerunAfterTimingFlake": true
+        },
+        "archiveFileIo": {
+          "passed": 327,
+          "failed": 0
+        }
+      },
+      "releasedSources": 10,
+      "sourceInputFingerprint": "ad21f0b710e88fb908b70d3ee33d54d9dddb38cf515ddb468a8396c4b349010b"
+    }
   }
 }

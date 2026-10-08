@@ -39,11 +39,11 @@
 
 - 公开配置移除、一次性入口范围及自动触发控制语义按 breaking／major 记录；持久状态影响单独评估，不由公开合同的 Major 自动决定。
 - 直接来源逐一为 v4.0.0、v4.0.1、v4.0.2、v4.0.3、v4.0.4、v4.0.5、v4.0.6、v4.1.0、v4.1.1 与 v4.1.2；既有夹具分别由发布镜像生成，来源与镜像摘要保存在 [released-state-sources.json](../../adr/assets/retention-maintenance-task-ownership/released-state-sources.json)。修复前候选升级验收已通过十个独立来源；最终候选的证据绑定仍须刷新。更早 Major 必须先中间升级，不支持多版本同时写入。
-- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始；主干合入对话统计变更后按已授权的同步合同对齐当前主干 d8aa9e7ffec8d24b499e93db633486827a87ba7c，保留实现备份并刷新验证与审查。
+- 实现从计划基线 `130c357c043a3449512a25cd82643fc5a8ca02df` 开始；主干合入对话统计变更后按已授权的同步合同对齐主干 d8aa9e7ffec8d24b499e93db633486827a87ba7c，保留实现备份并刷新验证与审查；后续以签名合并提交同步 ea2a37b3d577950ea9306c61c3b3c7129e1785c9，不重写已发布历史。
 - 必须完成最终候选工程检查、发布来源升级、Tier 4 只读审查及同一 PR 当前 head 的必要 CI，才可宣告 Step 5C Ready。
 
 ## References
 
 - [Requirements](SPEC.md)
 - [Background](HISTORY.md)
-- [Ownership decision](../../adr/0033-retention-maintenance-task-ownership.md)
+- [Ownership decision](../../adr/0034-retention-maintenance-task-ownership.md)

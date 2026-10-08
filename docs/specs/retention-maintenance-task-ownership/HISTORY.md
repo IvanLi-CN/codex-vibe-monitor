@@ -11,13 +11,15 @@
 - 主人已确认完整需求集合，关联 ADR 已接受；已按主人明确批准的实现计划进入实现与验证。
 - [Bounded retention runs](../bounded-retention-runs/SPEC.md) 继续拥有归档预算、正确性和资源合同。本主题接管其中会话派生维护的归档阶段归属、跨任务组合完成度和自动触发暂停的含义；不整体取代该主题。
 - [Invocation identity](../proxy-invocation-identity/SPEC.md) 与 [raw retention recovery](../autonomous-retention-recovery/SPEC.md) 继续拥有身份和文件删除安全。本主题调整执行者归属，不放宽保护条件。
-- [ADR 0033](../../adr/0033-retention-maintenance-task-ownership.md) 保存四项拆分、弃用环境输入、默认值、调度和 CLI 范围的取舍；词汇由根目录 `CONTEXT.md` 定义。
+- [ADR 0034](../../adr/0034-retention-maintenance-task-ownership.md) 保存四项拆分、弃用环境输入、默认值、调度和 CLI 范围的取舍；词汇由根目录 `CONTEXT.md` 定义。
 
 ## Related Changes
 
 - 文档在签名提交中保留；实现位于 `th/retention-maintenance-boundaries`，同一 [PR #1092](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092) 交付至 merge-ready。
 - v4.0.0–v4.0.6、v4.1.0、v4.1.1 与 v4.1.2 的发布镜像分别生成了状态夹具；修复前二进制已通过十来源升级与中断前向恢复，最终候选证据状态见 IMPLEMENTATION.md。
 - PR Linux CI 暴露首次启动后 inode 补锁排序与路由不一致，修复统一排序，并保留初始化／离线 CLI 角色，避免数据库对锁提前发布 ready；新增 raw dry-run 回归移至独立批次测试文件，遵守既有源文件预算。
+
+- 主干新增另一份 ADR 0033 后，本任务已批准的决策文件仅顺延为 ADR 0034 并更新引用，决策正文未变更。
 
 ## References
 

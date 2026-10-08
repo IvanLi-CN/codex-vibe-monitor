@@ -20,7 +20,7 @@
       "reasoning": "Removing RETENTION_ENABLED and XY_RETENTION_ENABLED without reading or importing their old values breaks the published runtime configuration contract. The one-shot CLI changes from combined maintenance to archive-only; automatic-trigger pause permits explicit manual execution and does not truncate an admitted bounded run. New cleanup tasks default to automatically triggered. Persistent-state compatibility is assessed separately.",
       "assessed_at": "2026-10-06T14:57:37Z",
       "evidence": [
-        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
         "README.md",
         "src/config.rs",
         "src/maintenance_store.rs",
@@ -36,7 +36,7 @@
       "reasoning": "Approved public configuration removal and independent task controls are implemented. Persistent state remains an additive Minor change and has passed all ten declared released-source upgrades.",
       "reassessed_at": "2026-10-08T00:20:00Z",
       "evidence": [
-        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
         "docs/specs/retention-maintenance-task-ownership/SPEC.md",
         "src/maintenance/cli.rs",
         "src/maintenance/ownership.rs",
@@ -61,7 +61,7 @@
       "planned_impact": "major",
       "supported_consumer_range": "The new runtime contract uses managed task controls only; consumers relying on either removed environment variable must adopt those controls.",
       "evidence": [
-        "docs/adr/0033-retention-maintenance-task-ownership.md",
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
         "docs/specs/retention-maintenance-task-ownership/SPEC.md"
       ]
     },

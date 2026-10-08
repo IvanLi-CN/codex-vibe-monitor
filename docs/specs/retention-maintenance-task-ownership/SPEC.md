@@ -139,7 +139,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 - [Task runtime observation and effective schedules](../../adr/0024-task-runtime-observation-and-effective-schedules.md)
 - [Retention core and conversation-derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
 - [Retention task-local batches and monthly targets](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
-- [Independent maintenance task ownership](../../adr/0033-retention-maintenance-task-ownership.md)
+- [Independent maintenance task ownership](../../adr/0034-retention-maintenance-task-ownership.md)
 
 ## References
 
