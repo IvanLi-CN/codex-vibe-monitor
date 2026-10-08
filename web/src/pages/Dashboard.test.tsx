@@ -153,13 +153,13 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
       options?: { tab?: "overview" | "routing" },
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings" | "operations";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -171,7 +171,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     } | null;
   }) => (
     <div data-testid="dashboard-working-conversations-section">
-      {cards.map((card) => card.conversationSequenceId).join(",")}
+      {cards.map((card) => card.conversationId).join(",")}
       <span data-testid="dashboard-working-conversations-endpoints">
         {cards.map((card) => card.currentInvocation.preview.endpoint ?? "").join(",")}
       </span>
@@ -194,7 +194,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             data-testid="dashboard-open-conversation"
             onClick={() =>
               onOpenConversation?.({
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
               })
             }
@@ -206,7 +206,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             data-testid="dashboard-open-conversation-settings"
             onClick={() =>
               onOpenConversation?.({
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
                 tab: "settings",
               })
@@ -220,7 +220,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             onClick={() =>
               onOpenInvocation?.({
                 slotKind: "current",
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
                 invocation: cards[0].currentInvocation,
               })
@@ -643,7 +643,7 @@ function createWorkingConversationCard(options?: {
   return {
     promptCacheKey: "pck-drawer-switch",
     normalizedPromptCacheKey: "pck-drawer-switch",
-    conversationSequenceId: "WC-ABCD12",
+    conversationId: "ABCD12",
     currentInvocation: {
       preview: {
         id: 101,
@@ -793,7 +793,7 @@ describe("DashboardPage", () => {
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent,
-    ).toContain("WC-ABCD12");
+    ).toContain("ABCD12");
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-endpoints"]')?.textContent,
     ).toContain("/v1/responses");

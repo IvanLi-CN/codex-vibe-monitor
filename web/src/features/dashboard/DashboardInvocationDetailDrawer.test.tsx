@@ -257,7 +257,7 @@ function createSelection(
 
   return {
     slotKind: "current",
-    conversationSequenceId: "WC-AB364A",
+    conversationId: "AB364A",
     promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
     invocation: {
       preview,
@@ -519,7 +519,7 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "pool-alpha@example.com");
   });
 
-  it("shows the bare conversation hash in the drawer header while keeping prompt cache key visible", async () => {
+  it("shows the persisted conversation id in the drawer header while keeping prompt cache key visible", async () => {
     apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([createRecord()]));
 
     render(
@@ -543,7 +543,6 @@ describe("DashboardInvocationDetailDrawer", () => {
     }
 
     expect(drawer.textContent ?? "").toContain("AB364A");
-    expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
     expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
 
     const drawerBody = drawer.closest('[role="dialog"], section')?.querySelector(".drawer-body");

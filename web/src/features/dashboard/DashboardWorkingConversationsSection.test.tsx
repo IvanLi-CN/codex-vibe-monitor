@@ -14,8 +14,6 @@ import type {
 } from "../../lib/api";
 import {
   type DashboardWorkingConversationCardModel,
-  formatDashboardWorkingConversationSequenceId,
-  hashDashboardWorkingConversationKey,
   mapPromptCacheConversationsToDashboardCards,
 } from "../../lib/dashboardWorkingConversations";
 import { ThemeProvider } from "../../theme";
@@ -195,6 +193,7 @@ function createConversation(
 ): PromptCacheConversation {
   return {
     promptCacheKey,
+    conversationId: overrides.conversationId ?? `test-conversation-${promptCacheKey}`,
     requestCount: overrides.requestCount ?? recentInvocations.length,
     totalTokens: overrides.totalTokens ?? 200,
     totalCost: overrides.totalCost ?? 0.02,
@@ -689,13 +688,13 @@ function renderSection(
       options?: DashboardOpenUpstreamAccountOptions,
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -735,13 +734,13 @@ function renderSectionWithCards(
       options?: DashboardOpenUpstreamAccountOptions,
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -844,7 +843,7 @@ describe("DashboardWorkingConversationsSection model routing", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-grid"]'),
     ).not.toBeNull();
-    expect(host?.textContent).toContain("C800F604");
+    expect(host?.textContent).toContain("test-conversation-pck-delayed-statistics");
   });
 });
 
@@ -866,13 +865,13 @@ function rerenderSection(
       options?: DashboardOpenUpstreamAccountOptions,
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -912,13 +911,13 @@ function rerenderSectionWithCards(
       options?: DashboardOpenUpstreamAccountOptions,
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -1300,7 +1299,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(
       host?.querySelectorAll('[data-testid="dashboard-upstream-account-recent-identity-chip"]')
         .length,
-    ).toBe(4);
+    ).toBe(0);
     expect(
       host?.querySelector('[data-testid="dashboard-upstream-account-header-row"]'),
     ).not.toBeNull();
@@ -2470,21 +2469,25 @@ describe("DashboardWorkingConversationsSection", () => {
     );
   });
 
-  it("shows conversation short id, full request id, mismatch models, and real prompt cache key in upstream recent rows", () => {
+  it("shows the persisted conversation id, full request id, mismatch models, and real prompt cache key in upstream recent rows", () => {
     upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
     const onOpenInvocation = vi.fn();
     const onOpenConversation = vi.fn();
 
     renderSection(
       createResponse([
-        createConversation("pck-upstream-anchor", [
-          createPreview({
-            id: 1,
-            invokeId: "invoke-upstream-anchor",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "running",
-          }),
-        ]),
+        createConversation(
+          "pck-upstream-running",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-upstream-anchor",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-upstream-running" },
+        ),
       ]),
       { onOpenConversation, onOpenInvocation },
     );
@@ -2514,11 +2517,6 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(rowAction).toBeInstanceOf(HTMLButtonElement);
 
-    const expectedConversationId = formatDashboardWorkingConversationSequenceId(
-      `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
-    );
-    const displayConversationId = expectedConversationId.replace(/^WC-/, "");
-
     const identity = firstRow.querySelector(
       '[data-testid="dashboard-upstream-account-recent-identity"]',
     );
@@ -2528,9 +2526,8 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(identityChip).not.toBeNull();
     expect(identityChip?.className).toContain("rounded-full");
     expect(identityChip?.className).toContain("font-mono");
-    expect(identity?.textContent).toContain(displayConversationId);
+    expect(identity?.textContent).toContain("conv-upstream-running");
     expect(identity?.textContent).toContain("acct-invoke-1");
-    expect(identity?.textContent).not.toContain("WC-");
     expect(firstRow.textContent).not.toContain("Pool Alpha");
     expect(firstRow.textContent).toContain("gpt-5.5-mini");
     expect(firstRow.textContent).toContain("gpt-5.5");
@@ -2567,14 +2564,18 @@ describe("DashboardWorkingConversationsSection", () => {
 
     renderSection(
       createResponse([
-        createConversation("pck-upstream-anchor", [
-          createPreview({
-            id: 1,
-            invokeId: "invoke-upstream-anchor",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "running",
-          }),
-        ]),
+        createConversation(
+          "pck-upstream-running",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-upstream-anchor",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-upstream-running" },
+        ),
       ]),
       { onOpenConversation, onOpenInvocation },
     );
@@ -2605,7 +2606,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(onOpenConversation).toHaveBeenCalledWith({
-      conversationSequenceId: `WC-${hashDashboardWorkingConversationKey("pck-upstream-running").slice(0, 6)}`,
+      conversationId: "conv-upstream-running",
       promptCacheKey: "pck-upstream-running",
     });
     expect(onOpenInvocation).not.toHaveBeenCalled();
@@ -2675,16 +2676,22 @@ describe("DashboardWorkingConversationsSection", () => {
     };
 
     renderSection(
-      createResponse([
-        createConversation("pck-upstream-tone-anchor", [
-          createPreview({
-            id: 1,
-            invokeId: "invoke-upstream-tone-anchor",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "running",
-          }),
-        ]),
-      ]),
+      createResponse(
+        UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map((promptCacheKey, index) =>
+          createConversation(
+            promptCacheKey,
+            [
+              createPreview({
+                id: index + 1,
+                invokeId: `invoke-upstream-tone-${index + 1}`,
+                occurredAt: `2026-04-04T10:0${5 - index}:00Z`,
+                status: "running",
+              }),
+            ],
+            { conversationId: `conv-tone-${index + 1}` },
+          ),
+        ),
+      ),
       { recentPreviewLimit: UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.length },
     );
 
@@ -2708,13 +2715,12 @@ describe("DashboardWorkingConversationsSection", () => {
     const toneClassNames = identityChips.map((chip) => chip.className);
     expect(new Set(toneClassNames).size).toBeGreaterThanOrEqual(4);
 
-    const renderedShortIds = identityChips.map((chip) => chip.textContent?.trim());
-    for (const promptCacheKey of UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS) {
-      const expectedShortId = formatDashboardWorkingConversationSequenceId(
-        `WC-${hashDashboardWorkingConversationKey(promptCacheKey).slice(0, 6)}`,
-      ).replace(/^WC-/, "");
-      expect(renderedShortIds).toContain(expectedShortId);
-    }
+    const renderedConversationIds = identityChips.map((chip) => chip.textContent?.trim());
+    expect(renderedConversationIds).toEqual(
+      expect.arrayContaining(
+        UPSTREAM_IDENTITY_TONE_COLLISION_SEEDS.map((_, index) => `conv-tone-${index + 1}`),
+      ),
+    );
   });
 
   it("renders the historical WebSocket transport badge only in websocket invocation slots", () => {
@@ -2745,18 +2751,22 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(badges?.[0]?.getAttribute("title")).toBe("WebSocket（历史）");
   });
 
-  it("shows a bare hash in the card header while keeping the raw prompt cache key non-visible", () => {
+  it("shows the persisted conversation id in the card header while keeping the raw prompt cache key non-visible", () => {
     const cards = renderSection(
       createResponse([
-        createConversation("019d68a9-9c32-7482-a353-71e4b6265f09", [
-          createPreview({
-            id: 1,
-            invokeId: "invoke-header",
-            occurredAt: "2026-04-04T10:04:00Z",
-            status: "running",
-            firstTokenMs: 720,
-          }),
-        ]),
+        createConversation(
+          "019d68a9-9c32-7482-a353-71e4b6265f09",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-header",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+              firstTokenMs: 720,
+            }),
+          ],
+          { conversationId: "conv-header" },
+        ),
       ]),
     );
 
@@ -2787,14 +2797,11 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(card.textContent).not.toContain("累计请求");
     expect(card.textContent).not.toContain("对话 Tokens");
     expect(card.textContent).not.toContain("对话成本");
-    expect(card.textContent).toContain(cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "");
-    expect(card.textContent).not.toContain("WC-");
+    expect(card.textContent).toContain(cards[0]?.conversationId ?? "");
     expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
     expect(card.getAttribute("data-prompt-cache-key")).toBeNull();
     expect(card.getAttribute("data-anchor-prompt-cache-key")).toBeNull();
-    expect(card.getAttribute("data-conversation-sequence-id")).toBe(
-      cards[0]?.conversationSequenceId.replace(/^WC-/, ""),
-    );
+    expect(card.getAttribute("data-conversation-id")).toBe(cards[0]?.conversationId);
   });
 
   it("keeps rendered cards visible while surfacing a non-blocking error banner", () => {
@@ -5108,10 +5115,7 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing current invocation slot");
     }
 
-    expect(currentSlot.getAttribute("aria-label")).toContain(
-      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
-    );
-    expect(currentSlot.getAttribute("aria-label")).not.toContain("WC-");
+    expect(currentSlot.getAttribute("aria-label")).toContain(cards[0]?.conversationId ?? "");
 
     act(() => {
       currentSlot.click();
@@ -5120,7 +5124,7 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
         slotKind: "current",
-        conversationSequenceId: cards[0]?.conversationSequenceId,
+        conversationId: cards[0]?.conversationId,
         promptCacheKey: "pck-slot-open",
       }),
     );
@@ -5161,18 +5165,14 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     const sequenceButton = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-sequence-button"]',
+      '[data-testid="dashboard-working-conversation-conversation-button"]',
     );
     if (!(sequenceButton instanceof HTMLButtonElement)) {
       throw new Error("missing sequence button");
     }
 
-    expect(sequenceButton.textContent).toContain(
-      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
-    );
-    expect(sequenceButton.getAttribute("aria-label")).toContain(
-      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
-    );
+    expect(sequenceButton.textContent).toContain(cards[0]?.conversationId ?? "");
+    expect(sequenceButton.getAttribute("aria-label")).toContain(cards[0]?.conversationId ?? "");
     expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-current");
     expect(sequenceButton.getAttribute("aria-label")).not.toContain("invoke-sequence-previous");
     expect(sequenceButton.getAttribute("aria-label")).toContain("pck-sequence-open");
@@ -5184,7 +5184,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(onOpenConversation).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationSequenceId: cards[0]?.conversationSequenceId,
+        conversationId: cards[0]?.conversationId,
         promptCacheKey: "pck-sequence-open",
       }),
     );
@@ -5271,7 +5271,7 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(onOpenInvocation).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationSequenceId: cards[0]?.conversationSequenceId,
+        conversationId: cards[0]?.conversationId,
         promptCacheKey: "pck-sequence-open",
         slotKind: "current",
       }),
@@ -5343,7 +5343,7 @@ describe("DashboardWorkingConversationsSection", () => {
     });
 
     expect(onOpenConversation).toHaveBeenCalledWith({
-      conversationSequenceId: cards[0]?.conversationSequenceId,
+      conversationId: cards[0]?.conversationId,
       promptCacheKey: "pck-manual-binding-open",
       tab: "settings",
     });
@@ -5446,13 +5446,13 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     ).map((card) => ({
       ...card,
-      conversationSequenceId: "WC-COLLIDE-ABC123",
+      conversationId: "COLLIDE-ABC123",
     }));
 
     renderSectionWithCards(cards, { onOpenConversation: vi.fn() });
 
     const sequenceButton = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-sequence-button"]',
+      '[data-testid="dashboard-working-conversation-conversation-button"]',
     );
     const badge = host?.querySelector(
       '[data-testid="dashboard-working-conversation-manual-binding-badge"]',
@@ -5764,13 +5764,13 @@ describe("DashboardWorkingConversationsSection", () => {
         ...baseCards[0]!,
         promptCacheKey: "hidden-before",
         normalizedPromptCacheKey: "hidden-before",
-        conversationSequenceId: "WC-COLLIDE-A",
+        conversationId: "COLLIDE-A",
       },
       {
         ...baseCards[1]!,
         promptCacheKey: "stable-anchor",
         normalizedPromptCacheKey: "stable-anchor",
-        conversationSequenceId: "WC-COLLIDE-B",
+        conversationId: "COLLIDE-B",
       },
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -5779,19 +5779,19 @@ describe("DashboardWorkingConversationsSection", () => {
         ...baseCards[2]!,
         promptCacheKey: "new-head",
         normalizedPromptCacheKey: "new-head",
-        conversationSequenceId: "WC-COLLIDE-A",
+        conversationId: "COLLIDE-A",
       },
       {
         ...baseCards[0]!,
         promptCacheKey: "hidden-before",
         normalizedPromptCacheKey: "hidden-before",
-        conversationSequenceId: "WC-COLLIDE-A-1",
+        conversationId: "COLLIDE-A-1",
       },
       {
         ...baseCards[1]!,
         promptCacheKey: "stable-anchor",
         normalizedPromptCacheKey: "stable-anchor",
-        conversationSequenceId: "WC-COLLIDE-B-1",
+        conversationId: "COLLIDE-B-1",
       },
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -5815,7 +5815,7 @@ describe("DashboardWorkingConversationsSection", () => {
         return rectFor(0, 600);
       }
       if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
-        switch (this.getAttribute("data-conversation-sequence-id")) {
+        switch (this.getAttribute("data-conversation-id")) {
           case "COLLIDE-A":
             return rectFor(-220);
           case "COLLIDE-B":
@@ -5863,21 +5863,21 @@ describe("DashboardWorkingConversationsSection", () => {
       ...card,
       promptCacheKey: `pruned-row-${index + 1}`,
       normalizedPromptCacheKey: `pruned-row-${index + 1}`,
-      conversationSequenceId: `WC-PRUNED-${index + 1}`,
+      conversationId: `PRUNED-${index + 1}`,
     })) satisfies DashboardWorkingConversationCardModel[];
 
     const insertedHead = {
       ...baseCards[0]!,
       promptCacheKey: "pruned-new-head",
       normalizedPromptCacheKey: "pruned-new-head",
-      conversationSequenceId: "WC-PRUNED-NEW",
+      conversationId: "PRUNED-NEW",
     } satisfies DashboardWorkingConversationCardModel;
 
     const nextCards = [
       insertedHead,
       ...initialCards.map((card, index) => ({
         ...card,
-        conversationSequenceId: `WC-PRUNED-NEXT-${index + 1}`,
+        conversationId: `PRUNED-NEXT-${index + 1}`,
       })),
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -5901,7 +5901,7 @@ describe("DashboardWorkingConversationsSection", () => {
         return rectFor(0, 600);
       }
       if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
-        switch (this.getAttribute("data-conversation-sequence-id")) {
+        switch (this.getAttribute("data-conversation-id")) {
           case "PRUNED-3":
             return rectFor(40);
           case "PRUNED-4":
@@ -5954,21 +5954,21 @@ describe("DashboardWorkingConversationsSection", () => {
       ...card,
       promptCacheKey: `partial-anchor-${index + 1}`,
       normalizedPromptCacheKey: `partial-anchor-${index + 1}`,
-      conversationSequenceId: `WC-PARTIAL-${index + 1}`,
+      conversationId: `PARTIAL-${index + 1}`,
     })) satisfies DashboardWorkingConversationCardModel[];
 
     const insertedHead = {
       ...baseCards[0]!,
       promptCacheKey: "partial-anchor-new-head",
       normalizedPromptCacheKey: "partial-anchor-new-head",
-      conversationSequenceId: "WC-PARTIAL-NEW",
+      conversationId: "PARTIAL-NEW",
     } satisfies DashboardWorkingConversationCardModel;
 
     const nextCards = [
       insertedHead,
       ...initialCards.map((card, index) => ({
         ...card,
-        conversationSequenceId: `WC-PARTIAL-NEXT-${index + 1}`,
+        conversationId: `PARTIAL-NEXT-${index + 1}`,
       })),
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -5992,7 +5992,7 @@ describe("DashboardWorkingConversationsSection", () => {
         return rectFor(0, 600);
       }
       if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
-        switch (this.getAttribute("data-conversation-sequence-id")) {
+        switch (this.getAttribute("data-conversation-id")) {
           case "PARTIAL-1":
             return rectFor(-24);
           case "PARTIAL-2":
@@ -6335,13 +6335,13 @@ describe("DashboardWorkingConversationsSection", () => {
         ...baseCards[0]!,
         promptCacheKey: "visible-top",
         normalizedPromptCacheKey: "visible-top",
-        conversationSequenceId: "WC-VISIBLE-A",
+        conversationId: "VISIBLE-A",
       },
       {
         ...baseCards[1]!,
         promptCacheKey: "visible-second",
         normalizedPromptCacheKey: "visible-second",
-        conversationSequenceId: "WC-VISIBLE-B",
+        conversationId: "VISIBLE-B",
       },
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -6350,19 +6350,19 @@ describe("DashboardWorkingConversationsSection", () => {
         ...baseCards[2]!,
         promptCacheKey: "visible-new-head",
         normalizedPromptCacheKey: "visible-new-head",
-        conversationSequenceId: "WC-VISIBLE-C",
+        conversationId: "VISIBLE-C",
       },
       {
         ...baseCards[0]!,
         promptCacheKey: "visible-top",
         normalizedPromptCacheKey: "visible-top",
-        conversationSequenceId: "WC-VISIBLE-A-1",
+        conversationId: "VISIBLE-A-1",
       },
       {
         ...baseCards[1]!,
         promptCacheKey: "visible-second",
         normalizedPromptCacheKey: "visible-second",
-        conversationSequenceId: "WC-VISIBLE-B-1",
+        conversationId: "VISIBLE-B-1",
       },
     ] satisfies DashboardWorkingConversationCardModel[];
 
@@ -6386,7 +6386,7 @@ describe("DashboardWorkingConversationsSection", () => {
         return rectFor(0, 600);
       }
       if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
-        switch (this.getAttribute("data-conversation-sequence-id")) {
+        switch (this.getAttribute("data-conversation-id")) {
           case "VISIBLE-A":
             return rectFor(40);
           case "VISIBLE-B":
@@ -7077,7 +7077,9 @@ describe("DashboardWorkingConversationsSection", () => {
       ).toContain("已选 1 个对话"),
     );
     expect(
-      host?.querySelector('button[data-testid="dashboard-working-conversation-sequence-button"]'),
+      host?.querySelector(
+        'button[data-testid="dashboard-working-conversation-conversation-button"]',
+      ),
     ).toBeNull();
 
     const refreshedCards = host?.querySelectorAll<HTMLElement>(
@@ -7105,7 +7107,7 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBeNull();
 
     const sequenceButton = host?.querySelector(
-      'button[data-testid="dashboard-working-conversation-sequence-button"]',
+      'button[data-testid="dashboard-working-conversation-conversation-button"]',
     );
     if (!(sequenceButton instanceof HTMLButtonElement)) {
       throw new Error("missing restored conversation button");
@@ -7142,7 +7144,7 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     const sequenceButton = host?.querySelector(
-      '[data-testid="dashboard-working-conversation-sequence-button"]',
+      '[data-testid="dashboard-working-conversation-conversation-button"]',
     );
     if (!(sequenceButton instanceof HTMLButtonElement)) {
       throw new Error("missing conversation sequence button");

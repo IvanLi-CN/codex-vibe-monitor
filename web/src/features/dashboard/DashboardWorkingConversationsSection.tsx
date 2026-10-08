@@ -71,8 +71,6 @@ import type {
 import {
   buildDashboardWorkingConversationInvocationModel,
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
-  formatDashboardWorkingConversationSequenceId,
-  hashDashboardWorkingConversationKey,
 } from "../../lib/dashboardWorkingConversations";
 import {
   type InvocationEndpointDisplay,
@@ -195,7 +193,7 @@ function readBrowserOfflineState() {
 }
 
 export interface DashboardWorkingConversationSelection {
-  conversationSequenceId: string;
+  conversationId: string;
   promptCacheKey: string;
   tab?: "overview" | "calls" | "settings";
 }
@@ -414,9 +412,17 @@ const UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES: CategoricalChipTone[] = [
   "emerald",
 ];
 
+function hashDashboardWorkingConversationVisualSeed(value: string) {
+  let hash = 0x811c9dc5;
+  for (const character of value) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return hash >>> 0;
+}
+
 function resolveConversationIdentityTone(seed: string): CategoricalChipTone {
-  const hash = hashDashboardWorkingConversationKey(seed);
-  const hashValue = Number.parseInt(hash, 16) >>> 0;
+  const hashValue = hashDashboardWorkingConversationVisualSeed(seed);
   const mixedHash = (hashValue ^ (hashValue >>> 7) ^ (hashValue >>> 13) ^ (hashValue >>> 21)) >>> 0;
   const toneIndex = mixedHash % UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES.length;
   return UPSTREAM_ACCOUNT_RECENT_IDENTITY_TONES[toneIndex];
@@ -2035,6 +2041,7 @@ function AccountSegmentList({
 
 const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   invocation,
+  conversationId,
   locale,
   detailsLayout,
   onOpenUpstreamAccount,
@@ -2042,6 +2049,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   onOpenInvocation,
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
+  conversationId?: string | null;
   locale: "zh" | "en";
   detailsLayout: "stacked" | "split";
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -2149,11 +2157,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
       ? timestampFormatter.format(new Date(invocation.occurredAtEpoch))
       : occurredAtLabel;
   const displayPromptCacheKey = invocation.preview.promptCacheKey?.trim() ?? "";
-  const displayConversationSequenceId = displayPromptCacheKey
-    ? formatDashboardWorkingConversationSequenceId(
-        `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
-      )
-    : "";
+  const displayConversationId = conversationId?.trim() ?? "";
   const conversationIdentityTone = displayPromptCacheKey
     ? resolveConversationIdentityTone(displayPromptCacheKey)
     : null;
@@ -2173,8 +2177,8 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   );
   const recentSummaryTitle = `${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · Cache write: ${viewModel.cacheWriteTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`;
   const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${invocation.record.invokeId}`;
-  const conversationActionLabel = displayPromptCacheKey
-    ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationSequenceId} · ${displayPromptCacheKey}`
+  const conversationActionLabel = displayConversationId
+    ? `${t("dashboard.workingConversations.openConversation")} · ${displayConversationId} · ${displayPromptCacheKey}`
     : null;
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const shouldGroupModelContext =
@@ -2183,20 +2187,20 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
   const handleOpenInvocation = useCallback(() => {
     onOpenInvocation?.({
       slotKind: "current",
-      conversationSequenceId: invocation.record.invokeId,
+      conversationId: conversationId ?? null,
       promptCacheKey:
         invocation.preview.promptCacheKey?.trim() || invocation.record.promptCacheKey?.trim() || "",
       invocation,
     });
-  }, [invocation, onOpenInvocation]);
+  }, [conversationId, invocation, onOpenInvocation]);
 
   const handleOpenConversation = useCallback(() => {
-    if (!displayPromptCacheKey) return;
+    if (!displayPromptCacheKey || !conversationId) return;
     onOpenConversation?.({
-      conversationSequenceId: `WC-${hashDashboardWorkingConversationKey(displayPromptCacheKey).slice(0, 6)}`,
+      conversationId,
       promptCacheKey: displayPromptCacheKey,
     });
-  }, [displayPromptCacheKey, onOpenConversation]);
+  }, [conversationId, displayPromptCacheKey, onOpenConversation]);
 
   const handleIdentityChipClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {
@@ -2238,7 +2242,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
             className="flex min-w-0 items-center gap-1.5"
             data-testid="dashboard-upstream-account-recent-identity"
           >
-            {displayConversationSequenceId ? (
+            {displayConversationId ? (
               <>
                 <Chip
                   asChild
@@ -2247,7 +2251,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
                   data-testid="dashboard-upstream-account-recent-identity-chip"
                   className="max-w-[4.8rem] cursor-pointer px-1.5 font-mono text-[10px] font-semibold tracking-[0.04em] transition-opacity duration-200 hover:opacity-80"
                   aria-label={conversationActionLabel ?? undefined}
-                  title={conversationActionLabel ?? displayConversationSequenceId}
+                  title={conversationActionLabel ?? displayConversationId}
                 >
                   <button
                     type="button"
@@ -2255,7 +2259,7 @@ const AccountRecentInvocationRow = memo(function AccountRecentInvocationRow({
                     onClick={handleIdentityChipClick}
                     onKeyDown={handleIdentityChipKeyDown}
                   >
-                    {displayConversationSequenceId}
+                    {displayConversationId}
                   </button>
                 </Chip>
                 <AppIcon
@@ -2405,7 +2409,7 @@ const InvocationSlot = memo(function InvocationSlot({
   invocation,
   label,
   slotKind,
-  conversationSequenceId,
+  conversationId,
   promptCacheKey,
   locale,
   interactionsDisabled = false,
@@ -2415,7 +2419,7 @@ const InvocationSlot = memo(function InvocationSlot({
   invocation: DashboardWorkingConversationInvocationModel;
   label: string;
   slotKind: "current" | "previous" | "earlier";
-  conversationSequenceId: string;
+  conversationId: string;
   promptCacheKey: string;
   locale: "zh" | "en";
   interactionsDisabled?: boolean;
@@ -2540,8 +2544,7 @@ const InvocationSlot = memo(function InvocationSlot({
     shouldGroupModelContext && viewModel.reasoningEffortValue === FALLBACK_CELL
       ? viewModel.modelValue
       : `${viewModel.modelValue} · ${viewModel.reasoningEffortValue}`;
-  const displayConversationSequenceId =
-    formatDashboardWorkingConversationSequenceId(conversationSequenceId);
+  const displayConversationId = conversationId;
   const usageSummaryFields = useMemo(
     () =>
       buildInvocationSummaryFields({
@@ -2563,7 +2566,7 @@ const InvocationSlot = memo(function InvocationSlot({
   const invocationActionLabel = [
     t("dashboard.workingConversations.openInvocation"),
     label,
-    displayConversationSequenceId,
+    displayConversationId,
     ...(shouldGroupModelContext ? [modelContextTitle, fastAccessibleLabel] : []),
     invocation.record.invokeId,
   ]
@@ -2574,12 +2577,12 @@ const InvocationSlot = memo(function InvocationSlot({
     if (interactionsDisabled) return;
     onOpenInvocation?.({
       slotKind,
-      conversationSequenceId,
+      conversationId,
       promptCacheKey,
       invocation,
     });
   }, [
-    conversationSequenceId,
+    conversationId,
     interactionsDisabled,
     invocation,
     onOpenInvocation,
@@ -2910,6 +2913,7 @@ function chunkDashboardUpstreamAccountRows(
 
 const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAccountActivityCard({
   account,
+  conversationIdByPromptCacheKey,
   routingStateVersion,
   locale,
   localeTag,
@@ -2923,6 +2927,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
   onRetryRecent,
 }: {
   account: UpstreamAccountActivityAccount;
+  conversationIdByPromptCacheKey: ReadonlyMap<string, string>;
   routingStateVersion?: RoutingStateVersion | null;
   locale: "zh" | "en";
   localeTag: string;
@@ -3939,6 +3944,11 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
                 <AccountRecentInvocationRow
                   key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
                   invocation={invocation}
+                  conversationId={
+                    conversationIdByPromptCacheKey.get(
+                      invocation.preview.promptCacheKey?.trim() ?? "",
+                    ) ?? null
+                  }
                   locale={locale}
                   detailsLayout={recentDetailsLayout}
                   onOpenUpstreamAccount={onOpenUpstreamAccount}
@@ -4216,6 +4226,14 @@ export function DashboardWorkingConversationsSection({
     () => new Set(cards.map((card) => card.promptCacheKey)),
     [cards],
   );
+  const conversationIdByPromptCacheKey = useMemo(() => {
+    const ids = new Map<string, string>();
+    for (const card of cards) {
+      ids.set(card.promptCacheKey, card.conversationId);
+      ids.set(card.normalizedPromptCacheKey, card.conversationId);
+    }
+    return ids;
+  }, [cards]);
   const selectedConversationCount = selectedPromptCacheKeys.length;
   const closeConversationBulkDialogs = useCallback(() => {
     setRouteBindDialogOpen(false);
@@ -5702,6 +5720,7 @@ export function DashboardWorkingConversationsSection({
                   <DashboardUpstreamAccountActivityCard
                     key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
                     account={account}
+                    conversationIdByPromptCacheKey={conversationIdByPromptCacheKey}
                     routingStateVersion={upstreamAccountActivity?.routingStateVersion}
                     locale={locale}
                     localeTag={localeTag}
@@ -5803,9 +5822,7 @@ export function DashboardWorkingConversationsSection({
                           card.currentInvocation.displayStatus,
                         );
                         const isCardSelected = selectedPromptCacheKeySet.has(card.promptCacheKey);
-                        const displaySequenceId = formatDashboardWorkingConversationSequenceId(
-                          card.conversationSequenceId,
-                        );
+                        const displayConversationId = card.conversationId;
                         const currentStatusLabel = currentStatusMeta.labelKey
                           ? t(currentStatusMeta.labelKey)
                           : (currentStatusMeta.label ?? t("table.status.unknown"));
@@ -5813,7 +5830,7 @@ export function DashboardWorkingConversationsSection({
                           card.sortAnchorEpoch != null
                             ? timestampFormatter.format(new Date(card.sortAnchorEpoch))
                             : FALLBACK_CELL;
-                        const sequenceConversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displaySequenceId} · ${card.promptCacheKey}`;
+                        const conversationActionLabel = `${t("dashboard.workingConversations.openConversation")} · ${displayConversationId} · ${card.promptCacheKey}`;
                         const manualBindingChipMeta = resolveDashboardManualBindingChipMeta(
                           card.manualBinding,
                           t,
@@ -5832,7 +5849,7 @@ export function DashboardWorkingConversationsSection({
                               ).__dashboardWorkingConversationAnchorKey = card.promptCacheKey;
                             }}
                             data-testid="dashboard-working-conversation-card"
-                            data-conversation-sequence-id={displaySequenceId}
+                            data-conversation-id={displayConversationId}
                             data-selection-mode={selectionModeEnabled ? "true" : "false"}
                             data-selected={isCardSelected ? "true" : "false"}
                             role={selectionModeEnabled ? "button" : undefined}
@@ -5840,7 +5857,7 @@ export function DashboardWorkingConversationsSection({
                             aria-pressed={selectionModeEnabled ? isCardSelected : undefined}
                             aria-label={
                               selectionModeEnabled
-                                ? `${selectionSummaryLabel} · ${displaySequenceId}`
+                                ? `${selectionSummaryLabel} · ${displayConversationId}`
                                 : undefined
                             }
                             className={cn(
@@ -5894,24 +5911,24 @@ export function DashboardWorkingConversationsSection({
                                   {onOpenConversation && !selectionModeEnabled ? (
                                     <button
                                       type="button"
-                                      data-testid="dashboard-working-conversation-sequence-button"
+                                      data-testid="dashboard-working-conversation-conversation-button"
                                       className="inline-flex shrink-0 cursor-pointer appearance-none items-center whitespace-nowrap border-0 bg-transparent p-0 text-left font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                                      aria-label={sequenceConversationActionLabel}
-                                      title={sequenceConversationActionLabel}
+                                      aria-label={conversationActionLabel}
+                                      title={conversationActionLabel}
                                       onClick={() => {
                                         onOpenConversation({
-                                          conversationSequenceId: card.conversationSequenceId,
+                                          conversationId: card.conversationId,
                                           promptCacheKey: card.promptCacheKey,
                                         });
                                       }}
                                     >
                                       <span className="block whitespace-nowrap">
-                                        {displaySequenceId}
+                                        {displayConversationId}
                                       </span>
                                     </button>
                                   ) : (
                                     <div className="shrink-0 whitespace-nowrap font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                                      {displaySequenceId}
+                                      {displayConversationId}
                                     </div>
                                   )}
                                   {manualBindingChipMeta ? (
@@ -5931,7 +5948,7 @@ export function DashboardWorkingConversationsSection({
                                           onClick={(event) => {
                                             event.stopPropagation();
                                             onOpenConversation({
-                                              conversationSequenceId: card.conversationSequenceId,
+                                              conversationId: card.conversationId,
                                               promptCacheKey: card.promptCacheKey,
                                               tab: "settings",
                                             });
@@ -6003,7 +6020,7 @@ export function DashboardWorkingConversationsSection({
                                   invocation={card.currentInvocation}
                                   label={t("dashboard.workingConversations.currentInvocation")}
                                   slotKind="current"
-                                  conversationSequenceId={card.conversationSequenceId}
+                                  conversationId={card.conversationId}
                                   promptCacheKey={card.promptCacheKey}
                                   locale={locale}
                                   interactionsDisabled={selectionModeEnabled}
@@ -6015,7 +6032,7 @@ export function DashboardWorkingConversationsSection({
                                     invocation={card.previousInvocation}
                                     label={t("dashboard.workingConversations.previousInvocation")}
                                     slotKind="previous"
-                                    conversationSequenceId={card.conversationSequenceId}
+                                    conversationId={card.conversationId}
                                     promptCacheKey={card.promptCacheKey}
                                     locale={locale}
                                     interactionsDisabled={selectionModeEnabled}
@@ -6030,7 +6047,7 @@ export function DashboardWorkingConversationsSection({
                                     invocation={card.earlierInvocation}
                                     label={t("dashboard.workingConversations.earlierInvocation")}
                                     slotKind="earlier"
-                                    conversationSequenceId={card.conversationSequenceId}
+                                    conversationId={card.conversationId}
                                     promptCacheKey={card.promptCacheKey}
                                     locale={locale}
                                     interactionsDisabled={selectionModeEnabled}

@@ -119,6 +119,7 @@ function createConversation(
 ): PromptCacheConversation {
   return {
     promptCacheKey,
+    conversationId: `conversation-id-${promptCacheKey}`,
     requestCount: recentInvocations.length,
     totalTokens: 120,
     totalCost: 0.2,

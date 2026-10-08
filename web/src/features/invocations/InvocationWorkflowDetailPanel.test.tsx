@@ -3,10 +3,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApiInvocation, ApiInvocationWorkflowDetailResponse } from "../../lib/api";
-import {
-  formatDashboardWorkingConversationSequenceId,
-  hashDashboardWorkingConversationKey,
-} from "../../lib/dashboardWorkingConversations";
 import { InvocationWorkflowDetailPanel } from "./InvocationWorkflowDetailPanel";
 import {
   failedWorkflowFinalResponseBodyText,
@@ -706,11 +702,11 @@ describe("InvocationWorkflowDetailPanel", () => {
     const record = createRecord();
     const requestBodySizeLabel = `${failedWorkflowRequestBodySize.toLocaleString("zh")} B`;
     const responseBodySizeLabel = `${failedWorkflowResponseBodySize.toLocaleString("zh")} B`;
-    const expectedConversationId = formatDashboardWorkingConversationSequenceId(
-      `WC-${hashDashboardWorkingConversationKey(record.promptCacheKey ?? "").slice(0, 6)}`,
-    );
+    const expectedConversationId = "conv-workflow-77";
 
-    render(<InvocationWorkflowDetailPanel record={record} />);
+    render(
+      <InvocationWorkflowDetailPanel record={record} conversationId={expectedConversationId} />,
+    );
 
     await waitFor(() => (host?.textContent ?? "").includes("Final adjudication"));
 

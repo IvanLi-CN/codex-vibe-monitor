@@ -5,10 +5,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
 import { fetchInvocationRecords } from "../../lib/api";
-import {
-  type DashboardWorkingConversationInvocationSelection,
-  formatDashboardWorkingConversationSequenceId,
-} from "../../lib/dashboardWorkingConversations";
+import type { DashboardWorkingConversationInvocationSelection } from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { InvocationWorkflowDetailPanel } from "../invocations/InvocationWorkflowDetailPanel";
@@ -222,9 +219,9 @@ export function DashboardInvocationDetailDrawer({
     recordForHeader != null
       ? formatOccurredAtLabel(recordForHeader.occurredAt, dateTimeFormatter)
       : FALLBACK_CELL;
-  const displaySequenceId =
+  const displayConversationId =
     selection?.invocation.record.invokeId === effectiveInvocationId
-      ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
+      ? selection.conversationId?.trim() || null
       : null;
 
   return (
@@ -239,7 +236,7 @@ export function DashboardInvocationDetailDrawer({
           <div className="flex flex-wrap items-center gap-2">
             <Chip tone="secondary">{slotLabel}</Chip>
             <Chip tone={statusMeta.variant}>{statusLabel}</Chip>
-            {displaySequenceId ? <Chip tone="secondary">{displaySequenceId}</Chip> : null}
+            {displayConversationId ? <Chip tone="secondary">{displayConversationId}</Chip> : null}
           </div>
           <div className="section-heading">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
@@ -299,6 +296,7 @@ export function DashboardInvocationDetailDrawer({
           <InvocationWorkflowDetailPanel
             record={fullRecord}
             size="default"
+            conversationId={selection?.conversationId}
             onOpenUpstreamAccount={onOpenUpstreamAccount}
           />
         </div>

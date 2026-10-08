@@ -4,10 +4,7 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
 } from "./api";
-import {
-  formatDashboardWorkingConversationSequenceId,
-  mapPromptCacheConversationsToDashboardCards,
-} from "./dashboardWorkingConversations";
+import { mapPromptCacheConversationsToDashboardCards } from "./dashboardWorkingConversations";
 
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
@@ -58,6 +55,7 @@ function createConversation(
   const hasLastInFlightAt = Object.hasOwn(overrides, "lastInFlightAt");
   return {
     promptCacheKey,
+    conversationId: overrides.conversationId ?? "conv-default",
     requestCount: overrides.requestCount ?? recentInvocations.length,
     totalTokens: overrides.totalTokens ?? 1000,
     totalCost: overrides.totalCost ?? 0.048,
@@ -99,31 +97,46 @@ function createResponse(
 }
 
 describe("mapPromptCacheConversationsToDashboardCards", () => {
-  it("strips the WC prefix from the display sequence id without changing the raw id", () => {
-    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF")).toBe("ABCDEF");
-    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF-11")).toBe("ABCDEF-11");
-    expect(formatDashboardWorkingConversationSequenceId("ABCDEF")).toBe("ABCDEF");
-  });
-
-  it("builds stable WC short sequence ids from prompt cache keys", () => {
+  it("uses the persisted conversation id without deriving one from the prompt cache key", () => {
     const response = createResponse([
-      createConversation("pck-alpha", [
-        createPreview({
-          id: 1,
-          invokeId: "invoke-1",
-          occurredAt: "2026-04-04T10:04:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-alpha",
+        [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-1",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        { conversationId: "conv-alpha" },
+      ),
     ]);
 
-    const first = mapPromptCacheConversationsToDashboardCards(response);
-    const second = mapPromptCacheConversationsToDashboardCards(response);
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
 
-    expect(first[0]?.conversationSequenceId).toMatch(/^WC-[A-F0-9]{6}$/);
-    expect(first[0]?.conversationSequenceId).toBe(second[0]?.conversationSequenceId);
-    expect(first[0]?.hasPreviousPlaceholder).toBe(true);
-    expect(first[0]?.hasEarlierPlaceholder).toBe(true);
+    expect(cards[0]?.conversationId).toBe("conv-alpha");
+    expect(cards[0]?.hasPreviousPlaceholder).toBe(true);
+    expect(cards[0]?.hasEarlierPlaceholder).toBe(true);
+  });
+
+  it("drops conversations without a persisted conversation id", () => {
+    const response = createResponse([
+      createConversation(
+        "pck-missing-id",
+        [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-missing-id",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        { conversationId: "   " },
+      ),
+    ]);
+
+    expect(mapPromptCacheConversationsToDashboardCards(response)).toEqual([]);
   });
 
   it("preserves manual binding summaries for dashboard badge rendering", () => {
@@ -159,35 +172,37 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     });
   });
 
-  it("appends a stable short suffix when visible WC short ids collide", () => {
+  it("preserves distinct persisted ids even when prompt cache keys would collide", () => {
     const response = createResponse([
-      createConversation("pck-alpha", [
-        createPreview({
-          id: 1,
-          invokeId: "invoke-1",
-          occurredAt: "2026-04-04T10:04:00Z",
-          status: "completed",
-        }),
-      ]),
-      createConversation("pck-beta", [
-        createPreview({
-          id: 2,
-          invokeId: "invoke-2",
-          occurredAt: "2026-04-04T10:03:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-alpha",
+        [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-1",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ],
+        { conversationId: "conv-alpha" },
+      ),
+      createConversation(
+        "pck-beta",
+        [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-2",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "completed",
+          }),
+        ],
+        { conversationId: "conv-beta" },
+      ),
     ]);
 
-    const cards = mapPromptCacheConversationsToDashboardCards(response, {
-      hashFn: () => "ABCDEF00",
-      collisionHashFn: (key) => (key.includes("alpha") ? "11" : "22"),
-    });
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
 
-    expect(cards.map((card) => card.conversationSequenceId)).toEqual([
-      "WC-ABCDEF-11",
-      "WC-ABCDEF-22",
-    ]);
+    expect(cards.map((card) => card.conversationId)).toEqual(["conv-alpha", "conv-beta"]);
   });
 
   it("keeps cards in visible-set order so newer activity stays ahead of newer createdAt", () => {

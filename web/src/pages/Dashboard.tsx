@@ -21,10 +21,7 @@ import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetail
 import { useTranslation } from "../i18n";
 import { usePageObservation } from "../lib/browserObservability";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
-import {
-  type DashboardWorkingConversationInvocationSelection,
-  formatDashboardWorkingConversationSequenceId,
-} from "../lib/dashboardWorkingConversations";
+import type { DashboardWorkingConversationInvocationSelection } from "../lib/dashboardWorkingConversations";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 export default function DashboardPage() {
@@ -209,12 +206,9 @@ export default function DashboardPage() {
         onOpenConversation={(selection) => {
           closeUpstreamAccount({ replace: true });
           setSelectedInvocation(null);
-          const conversationLabel = formatDashboardWorkingConversationSequenceId(
-            selection.conversationSequenceId,
-          );
           setSelectedConversation({
             key: selection.promptCacheKey,
-            label: conversationLabel,
+            label: selection.conversationId,
           });
           if (routeInvokeId != null) {
             const search = new URLSearchParams({

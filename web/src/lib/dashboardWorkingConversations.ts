@@ -40,7 +40,7 @@ export interface DashboardWorkingConversationInvocationModel {
 export interface DashboardWorkingConversationCardModel {
   promptCacheKey: string;
   normalizedPromptCacheKey: string;
-  conversationSequenceId: string;
+  conversationId: string;
   manualBinding?: PromptCacheConversationManualBinding | null;
   createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
@@ -60,25 +60,16 @@ export interface DashboardWorkingConversationCardModel {
 
 export interface DashboardWorkingConversationInvocationSelection {
   slotKind: "current" | "previous" | "earlier";
-  conversationSequenceId: string;
+  conversationId: string | null;
   promptCacheKey: string;
   invocation: DashboardWorkingConversationInvocationModel;
 }
 
-interface DashboardWorkingConversationSequenceOptions {
-  hashFn?: (value: string) => string;
-  collisionHashFn?: (value: string) => string;
-}
-
-interface DashboardWorkingConversationMapOptions
-  extends DashboardWorkingConversationSequenceOptions {
+interface DashboardWorkingConversationMapOptions {
   limit?: number;
 }
 
-type PendingSequenceCardModel = Omit<
-  DashboardWorkingConversationCardModel,
-  "conversationSequenceId"
->;
+type PendingSequenceCardModel = DashboardWorkingConversationCardModel;
 
 function normalizePromptCacheKey(value: string) {
   return value.trim();
@@ -92,30 +83,6 @@ function parseEpoch(value: string | null | undefined) {
 
 function isInFlightStatus(status: string) {
   return status === "running" || status === "pending";
-}
-
-function normalizeHash(value: string | null | undefined, minimumLength: number) {
-  const compact = (value ?? "")
-    .trim()
-    .replace(/[^a-z0-9]/gi, "")
-    .toUpperCase();
-  if (compact.length >= minimumLength) return compact;
-  return compact.padEnd(minimumLength, "0");
-}
-
-export function formatDashboardWorkingConversationSequenceId(value: string) {
-  const normalized = value.trim();
-  if (!normalized) return normalized;
-  return normalized.replace(/^WC-/i, "");
-}
-
-export function hashDashboardWorkingConversationKey(value: string) {
-  let hash = 0x811c9dc5;
-  for (const character of value) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0").toUpperCase();
 }
 
 export function buildDashboardWorkingConversationInvocationModel(
@@ -170,7 +137,8 @@ function buildPendingCardModel(
   rangeStartEpoch: number,
 ): PendingSequenceCardModel | null {
   const normalizedPromptCacheKey = normalizePromptCacheKey(conversation.promptCacheKey);
-  if (!normalizedPromptCacheKey) return null;
+  const conversationId = conversation.conversationId?.trim();
+  if (!normalizedPromptCacheKey || !conversationId) return null;
 
   const invocations = conversation.recentInvocations
     .map(buildDashboardWorkingConversationInvocationModel)
@@ -202,6 +170,7 @@ function buildPendingCardModel(
   return {
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
+    conversationId,
     manualBinding: conversation.manualBinding ?? null,
     createdAtEpoch: parseEpoch(conversation.firstInvocationAt ?? conversation.createdAt),
     currentInvocation,
@@ -260,62 +229,5 @@ export function mapPromptCacheConversationsToDashboardCards(
     visibleSetCards.splice(options.limit);
   }
 
-  const sortedCards = visibleSetCards.sort(compareDashboardWorkingConversationDisplayOrder);
-
-  const hashFn = options.hashFn ?? hashDashboardWorkingConversationKey;
-  const collisionHashFn =
-    options.collisionHashFn ??
-    ((value: string) => hashDashboardWorkingConversationKey(`collision:${value}`));
-
-  const primaryBuckets = new Map<string, PendingSequenceCardModel[]>();
-  for (const card of sortedCards) {
-    const primaryHash = normalizeHash(hashFn(card.normalizedPromptCacheKey), 6).slice(0, 6);
-    const bucket = primaryBuckets.get(primaryHash) ?? [];
-    bucket.push(card);
-    primaryBuckets.set(primaryHash, bucket);
-  }
-
-  return sortedCards.map<DashboardWorkingConversationCardModel>((card) => {
-    const primaryHash = normalizeHash(hashFn(card.normalizedPromptCacheKey), 6).slice(0, 6);
-    const colliders = primaryBuckets.get(primaryHash) ?? [card];
-    let conversationSequenceId = `WC-${primaryHash}`;
-
-    if (colliders.length > 1) {
-      const secondaryHash = normalizeHash(collisionHashFn(card.normalizedPromptCacheKey), 2).slice(
-        0,
-        2,
-      );
-      const secondaryBuckets = new Map<string, PendingSequenceCardModel[]>();
-      for (const collider of colliders) {
-        const suffix = normalizeHash(collisionHashFn(collider.normalizedPromptCacheKey), 2).slice(
-          0,
-          2,
-        );
-        const bucket = secondaryBuckets.get(suffix) ?? [];
-        bucket.push(collider);
-        secondaryBuckets.set(suffix, bucket);
-      }
-
-      const duplicateSuffixCards = secondaryBuckets.get(secondaryHash) ?? [card];
-      if (duplicateSuffixCards.length === 1) {
-        conversationSequenceId = `WC-${primaryHash}-${secondaryHash}`;
-      } else {
-        const collisionIndex = duplicateSuffixCards
-          .slice()
-          .sort((left, right) =>
-            left.normalizedPromptCacheKey.localeCompare(right.normalizedPromptCacheKey),
-          )
-          .findIndex(
-            (candidate) => candidate.normalizedPromptCacheKey === card.normalizedPromptCacheKey,
-          );
-        const fallbackSuffix = `${secondaryHash}${(collisionIndex + 1).toString(36).toUpperCase()}`;
-        conversationSequenceId = `WC-${primaryHash}-${fallbackSuffix}`;
-      }
-    }
-
-    return {
-      ...card,
-      conversationSequenceId,
-    };
-  });
+  return visibleSetCards.sort(compareDashboardWorkingConversationDisplayOrder);
 }
