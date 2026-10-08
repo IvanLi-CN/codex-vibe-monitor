@@ -2,7 +2,7 @@
 
 ## Current Status
 
-- Implementation: 已实现；PR #1092 的 CI 修复与主干同步正在进行，本会话 VM 因内存配额不足暂停，最终验证与交付尚未完成。
+- Implementation: 已实现；PR #1092 的 CI 修复与主干同步正在进行，本会话 VM 已在容量释放后恢复，最终验证与交付尚未完成。
 - Lifecycle: active。
 - 需求与 ADR 已确认；当前工作分支按批准计划实现同一 PR，交付停在 merge-ready。
 
@@ -20,7 +20,7 @@
 - 已通过：命名 Rust 初始化／暂停／重试／身份分页和预演／跨进程运行态锁／查询超时连接关闭围栏回归，共 7 项；1 项子进程辅助测试仅由父测试调用。
 - 已通过：Web 类型、lint、构建，最新主干完整 Web 单测 178 文件、1811 测试（6 跳过），相关 Storybook 72 项，以及桌面／移动端和 demo 路由 Playwright 12 项；Web 源码树及依赖在最新主干同步前后完全一致，保留对应结果与六张已确认图片。
 - 已通过：修复前二进制 SHA-256 `c03dd0a481184ee44d677cb335b840e219db732b6f63896e1c49b6c74cb8971b` 完成十个已发布来源的升级、三项只读预演、暂停后显式真实运行、身份保护、观测持久化及初始化中断前向恢复，见 [升级结果](../../adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json)。最终修复候选的兼容证据仍须刷新或按可核对的未变更范围保留。
-- 历史运行态证据覆盖首次启动、服务在线与 CLI 离线。PR #1092 的 Linux CI 暴露首次创建数据库后补锁与路由的 inode 排序不一致；修复统一排序，并使初始化与 CLI 的对锁发布实际角色，补锁不提前发布 ready。精确回归同时检查 hard-link 别名下初始化、离线 CLI 拒绝与 ready 服务准入。完整服务／CLI／页面竞争证据仍保留在 [历史运行态结果](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json)，不作为最终候选 digest 证明。
+- 历史运行态证据覆盖首次启动、服务在线与 CLI 离线。PR #1092 的 Linux CI 暴露首次创建数据库后补锁与路由的 inode 排序不一致；修复统一排序，并使初始化与 CLI 的对锁发布实际角色，补锁不提前发布 ready。返回离线路由前还取得两个数据库文件本身的独占锁，并在 SQLite 初始化前完成 inode 对锁，防止部分硬链接共享形成第二个执行者。精确回归同时检查 hard-link 别名下初始化、离线 CLI 拒绝、ready 服务准入与混合数据库对拒绝。完整服务／CLI／页面竞争证据仍保留在 [历史运行态结果](../../adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json)，不作为最终候选 digest 证明。
 - 进行中：修复前候选已完成 Rust 格式／check／clippy、十来源升级和质量门禁合同检查；最终修复候选正在刷新回归、复审与 PR 当前 head 必要 CI。原 CI 的代表性规模 job 在 apt 下载阶段被取消，未执行测试。
 - `VER-RMO-001` 至 `VER-RMO-008` 的实现证据已映射到当前候选验证卡；当前尚无 PR Ready 结论。恢复锚点及已通过／未通过门禁见 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。
 

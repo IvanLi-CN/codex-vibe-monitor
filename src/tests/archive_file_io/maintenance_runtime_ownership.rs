@@ -123,6 +123,14 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     })
     .await
     .unwrap();
+    let hard_other_maintenance = hardlink_dir.join("other.maintenance.sqlite");
+    fs::hard_link(&other_maintenance, &hard_other_maintenance).unwrap();
+    unsafe { std::env::set_var("MAINTENANCE_DATABASE_PATH", &hard_other_maintenance) };
+    assert!(
+        crate::maintenance::MaintenanceRuntimeLock::route(&hardlink_config, true).is_err(),
+        "a mixed hard-link database pair must not acquire offline ownership"
+    );
+    unsafe { std::env::remove_var("MAINTENANCE_DATABASE_PATH") };
     let mismatched = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "tests::archive_file_io::maintenance_runtime_ownership::ownership_runtime_lock_child_fixture", "--ignored"])
         .env("CVM_TEST_RUNTIME_DATABASE", &config.database_path)

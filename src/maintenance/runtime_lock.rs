@@ -7,6 +7,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 /// cannot establish independent writers. Lock files are stable and never unlinked.
 pub(crate) struct MaintenanceRuntimeLock {
     files: Vec<File>,
+    // Database descriptors are lifetime-locked, but never receive protocol markers.
+    _database_files: Vec<File>,
     database_pair_id: String,
     pair_lock_count: usize,
     database_paths: Vec<PathBuf>,
@@ -119,12 +121,34 @@ impl MaintenanceRuntimeLock {
                 }
             }
             if busy_roles.is_empty() {
-                return Ok(MaintenanceRuntimeRoute::Offline(Self {
+                let mut database_files = Vec::with_capacity(paths.len());
+                for path in &paths {
+                    let file = OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .read(true)
+                        .write(true)
+                        .open(path)?;
+                    // Protect individual inodes as well as the pair: a partial hard-link alias
+                    // must not establish a second owner with a different companion database.
+                    // SAFETY: the owned database descriptor stays alive for the runtime lease.
+                    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0
+                    {
+                        return Err(std::io::Error::last_os_error())
+                            .context("maintenance unavailable: database inode already owned");
+                    }
+                    database_files.push(file);
+                }
+                let mut owner = Self {
                     files,
+                    _database_files: database_files,
                     database_pair_id,
                     pair_lock_count,
                     database_paths: paths,
-                }));
+                };
+                // Files and all identity locks exist before the caller may initialize SQLite.
+                owner.refresh_inode_pair_lock()?;
+                return Ok(MaintenanceRuntimeRoute::Offline(owner));
             }
             // A partial acquisition, initialization, or another offline command is ambiguous.
             // Do not open/recover either database under that condition.
