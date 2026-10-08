@@ -20,7 +20,7 @@
 - public docs 文档壳：`docs-site/docs/`
 - 基础组件实现：`web/src/components/ui/`
 - 领域组件实现：`web/src/features/`
-- 页面级参考：`web/src/features/app-shell/AppLayout.stories.tsx`、`web/src/features/settings/SettingsPage.stories.tsx`、`web/src/features/records/RecordsPage.stories.tsx`、`web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/dashboard/TodayStatsOverview.stories.tsx`
+- Shell 与领域组件参考：`web/src/features/app-shell/AppLayout.stories.tsx`、`web/src/features/settings/PoolRoutingSettingsCard.stories.tsx`、`web/src/features/records/InvocationRecordsTable.stories.tsx`、`web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/dashboard/TodayStatsOverview.stories.tsx`
 - 历史功能 spec：`docs/specs/jpg66-settings-shadcn-refresh/SPEC.md`、`docs/specs/6whgx-records-stable-snapshot-analytics/SPEC.md`、`docs/specs/g4ek6-account-pool-upstream-accounts/SPEC.md`
 
 当文档和实现不一致时，先以实现与对应 story 为准，再回写本目录与相关 spec；不要让 `docs/ui/` 先于真实实现漂移。
@@ -37,6 +37,6 @@
 
 ## 已知例外 / 待治理
 
-- 当前规范仍有一部分事实来自 feature story 与页面故事，而不是独立 design token 层；这代表文档已经覆盖现状，但设计系统尚未完全抽象化。
+- 当前规范仍有一部分事实来自 feature story 与历史 spec，而不是独立 design token 层；这代表文档已经覆盖现状，但设计系统尚未完全抽象化。
 - 现有颜色、间距与表面层级同时存在 CSS 自定义属性和 Tailwind utility 双来源，后续若继续扩展主题，需评估是否补一层集中 token 映射。
 - 某些 feature spec 已经记录页面级视觉证据，但尚未统一回链到本目录；后续新增 spec 时应优先链接回 `docs/ui/` 的对应章节。

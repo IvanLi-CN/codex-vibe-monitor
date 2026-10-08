@@ -15,7 +15,7 @@ import {
 } from "./UpstreamAccountsPage.story-helpers";
 
 const meta = {
-  title: "Account Pool/Pages/Upstream Accounts/Overlays",
+  title: "Account Pool/Overlays/Upstream Account Detail",
   component: UpstreamAccountsPage,
   tags: ["autodocs"],
   parameters: {
@@ -357,40 +357,29 @@ function DetailDrawerStorySurface({
   accountId = 101,
   initialDeleteConfirmOpen = false,
   maxWidth = "none",
-  presentation = "overlay",
 }: {
   initialTab: "overview" | "records" | "routing" | "healthEvents";
   accountId?: number;
   initialDeleteConfirmOpen?: boolean;
   maxWidth?: string;
-  presentation?: "overlay" | "page";
 }) {
-  const isPagePresentation = presentation === "page";
-
   return (
     <MemoryRouter
       initialEntries={[`/account-pool/upstream-accounts?upstreamAccountId=${accountId}`]}
     >
-      <div
-        className={
-          isPagePresentation
-            ? "min-h-screen bg-base-100 text-base-content"
-            : "min-h-screen bg-base-200 p-3 text-base-content min-[769px]:p-6"
-        }
-      >
+      <div className="min-h-screen bg-base-200 p-3 text-base-content min-[769px]:p-6">
         <I18nProvider>
           <SystemNotificationProvider>
             <StorybookUpstreamAccountsMock>
               <div
-                style={!isPagePresentation && maxWidth !== "none" ? { maxWidth } : undefined}
-                className={isPagePresentation ? "w-full" : "mx-auto w-full"}
+                style={maxWidth !== "none" ? { maxWidth } : undefined}
+                className="mx-auto w-full"
               >
                 <SharedUpstreamAccountDetailDrawer
                   open
                   accountId={accountId}
                   initialTab={initialTab}
                   initialDeleteConfirmOpen={initialDeleteConfirmOpen}
-                  presentation={presentation}
                   onClose={() => {}}
                 />
               </div>
@@ -673,44 +662,6 @@ export const DetailDrawerRecordsSettledWide: Story = {
       within(dialog).queryByTestId("upstream-account-records-activity-overview"),
     ).not.toBeInTheDocument();
     await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument();
-  },
-};
-
-export const DetailPageMobile: Story = {
-  parameters: {
-    viewport: { defaultViewport: "mobile430" },
-  },
-  render: () => <DetailDrawerStorySurface initialTab="routing" presentation="page" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument();
-    await expect(within(document.body).queryByRole("dialog")).toBeNull();
-  },
-};
-
-export const DetailPageMobileDeleteConfirm: Story = {
-  parameters: {
-    viewport: { defaultViewport: "mobile430" },
-  },
-  render: () => (
-    <DetailDrawerStorySurface initialTab="overview" initialDeleteConfirmOpen presentation="page" />
-  ),
-  play: async () => {
-    const alertDialog = await within(document.body).findByRole("alertdialog");
-    await expect(alertDialog).toHaveClass("dialog-surface");
-    await expect(alertDialog).toHaveTextContent(/Codex Pro - Tokyo/i);
-  },
-};
-
-export const DetailPageTablet: Story = {
-  parameters: {
-    viewport: { defaultViewport: "tablet768" },
-  },
-  render: () => <DetailDrawerStorySurface initialTab="overview" presentation="page" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText(/账号活动总览|account activity overview/i)).toBeInTheDocument();
-    await expect(within(document.body).queryByRole("dialog")).toBeNull();
   },
 };
 
