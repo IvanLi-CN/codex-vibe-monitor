@@ -1,0 +1,6 @@
+# These projection fixtures exercise real deadline and latency contracts. Give
+# each the profile's execution slots so concurrent SQLite/archive fixtures do not
+# turn resource contention into a timing failure; keep every original assertion.
+[[profile.default.overrides]]
+filter = 'test(/^(api::slices::invocations_and_summary::request_compression_query_tests::summary_(projection|handler)_)|(api::slices::error_distribution_and_sse::tests::dashboard_runtime_projection_update_p95_)/)'
+threads-required = "num-test-threads"
