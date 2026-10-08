@@ -646,14 +646,22 @@ impl DiagnosticContext {
         }
         if let Some(root) = root.as_mut() {
             let trace_hash = root.span_context().trace_id().to_bytes()[0];
-            let sample_bucket = trace_hash & 7;
-            let random_candidate = trace_hash & 15 == 0;
+            let sample_bucket = trace_hash & 31;
+            let random_candidate = sample_bucket == 0;
+            // Select one deterministic category per request. Root spans retain the full
+            // lightweight record; only the selected category receives waterfall children.
             let detailed = truncated
-                || random_candidate
-                || (outcome != "complete" && sample_bucket == 1)
-                || (attempts > 1 && sample_bucket == 2)
-                || (wait_total >= Duration::from_millis(250) && sample_bucket == 3)
-                || (at >= Duration::from_secs(30) && sample_bucket == 4);
+                || if outcome != "complete" {
+                    sample_bucket == 1
+                } else if attempts > 1 {
+                    sample_bucket == 2
+                } else if wait_total >= Duration::from_millis(250) {
+                    sample_bucket == 3
+                } else if at >= Duration::from_secs(30) {
+                    sample_bucket == 4
+                } else {
+                    random_candidate
+                };
             if detailed {
                 for interval in phases {
                     self.emit(
