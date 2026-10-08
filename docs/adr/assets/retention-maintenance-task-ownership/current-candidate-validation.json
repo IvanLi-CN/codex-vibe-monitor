@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "status": "local-validation-passed-formal-review-and-live-ci-pending",
   "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
-  "codeCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
-  "sourceRustTree": "5ac7add967a0f4502c17de20e819f69ca52a0ae4",
+  "codeCandidateSha": "3d7ee15a3ca09c85f910e15cc5625222f3dd0029",
+  "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
-  "sourceInputFingerprint": "3d18d18978311e227c4dc6f73cf96d6acc4dc0c6a592ef9527e80433b5303360",
+  "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
   "sourceInputCount": 263,
   "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 6,
+    "repairBatchesUsed": 7,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -25,8 +25,8 @@
       "lightweight": {
         "passed": 1302,
         "failed": 0,
-        "testSeconds": 233.298,
-        "profileSeconds": 238
+        "testSeconds": 295.673,
+        "profileSeconds": 303
       },
       "statefulSqlite": {
         "passed": 1457,
@@ -86,30 +86,28 @@
     "docsLint": true
   },
   "backendEvidenceBinding": {
-    "sourceCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
-    "retainedProfiles": [],
-    "rustDelta": [
-      "src/maintenance/runtime_lock.rs",
-      "src/maintenance/runtime_lock/sqlite_vfs.rs",
-      "src/maintenance/runtime_lock/sqlite_vfs/io_guard.rs",
-      "src/maintenance_store.rs",
-      "src/tests/archive_file_io/maintenance_runtime_active_io.rs",
-      "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
-      "src/tests/archive_file_io/mod.rs"
+    "sourceCandidateSha": "3d7ee15a3ca09c85f910e15cc5625222f3dd0029",
+    "retainedProfiles": [
+      "stateful-sqlite",
+      "archive-file-io"
     ],
-    "scopeProof": "All three shared backend resource profiles and nine focused runtime regressions were executed on the exact sixth-batch Rust/build input fingerprint; no backend profile is retained from an older candidate.",
+    "rustDelta": [
+      "src/api/slices/invocations_and_summary.rs"
+    ],
+    "scopeProof": "The only Rust delta changes two existing cfg(test) functions selected exclusively by lightweight. Removing those two function bodies gives byte-identical file remainders; production prefix, shared test initializers/harness, resource profiles and all other Rust/build inputs are unchanged. Current lightweight/fmt/check/Clippy and six process-clock probes pass; current default-feature production binary is byte-identical. Stateful/archive and nine runtime focused results are retained from the sixth batch with directly inspectable Git delta.",
     "lightweightExecution": "whole shared runner and descendants pinned to guest CPU 5",
     "statefulExecution": "6 threads, distinct guest CPU lease per test, configured exclusive checkpoint/projection slots",
     "archiveExecution": "distinct guest CPU lease per test, bounded 30-second slot admission",
     "archiveRunnerSha256": "af3c5efc430e66e4b3757f0c2472cb62c1524266ef1b9f1bac5040a7f493efbe",
     "permissionTests": "setpriv --bounding-set=-dac_override,-dac_read_search",
     "logs": [
-      "repair6-lightweight.log",
-      "repair6-stateful-sqlite.log",
-      "repair6-archive-file-io.log",
-      "repair6-runtime-final.log",
-      "repair6-runtime-corrected.log"
-    ]
+      "repair7-lightweight.log",
+      "repair7-named-final.log",
+      "repair7-clock-1791475260.log"
+    ],
+    "retainedProfileSourceCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
+    "retainedProfileEvidenceLocator": ".codex/evidence/retention-maintenance/repair6",
+    "scopeProofLocator": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json"
   },
   "pending": [
     "formalTier4Review",
@@ -117,20 +115,21 @@
   ],
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
-    "generation": 11,
-    "leaseExpiresAt": "2026-10-08T15:54:15Z",
+    "generation": 12,
+    "leaseExpiresAt": "2026-10-08T17:24:17Z",
     "memoryMiB": 4096,
     "cpu": 8,
     "cargoBuildJobs": 1,
-    "compilerPeakAllocationMiB": 12288
+    "compilerPeakAllocationMiB": 12288,
+    "guestContinuityVerifiedAfterLiveReduction": true
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
-    "ownerAuthorizedRepairBatch": 6,
-    "ownerMessage": "解决问题",
-    "previousCandidateSha": "6956067deab2affb3fe6d1272a762d51ce63a48b",
-    "fixedFinding": "Drain post-connect initialization failures before lock release; validate active native SQLite database/journal/WAL/SHM I/O; revoke each acquired stale ready marker during takeover.",
-    "newFocusedRegression": "ownership_runtime_active_connection_rejects_database_and_sidecar_replacement; ownership_runtime_maintenance_initialization_failure_drains_workers; ownership_runtime_active_connection_rejects_shared_memory_replacement",
+    "ownerAuthorizedRepairBatch": 7,
+    "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
+    "previousCandidateSha": "ed7688f3e2f8d03be55337cb246ae417fd618291",
+    "fixedFinding": "CI fixture expected both rows in today during the first two minutes of a Shanghai calendar day; calculate independent count/token expectations from actual seeded dates.",
+    "newFocusedRegression": "Two existing delta-publication tests, six advancing-realtime positions including midnight crossing; no test retries or skips added.",
     "productionAssertionsAndLimitsUnchanged": true,
     "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51"
   },
@@ -139,10 +138,10 @@
     "reason": "Deterministic SQLite/file/process/mock fixtures cover behavior; production empirical thresholds are unnecessary"
   },
   "historicalEvidence": {
-    "directory": ".codex/evidence/retention-maintenance/repair5",
+    "directory": ".codex/evidence/retention-maintenance/repair6",
     "priorCandidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e",
     "files": "historical-*.json",
-    "note": "Prior Rust/binary/upgrade/runtime results remain historical; unchanged Web evidence is retained with exact source/support hash and directly inspectable Git delta."
+    "note": "Sixth-batch source/binary logs remain attributable to that execution. Unaffected stateful/archive/runtime/upgrades are retained using cfg(test)-only scope and verified byte-identical production binary; Web/docs evidence retains unchanged inputs."
   },
   "visualEvidence": {
     "source": "mock-only ui_demo",
@@ -157,12 +156,12 @@
     "CARGO_BUILD_JOBS": 1,
     "features": "default (hotpath)",
     "mode": "real program, not cfg(test)",
-    "seconds": 66
+    "seconds": 33.37
   },
   "validationSupportInputFingerprint": "d1e2814f2520b96d35be90ef48338609b3875943a0fd4ee5fd7fa6448ed66805",
   "webInputCount": 644,
-  "validatedAt": "2026-10-08T15:43:32.296919Z",
-  "evidenceLocator": ".codex/evidence/retention-maintenance/repair6",
+  "validatedAt": "2026-10-08T17:00:32.153524+00:00",
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair7",
   "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair6/candidate-repair6",
   "webInputFingerprint": "aa4e512848dab78a79915568cef428a848f84e498db9683eb14c0a866b982ae6",
   "acceptanceEvidence": {
@@ -242,25 +241,6 @@
       ]
     }
   },
-  "logSha256": {
-    "backend-contract.log": "190244ff89e1c13eb2db257f6eb343b0f7eea1843906a29a7282cb5f597a11d0",
-    "repair6-runtime-initial.log": "cba7183305ed353952903144b831cd5365e57d08eef995b5240fe8135865f901",
-    "repair6-runtime.log": "de5c8a4ab014bf0c2df3497b60f060167bc242f14c00d2731c2aa074c7eaea1e",
-    "repair6-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "repair6-runtime-focused.log": "05aefddc9c6ea9bb31aff6b43aff719243868f2adac115831c5a505836ddbcce",
-    "repair6-archive-file-io.log": "514795a028e2eeed3bbfcf3e615a096cf9c4acc1b14ee8de7f38d20a5df40199",
-    "repair6-runtime-final.log": "e5601293c460c3bab2f2397905f52b7113279b3e8794b12dc238e315a1dc4631",
-    "repair6-build.log": "82bca5030e58489ca37e64c0f38e5c507f792ee98d9efb6da700ba03172f00cb",
-    "docs-lint.log": "ba321fd1da83516a427f67310b50bfc1ff6994f1bbf5e5d4ee75f12f384ccc4d",
-    "repair6-runtime-corrected.log": "cee888be9f1b1b0d2b814de5fa47134bbb2809f6cba174392235f3567f818429",
-    "repair6-check.log": "0b9c85a57402765a9638848a90eec54abbd9a68f42a071a97aaa9d8acc5ba131",
-    "quality-contract.log": "5227d5fb38cbeeb4c889a06616cd3c857aa55cf6fd1bd8b317dfc2575e955292",
-    "repair6-upgrade.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
-    "repair6-lightweight.log": "1491b989416a4c74ed0ed0e6d1f4395d0d268364448e0ba0b926e925ef45a02d",
-    "repair6-stateful-sqlite.log": "56139a6f054c19174423dbe9cea5de6830921bdbb8c4241af76f8803f17efb7d",
-    "rust-source-quality.log": "d9d8282772c1f2ed9666d5c3d877f0defaab55d104859e9174f03c01db23e8c1",
-    "repair6-clippy.log": "8a2933ae25e59188be988ea6218274cb341f13d8bc4b533f57b12ececd4be8b3"
-  },
   "webEvidenceBinding": {
     "sourceCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
     "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
@@ -292,5 +272,66 @@
     "repair3-current-storybook.log": "ae817fb21d1dd7fb5e41fa079d531080147189fe8739975db6582c257ac9b9e7",
     "repair3-current-e2e.log": "f7532407a14187c7c4a16a6f986e7a16da3093c8280362609c9b4d9ca67d1ae0",
     "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937"
+  },
+  "retainedBackendLogSha256": {
+    "backend-contract.log": "190244ff89e1c13eb2db257f6eb343b0f7eea1843906a29a7282cb5f597a11d0",
+    "repair6-runtime-initial.log": "cba7183305ed353952903144b831cd5365e57d08eef995b5240fe8135865f901",
+    "repair6-runtime.log": "de5c8a4ab014bf0c2df3497b60f060167bc242f14c00d2731c2aa074c7eaea1e",
+    "repair6-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repair6-runtime-focused.log": "05aefddc9c6ea9bb31aff6b43aff719243868f2adac115831c5a505836ddbcce",
+    "repair6-archive-file-io.log": "514795a028e2eeed3bbfcf3e615a096cf9c4acc1b14ee8de7f38d20a5df40199",
+    "repair6-runtime-final.log": "e5601293c460c3bab2f2397905f52b7113279b3e8794b12dc238e315a1dc4631",
+    "repair6-build.log": "82bca5030e58489ca37e64c0f38e5c507f792ee98d9efb6da700ba03172f00cb",
+    "docs-lint.log": "ba321fd1da83516a427f67310b50bfc1ff6994f1bbf5e5d4ee75f12f384ccc4d",
+    "repair6-runtime-corrected.log": "cee888be9f1b1b0d2b814de5fa47134bbb2809f6cba174392235f3567f818429",
+    "repair6-check.log": "0b9c85a57402765a9638848a90eec54abbd9a68f42a071a97aaa9d8acc5ba131",
+    "quality-contract.log": "5227d5fb38cbeeb4c889a06616cd3c857aa55cf6fd1bd8b317dfc2575e955292",
+    "repair6-upgrade.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
+    "repair6-lightweight.log": "1491b989416a4c74ed0ed0e6d1f4395d0d268364448e0ba0b926e925ef45a02d",
+    "repair6-stateful-sqlite.log": "56139a6f054c19174423dbe9cea5de6830921bdbb8c4241af76f8803f17efb7d",
+    "rust-source-quality.log": "d9d8282772c1f2ed9666d5c3d877f0defaab55d104859e9174f03c01db23e8c1",
+    "repair6-clippy.log": "8a2933ae25e59188be988ea6218274cb341f13d8bc4b533f57b12ececd4be8b3"
+  },
+  "logSha256": {
+    "repair7-clock-1791475260.log": "2dfd94411bb8b0a99fad36f35d2a857dceb2461c31b5ef36e29676b79532cac8",
+    "repair7-clock-1791561598.log": "e1c57edfa977a93fd20a45d20f5f28ede2977ee67a887bc7f84258f10bb609e2",
+    "repair7-clippy.log": "da1924ec45380b46872eee7a6cf702080d4064c0382f896e889f7b076a1af7a4",
+    "repair7-named-final.log": "f52c7fbfa1eea0b5ae9c33e27ef4accd37a073fb62be553d9fb0872f52d6c219",
+    "repair7-clock-1791475200.log": "b4f1813a87b813ce507f177e871086ea001adb97663b0490838c5da087e62bd4",
+    "repair7-clock-1791518400.log": "5b878c3756430af1eb3aafc179d36de342eddaeb7b443c561c6850e7b7ca6f1a",
+    "repair7-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repair7-clock-1791475380.log": "dc40530dd7b40958556a4d0fa84952d2a8b908b50753a96b64aedf3795c0435c",
+    "repair7-build.log": "1110ecd44353edf8cd522431817c8803f13983d6d18850ccd841d0e139bec969",
+    "repair7-lightweight.log": "3e43cf345f13b38c143cab93061e9dcbec8fe2a5bda5f0ab9009e9a62451b7ba",
+    "repair7-check.log": "fb2722d71f9559963f333316dfc74c61debab0559599b2c3b3925ecaba905165",
+    "repair7-named-natural.log": "dab31e6f62b1c3150e3874074ad1cb09b92042596fd7186abe35a672a0c05b9e",
+    "repair7-clock-1791561590.log": "35636ad0d9037ec947284e3cd47ad213c3765f3270a5296cf3e080095aaa2050",
+    "source-quality-final.log": "d9d8282772c1f2ed9666d5c3d877f0defaab55d104859e9174f03c01db23e8c1",
+    "backend-contract.log": "190244ff89e1c13eb2db257f6eb343b0f7eea1843906a29a7282cb5f597a11d0",
+    "quality-metadata-final.log": "8ea102896819fc10273099e60b865b29a8c797f19c94d423d7408abc767b4cea",
+    "repair7-quality-contract-final.log": "2882423f0409737e3383d8a16511ceca7fa390b337553ddd889f8964992ca365",
+    "quality-snapshot-oom.log": "ded5dc30b6b19e06d5fcab8bcfa4625ef48312a4ce9fc106d6486dc0e6c0f9d7"
+  },
+  "retainedProductionEvidence": {
+    "executedCodeCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
+    "currentCodeCandidateSha": "3d7ee15a3ca09c85f910e15cc5625222f3dd0029",
+    "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
+    "currentBuildByteIdentical": true,
+    "releasedSources": 14,
+    "runtimeClaims": 8,
+    "scopeProof": "Only two lightweight cfg(test) fixtures changed; current default-feature production build hash exactly matches the previously executed binary."
+  },
+  "summaryClockValidation": "summary-clock-validation.json",
+  "toolingContractEvidence": {
+    "qualityGatesContract": "python3 .github/scripts/check_quality_gates_contract.py --repo-root . --declaration .github/quality-gates.json --metadata-script .github/scripts/metadata_gate.py --profile final; passed",
+    "backendTestContract": "bash .github/scripts/test-backend-test-contract.sh; passed",
+    "fullFixtureWrapper": "Not required by this test-only delta. Extra attempts did not complete: host snapshot tar write error; VM missing Ruby was resolved, then fixture snapshots in tmpfs exhausted guest memory (dmesg confirms tar OOM). No tooling source changed; these incomplete attempts are not claimed as passing full fixture tests.",
+    "toolingInputsUnchanged": true,
+    "extraAttemptLogs": [
+      "quality-contract.log",
+      "repair7-quality-contract.log",
+      "repair7-quality-contract-final.log",
+      "quality-snapshot-oom.log"
+    ]
   }
 }
