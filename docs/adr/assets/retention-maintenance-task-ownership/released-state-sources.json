@@ -119,6 +119,13 @@
         "--dry-run"
       ],
       "exitCode": 0
+    },
+    {
+      "tag": "v4.1.3",
+      "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.1.3",
+      "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:c34fe80a1fa74f4fe6f05f379636b4adea915c19564737f271f9f6d23c058dfb",
+      "generator": "released maintenance verify-archive-storage --dry-run",
+      "exitCode": 0
     }
   ]
 }
