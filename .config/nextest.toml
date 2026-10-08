@@ -4,3 +4,9 @@
 [[profile.default.overrides]]
 filter = 'test(/^(api::slices::invocations_and_summary::request_compression_query_tests::summary_(projection|handler)_)|(api::slices::error_distribution_and_sse::tests::dashboard_runtime_projection_update_p95_)/)'
 threads-required = "num-test-threads"
+
+# This fixture checks partial publication at 150 ms and completion at 3 seconds.
+# Preserve those real budgets while keeping other heavy fixtures out of its slots.
+[[profile.default.overrides]]
+filter = 'test(=tests::stateful_sqlite::prompt_cache_materialization_control::prompt_cache_statistics_checkpoint_budget_preserves_prefix_and_real_work_counts)'
+threads-required = "num-test-threads"

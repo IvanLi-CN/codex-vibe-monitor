@@ -20,7 +20,7 @@
 - 当前源码输入：Rust 树 `95af4b60a35ba18d947ee3c377f581d697448d61`，Web 树 `e352311b912402a2bd869630dd5c993fc454bc63`；260 个 Rust／构建输入已在会话 VM 逐项核对，指纹为 `c27f83124cd0a41a0d480dd23ce7b38966a9a9eb2767ef8f87e40121fa37faf9`。
 - 已通过：Web 类型、lint、构建；完整单测 179 文件、1838 测试（6 跳过），相关 Storybook 3 文件／72 测试，桌面／移动端与 demo 路由 Playwright 12 测试。测试夹具预先加载懒模块并等待实际渲染状态，未改变产品交互或生产阈值。
 - 已通过：会话 Linux VM 中共享 runner 的 lightweight 组 1302/1302，源码质量门禁、质量门禁合同与后端测试脚本合同。SQLite 与 archive/file-I/O 组、Rust fmt/check/clippy 的当前结果待补充。
-- Linux 计时诊断：增加 vCPU 和 nextest 独占执行槽均未消除共享宿主资源下的既有 projection 计时失败；将测试进程及子进程固定到单个来宾 CPU 后，11 个原失败测试全部通过，lightweight 完整组通过。保留失败日志，所有原断言和生产时限不变；当前三组完整回归按相同执行方式顺序运行。
+- Linux 计时诊断：增加 vCPU 和 nextest 独占执行槽均未消除共享宿主资源下的既有 projection 计时失败；将测试进程及子进程固定到单个来宾 CPU 后，11 个原失败测试全部通过，lightweight 完整组通过。保留失败日志，所有原断言和生产时限不变；SQLite 组维持六测试并行，以标准 Cargo target runner 将每个真实测试进程固定到独立来宾 CPU；七项原失败均在原断言下通过。统计检查点夹具在整组负载下仍未于既有恢复预算完成，隔离执行通过，现为该 150ms／3s 预算夹具配置独占执行槽，完整组待刷新。文件／归档组仍待验证。
 - 运行态修复统一路径／inode 锁排序，在 SQLite 初始化前持有实际数据库文件锁，并发布初始化、CLI 与 ready 角色。新升级与服务／CLI／页面竞争结果必须绑定最终候选二进制 digest；旧结果只保留为历史，不充当当前证明。
 - 六张 mock-only 页面图片已获主人确认；主干合并后再次核对任务行、控制、计划、计量及详情，图中相关页面行为与呈现保持一致。新主干的统计公平队列、分页及实时 overlay 合同保留。
 - `VER-RMO-001` 至 `VER-RMO-008` 的实现证据映射到 [当前候选验证卡](../../adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json)。当前尚未满足 PR Ready；必须完成十三来源升级、进程验证、Tier 4 审查及 PR 当前 head CI。
