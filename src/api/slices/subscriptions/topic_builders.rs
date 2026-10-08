@@ -290,6 +290,9 @@ impl SubscriptionTopic {
                 Ok(serde_json::to_value(snapshot)?)
             }
             Self::ManagedTaskTimeline => build_managed_task_timeline_topic_payload(None).await,
+            Self::ManagedTaskTimelineV2 => {
+                build_managed_task_timeline_revision_topic_payload().await
+            }
             Self::ManagedTaskDetail { task_key } => {
                 let Some(store) = crate::maintenance_store::global() else {
                     return Err(ApiError::unavailable(anyhow!(

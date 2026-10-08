@@ -3,6 +3,7 @@ import {
   acceptsRoutingStateVersion,
   compareRoutingStateVersion,
   fetchManagedTask,
+  fetchManagedTaskTimeline,
   fetchSystemStatus,
   fetchSystemStorage,
   normalizePoolRoutingSelectionAudit,
@@ -11,6 +12,157 @@ import {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+describe("fetchManagedTaskTimeline response contract", () => {
+  const validPage = {
+    observedAt: "2026-10-07T00:00:00Z",
+    windowStart: "2026-10-06T12:00:00Z",
+    windowEnd: "2026-10-07T00:00:00Z",
+    watermark: 7,
+    segments: [
+      {
+        segmentId: "run-1",
+        kind: "execution",
+        taskKey: "retention_archive",
+        title: "Retention archive",
+        startedAt: "2026-10-06T23:00:00Z",
+        lastObservedAt: "2026-10-06T23:01:00Z",
+        finishedAt: "2026-10-06T23:01:00Z",
+        durationMs: 60_000,
+        status: "success",
+        sessionId: "session-1",
+        revision: 7,
+      },
+    ],
+    coverage: [],
+    nextCursor: "cursor-1",
+    resetRequired: false,
+  };
+
+  it("returns a complete normalized page without changing its pagination cursor", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(validPage), { status: 200 })),
+    );
+
+    const page = await fetchManagedTaskTimeline({ limit: 500 });
+
+    expect(page).toMatchObject({
+      watermark: 7,
+      nextCursor: "cursor-1",
+      resetRequired: false,
+      segments: [expect.objectContaining({ segmentId: "run-1", revision: 7 })],
+    });
+  });
+
+  it("requests a server-selected rolling window without client timestamps", async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(validPage), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchManagedTaskTimeline({ windowHours: 12, afterRevision: 7, limit: 500 });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      "/api/system/managed-tasks/timeline?windowHours=12&afterRevision=7&limit=500",
+    );
+  });
+
+  it.each(["null", "absent"])("accepts %s optional timeline timestamps", async (presence) => {
+    const segmentWithOptionalTimestamps: Record<string, unknown> = {
+      ...validPage.segments[0],
+    };
+    const coverageWithOptionalTimestamp: Record<string, unknown> = {
+      sessionId: "session-1",
+      startedAt: "2026-10-06T23:00:00Z",
+      lastSeenAt: "2026-10-06T23:01:00Z",
+      droppedEvents: 0,
+    };
+    if (presence === "null") {
+      segmentWithOptionalTimestamps.finishedAt = null;
+      segmentWithOptionalTimestamps.retryAt = null;
+      Object.assign(coverageWithOptionalTimestamp, { endedAt: null });
+    } else {
+      delete segmentWithOptionalTimestamps.finishedAt;
+      delete segmentWithOptionalTimestamps.retryAt;
+    }
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ...validPage,
+              segments: [segmentWithOptionalTimestamps],
+              coverage: [coverageWithOptionalTimestamp],
+            }),
+            { status: 200 },
+          ),
+      ),
+    );
+
+    const page = await fetchManagedTaskTimeline({ limit: 500 });
+    expect(page.segments[0]).toMatchObject({ finishedAt: null, retryAt: null });
+    expect(page.coverage[0]).toMatchObject({ endedAt: null });
+  });
+
+  it.each([
+    ["missing segments", { segments: undefined }],
+    ["missing cursor", { nextCursor: undefined }],
+    ["invalid cursor", { nextCursor: 42 }],
+    ["invalid watermark", { watermark: "7" }],
+    ["invalid segment", { segments: [{ ...validPage.segments[0], revision: undefined }] }],
+    [
+      "invalid segment finish timestamp",
+      {
+        segments: [
+          validPage.segments[0],
+          { ...validPage.segments[0], segmentId: "run-2", finishedAt: "bad" },
+        ],
+      },
+    ],
+    [
+      "invalid segment retry timestamp",
+      {
+        segments: [
+          validPage.segments[0],
+          { ...validPage.segments[0], segmentId: "run-2", retryAt: "bad" },
+        ],
+      },
+    ],
+    [
+      "invalid coverage end timestamp",
+      {
+        coverage: [
+          {
+            sessionId: "session-1",
+            startedAt: "2026-10-06T23:00:00Z",
+            lastSeenAt: "2026-10-06T23:01:00Z",
+            endedAt: null,
+            droppedEvents: 0,
+          },
+          {
+            sessionId: "session-2",
+            startedAt: "2026-10-06T23:00:00Z",
+            lastSeenAt: "2026-10-06T23:01:00Z",
+            endedAt: "bad",
+            droppedEvents: 0,
+          },
+        ],
+      },
+    ],
+  ])("rejects a 200 response with %s instead of accepting a partial page", async (_label, changes) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ ...validPage, ...changes }), { status: 200 }),
+      ),
+    );
+
+    await expect(fetchManagedTaskTimeline({ limit: 500 })).rejects.toThrow(
+      "Invalid managed task timeline response",
+    );
+  });
 });
 
 describe("retention throughput optional contract", () => {

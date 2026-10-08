@@ -97,11 +97,36 @@ export async function resolveDemoTopicPayload(
         `/api/system/managed-tasks/${encodeURIComponent(taskKey)}`,
       ) as Promise<ManagedTaskDetail>;
     }
-    case "system.managed-tasks.timeline":
-      return requestTopicPayload(
+    case "system.managed-tasks.timeline": {
+      if (`${descriptor.params?.schemaVersion ?? "1"}` === "2") {
+        const page = (await requestTopicPayload(
+          requestUrl,
+          "/api/system/managed-tasks/timeline?limit=1",
+        )) as TaskTimelinePage;
+        return { watermark: page.watermark, observedAt: page.observedAt };
+      }
+
+      let page = (await requestTopicPayload(
         requestUrl,
-        "/api/system/managed-tasks/timeline",
-      ) as Promise<TaskTimelinePage>;
+        "/api/system/managed-tasks/timeline?windowHours=12&limit=500",
+      )) as TaskTimelinePage;
+      const snapshot = { ...page, segments: [...page.segments] };
+      while (page.nextCursor) {
+        const search = new URLSearchParams({ cursor: page.nextCursor, limit: "500" });
+        page = (await requestTopicPayload(
+          requestUrl,
+          `/api/system/managed-tasks/timeline?${search.toString()}`,
+        )) as TaskTimelinePage;
+        snapshot.segments.push(...page.segments);
+        if (
+          snapshot.segments.length > 10_000 ||
+          (snapshot.segments.length === 10_000 && page.nextCursor)
+        ) {
+          throw new Error("managed task timeline exceeds the bounded SSE snapshot capacity");
+        }
+      }
+      return { ...snapshot, nextCursor: null, replace: true };
+    }
     case "stats.summary.current": {
       const search = topicSearchParams(descriptor);
       return requestTopicPayload(requestUrl, `/api/stats?${search.toString()}`);

@@ -6,6 +6,7 @@ import { ListBodyState } from "../../features/shared/ListBodyState";
 import { managedTaskColor } from "../../features/system/managedTaskColor";
 import { TaskTimelineChart } from "../../features/system/TaskTimelineChart";
 import { TaskWorkloadSparkline } from "../../features/system/TaskWorkloadSparkline";
+import { useManagedTaskTimeline } from "../../hooks/useManagedTaskTimeline";
 import useSseStatus from "../../hooks/useSseStatus";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
@@ -14,9 +15,6 @@ import {
   type ManagedTask,
   type TaskAdmissionWait,
   type TaskRuntimeSnapshot,
-  type TaskTimelineCoverage,
-  type TaskTimelinePage,
-  type TaskTimelineSegment,
 } from "../../lib/api";
 import { requestImmediateReconnect } from "../../lib/sse";
 import { managedTaskExecutionClassLabel, managedTaskTriggerLabel } from "./taskLabels";
@@ -222,8 +220,6 @@ function admissionReason(wait: TaskAdmissionWait): string {
 
 export default function SystemTasksPage(): JSX.Element {
   const [tasks, setTasks] = useState<ManagedTask[]>([]);
-  const [timeline, setTimeline] = useState<TaskTimelineSegment[]>([]);
-  const [coverage, setCoverage] = useState<TaskTimelineCoverage[]>([]);
   const [runtimeReceivedAt, setRuntimeReceivedAt] = useState<number | null>(null);
   const [lastRuntimeObservedAt, setLastRuntimeObservedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -239,13 +235,13 @@ export default function SystemTasksPage(): JSX.Element {
   const catalogTopic = useSubscriptionTopic<ManagedTask[]>({
     topic: "system.managed-tasks.catalog",
   });
-  const timelineTopic = useSubscriptionTopic<TaskTimelinePage>({
-    topic: "system.managed-tasks.timeline",
-  });
+  const timelineTopic = useManagedTaskTimeline();
+  const timeline = timelineTopic.segments;
+  const coverage = timelineTopic.coverage;
+  const timelineWatermark = timelineTopic.watermark;
   const runtime = runtimeTopic.data;
   const sseStatus = useSseStatus();
   const connectionLostAt = useRef<number | null>(null);
-  const timelineWatermark = useRef<number | null>(null);
   const catalogEpoch = useRef(0);
 
   useEffect(() => {
@@ -254,38 +250,6 @@ export default function SystemTasksPage(): JSX.Element {
       setLastRuntimeObservedAt(runtime.observedAt);
     }
   }, [runtime]);
-
-  useEffect(() => {
-    const page = timelineTopic.data;
-    if (!page) return;
-    if (page.replace === false && timelineWatermark.current == null) {
-      timelineTopic.refresh();
-      return;
-    }
-    const currentWatermark = timelineWatermark.current;
-    if (currentWatermark != null && page.watermark < currentWatermark) return;
-    const replace = page.replace !== false || currentWatermark == null;
-    timelineWatermark.current = page.watermark;
-    setCoverage(page.coverage);
-    setTimeline((current) => {
-      const merged = new Map<string, TaskTimelineSegment>();
-      if (!replace) {
-        for (const segment of current) {
-          const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
-          if (!Number.isFinite(end) || end >= Date.parse(page.windowStart)) {
-            merged.set(segment.segmentId, segment);
-          }
-        }
-      }
-      for (const segment of page.segments) {
-        const existing = merged.get(segment.segmentId);
-        if (!existing || segment.revision >= existing.revision) {
-          merged.set(segment.segmentId, segment);
-        }
-      }
-      return [...merged.values()];
-    });
-  }, [timelineTopic.data, timelineTopic.refresh]);
 
   useEffect(() => {
     if (sseStatus.phase === "connected") {
@@ -575,9 +539,12 @@ export default function SystemTasksPage(): JSX.Element {
         />
         {timelineTopic.error ? (
           <Alert variant="warning">
-            时间线实时数据暂不可用，显示最后一次确认的区间：{timelineTopic.error}
+            时间线同步暂不可用，保留最后一次完整区间：{timelineTopic.error}
           </Alert>
-        ) : timelineTopic.lastReceivedAt == null && !loading && !timelineTopic.isLoading ? (
+        ) : timelineWatermark == null &&
+          timelineTopic.lastReceivedAt == null &&
+          !loading &&
+          !timelineTopic.isLoading ? (
           <Alert variant="warning">尚无可用的时间线记录，当前区间会以观测缺口呈现。</Alert>
         ) : null}
 
