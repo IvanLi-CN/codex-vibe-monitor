@@ -1,6 +1,49 @@
 use super::*;
 
 #[cfg(unix)]
+#[test]
+fn ownership_runtime_sqlite_open_supports_concurrent_vfs_registration() {
+    let directory = make_temp_test_dir("maintenance-runtime-concurrent-vfs");
+    let barrier = Arc::new(std::sync::Barrier::new(4));
+    let children: Vec<_> = (0..4)
+        .map(|index| {
+            let mut config = test_config();
+            config.database_path = directory.join(format!("business-{index}.sqlite"));
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let crate::maintenance::MaintenanceRuntimeRoute::Offline(mut owner) =
+                    crate::maintenance::MaintenanceRuntimeLock::route(&config, false).unwrap()
+                else {
+                    panic!("offline owner required");
+                };
+                barrier.wait();
+                let options = owner
+                    .sqlite_connect_options(
+                        &config.database_path,
+                        SqliteConnectOptions::new().journal_mode(SqliteJournalMode::Wal),
+                    )
+                    .unwrap();
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                runtime.block_on(async {
+                    let mut connection = SqliteConnection::connect_with(&options).await.unwrap();
+                    sqlx::query("CREATE TABLE proof (id INTEGER)")
+                        .execute(&mut connection)
+                        .await
+                        .unwrap();
+                    connection.close().await.unwrap();
+                });
+            })
+        })
+        .collect();
+    for child in children {
+        child.join().unwrap();
+    }
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn ownership_runtime_sqlite_open_rejects_replacement_before_initialization() {
     for maintenance in [false, true] {

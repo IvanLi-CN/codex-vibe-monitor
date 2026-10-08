@@ -50,11 +50,32 @@ pub(super) fn register(proof: &Arc<RuntimeDatabaseFiles>) -> Result<String> {
             "cvm-owned-runtime-{}",
             NEXT_ID.fetch_add(1, Ordering::Relaxed)
         );
-        let mut wrapper = Box::new(*base);
-        wrapper.pNext = std::ptr::null_mut();
-        wrapper.zName = CString::new(name.clone())?.into_raw();
-        wrapper.xOpen = Some(open);
-        wrapper.xFullPathname = Some(full_pathname);
+        let wrapper = Box::new(ffi::sqlite3_vfs {
+            iVersion: (*base).iVersion,
+            szOsFile: (*base).szOsFile,
+            mxPathname: (*base).mxPathname,
+            // SQLite mutates this list link during concurrent registration. Read
+            // only the original VFS's immutable ABI fields, never copy pNext.
+            pNext: std::ptr::null_mut(),
+            zName: CString::new(name.clone())?.into_raw(),
+            pAppData: (*base).pAppData,
+            xOpen: Some(open),
+            xDelete: (*base).xDelete,
+            xAccess: (*base).xAccess,
+            xFullPathname: Some(full_pathname),
+            xDlOpen: (*base).xDlOpen,
+            xDlError: (*base).xDlError,
+            xDlSym: (*base).xDlSym,
+            xDlClose: (*base).xDlClose,
+            xRandomness: (*base).xRandomness,
+            xSleep: (*base).xSleep,
+            xCurrentTime: (*base).xCurrentTime,
+            xGetLastError: (*base).xGetLastError,
+            xCurrentTimeInt64: (*base).xCurrentTimeInt64,
+            xSetSystemCall: (*base).xSetSystemCall,
+            xGetSystemCall: (*base).xGetSystemCall,
+            xNextSystemCall: (*base).xNextSystemCall,
+        });
         let pointer = Box::into_raw(wrapper);
         REGISTRATIONS
             .get_or_init(Mutex::default)
@@ -159,13 +180,11 @@ unsafe extern "C" fn open(
             .map(|(path, _)| path.with_extension("open-displaced"));
         #[cfg(test)]
         if let Some(((path, replacement), displaced)) = replacement.as_ref().zip(displaced.as_ref())
-        {
-            if std::fs::rename(path, displaced)
+            && std::fs::rename(path, displaced)
                 .and_then(|()| std::fs::rename(replacement, path))
                 .is_err()
-            {
-                return ffi::SQLITE_CANTOPEN;
-            }
+        {
+            return ffi::SQLITE_CANTOPEN;
         }
         let rc = callback(base, name, file, flags, output_flags);
         #[cfg(test)]
