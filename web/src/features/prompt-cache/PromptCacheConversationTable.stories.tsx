@@ -1630,6 +1630,13 @@ const stats: PromptCacheConversationsResponse = {
   ],
 };
 
+const delayedStatisticsStats: PromptCacheConversationsResponse = {
+  ...stats,
+  conversations: stats.conversations.map((conversation, index) =>
+    index === 0 ? { ...conversation, successCount: undefined } : conversation,
+  ),
+};
+
 const sharedScaleStats: PromptCacheConversationsResponse = {
   rangeStart: "2026-03-02T00:00:00.000Z",
   rangeEnd: "2026-03-03T00:00:00.000Z",
@@ -1937,6 +1944,34 @@ export const Populated: Story = {
 export const PopulatedMobile: Story = {
   args: {
     stats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    viewport: {
+      value: "mobile393",
+      isRotated: false,
+    },
+  },
+};
+
+export const DelayedStatistics: Story = {
+  args: {
+    stats: delayedStatisticsStats,
+    isLoading: false,
+    error: null,
+  },
+  globals: {
+    viewport: {
+      value: "desktop1280",
+      isRotated: false,
+    },
+  },
+};
+
+export const DelayedStatisticsMobile: Story = {
+  args: {
+    stats: delayedStatisticsStats,
     isLoading: false,
     error: null,
   },

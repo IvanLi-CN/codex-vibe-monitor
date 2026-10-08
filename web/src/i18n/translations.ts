@@ -2474,6 +2474,8 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "Channel {{name}}",
     "dashboard.workingConversations.empty":
       "No working conversations match the last 5 minutes or active in-flight window.",
+    "dashboard.workingConversations.statisticsPending":
+      "The current conversation list is available; detailed statistics are still refreshing.",
     "dashboard.workingConversations.offlineTitle": "Working conversations are unavailable offline",
     "dashboard.workingConversations.offlineDescription":
       "This section depends on live SSE snapshots and is not cached for offline use. Reconnect to resume current conversation monitoring.",
@@ -2721,6 +2723,8 @@ const baseTranslations = {
     "live.conversations.option.count": "{{count}} conversations",
     "live.conversations.option.activityHours": "Active in last {{hours}} hour(s)",
     "live.conversations.empty": "No conversations available.",
+    "live.conversations.statisticsPending":
+      "The current conversation list is available; detailed statistics are still refreshing.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
     "live.conversations.implicitFilter.inactiveOutsideActivityWindow":
@@ -5934,6 +5938,7 @@ const baseTranslations = {
     "dashboard.upstreamAccounts.channelName": "渠道 {{name}}",
     "dashboard.workingConversations.empty":
       "最近 5 分钟内暂无终态调用，且当前也没有运行中 / 排队中的对话。",
+    "dashboard.workingConversations.statisticsPending": "当前对话列表可用，详细统计仍在刷新中。",
     "dashboard.workingConversations.offlineTitle": "离线时无法读取 working conversations",
     "dashboard.workingConversations.offlineDescription":
       "这个区域依赖在线 SSE 快照，不会做离线缓存；重新联网后才会恢复当前对话监控。",
@@ -6173,6 +6178,7 @@ const baseTranslations = {
     "live.conversations.option.count": "{{count}} 个对话",
     "live.conversations.option.activityHours": "近 {{hours}} 小时活动",
     "live.conversations.empty": "暂无对话数据。",
+    "live.conversations.statisticsPending": "当前对话列表可用，详细统计仍在刷新中。",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
     "live.conversations.implicitFilter.inactiveOutsideActivityWindow":

@@ -8,6 +8,7 @@ import {
   DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   mapPromptCacheConversationsToDashboardCards,
 } from "../lib/dashboardWorkingConversations";
+import { hasPromptCacheConversationDelayedStatistics } from "../lib/promptCacheLive";
 import { buildTopicDescriptor } from "../lib/sse";
 import { useSubscriptionTopic } from "./useSubscriptionTopic";
 
@@ -113,6 +114,7 @@ export function useDashboardWorkingConversations(
   const { data, isLoading, error, refresh } =
     useSubscriptionTopic<PromptCacheConversationsResponse>(topic);
   const cards = useMemo(() => mapPromptCacheConversationsToDashboardCards(data), [data]);
+  const hasDelayedStatistics = hasPromptCacheConversationDelayedStatistics(data);
   const hasMore = data?.hasMore === true || Boolean(data?.nextCursor);
   const recentPreviewLimit = useMemo(
     () =>
@@ -141,6 +143,7 @@ export function useDashboardWorkingConversations(
   return {
     cards,
     stats: data,
+    hasDelayedStatistics,
     totalMatched: data?.totalMatched ?? cards.length,
     hasMore,
     isLoading,

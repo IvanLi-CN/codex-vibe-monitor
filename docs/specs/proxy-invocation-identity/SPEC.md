@@ -55,7 +55,7 @@ than their snapshot boundary while retaining the stable conversation identity.
 - A 400-key logical materialization page MAY be split into adaptive 32..400-key micro-batches. Prompt-cache pressure MUST yield only between committed micro-batches; a started micro-batch runs to commit or explicit failure.
 - Identity discovery MUST commit its identity rows, key cursor, and identity-key count together without scanning statistics. Statistics rebuild and queue drain MUST own resumable statistics pages. A statistics rebuild MUST commit each completed conversation's aggregate, generation-bound queue/staging cleanup, and continuous outer key cursor in the same transaction. An unfinished conversation MUST NOT advance that cursor. Queue drain MUST use generation-bound queue removal as its completion checkpoint.
 - Statistics pages with unchanged sources MUST continue within the existing run and query budgets, checking control and interactive pressure between committed pages. Repeated pages of one conversation MUST consume only one visited-key allowance per run. A completed continuous prefix MUST NOT restart when a later conversation yields; source changes after publication MUST enqueue only the affected conversation.
-- Aggregate reads MUST use the existing unavailable contract until identity coverage, aggregate freshness, complete migration phase, and an empty durable refresh queue are all satisfied. Retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
+- Explicit historical snapshot reads MUST use the existing unavailable contract until identity coverage, aggregate freshness, complete migration phase, and an empty durable refresh queue are all satisfied. Current/live reads MUST serve the durable working set plus runtime overlay while delayed statistics settle, as defined by REQ-PII-011. Retention MUST release masters whose retained invocation rows have been removed without maintaining a permanent released-ID blacklist.
 
 ### REQ-PII-005
 
@@ -110,6 +110,7 @@ than their snapshot boundary while retaining the stable conversation identity.
 - Frontend consumers MUST preserve delayed-statistics absence, use the durable first invocation
   timestamp for count-mode history ordering when present, and retain the existing live activity
   anchor for working-conversation selection.
+- Current/live HTTP reads and dashboard working-conversation SSE baselines MUST remain available while identity or statistics materialization is incomplete, using the durable working set and existing runtime overlay; delayed aggregate fields MAY be absent or stale. Explicit historical snapshot reads MUST retain the existing fail-closed materialization gate.
 - A snapshot MUST NOT publish durable aggregate fields whose last materialized invocation is newer
   than the snapshot boundary. The stable conversation identity MAY remain visible independently.
 
@@ -195,17 +196,18 @@ than their snapshot boundary while retaining the stable conversation identity.
 - [`../../adr/0029-conversation-invocation-range-reservations.md`](../../adr/0029-conversation-invocation-range-reservations.md)
 - [`../../adr/0030-durable-hourly-invocation-prefixes.md`](../../adr/0030-durable-hourly-invocation-prefixes.md)
 - [`../../adr/0031-prompt-cache-event-wake-priority.md`](../../adr/0031-prompt-cache-event-wake-priority.md)
+- [`../../adr/0033-prompt-cache-live-read-materialization-overlay.md`](../../adr/0033-prompt-cache-live-read-materialization-overlay.md)
 
 ## Visual Evidence
 
-- Source: `storybook_canvas`, mock-only stories
-  `monitoring-promptcacheconversationtable--populated` and
-  `monitoring-promptcacheconversationtable--populated-mobile`.
-- Viewports: desktop `1280x900` CSS px and mobile `393x852` CSS px; the mobile
-  asset captures the complete responsive surface at `393px` width.
-- Evidence assets: [desktop](assets/pr2-prompt-cache-conversations-desktop-1280.png)
-  and [mobile](assets/pr2-prompt-cache-conversations-mobile-393.png).
-- Preflight: both source-managed surfaces contain their targets, use an opaque natural theme background, satisfy the computed margin contract, and have no horizontal overflow. The confirmed candidate captures the single-column statistics layout on desktop and the complete wrapped breakdown on mobile.
+- Source: `storybook_canvas`, mock-only stories `monitoring-promptcacheconversationtable--delayed-statistics`, `monitoring-promptcacheconversationtable--delayed-statistics-mobile`, and `dashboard-workingconversationssection--delayed-statistics`.
+- `pr2-prompt-cache-conversations-desktop-1280.png`: `capture_scope=element`, `requested_viewport=1280x900`, `viewport_strategy=browser-resize-fallback`, `margin_policy=require_margin`, `evidence_surface=component`, `surface_selector=[data-visual-evidence-surface]`, `target_selector=[data-visual-evidence-target]`, `sensitive_exclusion=N/A`, `submission_gate=approved`; proves the live table remains visible with delayed-statistics freshness messaging.
+- `pr2-prompt-cache-conversations-mobile-393.png`: `capture_scope=element`, `requested_viewport=393x852`, `viewport_strategy=browser-resize-fallback`, `margin_policy=require_margin`, `evidence_surface=component`, `surface_selector=[data-visual-evidence-surface]`, `target_selector=[data-visual-evidence-target]`, `sensitive_exclusion=N/A`, `submission_gate=approved`; proves the responsive single-column list and wrapped breakdown remain readable.
+- `pr2-dashboard-working-conversations-delayed-desktop-1280.png`: `capture_scope=element`, `requested_viewport=1280x900`, `viewport_strategy=browser-resize-fallback`, `margin_policy=require_margin`, `evidence_surface=component`, `surface_selector=[data-visual-evidence-surface="dashboard-working-conversations"]`, `target_selector=[data-visual-evidence-target="dashboard-working-conversations-target"]`, `sensitive_exclusion=N/A`, `submission_gate=approved`; proves the dashboard current list and non-blocking freshness notice coexist.
+- Preflight: all source-managed surfaces contain their targets, use opaque natural theme backgrounds, satisfy the computed margin contract after lossless DOM-geometry tightening, and have no horizontal overflow. Browser-resize fallback was used only because ego-browser cannot capture a full-height Storybook iframe surface directly; device metrics and scrollbar state were restored after each capture.
+- ![Prompt-cache delayed statistics desktop](./assets/pr2-prompt-cache-conversations-desktop-1280.png)
+- ![Prompt-cache delayed statistics mobile](./assets/pr2-prompt-cache-conversations-mobile-393.png)
+- ![Dashboard delayed statistics](./assets/pr2-dashboard-working-conversations-delayed-desktop-1280.png)
 
 ## References
 
