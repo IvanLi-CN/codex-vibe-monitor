@@ -83,26 +83,27 @@
     "docsLint": true
   },
   "backendEvidenceBinding": {
-    "sourceCandidateSha": "66a5692914956b32ac8a1aee1140372a8cbcec4f",
+    "sourceCandidateSha": "cbd51fab0c4f63935fc4be9c91d076bbc3d6d2ea",
     "retainedProfiles": [
       "lightweight",
       "statefulSqlite"
     ],
     "rustDelta": [
-      "src/maintenance/runtime_lock/sqlite_vfs.rs: copy immutable VFS ABI fields and equivalent cfg(test) condition",
-      "src/tests/archive_file_io/maintenance_runtime_ownership.rs: concurrent native VFS registration regression"
+      "src/maintenance/cli.rs: online request/polling carries MaintenanceOnlineRuntime proof",
+      "src/maintenance/runtime_lock.rs: Online route persists ready markers and database descriptors through guarded VFS",
+      "src/maintenance_store.rs: connect_existing uses guarded options and closes pool before proof release",
+      "src/tests/archive_file_io/maintenance_runtime_ownership.rs: online replacement-after-route regression"
     ],
-    "scopeProof": "The post-66a56929 delta affects native VFS registration and archive/file-I/O tests only. Lightweight/stateful profiles have no owned runtime/VFS registration callers, and their test inputs remain unchanged. Archive 334/334 runs on immutable-field copy; the later Clippy-only cfg(test) conditional collapse is equivalent and its five focused tests pass again on final source.",
+    "scopeProof": "The fifth-batch code delta is confined to the four listed runtime/online-ownership files. A source scan of lightweight and stateful-sqlite test inputs found no MaintenanceRuntimeLock, MaintenanceOnlineRuntime, connect_existing, or maintenance::cli callers; all direct callers are in archive-file-io, whose 334/334 profile and six focused native-open tests were rerun on the fifth candidate. Retained lightweight/stateful profile results therefore have unchanged owned test inputs, while the changed runtime boundary is covered by archive-file-io and focused tests.",
     "lightweightExecution": "whole shared runner and descendants pinned to guest CPU 5",
     "statefulExecution": "6 threads, distinct guest CPU lease per test, configured exclusive checkpoint/projection slots",
     "archiveExecution": "distinct guest CPU lease per test, bounded 30-second slot admission",
     "archiveRunnerSha256": "af3c5efc430e66e4b3757f0c2472cb62c1524266ef1b9f1bac5040a7f493efbe",
     "permissionTests": "setpriv --bounding-set=-dac_override,-dac_read_search",
     "logs": [
-      "lightweight-final.log",
-      "stateful-sqlite-final.log",
-      "archive-file-io-final.log",
-      "runtime-open-final.log"
+      "repair5-archive-file-io.log",
+      "repair5-runtime-focused.log",
+      "repair5-runtime.log"
     ]
   },
   "pending": [
