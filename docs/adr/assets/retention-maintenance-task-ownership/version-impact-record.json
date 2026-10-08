@@ -34,7 +34,7 @@
         "description": "The owner expanded the task split to remove the global retention environment switch, reject compatibility import, and enable newly introduced cleanup controls by default."
       },
       "reasoning": "Approved public configuration removal, archive-only one-shot CLI scope and automatic-trigger controls are breaking changes. Persistent state is an additive Minor change verified against all fourteen declared released sources.",
-      "reassessed_at": "2026-10-08T12:29:39Z",
+      "reassessed_at": "2026-10-08T15:43:32.296919Z",
       "evidence": [
         "docs/adr/0034-retention-maintenance-task-ownership.md",
         "docs/specs/retention-maintenance-task-ownership/SPEC.md",
@@ -47,8 +47,8 @@
     },
     "verified": {
       "impact": "major",
-      "reasoning": "All fourteen individually generated sources passed on binary 896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e; the public contract remains Major and the additive persistent-state impact is separately verified Minor.",
-      "verified_at": "2026-10-08T12:29:39Z",
+      "reasoning": "All fourteen individually generated sources passed on binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51; the public contract remains Major and the additive persistent-state impact is separately verified Minor.",
+      "verified_at": "2026-10-08T15:43:32.296919Z",
       "evidence": [
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
         "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
@@ -71,7 +71,7 @@
       "classification_status": "verified",
       "reasoning": "Additive maintenance controls and cleanup scopes preserve existing formats; the candidate reads every declared v4.x source state and repairs interrupted initialization forward.",
       "state_description": "Managed task controls, schedules, initialization marker, per-task run/timeline observations, conversation orphan cursor, raw reconciliation/quarantine/release-pending state, and hourly identity state.",
-      "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; binary 896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e.",
+      "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51.",
       "evidence": [
         "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json",
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json",

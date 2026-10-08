@@ -2,16 +2,16 @@
   "schemaVersion": 1,
   "status": "local-validation-passed-formal-review-and-live-ci-pending",
   "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
-  "codeCandidateSha": "cbd51fab0c4f63935fc4be9c91d076bbc3d6d2ea",
-  "sourceRustTree": "3a887ffff0965b62f87efae9d8cf8eeae68851a6",
+  "codeCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
+  "sourceRustTree": "5ac7add967a0f4502c17de20e819f69ca52a0ae4",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
-  "sourceInputFingerprint": "81e534876aa138f191ed945baff32d17849596ea344b8172c265ccd74ad426e9",
-  "sourceInputCount": 261,
-  "candidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e",
+  "sourceInputFingerprint": "3d18d18978311e227c4dc6f73cf96d6acc4dc0c6a592ef9527e80433b5303360",
+  "sourceInputCount": 263,
+  "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
   "flow": {
     "type": "fast-track",
     "stop": "merge-ready",
-    "repairBatchesUsed": 5,
+    "repairBatchesUsed": 6,
     "prCreated": true,
     "currentFormalReviewLaunched": false
   },
@@ -25,18 +25,20 @@
       "lightweight": {
         "passed": 1302,
         "failed": 0,
-        "testSeconds": 282.943,
-        "profileSeconds": 289
+        "testSeconds": 233.298,
+        "profileSeconds": 238
       },
       "statefulSqlite": {
         "passed": 1457,
         "failed": 0,
-        "testSeconds": 315.674,
-        "profileSeconds": 323
+        "testSeconds": 259.689,
+        "profileSeconds": 265
       },
       "archiveFileIo": {
-        "passed": 334,
-        "failed": 0
+        "passed": 337,
+        "failed": 0,
+        "testSeconds": 82.278,
+        "profileSeconds": 88
       }
     },
     "linuxRuntimeLockRegression": true,
@@ -76,34 +78,37 @@
       "retries": 0
     },
     "sqliteNativeOpenFocused": {
-      "passed": 6,
-      "failed": 0
+      "passed": 9,
+      "failed": 0,
+      "ignored": 1
     },
     "docsSiteBuild": true,
     "docsLint": true
   },
   "backendEvidenceBinding": {
-    "sourceCandidateSha": "cbd51fab0c4f63935fc4be9c91d076bbc3d6d2ea",
-    "retainedProfiles": [
-      "lightweight",
-      "statefulSqlite"
-    ],
+    "sourceCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
+    "retainedProfiles": [],
     "rustDelta": [
-      "src/maintenance/cli.rs: online request/polling carries MaintenanceOnlineRuntime proof",
-      "src/maintenance/runtime_lock.rs: Online route persists ready markers and database descriptors through guarded VFS",
-      "src/maintenance_store.rs: connect_existing uses guarded options and closes pool before proof release",
-      "src/tests/archive_file_io/maintenance_runtime_ownership.rs: online replacement-after-route regression"
+      "src/maintenance/runtime_lock.rs",
+      "src/maintenance/runtime_lock/sqlite_vfs.rs",
+      "src/maintenance/runtime_lock/sqlite_vfs/io_guard.rs",
+      "src/maintenance_store.rs",
+      "src/tests/archive_file_io/maintenance_runtime_active_io.rs",
+      "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+      "src/tests/archive_file_io/mod.rs"
     ],
-    "scopeProof": "The fifth-batch code delta is confined to the four listed runtime/online-ownership files. A source scan of lightweight and stateful-sqlite test inputs found no MaintenanceRuntimeLock, MaintenanceOnlineRuntime, connect_existing, or maintenance::cli callers; all direct callers are in archive-file-io, whose 334/334 profile and six focused native-open tests were rerun on the fifth candidate. Retained lightweight/stateful profile results therefore have unchanged owned test inputs, while the changed runtime boundary is covered by archive-file-io and focused tests.",
+    "scopeProof": "All three shared backend resource profiles and nine focused runtime regressions were executed on the exact sixth-batch Rust/build input fingerprint; no backend profile is retained from an older candidate.",
     "lightweightExecution": "whole shared runner and descendants pinned to guest CPU 5",
     "statefulExecution": "6 threads, distinct guest CPU lease per test, configured exclusive checkpoint/projection slots",
     "archiveExecution": "distinct guest CPU lease per test, bounded 30-second slot admission",
     "archiveRunnerSha256": "af3c5efc430e66e4b3757f0c2472cb62c1524266ef1b9f1bac5040a7f493efbe",
     "permissionTests": "setpriv --bounding-set=-dac_override,-dac_read_search",
     "logs": [
-      "repair5-archive-file-io.log",
-      "repair5-runtime-focused.log",
-      "repair5-runtime.log"
+      "repair6-lightweight.log",
+      "repair6-stateful-sqlite.log",
+      "repair6-archive-file-io.log",
+      "repair6-runtime-final.log",
+      "repair6-runtime-corrected.log"
     ]
   },
   "pending": [
@@ -112,8 +117,8 @@
   ],
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
-    "generation": 7,
-    "leaseExpiresAt": "2026-10-08T09:46:32Z",
+    "generation": 11,
+    "leaseExpiresAt": "2026-10-08T15:54:15Z",
     "memoryMiB": 4096,
     "cpu": 8,
     "cargoBuildJobs": 1,
@@ -121,21 +126,21 @@
   },
   "currentRepair": {
     "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
-    "ownerAuthorizedRepairBatch": 5,
-    "ownerMessage": "允许",
-    "previousCandidateSha": "892c19387a0703d75c8fcf111f8ef420de2b59de",
-    "fixedFinding": "Online route proof now persists descriptors and ready marker files through guarded VFS connection, request and polling; pool closes before proof release.",
-    "newFocusedRegression": "ownership_runtime_lock_routes_online_and_recovers_process_death_without_unlinking",
+    "ownerAuthorizedRepairBatch": 6,
+    "ownerMessage": "解决问题",
+    "previousCandidateSha": "6956067deab2affb3fe6d1272a762d51ce63a48b",
+    "fixedFinding": "Drain post-connect initialization failures before lock release; validate active native SQLite database/journal/WAL/SHM I/O; revoke each acquired stale ready marker during takeover.",
+    "newFocusedRegression": "ownership_runtime_active_connection_rejects_database_and_sidecar_replacement; ownership_runtime_maintenance_initialization_failure_drains_workers; ownership_runtime_active_connection_rejects_shared_memory_replacement",
     "productionAssertionsAndLimitsUnchanged": true,
-    "candidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e"
+    "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51"
   },
   "empiricalAcceptance": {
     "disposition": "not_required",
     "reason": "Deterministic SQLite/file/process/mock fixtures cover behavior; production empirical thresholds are unnecessary"
   },
   "historicalEvidence": {
-    "directory": ".codex/evidence/retention-maintenance/repair4",
-    "priorCandidateBinarySha256": "70834aa108b851a4806ce188a3ccb9317de89e448e53d92ccad6125f89e0ed34",
+    "directory": ".codex/evidence/retention-maintenance/repair5",
+    "priorCandidateBinarySha256": "896b9e782aff17e65d0d9e89ff779852a79decd9c6d54e237d94092bb78c833e",
     "files": "historical-*.json",
     "note": "Prior Rust/binary/upgrade/runtime results remain historical; unchanged Web evidence is retained with exact source/support hash and directly inspectable Git delta."
   },
@@ -152,13 +157,13 @@
     "CARGO_BUILD_JOBS": 1,
     "features": "default (hotpath)",
     "mode": "real program, not cfg(test)",
-    "seconds": 215.29
+    "seconds": 66
   },
   "validationSupportInputFingerprint": "d1e2814f2520b96d35be90ef48338609b3875943a0fd4ee5fd7fa6448ed66805",
   "webInputCount": 644,
-  "validatedAt": "2026-10-08T12:29:39Z",
-  "evidenceLocator": ".codex/evidence/retention-maintenance/repair5",
-  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair5/candidate-repair5",
+  "validatedAt": "2026-10-08T15:43:32.296919Z",
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair6",
+  "candidateBinaryLocalPath": ".codex/evidence/retention-maintenance/repair6/candidate-repair6",
   "webInputFingerprint": "aa4e512848dab78a79915568cef428a848f84e498db9683eb14c0a866b982ae6",
   "acceptanceEvidence": {
     "VER-RMO-001": {
@@ -201,7 +206,8 @@
         "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
         "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
         "src/prompt_cache_conversations/invocation_ranges/lifecycle.rs",
-        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
+        "src/tests/archive_file_io/maintenance_runtime_active_io.rs"
       ]
     },
     "VER-RMO-006": {
@@ -211,7 +217,8 @@
         "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
         "src/tests/archive_file_io/retention_task_local_batches.rs",
         "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
-        "docs/adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json"
+        "docs/adr/assets/retention-maintenance-task-ownership/runtime-validation-results.json",
+        "src/tests/archive_file_io/maintenance_runtime_active_io.rs"
       ]
     },
     "VER-RMO-007": {
@@ -236,37 +243,23 @@
     }
   },
   "logSha256": {
-    "repair3-current-web-typecheck.log": "6e94b57663577cbb86d242c66afaabbf0a5aff17a5a04d8366f273d12e45e624",
-    "repair3-current-web-lint.log": "dfcddf3de8bfa7c17806762ce2e37dd96358ab6d3be17c525db8caec631488e4",
-    "repair3-current-web-unit.log": "8e81424c93dc7ec33a7eb9ea50c3120a53cf39d77fd0b66195908ef6063e3add",
-    "repair3-current-web-build.log": "476c5d02be78db3707dea30586163c4d5b09208f8a6555fa4d379a949a4fd726",
-    "repair3-current-storybook.log": "ae817fb21d1dd7fb5e41fa079d531080147189fe8739975db6582c257ac9b9e7",
-    "repair3-current-e2e.log": "f7532407a14187c7c4a16a6f986e7a16da3093c8280362609c9b4d9ca67d1ae0",
-    "rust-check-final.log": "4ac225733f7389ade8c848c8bcb851bfc818f7423fc6594093d37a42e9298262",
-    "runtime-open-focused-final.log": "2cc26f3fa18d56869586628bbd1d0916944ae6fb9300d1e17a6215f5bc3077d9",
-    "lightweight-initial-root-capabilities.log": "d985176a568b355f479ecdf68ed84eb2915925a4e8aa3a673f69ee0551b53ff4",
-    "rust-fmt-final.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-    "production-build-final.log": "00f99cc5043ace69c836539857753531c0a497e355db672a12ff1a9952f361b9",
-    "permission-focused.log": "863884cc36e4e99099e75e24c472405e8d38907f40585a8c09cc8fd9c5cd9985",
-    "archive-file-io-final.log": "2b33036fedef52919f48b6b6001a118bfd0f56a1bef035d7c3756ee1a3a16b38",
-    "runtime-open-final.log": "4a2f53118036f54f25bd4e5c949914c4350afa1d11bd64b9d6af2ede0132c62a",
-    "runtime-open-focused-initial.log": "066e80e099ab26cfddf25bdfa3d1d177620229d2689182a3dded79a8665b1da2",
-    "rust-clippy-initial.log": "5c5e936c69d2784494c4f8c8976c8dd5d059e1d163d90061dbe0f355330fd647",
-    "spec-drift-pre-final.log": "6de0bf6f7815ad70fd6e04e67a49d280cdeedadb44e8efb342c8d7a68a9bb1a8",
-    "archive-file-io-before-immutable-vfs-copy.log": "ca7652506c355c091c451881f307966bf99f20d24521044e87925384c834ff7f",
-    "stateful-sqlite-final.log": "0e1b48fcf1b8e93a42f72a6679019f92aafdb1817ee28c71d42fd88df17b981e",
-    "upgrade-final.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
-    "runtime-final.log": "57a11e14a5b9d2a9342ac450feee3fdf4882aaae605599e19735e7765b5b6d2c",
-    "rust-clippy-final.log": "085256bb790cc20b96809070f09ad14a150acab9b8950741fb4407a8590fbc3b",
-    "lightweight-final.log": "febc3b68340a0a7e7f0fedf866b77dcb7729db73154fc785fa6f9d6c7eb81475",
-    "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937",
-    "archive-file-io.log": "35a67bb0b9b9ecc8bace03b6977a014df62f5271eee0e3b4a174feef8f6b6b56",
-    "clippy.log": "42e5d84a90ab00981345e90f1aa09679baf5f4aee9c0b1ca370a33661ab53e6c",
-    "runtime-focused.log": "2b227dc3560c1606cbde2187c63904aebc4223f98c3f25e5a00bcf799466fd02",
-    "runtime.log": "bcce27f134306a01aedbac743fb4ef354310d70dcb46f30c18521e8a1b0e1f87",
-    "check.log": "c8081992a3b03d51a6fb80cf9bb2320198df1cf9465e17ef26ed0267703b28a8",
-    "build.log": "00597d8e4817e84af4d715b774e2efee57809320f36fa86c7c81db5f97b83a84",
-    "repair5-upgrade-results.json": "f6461420759123bac41cf62b33ede2389f5ef3cf193fc0b17bc8f57fa7299a6f"
+    "backend-contract.log": "190244ff89e1c13eb2db257f6eb343b0f7eea1843906a29a7282cb5f597a11d0",
+    "repair6-runtime-initial.log": "cba7183305ed353952903144b831cd5365e57d08eef995b5240fe8135865f901",
+    "repair6-runtime.log": "de5c8a4ab014bf0c2df3497b60f060167bc242f14c00d2731c2aa074c7eaea1e",
+    "repair6-fmt.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "repair6-runtime-focused.log": "05aefddc9c6ea9bb31aff6b43aff719243868f2adac115831c5a505836ddbcce",
+    "repair6-archive-file-io.log": "514795a028e2eeed3bbfcf3e615a096cf9c4acc1b14ee8de7f38d20a5df40199",
+    "repair6-runtime-final.log": "e5601293c460c3bab2f2397905f52b7113279b3e8794b12dc238e315a1dc4631",
+    "repair6-build.log": "82bca5030e58489ca37e64c0f38e5c507f792ee98d9efb6da700ba03172f00cb",
+    "docs-lint.log": "ba321fd1da83516a427f67310b50bfc1ff6994f1bbf5e5d4ee75f12f384ccc4d",
+    "repair6-runtime-corrected.log": "cee888be9f1b1b0d2b814de5fa47134bbb2809f6cba174392235f3567f818429",
+    "repair6-check.log": "0b9c85a57402765a9638848a90eec54abbd9a68f42a071a97aaa9d8acc5ba131",
+    "quality-contract.log": "5227d5fb38cbeeb4c889a06616cd3c857aa55cf6fd1bd8b317dfc2575e955292",
+    "repair6-upgrade.log": "30172dac0408e6c87b7ac474b9ceeb91a2d648344e93392a692d19361abfb96d",
+    "repair6-lightweight.log": "1491b989416a4c74ed0ed0e6d1f4395d0d268364448e0ba0b926e925ef45a02d",
+    "repair6-stateful-sqlite.log": "56139a6f054c19174423dbe9cea5de6830921bdbb8c4241af76f8803f17efb7d",
+    "rust-source-quality.log": "d9d8282772c1f2ed9666d5c3d877f0defaab55d104859e9174f03c01db23e8c1",
+    "repair6-clippy.log": "8a2933ae25e59188be988ea6218274cb341f13d8bc4b533f57b12ececd4be8b3"
   },
   "webEvidenceBinding": {
     "sourceCandidateSha": "0c631537a57925c52b3bae04678dcac6c9213944",
@@ -286,5 +279,18 @@
     "command": "cd docs-site && DOCS_BASE=/codex-vibe-monitor/ bun run build",
     "vmInputsVerified": true,
     "log": "docs-build-final.log"
+  },
+  "runtimeArgumentCorrection": {
+    "initialExitCode": 2,
+    "reason": "Orchestration used obsolete --fixture and omitted leased --http-port; parser rejected before fixture creation; corrected command was the first actual runtime validation."
+  },
+  "retainedLogSha256": {
+    "repair3-current-web-typecheck.log": "6e94b57663577cbb86d242c66afaabbf0a5aff17a5a04d8366f273d12e45e624",
+    "repair3-current-web-lint.log": "dfcddf3de8bfa7c17806762ce2e37dd96358ab6d3be17c525db8caec631488e4",
+    "repair3-current-web-unit.log": "8e81424c93dc7ec33a7eb9ea50c3120a53cf39d77fd0b66195908ef6063e3add",
+    "repair3-current-web-build.log": "476c5d02be78db3707dea30586163c4d5b09208f8a6555fa4d379a949a4fd726",
+    "repair3-current-storybook.log": "ae817fb21d1dd7fb5e41fa079d531080147189fe8739975db6582c257ac9b9e7",
+    "repair3-current-e2e.log": "f7532407a14187c7c4a16a6f986e7a16da3093c8280362609c9b4d9ca67d1ae0",
+    "docs-build-final.log": "eea548a9dea9f15ca1787e7a83647423a1f03ccae4af3024e794c79834e11937"
   }
 }
