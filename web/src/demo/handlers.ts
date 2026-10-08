@@ -20,6 +20,7 @@ import { demoSearchParamsFromLocation } from "./runtime";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DEMO_TASK_TIMELINE_SEGMENT_COUNT = 13_120;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
 const DEMO_INVOCATION_RESPONSE_BODY_SIZE = 138_649;
 const demoResetModelRoutes = new Set<string>();
@@ -3150,7 +3151,10 @@ function demoTaskOperationsRuntime() {
   };
 }
 
-function demoTaskOperationsTimeline() {
+let cachedDemoTaskOperationsTimeline: ReturnType<typeof createDemoTaskOperationsTimeline> | null =
+  null;
+
+function createDemoTaskOperationsTimeline() {
   const now = Date.now();
   const iso = (ageMs: number) => new Date(now - ageMs).toISOString();
   const active = demoTaskOperationsRuntime().activeRuns[0];
@@ -3173,7 +3177,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: 901,
       sessionId: "demo-session",
-      revision: 91,
+      revision: 13_120,
     },
     {
       segmentId: "demo-failed-retention",
@@ -3193,7 +3197,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: 812,
       sessionId: "demo-session",
-      revision: 90,
+      revision: 13_119,
     },
     {
       segmentId: "demo-interrupted-backfill",
@@ -3213,7 +3217,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 89,
+      revision: 13_118,
     },
     {
       segmentId: "demo-deferral-pressure",
@@ -3233,7 +3237,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 88,
+      revision: 13_117,
     },
     {
       segmentId: "demo-deferral-resource",
@@ -3253,7 +3257,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 87,
+      revision: 13_116,
     },
     {
       segmentId: "demo-observation-gap",
@@ -3273,20 +3277,24 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 86,
+      revision: 13_115,
     },
-    ...Array.from({ length: 14 }, (_, index) => {
-      const startedAt = now - (210_000 - index * 12_000);
+    ...Array.from({ length: DEMO_TASK_TIMELINE_SEGMENT_COUNT - 6 }, (_, index) => {
+      const startedAt =
+        now -
+        DAY_MS / 2 +
+        60_000 +
+        index * ((DAY_MS / 2 - 120_000) / (DEMO_TASK_TIMELINE_SEGMENT_COUNT - 6));
       return {
         segmentId: `demo-dense-${index}`,
         kind: "execution",
         taskKey: index % 2 ? "summary_snapshot" : "timeseries_minute_projection",
         title: index % 2 ? "汇总快照" : "分钟时序投影",
         startedAt: new Date(startedAt).toISOString(),
-        lastObservedAt: new Date(startedAt + 4_000).toISOString(),
-        finishedAt: new Date(startedAt + 4_000).toISOString(),
-        durationMs: 4_000,
-        status: index % 6 === 0 ? "failed" : "success",
+        lastObservedAt: new Date(startedAt + 1_500 + (index % 1_200)).toISOString(),
+        finishedAt: new Date(startedAt + 1_500 + (index % 1_200)).toISOString(),
+        durationMs: 1_500 + (index % 1_200),
+        status: index % 97 === 0 ? "failed" : "success",
         triggerKind: "event",
         executionClass: "p2_derived",
         reason: null,
@@ -3295,15 +3303,15 @@ function demoTaskOperationsTimeline() {
         activeChildTitle: null,
         managedRunId: 850 + index,
         sessionId: "demo-session",
-        revision: 70 + index,
+        revision: index + 1,
       };
     }),
   ];
   return {
     observedAt: new Date(now).toISOString(),
-    windowStart: iso(DAY_MS),
+    windowStart: iso(DAY_MS / 2),
     windowEnd: new Date(now).toISOString(),
-    watermark: 91,
+    watermark: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
     segments,
     coverage: [
       {
@@ -3315,6 +3323,63 @@ function demoTaskOperationsTimeline() {
       },
     ],
     nextCursor: null,
+    resetRequired: false,
+  };
+}
+
+function demoTaskOperationsTimeline() {
+  cachedDemoTaskOperationsTimeline ??= createDemoTaskOperationsTimeline();
+  return cachedDemoTaskOperationsTimeline;
+}
+
+function demoTaskOperationsTimelinePage(url: URL) {
+  const snapshot = demoTaskOperationsTimeline();
+  const cursor = url.searchParams.get("cursor");
+  let offset = 0;
+  let afterRevision: number | undefined;
+  let from = url.searchParams.get("from") ?? snapshot.windowStart;
+  let to = url.searchParams.get("to") ?? snapshot.windowEnd;
+  if (cursor) {
+    try {
+      const decoded = JSON.parse(decodeURIComponent(cursor)) as {
+        offset?: number;
+        afterRevision?: number;
+        from?: string;
+        to?: string;
+      };
+      offset = Number(decoded.offset) || 0;
+      afterRevision = decoded.afterRevision;
+      from = decoded.from ?? from;
+      to = decoded.to ?? to;
+    } catch {
+      return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+    }
+  } else {
+    const revision = url.searchParams.get("afterRevision");
+    afterRevision = revision == null ? undefined : Number(revision);
+  }
+  const pageSize = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 500));
+  const startBound = Date.parse(from);
+  const endBound = Date.parse(to);
+  const matching = snapshot.segments.filter((segment) => {
+    const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
+    return (
+      (afterRevision == null || segment.revision > afterRevision) &&
+      Date.parse(segment.startedAt) <= endBound &&
+      end >= startBound
+    );
+  });
+  const segments = matching.slice(offset, offset + pageSize);
+  const nextOffset = offset + segments.length;
+  return {
+    ...snapshot,
+    windowStart: from,
+    windowEnd: to,
+    segments,
+    nextCursor:
+      nextOffset < matching.length
+        ? encodeURIComponent(JSON.stringify({ offset: nextOffset, afterRevision, from, to }))
+        : null,
     resetRequired: false,
   };
 }
@@ -4994,7 +5059,7 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/system/managed-tasks/runtime" && request.method === "GET")
     return json(demoTaskOperationsRuntime());
   if (pathname === "/api/system/managed-tasks/timeline" && request.method === "GET")
-    return json(demoTaskOperationsTimeline());
+    return json(demoTaskOperationsTimelinePage(url));
   const managedTaskWorkloadMatch = pathname.match(
     /^\/api\/system\/managed-tasks\/([^/]+)\/workload$/,
   );

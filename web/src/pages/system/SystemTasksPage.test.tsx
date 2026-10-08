@@ -20,7 +20,7 @@ const streamMocks = vi.hoisted(() => ({
   useSseStatus: vi.fn(),
   requestImmediateReconnect: vi.fn(),
   runtimeLastReceivedAt: 0,
-  timelineLastReceivedAt: 0,
+  timelineLastReceivedAt: 0 as number | null,
   runtimeData: null as unknown,
   timelineData: null as unknown,
   runtimeRefresh: vi.fn(),
@@ -142,7 +142,10 @@ describe("SystemTasksPage", () => {
       resetRequired: false,
     };
     apiMocks.fetchManagedTaskTimeline.mockResolvedValue(timelineFixture);
-    streamMocks.timelineData = timelineFixture;
+    streamMocks.timelineData = {
+      watermark: timelineFixture.watermark,
+      observedAt: timelineFixture.observedAt,
+    };
     streamMocks.useSseStatus.mockReturnValue({
       phase: "connected",
       downtimeMs: 0,
@@ -239,12 +242,16 @@ describe("SystemTasksPage", () => {
     });
     expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
       topic: "system.managed-tasks.timeline",
+      params: { schemaVersion: "2" },
     });
     expect(streamMocks.useSubscriptionTopic).toHaveBeenCalledWith({
       topic: "system.managed-tasks.catalog",
     });
     expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
-    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
+    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 500, windowHours: 12 }),
+    );
     expect(host?.textContent).toContain("数据保留与归档");
     expect(host?.textContent).toContain("正在执行");
     expect(host?.textContent).toContain("已入队");
@@ -254,7 +261,6 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("等待开始");
     expect(host?.textContent).toContain("08:00:01");
     expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
-    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
     expect(host?.textContent).toContain("raw_compression");
   });
 
@@ -264,6 +270,16 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("固定间隔");
     expect(host?.textContent).toContain("手动");
     expect(host?.textContent).toContain("已停用");
+  });
+
+  it("does not report an empty timeline after an HTTP baseline arrives before SSE", async () => {
+    streamMocks.timelineData = null;
+    streamMocks.timelineLastReceivedAt = null;
+    renderPage();
+    await waitFor(() => expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1));
+    await flushEffects();
+
+    expect(host?.textContent).not.toContain("尚无可用的时间线记录");
   });
 
   it("combines enabled and trigger filters without hiding the running area", async () => {
@@ -330,7 +346,7 @@ describe("SystemTasksPage", () => {
     );
   });
 
-  it("merges SSE timeline deltas by segment identity and revision", async () => {
+  it("hydrates timeline pages and restarts the baseline when a cursor expires", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-01T00:00:10.000Z"));
     const originalSegment = {
@@ -353,7 +369,7 @@ describe("SystemTasksPage", () => {
       sessionId: "session-one",
       revision: 1,
     };
-    streamMocks.timelineData = {
+    apiMocks.fetchManagedTaskTimeline.mockResolvedValueOnce({
       observedAt: "2026-10-01T00:00:05.000Z",
       windowStart: "2026-09-30T12:00:05.000Z",
       windowEnd: "2026-10-01T00:00:05.000Z",
@@ -362,7 +378,8 @@ describe("SystemTasksPage", () => {
       coverage: [],
       nextCursor: null,
       resetRequired: false,
-    };
+    });
+    streamMocks.timelineData = { watermark: 1, observedAt: "2026-10-01T00:00:05.000Z" };
     renderPage();
     await flushEffects();
     const initialBars = host?.querySelectorAll('[data-testid="task-timeline"] g[role="button"]');
@@ -372,12 +389,11 @@ describe("SystemTasksPage", () => {
       ),
     ).toBe(true);
 
-    streamMocks.timelineData = {
+    apiMocks.fetchManagedTaskTimeline.mockResolvedValueOnce({
       observedAt: "2026-10-01T00:00:08.000Z",
       windowStart: "2026-09-30T12:00:08.000Z",
       windowEnd: "2026-10-01T00:00:08.000Z",
       watermark: 2,
-      replace: false,
       segments: [
         { ...originalSegment, status: "success", revision: 2 },
         {
@@ -393,7 +409,8 @@ describe("SystemTasksPage", () => {
       coverage: [],
       nextCursor: null,
       resetRequired: false,
-    };
+    });
+    streamMocks.timelineData = { watermark: 2, observedAt: "2026-10-01T00:00:08.000Z" };
     updatePage();
     await flushEffects();
 
@@ -405,71 +422,46 @@ describe("SystemTasksPage", () => {
       bars.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
     ).toHaveLength(2);
     expect(bars.some((bar) => bar.getAttribute("aria-label")?.includes("结果：失败"))).toBe(false);
-
-    streamMocks.timelineData = {
-      observedAt: "2026-10-01T00:00:09.000Z",
-      windowStart: "2026-09-30T12:00:09.000Z",
-      windowEnd: "2026-10-01T00:00:09.000Z",
-      watermark: 1,
-      replace: false,
-      segments: [{ ...originalSegment, status: "failed", revision: 3 }],
-      coverage: [],
-      nextCursor: null,
-      resetRequired: false,
-    };
-    updatePage();
-    await flushEffects();
-    const afterStaleDelta = Array.from(
-      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
+    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenLastCalledWith(
+      expect.objectContaining({ afterRevision: 1, limit: 500 }),
     );
-    expect(
-      afterStaleDelta.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
-    ).toHaveLength(2);
 
-    streamMocks.timelineData = {
-      observedAt: "2026-10-01T00:00:10.000Z",
-      windowStart: "2026-10-01T00:00:00.000Z",
-      windowEnd: "2026-10-01T00:00:10.000Z",
-      watermark: 3,
-      replace: false,
-      segments: [],
-      coverage: [],
-      nextCursor: null,
-      resetRequired: false,
-    };
+    apiMocks.fetchManagedTaskTimeline
+      .mockResolvedValueOnce({
+        observedAt: "2026-10-01T00:00:10.000Z",
+        windowStart: "2026-09-30T12:00:10.000Z",
+        windowEnd: "2026-10-01T00:00:10.000Z",
+        watermark: 3,
+        segments: [],
+        coverage: [],
+        nextCursor: null,
+        resetRequired: true,
+      })
+      .mockResolvedValueOnce({
+        observedAt: "2026-10-01T00:00:10.000Z",
+        windowStart: "2026-09-30T12:00:10.000Z",
+        windowEnd: "2026-10-01T00:00:10.000Z",
+        watermark: 3,
+        segments: [
+          {
+            ...originalSegment,
+            segmentId: "resnapshot-run",
+            title: "重新同步后的执行",
+            startedAt: "2026-10-01T00:00:08.000Z",
+            lastObservedAt: "2026-10-01T00:00:09.000Z",
+            finishedAt: "2026-10-01T00:00:09.000Z",
+            status: "success",
+            revision: 1,
+          },
+        ],
+        coverage: [],
+        nextCursor: null,
+        resetRequired: false,
+      });
+    streamMocks.timelineData = { watermark: 3, observedAt: "2026-10-01T00:00:10.000Z" };
     updatePage();
     await flushEffects();
-    const afterWindowSlide = Array.from(
-      host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
-    );
-    expect(
-      afterWindowSlide.filter((bar) => bar.getAttribute("aria-label")?.includes("结果：成功")),
-    ).toHaveLength(1);
-
-    streamMocks.timelineData = {
-      observedAt: "2026-10-01T00:00:10.000Z",
-      windowStart: "2026-09-30T12:00:10.000Z",
-      windowEnd: "2026-10-01T00:00:10.000Z",
-      watermark: 4,
-      replace: true,
-      segments: [
-        {
-          ...originalSegment,
-          segmentId: "resnapshot-run",
-          title: "重新同步后的执行",
-          startedAt: "2026-10-01T00:00:08.000Z",
-          lastObservedAt: "2026-10-01T00:00:09.000Z",
-          finishedAt: "2026-10-01T00:00:09.000Z",
-          status: "success",
-          revision: 1,
-        },
-      ],
-      coverage: [],
-      nextCursor: null,
-      resetRequired: true,
-    };
-    updatePage();
-    await flushEffects();
+    await waitFor(() => expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(4));
     const resnapshotBars = Array.from(
       host?.querySelectorAll<SVGGElement>('[data-testid="task-timeline"] g[role="button"]') ?? [],
     );
@@ -514,7 +506,7 @@ describe("SystemTasksPage", () => {
     expect(after).not.toBe(before);
     expect(host?.textContent).toContain("0 分 13 秒");
     expect(apiMocks.fetchManagedTaskRuntime).not.toHaveBeenCalled();
-    expect(apiMocks.fetchManagedTaskTimeline).not.toHaveBeenCalled();
+    expect(apiMocks.fetchManagedTaskTimeline).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 });

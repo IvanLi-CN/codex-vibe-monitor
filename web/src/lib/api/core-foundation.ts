@@ -6284,14 +6284,32 @@ export async function fetchManagedTaskRuntime(): Promise<TaskRuntimeSnapshot> {
   };
 }
 
+function isTaskTimelineTimestamp(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0 && Number.isFinite(Date.parse(value));
+}
+
 function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null {
   const payload = asRecord(raw);
+  const revision = normalizeFiniteNumber(payload?.revision);
+  const finishedAt = payload?.finishedAt;
+  const retryAt = payload?.retryAt;
   if (
     !payload ||
     typeof payload.segmentId !== "string" ||
+    payload.segmentId.length === 0 ||
     typeof payload.taskKey !== "string" ||
-    typeof payload.startedAt !== "string" ||
-    typeof payload.lastObservedAt !== "string" ||
+    payload.taskKey.length === 0 ||
+    typeof payload.title !== "string" ||
+    typeof payload.status !== "string" ||
+    typeof payload.sessionId !== "string" ||
+    payload.sessionId.length === 0 ||
+    !isTaskTimelineTimestamp(payload.startedAt) ||
+    !isTaskTimelineTimestamp(payload.lastObservedAt) ||
+    revision == null ||
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    (finishedAt != null && !isTaskTimelineTimestamp(finishedAt)) ||
+    (retryAt != null && !isTaskTimelineTimestamp(retryAt)) ||
     (payload.kind !== "execution" && payload.kind !== "deferral" && payload.kind !== "coverage_gap")
   ) {
     return null;
@@ -6300,33 +6318,40 @@ function normalizeTaskTimelineSegment(raw: unknown): TaskTimelineSegment | null 
     segmentId: payload.segmentId,
     kind: payload.kind,
     taskKey: payload.taskKey,
-    title: typeof payload.title === "string" ? payload.title : payload.taskKey,
+    title: payload.title,
     startedAt: payload.startedAt,
     lastObservedAt: payload.lastObservedAt,
-    finishedAt: typeof payload.finishedAt === "string" ? payload.finishedAt : null,
+    finishedAt: typeof finishedAt === "string" ? finishedAt : null,
     durationMs: normalizeFiniteNumber(payload.durationMs) ?? null,
-    status: typeof payload.status === "string" ? payload.status : "unknown",
+    status: payload.status,
     triggerKind: typeof payload.triggerKind === "string" ? payload.triggerKind : null,
     executionClass: typeof payload.executionClass === "string" ? payload.executionClass : null,
     reason: typeof payload.reason === "string" ? payload.reason : null,
-    retryAt: typeof payload.retryAt === "string" ? payload.retryAt : null,
+    retryAt: typeof retryAt === "string" ? retryAt : null,
     activeChildTaskKey:
       typeof payload.activeChildTaskKey === "string" ? payload.activeChildTaskKey : null,
     activeChildTitle:
       typeof payload.activeChildTitle === "string" ? payload.activeChildTitle : null,
     managedRunId: normalizeFiniteNumber(payload.managedRunId) ?? null,
-    sessionId: typeof payload.sessionId === "string" ? payload.sessionId : "unknown",
-    revision: normalizeFiniteNumber(payload.revision) ?? 0,
+    sessionId: payload.sessionId,
+    revision,
   };
 }
 
 function normalizeTaskTimelineCoverage(raw: unknown): TaskTimelineCoverage | null {
   const payload = asRecord(raw);
+  const droppedEvents = normalizeFiniteNumber(payload?.droppedEvents);
+  const endedAt = payload?.endedAt;
   if (
     !payload ||
     typeof payload.sessionId !== "string" ||
-    typeof payload.startedAt !== "string" ||
-    typeof payload.lastSeenAt !== "string"
+    payload.sessionId.length === 0 ||
+    !isTaskTimelineTimestamp(payload.startedAt) ||
+    !isTaskTimelineTimestamp(payload.lastSeenAt) ||
+    (endedAt != null && !isTaskTimelineTimestamp(endedAt)) ||
+    droppedEvents == null ||
+    !Number.isSafeInteger(droppedEvents) ||
+    droppedEvents < 0
   ) {
     return null;
   }
@@ -6334,8 +6359,8 @@ function normalizeTaskTimelineCoverage(raw: unknown): TaskTimelineCoverage | nul
     sessionId: payload.sessionId,
     startedAt: payload.startedAt,
     lastSeenAt: payload.lastSeenAt,
-    endedAt: typeof payload.endedAt === "string" ? payload.endedAt : null,
-    droppedEvents: normalizeFiniteNumber(payload.droppedEvents) ?? 0,
+    endedAt: typeof endedAt === "string" ? endedAt : null,
+    droppedEvents,
   };
 }
 
@@ -6343,6 +6368,7 @@ export async function fetchManagedTaskTimeline(
   query: {
     from?: string;
     to?: string;
+    windowHours?: number;
     cursor?: string;
     afterRevision?: number;
     limit?: number;
@@ -6354,25 +6380,47 @@ export async function fetchManagedTaskTimeline(
   }
   const suffix = params.size > 0 ? `?${params.toString()}` : "";
   const payload = asRecord(await fetchJson<unknown>(`/api/system/managed-tasks/timeline${suffix}`));
-  if (!payload) throw new Error("Invalid managed task timeline response");
+  const watermark = normalizeFiniteNumber(payload?.watermark);
+  const nextCursor = payload?.nextCursor;
+  if (
+    !payload ||
+    !isTaskTimelineTimestamp(payload.observedAt) ||
+    !isTaskTimelineTimestamp(payload.windowStart) ||
+    !isTaskTimelineTimestamp(payload.windowEnd) ||
+    watermark == null ||
+    !Number.isSafeInteger(watermark) ||
+    watermark < 0 ||
+    !Array.isArray(payload.segments) ||
+    !Array.isArray(payload.coverage) ||
+    (nextCursor !== null && (typeof nextCursor !== "string" || nextCursor.length === 0)) ||
+    typeof payload.resetRequired !== "boolean"
+  ) {
+    throw new Error("Invalid managed task timeline response");
+  }
+  const segments: TaskTimelineSegment[] = [];
+  for (const rawSegment of payload.segments) {
+    const segment = normalizeTaskTimelineSegment(rawSegment);
+    if (!segment) throw new Error("Invalid managed task timeline response");
+    segments.push(segment);
+  }
+  const coverage: TaskTimelineCoverage[] = [];
+  for (const rawCoverage of payload.coverage) {
+    const item = normalizeTaskTimelineCoverage(rawCoverage);
+    if (!item) throw new Error("Invalid managed task timeline response");
+    coverage.push(item);
+  }
+  if (payload.resetRequired && (nextCursor !== null || segments.length > 0)) {
+    throw new Error("Invalid managed task timeline response");
+  }
   return {
-    observedAt:
-      typeof payload.observedAt === "string" ? payload.observedAt : new Date().toISOString(),
-    windowStart: typeof payload.windowStart === "string" ? payload.windowStart : "",
-    windowEnd: typeof payload.windowEnd === "string" ? payload.windowEnd : "",
-    watermark: normalizeFiniteNumber(payload.watermark) ?? 0,
-    segments: Array.isArray(payload.segments)
-      ? payload.segments
-          .map(normalizeTaskTimelineSegment)
-          .filter((segment): segment is TaskTimelineSegment => segment != null)
-      : [],
-    coverage: Array.isArray(payload.coverage)
-      ? payload.coverage
-          .map(normalizeTaskTimelineCoverage)
-          .filter((coverage): coverage is TaskTimelineCoverage => coverage != null)
-      : [],
-    nextCursor: typeof payload.nextCursor === "string" ? payload.nextCursor : null,
-    resetRequired: payload.resetRequired === true,
+    observedAt: payload.observedAt,
+    windowStart: payload.windowStart,
+    windowEnd: payload.windowEnd,
+    watermark,
+    segments,
+    coverage,
+    nextCursor,
+    resetRequired: payload.resetRequired,
   };
 }
 

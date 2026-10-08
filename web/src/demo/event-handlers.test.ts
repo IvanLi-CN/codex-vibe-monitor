@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { handleDemoRequest } from "./handlers";
 import { resolveDemoTopicPayload } from "./topic-payloads";
 
 const requestUrl = "http://demo.invalid/events";
@@ -29,11 +30,14 @@ describe("demo topic payloads", () => {
     expect(invocations).toMatchObject({ records: expect.any(Array), total: expect.any(Number) });
   });
 
-  it("provides task catalog, runtime, timeline, and workload snapshots to demo SSE topics", async () => {
+  it("provides catalog, runtime, workload, and revision marker payloads to demo SSE topics", async () => {
     const [catalog, runtime, timeline, workload] = await Promise.all([
       resolveDemoTopicPayload({ topic: "system.managed-tasks.catalog" }, requestUrl),
       resolveDemoTopicPayload({ topic: "system.managed-tasks.runtime" }, requestUrl),
-      resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),
+      resolveDemoTopicPayload(
+        { topic: "system.managed-tasks.timeline", params: { schemaVersion: "2" } },
+        requestUrl,
+      ),
       resolveDemoTopicPayload(
         {
           topic: "system.managed-tasks.workload",
@@ -52,19 +56,52 @@ describe("demo topic payloads", () => {
       admissionWaits: expect.any(Array),
     });
     expect(timeline).toMatchObject({
-      segments: expect.any(Array),
-      coverage: expect.any(Array),
-    });
-    expect(timeline).toMatchObject({
-      segments: expect.arrayContaining([
-        expect.objectContaining({
-          kind: "coverage_gap",
-          reason: "event_channel_overflow",
-        }),
-      ]),
-      coverage: expect.arrayContaining([expect.objectContaining({ droppedEvents: 4 })]),
+      watermark: expect.any(Number),
+      observedAt: expect.any(String),
     });
     expect(workload).toMatchObject({ samples: expect.any(Array), coverage: expect.any(String) });
+    expect(timeline).not.toHaveProperty("segments");
+    expect(timeline).not.toHaveProperty("coverage");
+  });
+
+  it("serves the dense task timeline through 500-row fixed-window pages", async () => {
+    const from = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const to = new Date().toISOString();
+    const ids = new Set<string>();
+    let cursor: string | null = null;
+    let watermark: number | null = null;
+    let pageCount = 0;
+    do {
+      const query = new URLSearchParams({ from, to, limit: "500" });
+      if (cursor) query.set("cursor", cursor);
+      const response = await handleDemoRequest(
+        new Request(`http://demo.invalid/api/system/managed-tasks/timeline?${query.toString()}`),
+      );
+      const page = (await response.json()) as {
+        watermark: number;
+        segments: Array<{ segmentId: string }>;
+        nextCursor: string | null;
+        windowStart: string;
+        windowEnd: string;
+      };
+      watermark ??= page.watermark;
+      expect(page.watermark).toBe(watermark);
+      expect(page.windowStart).toBe(from);
+      expect(page.windowEnd).toBe(to);
+      expect(page.segments.length).toBeLessThanOrEqual(500);
+      for (const segment of page.segments) ids.add(segment.segmentId);
+      cursor = page.nextCursor;
+      pageCount += 1;
+    } while (cursor);
+
+    expect(ids.size).toBe(13_120);
+    expect(pageCount).toBe(27);
+  });
+
+  it("keeps unversioned timeline demo subscriptions on the bounded v1 contract", async () => {
+    await expect(
+      resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),
+    ).rejects.toThrow("managed task timeline exceeds the bounded SSE snapshot capacity");
   });
 
   it("keeps model routing subscription filters in the demo snapshot", async () => {

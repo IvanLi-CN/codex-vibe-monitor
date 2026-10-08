@@ -2159,6 +2159,7 @@ pub(crate) async fn get_managed_task_runtime(
 pub(crate) struct ManagedTaskTimelineQuery {
     pub(crate) from: Option<String>,
     pub(crate) to: Option<String>,
+    pub(crate) window_hours: Option<i64>,
     pub(crate) cursor: Option<String>,
     pub(crate) after_revision: Option<i64>,
     pub(crate) limit: Option<usize>,
@@ -2172,8 +2173,20 @@ pub(crate) async fn get_managed_task_timeline(
             "maintenance database unavailable"
         )));
     };
+    get_managed_task_timeline_from_store(store, query).await
+}
+
+async fn get_managed_task_timeline_from_store(
+    store: &crate::maintenance_store::MaintenanceStore,
+    query: ManagedTaskTimelineQuery,
+) -> Result<Json<crate::task_timeline::TaskTimelinePage>, ApiError> {
     let from = parse_system_task_run_bound(query.from.as_deref(), "from")?;
     let to = parse_system_task_run_bound(query.to.as_deref(), "to")?;
+    if query.window_hours.is_some() && (from.is_some() || to.is_some()) {
+        return Err(ApiError::bad_request(anyhow!(
+            "windowHours cannot be combined with from or to"
+        )));
+    }
     let end_at = to
         .as_deref()
         .map(DateTime::parse_from_rfc3339)
@@ -2187,11 +2200,16 @@ pub(crate) async fn get_managed_task_timeline(
         .transpose()
         .map_err(|error| ApiError::bad_request(anyhow!(error)))?
         .map(|value| value.with_timezone(&Utc))
-        .unwrap_or_else(|| end_at - chrono::Duration::hours(24));
+        .unwrap_or_else(|| end_at - chrono::Duration::hours(query.window_hours.unwrap_or(24)));
     let duration = end_at.signed_duration_since(start_at);
-    if duration < chrono::Duration::zero() || duration > chrono::Duration::hours(24) {
+    if query
+        .window_hours
+        .is_some_and(|hours| !(1..=24).contains(&hours))
+        || duration < chrono::Duration::zero()
+        || duration > chrono::Duration::hours(24)
+    {
         return Err(ApiError::bad_request(anyhow!(
-            "timeline window must be between zero and 24 hours"
+            "timeline window must be between zero and 24 hours and windowHours between one and 24"
         )));
     }
     if let Some(cursor) = query.cursor.as_deref() {
@@ -2208,6 +2226,7 @@ pub(crate) async fn get_managed_task_timeline(
         query.after_revision,
         from.as_deref(),
         to.as_deref(),
+        query.window_hours,
         query.limit.unwrap_or(500).clamp(1, 500),
     )
     .await
@@ -2433,6 +2452,179 @@ pub(crate) fn summarize_retention_run_for_system_task(
 mod managed_task_control_contract_tests {
     use super::*;
     use crate::OptionalField;
+
+    async fn managed_task_timeline_test_handler(
+        axum::extract::Extension(store): axum::extract::Extension<
+            Arc<crate::maintenance_store::MaintenanceStore>,
+        >,
+        Query(query): Query<ManagedTaskTimelineQuery>,
+    ) -> Result<Json<crate::task_timeline::TaskTimelinePage>, ApiError> {
+        get_managed_task_timeline_from_store(&store, query).await
+    }
+
+    #[tokio::test]
+    async fn managed_task_timeline_http_pages_keep_server_window_and_revision_rows() {
+        use axum::{body::Body, routing::get};
+        use tower::ServiceExt;
+
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("connect HTTP timeline fixture");
+        sqlx::query("CREATE TABLE maintenance_metadata (key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create HTTP timeline metadata");
+        sqlx::query("INSERT INTO maintenance_metadata (key,value,updated_at) VALUES ('task_timeline_revision','501','2026-10-07T00:00:00.000Z')")
+            .execute(&pool)
+            .await
+            .expect("seed HTTP timeline watermark");
+        sqlx::query("CREATE TABLE task_timeline_segments (segment_id TEXT PRIMARY KEY,kind TEXT NOT NULL,task_key TEXT NOT NULL,title TEXT NOT NULL,started_at TEXT NOT NULL,last_observed_at TEXT NOT NULL,finished_at TEXT,duration_ms INTEGER,status TEXT NOT NULL,trigger_kind TEXT,execution_class TEXT,reason TEXT,retry_at TEXT,active_child_task_key TEXT,active_child_title TEXT,managed_run_id INTEGER,session_id TEXT NOT NULL,revision INTEGER NOT NULL)")
+            .execute(&pool)
+            .await
+            .expect("create HTTP timeline segments");
+        sqlx::query("CREATE TABLE task_timeline_coverage (session_id TEXT PRIMARY KEY,started_at TEXT NOT NULL,last_seen_at TEXT NOT NULL,ended_at TEXT,dropped_events INTEGER NOT NULL DEFAULT 0)")
+            .execute(&pool)
+            .await
+            .expect("create HTTP timeline coverage");
+
+        let started_at = format_utc_iso_millis(Utc::now() - ChronoDuration::minutes(1));
+        let mut transaction = pool.begin().await.expect("begin HTTP timeline fixture");
+        for revision in 1..=501 {
+            sqlx::query("INSERT INTO task_timeline_segments (segment_id,kind,task_key,title,started_at,last_observed_at,status,session_id,revision) VALUES (?,'execution','retention_archive','Retention archive',?,?,'success','http-fixture',?)")
+                .bind(format!("http-fixture-{revision:05}"))
+                .bind(&started_at)
+                .bind(&started_at)
+                .bind(revision)
+                .execute(&mut *transaction)
+                .await
+                .expect("insert HTTP timeline fixture row");
+        }
+        transaction
+            .commit()
+            .await
+            .expect("commit HTTP timeline fixture");
+
+        let store = Arc::new(crate::maintenance_store::MaintenanceStore::from_pool(pool));
+        let app = axum::Router::new()
+            .route("/timeline", get(managed_task_timeline_test_handler))
+            .layer(axum::Extension(store.clone()));
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/timeline?windowHours=12&limit=500")
+                    .body(Body::empty())
+                    .expect("first HTTP timeline request"),
+            )
+            .await
+            .expect("first HTTP timeline response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("first HTTP timeline body");
+        let first: Value = serde_json::from_slice(&body).expect("first HTTP timeline JSON");
+        assert_eq!(first["watermark"], 501);
+        assert_eq!(first["segments"].as_array().map(Vec::len), Some(500));
+        let cursor = first["nextCursor"]
+            .as_str()
+            .expect("first HTTP timeline cursor");
+        let window_start = DateTime::parse_from_rfc3339(first["windowStart"].as_str().unwrap())
+            .expect("server window start");
+        let window_end = DateTime::parse_from_rfc3339(first["windowEnd"].as_str().unwrap())
+            .expect("server window end");
+        assert_eq!(
+            window_end.signed_duration_since(window_start),
+            ChronoDuration::hours(12)
+        );
+        assert_eq!(first["observedAt"], first["windowEnd"]);
+
+        sqlx::query(
+            "UPDATE maintenance_metadata SET value='502' WHERE key='task_timeline_revision'",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("advance HTTP timeline watermark during paging");
+        sqlx::query(
+            "UPDATE task_timeline_segments SET revision=502 WHERE segment_id='http-fixture-00001'",
+        )
+        .execute(&store.pool)
+        .await
+        .expect("revise a row from the first HTTP page");
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri(format!("/timeline?cursor={cursor}&limit=500"))
+                    .body(Body::empty())
+                    .expect("second HTTP timeline request"),
+            )
+            .await
+            .expect("second HTTP timeline response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("second HTTP timeline body");
+        let second: Value = serde_json::from_slice(&body).expect("second HTTP timeline JSON");
+        assert_eq!(second["watermark"], 501);
+        assert_eq!(second["segments"].as_array().map(Vec::len), Some(1));
+        assert_eq!(second["segments"][0]["segmentId"], "http-fixture-00501");
+        assert_eq!(second["windowStart"], first["windowStart"]);
+        assert_eq!(second["windowEnd"], first["windowEnd"]);
+
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/timeline?windowHours=12&afterRevision=501&limit=500")
+                    .body(Body::empty())
+                    .expect("revision delta HTTP request"),
+            )
+            .await
+            .expect("revision delta HTTP response");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("revision delta HTTP body");
+        let delta: Value = serde_json::from_slice(&body).expect("revision delta HTTP JSON");
+        assert_eq!(delta["watermark"], 502);
+        assert_eq!(delta["segments"].as_array().map(Vec::len), Some(1));
+        assert_eq!(delta["segments"][0]["segmentId"], "http-fixture-00001");
+        assert_eq!(delta["segments"][0]["revision"], 502);
+
+        for offset in [0, 500] {
+            let legacy_cursor = URL_SAFE_NO_PAD.encode(
+                serde_json::to_vec(&serde_json::json!({
+                    "from": first["windowStart"],
+                    "to": first["windowEnd"],
+                    "watermark": 501,
+                    "offset": offset,
+                    "afterRevision": null,
+                    "expiresAt": format_utc_iso_millis(Utc::now() + ChronoDuration::minutes(5)),
+                }))
+                .expect("serialize legacy timeline cursor"),
+            );
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(format!("/timeline?cursor={legacy_cursor}&limit=500"))
+                        .body(Body::empty())
+                        .expect("legacy cursor request"),
+                )
+                .await
+                .expect("legacy cursor response");
+            assert_eq!(response.status(), axum::http::StatusCode::OK);
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("legacy cursor body");
+            let reset: Value = serde_json::from_slice(&body).expect("legacy cursor JSON");
+            assert_eq!(reset["resetRequired"], true);
+            assert_eq!(reset["segments"].as_array().map(Vec::len), Some(0));
+        }
+    }
 
     #[test]
     fn schedule_patch_distinguishes_missing_null_and_value() {

@@ -2,37 +2,37 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add per-task workload capabilities and durable run samples, revisioned detail updates, and evidence-based workload charts with Retention backlog history.",
-    "release_unit_description": "Task operations API and additive maintenance-store workload migration, including recent-100 run trends and responsive Retention backlog Tabs.",
+    "description": "Preserve the managed task timeline SSE v1 contract and add opt-in marker-only SSE v2 with fixed-watermark HTTP pages and afterRevision deltas.",
+    "release_unit_description": "Managed task timeline API with compatible SSE v1 and additive SSE v2, including fixed-watermark HTTP paging and revision catch-up.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
     "allowed_impacts": ["patch", "minor", "major"],
     "planned": {
       "impact": "minor",
-      "reasoning": "Measurement capabilities, workload trend fields, and the task-key detail SSE topic are additive. The maintenance-store sample table is forward-only and idempotent; legacy request-time, duration, task controls, and colors retain their existing meanings and values.",
-      "assessed_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md", "docs/specs/task-operations/persistent-state-migration.json"]
+      "reasoning": "The existing unversioned timeline SSE v1 interval snapshot/delta contract remains available. Marker-only v2 is selected through the additive schemaVersion parameter, while the built-in page opts into HTTP pagination. The persisted timeline schema and existing task controls, colors, request timestamps, and duration semantics are unchanged.",
+      "assessed_at": "2026-10-08T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0030-versioned-managed-task-timeline-sse-compatibility.md", "docs/specs/task-operations/persistent-state-migration.json"]
     },
     "current": {
       "impact": "minor",
-      "scope_drift": {"detected": false, "description": "The workload requirements extend the same task-operations topic with additive response fields, a task-key SSE detail topic, and an idempotent maintenance-store sample table; no scheduling or task-admission behavior changes."},
-      "reasoning": "The migration adds workload sample identity, sequence, state, and serialized metric coverage without reconstructing historical values. Existing controls, colors, request timestamps, duration semantics, and legacy history are preserved.",
-      "reassessed_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/specs/task-operations/persistent-state-migration.json", "docs/adr/0026-durable-task-execution-and-deferral-timelines.md"]
+      "scope_drift": {"detected": true, "description": "The owner rejected a major release. Compatibility was restored by preserving the unversioned v1 interval contract and making marker-only v2 opt-in through an additive schemaVersion parameter."},
+      "reasoning": "The timeline SSE v1 contract remains unchanged for existing consumers. The new v2 marker-only contract is opt-in, so the public API change is additive. The maintenance-store schema, control columns, and legacy history semantics are unchanged by this transport change.",
+      "reassessed_at": "2026-10-08T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0030-versioned-managed-task-timeline-sse-compatibility.md", "docs/specs/task-operations/persistent-state-migration.json"]
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "The additive detail contract and idempotent sample-table migration preserve old task controls, colors, request-time fields, and unknown legacy metrics.",
-      "verified_at": "2026-10-03T00:00:00Z",
-      "evidence": ["docs/specs/task-operations/persistent-state-migration.json", "cargo fmt --all -- --check", "cargo check --locked --all-targets --all-features", "backend lightweight/stateful-sqlite/archive-file-io profiles"]
+      "reasoning": "The unversioned v1 snapshot/delta transport remains available with its existing 10,000-segment bound; the marker-only v2 transport is explicitly selected by schemaVersion=2. Rust topic-contract and transport regressions plus frontend synchronization tests cover both contracts. The isolated service loaded all 13,120 fixture intervals in 27 fixed-watermark pages and applied the concurrent revision once; reconnect restored the persisted watermark. Browser integration rendered all 13,120 fixture IDs without an unavailable warning. Persistent-state impact remains minor, so the release unit maximum is minor.",
+      "verified_at": "2026-10-08T00:00:00Z",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0030-versioned-managed-task-timeline-sse-compatibility.md", "cargo test managed_task_timeline_transport_pages_more_than_ten_thousand_rows -- --nocapture", "cargo test managed_task_sse_topics_have_stable_bounded_contracts -- --nocapture", "cd web && bun run test -- src/hooks/useManagedTaskTimeline.test.tsx src/pages/system/SystemTasksPage.test.tsx src/demo/event-handlers.test.ts src/demo/event-source.test.ts", "Agent VM A3 at code candidate 5176f8b17c4b4630681d46000515ef0dd71bece0: 13,120 fixtures in 27 HTTP pages; revision 13384 applied once over baseline 13383; SSE reconnect watermark 13391 matched persisted metadata", "Ego TaskSpace 22 A3 browser: 13,120 fixture IDs loaded in the fixed 12-hour window; 13,587 total HTTP segments over 28 pages including service-generated records; 13,565 executions rendered without unavailable warning"]
     }
   },
   "compatibility_evidence": {
     "public_api": {
-      "change": "compatible",
-      "supported_consumer_range": "Same-major consumers remain compatible with legacy task fields and enabled-only PATCH requests; measurementCapabilities, workloadTrend, and the taskKey-scoped detail SSE topic are additive, and absent historical metrics remain unknown. Public API impact is minor because the release adds new response fields and a topic.",
-      "evidence": ["docs/specs/task-operations/SPEC.md"]
+      "change": "additive",
+      "supported_consumer_range": "Consumers that omit schemaVersion continue receiving the existing system.managed-tasks.timeline/v1 interval snapshot/delta contract. Consumers that need unbounded timeline history may opt into schemaVersion=2 and load interval rows through the paginated HTTP timeline endpoint; workload response fields and enabled-only task updates remain compatible additions.",
+      "evidence": ["docs/specs/task-operations/SPEC.md", "docs/adr/0030-versioned-managed-task-timeline-sse-compatibility.md"]
     },
     "persistent_state": {
       "applicable": true,
@@ -44,6 +44,6 @@
   "release_unit": {
     "member_change_records": ["docs/specs/task-operations/persistent-state-migration.json"],
     "maximum_verified_impact": "minor",
-    "calculation_evidence": ["verified public_api=minor", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=minor"]
+    "calculation_evidence": ["verified public_api=minor (v1 retained; v2 is opt-in)", "verified persistent_state=minor", "verified release unit=max(public_api,persistent_state)=minor"]
   }
 }
