@@ -1,6 +1,4 @@
 use super::*;
-use serde_json::json;
-
 #[tokio::test]
 async fn backfill_proxy_prompt_cache_keys_updates_payload_and_is_idempotent() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
