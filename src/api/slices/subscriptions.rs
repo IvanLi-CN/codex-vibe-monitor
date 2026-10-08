@@ -6136,16 +6136,6 @@ impl SubscriptionHub {
         } = topic
         {
             let mut transaction = state.pool.begin().await?;
-            if !prompt_cache_conversation_materialization_is_complete_on_connection(
-                transaction.as_mut(),
-            )
-            .await
-            .map_err(ApiError::from)?
-            {
-                return Err(ApiError::unavailable(anyhow!(
-                    "prompt-cache conversation history is still materializing"
-                )));
-            }
             let baseline_row_id =
                 sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                     .fetch_one(transaction.as_mut())
@@ -20706,6 +20696,13 @@ mod tests {
             .entry(topic_key)
             .or_default()
             .insert(delta.identity.clone(), delta);
+        sqlx::query(
+            "INSERT OR REPLACE INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) VALUES (?1)",
+        )
+        .bind("runtime-overlay-pending-key")
+        .execute(&state.pool)
+        .await
+        .expect("queue prompt-cache statistics refresh before SSE baseline");
 
         let cached = state
             .subscription_hub
@@ -21226,7 +21223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn working_conversations_bounded_hydration_defers_while_statistics_materialize() {
+    async fn working_conversations_bounded_hydration_reads_while_statistics_materialize() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -21257,7 +21254,7 @@ mod tests {
         let source_scope = resolve_default_source_scope(&state.pool)
             .await
             .expect("resolve default source scope");
-        let error = hydrate_working_prompt_cache_conversation_for_key(
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
             state.as_ref(),
             source_scope,
             "queued-working-hydration",
@@ -21267,9 +21264,12 @@ mod tests {
             None,
         )
         .await
-        .expect_err("bounded hydration must defer while statistics are queued");
+        .expect("bounded hydration should keep serving while statistics are queued")
+        .expect("queued runtime-only working conversation should remain visible");
 
-        assert!(format!("{error:?}").contains("still materializing"));
+        assert_eq!(conversation.prompt_cache_key, "queued-working-hydration");
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.success_count, None);
     }
 
     #[tokio::test]

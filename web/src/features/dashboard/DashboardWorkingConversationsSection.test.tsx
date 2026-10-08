@@ -678,6 +678,7 @@ function renderSection(
     isLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
+    hasDelayedStatistics?: boolean;
     totalMatched?: number;
     recentPreviewLimit?: number;
     onLoadMore?: () => void;
@@ -724,6 +725,7 @@ function renderSectionWithCards(
     isLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
+    hasDelayedStatistics?: boolean;
     totalMatched?: number;
     onLoadMore?: () => void;
     setRefreshTargetCount?: (count: number) => void;
@@ -770,6 +772,7 @@ function renderSectionWithCards(
             cards={cards}
             totalMatched={options?.totalMatched}
             hasMore={options?.hasMore}
+            hasDelayedStatistics={options?.hasDelayedStatistics}
             isLoading={options?.isLoading ?? false}
             isLoadingMore={options?.isLoadingMore}
             error={options?.error ?? null}
@@ -818,6 +821,30 @@ describe("DashboardWorkingConversationsSection model routing", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversation-model-routing-indicator"]'),
     ).not.toBeNull();
+  });
+
+  it("keeps working cards visible while explaining delayed statistics", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-delayed-statistics", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-delayed-statistics",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "success",
+          }),
+        ]),
+      ]),
+      { hasDelayedStatistics: true },
+    );
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-working-conversations-statistics-pending"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-working-conversations-grid"]'),
+    ).not.toBeNull();
+    expect(host?.textContent).toContain("C800F604");
   });
 });
 

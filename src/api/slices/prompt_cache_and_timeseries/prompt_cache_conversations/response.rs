@@ -485,14 +485,6 @@ pub(crate) async fn hydrate_working_prompt_cache_conversation_for_key_with_termi
     .filter(|record| record.prompt_cache_key.as_deref() == Some(prompt_cache_key))
     .collect::<Vec<_>>();
     let mut transaction = state.pool.begin().await?;
-    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
-        .await
-        .map_err(ApiError::from)?
-    {
-        return Err(ApiError::unavailable(anyhow!(
-            "prompt-cache conversation history is still materializing"
-        )));
-    }
     let hydration_snapshot_at = Utc::now();
     let snapshot_hour_start_epoch = align_bucket_epoch(hydration_snapshot_at.timestamp(), 3_600, 0);
     let snapshot_hour_start_bound = db_occurred_at_lower_bound(
@@ -698,7 +690,10 @@ pub(crate) async fn build_prompt_cache_conversations_response_for_request(
     let snapshot_at = resolve_prompt_cache_conversation_snapshot_at(request.snapshot_at.as_deref())
         .map_err(ApiError::bad_request)?;
     let mut transaction = state.pool.begin().await?;
-    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
+    if request.snapshot_at.is_some()
+        && !prompt_cache_conversation_materialization_is_complete_on_connection(
+            transaction.as_mut(),
+        )
         .await
         .map_err(ApiError::from)?
     {
@@ -933,13 +928,6 @@ pub(crate) async fn build_prompt_cache_conversations_response_with_recent_limit(
     recent_invocation_limit: Option<i64>,
 ) -> Result<PromptCacheConversationsResponse, ApiError> {
     let mut transaction = state.pool.begin().await?;
-    if !prompt_cache_conversation_materialization_is_complete_on_connection(transaction.as_mut())
-        .await?
-    {
-        return Err(ApiError::unavailable(anyhow!(
-            "prompt-cache conversation history is still materializing"
-        )));
-    }
     let response = build_prompt_cache_conversations_response_with_recent_limit_on_connection(
         state,
         selection,
@@ -958,6 +946,10 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
     recent_invocation_limit: Option<i64>,
     connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationsResponse> {
+    // BEGIN is deferred in SQLite: establish the read snapshot before copying runtime state.
+    sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+        .fetch_one(&mut *connection)
+        .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_end = Utc::now();
     let range_start = range_end - selection.activity_window_duration();
@@ -1046,7 +1038,7 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
     };
     aggregates = merge_runtime_prompt_cache_aggregates(
         aggregates,
-        &transient_runtime_overlay_records,
+        &runtime_overlay_records,
         None,
         display_limit,
     );

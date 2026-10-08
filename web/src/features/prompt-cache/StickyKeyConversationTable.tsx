@@ -109,6 +109,7 @@ export function StickyKeyConversationTable({
   return (
     <PromptCacheConversationTable
       stats={promptCacheStats}
+      showDelayedStatisticsNotice={false}
       isLoading={isLoading}
       error={error}
       expandedPromptCacheKeys={expandedStickyKeys}

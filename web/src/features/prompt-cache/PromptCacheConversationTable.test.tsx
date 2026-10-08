@@ -522,6 +522,27 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain('stroke="oklch(var(--color-primary) / 0.88)"');
   });
 
+  it("keeps the conversation table visible while delayed statistics are unavailable", () => {
+    const html = renderTable({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-delayed-statistics",
+          createdAt: "2026-03-02T00:00:00Z",
+          lastActivityAt: "2026-03-02T16:00:00Z",
+        }),
+      ],
+    });
+
+    expect(html).toContain('data-testid="prompt-cache-conversation-statistics-pending"');
+    expect(html).toContain("pck-delayed-statistics");
+  });
+
   it("orders count-mode history by first invocation with a created-at fallback", () => {
     const html = renderTable({
       rangeStart: "2026-03-01T00:00:00Z",
