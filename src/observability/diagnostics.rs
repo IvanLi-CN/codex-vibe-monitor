@@ -429,6 +429,7 @@ impl DiagnosticContext {
         let started = Instant::now();
         let utc = SystemTime::now();
         let metric_handles = metrics.request_metrics(endpoint);
+        let trace_details = traces.tracer.is_some();
         let root = traces.tracer.as_ref().map(|tracer| {
             tracer.build_with_context(
                 tracer
@@ -457,8 +458,16 @@ impl DiagnosticContext {
                 waits: [WaitStats::default(); 7],
                 wait_union: IntervalUnion::default(),
                 phase_union: IntervalUnion::default(),
-                longest: Vec::with_capacity(WAIT_LIMIT),
-                phases: Vec::with_capacity(PHASE_INTERVAL_LIMIT),
+                longest: if trace_details {
+                    Vec::with_capacity(WAIT_LIMIT)
+                } else {
+                    Vec::new()
+                },
+                phases: if trace_details {
+                    Vec::with_capacity(PHASE_INTERVAL_LIMIT)
+                } else {
+                    Vec::new()
+                },
                 spans: 1,
                 bytes: 4096,
                 truncated: false,
@@ -877,17 +886,6 @@ impl Drop for Guard {
             }
             Kind::Phase(phase) => {
                 self.context.0.metric_handles.stages[phase.index()].record(duration.as_secs_f64());
-                if self.detail && self.context.0.traces.tracer.is_some() {
-                    self.context.emit(
-                        phase.name(),
-                        self.start,
-                        end,
-                        [
-                            KeyValue::new("cvm.phase", phase.name()),
-                            KeyValue::new("cvm.lower_bound", !self.complete),
-                        ],
-                    );
-                }
             }
         }
     }
