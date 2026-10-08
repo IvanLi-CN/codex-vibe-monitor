@@ -16,7 +16,7 @@
 ## Related Changes
 
 - 文档在签名提交中保留；实现位于 `th/retention-maintenance-boundaries`，同一 [PR #1092](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092) 交付至 merge-ready。
-- 直接兼容验证按独立发布来源执行；覆盖 v4.0.0–v4.0.6、v4.1.0–v4.1.3、v4.2.0 与 v4.2.1，不依据格式猜测合并来源，最终候选结果见 IMPLEMENTATION.md。
+- 直接兼容验证按独立发布来源执行；覆盖 v4.0.0–v4.0.6、v4.1.0–v4.1.3、v4.2.0 至 v4.2.2，不依据格式猜测合并来源，最终候选结果见 IMPLEMENTATION.md。
 - PR Linux CI 暴露首次启动后 inode 补锁排序与路由不一致，修复统一排序，并保留初始化／离线 CLI 角色，避免数据库对锁提前发布 ready；新增 raw dry-run 回归移至独立批次测试文件，遵守既有源文件预算。
 
 - 后续修复在 SQLite 打开前取得实际数据库文件及规范化路径／inode 对锁；在线准入同时验证 ready 角色、路径对与当前 inode，拒绝日志路径不确定的 hard-link 别名和离线多链接数据库。
