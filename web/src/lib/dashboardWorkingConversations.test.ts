@@ -172,10 +172,11 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     });
   });
 
-  it("preserves distinct persisted ids even when prompt cache keys would collide", () => {
+  it("preserves distinct persisted ids for keys that collided in legacy short ids", () => {
     const response = createResponse([
       createConversation(
-        "pck-alpha",
+        // These keys share the former FNV-1a six-character display hash.
+        "pck-collision-2662",
         [
           createPreview({
             id: 1,
@@ -187,7 +188,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
         { conversationId: "conv-alpha" },
       ),
       createConversation(
-        "pck-beta",
+        "pck-collision-10988",
         [
           createPreview({
             id: 2,

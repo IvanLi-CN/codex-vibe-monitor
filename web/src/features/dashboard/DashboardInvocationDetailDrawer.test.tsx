@@ -552,6 +552,52 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(drawerBody?.textContent ?? "").toContain("工作流时间线");
   });
 
+  it("does not pair a stale full record with a new route conversation id", async () => {
+    const firstRecord = createRecord({ invokeId: "invoke-drawer-first" });
+    const secondRecord = createRecord({
+      id: 502,
+      invokeId: "invoke-drawer-second",
+      occurredAt: "2026-04-06T10:25:37Z",
+    });
+    const firstSelection = {
+      ...createSelection(firstRecord),
+      conversationId: "conversation-first",
+    };
+    const secondSelection = {
+      ...createSelection(secondRecord),
+      conversationId: "conversation-second",
+    };
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce(createRecordsResponse([firstRecord]))
+      .mockResolvedValueOnce(createRecordsResponse([secondRecord]));
+
+    render(
+      <DashboardInvocationDetailDrawer
+        open
+        invocationId={firstRecord.invokeId}
+        selection={firstSelection}
+        onClose={() => undefined}
+      />,
+    );
+
+    await waitFor(() => (document.body.textContent ?? "").includes("工作流时间线"));
+    expect(document.body.textContent ?? "").toContain("conversation-first");
+
+    act(() => {
+      root?.render(
+        <DashboardInvocationDetailDrawer
+          open
+          invocationId={secondRecord.invokeId}
+          selection={secondSelection}
+          onClose={() => undefined}
+        />,
+      );
+    });
+
+    await waitFor(() => (document.body.textContent ?? "").includes("conversation-second"));
+    expect(document.body.textContent ?? "").not.toContain("conversation-first");
+  });
+
   it("renders interrupted status with the dedicated recovery badge", async () => {
     const record = createRecord({
       status: "interrupted",

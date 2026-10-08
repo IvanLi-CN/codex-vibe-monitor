@@ -199,7 +199,8 @@ export function DashboardInvocationDetailDrawer({
     return () => window.clearTimeout(retryTimer);
   }, [effectiveInvocationId, effectiveTransientRecord, isLoading, loadError, open]);
 
-  const recordForHeader = fullRecord ?? selectionRecord;
+  const effectiveFullRecord = fullRecord?.invokeId === effectiveInvocationId ? fullRecord : null;
+  const recordForHeader = effectiveFullRecord ?? selectionRecord;
   const statusMeta = resolveStatusMeta(
     recordForHeader != null
       ? resolveInvocationDisplayStatus(recordForHeader)
@@ -276,7 +277,7 @@ export function DashboardInvocationDetailDrawer({
             <p className="mt-1 text-sm">{loadError}</p>
           </div>
         </Alert>
-      ) : !fullRecord ? (
+      ) : !effectiveFullRecord ? (
         <div
           className="flex min-h-[18rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center"
           data-testid="dashboard-invocation-detail-empty"
@@ -294,9 +295,9 @@ export function DashboardInvocationDetailDrawer({
       ) : (
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-4">
           <InvocationWorkflowDetailPanel
-            record={fullRecord}
+            record={effectiveFullRecord}
             size="default"
-            conversationId={selection?.conversationId}
+            conversationId={displayConversationId}
             onOpenUpstreamAccount={onOpenUpstreamAccount}
           />
         </div>
