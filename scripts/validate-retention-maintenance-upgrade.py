@@ -9,7 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 
-VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2"]
+VERSIONS = [*[f"v4.0.{index}" for index in range(7)], "v4.1.0", "v4.1.1", "v4.1.2", "v4.1.3"]
 OWNERS = ["retention_archive", "invocation_identity_cleanup", "raw_orphan_sweep", "prompt_cache_materialization"]
 
 
