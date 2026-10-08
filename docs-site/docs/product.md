@@ -101,15 +101,15 @@ Codex Vibe Monitor 的重点不是替代上游控制台，而是把代理调用�
 - 想先部署：从 [快速开始](/quick-start) 开始，再去 [自部署](/deployment)。
 - 想先搭开发环境：看 [开发](/development)。
 - 想体验全产品路由但不连接真实服务：打开 [Web Demo](/demo/)。
-- 想改页面、状态和组件表现：优先看 [Storybook](/storybook.html)。
+- 想改组件、局部状态和浮层表现：优先看 [Storybook](/storybook.html)；完整产品路由先看 [Web Demo](/demo/)。
 - 想核对更深的部署与安全假设：继续读 [Deployment Guide](https://github.com/IvanLi-CN/codex-vibe-monitor/blob/main/docs/deployment.md)。
 - 想看 UI 规范和内部事实来源：回仓库读 [`docs/ui/`](https://github.com/IvanLi-CN/codex-vibe-monitor/tree/main/docs/ui)。
 
 ## 何时优先看 Storybook
 
-- 想确认页面状态、筛选器、表格与卡片在 mock 数据下的表现时
-- 想快速核对 Dashboard、InvocationTable、RecordsPage、SettingsPage 或 Account Pool 页面边界时
-- 想在不启动完整后端的前提下做页面或组件复核时
+- 想确认组件状态、筛选器、表格与卡片在 mock 数据下的表现时
+- 想快速核对 Dashboard KPI、Invocation/Records 表格、Settings 与 Account Pool 组件边界时
+- 想在不启动完整后端的前提下做组件或局部状态复核时
 
 ## 非目标
 

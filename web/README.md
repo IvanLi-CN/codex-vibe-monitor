@@ -71,9 +71,9 @@ bun run storybook:build
 - `Shell/*`：应用布局与壳层
 - `Dashboard/*`：首页 KPI 与摘要卡片
 - `Monitoring/*`：Invocation / Forward Proxy 相关页面状态
-- `Records/*`：记录列表、筛选与摘要
-- `Settings/*`：设置页表单与配置状态
-- `Account Pool/*`：账号列表、详情抽屉、创建页与系统标签只读筛选
+- `Records/*`：记录表、筛选与摘要组件状态
+- `Settings/*`：设置表单与配置组件状态
+- `Account Pool/*`：账号表格、详情抽屉、创建流程组件与系统标签只读筛选
 - `UI/*`：基础输入组件与表单反馈
 
 ## docs-site 关系
