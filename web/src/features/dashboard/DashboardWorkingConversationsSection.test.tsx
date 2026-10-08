@@ -2631,6 +2631,77 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
+  it("hides upstream identity when a prompt cache key maps to multiple conversations", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onOpenInvocation = vi.fn();
+    const onOpenConversation = vi.fn();
+
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-upstream-running",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-upstream-anchor-a",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-upstream-a" },
+        ),
+        createConversation(
+          "pck-upstream-running",
+          [
+            createPreview({
+              id: 2,
+              invokeId: "invoke-upstream-anchor-b",
+              occurredAt: "2026-04-04T10:03:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-upstream-b" },
+        ),
+      ]),
+      { onOpenConversation, onOpenInvocation },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const firstRow = host?.querySelector('[data-testid="dashboard-upstream-account-recent-row"]');
+    expect(
+      firstRow?.querySelector('[data-testid="dashboard-upstream-account-recent-identity-chip"]'),
+    ).toBeNull();
+
+    const rowAction = firstRow?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    if (!(rowAction instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream recent row action");
+    }
+
+    act(() => {
+      rowAction.click();
+    });
+
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: null,
+        promptCacheKey: "pck-upstream-running",
+      }),
+    );
+  });
+
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
     upstreamAccountActivityMock.data = {
       range: "today",

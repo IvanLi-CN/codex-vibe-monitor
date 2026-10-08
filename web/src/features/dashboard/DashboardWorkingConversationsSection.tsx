@@ -2927,7 +2927,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
   onRetryRecent,
 }: {
   account: UpstreamAccountActivityAccount;
-  conversationIdByPromptCacheKey: ReadonlyMap<string, string>;
+  conversationIdByPromptCacheKey: ReadonlyMap<string, string | null>;
   routingStateVersion?: RoutingStateVersion | null;
   locale: "zh" | "en";
   localeTag: string;
@@ -4227,10 +4227,15 @@ export function DashboardWorkingConversationsSection({
     [cards],
   );
   const conversationIdByPromptCacheKey = useMemo(() => {
-    const ids = new Map<string, string>();
+    const ids = new Map<string, string | null>();
     for (const card of cards) {
-      ids.set(card.promptCacheKey, card.conversationId);
-      ids.set(card.normalizedPromptCacheKey, card.conversationId);
+      for (const key of [card.promptCacheKey, card.normalizedPromptCacheKey]) {
+        if (!ids.has(key)) {
+          ids.set(key, card.conversationId);
+        } else if (ids.get(key) !== card.conversationId) {
+          ids.set(key, null);
+        }
+      }
     }
     return ids;
   }, [cards]);
