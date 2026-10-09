@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 37,
-    "suppression_entries": 118
+    "suppression_entries": 117
   },
   "loc_targets": {
     "production": 2500,
@@ -313,12 +313,6 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime shutdown coordination preserves established task handles.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/main.rs; remove it when the listed boundary split is complete."
-    },
-    {
-      "path": "src/main.rs",
-      "kind": "expect",
-      "declaration": "#[expect( clippy::large_enum_variant, reason = \"Batch variants preserve established channel payload ownership.\" )]",
-      "reason": "Retain this targeted expect declaration for the current module boundary in src/main.rs; update it when the listed module workstream changes the declaration."
     },
     {
       "path": "src/main.rs",

@@ -129,10 +129,6 @@ mod share_links;
 mod summary_source_change;
 mod system_storage;
 pub(crate) use dashboard_network_speed::*;
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Batch variants preserve established channel payload ownership."
-)]
 mod sqlite_batch_writer;
 #[expect(
     clippy::type_complexity,

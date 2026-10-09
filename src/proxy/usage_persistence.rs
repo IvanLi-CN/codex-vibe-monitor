@@ -674,69 +674,19 @@ pub(crate) async fn begin_pool_upstream_request_attempt(
     .await
 }
 
-pub(crate) async fn update_pool_upstream_request_attempt_model(
-    pool: &Pool<Sqlite>,
-    attempt_id: Option<i64>,
-    model: Option<&str>,
-) -> Result<()> {
-    let Some(attempt_id) = attempt_id else {
-        return Ok(());
-    };
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-    let model = model.map(str::trim);
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET request_model = ?1,
-            upstream_request_model = CASE
-                WHEN model_mapping_pattern IS NULL THEN ?1
-                ELSE upstream_request_model
-            END
-        WHERE id = ?2
-        "#,
-    )
-    .bind(model)
-    .bind(attempt_id)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub(crate) async fn annotate_pool_upstream_request_attempt_model_mapping(
-    pool: &Pool<Sqlite>,
-    pending: &PendingPoolAttemptRecord,
+pub(crate) fn annotate_pool_upstream_request_attempt_model_mapping(
+    pending: &mut PendingPoolAttemptRecord,
     upstream_request_model: Option<&str>,
     model_mapping_pattern: Option<&str>,
 ) -> Result<()> {
-    let Some(attempt_id) = pending.attempt_id else {
-        return Ok(());
-    };
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET upstream_request_model = ?2,
-            model_mapping_pattern = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(attempt_id)
-    .bind(
-        upstream_request_model
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-    )
-    .bind(
-        model_mapping_pattern
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-    )
-    .execute(pool)
-    .await?;
+    pending.upstream_request_model = upstream_request_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    pending.model_mapping_pattern = model_mapping_pattern
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     Ok(())
 }
 
@@ -928,6 +878,9 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
         proxy_binding_key_snapshot: proxy_binding_key_snapshot.map(ToOwned::to_owned),
         request_model: trace.request_model.clone(),
+        upstream_request_model: trace.request_model.clone(),
+        model_mapping_pattern: None,
+        request_summary_json: None,
         upstream_account_id,
         upstream_route_key: upstream_route_key.to_string(),
         attempt_index,
@@ -982,7 +935,7 @@ pub(crate) fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptReco
     })
 }
 
-pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
+pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallback(
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
 ) -> Result<()> {
@@ -1010,15 +963,57 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
         .flatten(),
     };
     let Some(attempt_id) = attempt_id else {
-        return Ok(());
+        return Err(anyhow!(
+            "pool attempt row was not available for response capture metadata"
+        ));
     };
+    let current = sqlx::query_as::<
+        _,
+        (
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT
+            response_raw_path,
+            response_raw_codec,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            response_content_encoding
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow!("pool attempt row disappeared during response capture"))?;
+    let expected_truncated = i64::from(pending.response_raw_truncated);
+    if current
+        == (
+            pending.response_raw_path.clone(),
+            pending.response_raw_codec.clone(),
+            pending.response_raw_size,
+            Some(expected_truncated),
+            pending.response_raw_truncated_reason.clone(),
+            pending.response_content_encoding.clone(),
+        )
+    {
+        return Ok(());
+    }
     sqlx::query(
         r#"
         UPDATE pool_upstream_request_attempts
         SET
-            response_raw_path = ?2,
+            response_raw_path = COALESCE(?2, response_raw_path),
             response_raw_codec = COALESCE(?3, response_raw_codec),
-            response_raw_size = ?4,
+            response_raw_size = COALESCE(?4, response_raw_size),
             response_raw_truncated = ?5,
             response_raw_truncated_reason = ?6,
             response_content_encoding = ?7
@@ -1036,6 +1031,58 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture(
     })
     .bind(pending.response_raw_truncated_reason.as_deref())
     .bind(pending.response_content_encoding.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn persist_pool_upstream_request_attempt_metadata_before_recovery(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+) -> Result<()> {
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(());
+    };
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            compact_support_status = COALESCE(?2, compact_support_status),
+            compact_support_reason = COALESCE(?3, compact_support_reason),
+            request_model = COALESCE(?4, request_model),
+            upstream_request_model = COALESCE(?5, upstream_request_model),
+            model_mapping_pattern = COALESCE(?6, model_mapping_pattern),
+            request_summary_json = COALESCE(?7, request_summary_json),
+            upstream_request_compression_algorithm = COALESCE(?8, upstream_request_compression_algorithm),
+            upstream_request_compression_mode = COALESCE(?9, upstream_request_compression_mode),
+            upstream_request_logical_body_bytes = COALESCE(?10, upstream_request_logical_body_bytes),
+            upstream_request_transmitted_body_bytes = COALESCE(?11, upstream_request_transmitted_body_bytes),
+            upstream_request_header_bytes_approx = COALESCE(?12, upstream_request_header_bytes_approx),
+            upstream_response_body_bytes = COALESCE(?13, upstream_response_body_bytes),
+            upstream_response_header_bytes_approx = COALESCE(?14, upstream_response_header_bytes_approx)
+        WHERE id = ?1
+          AND status = ?15
+          AND finished_at IS NULL
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(pending.compact_support_status.as_deref())
+    .bind(pending.compact_support_reason.as_deref())
+    .bind(pending.request_model.as_deref())
+    .bind(pending.upstream_request_model.as_deref())
+    .bind(pending.model_mapping_pattern.as_deref())
+    .bind(pending.request_summary_json.as_deref())
+    .bind(pending.upstream_request_compression_algorithm.as_deref())
+    .bind(pending.upstream_request_compression_mode.as_deref())
+    .bind(pending.upstream_request_logical_body_bytes)
+    .bind(pending.upstream_request_transmitted_body_bytes)
+    .bind(pending.upstream_request_header_bytes_approx)
+    .bind(pending.upstream_response_body_bytes)
+    .bind(pending.upstream_response_header_bytes_approx)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
     .execute(pool)
     .await?;
     Ok(())
@@ -1061,71 +1108,27 @@ pub(crate) fn update_pending_pool_upstream_request_attempt_http_bytes(
         response_header_bytes_approx.and_then(|value| i64::try_from(value).ok());
 }
 
-pub(crate) async fn annotate_pool_upstream_request_attempt_request_compression(
-    pool: &Pool<Sqlite>,
+pub(crate) fn annotate_pool_upstream_request_attempt_request_compression(
     pending: &mut PendingPoolAttemptRecord,
     algorithm: &str,
     mode: &str,
 ) -> Result<bool> {
     pending.upstream_request_compression_algorithm = Some(algorithm.to_string());
     pending.upstream_request_compression_mode = Some(mode.to_string());
-
-    let Some(attempt_id) = pending.attempt_id else {
-        return Ok(false);
-    };
-
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-
-    let result = sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET
-            upstream_request_compression_algorithm = ?2,
-            upstream_request_compression_mode = ?3
-        WHERE id = ?1
-          AND (
-                COALESCE(upstream_request_compression_algorithm, '') <> ?2
-                OR COALESCE(upstream_request_compression_mode, '') <> ?3
-              )
-        "#,
-    )
-    .bind(attempt_id)
-    .bind(algorithm)
-    .bind(mode)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
+    Ok(pending.attempt_id.is_some())
 }
 
 /// Stores the bounded rewrite audit on the attempt that produced it. This keeps
 /// failover timelines account-accurate instead of inheriting the final attempt's audit.
-pub(crate) async fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
-    pool: &Pool<Sqlite>,
-    pending: &PendingPoolAttemptRecord,
+pub(crate) fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
+    pending: &mut PendingPoolAttemptRecord,
     codex_imagegen_rewrite: Option<&Value>,
 ) -> Result<bool> {
     let Some(codex_imagegen_rewrite) = codex_imagegen_rewrite else {
         return Ok(false);
     };
-    let Some(attempt_id) = pending.attempt_id else {
-        return Ok(false);
-    };
-
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-
-    let existing = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT request_summary_json FROM pool_upstream_request_attempts WHERE id = ?1",
-    )
-    .bind(attempt_id)
-    .fetch_optional(pool)
-    .await?
-    .flatten();
-    let mut summary = existing
+    let mut summary = pending
+        .request_summary_json
         .as_deref()
         .and_then(|raw| serde_json::from_str::<Value>(raw).ok())
         .filter(Value::is_object)
@@ -1140,120 +1143,8 @@ pub(crate) async fn annotate_pool_upstream_request_attempt_codex_imagegen_rewrit
         "codexImagegenRewrite".to_string(),
         codex_imagegen_rewrite.clone(),
     );
-    let request_summary_json = serde_json::to_string(&Value::Object(summary.clone()))?;
-    let result = sqlx::query(
-        "UPDATE pool_upstream_request_attempts SET request_summary_json = ?2 WHERE id = ?1",
-    )
-    .bind(attempt_id)
-    .bind(request_summary_json)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
-}
-
-pub(crate) async fn update_pool_upstream_request_attempt_phase(
-    pool: &Pool<Sqlite>,
-    pending: &PendingPoolAttemptRecord,
-    phase: &str,
-) -> Result<bool> {
-    update_pool_upstream_request_attempt_progress(pool, pending, phase, None, None, None, None)
-        .await
-}
-
-pub(crate) async fn update_pool_upstream_request_attempt_progress(
-    pool: &Pool<Sqlite>,
-    pending: &PendingPoolAttemptRecord,
-    phase: &str,
-    connect_latency_ms: Option<f64>,
-    first_byte_latency_ms: Option<f64>,
-    compact_support_status: Option<&str>,
-    compact_support_reason: Option<&str>,
-) -> Result<bool> {
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-    let Some(attempt_id) = pending.attempt_id else {
-        return Ok(false);
-    };
-
-    let result = sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET
-            phase = ?2,
-            connect_latency_ms = CASE
-                WHEN ?4 IS NULL THEN connect_latency_ms
-                WHEN connect_latency_ms IS NULL OR connect_latency_ms < ?4 THEN ?4
-                ELSE connect_latency_ms
-            END,
-            first_byte_latency_ms = CASE
-                WHEN ?5 IS NULL THEN first_byte_latency_ms
-                WHEN first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5 THEN ?5
-                ELSE first_byte_latency_ms
-            END,
-            compact_support_status = COALESCE(?6, compact_support_status),
-            compact_support_reason = COALESCE(?7, compact_support_reason)
-        WHERE id = ?1
-          AND status = ?3
-          AND finished_at IS NULL
-          AND (
-                COALESCE(phase, '') <> ?2
-                OR (?4 IS NOT NULL AND (connect_latency_ms IS NULL OR connect_latency_ms < ?4))
-                OR (?5 IS NOT NULL AND (first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5))
-                OR (?6 IS NOT NULL AND COALESCE(compact_support_status, '') <> ?6)
-                OR (?7 IS NOT NULL AND COALESCE(compact_support_reason, '') <> ?7)
-              )
-        "#,
-    )
-    .bind(attempt_id)
-    .bind(phase)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
-    .bind(connect_latency_ms)
-    .bind(first_byte_latency_ms)
-    .bind(compact_support_status)
-    .bind(compact_support_reason)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
-}
-
-pub(crate) async fn persist_pool_upstream_request_attempt_first_byte_progress(
-    pool: &Pool<Sqlite>,
-    pending: &PendingPoolAttemptRecord,
-    connect_latency_ms: f64,
-    first_byte_latency_ms: f64,
-) -> Result<bool> {
-    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-        .await;
-    let Some(attempt_id) = pending.attempt_id else {
-        return Ok(false);
-    };
-
-    let result = sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET
-            connect_latency_ms = CASE
-                WHEN connect_latency_ms IS NULL OR connect_latency_ms < ?2 THEN ?2
-                ELSE connect_latency_ms
-            END,
-            first_byte_latency_ms = CASE
-                WHEN first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?3 THEN ?3
-                ELSE first_byte_latency_ms
-            END
-        WHERE id = ?1
-        "#,
-    )
-    .bind(attempt_id)
-    .bind(connect_latency_ms)
-    .bind(first_byte_latency_ms)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected() > 0)
+    pending.request_summary_json = Some(serde_json::to_string(&Value::Object(summary.clone()))?);
+    Ok(pending.attempt_id.is_some())
 }
 
 pub(crate) async fn advance_pool_upstream_request_attempt_phase(
@@ -1261,7 +1152,19 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     pending: &PendingPoolAttemptRecord,
     phase: &str,
 ) -> Result<()> {
-    enqueue_pool_upstream_request_attempt_progress(state, pending, phase, None, None, None, None);
+    if pending.attempt_id.is_some() {
+        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
+            state, pending, phase, None, None, None, None,
+        );
+        if !phase_enqueued {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                attempt_id = pending.attempt_id,
+                phase,
+                "failed to enqueue pool attempt phase progress"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1274,20 +1177,184 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_progress(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> bool {
-    let Some(attempt_id) = pending.attempt_id else {
+    enqueue_pool_upstream_request_attempt_progress_with_phase(
+        state,
+        pending,
+        Some(phase),
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status,
+        compact_support_reason,
+    )
+}
+
+pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    enqueue_pool_upstream_request_attempt_progress_with_phase(
+        state,
+        pending,
+        None,
+        (pending.connect_latency_ms > 0.0).then_some(pending.connect_latency_ms),
+        (pending.first_byte_latency_ms > 0.0).then_some(pending.first_byte_latency_ms),
+        pending.compact_support_status.as_deref(),
+        pending.compact_support_reason.as_deref(),
+    )
+}
+
+pub(crate) fn enqueue_pool_upstream_request_attempt_progress_reliably(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: &str,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> bool {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        Some(phase),
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status,
+        compact_support_reason,
+    ) else {
         return false;
     };
     state
         .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
-            attempt_id,
-            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: phase.to_string(),
-            connect_latency_ms,
-            first_byte_latency_ms,
-            compact_support_status: compact_support_status.map(ToOwned::to_owned),
-            compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
-        }))
+        .enqueue_attempt_progress_reliably(progress)
+}
+
+pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        None,
+        (pending.connect_latency_ms > 0.0).then_some(pending.connect_latency_ms),
+        (pending.first_byte_latency_ms > 0.0).then_some(pending.first_byte_latency_ms),
+        pending.compact_support_status.as_deref(),
+        pending.compact_support_reason.as_deref(),
+    ) else {
+        return false;
+    };
+    state
+        .sqlite_batch_writer
+        .enqueue_attempt_progress_reliably(progress)
+}
+
+pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
+    state: &AppState,
+    pending_attempt_record: &PendingPoolAttemptRecord,
+    early_phase_cleanup_guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    connect_latency_ms: f64,
+    first_byte_latency_ms: f64,
+) -> Option<PoolEarlyPhaseOrphanCleanupGuard> {
+    let mut deferred_guard = if pending_attempt_record.attempt_id.is_none() {
+        early_phase_cleanup_guard.take()
+    } else {
+        None
+    };
+    let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
+        state,
+        pending_attempt_record,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+        Some(connect_latency_ms),
+        Some(first_byte_latency_ms),
+        None,
+        None,
+    );
+    if phase_enqueued {
+        debug!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            "queued pool attempt streaming phase progress"
+        );
+    } else {
+        info!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
+        );
+    }
+    if pending_attempt_record.attempt_id.is_some() {
+        deferred_guard = early_phase_cleanup_guard.take();
+    }
+    deferred_guard
+}
+
+fn enqueue_pool_upstream_request_attempt_progress_with_phase(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> bool {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        phase,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status,
+        compact_support_reason,
+    ) else {
+        return false;
+    };
+    state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::AttemptProgress(progress))
+}
+
+fn build_pool_upstream_request_attempt_progress(
+    pending: &PendingPoolAttemptRecord,
+    phase: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> Option<BatchedAttemptProgress> {
+    let attempt_id = pending.attempt_id?;
+    let response_raw_capture_present = pending.response_raw_path.is_some()
+        || pending.response_raw_size.is_some()
+        || pending.response_raw_truncated
+        || pending.response_raw_truncated_reason.is_some()
+        || pending.response_content_encoding.is_some();
+    Some(BatchedAttemptProgress {
+        attempt_id,
+        pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+        enqueue_sequence: 0,
+        field_sequences: Default::default(),
+        phase: phase.map(ToOwned::to_owned),
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status: compact_support_status.map(ToOwned::to_owned),
+        compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
+        request_model: pending.request_model.clone(),
+        upstream_request_model: pending.upstream_request_model.clone(),
+        model_mapping_pattern: pending.model_mapping_pattern.clone(),
+        request_summary_json: pending.request_summary_json.clone(),
+        upstream_request_compression_algorithm: pending
+            .upstream_request_compression_algorithm
+            .clone(),
+        upstream_request_compression_mode: pending.upstream_request_compression_mode.clone(),
+        upstream_request_logical_body_bytes: pending.upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes: pending.upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx: pending.upstream_request_header_bytes_approx,
+        upstream_response_body_bytes: pending.upstream_response_body_bytes,
+        upstream_response_header_bytes_approx: pending.upstream_response_header_bytes_approx,
+        response_raw_path: pending.response_raw_path.clone(),
+        response_raw_codec: pending.response_raw_codec.clone(),
+        response_raw_size: pending.response_raw_size,
+        response_raw_truncated: response_raw_capture_present
+            .then_some(pending.response_raw_truncated),
+        response_raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
+        response_content_encoding: pending.response_content_encoding.clone(),
+    })
 }
 
 pub(crate) enum PoolAttemptRecoveryScope<'a> {
@@ -2047,6 +2114,11 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     terminal_outcome_observed: bool,
 ) -> Result<()> {
     state.sqlite_batch_writer.flush_now(&state.pool).await?;
+    persist_pool_upstream_request_attempt_metadata_before_recovery(
+        &state.pool,
+        &pending_attempt_record,
+    )
+    .await?;
 
     if first_byte_observed && terminal_outcome_observed {
         info!(
@@ -2428,6 +2500,10 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         compact_support_status.or(pending.compact_support_status.as_deref());
     let compact_support_reason =
         compact_support_reason.or(pending.compact_support_reason.as_deref());
+    let request_model = pending.request_model.as_deref();
+    let upstream_request_model = pending.upstream_request_model.as_deref();
+    let model_mapping_pattern = pending.model_mapping_pattern.as_deref();
+    let request_summary_json = pending.request_summary_json.as_deref();
     let upstream_request_compression_algorithm =
         pending.upstream_request_compression_algorithm.as_deref();
     let upstream_request_compression_mode = pending.upstream_request_compression_mode.as_deref();
@@ -2482,7 +2558,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
                 response_raw_size = COALESCE(?26, response_raw_size),
                 response_raw_truncated = COALESCE(?27, response_raw_truncated),
                 response_raw_truncated_reason = COALESCE(?28, response_raw_truncated_reason),
-                response_content_encoding = COALESCE(?29, response_content_encoding)
+                response_content_encoding = COALESCE(?29, response_content_encoding),
+                request_model = COALESCE(?30, request_model),
+                upstream_request_model = COALESCE(?31, upstream_request_model),
+                model_mapping_pattern = COALESCE(?32, model_mapping_pattern),
+                request_summary_json = COALESCE(?33, request_summary_json)
             WHERE id = ?1
             "#,
         )
@@ -2519,6 +2599,10 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
         }))
         .bind(pending.response_raw_truncated_reason.as_deref())
         .bind(pending.response_content_encoding.as_deref())
+        .bind(request_model)
+        .bind(upstream_request_model)
+        .bind(model_mapping_pattern)
+        .bind(request_summary_json)
         .execute(pool)
         .await?;
 
@@ -2572,7 +2656,11 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
             response_raw_size = ?4,
             response_raw_truncated = ?5,
             response_raw_truncated_reason = ?6,
-            response_content_encoding = ?7
+            response_content_encoding = ?7,
+            request_model = COALESCE(?8, request_model),
+            upstream_request_model = COALESCE(?9, upstream_request_model),
+            model_mapping_pattern = COALESCE(?10, model_mapping_pattern),
+            request_summary_json = COALESCE(?11, request_summary_json)
         WHERE id = ?1
         "#,
     )
@@ -2587,6 +2675,10 @@ pub(crate) async fn finalize_pool_upstream_request_attempt(
     })
     .bind(pending.response_raw_truncated_reason.as_deref())
     .bind(pending.response_content_encoding.as_deref())
+    .bind(request_model)
+    .bind(upstream_request_model)
+    .bind(model_mapping_pattern)
+    .bind(request_summary_json)
     .execute(pool)
     .await?;
     Ok(())
