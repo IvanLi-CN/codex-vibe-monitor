@@ -47,6 +47,7 @@
 - The owner confirmed six header-alignment screenshots on 2026-10-05 and authorized Spec and PR reuse. They replace the prior canonical images and demonstrate the heading and view Tabs sharing one row with opposite-edge alignment on desktop and mobile.
 - The owner confirmed the catalog background screenshots on 2026-10-06 and authorized visual-evidence submission. The final assets show the P/D/C background spanning each task row on desktop and mobile; a follow-up rendering correction closes filled areas at observed endpoints, removing the false diagonal edge caused by fixed chart-boundary closure.
 - PR #1074's reconnect Storybook fixture allows 750 ms before the simulated disconnect while preserving its connection-state assertions and timer cleanup. The test-only correction passed current-head CI at `62354bb8`; it does not change production SSE behavior or the accepted workload-chart evidence.
+- The final timeline repair candidate keeps the on-demand P/D/C metric mapping inside the detail dialog after removing the persistent catalog legend, refreshes focused details immediately on revision, and retains the snapshot-bound dense demo cursor guards. The candidate was rebased by merge onto `origin/main` at `1f3881075b1fe749e964dda3ec66ab10b710c797`; current Web unit, Storybook focus, typecheck, lint, production build, and demo build evidence is bound to the resulting head.
 
 ## Related Changes
 
