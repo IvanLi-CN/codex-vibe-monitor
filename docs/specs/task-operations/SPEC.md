@@ -64,6 +64,8 @@
 - 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。成功提交 HTTP 基线后，即使首个 SSE 水位通知尚未到达，也 MUST 将其视为已知快照而不提示时间线不可用。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
 - SSE 静默期间，前端 MUST 继续推进可见当前时间以及连接仍有效的运行/等待时长，不得把“没有新事件”误判为无任务或失联。SSE 断开时 MUST 显示连接状态与最后确认时间；短暂重连窗口后冻结开放状态的外推并标记为未知，重连快照恢复后立即校准。
 - 色条详情 MUST 提供任务名称、触发来源、真实起止时间、实际执行用时与结果；缺少的历史字段保持未知。短于实时刷新周期的任务也须能由执行边界记录进入历史；极短区间的可见标记不得改变原始耗时。
+- 前端 MUST 模块级复用紧凑时间和精确时间两种格式化器；已结束区间的完整详情 MUST 按区间身份及 `revision` 缓存，并在修订、快照淘汰或组件卸载时失效。历史几何 MUST 与每秒时钟投影分离，时钟推进只更新开放区间终点、滚动窗口裁剪和当前时间，不得每秒重排不变的历史泳道。
+- 未交互的执行和让行区间 MUST 只提供轻量无障碍摘要；鼠标进入或键盘聚焦后，当前区间才生成完整原生 Tooltip 与无障碍详情。完整详情 MUST 保留自身优先、其余按原记录顺序，并在聚焦期间收到更高 `revision` 时立即更新。
 - 已结束区间 MUST 保留成功、失败、取消或其他已观测结果的区别，不得只展示成功记录。共享一个执行实例的父子任务不得画成两个并行任务；当前子任务身份须在对应实例详情中可辨认。
 - 密集区间 MAY 采用像素级聚合标记，但 MUST 展示聚合数量并支持查阅其包含的实际运行；聚合不得改写真实起止、合并运行身份或静默丢弃记录。
 - 目录筛选 MUST 保持当前执行和等待区的完整性；时间图默认展示全部任务的窗口内执行，色条须可关联到对应任务详情。窄屏 MUST 隐藏冗余文字泳道标签，时间图 MUST 适配可用宽度且不得引入横向滚动；泳道含义须通过无障碍名称保留。
@@ -74,6 +76,7 @@
 - 此行 MUST 聚焦会延后任务的压力、资源占用和准入限制；系统总体健康或与任务等待无关的告警不得直接作为让行状态。悬停须展示对应时间范围、原因、可确认的受影响任务以及可确认的恢复资格时间。
 - 相邻且状态与原因一致的区间 SHOULD 合并。同一时段存在多种限制时须保留原因集合，不得在汇总为单条横条后丢失具体让行原因；未观测的时段不得标为正常。
 - 当前状态 MUST 随后台观测刷新，前端每秒推进仍有效的开放区间；一般累计压力计数或性能时间桶不得冒充精确的状态起止区间。
+- 让行重叠计算 MUST 使用按起止索引的二分或线性扫描，保持 `start < otherEnd && otherStart < end` 的严格相交语义；仅端点相接不得算重叠。覆盖正常区间扣除等待与缺口前 MUST 合并未知区间后线性求差，不得在渲染中对每个区间逐条全量遍历。
 
 ### REQ-TASK-OPS-009 — 持久区间与观测覆盖
 
@@ -143,6 +146,7 @@
 - 被数量上限省略的早期区域 MUST 与无运行、功能启用前无计量和采集缺口可区分；不得把显示截断解释为零工作量或没有触发。单个有效样本和真实零值须可辨认，缺失指标不补零，不跨采集缺口或单位／范围变化连接面积。
 - 面积颜色 MUST 表示工作量指标；目录 Dot 继续表示任务身份，结果采用独立文字或标记。不同单位不得合成同一数量轴或通过任意缩放相加，点详情须注明单位与范围，跨任务数量不得暗示同一尺度。
 - 背景 MUST 保持目录文字、链接和筛选可用，不降低文字对比度，不因加载改变行高或引入窄屏横向滚动。点详情须支持指针、键盘与触屏查看时间、触发来源、结果、三项原始值、单位、观测性质及有界原因。
+- 背景行 MUST 隐藏持续显示的 P/D/C 数值、状态和文字版“查看运行计量”图例，避免重复占用目录空间；仍须保留每行可聚焦、可点击且带可访问名称的紧凑详情控件，完整点详情仅在交互时生成。
 
 ### REQ-TASK-OPS-017 — 目录工作量数据与保留
 
@@ -156,6 +160,7 @@
 - 背景的历史获取和图表挂载 MUST 在目录行进入可见范围后按需执行。未显示、被筛掉或尚未进入可见范围的行不得预先读取完整历史、挂载画布或订阅完整任务详情；不得只延迟绘图而提前读取全部任务历史。
 - 请求和订阅 MUST 有界，重复进入可见范围复用仍有效的缓存，同一任务相同窗口的并发读取去重；离开可见范围或卸载后不得继续无意义的逐行刷新。
 - 可见背景及最近执行摘要 MUST 沿用已有运行边界、计量修订和 SSE 重连信号及时更新，不引入逐行固定周期 HTTP 轮询。恢复前台后校准时间窗、观测与缓存；缓存过期、失联和请求失败不得伪装为新鲜空结果。
+- 工作量 SSE 通知的 `revision` 未前进时 MUST 复用当前背景缓存，不得因重复通知重算未变化的三条曲线；更高修订才触发对应任务的背景更新。
 - 前端时间推进不得要求每秒重新读取目录或完整背景历史；懒加载错误须限于对应背景，已知摘要、目录筛选与跳转继续可用。
 
 ### REQ-TASK-OPS-019 — 工作量空值原因与成功记录
@@ -269,6 +274,12 @@
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-009`
 - Pass condition: the HTTP baseline starts immediately after subscribing and commits even before the first SSE marker; all baseline rows load in 500-row fixed-watermark keyset pages even if an earlier row is revised during pagination; server-selected 12-hour bounds remain fixed within each traversal; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired and legacy offset cursors without a keyset position, including `offset=0`, restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
 
+### VER-TASK-OPS-017
+
+- Method: focused frontend regressions, the `task-timeline-pressure-dense` demo and Storybook state, plus production demo Chromium sampling at `1280x900` and `393x852` with a 10-second warm-up, 30-second observation window and revision injection every three seconds.
+- covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, and the performance constraints in this Spec.
+- Pass condition: two module-level formatters remain stable; dense waits preserve task identities, two reasons, open intervals, strict overlap semantics and one-second clock progression; history is not recomputed on each tick; complete details appear only on hover/focus and refresh on revision; application main-thread occupancy stays below 20%, no application long task exceeds 200 ms, and hover, keyboard focus and task filtering remain below 100 ms p95 on both viewports.
+
 ## Related ADRs
 
 - [Task Runtime Observation and Effective Schedules](../../adr/0024-task-runtime-observation-and-effective-schedules.md)
@@ -370,21 +381,21 @@
 
 ### Task Catalog Workload Background — Desktop and Mobile
 
-- source_type: `storybook_canvas`
-- story_id_or_title: `System/SystemWorkspace/Tasks`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport` for desktop, `element` for row and mobile
-- viewport_strategy: `storybook-viewport`
-- requested_viewport: `1440x900` and `393x852`
+- source_type: `ui_demo`
+- story_id_or_title: `task-timeline-pressure-dense`
+- target_program: `vite_web_demo`
+- capture_scope: `browser-viewport` for desktop and mobile, `element` for row
+- viewport_strategy: `ui-demo-source`
+- requested_viewport: `1280x900` and `393x852`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
 - sensitive_exclusion: `N/A`
 - comparison_base: `1b5a4056391b5e7fbdcd66d44655907747173ac0`
 - comparison: `current-only`; the locked baseline contains no catalog-background image at these exact paths
-- rendered_candidate: `d4299e32`
-- owner_confirmation: confirmed in chat on 2026-10-06 ("看起来没问题了，允许提交视觉证据。")
+- rendered_candidate: `aeb63f51`
+- owner_confirmation: confirmed in chat on 2026-10-09 ("图没问题。")
 - submission_gate: `approved`
-- state: 37-task catalog with visible-row lazy-loaded P/D/C background, corrected area closure, and workload detail inspection
+- state: 39-task catalog with visible-row lazy-loaded P/D/C background, no persistent legend, corrected area closure, and workload detail inspection
 - images:
   - ![Task catalog workload background, desktop](./assets/task-catalog-workload-background-desktop.png)
   - ![Task catalog workload background, row](./assets/task-catalog-workload-background-row.png)

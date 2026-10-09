@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { type ReactNode, useEffect } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { managedTasks } from "../../demo/handlers";
 import type {
   CurrentTaskExecution,
@@ -140,6 +140,23 @@ const denseSegments = Array.from({ length: 24 }, (_, index) => {
   });
 });
 
+const densePressureSegments = Array.from({ length: 120 }, (_, index) => {
+  const group = Math.floor(index / 4);
+  const startedAt = NOW - 11 * 60 * 60_000 + group * 90_000;
+  return segment({
+    segmentId: `pressure-dense-${index}`,
+    kind: "deferral",
+    taskKey: index % 2 ? "long_term_projection" : "timeseries_minute_projection",
+    startedAt: new Date(startedAt).toISOString(),
+    lastObservedAt: new Date(startedAt + 120_000).toISOString(),
+    finishedAt: new Date(startedAt + 120_000).toISOString(),
+    durationMs: 120_000,
+    status: "released",
+    reason: index % 2 ? "pressure_cooldown" : "resource_busy",
+    triggerKind: null,
+  });
+});
+
 const baseArgs = {
   tasks: TASKS,
   executions: mixedSegments,
@@ -209,9 +226,11 @@ export const MixedOperations: Story = {
     const pressureBars = canvas.getAllByRole("button", {
       name: /资源占用等待/,
     });
-    await expect(pressureBars).toHaveLength(2);
+    await expect(pressureBars).toHaveLength(1);
     const yCoordinates = pressureBars.map((bar) => bar.querySelector("rect")?.getAttribute("y"));
     await expect(new Set(yCoordinates).size).toBe(1);
+    pressureBars[0].focus();
+    await expect(pressureBars[0]).toHaveAccessibleName(/压力冷却让行/);
   },
 };
 
@@ -253,6 +272,20 @@ export const DenseShortRuns: Story = {
       await userEvent.click(canvas.getByRole("button", { name: "收起" }));
     }
     await expect(inspectedRuns).toBe(24);
+  },
+};
+
+export const DensePressureWaits: Story = {
+  args: { ...baseArgs, executions: densePressureSegments, activeRuns: [] },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const waits = canvas.getAllByRole("button", { name: /任务让行/ });
+    await expect(waits).toHaveLength(30);
+    await expect(waits[0]).not.toHaveAccessibleName(/开始 /);
+    waits[0].focus();
+    await waitFor(() => expect(waits[0]).toHaveAccessibleName(/开始 /));
+    await expect(waits[0]).toHaveAccessibleName(/压力冷却让行|资源占用等待/);
   },
 };
 
