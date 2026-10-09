@@ -7,7 +7,7 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &s
     "codex_invocations_summary_rollup_v2_live_cursor";
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
-const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = 128;
+const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SummaryWindow {
@@ -5303,14 +5303,19 @@ async fn repair_invocation_summary_rollups_with_mode(
         )
         .await?;
     }
+    let live_rebuild_start_id = if preserve_materialized_archives {
+        shared_live_cursor.max(repair_live_cursor)
+    } else {
+        0
+    };
     let mut restored_live_rows = load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
         tx.as_mut(),
         &cleared_rollup_buckets.overall,
         InvocationSourceScope::All,
-        shared_live_cursor,
+        live_rebuild_start_id,
     )
     .await?;
-    restored_live_rows.retain(|row| !seen_ids.contains(&row.id));
+    restored_live_rows.retain(|row| seen_ids.insert(row.id));
     if !restored_live_rows.is_empty() {
         upsert_invocation_hourly_rollups_tx(
             tx.as_mut(),
@@ -5324,20 +5329,21 @@ async fn repair_invocation_summary_rollups_with_mode(
         InvocationSourceScope::All,
         &mut seen_ids,
         &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-        if preserve_materialized_archives {
-            shared_live_cursor
-        } else {
-            0
-        },
+        live_rebuild_start_id,
     )
     .await?;
-    if !repair_incomplete {
-        save_hourly_rollup_live_progress_tx(
-            tx.as_mut(),
-            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-            live_cursor_id.max(shared_live_cursor),
-        )
-        .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+        live_cursor_id.max(shared_live_cursor),
+    )
+    .await?;
+    if repair_incomplete {
+        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
+            .execute(tx.as_mut())
+            .await?;
+    } else {
         save_hourly_rollup_live_progress_tx(
             tx.as_mut(),
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
