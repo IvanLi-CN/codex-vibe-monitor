@@ -1214,7 +1214,7 @@ async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_
     let stop_after_prefix = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observer_pool = pool.clone();
     let observer_stop = stop_after_prefix.clone();
-    let observer = tokio::spawn(async move {
+    let mut observer = tokio::spawn(async move {
         loop {
             let cursor_id: Option<i64> = sqlx::query_scalar(
                 "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
@@ -1240,9 +1240,14 @@ async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_
     )
     .await
     .expect("commit the prompt-cache prefix before the final page");
-    observer
-        .await
-        .expect("observe the committed prompt-cache prefix");
+    match tokio::time::timeout(std::time::Duration::from_secs(3), &mut observer).await {
+        Ok(result) => result.expect("observe the committed prompt-cache prefix"),
+        Err(_) => {
+            observer.abort();
+            let _ = observer.await;
+            panic!("observe the committed prompt-cache prefix before timeout");
+        }
+    }
     let (prefix_request_count, prefix_cursor_id): (i64, i64) = sqlx::query_as(
         "SELECT request_count, \
              (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \

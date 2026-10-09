@@ -2571,6 +2571,56 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 );
                 return;
             }
+            let usage_breakdown_repair_pending =
+                match crate::maintenance::usage_breakdown_repair_is_pending(&state.pool).await {
+                    Ok(pending) => pending,
+                    Err(err) => {
+                        drop(write_permit);
+                        drop(pressure_permit);
+                        drop(rollup_guard);
+                        pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+                        finish_runtime_startup_hourly_rollup_bootstrap_task(
+                            state.as_ref(),
+                            &cancel,
+                            Some(&task_run),
+                            SystemTaskStatus::Failed,
+                            "background hourly rollup bootstrap could not inspect pending repair state",
+                            Some(err.to_string()),
+                        )
+                        .await;
+                        warn!(
+                            error = %err,
+                            elapsed_ms = started_at.elapsed().as_millis() as u64,
+                            "background startup hourly rollup bootstrap could not inspect pending repair state"
+                        );
+                        return;
+                    }
+                };
+            if usage_breakdown_repair_pending {
+                drop(write_permit);
+                drop(pressure_permit);
+                drop(rollup_guard);
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap deferred with pending archive usage breakdown repair",
+                    None,
+                )
+                .await;
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let retry_after = p2_preemption_retry;
+                p2_preemption_retry =
+                    next_startup_hourly_rollup_p2_preemption_retry(p2_preemption_retry);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(retry_after) => continue,
+                }
+            }
             if let Ok(work_count) = hourly_rollups.as_ref()
                 && let Some(observation) = task_run.observation.as_ref()
             {

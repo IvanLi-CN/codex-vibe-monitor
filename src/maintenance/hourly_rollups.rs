@@ -6,10 +6,11 @@ const USAGE_BREAKDOWN_REPAIR_SCOPE: &str = "invocation_archive_usage_breakdown";
 const USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE: usize = 64;
 const USAGE_BREAKDOWN_REPAIR_MAX_BOOTSTRAP_PAGES: usize = 4;
 const USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES: usize = 64;
+const USAGE_BREAKDOWN_REPAIR_MAX_ELAPSED: Duration = Duration::from_secs(6);
+const USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK: i64 = -1;
 // Invocation archives are monthly at most; keep one repair transaction bounded while covering
 // every hour in the longest calendar month.
 const USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS: usize = 31 * 24;
-const USAGE_BREAKDOWN_REPAIR_MAX_LIVE_ROWS: i64 = 512;
 const LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING: &str =
     "structured_rollup_unknown_reasoning";
 const LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED: &str = "blocked_payload_required";
@@ -206,13 +207,25 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     file_path: &str,
 ) -> Result<()> {
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
-        mark_hourly_rollup_archive_replayed_tx(
-            tx,
-            target,
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            file_path,
+        let marker_exists = sqlx::query_scalar::<_, i64>(
+            "SELECT 1 FROM hourly_rollup_archive_replay \
+             WHERE target = ?1 AND dataset = ?2 AND file_path = ?3 LIMIT 1",
         )
-        .await?;
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(file_path)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_some();
+        if !marker_exists {
+            mark_hourly_rollup_archive_replayed_tx(
+                tx,
+                target,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path,
+            )
+            .await?;
+        }
     }
     Ok(())
 }
@@ -263,7 +276,6 @@ async fn load_materialized_invocation_archives_missing_upstream_account_markers_
                     WHERE replay.target = ?2
                       AND replay.dataset = batches.dataset
                       AND replay.file_path = batches.file_path
-                      AND replay.archive_sha256 = batches.sha256
                 )
                 OR NOT EXISTS (
                     SELECT 1
@@ -271,7 +283,6 @@ async fn load_materialized_invocation_archives_missing_upstream_account_markers_
                     WHERE replay.target = ?3
                       AND replay.dataset = batches.dataset
                       AND replay.file_path = batches.file_path
-                      AND replay.archive_sha256 = batches.sha256
                 )
                 OR NOT EXISTS (
                     SELECT 1
@@ -279,7 +290,6 @@ async fn load_materialized_invocation_archives_missing_upstream_account_markers_
                     WHERE replay.target = ?4
                       AND replay.dataset = batches.dataset
                       AND replay.file_path = batches.file_path
-                      AND replay.archive_sha256 = batches.sha256
                 )
           )
           AND batches.id > ?5
@@ -336,7 +346,7 @@ struct MaterializedInvocationArchiveUsageBreakdownRepairRow {
     coverage_end_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct UsageBreakdownRepairCursor {
     stale_rank: i64,
     month_key: String,
@@ -344,85 +354,138 @@ struct UsageBreakdownRepairCursor {
     id: i64,
 }
 
+impl Default for UsageBreakdownRepairCursor {
+    fn default() -> Self {
+        Self {
+            stale_rank: USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK,
+            month_key: String::new(),
+            created_at: String::new(),
+            id: 0,
+        }
+    }
+}
+
 async fn load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
     tx: &mut SqliteConnection,
     cursor: &UsageBreakdownRepairCursor,
 ) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
-    sqlx::query_as(
-        r#"
-        WITH candidates AS (
-            SELECT
-                batches.id,
-                batches.file_path,
-                batches.month_key,
-                batches.created_at,
-                batches.coverage_start_at,
-                batches.coverage_end_at,
-                CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM hourly_rollup_archive_replay AS stale
-                    WHERE stale.dataset = batches.dataset
-                      AND stale.file_path = batches.file_path
-                      AND stale.archive_sha256 IS NOT NULL
-                      AND TRIM(stale.archive_sha256) <> ''
-                      AND stale.archive_sha256 <> batches.sha256
-                ) THEN 1 ELSE 0 END AS stale_rank
-            FROM archive_batches AS batches
-            WHERE batches.dataset = 'codex_invocations'
-              AND batches.status = ?1
-              AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
-              AND batches.historical_rollups_materialized_at IS NOT NULL
-              AND batches.sha256 IS NOT NULL
-              AND TRIM(batches.sha256) <> ''
-              AND NOT EXISTS (
-                    SELECT 1
-                    FROM hourly_rollup_archive_replay AS unverified
-                    WHERE unverified.dataset = batches.dataset
-                      AND unverified.file_path = batches.file_path
-                      AND (
-                            unverified.archive_sha256 IS NULL
-                            OR TRIM(unverified.archive_sha256) = ''
-                      )
-              )
-              AND (
-                    EXISTS (
-                        SELECT 1
-                        FROM hourly_rollup_archive_replay AS stale
-                        WHERE stale.dataset = batches.dataset
-                          AND stale.file_path = batches.file_path
-                          AND stale.archive_sha256 IS NOT NULL
-                          AND TRIM(stale.archive_sha256) <> ''
-                          AND stale.archive_sha256 <> batches.sha256
-                    )
-                    OR NOT EXISTS (
-                        SELECT 1
-                        FROM hourly_rollup_archive_replay AS replay
-                        WHERE replay.target = ?2
-                          AND replay.dataset = batches.dataset
-                          AND replay.file_path = batches.file_path
-                          AND replay.archive_sha256 = batches.sha256
-                    )
-              )
-        )
-        SELECT id, file_path, month_key, created_at, stale_rank, coverage_start_at, coverage_end_at
-        FROM candidates
-        WHERE stale_rank > ?3
-           OR (stale_rank = ?3 AND month_key > ?4)
-           OR (stale_rank = ?3 AND month_key = ?4 AND created_at > ?5)
-           OR (stale_rank = ?3 AND month_key = ?4 AND created_at = ?5 AND id > ?6)
-        ORDER BY stale_rank ASC, month_key ASC, created_at ASC, id ASC
-        LIMIT 1
-        "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-    .bind(cursor.stale_rank)
-    .bind(&cursor.month_key)
-    .bind(&cursor.created_at)
-    .bind(cursor.id)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(Into::into)
+    async fn load_ranked_candidate_tx(
+        tx: &mut SqliteConnection,
+        cursor: &UsageBreakdownRepairCursor,
+        stale_rank: i64,
+        after_cursor: bool,
+    ) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT batches.id, batches.file_path, batches.month_key, batches.created_at, ",
+        );
+        query.push(stale_rank.to_string());
+        query.push(
+            " AS stale_rank, batches.coverage_start_at, batches.coverage_end_at \
+             FROM archive_batches AS batches \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = ",
+        );
+        query.push_bind(ARCHIVE_STATUS_COMPLETED);
+        query.push(
+            " \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND batches.historical_rollups_materialized_at IS NOT NULL \
+               AND batches.sha256 IS NOT NULL \
+               AND TRIM(batches.sha256) <> '' \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS unverified \
+                    WHERE unverified.dataset = batches.dataset \
+                      AND unverified.file_path = batches.file_path \
+                      AND ( \
+                            unverified.archive_sha256 IS NULL \
+                            OR TRIM(unverified.archive_sha256) = '' \
+                      ) \
+               )",
+        );
+        if stale_rank == 1 {
+            query.push(
+                " \
+               AND EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS stale \
+                    WHERE stale.dataset = batches.dataset \
+                      AND stale.file_path = batches.file_path \
+                      AND stale.archive_sha256 IS NOT NULL \
+                      AND TRIM(stale.archive_sha256) <> '' \
+                      AND stale.archive_sha256 <> batches.sha256 \
+               )",
+            );
+        } else {
+            query.push(
+                " \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS stale \
+                    WHERE stale.dataset = batches.dataset \
+                      AND stale.file_path = batches.file_path \
+                      AND stale.archive_sha256 IS NOT NULL \
+                      AND TRIM(stale.archive_sha256) <> '' \
+                      AND stale.archive_sha256 <> batches.sha256 \
+               ) \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS replay \
+                    WHERE replay.target = ",
+            );
+            query.push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN);
+            query.push(
+                " \
+                      AND replay.dataset = batches.dataset \
+                      AND replay.file_path = batches.file_path \
+                      AND replay.archive_sha256 = batches.sha256 \
+               )",
+            );
+        }
+        if after_cursor {
+            query.push(
+                " \
+               AND ( \
+                    batches.month_key > ",
+            );
+            query.push_bind(&cursor.month_key);
+            query.push(" OR (batches.month_key = ");
+            query.push_bind(&cursor.month_key);
+            query.push(" AND batches.created_at > ");
+            query.push_bind(&cursor.created_at);
+            query.push(" ) OR (batches.month_key = ");
+            query.push_bind(&cursor.month_key);
+            query.push(" AND batches.created_at = ");
+            query.push_bind(&cursor.created_at);
+            query.push(" AND batches.id > ");
+            query.push_bind(cursor.id);
+            query.push(" ) )");
+        }
+        query.push(
+            " ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC LIMIT 1",
+        );
+        query
+            .build_query_as::<MaterializedInvocationArchiveUsageBreakdownRepairRow>()
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Into::into)
+    }
+
+    match cursor.stale_rank {
+        rank if rank <= USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK => {
+            if let Some(row) = load_ranked_candidate_tx(tx, cursor, 0, false).await? {
+                return Ok(Some(row));
+            }
+            load_ranked_candidate_tx(tx, cursor, 1, false).await
+        }
+        0 => {
+            if let Some(row) = load_ranked_candidate_tx(tx, cursor, 0, true).await? {
+                return Ok(Some(row));
+            }
+            load_ranked_candidate_tx(tx, cursor, 1, false).await
+        }
+        _ => load_ranked_candidate_tx(tx, cursor, 1, true).await,
+    }
 }
 
 async fn load_usage_breakdown_repair_cursor(
@@ -435,15 +498,23 @@ async fn load_usage_breakdown_repair_cursor(
     .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
     .fetch_optional(pool)
     .await?
-    .map(
-        |(stale_rank, month_key, created_at, id)| UsageBreakdownRepairCursor {
-            stale_rank,
-            month_key,
-            created_at,
-            id,
-        },
-    )
+    .map(|(stale_rank, month_key, created_at, id)| {
+        if month_key.is_empty() && created_at.is_empty() && id == 0 {
+            UsageBreakdownRepairCursor::default()
+        } else {
+            UsageBreakdownRepairCursor {
+                stale_rank,
+                month_key,
+                created_at,
+                id,
+            }
+        }
+    })
     .unwrap_or_default())
+}
+
+pub(crate) async fn usage_breakdown_repair_is_pending(pool: &Pool<Sqlite>) -> Result<bool> {
+    Ok(load_usage_breakdown_repair_cursor(pool).await? != UsageBreakdownRepairCursor::default())
 }
 
 async fn advance_usage_breakdown_repair_cursor_tx(
@@ -501,39 +572,6 @@ fn usage_breakdown_repair_bucket_epochs_from_bounds(
             .ok_or_else(|| anyhow!("usage breakdown archive bucket epoch overflowed"))?;
     }
     Ok(Some(bucket_start_epochs))
-}
-
-async fn usage_breakdown_repair_live_rows_exceed_limit_tx(
-    tx: &mut SqliteConnection,
-    bucket_start_epochs: &HashSet<i64>,
-) -> Result<bool> {
-    let Some(min_bucket_epoch) = bucket_start_epochs.iter().min().copied() else {
-        return Ok(false);
-    };
-    let Some(max_bucket_epoch) = bucket_start_epochs.iter().max().copied() else {
-        return Ok(false);
-    };
-    let min_bucket_start = Utc
-        .timestamp_opt(min_bucket_epoch, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid minimum usage breakdown bucket epoch"))?;
-    let max_bucket_end = Utc
-        .timestamp_opt(max_bucket_epoch + 3_600, 0)
-        .single()
-        .ok_or_else(|| anyhow!("invalid maximum usage breakdown bucket epoch"))?;
-    let sentinel = sqlx::query_scalar::<_, i64>(
-        "SELECT id
-         FROM codex_invocations
-         WHERE occurred_at >= ?1 AND occurred_at < ?2
-         ORDER BY id ASC
-         LIMIT 1 OFFSET ?3",
-    )
-    .bind(db_occurred_at_lower_bound(min_bucket_start))
-    .bind(db_occurred_at_lower_bound(max_bucket_end))
-    .bind(USAGE_BREAKDOWN_REPAIR_MAX_LIVE_ROWS - 1)
-    .fetch_optional(&mut *tx)
-    .await?;
-    Ok(sentinel.is_some())
 }
 
 async fn clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
@@ -1205,8 +1243,16 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
     file_path: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
 ) -> Result<Option<Vec<String>>> {
-    if !invocation_archive_file_is_readable(Path::new(file_path)).await {
+    if !invocation_archive_file_is_readable_with_budget(
+        Path::new(file_path),
+        started_at,
+        max_elapsed,
+    )
+    .await
+    {
         return Ok(None);
     }
     let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
@@ -1247,16 +1293,27 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             if reopened_file_paths.len() >= USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES {
                 return Ok(None);
             }
+            if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                return Ok(None);
+            }
             let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(
                 &overlapping_archive.file_path,
             )) {
                 Ok(value) => value,
                 Err(_) => return Ok(None),
             };
+            if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                return Ok(None);
+            }
             if actual_sha256 != expected_sha256 {
                 return Ok(None);
             }
-            if !invocation_archive_file_is_readable(Path::new(&overlapping_archive.file_path)).await
+            if !invocation_archive_file_is_readable_with_budget(
+                Path::new(&overlapping_archive.file_path),
+                started_at,
+                max_elapsed,
+            )
+            .await
             {
                 return Ok(None);
             }
@@ -1280,9 +1337,6 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
         }
     }
     if !reopened_file_path_set.contains(file_path) {
-        return Ok(None);
-    }
-    if usage_breakdown_repair_live_rows_exceed_limit_tx(tx, &bucket_start_epochs).await? {
         return Ok(None);
     }
     clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
@@ -1314,8 +1368,16 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     file_path: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
 ) -> Result<Option<Vec<String>>> {
-    if !invocation_archive_file_is_readable(Path::new(file_path)).await {
+    if !invocation_archive_file_is_readable_with_budget(
+        Path::new(file_path),
+        started_at,
+        max_elapsed,
+    )
+    .await
+    {
         return Ok(None);
     }
     let mut reopened_file_paths = vec![file_path.to_string()];
@@ -1349,7 +1411,12 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                 if reopened_file_paths.len() >= USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES {
                     return Ok(None);
                 }
-                if !invocation_archive_file_is_readable(Path::new(&overlapping_archive.file_path))
+                if historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+                    || !invocation_archive_file_is_readable_with_budget(
+                        Path::new(&overlapping_archive.file_path),
+                        started_at,
+                        max_elapsed,
+                    )
                     .await
                 {
                     return Ok(None);
@@ -1372,9 +1439,6 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
             if !expanded {
                 break;
             }
-        }
-        if usage_breakdown_repair_live_rows_exceed_limit_tx(tx, &bucket_start_epochs).await? {
-            return Ok(None);
         }
         clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
         let mut bucket_start_epochs = bucket_start_epochs.into_iter().collect::<Vec<_>>();
@@ -1399,11 +1463,16 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
 ) -> Result<usize> {
     let mut cursor = load_usage_breakdown_repair_cursor(pool).await?;
     let mut touched_batches = 0usize;
+    let started_at = Instant::now();
+    let max_elapsed = Some(USAGE_BREAKDOWN_REPAIR_MAX_ELAPSED);
 
     // One candidate per transaction keeps closure expansion, rollup rebuilding, and marker
     // resets below the recovery write budget. The durable cursor lets skipped/quarantined rows
     // yield to later recoverable rows instead of being selected forever from the same prefix.
     for _ in 0..USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE {
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+            break;
+        }
         let mut tx = pool.begin().await?;
         let Some(row) =
             load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
@@ -1450,6 +1519,8 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
                         &row.file_path,
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
+                        started_at,
+                        max_elapsed,
                     )
                     .await?
                 } else {
@@ -1458,11 +1529,16 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
                         &row.file_path,
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
+                        started_at,
+                        max_elapsed,
                     )
                     .await?
                 };
                 if let Some(reopened) = reopened {
                     touched_batches = touched_batches.saturating_add(reopened.len());
+                } else if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                    tx.rollback().await?;
+                    break;
                 }
             }
         }
@@ -1644,16 +1720,35 @@ pub(crate) async fn open_historical_rollup_archive_pool(
     }
 }
 
-async fn invocation_archive_file_is_readable(archive_path: &Path) -> bool {
+async fn invocation_archive_file_is_readable_with_budget(
+    archive_path: &Path,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> bool {
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        return false;
+    }
     let temp_path = std::env::temp_dir().join(format!(
         "codex-invocation-archive-check-{}.sqlite",
         nanoid::nanoid!()
     ));
     let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
-    let archive_pool = match open_historical_rollup_archive_pool(archive_path, &temp_path).await {
-        Ok(pool) => pool,
+    let archive_pool = match open_historical_rollup_archive_pool_with_budget(
+        archive_path,
+        &temp_path,
+        started_at,
+        max_elapsed,
+    )
+    .await
+    {
+        Ok(Some(pool)) => pool,
         Err(_) => return false,
+        Ok(None) => return false,
     };
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        archive_pool.close().await;
+        return false;
+    }
     let readable = match load_sqlite_table_columns(&archive_pool, "codex_invocations").await {
         Ok(columns)
             if ["id", "invoke_id", "occurred_at", "raw_response"]
@@ -1668,7 +1763,7 @@ async fn invocation_archive_file_is_readable(archive_path: &Path) -> bool {
         _ => false,
     };
     archive_pool.close().await;
-    readable
+    readable && !historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
 }
 
 async fn open_historical_rollup_archive_pool_with_budget(
@@ -2423,6 +2518,8 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 &archive_file.file_path,
                 archive_file.coverage_start_at.as_deref(),
                 archive_file.coverage_end_at.as_deref(),
+                started_at,
+                max_elapsed,
             )
             .await?
             else {

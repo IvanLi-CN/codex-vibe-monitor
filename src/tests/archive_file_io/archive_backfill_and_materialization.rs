@@ -4052,6 +4052,170 @@ async fn usage_breakdown_repair_reaches_recoverable_stale_tail_after_cursor_page
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_cursor_survives_file_backed_restart() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("breakdown-repair-file-backed-cursor").await;
+    let mut seed_tx = pool
+        .begin()
+        .await
+        .expect("begin file-backed repair cursor seed");
+    for id in 1..=65_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-02', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("file-backed-cursor-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("file-backed-cursor-sha-{id}"))
+        .execute(&mut *seed_tx)
+        .await
+        .expect("seed file-backed repair cursor candidate");
+    }
+    seed_tx
+        .commit()
+        .await
+        .expect("commit file-backed repair cursor seed");
+
+    let first_attempt =
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("repair first file-backed cursor page");
+    assert_eq!(first_attempt, 0);
+    let first_cursor_id: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_archive_repair_progress \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load first file-backed repair cursor");
+    assert_eq!(first_cursor_id, 64);
+    pool.close().await;
+
+    let reopened_pool = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect(&test_sqlite_url_for_path(&config.database_path))
+        .await
+        .expect("reopen file-backed repair cursor database");
+    let second_attempt =
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&reopened_pool)
+            .await
+            .expect("continue file-backed repair cursor after restart");
+    assert_eq!(second_attempt, 0);
+    let final_cursor: (i64, i64, String, String) = sqlx::query_as(
+        "SELECT cursor_id, cursor_stale_rank, cursor_month_key, cursor_created_at \
+         FROM hourly_rollup_archive_repair_progress \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&reopened_pool)
+    .await
+    .expect("load reset file-backed repair cursor");
+    assert_eq!(final_cursor, (0, -1, String::new(), String::new()));
+    reopened_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_repair_rebuilds_more_than_512_live_rows() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-large-live-bucket").await;
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("large-live-bucket.sqlite.gz");
+    fs::create_dir_all(
+        archive_path
+            .parent()
+            .expect("large live bucket archive has a parent"),
+    )
+    .expect("create large live bucket archive directory");
+    write_valid_invocation_archive(&archive_path, "large-live-bucket").await;
+    let archive_path_string = archive_path.to_string_lossy().to_string();
+    let archive_sha = sha256_hex_file(&archive_path).expect("hash large live bucket archive");
+    let occurred_at = "2026-02-01 08:15:00";
+    let payload = r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#;
+    let mut seed_tx = pool.begin().await.expect("begin large live bucket seed");
+    for index in 0..513_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, model, input_tokens, output_tokens,
+                cache_input_tokens, reasoning_tokens, total_tokens, cost, status,
+                payload, raw_response
+            )
+            VALUES (?1, ?2, 'proxy', 'gpt-5', 12, 3, 0, 0, 15, 0.01,
+                    'success', ?3, '{}')
+            "#,
+        )
+        .bind(format!("large-live-bucket-{index}"))
+        .bind(occurred_at)
+        .bind(payload)
+        .execute(&mut *seed_tx)
+        .await
+        .expect("seed large live bucket invocation");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status,
+            summary_source_kind, coverage_start_at, coverage_end_at,
+            historical_rollups_materialized_at, created_at
+        )
+        VALUES ('codex_invocations', '2026-02', ?1, ?2, 1, 'completed',
+                'unknown', '2026-02-01 08:00:00', '2026-02-01 08:30:00',
+                datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(&archive_path_string)
+    .bind(&archive_sha)
+    .execute(&mut *seed_tx)
+    .await
+    .expect("seed large live bucket archive manifest");
+    seed_tx
+        .commit()
+        .await
+        .expect("commit large live bucket seed");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair large live bucket without a row-count cutoff");
+    assert_eq!(touched, 1);
+    let bucket_epoch = crate::stats::summary_rollup_bucket_start_epoch(occurred_at)
+        .expect("calculate large live bucket epoch");
+    let request_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(request_count), 0) \
+         FROM upstream_account_usage_breakdown_hourly \
+         WHERE bucket_start_epoch = ?1 AND upstream_account_id = 17",
+    )
+    .bind(bucket_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("count large live bucket usage breakdown rows");
+    assert_eq!(request_count, 513);
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
+    )
+    .bind(&archive_path_string)
+    .fetch_one(&pool)
+    .await
+    .expect("load large live bucket materialization state");
+    assert!(materialized_at.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("breakdown-repair-overlap").await;
@@ -4710,7 +4874,11 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
     .fetch_one(&pool)
     .await
     .expect("load repaired stale upstream account archive marker");
-    assert_eq!(repaired_sha.as_deref(), Some("materialized-marker-sha-1"));
+    assert_eq!(
+        repaired_sha.as_deref(),
+        Some("stale-marker-sha"),
+        "marker repair must preserve an existing stale marker for full rebuild repair"
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }

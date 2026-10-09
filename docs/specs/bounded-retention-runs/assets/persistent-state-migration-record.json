@@ -50,7 +50,7 @@
     "dml_changes": [
       {
         "id": "dml-001",
-        "description": "Write replay markers with the completed manifest SHA and require that same SHA for upstream-account marker repair and usage-breakdown selection; stale or unverified markers remain repair work.",
+        "description": "Write replay markers with the completed manifest SHA; upstream-account marker repair fills only absent target rows and preserves stale or unknown markers, while usage-breakdown repair treats stale identities as full-rebuild work.",
         "order": 4,
         "depends_on": [
           "ddl-001"
@@ -60,7 +60,7 @@
       },
       {
         "id": "dml-002",
-        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap.",
+        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap; a still-pending cursor defers the runtime task for a cancellation-aware retry.",
         "order": 5,
         "depends_on": [
           "ddl-002"
@@ -82,7 +82,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages, with real archive readability checks before rollup clearing; unverified legacy markers remain quarantined until a verified replay.",
+        "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages, with real archive readability checks under the shared per-page elapsed budget before rollup clearing; unverified legacy markers remain quarantined until a verified replay.",
         "order": 7,
         "depends_on": [
           "dml-001",

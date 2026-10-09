@@ -2866,6 +2866,23 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_usage_breakdown_repair_order
+        ON archive_batches (
+            dataset,
+            status,
+            historical_rollups_materialized_at,
+            month_key,
+            created_at,
+            id
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_usage_breakdown_repair_order")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_archive_batches_summary_source_coverage
         ON archive_batches (
             dataset,
@@ -4348,7 +4365,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE TABLE IF NOT EXISTS hourly_rollup_archive_repair_progress (
             scope TEXT PRIMARY KEY,
             cursor_id INTEGER NOT NULL DEFAULT 0,
-            cursor_stale_rank INTEGER NOT NULL DEFAULT 0,
+            cursor_stale_rank INTEGER NOT NULL DEFAULT -1,
             cursor_month_key TEXT NOT NULL DEFAULT '',
             cursor_created_at TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -4359,7 +4376,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure hourly_rollup_archive_repair_progress table existence")?;
     for (column, definition) in [
-        ("cursor_stale_rank", "INTEGER NOT NULL DEFAULT 0"),
+        ("cursor_stale_rank", "INTEGER NOT NULL DEFAULT -1"),
         ("cursor_month_key", "TEXT NOT NULL DEFAULT ''"),
         ("cursor_created_at", "TEXT NOT NULL DEFAULT ''"),
     ] {
@@ -4374,6 +4391,15 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             format!("failed to ensure hourly rollup archive repair cursor column {column}")
         })?;
     }
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_repair_progress \
+         SET cursor_stale_rank = -1 \
+         WHERE cursor_id = 0 \
+           AND cursor_month_key = '' AND cursor_created_at = ''",
+    )
+    .execute(pool)
+    .await
+    .context("failed to normalize the initial hourly rollup archive repair cursor")?;
 
     sqlx::query(
         r#"
