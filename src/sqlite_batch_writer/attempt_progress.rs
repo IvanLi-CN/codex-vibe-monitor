@@ -1,10 +1,29 @@
 use super::*;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AttemptProgressFieldSequences {
+    pub(crate) phase: u64,
+    pub(crate) compact_support_status: u64,
+    pub(crate) compact_support_reason: u64,
+    pub(crate) request_model: u64,
+    pub(crate) upstream_request_model: u64,
+    pub(crate) model_mapping_pattern: u64,
+    pub(crate) request_summary_json: u64,
+    pub(crate) upstream_request_compression_algorithm: u64,
+    pub(crate) upstream_request_compression_mode: u64,
+    pub(crate) response_raw_path: u64,
+    pub(crate) response_raw_codec: u64,
+    pub(crate) response_raw_truncated: u64,
+    pub(crate) response_raw_truncated_reason: u64,
+    pub(crate) response_content_encoding: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BatchedAttemptProgress {
     pub(crate) attempt_id: i64,
     pub(crate) pending_status: &'static str,
     pub(crate) enqueue_sequence: u64,
+    pub(crate) field_sequences: AttemptProgressFieldSequences,
     pub(crate) phase: Option<String>,
     pub(crate) connect_latency_ms: Option<f64>,
     pub(crate) first_byte_latency_ms: Option<f64>,
@@ -27,6 +46,54 @@ pub(crate) struct BatchedAttemptProgress {
     pub(crate) response_raw_truncated: Option<bool>,
     pub(crate) response_raw_truncated_reason: Option<String>,
     pub(crate) response_content_encoding: Option<String>,
+}
+
+impl BatchedAttemptProgress {
+    pub(crate) fn stamp_sequence(&mut self, sequence: u64) {
+        self.enqueue_sequence = sequence;
+        if self.phase.is_some() {
+            self.field_sequences.phase = sequence;
+        }
+        if self.compact_support_status.is_some() {
+            self.field_sequences.compact_support_status = sequence;
+        }
+        if self.compact_support_reason.is_some() {
+            self.field_sequences.compact_support_reason = sequence;
+        }
+        if self.request_model.is_some() {
+            self.field_sequences.request_model = sequence;
+        }
+        if self.upstream_request_model.is_some() {
+            self.field_sequences.upstream_request_model = sequence;
+        }
+        if self.model_mapping_pattern.is_some() {
+            self.field_sequences.model_mapping_pattern = sequence;
+        }
+        if self.request_summary_json.is_some() {
+            self.field_sequences.request_summary_json = sequence;
+        }
+        if self.upstream_request_compression_algorithm.is_some() {
+            self.field_sequences.upstream_request_compression_algorithm = sequence;
+        }
+        if self.upstream_request_compression_mode.is_some() {
+            self.field_sequences.upstream_request_compression_mode = sequence;
+        }
+        if self.response_raw_path.is_some() {
+            self.field_sequences.response_raw_path = sequence;
+        }
+        if self.response_raw_codec.is_some() {
+            self.field_sequences.response_raw_codec = sequence;
+        }
+        if self.response_raw_truncated.is_some() {
+            self.field_sequences.response_raw_truncated = sequence;
+        }
+        if self.response_raw_truncated.is_some() || self.response_raw_truncated_reason.is_some() {
+            self.field_sequences.response_raw_truncated_reason = sequence;
+        }
+        if self.response_content_encoding.is_some() {
+            self.field_sequences.response_content_encoding = sequence;
+        }
+    }
 }
 
 pub(crate) fn estimated_memory_bytes(progress: &BatchedAttemptProgress) -> usize {
@@ -76,14 +143,33 @@ fn attempt_phase_rank(phase: &str) -> u8 {
     }
 }
 
+fn effective_field_sequence(field_sequence: u64, record_sequence: u64) -> u64 {
+    if field_sequence == 0 {
+        record_sequence
+    } else {
+        field_sequence
+    }
+}
+
 fn merge_latest_optional_string(
     current: &mut Option<String>,
     incoming: Option<String>,
-    current_sequence: u64,
-    incoming_sequence: u64,
+    current_field_sequence: &mut u64,
+    current_record_sequence: u64,
+    incoming_field_sequence: u64,
+    incoming_record_sequence: u64,
 ) {
-    if incoming.is_some() && incoming_sequence >= current_sequence {
-        *current = incoming;
+    let Some(incoming) = incoming else {
+        return;
+    };
+    let current_sequence =
+        effective_field_sequence(*current_field_sequence, current_record_sequence);
+    let incoming_sequence =
+        effective_field_sequence(incoming_field_sequence, incoming_record_sequence);
+    if (current.is_none() && *current_field_sequence == 0) || incoming_sequence >= current_sequence
+    {
+        *current = Some(incoming);
+        *current_field_sequence = incoming_sequence;
     }
 }
 
@@ -108,13 +194,23 @@ pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttem
     let incoming_sequence = incoming.enqueue_sequence;
     let should_replace_phase = match (current.phase.as_deref(), incoming.phase.as_deref()) {
         (None, Some(_)) => true,
-        (Some(current), Some(incoming)) => {
-            attempt_phase_rank(incoming) >= attempt_phase_rank(current)
+        (Some(current_phase), Some(incoming_phase)) => {
+            let incoming_rank = attempt_phase_rank(incoming_phase);
+            let current_rank = attempt_phase_rank(current_phase);
+            incoming_rank > current_rank
+                || (incoming_rank == current_rank
+                    && effective_field_sequence(incoming.field_sequences.phase, incoming_sequence)
+                        >= effective_field_sequence(
+                            current.field_sequences.phase,
+                            current_sequence,
+                        ))
         }
         _ => false,
     };
     if should_replace_phase {
         current.phase = incoming.phase;
+        current.field_sequences.phase =
+            effective_field_sequence(incoming.field_sequences.phase, incoming_sequence);
     }
     merge_max_f64(&mut current.connect_latency_ms, incoming.connect_latency_ms);
     merge_max_f64(
@@ -124,49 +220,69 @@ pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttem
     merge_latest_optional_string(
         &mut current.compact_support_status,
         incoming.compact_support_status,
+        &mut current.field_sequences.compact_support_status,
         current_sequence,
+        incoming.field_sequences.compact_support_status,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.compact_support_reason,
         incoming.compact_support_reason,
+        &mut current.field_sequences.compact_support_reason,
         current_sequence,
+        incoming.field_sequences.compact_support_reason,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.request_model,
         incoming.request_model,
+        &mut current.field_sequences.request_model,
         current_sequence,
+        incoming.field_sequences.request_model,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.upstream_request_model,
         incoming.upstream_request_model,
+        &mut current.field_sequences.upstream_request_model,
         current_sequence,
+        incoming.field_sequences.upstream_request_model,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.model_mapping_pattern,
         incoming.model_mapping_pattern,
+        &mut current.field_sequences.model_mapping_pattern,
         current_sequence,
+        incoming.field_sequences.model_mapping_pattern,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.request_summary_json,
         incoming.request_summary_json,
+        &mut current.field_sequences.request_summary_json,
         current_sequence,
+        incoming.field_sequences.request_summary_json,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.upstream_request_compression_algorithm,
         incoming.upstream_request_compression_algorithm,
+        &mut current
+            .field_sequences
+            .upstream_request_compression_algorithm,
         current_sequence,
+        incoming
+            .field_sequences
+            .upstream_request_compression_algorithm,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.upstream_request_compression_mode,
         incoming.upstream_request_compression_mode,
+        &mut current.field_sequences.upstream_request_compression_mode,
         current_sequence,
+        incoming.field_sequences.upstream_request_compression_mode,
         incoming_sequence,
     );
     merge_max_i64(
@@ -192,29 +308,66 @@ pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttem
     merge_latest_optional_string(
         &mut current.response_raw_path,
         incoming.response_raw_path,
+        &mut current.field_sequences.response_raw_path,
         current_sequence,
+        incoming.field_sequences.response_raw_path,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.response_raw_codec,
         incoming.response_raw_codec,
+        &mut current.field_sequences.response_raw_codec,
         current_sequence,
+        incoming.field_sequences.response_raw_codec,
         incoming_sequence,
     );
     merge_max_i64(&mut current.response_raw_size, incoming.response_raw_size);
-    if incoming.response_raw_truncated.is_some() && incoming_sequence >= current_sequence {
-        current.response_raw_truncated = incoming.response_raw_truncated;
+    if incoming.response_raw_truncated.is_some() {
+        let current_field_sequence = effective_field_sequence(
+            current.field_sequences.response_raw_truncated,
+            current_sequence,
+        );
+        let incoming_field_sequence = effective_field_sequence(
+            incoming.field_sequences.response_raw_truncated,
+            incoming_sequence,
+        );
+        if current.response_raw_truncated.is_none()
+            || incoming_field_sequence >= current_field_sequence
+        {
+            current.response_raw_truncated = incoming.response_raw_truncated;
+            current.field_sequences.response_raw_truncated = incoming_field_sequence;
+        }
     }
+    if current.response_raw_truncated.is_some() {
+        current.field_sequences.response_raw_truncated_reason = current
+            .field_sequences
+            .response_raw_truncated_reason
+            .max(effective_field_sequence(
+                current.field_sequences.response_raw_truncated,
+                current_sequence,
+            ));
+    }
+    let incoming_raw_truncated_reason_sequence = effective_field_sequence(
+        incoming.field_sequences.response_raw_truncated_reason,
+        incoming
+            .field_sequences
+            .response_raw_truncated
+            .max(incoming_sequence),
+    );
     merge_latest_optional_string(
         &mut current.response_raw_truncated_reason,
         incoming.response_raw_truncated_reason,
+        &mut current.field_sequences.response_raw_truncated_reason,
         current_sequence,
+        incoming_raw_truncated_reason_sequence,
         incoming_sequence,
     );
     merge_latest_optional_string(
         &mut current.response_content_encoding,
         incoming.response_content_encoding,
+        &mut current.field_sequences.response_content_encoding,
         current_sequence,
+        incoming.field_sequences.response_content_encoding,
         incoming_sequence,
     );
     current.enqueue_sequence = current_sequence.max(incoming_sequence);
@@ -229,7 +382,29 @@ pub(crate) async fn persist(
         UPDATE pool_upstream_request_attempts
         SET
             phase = CASE
-                WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?2, phase)
+                WHEN status = ?3
+                    AND finished_at IS NULL
+                    AND (
+                        ?2 IS NULL
+                        OR phase IS NULL
+                        OR CASE LOWER(TRIM(?2))
+                            WHEN 'connecting' THEN 0
+                            WHEN 'sending_request' THEN 1
+                            WHEN 'waiting_first_byte' THEN 2
+                            WHEN 'streaming_response' THEN 3
+                            WHEN 'completed' THEN 4
+                            WHEN 'failed' THEN 4
+                            ELSE 1
+                        END >= CASE LOWER(TRIM(phase))
+                            WHEN 'connecting' THEN 0
+                            WHEN 'sending_request' THEN 1
+                            WHEN 'waiting_first_byte' THEN 2
+                            WHEN 'streaming_response' THEN 3
+                            WHEN 'completed' THEN 4
+                            WHEN 'failed' THEN 4
+                            ELSE 1
+                        END
+                    ) THEN COALESCE(?2, phase)
                 ELSE phase
             END,
             connect_latency_ms = CASE
@@ -420,6 +595,7 @@ mod tests {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
                 enqueue_sequence: 0,
+                field_sequences: Default::default(),
                 phase: Some(phase.to_string()),
                 connect_latency_ms: Some(18.0),
                 first_byte_latency_ms: Some(33.0),
@@ -608,6 +784,98 @@ mod tests {
         assert_eq!(row.4.as_deref(), Some("terminal-upstream-model"));
         assert_eq!(row.5.as_deref(), Some("terminal-map"));
         assert_eq!(row.6.as_deref(), Some(r#"{"rewrite":"terminal"}"#));
+    }
+
+    #[test]
+    fn sparse_progress_fields_merge_by_their_own_sequence() {
+        let mut merged = BatchedAttemptProgress {
+            attempt_id: 7,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            enqueue_sequence: 10,
+            field_sequences: AttemptProgressFieldSequences {
+                phase: 10,
+                request_model: 10,
+                ..Default::default()
+            },
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string()),
+            request_model: Some("old-request-model".to_string()),
+            ..Default::default()
+        };
+        let newer_phase = BatchedAttemptProgress {
+            attempt_id: 7,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            enqueue_sequence: 30,
+            field_sequences: AttemptProgressFieldSequences {
+                phase: 30,
+                ..Default::default()
+            },
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
+            ..Default::default()
+        };
+        let retained_request_model = BatchedAttemptProgress {
+            attempt_id: 7,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            enqueue_sequence: 20,
+            field_sequences: AttemptProgressFieldSequences {
+                request_model: 20,
+                ..Default::default()
+            },
+            request_model: Some("new-request-model".to_string()),
+            ..Default::default()
+        };
+
+        merge(&mut merged, newer_phase);
+        merge(&mut merged, retained_request_model);
+
+        assert_eq!(
+            merged.phase.as_deref(),
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+        );
+        assert_eq!(merged.request_model.as_deref(), Some("new-request-model"));
+    }
+
+    #[tokio::test]
+    async fn stale_phase_from_a_later_batch_cannot_regress_persisted_phase() {
+        let pool = test_pool().await;
+        let attempt_id = pending_attempt(&pool, "batch-progress-phase-rank")
+            .await
+            .attempt_id
+            .expect("attempt id");
+
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                enqueue_sequence: 20,
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
+                ..Default::default()
+            })],
+        )
+        .await;
+        SqliteBatchWriter::flush_for_test(
+            &pool,
+            vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                enqueue_sequence: 10,
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string()),
+                ..Default::default()
+            })],
+        )
+        .await;
+
+        let phase = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT phase FROM pool_upstream_request_attempts WHERE id = ?1",
+        )
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load persisted phase");
+        assert_eq!(
+            phase.as_deref(),
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+        );
     }
 
     #[test]

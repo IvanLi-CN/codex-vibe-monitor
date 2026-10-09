@@ -1088,6 +1088,7 @@ impl PendingBatch {
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
     attempt_progress_sequence: AtomicU64,
+    attempt_progress_send_gate: std::sync::Mutex<()>,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
@@ -1180,6 +1181,7 @@ impl SqliteBatchWriter {
         let writer = Arc::new(Self {
             write_sender,
             attempt_progress_sequence: AtomicU64::new(0),
+            attempt_progress_send_gate: std::sync::Mutex::new(()),
             queued_p1_count,
             p1_priority_gate,
             control_sender,
@@ -1227,6 +1229,7 @@ impl SqliteBatchWriter {
         Arc::new(Self {
             write_sender,
             attempt_progress_sequence: AtomicU64::new(0),
+            attempt_progress_send_gate: std::sync::Mutex::new(()),
             queued_p1_count: Arc::new(AtomicUsize::new(0)),
             p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
             control_sender,
@@ -1294,10 +1297,15 @@ impl SqliteBatchWriter {
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
-        let write = self.stamp_attempt_progress(write);
-        let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
         let is_attempt_progress = is_attempt_progress_write(&write);
+        let _attempt_progress_send_guard = is_attempt_progress.then(|| {
+            self.attempt_progress_send_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        let write = self.stamp_attempt_progress(write);
+        let estimated_bytes = write.estimated_memory_bytes();
         if is_attempt_progress {
             self.accounting.attempt_progress_enqueued();
         }
@@ -1362,8 +1370,6 @@ impl SqliteBatchWriter {
         &self,
         progress: BatchedAttemptProgress,
     ) -> bool {
-        let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
-        let estimated_bytes = write.estimated_memory_bytes();
         self.accounting.attempt_progress_enqueued();
         let deferred = self.write_sender.capacity() == 0;
         if deferred {
@@ -1372,6 +1378,12 @@ impl SqliteBatchWriter {
 
         #[cfg(test)]
         if let Some(buffered_writes) = &self.buffered_writes {
+            let _attempt_progress_send_guard = self
+                .attempt_progress_send_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
+            let estimated_bytes = write.estimated_memory_bytes();
             match buffered_writes.lock() {
                 Ok(mut guard) => {
                     guard.push(write);
@@ -1391,11 +1403,9 @@ impl SqliteBatchWriter {
             }
         }
 
-        self.accounting.enqueue(estimated_bytes);
-        match self.write_sender.send(write).await {
-            Ok(()) => true,
+        let permit = match self.write_sender.reserve().await {
+            Ok(permit) => permit,
             Err(err) => {
-                self.accounting.rollback_enqueue(estimated_bytes);
                 self.accounting.attempt_progress_dropped();
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
@@ -1403,18 +1413,27 @@ impl SqliteBatchWriter {
                     dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
                     "sqlite batch writer closed; dropped reliable attempt progress"
                 );
-                false
+                return false;
             }
-        }
+        };
+        let _attempt_progress_send_guard = self
+            .attempt_progress_send_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
+        self.accounting.enqueue(write.estimated_memory_bytes());
+        permit.send(write);
+        true
     }
 
     fn stamp_attempt_progress(&self, write: SqliteBatchWrite) -> SqliteBatchWrite {
         match write {
             SqliteBatchWrite::AttemptProgress(mut progress) => {
-                progress.enqueue_sequence = self
+                let sequence = self
                     .attempt_progress_sequence
                     .fetch_add(1, Ordering::Relaxed)
                     .saturating_add(1);
+                progress.stamp_sequence(sequence);
                 SqliteBatchWrite::AttemptProgress(progress)
             }
             other => other,
@@ -4637,6 +4656,85 @@ mod tests {
             .expect("connect sqlite memory pool");
         ensure_schema(&pool).await.expect("ensure schema");
         pool
+    }
+
+    fn test_writer_with_channel_capacity(
+        capacity: usize,
+    ) -> (Arc<SqliteBatchWriter>, mpsc::Receiver<SqliteBatchWrite>) {
+        let (write_sender, write_receiver) = mpsc::channel(capacity);
+        let (control_sender, _control_receiver) = mpsc::channel(1);
+        (
+            Arc::new(SqliteBatchWriter {
+                write_sender,
+                attempt_progress_sequence: AtomicU64::new(0),
+                attempt_progress_send_gate: std::sync::Mutex::new(()),
+                queued_p1_count: Arc::new(AtomicUsize::new(0)),
+                p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
+                control_sender,
+                accounting: Arc::new(PendingQueueAccounting::default()),
+                dropped_writes: Arc::new(AtomicU64::new(0)),
+                terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
+                dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+                summary_delta_hub: Arc::new(std::sync::Mutex::new(None)),
+                terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
+                terminal_journal: Arc::new(TrackedTerminalJournal::new(None)),
+                database_path: std::path::PathBuf::from("test-sqlite-batch-writer.db"),
+                dashboard_reconcile_gate: Arc::new(Mutex::new(())),
+                prompt_cache_conversation_cache: Some(Arc::new(Mutex::new(
+                    PromptCacheConversationsCacheState::default(),
+                ))),
+                handle: Mutex::new(None),
+                journal_sync_shutdown: CancellationToken::new(),
+                journal_sync_handle: Mutex::new(None),
+                buffered_writes: None,
+                auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            }),
+            write_receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn cancelled_reliable_attempt_progress_admission_does_not_leak_accounting() {
+        let (writer, _write_receiver) = test_writer_with_channel_capacity(1);
+        writer
+            .write_sender
+            .try_send(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id: 1,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                ..Default::default()
+            }))
+            .expect("fill reliable admission channel");
+
+        let admission = tokio::spawn({
+            let writer = writer.clone();
+            async move {
+                writer
+                    .enqueue_attempt_progress_reliably(BatchedAttemptProgress {
+                        attempt_id: 2,
+                        pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                        ..Default::default()
+                    })
+                    .await
+            }
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if writer.accounting_snapshot().attempt_progress_deferred > 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("reliable admission should reach the full channel");
+        admission.abort();
+        let _ = admission.await;
+
+        let accounting = writer.accounting_snapshot();
+        assert_eq!(accounting.pending_depth, 0);
+        assert_eq!(accounting.pending_bytes, 0);
+        assert_eq!(accounting.attempt_progress_enqueued, 1);
+        assert_eq!(accounting.attempt_progress_dropped, 0);
     }
 
     #[tokio::test]

@@ -987,9 +987,9 @@ fn spawn_pool_attempt_response_capture(
             &raw_meta,
             response_content_encoding.as_deref(),
         );
-        let mut progress_persisted =
+        let progress_admitted =
             enqueue_pool_upstream_request_attempt_snapshot_reliably(state.as_ref(), &pending).await;
-        if progress_persisted
+        if progress_admitted
             && let Err(err) = state.sqlite_batch_writer.flush_now(&state.pool).await
         {
             warn!(
@@ -997,28 +997,37 @@ fn spawn_pool_attempt_response_capture(
                 error = %err,
                 "failed to flush deferred pool attempt response capture"
             );
-            progress_persisted = false;
         }
-        if !progress_persisted
-            && let Err(err) = persist_pool_upstream_request_attempt_response_capture_fallback(
+        let capture_persisted =
+            match persist_pool_upstream_request_attempt_response_capture_fallback(
                 &state.pool,
                 &pending,
             )
             .await
-        {
-            warn!(
-                invoke_id = %pending.invoke_id,
-                error = %err,
-                "failed to persist fallback pool attempt response capture"
-            );
-        }
-        if let Err(err) =
-            broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id).await
+            {
+                Ok(()) => true,
+                Err(err) => {
+                    warn!(
+                        invoke_id = %pending.invoke_id,
+                        error = %err,
+                        "failed to persist pool attempt response capture"
+                    );
+                    false
+                }
+            };
+        if capture_persisted
+            && let Err(err) =
+                broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id).await
         {
             warn!(
                 invoke_id = %pending.invoke_id,
                 error = %err,
                 "failed to broadcast asynchronous pool attempt response capture"
+            );
+        } else if !capture_persisted {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                "skipping asynchronous pool attempt response capture broadcast because metadata was not persisted"
             );
         }
     });
