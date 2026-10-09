@@ -1206,16 +1206,63 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_unpublished_prefix()
 {
-    let pool = prompt_cache_statistics_checkpoint_fixture(&[512]).await;
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[300]).await;
     let maintenance = prompt_cache_materialization_maintenance_store(true).await;
     let control = maintenance.prompt_cache_materialization_control.clone();
     let expected_generation = control.snapshot().expect("trusted control").generation;
+
+    let stop_after_prefix = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observer_pool = pool.clone();
+    let observer_stop = stop_after_prefix.clone();
+    let observer = tokio::spawn(async move {
+        loop {
+            let cursor_id: Option<i64> = sqlx::query_scalar(
+                "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+                 WHERE prompt_cache_key='checkpoint-key-000'",
+            )
+            .fetch_optional(&observer_pool)
+            .await
+            .expect("observe committed prompt-cache prefix");
+            if cursor_id == Some(256) {
+                observer_stop.store(true, std::sync::atomic::Ordering::Release);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+    let _first_page = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+        &pool,
+        1,
+        None,
+        &|| stop_after_prefix.load(std::sync::atomic::Ordering::Acquire),
+        &control,
+        expected_generation,
+    )
+    .await
+    .expect("commit the prompt-cache prefix before the final page");
+    observer
+        .await
+        .expect("observe the committed prompt-cache prefix");
+    let (prefix_request_count, prefix_cursor_id): (i64, i64) = sqlx::query_as(
+        "SELECT request_count, \
+             (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000') \
+             FROM prompt_cache_conversations \
+             WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load committed prompt-cache prefix");
+    assert_eq!(prefix_request_count, 0);
+    assert_eq!(prefix_cursor_id, 256);
+
     let hook = std::sync::Arc::new(PromptCacheStatsPageCommitHook {
         ready: std::sync::Arc::new(tokio::sync::Notify::new()),
         release: std::sync::Arc::new(tokio::sync::Notify::new()),
     });
     let worker_pool = pool.clone();
     let worker_hook = hook.clone();
+    let worker_control = control.clone();
     let worker = tokio::spawn(
         PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.scope(worker_hook, async move {
             run_prompt_cache_conversations_materialization_with_pressure_and_control(
@@ -1223,7 +1270,7 @@ async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_
                 1,
                 None,
                 &|| false,
-                &control,
+                &worker_control,
                 expected_generation,
             )
             .await
@@ -1270,9 +1317,47 @@ async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_
         request_count, 0,
         "the stale page must not publish its aggregate"
     );
-    assert_eq!(cursor_id, 0, "the stale page must not advance its cursor");
+    assert_eq!(cursor_id, 256, "the stale page must not advance its cursor");
     assert!(queue_generation > 0);
     assert_eq!(pending_generation, Some(queue_generation));
+
+    let mut complete = false;
+    for _ in 0..4 {
+        let resumed = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            1,
+            None,
+            &|| false,
+            &control,
+            expected_generation,
+        )
+        .await
+        .expect("finish the refreshed final prompt-cache page");
+        if resumed.complete {
+            complete = true;
+            break;
+        }
+    }
+    assert!(
+        complete,
+        "new generation should converge after the final page fence"
+    );
+    let final_request_count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load final prompt-cache aggregate");
+    assert_eq!(final_request_count, 300);
+    let publication_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkpoint_publications")
+        .fetch_one(&pool)
+        .await
+        .expect("count prompt-cache publications");
+    assert_eq!(
+        publication_count, 1,
+        "only the fresh generation should publish"
+    );
 }
 
 #[tokio::test]

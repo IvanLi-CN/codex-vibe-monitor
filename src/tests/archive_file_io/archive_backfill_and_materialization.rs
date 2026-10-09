@@ -3904,6 +3904,100 @@ async fn usage_breakdown_repair_prioritizes_recoverable_candidates_over_stale_pr
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_reaches_recoverable_stale_tail_after_cursor_page() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-stale-tail").await;
+    let tail_path = temp_dir.join("stale-tail-65.sqlite.gz");
+    fs::write(&tail_path, b"recoverable stale tail archive").expect("write recoverable tail");
+    let tail_path = tail_path.to_string_lossy().to_string();
+    let tail_sha = sha256_hex_file(Path::new(&tail_path)).expect("hash recoverable tail");
+
+    for id in 1..=65_i64 {
+        let file_path = if id == 65 {
+            tail_path.clone()
+        } else {
+            temp_dir
+                .join(format!("unrecoverable-stale-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string()
+        };
+        let sha256 = if id == 65 {
+            tail_sha.clone()
+        } else {
+            format!("current-sha-{id}")
+        };
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at,
+                coverage_start_at, coverage_end_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'), ?4, ?5, datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(&file_path)
+        .bind(&sha256)
+        .bind((id == 65).then_some("2026-01-01 00:00:00"))
+        .bind((id == 65).then_some("2026-01-01 00:30:00"))
+        .execute(&pool)
+        .await
+        .expect("seed stale-tail materialized archive");
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (
+                target, dataset, file_path, archive_sha256, replayed_at
+            )
+            VALUES (?1, 'codex_invocations', ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(&file_path)
+        .bind(format!("stale-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed stale-tail replay marker");
+    }
+
+    let first_page = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("skip the first stale cursor page");
+    assert_eq!(first_page, 0);
+    let tail_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE id = 65",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load stale tail after first cursor page");
+    assert!(tail_materialized_at.is_some());
+
+    let second_page = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair the recoverable stale tail");
+    assert_eq!(second_page, 1);
+    let tail_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE id = 65",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired stale tail");
+    assert!(tail_materialized_at.is_none());
+    let tail_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(&tail_path)
+    .fetch_one(&pool)
+    .await
+    .expect("count repaired stale tail markers");
+    assert_eq!(tail_marker_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_prefix() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("historical-rollup-bounded-selection").await;
@@ -4296,10 +4390,48 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
         .expect("seed materialized marker repair candidate");
     }
 
+    sqlx::query(
+        r#"
+        CREATE TRIGGER fail_upstream_account_marker_second_page
+        BEFORE INSERT ON hourly_rollup_archive_replay
+        WHEN NEW.file_path LIKE '%materialized-marker-65.sqlite.gz'
+        BEGIN
+            SELECT RAISE(ABORT, 'injected marker page failure');
+        END
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("install second-page marker failure");
+
+    let first_attempt = repair_materialized_upstream_account_archive_markers(&pool).await;
+    assert!(first_attempt.is_err(), "second marker page should fail");
+    for target in [
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+    ] {
+        let marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .expect("count committed first-page upstream account markers");
+        assert_eq!(
+            marker_count, 64,
+            "first marker page should commit for {target}"
+        );
+    }
+
+    sqlx::query("DROP TRIGGER fail_upstream_account_marker_second_page")
+        .execute(&pool)
+        .await
+        .expect("remove second-page marker failure");
     let repaired = repair_materialized_upstream_account_archive_markers(&pool)
         .await
-        .expect("repair all materialized upstream account archive markers");
-    assert_eq!(repaired, 65);
+        .expect("repair remaining materialized upstream account archive marker");
+    assert_eq!(repaired, 1);
 
     for target in [
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,

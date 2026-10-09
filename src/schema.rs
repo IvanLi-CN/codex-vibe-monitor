@@ -4211,6 +4211,16 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .context("failed to add hourly rollup archive replay identity column")?;
     }
 
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_hourly_rollup_archive_replay_dataset_file_sha
+        ON hourly_rollup_archive_replay (dataset, file_path, archive_sha256)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly rollup archive replay identity lookup index")?;
+
     // An authoritative invocation archive becomes Summary-visible only after its bounded source
     // coverage and the three Summary rollup proofs commit in the same transaction. Live-detail
     // mirrors never enter Summary source coverage and therefore do not require these proofs.
@@ -4332,6 +4342,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_progress table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_archive_repair_progress (
+            scope TEXT PRIMARY KEY,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly_rollup_archive_repair_progress table existence")?;
 
     sqlx::query(
         r#"

@@ -2162,7 +2162,41 @@ async fn load_retention_recovery_expired_backlog(
         return Ok(cached);
     }
 
-    let backlog = sqlx::query_as::<_, (i64, Option<String>)>(
+    let query_budget = retention_run_remaining_budget()
+        .unwrap_or(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET)
+        .min(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET);
+    if query_budget.is_zero() {
+        return Err(anyhow!(
+            "retention recovery backlog query budget expired before connection acquisition"
+        ));
+    }
+    let deadline = Instant::now() + query_budget;
+    let mut connection = tokio::time::timeout(query_budget, pool.acquire())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "retention recovery backlog connection acquisition exceeded {}ms",
+                query_budget.as_millis()
+            )
+        })??;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let mut handle = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            connection.lock_handle(),
+        )
+        .await
+        .map_err(|_| anyhow!("retention recovery backlog SQLite handle acquisition timed out"))??;
+        handle.set_progress_handler(RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS, move || {
+            let within_budget = Instant::now() < deadline;
+            if !within_budget {
+                interrupted.store(true, Ordering::Release);
+            }
+            within_budget
+        });
+    }
+    let query = sqlx::query_as::<_, (i64, Option<String>)>(
         r#"
             SELECT COUNT(*), MIN(occurred_at)
             FROM codex_invocations
@@ -2170,8 +2204,36 @@ async fn load_retention_recovery_expired_backlog(
             "#,
     )
     .bind(cutoff)
-    .fetch_one(pool)
-    .await?;
+    .fetch_one(&mut *connection);
+    let result =
+        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), query).await;
+    if let Err(error) =
+        clear_retention_backlog_observer_progress_handler(&mut connection, deadline).await
+    {
+        connection.close_on_drop();
+        return Err(error);
+    }
+    let backlog = match result {
+        Ok(Ok(backlog)) => backlog,
+        Ok(Err(error)) if interrupted.load(Ordering::Acquire) => {
+            connection.close_on_drop();
+            return Err(anyhow!(
+                "retention recovery backlog SQLite query was cancelled: {error}"
+            ));
+        }
+        Ok(Err(error)) => {
+            connection.close_on_drop();
+            return Err(error.into());
+        }
+        Err(_) => {
+            connection.close_on_drop();
+            return Err(anyhow!(
+                "retention recovery backlog query exceeded {}ms",
+                query_budget.as_millis()
+            ));
+        }
+    };
+    drop(connection);
 
     if let Some(database_key) = database_key {
         let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
@@ -7002,10 +7064,10 @@ fn reset_raw_orphan_sweep_traversal_after_interrupted_pass(
     traversal: &mut RetentionRawDirectoryTraversal,
     pass: &RawOrphanSweepPassResult,
 ) {
-    if pass.deferred || pass.directory_scan_failures > 0 {
-        // A directory scan error or admission defer may leave the process-local ReadDir ahead of
-        // work that was not durably observed. Reopen from the ledger on the next retry. Ordinary
-        // item failures keep the iterator position so one bad file cannot starve the suffix.
+    if pass.directory_scan_failures > 0 {
+        // A directory scan error may leave the process-local ReadDir ahead of work that was not
+        // durably observed. Reopen from the ledger on the next retry. Admission defers retain
+        // their pending candidates and iterator because no directory state was lost.
         traversal.reset_after_interrupted_slice();
     }
 }
@@ -7234,7 +7296,6 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
                     }
                 }
                 Err(error) if is_retention_write_deferred(&error) => {
-                    traversal.reset_after_interrupted_slice();
                     let admission_evidence = raw_orphan_sweep_admission_details(&error);
                     let persisted = persist_raw_orphan_sweep_schedule_with_evidence(
                         &state.pool,
@@ -11047,8 +11108,8 @@ mod retention_summary_tests {
             ..Default::default()
         };
         reset_raw_orphan_sweep_traversal_after_interrupted_pass(&mut traversal, &pass);
-        assert!(traversal.directory.is_none());
-        assert!(traversal.pending_candidates.is_empty());
+        assert!(traversal.directory.is_some());
+        assert_eq!(traversal.pending_candidates.len(), 1);
 
         let mut failure_traversal = RetentionRawDirectoryTraversal {
             root: Some(std::env::temp_dir()),
