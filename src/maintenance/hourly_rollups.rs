@@ -558,6 +558,7 @@ async fn delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(
                 WHERE batches.id = deferred.archive_id \
                   AND batches.dataset = 'codex_invocations' \
                   AND batches.status = ?2 \
+                  AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
                   AND batches.historical_rollups_materialized_at IS NOT NULL \
            )",
     )
@@ -1604,6 +1605,7 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
     repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
         pool,
         Some(USAGE_BREAKDOWN_REPAIR_MAX_ELAPSED),
+        false,
     )
     .await
 }
@@ -1616,6 +1618,7 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
     repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
         pool,
         Some(max_elapsed),
+        true,
     )
     .await
 }
@@ -1623,17 +1626,21 @@ pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backf
 async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
     pool: &Pool<Sqlite>,
     max_elapsed: Option<Duration>,
+    allow_one_candidate_after_budget: bool,
 ) -> Result<usize> {
     let mut cursor = load_usage_breakdown_repair_cursor(pool).await?;
     let mut touched_batches = 0usize;
     let started_at = Instant::now();
+    let mut budget_overrun_candidate_started = false;
 
     // One candidate per transaction keeps closure expansion, rollup rebuilding, and marker
     // resets below the recovery write budget. The durable cursor lets skipped/quarantined rows
     // yield to later recoverable rows; a separately durable deferred queue keeps budget-exhausted
     // candidates retryable without blocking the rest of the ordered set.
     for _ in 0..USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE {
-        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+            && (!allow_one_candidate_after_budget || budget_overrun_candidate_started)
+        {
             break;
         }
         let mut tx = pool.begin().await?;
@@ -1658,10 +1665,10 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         &UsageBreakdownRepairCursor::default(),
                     )
                     .await?;
-                    tx.commit().await?;
-                } else {
-                    tx.rollback().await?;
                 }
+                // Commit even when the cursor is already at its origin: the cleanup above may
+                // have removed deferred rows that became ineligible for repair.
+                tx.commit().await?;
                 break;
             }
         };
@@ -1699,7 +1706,10 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
                         started_at,
-                        max_elapsed,
+                        // The elapsed budget is a boundary between candidates. Once a candidate
+                        // is selected, finish its validation and overlap closure so its cursor
+                        // commit cannot be lost when gzip/file IO crosses the run budget.
+                        None,
                     )
                     .await?
                 } else {
@@ -1709,7 +1719,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
                         started_at,
-                        max_elapsed,
+                        None,
                     )
                     .await?
                 };
@@ -1738,6 +1748,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             advance_usage_breakdown_repair_cursor_tx(tx.as_mut(), &next_cursor).await?;
             cursor = next_cursor;
         }
+        budget_overrun_candidate_started = true;
         tx.commit().await?;
     }
 
@@ -1969,12 +1980,10 @@ async fn open_historical_rollup_archive_pool_with_budget(
             != Some(current_signature.as_str());
     if stale_temp {
         remove_temp_sqlite_artifacts(temp_path);
-        if !inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, max_elapsed)
-            .await?
-        {
-            remove_temp_sqlite_artifacts(temp_path);
-            return Ok(None);
-        }
+        // Once an archive has been selected, finish building its durable temp copy. The caller
+        // still enforces the elapsed budget before the next archive, while the persisted source
+        // signature prevents a later pass from repeating a partial gzip inflate.
+        inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
         persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
@@ -1989,17 +1998,7 @@ async fn open_historical_rollup_archive_pool_with_budget(
         Ok(pool) => Ok(Some(pool)),
         Err(first_err) => {
             remove_temp_sqlite_artifacts(temp_path);
-            if !inflate_gzip_sqlite_file_with_budget(
-                archive_path,
-                temp_path,
-                started_at,
-                max_elapsed,
-            )
-            .await?
-            {
-                remove_temp_sqlite_artifacts(temp_path);
-                return Ok(None);
-            }
+            inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.map(Some).with_context(|| {
                 format!(
@@ -2710,7 +2709,9 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 archive_file.coverage_start_at.as_deref(),
                 archive_file.coverage_end_at.as_deref(),
                 started_at,
-                max_elapsed,
+                // The selected archive is the durable replay unit. Finish its verified overlap
+                // closure before the outer batch budget gates the next archive.
+                None,
             )
             .await?
             else {

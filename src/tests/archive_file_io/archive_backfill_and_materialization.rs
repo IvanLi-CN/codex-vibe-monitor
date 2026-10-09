@@ -4552,6 +4552,124 @@ async fn usage_breakdown_repair_deferred_candidate_does_not_starve_recoverable_t
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_discards_deferred_live_mirror_candidate() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-live-mirror-queue").await;
+    let file_path = temp_dir.join("live-mirror-queued.sqlite.gz");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id, dataset, month_key, file_path, sha256, row_count, status,
+            summary_source_kind, coverage_start_at, coverage_end_at,
+            historical_rollups_materialized_at
+        )
+        VALUES (1, 'codex_invocations', '2026-08', ?1, 'live-mirror-sha', 1, 'completed',
+                'live_mirror', '2026-08-01 08:00:00', '2026-08-01 08:30:00', datetime('now'))
+        "#,
+    )
+    .bind(file_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("seed live-mirror archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_deferred (
+            scope, archive_id, stale_rank, month_key, created_at, file_path
+        )
+        VALUES ('invocation_archive_usage_breakdown', 1, 0, '2026-08', datetime('now'), ?1)
+        "#,
+    )
+    .bind(file_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("seed live-mirror deferred queue entry");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("discard deferred live-mirror candidate");
+    assert_eq!(touched, 0);
+    let deferred_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count discarded live-mirror queue entries");
+    assert_eq!(deferred_count, 0);
+    assert!(
+        !usage_breakdown_repair_is_pending(&pool)
+            .await
+            .expect("inspect cleared live-mirror repair state")
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_repair_commits_selected_candidate_after_elapsed_budget() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-candidate-budget").await;
+    let first_path = temp_dir.join("budgeted-candidate-first.sqlite.gz");
+    let second_path = temp_dir.join("budgeted-candidate-second.sqlite.gz");
+    write_valid_invocation_archive(&first_path, "budgeted-candidate-first").await;
+    write_valid_invocation_archive(&second_path, "budgeted-candidate-second").await;
+
+    for (id, path, month_key) in [
+        (1_i64, &first_path, "2026-08"),
+        (2_i64, &second_path, "2026-09"),
+    ] {
+        let path = path.to_string_lossy().into_owned();
+        let sha256 = sha256_hex_file(Path::new(&path)).expect("hash budgeted candidate archive");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, coverage_start_at, coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (?1, 'codex_invocations', ?2, ?3, ?4, 1, 'completed',
+                    'unknown', ?5, ?6, datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(month_key)
+        .bind(path)
+        .bind(sha256)
+        .bind(format!("{month_key}-01 08:00:00"))
+        .bind(format!("{month_key}-01 08:30:00"))
+        .execute(&pool)
+        .await
+        .expect("seed budgeted candidate archive");
+    }
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_elapsed_budget_for_test(
+        &pool,
+        Duration::ZERO,
+    )
+    .await
+    .expect("finish the selected candidate after the elapsed budget");
+    assert_eq!(touched, 1);
+    let materialized_states: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load budgeted candidate materialization states");
+    assert!(materialized_states[0].is_none());
+    assert!(materialized_states[1].is_some());
+    let cursor_id: i64 = sqlx::query_scalar(
+        "SELECT cursor_id FROM hourly_rollup_archive_repair_progress \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load committed budgeted repair cursor");
+    assert_eq!(cursor_id, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_prefix() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("historical-rollup-bounded-selection").await;

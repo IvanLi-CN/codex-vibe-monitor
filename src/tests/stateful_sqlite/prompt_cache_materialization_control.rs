@@ -1212,42 +1212,40 @@ async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_
     let expected_generation = control.snapshot().expect("trusted control").generation;
 
     let stop_after_prefix = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let observer_pool = pool.clone();
-    let observer_stop = stop_after_prefix.clone();
-    let mut observer = tokio::spawn(async move {
-        loop {
-            let cursor_id: Option<i64> = sqlx::query_scalar(
-                "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
-                 WHERE prompt_cache_key='checkpoint-key-000'",
-            )
-            .fetch_optional(&observer_pool)
-            .await
-            .expect("observe committed prompt-cache prefix");
-            if cursor_id == Some(256) {
-                observer_stop.store(true, std::sync::atomic::Ordering::Release);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
+    let first_page_hook = std::sync::Arc::new(PromptCacheStatsPageCommitHook {
+        ready: std::sync::Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Arc::new(tokio::sync::Notify::new()),
     });
-    let _first_page = run_prompt_cache_conversations_materialization_with_pressure_and_control(
-        &pool,
-        1,
-        None,
-        &|| stop_after_prefix.load(std::sync::atomic::Ordering::Acquire),
-        &control,
-        expected_generation,
+    let first_page_pool = pool.clone();
+    let first_page_control = control.clone();
+    let first_page_stop = stop_after_prefix.clone();
+    let first_page_worker = tokio::spawn(PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.scope(
+        first_page_hook.clone(),
+        async move {
+            run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &first_page_pool,
+                1,
+                None,
+                &|| first_page_stop.load(std::sync::atomic::Ordering::Acquire),
+                &first_page_control,
+                expected_generation,
+            )
+            .await
+        },
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        first_page_hook.ready.notified(),
     )
     .await
-    .expect("commit the prompt-cache prefix before the final page");
-    match tokio::time::timeout(std::time::Duration::from_secs(3), &mut observer).await {
-        Ok(result) => result.expect("observe the committed prompt-cache prefix"),
-        Err(_) => {
-            observer.abort();
-            let _ = observer.await;
-            panic!("observe the committed prompt-cache prefix before timeout");
-        }
-    }
+    .expect("first statistics page should reach the pre-commit hook");
+    stop_after_prefix.store(true, std::sync::atomic::Ordering::Release);
+    first_page_hook.release.notify_one();
+    let first_page = first_page_worker
+        .await
+        .expect("join prompt-cache prefix worker")
+        .expect("commit the prompt-cache prefix before the final page");
+    assert_eq!(first_page.defer_reason, Some("coordinator_priority"));
     let (prefix_request_count, prefix_cursor_id): (i64, i64) = sqlx::query_as(
         "SELECT request_count, \
              (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
