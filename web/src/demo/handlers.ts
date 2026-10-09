@@ -1831,6 +1831,7 @@ function promptCacheConversations() {
     });
     return {
       promptCacheKey,
+      conversationId: `demo-persisted-${promptCacheKey}`,
       hasEncryptedSessionOwner: owner != null,
       encryptedOwnerAccountId,
       encryptedOwnerAccountName: owner?.displayName ?? null,
