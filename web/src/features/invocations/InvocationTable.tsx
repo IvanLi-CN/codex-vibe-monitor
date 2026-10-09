@@ -49,6 +49,7 @@ interface InvocationTableProps {
   isLoading: boolean;
   error?: string | null;
   emptyLabel?: string;
+  conversationId?: string | null;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
   scrollTarget?: { invokeId: string; attemptId?: string | null; version: number } | null;
@@ -211,6 +212,7 @@ export function InvocationCardList({
   isLoading,
   error,
   emptyLabel,
+  conversationId,
   onOpenUpstreamAccount,
   scrollElement,
   scrollTarget,
@@ -981,6 +983,7 @@ export function InvocationCardList({
           >
             <InvocationWorkflowDetailPanel
               record={row.record}
+              conversationId={conversationId}
               focusedAttemptId={isHighlighted ? (scrollTarget?.attemptId ?? null) : null}
               size={isMdUp ? "default" : "compact"}
               onOpenUpstreamAccount={onOpenUpstreamAccount}

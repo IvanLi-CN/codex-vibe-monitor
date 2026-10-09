@@ -240,13 +240,15 @@ export default function DashboardPage() {
       promptCacheConversationId != null &&
       verifiedConversationRoute?.key === promptCacheConversationKey &&
       verifiedConversationRoute?.conversationId === promptCacheConversationId;
+    const visibleConversationRouteMatches =
+      promptCacheConversationId != null && singleConversationId === promptCacheConversationId;
     const conversationLabel = conversationDataIsComplete
       ? promptCacheConversationId != null
         ? singleConversationId === promptCacheConversationId
           ? promptCacheConversationId
           : null
         : singleConversationId
-      : previouslyVerifiedRoute
+      : previouslyVerifiedRoute || (workingCardsError == null && visibleConversationRouteMatches)
         ? promptCacheConversationId
         : null;
     if (
@@ -340,6 +342,8 @@ export default function DashboardPage() {
   const conversationRouteReadOnly = !conversationRouteIdentityIsWritable;
   const discardConversationRoutePendingMutations =
     promptCacheConversationKey != null && conversationRouteReadOnly;
+  const keepCompactConversationDrawerMounted =
+    discardConversationRoutePendingMutations && verifiedConversationRoute != null;
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
     verifiedConversationRouteIsActive ||
@@ -379,11 +383,15 @@ export default function DashboardPage() {
     });
   };
 
-  if (isCompactViewport && promptCacheConversationKey != null && conversationRouteIsSafe) {
+  if (
+    isCompactViewport &&
+    promptCacheConversationKey != null &&
+    (conversationRouteIsSafe || keepCompactConversationDrawerMounted)
+  ) {
     return (
       <div className="mx-auto flex w-full max-w-full flex-col gap-6">
         <PromptCacheConversationHistoryDrawer
-          open
+          open={conversationRouteIsSafe}
           presentation="page"
           conversationKey={promptCacheConversationKey}
           conversationId={promptCacheConversationId}

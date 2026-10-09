@@ -1503,6 +1503,9 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).not.toBeNull();
     expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+    expect(
       host?.querySelector('[data-testid="dashboard-conversation-drawer-read-only"]')?.textContent,
     ).toBe("false");
   });

@@ -21,6 +21,7 @@ export interface UseLatestDebouncedMutationResult<TPayload, TResult> {
   schedule: (payload: TPayload) => void;
   flush: () => Promise<void>;
   retry: () => void;
+  cancelPending: () => void;
   revert: () => void;
   reconcile: (result: TResult) => void;
 }
@@ -113,18 +114,22 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
           failedEntryRef.current = null;
           if (mountedRef.current) onSuccessRef.current?.(result, entry.payload);
         }
-        if (mountedRef.current) {
+        if (mountedRef.current && isLatest) {
           setError(null);
         }
         succeeded = true;
       } catch (nextError) {
-        failedEntryRef.current = queueRef.current.get(entry.resourceKey) ?? entry;
-        if (mountedRef.current) {
-          setStatus("error");
-          setError(nextError);
+        const isLatest = entry.sequence === latestSequenceRef.current;
+        if (isLatest) {
+          failedEntryRef.current = queueRef.current.get(entry.resourceKey) ?? entry;
+          if (mountedRef.current) {
+            setStatus("error");
+            setError(nextError);
+          }
+          if (mountedRef.current) onErrorRef.current?.(nextError, failedEntryRef.current.payload);
         }
-        if (mountedRef.current) onErrorRef.current?.(nextError, failedEntryRef.current.payload);
       } finally {
+        const isLatest = entry.sequence === latestSequenceRef.current;
         inFlightRef.current = null;
         updatePendingState();
         if (succeeded && queueRef.current.size > 0) {
@@ -133,6 +138,13 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
           }
           void drain();
         } else if (succeeded && failedEntryRef.current == null && mountedRef.current) {
+          setStatus("idle");
+        } else if (!succeeded && !isLatest && queueRef.current.size > 0) {
+          if (mountedRef.current) {
+            setStatus("pending");
+          }
+          void drain();
+        } else if (!succeeded && failedEntryRef.current == null && mountedRef.current) {
           setStatus("idle");
         }
       }
@@ -204,19 +216,23 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
     );
   }, [delayMs, drain, updatePendingState]);
 
-  const revert = useCallback(() => {
-    if (inFlightRef.current != null) return;
+  const cancelPending = useCallback(() => {
     clearTimer();
     queueRef.current.clear();
     failedEntryRef.current = null;
     latestSequenceRef.current += 1;
     if (mountedRef.current) {
-      setStatus("idle");
+      setStatus(inFlightRef.current == null ? "idle" : "saving");
       setError(null);
-      setHasPending(false);
+      updatePendingState();
     }
     onRevertRef.current?.(confirmedResultRef.current);
-  }, [clearTimer]);
+  }, [clearTimer, updatePendingState]);
+
+  const revert = useCallback(() => {
+    if (inFlightRef.current != null) return;
+    cancelPending();
+  }, [cancelPending]);
 
   const reconcile = useCallback((result: TResult) => {
     confirmedResultRef.current = result;
@@ -237,20 +253,11 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
     if (resourceKeyRef.current === resourceKey) return;
     const previousResourceKey = resourceKeyId(resourceKeyRef.current);
     resourceKeyRef.current = resourceKey;
-    latestSequenceRef.current += 1;
     if (cancelOnResourceChange) {
-      clearTimer();
-      queueRef.current.delete(previousResourceKey);
-      if (failedEntryRef.current?.resourceKey === previousResourceKey) {
-        failedEntryRef.current = null;
-      }
-      if (mountedRef.current) {
-        setStatus("idle");
-        setError(null);
-        updatePendingState();
-      }
+      cancelPending();
       return;
     }
+    latestSequenceRef.current += 1;
     void flush().then(() => {
       queueRef.current.delete(previousResourceKey);
       if (failedEntryRef.current?.resourceKey === previousResourceKey) {
@@ -262,7 +269,7 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
         updatePendingState();
       }
     });
-  }, [cancelOnResourceChange, clearTimer, flush, resourceKey, updatePendingState]);
+  }, [cancelOnResourceChange, cancelPending, flush, resourceKey, updatePendingState]);
 
   useEffect(() => {
     const flushOnPageExit = () => {
@@ -279,5 +286,15 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
     };
   }, [flush]);
 
-  return { status, error, hasPending, schedule, flush, retry, revert, reconcile };
+  return {
+    status,
+    error,
+    hasPending,
+    schedule,
+    flush,
+    retry,
+    cancelPending,
+    revert,
+    reconcile,
+  };
 }
