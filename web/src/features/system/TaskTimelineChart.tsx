@@ -81,7 +81,7 @@ type DeferralIndex = {
   prefixMaxEnd: number[];
   overlapCounts: Map<string, number>;
   byId: Map<string, PositionedDeferral>;
-  dynamic?: PositionedDeferral[];
+  dynamicIndex?: DeferralIndex;
   base?: DeferralIndex;
 };
 
@@ -437,8 +437,43 @@ function buildLiveDeferralIndex(
     );
     byId.set(liveItem.segment.segmentId, liveItem);
   }
+  return {
+    ...staticIndex,
+    overlapCounts,
+    byId,
+    dynamicIndex,
+    base: staticIndex,
+  };
+}
+
+function deferralOverlapCount(item: PositionedDeferral, index: DeferralIndex): number {
+  const overlapCount = index.overlapCounts.get(item.segment.segmentId) ?? 0;
+  if (!index.dynamicIndex || index.dynamicIndex.byId.has(item.segment.segmentId)) {
+    return overlapCount;
+  }
+  return overlapCount + countOverlapsInIndex(item, index.dynamicIndex);
+}
+
+function liveStaticOverlapSignature(
+  staticIndex: DeferralIndex,
+  liveItems: PositionedDeferral[],
+): string {
+  return liveItems
+    .map(
+      (item) =>
+        `${item.segment.segmentId}:${lowerBound(staticIndex.starts, item.endMs)}:${upperBound(staticIndex.ends, item.startMs)}`,
+    )
+    .join("|");
+}
+
+function buildRenderOverlapCounts(
+  staticIndex: DeferralIndex,
+  liveIndex: DeferralIndex,
+): Map<string, number> {
+  const overlapCounts = new Map(liveIndex.overlapCounts);
+  if (!liveIndex.dynamicIndex) return overlapCounts;
   for (const staticItem of staticIndex.sorted) {
-    const liveOverlapCount = countOverlapsInIndex(staticItem, dynamicIndex);
+    const liveOverlapCount = countOverlapsInIndex(staticItem, liveIndex.dynamicIndex);
     if (liveOverlapCount > 0) {
       overlapCounts.set(
         staticItem.segment.segmentId,
@@ -446,13 +481,7 @@ function buildLiveDeferralIndex(
       );
     }
   }
-  return {
-    ...staticIndex,
-    overlapCounts,
-    byId,
-    dynamic,
-    base: staticIndex,
-  };
+  return overlapCounts;
 }
 
 function countOverlapsInIndex(item: PositionedDeferral, index: DeferralIndex): number {
@@ -486,16 +515,8 @@ function overlappingDeferrals(
 ): PositionedDeferral[] {
   const base = index.base ?? index;
   const matches = overlappingDeferralsInIndex(item, base);
-  if (index.dynamic) {
-    matches.push(
-      ...index.dynamic.filter(
-        (other) =>
-          other.segment.segmentId !== item.segment.segmentId &&
-          other.endMs > other.startMs &&
-          other.startMs < item.endMs &&
-          other.endMs > item.startMs,
-      ),
-    );
+  if (index.dynamicIndex) {
+    matches.push(...overlappingDeferralsInIndex(item, index.dynamicIndex));
   }
   return matches.sort((left, right) => left.order - right.order);
 }
@@ -848,7 +869,13 @@ export function TaskTimelineChart({
   const executionBarByIdRef = useRef(new Map<string, ExecutionBar>());
   const executionTitleTimerRef = useRef<number | null>(null);
   const deferralTitleTimerRef = useRef<number | null>(null);
+  const executionDetailRevisionRef = useRef("");
   const deferralDetailRevisionRef = useRef("");
+  const renderOverlapCountsRef = useRef<{
+    staticIndex: DeferralIndex;
+    signature: string;
+    counts: Map<string, number>;
+  } | null>(null);
   const staticTimelineLayerRef = useRef<SVGGElement>(null);
   const executionDetailCacheRef = useRef(new Map<string, CachedDetail>());
   const deferralDetailCacheRef = useRef(new Map<string, CachedDetail>());
@@ -1110,6 +1137,16 @@ export function TaskTimelineChart({
     () => buildLiveDeferralIndex(staticDeferralIndex, livePositionedDeferrals),
     [livePositionedDeferrals, staticDeferralIndex],
   );
+  const renderOverlapCounts = useMemo(() => {
+    const signature = liveStaticOverlapSignature(staticDeferralIndex, livePositionedDeferrals);
+    const cached = renderOverlapCountsRef.current;
+    if (cached?.staticIndex === staticDeferralIndex && cached.signature === signature) {
+      return cached.counts;
+    }
+    const counts = buildRenderOverlapCounts(staticDeferralIndex, deferralIndex);
+    renderOverlapCountsRef.current = { staticIndex: staticDeferralIndex, signature, counts };
+    return counts;
+  }, [deferralIndex, livePositionedDeferrals, staticDeferralIndex]);
   const deferralDetailRevision = useMemo(
     () => `${runtimeFresh}:${deferrals.map(deferralSegmentSignature).join("|")}`,
     [deferrals, runtimeFresh],
@@ -1217,7 +1254,7 @@ export function TaskTimelineChart({
   executionBarByIdRef.current = executionBarById;
 
   const updateExecutionNode = useCallback(
-    (node: SVGGElement, bar: ExecutionBar, expanded: boolean) => {
+    (node: SVGGElement, bar: ExecutionBar, expanded: boolean, immediate = false) => {
       const summary = executionSummary(bar);
       if (executionTitleTimerRef.current != null) {
         window.clearTimeout(executionTitleTimerRef.current);
@@ -1228,7 +1265,7 @@ export function TaskTimelineChart({
       if (!titleElement) return;
       titleElement.textContent = summary;
       if (!expanded) return;
-      executionTitleTimerRef.current = window.setTimeout(() => {
+      const renderDetail = () => {
         const currentBar = executionBarByIdRef.current.get(bar.segment.segmentId) ?? bar;
         if (
           activeExecutionNodeRef.current === node &&
@@ -1239,7 +1276,9 @@ export function TaskTimelineChart({
           titleElement.textContent = detail;
         }
         executionTitleTimerRef.current = null;
-      }, 80);
+      };
+      if (immediate) renderDetail();
+      else executionTitleTimerRef.current = window.setTimeout(renderDetail, 80);
     },
     [cachedExecutionTitle],
   );
@@ -1284,14 +1323,11 @@ export function TaskTimelineChart({
       item: PositionedDeferral,
       expanded: boolean,
       members: PositionedDeferral[] = [],
+      immediate = false,
     ) => {
       const index = deferralIndexRef.current;
       if (!index) return;
-      const summary = deferralSummary(
-        item,
-        index.overlapCounts.get(item.segment.segmentId) ?? 0,
-        members,
-      );
+      const summary = deferralSummary(item, deferralOverlapCount(item, index), members);
       if (!expanded) node.setAttribute("aria-label", summary);
       if (deferralTitleTimerRef.current != null) {
         window.clearTimeout(deferralTitleTimerRef.current);
@@ -1303,7 +1339,7 @@ export function TaskTimelineChart({
         titleElement.textContent = summary;
         return;
       }
-      deferralTitleTimerRef.current = window.setTimeout(() => {
+      const renderDetail = () => {
         const currentIndex = deferralIndexRef.current;
         const currentItem = currentIndex?.byId.get(item.segment.segmentId) ?? item;
         if (expanded) {
@@ -1323,7 +1359,9 @@ export function TaskTimelineChart({
           titleElement.textContent = summary;
         }
         deferralTitleTimerRef.current = null;
-      }, 80);
+      };
+      if (immediate) renderDetail();
+      else deferralTitleTimerRef.current = window.setTimeout(renderDetail, 80);
     },
     [cachedDeferralTitle],
   );
@@ -1399,7 +1437,10 @@ export function TaskTimelineChart({
       activeExecutionNodeRef.current = null;
       return;
     }
-    updateExecutionNode(node, bar, true);
+    const detailRevision = `${bar.segment.segmentId}:${bar.segment.revision}:${bar.segment.status}:${bar.segment.finishedAt ?? bar.segment.lastObservedAt}`;
+    const detailRevisionChanged = executionDetailRevisionRef.current !== detailRevision;
+    executionDetailRevisionRef.current = detailRevision;
+    updateExecutionNode(node, bar, true, detailRevisionChanged);
   }, [executionBarById, updateExecutionNode]);
 
   useEffect(() => {
@@ -1425,7 +1466,7 @@ export function TaskTimelineChart({
         return;
       }
     }
-    updateDeferralNode(node, item, true);
+    updateDeferralNode(node, item, true, [], true);
   }, [deferralDetailRevision, deferralIndex, updateDeferralNode]);
 
   const selectedDescription = selectedExecutions
@@ -1613,7 +1654,7 @@ export function TaskTimelineChart({
                 chartWidth={chartWidth}
                 windowStart={modelWindowStart}
                 pressureTop={pressureTop}
-                overlapCounts={deferralIndex.overlapCounts}
+                overlapCounts={renderOverlapCounts}
                 onSelect={selectDeferral}
                 onActivate={activateDeferral}
                 onDeactivate={deactivateDeferral}
@@ -1636,7 +1677,7 @@ export function TaskTimelineChart({
               chartWidth={chartWidth}
               windowStart={windowStart}
               pressureTop={pressureTop}
-              overlapCounts={deferralIndex.overlapCounts}
+              overlapCounts={renderOverlapCounts}
               onSelect={selectDeferral}
               onActivate={activateDeferral}
               onDeactivate={deactivateDeferral}

@@ -3157,9 +3157,12 @@ type DemoTaskOperationsTimeline =
   | ReturnType<typeof createDemoTaskOperationsTimeline>
   | ReturnType<typeof createDenseTaskOperationsTimeline>;
 let cachedDemoTaskOperationsTimeline: {
+  state: object;
   scene: string;
+  snapshotId: number;
   snapshot: DemoTaskOperationsTimeline;
 } | null = null;
+let demoTaskOperationsTimelineSnapshotId = 0;
 
 function createDenseTaskOperationsTimeline() {
   const now = Date.now();
@@ -3441,21 +3444,28 @@ function createDemoTaskOperationsTimeline() {
 }
 
 function demoTaskOperationsTimeline() {
-  const scene = demoModel.snapshot.scene;
-  if (cachedDemoTaskOperationsTimeline?.scene === scene) {
+  const state = demoModel.snapshot;
+  const scene = state.scene;
+  if (cachedDemoTaskOperationsTimeline?.state === state) {
     return cachedDemoTaskOperationsTimeline.snapshot;
   }
   const snapshot =
     scene === "task-timeline-pressure-dense"
       ? createDenseTaskOperationsTimeline()
       : createDemoTaskOperationsTimeline();
-  cachedDemoTaskOperationsTimeline = { scene, snapshot };
+  cachedDemoTaskOperationsTimeline = {
+    state,
+    scene,
+    snapshotId: ++demoTaskOperationsTimelineSnapshotId,
+    snapshot,
+  };
   return snapshot;
 }
 
 function demoTaskOperationsTimelinePage(url: URL) {
   const scene = demoModel.snapshot.scene;
   const snapshot = demoTaskOperationsTimeline();
+  const snapshotId = cachedDemoTaskOperationsTimeline?.snapshotId ?? 0;
   const cursor = url.searchParams.get("cursor");
   let offset = 0;
   let afterRevision: number | undefined;
@@ -3465,12 +3475,13 @@ function demoTaskOperationsTimelinePage(url: URL) {
     try {
       const decoded = JSON.parse(decodeURIComponent(cursor)) as {
         scene?: string;
+        snapshotId?: number;
         offset?: number;
         afterRevision?: number;
         from?: string;
         to?: string;
       };
-      if (decoded.scene !== scene) {
+      if (decoded.scene !== scene || decoded.snapshotId !== snapshotId) {
         return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
       }
       offset = Number(decoded.offset) || 0;
@@ -3504,7 +3515,9 @@ function demoTaskOperationsTimelinePage(url: URL) {
     segments,
     nextCursor:
       nextOffset < matching.length
-        ? encodeURIComponent(JSON.stringify({ scene, offset: nextOffset, afterRevision, from, to }))
+        ? encodeURIComponent(
+            JSON.stringify({ scene, snapshotId, offset: nextOffset, afterRevision, from, to }),
+          )
         : null,
     resetRequired: false,
   };

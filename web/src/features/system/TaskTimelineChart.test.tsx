@@ -438,6 +438,7 @@ describe("TaskTimelineChart", () => {
         : item,
     );
     render(nowMs, { executions: revised });
+    expect(bars[0].getAttribute("aria-label")).toContain("恢复");
     await settleDeferralDetail();
     expect(bars[0].getAttribute("aria-label")).toContain("恢复");
     expect(bars[0].getAttribute("aria-label")).toContain("压力冷却让行");
