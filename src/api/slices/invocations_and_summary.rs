@@ -30223,45 +30223,6 @@ pub(crate) async fn load_summary_response_from_query(
     Ok(response)
 }
 
-pub(crate) fn summary_delta_gap_affects_selection(
-    projection: &SummaryProjection,
-    gaps: &[DeltaGapProof],
-    deltas: &[DashboardActivityTerminalDelta],
-    window: &SummaryWindow,
-    reporting_tz: Tz,
-    upstream_account_id: Option<i64>,
-) -> bool {
-    if let SummaryWindow::Current(limit) = window {
-        return gaps.iter().any(|gap| {
-            (upstream_account_id.is_none()
-                || gap.upstream_account_id.is_none()
-                || gap.upstream_account_id == upstream_account_id)
-                && projection.delta_gap_affects_current_selection(
-                    gap,
-                    (*limit).max(0) as usize,
-                    upstream_account_id,
-                    deltas,
-                )
-        });
-    }
-    let range = summary_window_range(window, reporting_tz, Utc::now())
-        .ok()
-        .flatten();
-    gaps.iter().any(|gap| {
-        if upstream_account_id.is_some()
-            && gap.upstream_account_id.is_some()
-            && gap.upstream_account_id != upstream_account_id
-        {
-            return false;
-        }
-        let Some((start, end)) = range else {
-            return true;
-        };
-        parse_to_utc_datetime(&gap.occurred_at)
-            .is_none_or(|occurred_at| occurred_at >= start && occurred_at < end)
-    })
-}
-
 pub(crate) fn summary_delta_affects_selection(
     projection: &SummaryProjection,
     deltas: &[DashboardActivityTerminalDelta],
@@ -30339,6 +30300,20 @@ pub(crate) async fn fetch_summary(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+        let source_gap_pending = summary_delta_gap_affects_selection(
+            projection.as_ref(),
+            &gaps,
+            &deltas,
+            &window,
+            reporting_tz,
+            params.upstream_account_id,
+            SummaryDeltaGapKind::Source,
+        );
+        if source_gap_pending {
+            return Err(ApiError::unavailable(anyhow!(
+                "summary source journal has an unproven change for the requested selection"
+            )));
+        }
         let delta_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
             &gaps,
@@ -30346,6 +30321,7 @@ pub(crate) async fn fetch_summary(
             &window,
             reporting_tz,
             params.upstream_account_id,
+            SummaryDeltaGapKind::Terminal,
         );
         let mut response = projection.response_for_query_with_rolling_delta(
             &params,
@@ -30386,6 +30362,20 @@ pub(crate) async fn fetch_summary(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let source_gap_pending = summary_delta_gap_affects_selection(
+        projection.as_ref(),
+        &gaps,
+        &deltas,
+        &window,
+        reporting_tz,
+        account_id,
+        SummaryDeltaGapKind::Source,
+    );
+    if source_gap_pending {
+        return Err(ApiError::unavailable(anyhow!(
+            "summary source journal has an unproven change for the requested selection"
+        )));
+    }
     let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
@@ -30393,6 +30383,7 @@ pub(crate) async fn fetch_summary(
         &window,
         reporting_tz,
         account_id,
+        SummaryDeltaGapKind::Terminal,
     );
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),
@@ -33907,6 +33898,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(2),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "a gap beyond the requested current prefix must remain selection-local"
         );
@@ -33918,6 +33910,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(4),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "the acknowledged delta tail must extend the exact current cutoff"
         );
@@ -33929,6 +33922,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(5),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "a current limit reaching the first unproven rank must fail closed"
         );
@@ -33940,6 +33934,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::All,
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "an all-time gap must fail closed for both HTTP and Summary SSE"
         );
@@ -33951,6 +33946,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(50),
                 Shanghai,
                 Some(7),
+                SummaryDeltaGapKind::Any,
             ),
             "a gap for another account must not hide an independent account selection"
         );

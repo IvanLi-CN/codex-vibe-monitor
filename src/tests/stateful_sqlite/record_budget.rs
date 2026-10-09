@@ -3,7 +3,48 @@ use super::*;
 const SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize = 8;
 
 #[tokio::test]
-async fn stats_serves_last_good_snapshot_while_summary_delta_proof_is_pending() {
+async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("open schema test pool");
+    ensure_schema(&pool).await.expect("ensure schema");
+
+    let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        "EXPLAIN QUERY PLAN SELECT id FROM archive_batches \
+         WHERE dataset = ?1 AND status = ?2 \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         ORDER BY month_key, created_at, id LIMIT ?3",
+    )
+    .bind("codex_invocations")
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(128_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("explain pending Summary rollup query");
+    assert!(
+        plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_batches_pending_summary_rollup_order")
+        }),
+        "pending Summary rollup query must use the partial index: {plan:?}"
+    );
+
+    ensure_schema(&pool).await.expect("repeat schema migration");
+    let index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'index' AND name = 'idx_archive_batches_pending_summary_rollup_order'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count pending Summary rollup indexes");
+    assert_eq!(
+        index_count, 1,
+        "re-entry must not duplicate the partial index"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap() {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -56,7 +97,7 @@ async fn stats_serves_last_good_snapshot_while_summary_delta_proof_is_pending() 
         .await;
     state
         .subscription_hub
-        .record_summary_source_change_gap(913_102)
+        .record_summary_terminal_sequence_gap(913_102)
         .await;
     state.pool.close().await;
 
@@ -78,7 +119,7 @@ async fn stats_serves_last_good_snapshot_while_summary_delta_proof_is_pending() 
         Some(StatsDataQualityResponse::summary_delta_journal_pending())
     );
 
-    let Json(stats) = fetch_stats(State(state))
+    let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("legacy stats should share the degraded memory-only path");
     assert_eq!(stats.total_count, 2);
@@ -86,6 +127,31 @@ async fn stats_serves_last_good_snapshot_while_summary_delta_proof_is_pending() 
     assert_eq!(
         stats.data_quality,
         Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_103)
+        .await;
+    let summary_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(summary_error, Err(ApiError::Unavailable(_))),
+        "durable source gaps must remain unavailable for Summary HTTP reads"
+    );
+
+    let stats_error = fetch_stats(State(state)).await;
+    assert!(
+        matches!(stats_error, Err(ApiError::Unavailable(_))),
+        "durable source gaps must remain unavailable for legacy stats reads"
     );
 }
 

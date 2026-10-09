@@ -92,6 +92,11 @@
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
 
+## Compatibility and Migration Records
+
+- Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
+- SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
+
 ## Approved Recovery Boundary
 
 - A Summary-affecting terminal transaction appends one compact descriptor in

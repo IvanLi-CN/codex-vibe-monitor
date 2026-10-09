@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Install the pending Summary archive partial index and repair missing invocation Summary rollups in bounded, additive transactions.",
+    "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "The archive_batches optimizer index plus existing hourly_rollup_archive_replay markers and invocation_rollup_hourly derived rows used by Summary recovery.",
+    "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
+      "to_program_version": "PR #1097 candidate.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "During ensure_schema, create the partial idx_archive_batches_pending_summary_rollup_order index on existing archive_batches columns for completed non-live-mirror codex_invocations. CREATE INDEX IF NOT EXISTS makes installation idempotent; the index is optimizer-only and does not alter business rows.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "After selecting at most 128 unmarked archive batches, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit the replay markers and rollup writes in one SQLite transaction. The additive bounded pass does not clear a shared bucket, write an allocator cursor, or deploy anything.",
+        "order": 2,
+        "depends_on": [
+          "ddl-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "sqlite_master and EXPLAIN QUERY PLAN show the partial index",
+      "Replay-marker count and invocation_rollup_hourly totals advance together after each committed bounded pass",
+      "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass"
+    ],
+    "pause_points": [
+      "After ensure_schema commits the index and before background repair starts",
+      "After each bounded archive-repair transaction; a 128-batch boundary is a safe re-entry point"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; an older reader may ignore the optional index and continues using the existing table representations",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version; a failed bounded transaction rolls back its marker and rollup writes, and the next run selects the still-unmarked archive batch",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "The public API remains nonbreaking and candidate-written state uses existing representations readable by supported earlier same-Minor readers.",
+        "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
+        "The bounded archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
+        "A source Summary gap remains unavailable while a terminal in-memory gap is explicitly degraded, for both HTTP and Summary SSE.",
+        "No old-version allocator writeback or deployment action is part of the migration contract."
+      ]
+    },
+    "minor": {
+      "required_test_evidence": []
+    },
+    "major": {
+      "required_test_evidence": []
+    },
+    "completed_evidence": [
+      "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+      "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+      "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+      "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap"
+    ]
+  }
+}

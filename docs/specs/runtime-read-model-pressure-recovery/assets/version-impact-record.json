@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Expose explicit degraded Summary data quality and repair pending invocation archive rollups in bounded background batches.",
+    "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The public change is one optional additive StatsResponse.dataQuality object. The durable change adds an optimizer-only partial index and writes existing replay-marker and hourly-rollup representations; no new row or column encoding is introduced.",
+      "assessed_at": "2026-10-09T10:08:10Z",
+      "evidence": [
+        "docs/adr/0034-summary-delta-degraded-read-path.md",
+        "docs/specs/runtime-read-model-pressure-recovery/SPEC.md",
+        "src/api/slices/settings_models_and_cache.rs",
+        "src/schema.rs"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes."
+      },
+      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. The source-gap path remains unavailable instead of returning an approximate success.",
+      "reassessed_at": "2026-10-09T10:08:10Z",
+      "evidence": [
+        "src/api/slices/invocations_and_summary.rs",
+        "src/api/slices/subscriptions/topic_builders.rs",
+        "src/stats/mod.rs",
+        "src/tests/stateful_sqlite/record_budget.rs",
+        "src/tests/archive_file_io/mod.rs"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation, source-gap fail-closed behavior, index re-entry, and same-bucket repair across the 128-archive boundary.",
+      "verified_at": "2026-10-09T10:08:10Z",
+      "evidence": [
+        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible additive field",
+      "supported_consumer_range": "Existing consumers of the StatsResponse JSON contract, including supported earlier same-Minor clients; healthy payloads retain the prior shape and degraded payloads add optional dataQuality.",
+      "evidence": [
+        "src/api/slices/settings_models_and_cache.rs::StatsResponse",
+        "web/src/lib/api/core-foundation.ts::StatsDataQuality",
+        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
+      "source_program_compatibility_range": "Supported earlier same-Minor readers of the existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations; the partial index is optional optimizer state.",
+      "evidence": [
+        "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
+        "src/stats/mod.rs::backfill_missing_invocation_summary_archive_rollups",
+        "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "PR-1097",
+      "assets/persistent-state-migration-record.json"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "public_api=patch: additive optional field with existing consumer compatibility",
+      "persistent_state=patch: additive optimizer index and existing-table writes readable by earlier same-Minor readers"
+    ]
+  }
+}

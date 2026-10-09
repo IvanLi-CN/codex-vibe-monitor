@@ -18667,6 +18667,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before recording the gap");
+        state
+            .subscription_hub
+            .record_summary_terminal_sequence_gap(913_102)
+            .await;
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("terminal-only Summary gap should retain the last-good payload")
+            .serialize(None, None, None)
+            .expect("serialize degraded Summary payload");
+        let payload: Value = serde_json::from_slice(&payload).expect("Summary payload JSON");
+        assert!(
+            !payload["dataQuality"].is_null(),
+            "terminal-only Summary gap must be visible in the payload quality"
+        );
+
+        state
+            .subscription_hub
+            .record_summary_source_change_gap(913_103)
+            .await;
+        assert!(matches!(
+            summary.build_cached_payload(state).await,
+            Err(ApiError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn hydrated_summary_topic_does_not_replay_unacknowledged_terminal_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),

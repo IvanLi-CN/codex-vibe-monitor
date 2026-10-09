@@ -5257,8 +5257,9 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
         return Ok(());
     }
 
-    let shared_live_cursor =
-        load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    // This query is an archive-count budget, not a complete rollup bucket boundary. Keep the
+    // repair additive so a later bounded pass cannot clear contributions from archives replayed
+    // by an earlier pass in the same hour/source bucket.
     let mut seen_ids = HashSet::new();
     let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     for archive_row in &archive_rows {
@@ -5294,41 +5295,7 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &targets,
-            true,
-        )
-        .await?;
-    }
-    let mut restored_overall_live_rows =
-        load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
-            tx.as_mut(),
-            &cleared_rollup_buckets.overall,
-            InvocationSourceScope::All,
-            shared_live_cursor,
-        )
-        .await?;
-    restored_overall_live_rows.retain(|row| !seen_ids.contains(&row.id));
-    if !restored_overall_live_rows.is_empty() {
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &restored_overall_live_rows,
-            &[HOURLY_ROLLUP_TARGET_INVOCATIONS],
-        )
-        .await?;
-    }
-    let mut restored_failure_live_rows =
-        load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
-            tx.as_mut(),
-            &cleared_rollup_buckets.failures,
-            InvocationSourceScope::All,
-            shared_live_cursor,
-        )
-        .await?;
-    restored_failure_live_rows.retain(|row| !seen_ids.contains(&row.id));
-    if !restored_failure_live_rows.is_empty() {
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &restored_failure_live_rows,
-            &[HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES],
+            false,
         )
         .await?;
     }
