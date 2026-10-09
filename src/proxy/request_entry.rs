@@ -1284,7 +1284,7 @@ pub(crate) fn store_pool_failover_error(
     *last_error = Some(err);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
     pub(crate) attempt_public_id: Option<String>,

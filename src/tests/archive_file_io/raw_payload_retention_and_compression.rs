@@ -4889,9 +4889,6 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         requester_ip: Some("192.168.31.10".to_string()),
         upstream_base_url_host: None,
         request_model: None,
-        upstream_request_model: None,
-        model_mapping_pattern: None,
-        request_summary_json: None,
         group_name_snapshot: Some("prod".to_string()),
         proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
         upstream_account_id: account_id,
@@ -4917,6 +4914,7 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         response_raw_truncated: false,
         response_raw_truncated_reason: None,
         response_content_encoding: None,
+        ..Default::default()
     };
 
     finalize_pool_upstream_request_attempt(
@@ -6028,9 +6026,6 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         request_model: None,
-        upstream_request_model: None,
-        model_mapping_pattern: None,
-        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
@@ -6056,6 +6051,7 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         response_raw_truncated: false,
         response_raw_truncated_reason: None,
         response_content_encoding: None,
+        ..Default::default()
     };
 
     recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending, false, false)
