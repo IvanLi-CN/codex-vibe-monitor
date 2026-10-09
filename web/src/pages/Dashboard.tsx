@@ -43,6 +43,10 @@ export default function DashboardPage() {
     key: string;
     conversationId: string;
   } | null>(null);
+  const [lastSafeConversationRoute, setLastSafeConversationRoute] = useState<{
+    key: string;
+    conversationId: string | null;
+  } | null>(null);
   const [pendingConversationSelection, setPendingConversationSelection] = useState<{
     key: string;
     conversationId: string | null;
@@ -342,8 +346,6 @@ export default function DashboardPage() {
   const conversationRouteReadOnly = !conversationRouteIdentityIsWritable;
   const discardConversationRoutePendingMutations =
     promptCacheConversationKey != null && conversationRouteReadOnly;
-  const keepCompactConversationDrawerMounted =
-    discardConversationRoutePendingMutations && verifiedConversationRoute != null;
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
     verifiedConversationRouteIsActive ||
@@ -351,6 +353,32 @@ export default function DashboardPage() {
     (conversationDataIsComplete &&
       visibleRouteIdentityIsUnique &&
       (promptCacheConversationId == null || routeConversationId === promptCacheConversationId));
+  useEffect(() => {
+    if (promptCacheConversationKey == null) {
+      setLastSafeConversationRoute(null);
+      return;
+    }
+    if (conversationRouteIsSafe) {
+      setLastSafeConversationRoute((current) =>
+        current?.key === promptCacheConversationKey &&
+        current.conversationId === promptCacheConversationId
+          ? current
+          : {
+              key: promptCacheConversationKey,
+              conversationId: promptCacheConversationId,
+            },
+      );
+      return;
+    }
+    setLastSafeConversationRoute((current) =>
+      current?.key === promptCacheConversationKey &&
+      current.conversationId === promptCacheConversationId
+        ? current
+        : null,
+    );
+  }, [conversationRouteIsSafe, promptCacheConversationId, promptCacheConversationKey]);
+  const keepCompactConversationDrawerMounted =
+    discardConversationRoutePendingMutations && lastSafeConversationRoute != null;
 
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();

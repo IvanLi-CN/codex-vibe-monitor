@@ -64,6 +64,7 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
   const confirmedResultRef = useRef<TResult | undefined>(undefined);
   const inFlightRef = useRef<Promise<void> | null>(null);
   const resourceKeyRef = useRef(resourceKey);
+  const confirmedResourceKeyRef = useRef(resourceKeyId(resourceKey));
   const mutateRef = useRef(mutate);
   const onSuccessRef = useRef(onSuccess);
   const onErrorRef = useRef(onError);
@@ -111,6 +112,7 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
         const isLatest = entry.sequence === latestSequenceRef.current;
         if (isLatest) {
           confirmedResultRef.current = result;
+          confirmedResourceKeyRef.current = resourceKeyId(resourceKeyRef.current);
           failedEntryRef.current = null;
           if (mountedRef.current) onSuccessRef.current?.(result, entry.payload);
         }
@@ -226,6 +228,11 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
       setError(null);
       updatePendingState();
     }
+    const currentResourceKey = resourceKeyId(resourceKeyRef.current);
+    if (confirmedResourceKeyRef.current !== currentResourceKey) {
+      confirmedResultRef.current = undefined;
+      return;
+    }
     onRevertRef.current?.(confirmedResultRef.current);
   }, [clearTimer, updatePendingState]);
 
@@ -236,6 +243,7 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
 
   const reconcile = useCallback((result: TResult) => {
     confirmedResultRef.current = result;
+    confirmedResourceKeyRef.current = resourceKeyId(resourceKeyRef.current);
   }, []);
 
   useEffect(() => {

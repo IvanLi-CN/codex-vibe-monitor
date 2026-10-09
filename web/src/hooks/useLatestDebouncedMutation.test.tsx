@@ -259,6 +259,37 @@ describe("useLatestDebouncedMutation", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("does not restore a confirmed result from a previous resource", async () => {
+    const mutate = vi.fn<(payload: string) => Promise<string>>().mockResolvedValue("saved");
+    const onRevert = vi.fn<(result: string | undefined) => void>();
+    const controls: ReturnType<typeof useLatestDebouncedMutation<string, string>>[] = [];
+    let switchResource!: () => void;
+    function ResourceProbe() {
+      const [resource, setResource] = useState("first");
+      switchResource = () => setResource("second");
+      const mutation = useLatestDebouncedMutation({
+        cancelOnResourceChange: true,
+        mutate,
+        onRevert,
+        resourceKey: resource,
+      });
+      controls.push(mutation);
+      return null;
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root?.render(<ResourceProbe />));
+
+    act(() => controls.at(-1)?.schedule("first-draft"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    act(switchResource);
+
+    expect(onRevert).not.toHaveBeenCalled();
+  });
+
   it("retains a failed payload for retry and reverts to the confirmed result", async () => {
     const mutate = vi
       .fn<(payload: string) => Promise<string>>()
