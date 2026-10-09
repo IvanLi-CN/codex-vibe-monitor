@@ -88,6 +88,13 @@ impl SubscriptionTopic {
                             *upstream_account_id,
                             crate::SummaryDeltaGapKind::Terminal,
                         );
+                        if matches!(summary_window, SummaryWindow::Current(_))
+                            && terminal_delta_gap_pending
+                        {
+                            return Err(ApiError::unavailable(anyhow!(
+                                "summary current rank is not proven for the requested selection"
+                            )));
+                        }
                         let mut response = projection.response_for_query_with_rolling_delta(
                             &query,
                             state.config.list_limit_max as i64,

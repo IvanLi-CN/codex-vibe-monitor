@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Expose explicit degraded Summary data quality and repair pending invocation archive rollups in bounded background batches.",
+    "description": "Expose explicit degraded Summary data quality, fail closed for unproven current rank and source gaps, and repair pending invocation archive Summary rollups with SHA-aware replay reconciliation in bounded background batches.",
     "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
     "affected_contracts": [
       "public-api",
@@ -17,8 +17,8 @@
     ],
     "planned": {
       "impact": "patch",
-      "reasoning": "The public change is one optional additive StatsResponse.dataQuality object. The durable change adds an optimizer-only partial index and writes existing replay-marker and hourly-rollup representations; no new row or column encoding is introduced.",
-      "assessed_at": "2026-10-09T10:08:10Z",
+      "reasoning": "The public change is one optional additive StatsResponse.dataQuality object. The durable change adds an optimizer-only partial index and reconciles existing replay-marker and hourly-rollup representations; no new row or column encoding is introduced.",
+      "assessed_at": "2026-10-09T10:54:44Z",
       "evidence": [
         "docs/adr/0034-summary-delta-degraded-read-path.md",
         "docs/specs/runtime-read-model-pressure-recovery/SPEC.md",
@@ -30,27 +30,35 @@
       "impact": "patch",
       "scope_drift": {
         "detected": false,
-        "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes."
+        "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes; the additional fail-closed decisions narrow claims without changing the response schema."
       },
-      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. The source-gap path remains unavailable instead of returning an approximate success.",
-      "reassessed_at": "2026-10-09T10:08:10Z",
+      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. Terminal-journal proof-budget overflow preserves a degraded last-good snapshot, while source-journal loss and an unproven current rank remain unavailable. Blank or NULL replay-marker SHA values remain legacy-readable; nonblank stale SHA values and missing materialized Summary markers re-enter idempotent repair.",
+      "reassessed_at": "2026-10-09T10:54:44Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
+        "src/api/slices/summary_delta_gap.rs",
+        "src/api/slices/subscriptions.rs",
         "src/api/slices/subscriptions/topic_builders.rs",
         "src/stats/mod.rs",
         "src/tests/stateful_sqlite/record_budget.rs",
-        "src/tests/archive_file_io/mod.rs"
+        "src/tests/archive_file_io/mod.rs",
+        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs"
       ]
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation, source-gap fail-closed behavior, index re-entry, and same-bucket repair across the 128-archive boundary.",
-      "verified_at": "2026-10-09T10:08:10Z",
+      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, legacy blank-marker compatibility, stale-marker reopening, materialized-marker repair, and same-bucket repair across the 128-archive boundary.",
+      "verified_at": "2026-10-09T10:54:44Z",
       "evidence": [
         "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+        "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
         "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+        "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
+        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
+        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing"
       ]
     }
   },
@@ -67,12 +75,15 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
+      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank legacy replay-marker SHA values remain readable, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent full repair of the existing rollups. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers of the existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations; the partial index is optional optimizer state.",
       "evidence": [
         "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
         "src/stats/mod.rs::backfill_missing_invocation_summary_archive_rollups",
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+        "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
+        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
+        "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
         "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
       ]
     }

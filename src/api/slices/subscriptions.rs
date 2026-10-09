@@ -54,7 +54,7 @@ const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
 const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
 const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS: usize = 1_024;
-const SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS: usize = 4_096;
+pub(crate) const SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS: usize = 4_096;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -852,6 +852,9 @@ pub(crate) struct DeltaGapProof {
     // A journal cursor and a terminal sequence are different domains. `None` means this proof
     // was created by source-journal compaction and must not be retired by a terminal watermark.
     pub(crate) terminal_sequence: Option<u64>,
+    // A broad proof intentionally clears its concrete terminal sequence. Preserve whether that
+    // broad proof came from source-journal loss so terminal-only overflow can remain degraded.
+    pub(crate) source_gap: bool,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) occurred_at: String,
     pub(crate) row_id: Option<i64>,
@@ -1063,6 +1066,7 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: Some(cursor),
+            source_gap: false,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1076,6 +1080,7 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
+            source_gap: true,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1099,6 +1104,7 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
             terminal_sequence: Some(delta.terminal_sequence),
+            source_gap: false,
             upstream_account_id: delta.upstream_account_id,
             occurred_at: delta.occurred_at.clone(),
             row_id: delta.persisted_row_id,
@@ -1108,15 +1114,23 @@ impl SummaryDeltaJournal {
 
     fn retain_gap_proof(&mut self, proof: DeltaGapProof) {
         if self.gap_proof_budget_exhausted {
+            if proof.source_gap {
+                for existing in &mut self.gap_proofs {
+                    existing.source_gap = true;
+                }
+            }
             return;
         }
         if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
             // Dropping the oldest scoped proof could make an old account/range look exact.
             // Keep one irreversible broad proof until a durable projection consumes the gap.
+            let source_gap =
+                proof.source_gap || self.gap_proofs.iter().any(|existing| existing.source_gap);
             self.gap_proofs.clear();
             self.gap_proofs.push_back(DeltaGapProof {
                 cursor: proof.cursor,
                 terminal_sequence: None,
+                source_gap,
                 upstream_account_id: None,
                 occurred_at: String::new(),
                 row_id: None,
@@ -4546,6 +4560,7 @@ impl SubscriptionHub {
         state.summary_delta_journal.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
+            source_gap: true,
             upstream_account_id,
             occurred_at,
             row_id,
@@ -15726,6 +15741,7 @@ mod tests {
             .expect("source compaction retains a broad proof");
         assert_eq!(proof.cursor, SummaryDeltaCursor(99));
         assert_eq!(proof.terminal_sequence, None);
+        assert!(proof.source_gap);
     }
     #[tokio::test]
     async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {
@@ -15963,6 +15979,19 @@ mod tests {
             .expect("budget exhaustion retains a broad proof");
         assert!(proof.occurred_at.is_empty());
         assert_eq!(proof.upstream_account_id, None);
+        assert!(
+            !proof.source_gap,
+            "terminal-only overflow must remain terminal"
+        );
+
+        journal.note_unknown_source_cursor_gap(9_999);
+        assert!(
+            journal
+                .gap_proofs
+                .front()
+                .is_some_and(|proof| proof.source_gap),
+            "a later source gap must tighten an already broad terminal proof"
+        );
     }
     #[tokio::test]
     async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
@@ -18697,6 +18726,20 @@ mod tests {
         assert!(
             !payload["dataQuality"].is_null(),
             "terminal-only Summary gap must be visible in the payload quality"
+        );
+
+        let current = SubscriptionTopic::SummaryCurrent {
+            window: "current".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: Some(1),
+            upstream_account_id: None,
+        };
+        assert!(
+            matches!(
+                current.build_cached_payload(state.clone()).await,
+                Err(ApiError::Unavailable(_))
+            ),
+            "a terminal gap affecting current rank must remain unavailable"
         );
 
         state

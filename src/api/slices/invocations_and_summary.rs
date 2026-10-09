@@ -5539,6 +5539,9 @@ impl SummaryProjection {
                     "summary all-time account snapshot is not hydrated"
                 )));
             }
+            return Err(ApiError::unavailable(anyhow!(
+                "summary all-time snapshot is not hydrated"
+            )));
         }
         let (candidate_indexes, candidate_records) = match range {
             None if matches!(window, SummaryWindow::Current(_)) => (
@@ -30385,6 +30388,9 @@ pub(crate) async fn fetch_summary(
         account_id,
         SummaryDeltaGapKind::Terminal,
     );
+    if matches!(window, SummaryWindow::Current(_)) && delta_gap_pending {
+        return Err(ApiError::unavailable(anyhow!("current rank unproven")));
+    }
     let delta_overlay_affects_selection = summary_delta_affects_selection(
         projection.as_ref(),
         &deltas,
@@ -33571,6 +33577,10 @@ mod request_compression_query_tests {
             assert_eq!(response.total_count, 1, "{window} response");
             assert_eq!(response.total_tokens, 17, "{window} response");
         }
+        state
+            .subscription_hub
+            .record_summary_terminal_sequence_gap(913_104)
+            .await;
         let all_time = fetch_summary(
             State(state),
             Query(SummaryQuery {
@@ -33872,6 +33882,7 @@ mod request_compression_query_tests {
         let gap = DeltaGapProof {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
+            source_gap: false,
             upstream_account_id: Some(42),
             occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
             row_id: Some(i64::MAX),

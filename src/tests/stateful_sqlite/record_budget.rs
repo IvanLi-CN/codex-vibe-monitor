@@ -119,6 +119,21 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
         Some(StatsDataQualityResponse::summary_delta_journal_pending())
     );
 
+    let current_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(current_error, Err(ApiError::Unavailable(_))),
+        "a terminal gap affecting current rank must remain unavailable"
+    );
+
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("legacy stats should share the degraded memory-only path");
@@ -156,6 +171,40 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
 }
 
 #[tokio::test]
+async fn stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('stats-proof-budget-base', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+    )
+    .bind(db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2)))
+    .execute(&state.pool)
+    .await
+    .expect("seed proof-budget stats snapshot");
+    hydrate_stats_snapshot_for_test(&state).await;
+
+    for sequence in 1..=(SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS as u64 + 1) {
+        state
+            .subscription_hub
+            .record_summary_terminal_sequence_gap(sequence)
+            .await;
+    }
+    state.pool.close().await;
+
+    let Json(stats) = fetch_stats(State(state))
+        .await
+        .expect("terminal-only proof overflow should remain degraded");
+    assert_eq!(
+        stats.data_quality,
+        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+}
+
+#[tokio::test]
 async fn summary_rollup_repair_reads_a_bounded_archive_batch() {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -188,6 +237,45 @@ async fn summary_rollup_repair_reads_a_bounded_archive_batch() {
         .await
         .expect("load bounded archive repair batch");
     assert_eq!(rows.len(), 128);
+}
+
+#[tokio::test]
+async fn summary_rollup_repair_reopens_stale_archive_sha_markers() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let archive_path = "stats-stale-summary-archive.sqlite.gz";
+    sqlx::query(
+        "INSERT INTO archive_batches (
+             dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+         ) VALUES ('codex_invocations', '2026-01', ?1, 'current-hash', 1, 'completed', 'unknown')",
+    )
+    .bind(archive_path)
+    .execute(&state.pool)
+    .await
+    .expect("insert stale Summary archive manifest");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay (
+                 target, dataset, file_path, archive_sha256
+             ) VALUES (?1, 'codex_invocations', ?2, 'stale-hash')",
+        )
+        .bind(target)
+        .bind(archive_path)
+        .execute(&state.pool)
+        .await
+        .expect("insert stale Summary replay marker");
+    }
+
+    let rows = load_invocation_archives_missing_summary_rollup_markers(&state.pool)
+        .await
+        .expect("load stale Summary archive marker");
+    assert_eq!(rows.len(), 1);
+    state.pool.close().await;
 }
 
 #[tokio::test]

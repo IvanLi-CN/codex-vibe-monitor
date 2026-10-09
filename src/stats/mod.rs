@@ -1727,7 +1727,7 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                     FROM hourly_rollup_archive_replay AS replay
                     WHERE replay.target = ?2
                       AND replay.dataset = 'codex_invocations'
-                      AND replay.file_path = batches.file_path
+                      AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_overall,
@@ -1737,7 +1737,7 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                     FROM hourly_rollup_archive_replay AS replay
                     WHERE replay.target = ?3
                       AND replay.dataset = 'codex_invocations'
-                      AND replay.file_path = batches.file_path
+                      AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_failures
@@ -1751,14 +1751,14 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                 FROM hourly_rollup_archive_replay AS replay
                 WHERE replay.target = ?2
                   AND replay.dataset = 'codex_invocations'
-                  AND replay.file_path = batches.file_path
+                  AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
             )
             OR NOT EXISTS(
                 SELECT 1
                 FROM hourly_rollup_archive_replay AS replay
                 WHERE replay.target = ?3
                   AND replay.dataset = 'codex_invocations'
-                  AND replay.file_path = batches.file_path
+                  AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
             )
           )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC LIMIT 128
@@ -5135,20 +5135,33 @@ pub(crate) async fn invocation_summary_repair_live_cursor_state_tx(
 }
 
 pub(crate) async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Result<()> {
+    repair_invocation_summary_rollups_with_mode(pool, false).await
+}
+async fn repair_invocation_summary_rollups_with_mode(
+    pool: &Pool<Sqlite>,
+    force_rebuild: bool,
+) -> Result<()> {
     let (repair_marker_done, repair_live_cursor_exists, shared_live_cursor, repair_live_cursor) =
         invocation_summary_repair_live_cursor_state(pool).await?;
-    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor {
+    let repair_complete =
+        repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor;
+    if !force_rebuild && repair_complete {
         return Ok(());
     }
-
     let mut tx = pool.begin().await?;
     let (repair_marker_done, repair_live_cursor_exists, shared_live_cursor, repair_live_cursor) =
         invocation_summary_repair_live_cursor_state_tx(tx.as_mut()).await?;
-    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor {
+    let repair_complete =
+        repair_marker_done && repair_live_cursor_exists && repair_live_cursor >= shared_live_cursor;
+    if !force_rebuild && repair_complete {
         tx.rollback().await?;
         return Ok(());
     }
-    if repair_marker_done && repair_live_cursor_exists && repair_live_cursor < shared_live_cursor {
+    if !force_rebuild
+        && repair_marker_done
+        && repair_live_cursor_exists
+        && repair_live_cursor < shared_live_cursor
+    {
         save_hourly_rollup_live_progress_tx(
             tx.as_mut(),
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
@@ -5158,7 +5171,6 @@ pub(crate) async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Re
         tx.commit().await?;
         return Ok(());
     }
-
     let archive_rows = load_completed_invocation_archive_paths(tx.as_mut()).await?;
     let preserve_materialized_archives = archive_rows.iter().any(|archive_row| {
         archive_row.historical_rollups_materialized_at.is_some()
@@ -5241,22 +5253,43 @@ pub(crate) async fn repair_invocation_summary_rollups(pool: &Pool<Sqlite>) -> Re
     tx.commit().await?;
     Ok(())
 }
-
+async fn summary_rollup_backfill_requires_full_repair(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(SELECT 1 FROM archive_batches AS batches WHERE batches.dataset = 'codex_invocations' AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' AND (EXISTS(SELECT 1 FROM hourly_rollup_archive_replay AS replay
+            WHERE replay.target IN (?2, ?3) AND replay.dataset = batches.dataset AND replay.file_path = batches.file_path
+              AND TRIM(replay.archive_sha256) <> '' AND replay.archive_sha256 IS NOT batches.sha256)
+            OR (batches.historical_rollups_materialized_at IS NOT NULL AND (SELECT COUNT(*) FROM hourly_rollup_archive_replay AS replay
+              WHERE replay.target IN (?2, ?3) AND replay.dataset = batches.dataset AND replay.file_path = batches.file_path
+                AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256) < 2)))
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_one(executor)
+    .await?
+        != 0)
+}
 pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
+    if summary_rollup_backfill_requires_full_repair(pool).await? {
+        repair_invocation_summary_rollups_with_mode(pool, true).await?;
+    }
     let archive_rows = load_invocation_archives_missing_summary_rollup_markers(pool).await?;
     if archive_rows.is_empty() {
         return Ok(());
     }
-
     let mut tx = pool.begin().await?;
     let archive_rows = load_invocation_archives_missing_summary_rollup_markers(tx.as_mut()).await?;
     if archive_rows.is_empty() {
         tx.rollback().await?;
         return Ok(());
     }
-
     // This query is an archive-count budget, not a complete rollup bucket boundary. Keep the
     // repair additive so a later bounded pass cannot clear contributions from archives replayed
     // by an earlier pass in the same hour/source bucket.

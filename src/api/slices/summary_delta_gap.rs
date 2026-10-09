@@ -18,8 +18,8 @@ pub(crate) fn summary_delta_gap_affects_selection(
 ) -> bool {
     let gap_matches = |gap: &DeltaGapProof| match gap_kind {
         SummaryDeltaGapKind::Any => true,
-        SummaryDeltaGapKind::Source => gap.terminal_sequence.is_none(),
-        SummaryDeltaGapKind::Terminal => gap.terminal_sequence.is_some(),
+        SummaryDeltaGapKind::Source => gap.source_gap,
+        SummaryDeltaGapKind::Terminal => !gap.source_gap,
     };
     if let SummaryWindow::Current(limit) = window {
         return gaps.iter().any(|gap| {
