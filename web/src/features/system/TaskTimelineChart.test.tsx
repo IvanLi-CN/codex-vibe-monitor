@@ -474,6 +474,38 @@ describe("TaskTimelineChart", () => {
     expect(host?.textContent).toContain("结果：失败");
   });
 
+  it("refreshes focused execution details immediately after a revision", async () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const running = {
+      ...segment("focused-execution", nowMs - 120_000, nowMs - 1_000),
+      status: "running",
+      finishedAt: null,
+      durationMs: null,
+      revision: 1,
+    } satisfies TaskTimelineSegment;
+    const { render } = renderChart({ nowMs, executions: [running] });
+    const bar = host?.querySelector<SVGGElement>('g[role="button"]');
+    if (!bar) throw new Error("Focused execution bar is missing");
+    act(() => bar.focus());
+    await settleDeferralDetail();
+    expect(bar.getAttribute("aria-label")).toContain("结果：未知");
+
+    render(nowMs, {
+      executions: [
+        {
+          ...running,
+          status: "success",
+          finishedAt: new Date(nowMs - 500).toISOString(),
+          lastObservedAt: new Date(nowMs - 500).toISOString(),
+          durationMs: 119_500,
+          revision: 2,
+        },
+      ],
+    });
+    expect(bar.getAttribute("aria-label")).toContain("结束：");
+    expect(bar.getAttribute("aria-label")).toContain("结果：成功");
+  });
+
   it("refreshes the static window when a new historical snapshot arrives", () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const { render } = renderChart({ nowMs });

@@ -377,11 +377,20 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
   const sorted = [...indexedItems].sort(
     (left, right) => left.startMs - right.startMs || left.order - right.order,
   );
+  return buildDeferralIndexFromSorted(sorted, items);
+}
+
+function buildDeferralIndexFromSorted(
+  sorted: PositionedDeferral[],
+  allItems: PositionedDeferral[] = sorted,
+  sortedEnds?: number[],
+): DeferralIndex {
   const starts = sorted.map((item) => item.startMs);
-  const endSorted = [...sorted].sort(
-    (left, right) => left.endMs - right.endMs || left.order - right.order,
-  );
-  const ends = endSorted.map((item) => item.endMs);
+  const ends =
+    sortedEnds ??
+    [...sorted]
+      .sort((left, right) => left.endMs - right.endMs || left.order - right.order)
+      .map((item) => item.endMs);
   const prefixMaxEnd: number[] = [];
   let maxEnd = Number.NEGATIVE_INFINITY;
   for (const item of sorted) {
@@ -395,7 +404,7 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
     ends,
     prefixMaxEnd,
     overlapCounts,
-    byId: new Map(items.map((item) => [item.segment.segmentId, item])),
+    byId: new Map(allItems.map((item) => [item.segment.segmentId, item])),
   };
 }
 
@@ -425,10 +434,13 @@ function buildLiveDeferralIndex(
   if (liveItems.length === 0) return staticIndex;
   const overlapCounts = new Map(staticIndex.overlapCounts);
   const byId = new Map(staticIndex.byId);
-  const dynamic = [...liveItems].sort(
-    (left, right) => left.startMs - right.startMs || left.order - right.order,
+  const dynamic = liveItems;
+  const indexedDynamic = dynamic.filter((item) => item.endMs > item.startMs);
+  const dynamicIndex = buildDeferralIndexFromSorted(
+    indexedDynamic,
+    dynamic,
+    indexedDynamic.map((item) => item.endMs),
   );
-  const dynamicIndex = buildDeferralIndex(dynamic);
   for (const liveItem of dynamic) {
     const staticOverlapCount = countOverlapsInIndex(liveItem, staticIndex);
     overlapCounts.set(
@@ -1111,24 +1123,38 @@ export function TaskTimelineChart({
       )
       .map(({ live: _live, ...item }) => item);
   }, [deferrals, modelWindowStart, runtimeFresh, staticRuntimeBoundary]);
+  const liveDeferralTemplate = useMemo(
+    () =>
+      deferrals
+        .flatMap((segment, order) => {
+          if (segment.status !== "waiting" || segment.finishedAt) return [];
+          return [{ segment, order, rawStartMs: timestamp(segment.startedAt, Number.NaN) }];
+        })
+        .sort((left, right) => {
+          const leftStart = Number.isFinite(left.rawStartMs)
+            ? left.rawStartMs
+            : Number.POSITIVE_INFINITY;
+          const rightStart = Number.isFinite(right.rawStartMs)
+            ? right.rawStartMs
+            : Number.POSITIVE_INFINITY;
+          return leftStart - rightStart || left.order - right.order;
+        }),
+    [deferrals],
+  );
   const livePositionedDeferrals = useMemo<PositionedDeferral[]>(() => {
     if (!runtimeFresh) return [];
-    return deferrals
-      .flatMap((segment, order) => {
-        if (segment.status !== "waiting" || segment.finishedAt) return [];
-        const startMs = timestamp(segment.startedAt, nowMs);
-        return [
-          {
-            segment,
-            startMs: Math.max(windowStart, startMs),
-            endMs: nowMs,
-            order,
-          },
-        ];
+    return liveDeferralTemplate
+      .map(({ segment, order, rawStartMs }) => {
+        const startMs = Number.isFinite(rawStartMs) ? rawStartMs : nowMs;
+        return {
+          segment,
+          startMs: Math.max(windowStart, startMs),
+          endMs: nowMs,
+          order,
+        };
       })
-      .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs)
-      .sort((left, right) => left.startMs - right.startMs || left.order - right.order);
-  }, [deferrals, nowMs, runtimeFresh, windowStart]);
+      .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs);
+  }, [liveDeferralTemplate, nowMs, runtimeFresh, windowStart]);
   const staticDeferralIndex = useMemo(
     () => buildDeferralIndex(staticPositionedDeferrals),
     [staticPositionedDeferrals],
