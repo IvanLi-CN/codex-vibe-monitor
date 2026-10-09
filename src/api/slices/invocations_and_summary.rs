@@ -37087,7 +37087,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof() {
+    async fn summary_projection_refresh_rejects_legacy_source_gap() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -37139,12 +37139,9 @@ mod request_compression_query_tests {
             }),
         )
         .await;
-        let Json(affected) = affected
-            .expect("a Summary Delta proof gap should serve the last-good range as degraded");
-        assert_eq!(affected.total_count, 2);
-        assert_eq!(
-            affected.data_quality,
-            Some(StatsDataQualityResponse::summary_delta_journal_pending())
+        assert!(
+            matches!(affected, Err(ApiError::Unavailable(_))),
+            "a scoped legacy source gap must remain unavailable for its affected historical range"
         );
         state.pool.close().await;
     }

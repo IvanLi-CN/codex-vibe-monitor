@@ -19366,10 +19366,28 @@ mod tests {
             limit: None,
             upstream_account_id: None,
         };
-        assert!(matches!(
-            summary.build_cached_payload(state.clone()).await,
-            Err(ApiError::Unavailable(_))
-        ));
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("rolling terminal overflow must retain a degraded Summary payload")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas.clone(),
+                }),
+            )
+            .expect("serialize the degraded Summary payload");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+        assert_eq!(
+            payload["dataQuality"],
+            serde_json::to_value(StatsDataQualityResponse::summary_delta_journal_pending())
+                .expect("serialize Summary data quality")
+        );
 
         hydrate_summary_snapshots(state.as_ref())
             .await
