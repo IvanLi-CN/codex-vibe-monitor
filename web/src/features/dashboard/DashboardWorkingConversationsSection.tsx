@@ -4723,7 +4723,7 @@ export function DashboardWorkingConversationsSection({
       ),
     [cards, conversationSort],
   );
-  const cardAnchorKeys = useMemo(() => {
+  const cardKeys = useMemo(() => {
     const promptCacheKeyCounts = new Map<string, number>();
     for (const card of sortedCards) {
       promptCacheKeyCounts.set(
@@ -4732,26 +4732,28 @@ export function DashboardWorkingConversationsSection({
       );
     }
     const compositeOccurrences = new Map<string, number>();
-    const keys = new Map<DashboardWorkingConversationCardModel, string>();
+    const keys = new Map<
+      DashboardWorkingConversationCardModel,
+      { anchorKey: string; reactKey: string }
+    >();
     for (const card of sortedCards) {
-      if (promptCacheKeyCounts.get(card.promptCacheKey) === 1) {
-        keys.set(card, JSON.stringify([card.promptCacheKey]));
-        continue;
-      }
       const compositeIdentity = buildDashboardWorkingConversationCardIdentity(
         card.promptCacheKey,
         card.conversationId,
       );
       const occurrence = compositeOccurrences.get(compositeIdentity) ?? 0;
       compositeOccurrences.set(compositeIdentity, occurrence + 1);
-      keys.set(
-        card,
-        buildDashboardWorkingConversationCardAnchorKey(
-          card.promptCacheKey,
-          card.conversationId,
-          occurrence,
-        ),
-      );
+      keys.set(card, {
+        reactKey: JSON.stringify([card.promptCacheKey, card.conversationId, occurrence]),
+        anchorKey:
+          promptCacheKeyCounts.get(card.promptCacheKey) === 1
+            ? JSON.stringify([card.promptCacheKey])
+            : buildDashboardWorkingConversationCardAnchorKey(
+                card.promptCacheKey,
+                card.conversationId,
+                occurrence,
+              ),
+      });
     }
     return keys;
   }, [sortedCards]);
@@ -5873,11 +5875,12 @@ export function DashboardWorkingConversationsSection({
                           card.currentInvocation.tone,
                           card.currentInvocation.displayStatus,
                         );
-                        const cardIdentity = buildDashboardWorkingConversationCardIdentity(
-                          card.promptCacheKey,
-                          card.conversationId,
-                        );
-                        const cardAnchorKey = cardAnchorKeys.get(card) ?? cardIdentity;
+                        const cardKey = cardKeys.get(card);
+                        const cardIdentity =
+                          cardKey?.reactKey ??
+                          JSON.stringify([card.promptCacheKey, card.conversationId, 0]);
+                        const cardAnchorKey =
+                          cardKey?.anchorKey ?? JSON.stringify([card.promptCacheKey]);
                         const canOpenConversation =
                           onOpenConversation != null &&
                           !selectionModeEnabled &&

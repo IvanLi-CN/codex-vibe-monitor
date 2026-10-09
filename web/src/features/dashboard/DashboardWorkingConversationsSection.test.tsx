@@ -2812,6 +2812,45 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(scrollBy).toHaveBeenCalledWith(0, 60);
   });
 
+  it("keeps exactly duplicate composite identities free of React key warnings", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-duplicate-composite",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-duplicate-composite-a",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-composite" },
+        ),
+        createConversation(
+          "pck-duplicate-composite",
+          [
+            createPreview({
+              id: 2,
+              invokeId: "invoke-duplicate-composite-b",
+              occurredAt: "2026-04-04T10:03:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-composite" },
+        ),
+      ]),
+    );
+
+    expect(
+      consoleError.mock.calls.some((args) =>
+        args.some((value) => String(value).includes("same key")),
+      ),
+    ).toBe(false);
+  });
+
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
     upstreamAccountActivityMock.data = {
       range: "today",
