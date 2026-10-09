@@ -5178,9 +5178,10 @@ export function PromptCacheConversationTable({
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(
-    null,
-  );
+  const [historyDrawerSelection, setHistoryDrawerSelection] = useState<{
+    promptCacheKey: string;
+    conversationId?: string | null;
+  } | null>(null);
   const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] = useState<string[]>(
     [],
   );
@@ -5374,7 +5375,7 @@ export function PromptCacheConversationTable({
 
   const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
-    setHistoryDrawerPromptCacheKey(null);
+    setHistoryDrawerSelection(null);
     onOpenUpstreamAccount?.(
       Math.trunc(Number(account.upstreamAccountId)),
       resolveUpstreamAccountLabel(account, fallbackAccountLabel),
@@ -5382,16 +5383,19 @@ export function PromptCacheConversationTable({
   };
   const openAccountDrawerFromHistory = useCallback(
     (accountId: number, accountLabel: string) => {
-      setHistoryDrawerPromptCacheKey(null);
+      setHistoryDrawerSelection(null);
       onOpenUpstreamAccount?.(accountId, accountLabel);
     },
     [onOpenUpstreamAccount],
   );
-  const openHistoryDrawer = (promptCacheKey: string) => {
-    setHistoryDrawerPromptCacheKey(promptCacheKey);
+  const openHistoryDrawer = (conversation: PromptCacheConversation) => {
+    setHistoryDrawerSelection({
+      promptCacheKey: conversation.promptCacheKey,
+      conversationId: conversation.conversationId,
+    });
   };
   const closeHistoryDrawer = () => {
-    setHistoryDrawerPromptCacheKey(null);
+    setHistoryDrawerSelection(null);
   };
   const togglePromptCachePreview = (promptCacheKey: string) => {
     if (!isExpansionControlled) {
@@ -5489,7 +5493,7 @@ export function PromptCacheConversationTable({
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={previewLabels.historyAction}
-                        onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
+                        onClick={() => openHistoryDrawer(conversation)}
                       >
                         <AppIcon name="account-details-outline" className="h-4 w-4" aria-hidden />
                       </button>
@@ -5633,7 +5637,7 @@ export function PromptCacheConversationTable({
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={previewLabels.historyAction}
-                            onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
+                            onClick={() => openHistoryDrawer(conversation)}
                           >
                             <AppIcon
                               name="account-details-outline"
@@ -5727,8 +5731,9 @@ export function PromptCacheConversationTable({
       </div>
       {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
       <PromptCacheConversationHistoryDrawer
-        open={historyDrawerPromptCacheKey != null}
-        conversationKey={historyDrawerPromptCacheKey}
+        open={historyDrawerSelection != null}
+        conversationKey={historyDrawerSelection?.promptCacheKey ?? null}
+        conversationId={historyDrawerSelection?.conversationId}
         onClose={closeHistoryDrawer}
         t={t}
         onOpenUpstreamAccount={openAccountDrawerFromHistory}

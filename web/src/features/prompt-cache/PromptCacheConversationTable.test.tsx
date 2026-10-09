@@ -1241,6 +1241,7 @@ describe("PromptCacheConversationTable", () => {
       conversations: [
         createConversation({
           promptCacheKey: "pck-history",
+          conversationId: "persisted-history",
           requestCount: 3,
           totalTokens: 2400,
           totalCost: 0.51,
@@ -1262,6 +1263,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("对话详情");
     expect(document.body.textContent).toContain("对话调用总览");
     await clickDrawerTab("调用");
+    expect(document.body.textContent).toContain("persisted-history");
 
     expect(apiMocks.fetchInvocationRecords).not.toHaveBeenCalled();
 
