@@ -751,20 +751,22 @@ impl DiagnosticContext {
                     root.set_attribute(KeyValue::new(name, value.as_secs_f64() * 1000.0));
                 }
             }
-            for resource in Resource::ALL {
-                let stats = waits[resource.index()];
-                root.set_attribute(KeyValue::new(
-                    WAIT_COUNT_KEYS[resource.index()],
-                    stats.count as i64,
-                ));
-                root.set_attribute(KeyValue::new(
-                    WAIT_SUM_KEYS[resource.index()],
-                    stats.sum.as_secs_f64() * 1000.0,
-                ));
-                root.set_attribute(KeyValue::new(
-                    WAIT_MAX_KEYS[resource.index()],
-                    stats.max.as_secs_f64() * 1000.0,
-                ));
+            if detailed {
+                for resource in Resource::ALL {
+                    let stats = waits[resource.index()];
+                    root.set_attribute(KeyValue::new(
+                        WAIT_COUNT_KEYS[resource.index()],
+                        stats.count as i64,
+                    ));
+                    root.set_attribute(KeyValue::new(
+                        WAIT_SUM_KEYS[resource.index()],
+                        stats.sum.as_secs_f64() * 1000.0,
+                    ));
+                    root.set_attribute(KeyValue::new(
+                        WAIT_MAX_KEYS[resource.index()],
+                        stats.max.as_secs_f64() * 1000.0,
+                    ));
+                }
             }
             root.end_with_timestamp(self.0.utc + at);
         }
