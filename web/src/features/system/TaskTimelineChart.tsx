@@ -77,6 +77,7 @@ type DeferralRenderGroup = {
 type DeferralIndex = {
   sorted: PositionedDeferral[];
   starts: number[];
+  ends: number[];
   prefixMaxEnd: number[];
   overlapCounts: Map<string, number>;
   byId: Map<string, PositionedDeferral>;
@@ -390,6 +391,7 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
   return {
     sorted,
     starts,
+    ends,
     prefixMaxEnd,
     overlapCounts,
     byId: new Map(sorted.map((item) => [item.segment.segmentId, item])),
@@ -425,20 +427,23 @@ function buildLiveDeferralIndex(
   const dynamic = [...liveItems].sort(
     (left, right) => left.startMs - right.startMs || left.order - right.order,
   );
-  const dynamicOverlapCounts = buildOverlapCounts(dynamic);
+  const dynamicIndex = buildDeferralIndex(dynamic);
   for (const liveItem of dynamic) {
-    const staticOverlaps = overlappingDeferralsInIndex(liveItem, staticIndex);
+    const staticOverlapCount = countOverlapsInIndex(liveItem, staticIndex);
     overlapCounts.set(
       liveItem.segment.segmentId,
-      staticOverlaps.length + (dynamicOverlapCounts.get(liveItem.segment.segmentId) ?? 0),
+      staticOverlapCount + (dynamicIndex.overlapCounts.get(liveItem.segment.segmentId) ?? 0),
     );
-    for (const staticItem of staticOverlaps) {
+    byId.set(liveItem.segment.segmentId, liveItem);
+  }
+  for (const staticItem of staticIndex.sorted) {
+    const liveOverlapCount = countOverlapsInIndex(staticItem, dynamicIndex);
+    if (liveOverlapCount > 0) {
       overlapCounts.set(
         staticItem.segment.segmentId,
-        (overlapCounts.get(staticItem.segment.segmentId) ?? 0) + 1,
+        (overlapCounts.get(staticItem.segment.segmentId) ?? 0) + liveOverlapCount,
       );
     }
-    byId.set(liveItem.segment.segmentId, liveItem);
   }
   return {
     ...staticIndex,
@@ -447,6 +452,13 @@ function buildLiveDeferralIndex(
     dynamic,
     base: staticIndex,
   };
+}
+
+function countOverlapsInIndex(item: PositionedDeferral, index: DeferralIndex): number {
+  const startsBeforeEnd = lowerBound(index.starts, item.endMs);
+  const endsAtOrBeforeStart = upperBound(index.ends, item.startMs);
+  const self = index.byId.has(item.segment.segmentId) ? 1 : 0;
+  return Math.max(0, startsBeforeEnd - endsAtOrBeforeStart - self);
 }
 
 function overlappingDeferralsInIndex(

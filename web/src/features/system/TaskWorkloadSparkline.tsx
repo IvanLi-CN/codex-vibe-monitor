@@ -672,6 +672,25 @@ export function TaskWorkloadSparkline({
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [backgroundMode, detailsOpen]);
+  useEffect(() => {
+    if (!backgroundMode || !detailsOpen || typeof MutationObserver === "undefined") return;
+    const button = detailsButtonRef.current;
+    const row = button?.closest("[data-task-catalog-row]");
+    if (!button || !row) return;
+    const closeIfHidden = () => {
+      const rowHidden =
+        row.hasAttribute("hidden") ||
+        row.getAttribute("aria-hidden") === "true" ||
+        getComputedStyle(row).display === "none";
+      if (rowHidden || button.getClientRects().length === 0) {
+        setDetailsOpen(false);
+      }
+    };
+    closeIfHidden();
+    const observer = new MutationObserver(closeIfHidden);
+    observer.observe(row, { attributes: true, attributeFilter: ["hidden", "class", "style"] });
+    return () => observer.disconnect();
+  }, [backgroundMode, detailsOpen]);
   const backgroundDetailsPanel =
     backgroundMode && detailsOpen && detailsPosition && typeof document !== "undefined"
       ? createPortal(

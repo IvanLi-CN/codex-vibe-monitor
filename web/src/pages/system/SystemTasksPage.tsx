@@ -614,6 +614,7 @@ export default function SystemTasksPage(): JSX.Element {
             {tasks.map((task) => (
               <div
                 key={task.taskKey}
+                data-task-catalog-row={task.taskKey}
                 hidden={!visibleTaskKeys.has(task.taskKey)}
                 className={`relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center ${visibleTaskKeys.has(task.taskKey) ? "" : "!hidden"}`}
               >

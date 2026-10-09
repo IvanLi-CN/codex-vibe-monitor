@@ -3,10 +3,12 @@ import type { ReactNode } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { managedTasks } from "../../demo/handlers";
 import type { ManagedTask, TaskWorkloadTrend } from "../../lib/api";
+import { buildTopicDescriptor, getTopicDescriptorKey } from "../../lib/sse";
 import {
   StorybookPageEnvironment,
   type StorybookRequestHandler,
 } from "../../storybook/storybookPageHelpers";
+import { getStorybookPageSseController } from "../../storybook/storybookPageSse";
 import { TaskWorkloadSparkline } from "./TaskWorkloadSparkline";
 import { buildRetentionWorkloadFixture } from "./taskWorkloadFixtures";
 
@@ -113,7 +115,10 @@ export const Loaded: Story = {
 export const BackgroundRow: Story = {
   args: { task, dark: false, mode: "background" },
   render: (args) => (
-    <div className="relative grid gap-3 bg-base-100 px-4 py-4 md:grid-cols-5">
+    <div
+      data-task-catalog-row={args.task.taskKey}
+      className="relative grid gap-3 bg-base-100 px-4 py-4 md:grid-cols-5"
+    >
       <TaskWorkloadSparkline {...args} />
       <h3 className="relative z-10 font-semibold">{args.task.title}</h3>
     </div>
@@ -127,6 +132,53 @@ export const BackgroundRow: Story = {
     await expect(
       within(canvasElement.ownerDocument.body).getByRole("dialog", { name: /运行计量详情/ }),
     ).toHaveTextContent("触发时间：");
+    canvasElement.querySelector<HTMLElement>("[data-task-catalog-row]")?.setAttribute("hidden", "");
+    await waitFor(() =>
+      expect(
+        within(canvasElement.ownerDocument.body).queryByRole("dialog", { name: /运行计量详情/ }),
+      ).toBeNull(),
+    );
+  },
+};
+
+export const IgnoresSameRevisionWorkloadTopic: Story = {
+  args: { task, dark: false },
+  tags: ["test"],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await waitFor(() => expect(canvas.getByText(/P /)).toBeVisible());
+    await userEvent.click(canvas.getByRole("button", { name: "查看运行计量" }));
+    const body = within(canvasElement.ownerDocument.body);
+    const dialog = body.getByRole("dialog", { name: /运行计量详情/ });
+    await expect(dialog).toHaveTextContent("结果：成功");
+
+    const controller = getStorybookPageSseController();
+    if (!controller) throw new Error("Storybook SSE controller is unavailable");
+    const topic = buildTopicDescriptor("system.managed-tasks.workload", {
+      taskKey: task.taskKey,
+      windowHours: "24",
+      limit: "200",
+    });
+    const sameRevision = {
+      ...fixture,
+      coverage: "same-revision update",
+      samples: fixture.samples.map((sample, index) =>
+        index === fixture.samples.length - 1
+          ? { ...sample, status: "failed", reason: "same-revision update" }
+          : sample,
+      ),
+    } satisfies TaskWorkloadTrend;
+    controller.emit({
+      type: "live",
+      topic,
+      topicKey: getTopicDescriptorKey(topic),
+      schemaEpoch: "system.managed-tasks.workload/v1",
+      cursor: 2,
+      payload: sameRevision,
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 80));
+    await expect(dialog).toHaveTextContent("结果：成功");
+    await expect(dialog).not.toHaveTextContent("same-revision update");
   },
 };
 

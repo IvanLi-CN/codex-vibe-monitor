@@ -342,6 +342,35 @@ describe("TaskTimelineChart", () => {
     expect(firstBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
   });
 
+  it("counts mixed dense static and live deferrals without pairwise render work", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const closedDeferrals = Array.from({ length: 300 }, (_, index) =>
+      deferral(
+        `closed-dense-${index}`,
+        nowMs - 60_000 + index * 10,
+        nowMs - 1_000,
+        "resource_busy",
+      ),
+    );
+    const openDeferrals = Array.from({ length: 300 }, (_, index) => ({
+      ...deferral(
+        `live-dense-${index}`,
+        nowMs - 50_000 + index * 10,
+        nowMs - 1_000,
+        "pressure_cooldown",
+      ),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    }));
+    renderChart({ nowMs, executions: [...closedDeferrals, ...openDeferrals] });
+
+    const staticBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="closed-dense-0"]');
+    const liveBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="live-dense-0"]');
+    expect(staticBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+    expect(liveBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+  });
+
   it("keeps high-density deferral details lazy and refreshes a focused interval", async () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const dense = Array.from({ length: 1_000 }, (_, index) => {
