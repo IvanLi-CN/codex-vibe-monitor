@@ -8,6 +8,7 @@ export type DemoScene =
   | "runtime-pressure-deferred"
   | "runtime-pressure-degraded"
   | "runtime-pressure-accounting-error"
+  | "task-timeline-pressure-dense"
   | "system-raw-inventory-preparing"
   | "system-storage-preparing"
   | "system-storage-status-unavailable"
@@ -27,6 +28,7 @@ const SCENE_VALUES = new Set<DemoScene>([
   "runtime-pressure-deferred",
   "runtime-pressure-degraded",
   "runtime-pressure-accounting-error",
+  "task-timeline-pressure-dense",
   "system-raw-inventory-preparing",
   "system-storage-preparing",
   "system-storage-status-unavailable",
