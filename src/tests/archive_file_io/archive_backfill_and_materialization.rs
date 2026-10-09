@@ -63,6 +63,34 @@ async fn insert_summary_archive_snapshot_proof(
         .expect("commit Summary Snapshot final proof");
 }
 
+async fn write_valid_invocation_archive(path: &Path, invoke_id: &str) {
+    let source_path = PathBuf::from(format!("{}.source.sqlite", path.display()));
+    let _ = fs::remove_file(&source_path);
+    if let Some(parent) = source_path.parent() {
+        fs::create_dir_all(parent).expect("create invocation archive source directory");
+    }
+    fs::File::create(&source_path).expect("create invocation archive source file");
+    let archive_pool = SqlitePool::connect(&test_sqlite_url_for_path(&source_path))
+        .await
+        .expect("open invocation archive source sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create invocation archive source schema");
+    sqlx::query(
+        "INSERT INTO codex_invocations (id, invoke_id, occurred_at, raw_response, created_at) \
+         VALUES (1, ?1, '2026-01-15 08:15:00', '{}', '2026-01-15 08:15:00')",
+    )
+    .bind(invoke_id)
+    .execute(&archive_pool)
+    .await
+    .expect("insert invocation archive source row");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&source_path, path).expect("compress invocation archive source");
+    let _ = fs::remove_file(source_path);
+}
+
 #[tokio::test]
 async fn legacy_summary_snapshot_backfill_materializes_v2_before_raw_source_loss() {
     let (pool, _config, temp_dir) =
@@ -3785,10 +3813,23 @@ async fn usage_breakdown_priority_materialization_drains_backlog_without_clearin
 async fn usage_breakdown_repair_skips_quarantined_prefix_and_reaches_verified_archive() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("breakdown-repair-bounded-prefix").await;
+    let verified_archive_path = temp_dir.join("verified-prefix-65.sqlite.gz");
+    write_valid_invocation_archive(&verified_archive_path, "verified-prefix").await;
+    let verified_archive_path = verified_archive_path.to_string_lossy().to_string();
+    let verified_archive_sha =
+        sha256_hex_file(Path::new(&verified_archive_path)).expect("hash verified archive");
     for id in 1..=65_i64 {
-        let file_path = temp_dir.join(format!("archive-{id}.sqlite.gz"));
-        let file_path = file_path.to_string_lossy().to_string();
-        let sha256 = format!("sha-{id}");
+        let (file_path, sha256) = if id == 65 {
+            (verified_archive_path.clone(), verified_archive_sha.clone())
+        } else {
+            (
+                temp_dir
+                    .join(format!("archive-{id}.sqlite.gz"))
+                    .to_string_lossy()
+                    .to_string(),
+                format!("sha-{id}"),
+            )
+        };
         sqlx::query(
             r#"
             INSERT INTO archive_batches (
@@ -3850,10 +3891,23 @@ async fn usage_breakdown_repair_skips_quarantined_prefix_and_reaches_verified_ar
 async fn usage_breakdown_repair_prioritizes_recoverable_candidates_over_stale_prefix() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("breakdown-repair-stale-prefix").await;
+    let verified_archive_path = temp_dir.join("verified-stale-prefix-65.sqlite.gz");
+    write_valid_invocation_archive(&verified_archive_path, "verified-stale-prefix").await;
+    let verified_archive_path = verified_archive_path.to_string_lossy().to_string();
+    let verified_archive_sha = sha256_hex_file(Path::new(&verified_archive_path))
+        .expect("hash verified stale-prefix archive");
     for id in 1..=65_i64 {
-        let file_path = temp_dir.join(format!("stale-prefix-{id}.sqlite.gz"));
-        let file_path = file_path.to_string_lossy().to_string();
-        let sha256 = format!("current-sha-{id}");
+        let (file_path, sha256) = if id == 65 {
+            (verified_archive_path.clone(), verified_archive_sha.clone())
+        } else {
+            (
+                temp_dir
+                    .join(format!("stale-prefix-{id}.sqlite.gz"))
+                    .to_string_lossy()
+                    .to_string(),
+                format!("current-sha-{id}"),
+            )
+        };
         sqlx::query(
             r#"
             INSERT INTO archive_batches (
@@ -3908,7 +3962,7 @@ async fn usage_breakdown_repair_reaches_recoverable_stale_tail_after_cursor_page
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("breakdown-repair-stale-tail").await;
     let tail_path = temp_dir.join("stale-tail-65.sqlite.gz");
-    fs::write(&tail_path, b"recoverable stale tail archive").expect("write recoverable tail");
+    write_valid_invocation_archive(&tail_path, "recoverable-stale-tail").await;
     let tail_path = tail_path.to_string_lossy().to_string();
     let tail_sha = sha256_hex_file(Path::new(&tail_path)).expect("hash recoverable tail");
 
@@ -4388,6 +4442,23 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
         .execute(&pool)
         .await
         .expect("seed materialized marker repair candidate");
+        if id == 1 {
+            sqlx::query(
+                "INSERT INTO hourly_rollup_archive_replay \
+                 (target, dataset, file_path, archive_sha256) \
+                 VALUES (?1, 'codex_invocations', ?2, 'stale-marker-sha')",
+            )
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+            .bind(
+                temp_dir
+                    .join("materialized-marker-1.sqlite.gz")
+                    .to_string_lossy()
+                    .to_string(),
+            )
+            .execute(&pool)
+            .await
+            .expect("seed stale upstream account archive marker");
+        }
     }
 
     sqlx::query(
@@ -4450,6 +4521,22 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
             "all candidates should be repaired for {target}"
         );
     }
+    let repaired_sha: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = 'codex_invocations' \
+           AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+    .bind(
+        temp_dir
+            .join("materialized-marker-1.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired stale upstream account archive marker");
+    assert_eq!(repaired_sha.as_deref(), Some("materialized-marker-sha-1"));
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -4923,7 +5010,7 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
             .expect("archive fixture has a parent directory"),
     )
     .expect("create archive fixture directory");
-    fs::write(&archive_file, b"initial archive bytes").expect("write initial archive fixture");
+    write_valid_invocation_archive(&archive_file, "initial-archive").await;
     let initial_sha256 = sha256_hex_file(&archive_file).expect("hash initial archive fixture");
 
     sqlx::query(
@@ -4986,7 +5073,69 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
         .expect("matching marker must preserve materialized archive state");
     assert_eq!(untouched, 0);
 
-    fs::write(&archive_file, b"replacement archive bytes").expect("replace archive fixture bytes");
+    let protected_bucket_epoch =
+        crate::stats::summary_rollup_bucket_start_epoch("2026-01-15 08:00:00")
+            .expect("calculate protected archive bucket");
+    sqlx::query(
+        "INSERT INTO upstream_account_usage_breakdown_hourly \
+         (bucket_start_epoch, source, upstream_account_key, normalized_model, request_count) \
+         VALUES (?1, 'proxy', '17', 'gpt-5', 1)",
+    )
+    .bind(protected_bucket_epoch)
+    .execute(&pool)
+    .await
+    .expect("seed last-good usage breakdown row");
+
+    fs::write(&archive_file, b"corrupt archive bytes").expect("corrupt archive fixture");
+    let corrupt_sha256 = sha256_hex_file(&archive_file).expect("hash corrupt archive fixture");
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET sha256 = ?1
+        WHERE dataset = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(&corrupt_sha256)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .execute(&pool)
+    .await
+    .expect("publish corrupt archive manifest SHA");
+
+    let blocked = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("unreadable replacement must be deferred");
+    assert_eq!(blocked, 0);
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
+    )
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp for unreadable archive");
+    assert!(materialized_at.is_some());
+    let replay_sha256: Option<String> = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load last-good replay marker");
+    assert_eq!(replay_sha256.as_deref(), Some(initial_sha256.as_str()));
+    let protected_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch = ?1",
+    )
+    .bind(protected_bucket_epoch)
+    .fetch_one(&pool)
+    .await
+    .expect("count last-good usage breakdown rows");
+    assert_eq!(protected_rows, 1);
+
+    write_valid_invocation_archive(&archive_file, "replacement-archive").await;
     let replacement_sha256 =
         sha256_hex_file(&archive_file).expect("hash replacement archive fixture");
     sqlx::query(
@@ -7598,6 +7747,8 @@ async fn usage_breakdown_repair_preserves_retained_live_rows_in_reopened_archive
         .join("archives")
         .join("codex_invocations")
         .join("partial-retained-live.sqlite.gz");
+    write_valid_invocation_archive(&archive_path, "partial-retained-live").await;
+    let archive_sha = sha256_hex_file(&archive_path).expect("hash retained-live archive");
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -7618,7 +7769,7 @@ async fn usage_breakdown_repair_preserves_retained_live_rows_in_reopened_archive
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&coverage_start[..7])
     .bind(archive_path.to_string_lossy().to_string())
-    .bind("partial-retained-live-sha")
+    .bind(&archive_sha)
     .bind(1_i64)
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(&coverage_start)

@@ -3043,6 +3043,23 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
         first_start_sha.is_none(),
         "a legacy replay marker remains unverified even when a completed manifest exists"
     );
+    let repair_progress_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('hourly_rollup_archive_repair_progress')",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect archive repair progress columns");
+    for column in [
+        "cursor_id",
+        "cursor_stale_rank",
+        "cursor_month_key",
+        "cursor_created_at",
+    ] {
+        assert!(
+            repair_progress_columns.iter().any(|name| name == column),
+            "missing repair cursor column {column}"
+        );
+    }
 
     ensure_schema(&pool)
         .await

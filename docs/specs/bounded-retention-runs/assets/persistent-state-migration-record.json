@@ -1,41 +1,47 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "compatibility-verified-staged-delivery",
+  "status": "candidate-evidence-pending-ci",
   "migration": {
-    "description": "Add bounded conversation scan continuation, generation-safe staged statistics, automatic retention catch-up and exact hourly backlog observations.",
-    "release_unit_description": "Bounded retention execution, automatic catch-up and its task observation contract.",
+    "description": "Add archive identity proofs, a resumable bounded usage-breakdown repair cursor, and generation-safe prompt-cache statistics publication.",
+    "release_unit_description": "Incremental maintenance repair and prompt-cache publication fencing.",
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Retention source scope, orphan scan epoch/cursor, generation-checked per-key aggregate staging and source-page cursor, queue mutation generations, nullable run completion, catch-up schedule state, progress evidence and hourly backlog observations.",
-    "storage_implementation": "Additive SQLite structure. Archive/derived correctness remains authoritative in the main database; operational snapshots/results remain in the separate maintenance database.",
+    "description": "Archive replay SHA identities, ordered usage-breakdown repair progress, and prompt-cache staging generation fences.",
+    "storage_implementation": "Additive main-database SQLite columns, one replay identity index, and one repair-progress table. No public API fields or response status values change.",
     "source_compatibility_range": {
-      "from_program_versions": "Existing retention support boundary v2.71.x through observed v2.80.2; v2.71.45 and v2.80.2 are the declared reproducible fixtures, and unobserved intervening snapshots are not claimed as covered.",
-      "to_program_version": "Candidate branch th/retention-catchup-observability from origin/main 6228352d; measured production source 1b15332d; final identity bound by PR #1068 and merge receipt.",
+      "from_program_versions": "v4.3.0 origin/main schema at 6447cec2e9f6790b04f4e828e9d43f440f3105f; additive objects are readable by the same-Major schema initializer.",
+      "to_program_version": "Candidate branch th/pr-maintenance-incremental; final commit and PR identity are bound by the delivery record.",
       "direct_major_skips_supported": false
     }
   },
+  "public_api": {
+    "applicable": true,
+    "impact": "patch",
+    "description": "No public HTTP or task-response contract changes; existing fields and status values remain unchanged."
+  },
   "database_migration": {
     "applicable": true,
+    "structural_change_assessment": "All changes are additive and idempotent. Existing replay rows remain unverified until a current manifest SHA is explicitly written; no historical aggregate is fabricated by schema installation.",
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Idempotently install prompt_cache_conversation_stats_refresh_queue generation, generation_clock, refresh_staging and orphan_cleanup_state structures plus existing migration progress; add nullable managed-task result/progress/schedule fields and indexes. Existing deployed migrations are immutable.",
+        "description": "Ensure hourly_rollup_archive_replay.archive_sha256 exists and install the dataset/file/SHA lookup index. Existing legacy rows remain NULL or blank and are not promoted by DDL.",
         "order": 1,
         "observable": true,
         "pauseable": true
       },
       {
         "id": "ddl-002",
-        "description": "Add managed_tasks next_catchup_at and catchup_reason, managed_task_progress next_inspection_at/next_catchup_at/catchup_state, and the maintenance-database retention_backlog_hourly_observations table with an observed-time index. Installation is additive and idempotent; no historical observation rows are fabricated.",
+        "description": "Create hourly_rollup_archive_repair_progress and add cursor_stale_rank, cursor_month_key, and cursor_created_at to an existing table when absent. The cursor key is initialized to the empty/default position and is installed before repair reads it.",
         "order": 2,
         "observable": true,
         "pauseable": true
       },
       {
         "id": "ddl-003",
-        "description": "Idempotently add the main-database (occurred_at, id) index. SQLite builds the index from existing rows; no business historical aggregate or observation-history backfill is performed.",
+        "description": "Add nullable prompt_cache_conversation_stats_refresh_staging.pending_generation when absent. Existing staging accumulators retain their current generation and cursor values.",
         "order": 3,
         "observable": true,
         "pauseable": true
@@ -44,22 +50,19 @@
     "dml_changes": [
       {
         "id": "dml-001",
-        "description": "Atomically invalidate/enqueue on source mutations, advance the persistent generation clock, checkpoint bounded source pages and conditionally publish precise aggregate results/clear only the consumed generation. Commit orphan deletion with its safe cursor boundary.",
+        "description": "Write replay markers with the completed manifest SHA and require that same SHA for upstream-account marker repair and usage-breakdown selection; stale or unverified markers remain repair work.",
         "order": 4,
         "depends_on": [
-          "ddl-001",
-          "ddl-002",
-          "ddl-003"
+          "ddl-001"
         ],
         "observable": true,
         "pauseable": true
       },
       {
         "id": "dml-002",
-        "description": "Asynchronously publish coalesced operational progress, effective schedule and immutable run results/details to the maintenance database; never add a main-database operational fallback.",
+        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap.",
         "order": 5,
         "depends_on": [
-          "ddl-001",
           "ddl-002"
         ],
         "observable": true,
@@ -67,21 +70,9 @@
       },
       {
         "id": "dml-003",
-        "description": "After each retention run, schedule bounded catch-up eligibility while pending work remains, even for a completed core result; preserve inspection timing and reason-specific backoff. Clear on no pending work or disablement; enqueue through the existing single owner.",
+        "description": "Record pending_generation before discarding a page whose source generation changed, and publish only when the generation fence still matches. A stopped release is repaired forward by the next run.",
         "order": 6,
         "depends_on": [
-          "ddl-002",
-          "dml-002"
-        ],
-        "observable": true,
-        "pauseable": true
-      },
-      {
-        "id": "dml-004",
-        "description": "Run an independent bounded observer against one main-database read snapshot, cancel over-budget SQLite work, and idempotently publish the latest successful UTC-hour count/max-overdue pair to the maintenance database while retaining explicit gaps.",
-        "order": 7,
-        "depends_on": [
-          "ddl-002",
           "ddl-003"
         ],
         "observable": true,
@@ -91,14 +82,11 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No readiness-wide historical scan or fabricated history. Existing durable queue entries initialize conservatively and resume in bounded background pages; absent counters/outcomes/durations stay unknown. Duplicate active maintenance rows are terminalized with an auditable failure result rather than deleted.",
-        "order": 8,
+        "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages, with real archive readability checks before rollup clearing; unverified legacy markers remain quarantined until a verified replay.",
+        "order": 7,
         "depends_on": [
-          "ddl-001",
-          "ddl-002",
-          "ddl-003",
           "dml-001",
-          "dml-004"
+          "dml-002"
         ],
         "observable": true,
         "pauseable": true
@@ -114,26 +102,24 @@
       "dml-001",
       "dml-002",
       "dml-003",
-      "dml-004",
       "backfill-001"
     ],
     "progress_signals": [
-      "Core/stage outcomes and pending work",
-      "Business cursor/generation and last committed progress",
-      "Query budget/cancellation/settlement evidence",
-      "Operational observation freshness, effective inspection schedule and next catch-up eligibility",
-      "Hourly backlog observation state, observedAt and source cutoff"
+      "Replay marker SHA equality with the current archive manifest",
+      "Durable repair cursor stale rank, month, creation time and archive id",
+      "Prompt-cache staging pending_generation and generation outcome",
+      "Committed candidate/page counts and deferred unreadable archives"
     ],
     "pause_points": [
-      "Between idempotent structure installation and background recovery",
-      "At each committed business page/batch; operator disable prevents the next batch",
-      "Before the next catch-up eligibility; observer failure leaves the bucket missing"
+      "After idempotent schema installation and before background repair",
+      "After each committed archive repair candidate transaction",
+      "Before prompt-cache page publication when the source generation changes"
     ]
   },
   "recovery": {
     "deployed_migrations_immutable": true,
-    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; older Minor binaries are not promised to preserve new continuation semantics",
-    "faulty_release_recovery": "A newer version recognizes unfinished cursor/staging generations, discards stale derived staging conservatively and resumes the durable queue without changing archive proof or source ownership.",
+    "program_rollback_state_behavior": "An older same-Major binary may open additive SQLite objects but does not understand the new cursor or generation-fence protocol; rollback does not down-migrate or erase durable evidence.",
+    "faulty_release_recovery": "A newer binary recognizes missing, stale, or pending identities, preserves last-good rollups when an archive is unreadable, and resumes the durable repair or staging state from its last committed boundary.",
     "backup_restore_role": "separate-disaster-recovery"
   },
   "validation": {
@@ -142,27 +128,25 @@
     },
     "minor": {
       "required_test_evidence": [
-        "Candidate reads the v2.71.45 and v2.80.2 declared retention schema fixtures; original API fields/status remain compatible.",
-        "Repeated DDL and re-entry are idempotent; no business historical aggregation or observation-history backfill occurs in readiness. Index construction is structural work.",
-        "A forward-repair candidate resumes stopped-release staging and cursors without stale publication or lost queue generations.",
-        "Legacy missing operational evidence stays unknown and maintenance-store failure does not block business work.",
-        "Real SQLite query interruption, rollback and lock release meet the page budget contract.",
-        "Catch-up scheduling regression preserves the inspection schedule, applies reason-specific backoff, and clears future work when disabled.",
-        "Hourly observer fixtures prove same-snapshot count/max-overdue pairs, idempotent last-success wins, explicit missing buckets and no historical backfill.",
-        "Task API and Web chart regressions prove optional-field compatibility, shared hourly axes, readable observedAt/retention policy, and missing versus exact-zero semantics.",
-        "The synthetic fixed-cohort card supports owner-approved staged delivery only. Full ordinary/peak traffic calibration, complete runtime latency, cancellation/lock-release measurement and per-file capacity proof remain follow-up; original A7 is not marked passed."
+        "Repeated schema installation creates or upgrades replay identity, repair cursor, and pending-generation structures without changing legacy unverified marker values.",
+        "A file-backed restart preserves the repair cursor and a stopped prompt-cache generation cannot publish a stale page.",
+        "A corrupted or unreadable archive leaves its materialized timestamp, replay marker, and last-good rollup rows intact.",
+        "Current candidate Linux backend profiles and the required source-quality checks pass on the pushed commit."
       ]
     },
     "major": {
       "required_test_evidence": []
     },
     "completed_evidence": [
-      "Existing v2.71.45/v2.80.2 schema forward-repair fixtures, repeated DDL and staging/generation preservation regressions pass; maintenance-store legacy repair and observation installation use additive guarded schema changes.",
-      "Targeted retention scheduling tests cover partial catch-up, completed with remaining backlog, due catch-up single-instance behavior, preserved inspection schedule and disabled configuration; hourly fixtures cover observed/missing buckets and last-success preservation.",
-      "Rust fmt/check/Clippy and Web unit/typecheck/lint/build passed. Bound Demo E2E 8/8 and Storybook 172/172 passed.",
-      "GitHub CI 37097078616 at 1170aed8 passed all backend profiles, both stateful-sqlite shards, representative scale, Web, Storybook accessibility and Demo E2E. Final review-repair head is revalidated by live current-head CI.",
-      "Three candidate release-build runs drained the 1,300,000-row source cohort; three bounded baseline windows removed 192 rows each. Synthetic workload limitations and unclosed full A7 are explicit in the capacity card.",
-      "Independent current-head Tier 4 review is recorded by the delivery flow; this compatibility record does not substitute for review, merge preflight or release publication evidence."
+      "cargo fmt --all -- --check",
+      "git diff --check",
+      "python3 .github/scripts/check_quality_gates_contract.py --repo-root . --profile final",
+      "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+      "src/tests/archive_file_io/archive_backfill_and_materialization.rs"
+    ],
+    "pending_evidence": [
+      "Candidate-head backend profile results from required CI",
+      "Fresh Tier 4 review after candidate Readiness"
     ]
   }
 }

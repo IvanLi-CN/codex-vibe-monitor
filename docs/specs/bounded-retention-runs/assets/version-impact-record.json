@@ -1,10 +1,9 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
-  "status": "compatibility-verified-staged-delivery",
   "change": {
-    "description": "Bound retention runs, automatic catch-up, independent hourly backlog observations, and compatible task evidence.",
-    "release_unit_description": "Bounded retention execution, catch-up scheduling, and its task observation contract.",
+    "description": "Incremental archive repair identity/cursor fencing and prompt-cache generation-safe publication.",
+    "release_unit_description": "One direct maintenance PR.",
     "affected_contracts": [
       "public-api",
       "persistent-state"
@@ -18,74 +17,65 @@
     ],
     "planned": {
       "impact": "minor",
-      "reasoning": "Public API retains existing fields and status values; new durable continuation semantics require forward repair and are not promised to older Minor binaries.",
-      "assessed_at": "2026-10-01T12:00:00Z",
+      "reasoning": "The public API remains compatible, but the candidate adds durable replay identity, repair cursor, and generation-fence state. The additions are idempotent and repair-forward; same-Major older readers may open the schema but are not assumed to preserve the new protocol.",
       "evidence": [
-        "SPEC.md",
-        "IMPLEMENTATION.md",
-        "../../adr/0025-retention-core-and-conversation-derived-maintenance.md"
+        "docs/specs/bounded-retention-runs/assets/persistent-state-migration-record.json"
       ]
     },
     "current": {
       "impact": "minor",
       "scope_drift": {
-        "detected": false,
-        "description": "Owner approved staged delivery of catch-up and observability; full ordinary-load capacity/non-regression acceptance is deferred without changing safety or compatibility."
+        "detected": true,
+        "description": "The candidate includes durable cursor/index and pending-generation changes in addition to bounded maintenance behavior."
       },
-      "reasoning": "The Candidate retains existing API fields and status values while adding optional observation fields; main-database generation, staging and orphan cursors are new durable state, so the release unit remains minor.",
-      "reassessed_at": "2026-10-03T04:40:00Z",
+      "reasoning": "Public HTTP and task-response contracts remain unchanged. Persistent state has additive schema and continuation semantics that require a forward-repair-capable reader, so the maximum impact is minor.",
       "evidence": [
-        "IMPLEMENTATION.md",
-        "assets/persistent-state-migration-record.json",
-        "src/maintenance_store.rs",
-        "src/prompt_cache_conversations.rs"
+        "src/schema.rs",
+        "src/maintenance/hourly_rollups.rs",
+        "src/prompt_cache_conversations.rs",
+        "docs/specs/bounded-retention-runs/assets/persistent-state-migration-record.json"
       ]
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "Existing API/status fields remain compatible with optional additions (patch); durable catch-up and hourly observations are additive forward-readable state (minor). Declared historical schema fixtures and idempotent installation regressions pass in backend CI. Performance qualification remains a separate follow-up and is not a compatibility pass.",
-      "verified_at": "2026-10-03T04:40:00Z",
+      "reasoning": "Public API impact is patch-level, while persistent-state impact is minor-level because the schema adds archive identity/index state, ordered repair continuation, and a generation fence. Final candidate CI and Tier 4 review remain delivery gates.",
       "evidence": [
-        "src/maintenance_store.rs",
-        "src/schema.rs",
         "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
-        "assets/persistent-state-migration-record.json",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/37097078616"
+        "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
+        "src/tests/stateful_sqlite/prompt_cache_materialization_control.rs",
+        "docs/specs/bounded-retention-runs/assets/persistent-state-migration-record.json"
       ]
     }
   },
   "compatibility_evidence": {
     "public_api": {
-      "planned_impact": "patch",
-      "change": "compatible",
-      "supported_consumer_range": "Existing current-Major consumers of managed task detail and performance fields, including original TaskRun.status values.",
+      "change": "No public response or status contract change",
+      "supported_consumer_range": "Existing Major-4 HTTP and task-response consumers",
+      "impact": "patch",
       "evidence": [
-        "src/maintenance_store.rs",
-        "src/runtime.rs",
-        "src/api/slices/system_routes_and_tasks.rs",
-        "web/src/lib/api/core-foundation.ts"
+        "Existing response fields and status values are unchanged."
       ]
     },
     "persistent_state": {
-      "planned_impact": "minor",
       "applicable": true,
-      "state_description": "Business correctness cursors, generation-checked staged aggregates and queue entries, retention catch-up schedule, the main-database eligibility index, and nullable operational outcomes/hourly snapshots in the maintenance database.",
-      "source_program_compatibility_range": "Declared v2.71.45 and v2.80.2 retention fixtures plus the current development-base structures; unobserved intermediate snapshots are not claimed.",
+      "impact": "minor",
+      "state_description": "Replay SHA identity, ordered usage-breakdown repair cursor, and prompt-cache staging pending_generation.",
+      "source_program_compatibility_range": "v4.3.0 origin/main schema through the th/pr-maintenance-incremental candidate; direct Major skips are unsupported.",
       "evidence": [
-        "src/maintenance_store.rs",
-        "src/schema.rs",
-        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
-        "Backend CI 37097078616: all resource profiles and scale passed at 1170aed8."
+        "Additive/idempotent schema installation and re-entry regression.",
+        "Candidate-specific migration record with repair-forward behavior.",
+        "Required candidate-head Linux and fresh Tier 4 evidence remain pending."
       ]
     }
   },
   "release_unit": {
     "member_change_records": [
-      "bounded-retention-runs"
+      "public-api",
+      "persistent-state"
     ],
     "maximum_verified_impact": "minor",
     "calculation_evidence": [
-      "Compatible additive public_api=patch; forward-readable durable persistent_state=minor; maximum verified compatibility impact=minor. Actual tag and publication are bound to the merge SHA by release tracking."
+      "public-api=patch, persistent-state=minor; max=minor"
     ]
   }
 }

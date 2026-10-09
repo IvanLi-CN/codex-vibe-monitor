@@ -4348,6 +4348,9 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         CREATE TABLE IF NOT EXISTS hourly_rollup_archive_repair_progress (
             scope TEXT PRIMARY KEY,
             cursor_id INTEGER NOT NULL DEFAULT 0,
+            cursor_stale_rank INTEGER NOT NULL DEFAULT 0,
+            cursor_month_key TEXT NOT NULL DEFAULT '',
+            cursor_created_at TEXT NOT NULL DEFAULT '',
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -4355,6 +4358,22 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_archive_repair_progress table existence")?;
+    for (column, definition) in [
+        ("cursor_stale_rank", "INTEGER NOT NULL DEFAULT 0"),
+        ("cursor_month_key", "TEXT NOT NULL DEFAULT ''"),
+        ("cursor_created_at", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        ensure_column_with_definition(
+            pool,
+            "hourly_rollup_archive_repair_progress",
+            column,
+            definition,
+        )
+        .await
+        .with_context(|| {
+            format!("failed to ensure hourly rollup archive repair cursor column {column}")
+        })?;
+    }
 
     sqlx::query(
         r#"
