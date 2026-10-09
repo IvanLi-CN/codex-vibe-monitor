@@ -33,7 +33,7 @@
         "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes; the additional fail-closed decisions narrow claims without changing the response schema."
       },
       "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. Terminal-journal proof-budget overflow preserves a degraded last-good snapshot, while source-journal loss and an unproven current rank remain unavailable. Blank or NULL replay-marker SHA values remain legacy-readable; nonblank stale SHA values and missing materialized Summary markers re-enter idempotent repair.",
-      "reassessed_at": "2026-10-09T10:54:44Z",
+      "reassessed_at": "2026-10-09T15:09:58Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/summary_delta_gap.rs",
@@ -47,8 +47,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, legacy blank-marker compatibility, stale-marker reopening, materialized-marker repair, and same-bucket repair across the 128-archive boundary.",
-      "verified_at": "2026-10-09T10:54:44Z",
+      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, legacy blank-marker compatibility, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
+      "verified_at": "2026-10-09T15:09:58Z",
       "evidence": [
         "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
         "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
@@ -57,6 +57,9 @@
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
         "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
         "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries",
         "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
         "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing"
       ]
@@ -75,7 +78,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank legacy replay-marker SHA values remain readable, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent full repair of the existing rollups. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
+      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank legacy replay-marker SHA values remain readable, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent paged full repair of the existing rollups, bounded to 4,096 completed authoritative batches per transaction with durable archive and live repair cursors that remain durable while completion is incomplete. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers of the existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations; the partial index is optional optimizer state.",
       "evidence": [
         "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
@@ -84,7 +87,10 @@
         "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
         "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
         "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+        "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+        "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
       ]
     }
   },

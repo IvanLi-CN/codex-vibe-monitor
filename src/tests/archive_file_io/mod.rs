@@ -137,6 +137,64 @@ async fn bounded_summary_archive_repair_preserves_same_bucket_totals_across_pass
 }
 
 #[tokio::test]
+async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("summary-rollup-force-repair-pages").await;
+    let archive_count = 4_097_i64;
+    for id in 1..=archive_count {
+        let file_path = config.archive_dir.join(format!(
+            "summary-rollup-force-repair-missing-{id}.sqlite.gz"
+        ));
+        sqlx::query(
+            "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, row_count, \
+             status, coverage_start_at, coverage_end_at, historical_rollups_materialized_at) \
+             VALUES (?1, 'codex_invocations', '2020-01', ?2, ?3, 1, 'completed', \
+                     '2020-01-15 00:00:00', '2020-01-15 00:00:00', datetime('now'))",
+        )
+        .bind(id)
+        .bind(file_path.to_string_lossy().to_string())
+        .bind(format!("summary-force-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("insert force-repair archive manifest");
+    }
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("first force-repair archive page should commit");
+    let first_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
+    .fetch_one(&pool)
+    .await
+    .expect("load first force-repair archive cursor");
+    assert_eq!(first_cursor, 4_096);
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("second force-repair archive page should commit");
+    let second_cursor = sqlx::query_scalar::<_, i64>(
+        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    )
+    .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
+    .fetch_one(&pool)
+    .await
+    .expect("load second force-repair archive cursor");
+    assert_eq!(second_cursor, archive_count);
+    let repair_marker_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM hourly_rollup_live_progress WHERE dataset = ?1)",
+    )
+    .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
+    .fetch_one(&pool)
+    .await
+    .expect("check incomplete force-repair marker");
+    assert_eq!(repair_marker_exists, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild() {
     let mut config = test_config();
     config.openai_upstream_base_url =

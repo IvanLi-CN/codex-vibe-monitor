@@ -60,8 +60,12 @@
   last-good base plus acknowledged overlay with explicit `dataQuality` degraded
   status; `/api/stats` uses the same all-time memory path.
 - Summary archive replay-marker repair is ordered by a partial SQLite index and
-  reads at most 128 candidates per background turn. The request path never runs
-  this proof or a broad historical scan.
+  reads at most 128 pending candidates per additive background turn. Stale-marker
+  or incomplete-materialized recovery uses the established 4,096 completed
+  authoritative-batch ceiling per bounded replacement transaction and persists an
+  archive ID cursor between pages. Restored live rows are deduplicated by ID, and
+  incomplete recovery persists its live cursor without publishing completion.
+  The request path never runs this proof or a broad historical scan.
 - Lifecycle: active canonical-classification recovery initiative.
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.
 - Cold maintenance retries now retain the 30-second Bootstrap mode until the hub has atomically published its first immutable Projection; only published Projections use the four-second Rolling refresh path. Bootstrap telemetry records the current archive admission, runtime overlay, Projection materialization and generation-fence snapshot stages without source content.

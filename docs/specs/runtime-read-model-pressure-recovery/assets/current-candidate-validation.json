@@ -33,7 +33,10 @@
       "summary_rollup_repair_reopens_stale_archive_sha_markers",
       "all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
       "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
-      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+      "summary_rollup_force_repair_pages_past_archive_batch_budget",
+      "summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+      "summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]
   },
   "required_lanes": [

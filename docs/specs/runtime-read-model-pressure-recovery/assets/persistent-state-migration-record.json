@@ -38,7 +38,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a nonblank Summary marker SHA is stale or a materialized archive lacks either Summary marker, enter the existing full Summary rebuild path; valid blank or NULL legacy markers remain readable. Every mode is idempotent and does not clear a shared bucket, write an allocator cursor, or deploy anything.",
+        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a nonblank Summary marker SHA is stale or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with at most 4,096 completed authoritative batches per transaction and a durable archive ID cursor; restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Valid blank or NULL legacy markers remain readable. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
         "order": 3,
         "depends_on": [
           "ddl-001",
@@ -60,7 +60,8 @@
       "sqlite_master and EXPLAIN QUERY PLAN show the partial index",
       "Replay-marker count and invocation_rollup_hourly totals advance together after each committed bounded pass",
       "Stale nonblank markers or materialized archives with incomplete Summary marker proof remain eligible for repair until the full existing rebuild converges",
-      "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass"
+      "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
+      "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -79,8 +80,9 @@
       "required_test_evidence": [
         "The public API remains nonbreaking and candidate-written state uses existing representations readable by supported earlier same-Minor readers.",
         "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
-        "The bounded archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
+        "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
         "Legacy blank or NULL replay-marker SHA values remain readable, while a stale nonblank SHA and a materialized archive missing Summary marker proof are reopened for idempotent repair.",
+        "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
         "A source Summary gap remains unavailable while a terminal in-memory gap is explicitly degraded, for both HTTP and Summary SSE.",
         "An unproven current rank and an all-time response without a hydrated baseline remain unavailable instead of falling through to an approximate resident response.",
         "No old-version allocator writeback or deployment action is part of the migration contract."
@@ -100,8 +102,11 @@
       "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
       "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
       "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
       "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
-      "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap"
+      "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]
   },
   "delivery_context": {
