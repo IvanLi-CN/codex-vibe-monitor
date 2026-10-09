@@ -33883,6 +33883,7 @@ mod request_compression_query_tests {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
             source_gap: false,
+            compaction_gap: false,
             upstream_account_id: Some(42),
             occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
             row_id: Some(i64::MAX),

@@ -850,11 +850,14 @@ pub(crate) struct SummaryDeltaEntry {
 pub(crate) struct DeltaGapProof {
     pub(crate) cursor: SummaryDeltaCursor,
     // A journal cursor and a terminal sequence are different domains. `None` means this proof
-    // was created by source-journal compaction and must not be retired by a terminal watermark.
+    // is source-scoped rather than tied to a terminal watermark.
     pub(crate) terminal_sequence: Option<u64>,
     // A broad proof intentionally clears its concrete terminal sequence. Preserve whether that
     // broad proof came from source-journal loss so terminal-only overflow can remain degraded.
     pub(crate) source_gap: bool,
+    // Only the proof emitted by source-journal compaction may be retired by compaction cleanup.
+    // Scoped source proofs must survive a concurrent cleanup attempt.
+    pub(crate) compaction_gap: bool,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) occurred_at: String,
     pub(crate) row_id: Option<i64>,
@@ -1067,6 +1070,7 @@ impl SummaryDeltaJournal {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: Some(cursor),
             source_gap: false,
+            compaction_gap: false,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1081,6 +1085,7 @@ impl SummaryDeltaJournal {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
             source_gap: true,
+            compaction_gap: true,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1093,8 +1098,7 @@ impl SummaryDeltaJournal {
         if !self.source_compaction_gap || self.gap_proof_budget_exhausted {
             return;
         }
-        self.gap_proofs
-            .retain(|proof| proof.terminal_sequence.is_some());
+        self.gap_proofs.retain(|proof| !proof.compaction_gap);
         self.source_compaction_gap = false;
         self.gap_proof_budget_exhausted = false;
     }
@@ -1105,6 +1109,7 @@ impl SummaryDeltaJournal {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
             terminal_sequence: Some(delta.terminal_sequence),
             source_gap: false,
+            compaction_gap: false,
             upstream_account_id: delta.upstream_account_id,
             occurred_at: delta.occurred_at.clone(),
             row_id: delta.persisted_row_id,
@@ -1131,6 +1136,7 @@ impl SummaryDeltaJournal {
                 cursor: proof.cursor,
                 terminal_sequence: None,
                 source_gap,
+                compaction_gap: false,
                 upstream_account_id: None,
                 occurred_at: String::new(),
                 row_id: None,
@@ -4561,6 +4567,7 @@ impl SubscriptionHub {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
             source_gap: true,
+            compaction_gap: false,
             upstream_account_id,
             occurred_at,
             row_id,
@@ -15742,6 +15749,34 @@ mod tests {
         assert_eq!(proof.cursor, SummaryDeltaCursor(99));
         assert_eq!(proof.terminal_sequence, None);
         assert!(proof.source_gap);
+    }
+    #[test]
+    fn clearing_source_compaction_gap_preserves_scoped_source_proof() {
+        let mut journal = SummaryDeltaJournal::default();
+        journal.note_unknown_source_cursor_gap(10);
+        journal.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(11),
+            terminal_sequence: None,
+            source_gap: true,
+            compaction_gap: false,
+            upstream_account_id: Some(42),
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            row_id: Some(7),
+            invoke_id: Some("scoped-source-gap".to_string()),
+        });
+
+        journal.clear_source_compaction_gap();
+
+        assert!(!journal.source_compaction_gap);
+        assert!(!journal.gap_proof_budget_exhausted);
+        assert_eq!(journal.gap_proofs.len(), 1);
+        let proof = journal
+            .gap_proofs
+            .front()
+            .expect("scoped source proof survives compaction cleanup");
+        assert!(!proof.compaction_gap);
+        assert_eq!(proof.row_id, Some(7));
+        assert_eq!(proof.upstream_account_id, Some(42));
     }
     #[tokio::test]
     async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {

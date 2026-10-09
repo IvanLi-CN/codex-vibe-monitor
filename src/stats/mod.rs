@@ -1745,6 +1745,8 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
           AND (
             NOT EXISTS(
                 SELECT 1
@@ -5259,7 +5261,8 @@ async fn summary_rollup_backfill_requires_full_repair(
     Ok(sqlx::query_scalar::<_, i64>(
         r#"
         SELECT EXISTS(SELECT 1 FROM archive_batches AS batches WHERE batches.dataset = 'codex_invocations' AND batches.status = ?1
-          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' AND (EXISTS(SELECT 1 FROM hourly_rollup_archive_replay AS replay
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+          AND batches.sha256 IS NOT NULL AND TRIM(batches.sha256) <> '' AND (EXISTS(SELECT 1 FROM hourly_rollup_archive_replay AS replay
             WHERE replay.target IN (?2, ?3) AND replay.dataset = batches.dataset AND replay.file_path = batches.file_path
               AND TRIM(replay.archive_sha256) <> '' AND replay.archive_sha256 IS NOT batches.sha256)
             OR (batches.historical_rollups_materialized_at IS NOT NULL AND (SELECT COUNT(*) FROM hourly_rollup_archive_replay AS replay

@@ -10,14 +10,65 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
     ensure_schema(&pool).await.expect("ensure schema");
 
     let plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
-        "EXPLAIN QUERY PLAN SELECT id FROM archive_batches \
-         WHERE dataset = ?1 AND status = ?2 \
-           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
-         ORDER BY month_key, created_at, id LIMIT ?3",
+        r#"EXPLAIN QUERY PLAN
+        SELECT
+            batches.file_path,
+            batches.month_key,
+            batches.coverage_start_at,
+            batches.coverage_end_at,
+            batches.historical_rollups_materialized_at,
+            CASE
+                WHEN EXISTS(
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?2
+                      AND replay.dataset = 'codex_invocations'
+                      AND replay.file_path = batches.file_path
+                      AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                ) THEN 0
+                ELSE 1
+            END AS needs_overall,
+            CASE
+                WHEN EXISTS(
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?3
+                      AND replay.dataset = 'codex_invocations'
+                      AND replay.file_path = batches.file_path
+                      AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                ) THEN 0
+                ELSE 1
+            END AS needs_failures
+        FROM archive_batches AS batches
+        WHERE batches.dataset = 'codex_invocations'
+          AND batches.status = ?1
+          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
+          AND (
+            NOT EXISTS(
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?2
+                  AND replay.dataset = 'codex_invocations'
+                  AND replay.file_path = batches.file_path
+                  AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+            )
+            OR NOT EXISTS(
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?3
+                  AND replay.dataset = 'codex_invocations'
+                  AND replay.file_path = batches.file_path
+                  AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+            )
+          )
+        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        LIMIT 128"#,
     )
-    .bind("codex_invocations")
     .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(128_i64)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
     .fetch_all(&pool)
     .await
     .expect("explain pending Summary rollup query");
@@ -26,6 +77,48 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
             detail.contains("idx_archive_batches_pending_summary_rollup_order")
         }),
         "pending Summary rollup query must use the partial index: {plan:?}"
+    );
+
+    let bounded_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        r#"EXPLAIN QUERY PLAN
+        SELECT
+            file_path,
+            month_key,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            NULL AS needs_overall,
+            NULL AS needs_failures
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND status = ?2
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+          AND (
+            coverage_start_at IS NULL
+            OR coverage_end_at IS NULL
+            OR (
+                coverage_end_at >= ?3
+                AND coverage_start_at < ?4
+            )
+          )
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        LIMIT ?5"#,
+    )
+    .bind("codex_invocations")
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind("2026-01-01T00:00:00Z")
+    .bind("2026-02-01T00:00:00Z")
+    .bind(129_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("explain bounded Summary archive query");
+    assert!(
+        bounded_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_batches_pending_summary_rollup_order")
+        }),
+        "bounded Summary archive query must use the partial index: {bounded_plan:?}"
     );
 
     ensure_schema(&pool).await.expect("repeat schema migration");
@@ -237,6 +330,61 @@ async fn summary_rollup_repair_reads_a_bounded_archive_batch() {
         .await
         .expect("load bounded archive repair batch");
     assert_eq!(rows.len(), 128);
+}
+
+#[tokio::test]
+async fn summary_rollup_repair_skips_unhashable_legacy_archive_batches() {
+    let pool = SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("open legacy archive schema fixture");
+    sqlx::query(
+        "CREATE TABLE archive_batches (
+             id INTEGER PRIMARY KEY,
+             dataset TEXT NOT NULL,
+             month_key TEXT,
+             file_path TEXT NOT NULL,
+             sha256 TEXT,
+             row_count INTEGER NOT NULL,
+             status TEXT NOT NULL,
+             summary_source_kind TEXT,
+             coverage_start_at TEXT,
+             coverage_end_at TEXT,
+             historical_rollups_materialized_at TEXT,
+             created_at TEXT NOT NULL
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy archive manifest table");
+    sqlx::query(
+        "CREATE TABLE hourly_rollup_archive_replay (
+             target TEXT NOT NULL,
+             dataset TEXT NOT NULL,
+             file_path TEXT NOT NULL,
+             archive_sha256 TEXT
+         )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy replay marker table");
+    sqlx::query(
+        "INSERT INTO archive_batches (
+             id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, created_at
+         ) VALUES
+             (1, 'codex_invocations', '2026-01', 'stats-valid-summary-archive', 'current-hash', 1, 'completed', 'unknown', '2026-01-01T00:00:00Z'),
+             (2, 'codex_invocations', '2026-01', 'stats-null-sha-summary-archive', NULL, 1, 'completed', 'unknown', '2026-01-01T00:00:01Z'),
+             (3, 'codex_invocations', '2026-01', 'stats-blank-sha-summary-archive', '  ', 1, 'completed', 'unknown', '2026-01-01T00:00:02Z')",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert hash compatibility fixtures");
+
+    let rows = load_invocation_archives_missing_summary_rollup_markers(&pool)
+        .await
+        .expect("load hash-compatible Summary archive markers");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].file_path(), "stats-valid-summary-archive");
+    pool.close().await;
 }
 
 #[tokio::test]
