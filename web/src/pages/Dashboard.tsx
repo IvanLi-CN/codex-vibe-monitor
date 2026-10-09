@@ -143,7 +143,12 @@ export default function DashboardPage() {
       promptCacheConversationKey !== pendingConversationSelection.key ||
       promptCacheConversationId !== pendingConversationSelection.conversationId
     ) {
-      setPendingConversationSelection(null);
+      setPendingConversationSelection((current) =>
+        current?.key === pendingConversationSelection.key &&
+        current.conversationId === pendingConversationSelection.conversationId
+          ? null
+          : current,
+      );
       return;
     }
     if (workingCardsError != null) {

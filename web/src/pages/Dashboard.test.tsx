@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
@@ -426,6 +426,15 @@ function LocationProbe() {
       <div data-testid="dashboard-location-search">{location.search}</div>
       <div data-testid="dashboard-location-path">{location.pathname}</div>
     </>
+  );
+}
+
+function RouteNavigationButton({ to }: { to: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" data-testid="dashboard-switch-route" onClick={() => navigate(to)}>
+      switch route
+    </button>
   );
 }
 
@@ -1234,6 +1243,39 @@ describe("DashboardPage", () => {
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
       "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
     );
+  });
+
+  it("continues paging after switching between pending conversation routes", () => {
+    installSummaryMocks();
+    const firstCard = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [firstCard],
+      totalMatched: 21,
+      hasMore: true,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    const secondRoute =
+      "/dashboard?promptCacheConversationKey=pck-second&promptCacheConversationId=EFGH34";
+    render(
+      <>
+        <RouteNavigationButton to={secondRoute} />
+        <DashboardPage />
+      </>,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      host?.querySelector<HTMLButtonElement>('[data-testid="dashboard-switch-route"]')?.click();
+    });
+
+    expect(loadMore).toHaveBeenCalledTimes(2);
   });
 
   it("closes the conversation drawer when its explicit persisted id becomes stale", () => {
