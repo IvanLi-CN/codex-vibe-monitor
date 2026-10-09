@@ -3414,6 +3414,8 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         }
     }
     query.push(") ORDER BY month_key ASC, id ASC");
+    // This is an exact diagnostics snapshot. Bounded materialization paths must not call it on
+    // normal runs because their replay selectors already own the bounded page and cursor.
     let pending_rows = query
         .build_query_as::<HistoricalRollupPendingArchiveBatchRow>()
         .fetch_all(pool)
@@ -3427,7 +3429,6 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         .iter()
         .filter(|row| Path::new(&row.file_path).exists())
         .count() as u64;
-    let legacy_archive_scan_pending = pending_rows.len() as u64;
     let legacy_invocation_pending = pending_rows
         .iter()
         .filter(|row| Path::new(&row.file_path).exists())
@@ -3456,7 +3457,6 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
     Ok(HistoricalRollupBackfillSnapshot {
         pending_buckets,
         legacy_archive_pending,
-        legacy_archive_scan_pending,
         pending_usage_breakdown_batches,
         last_materialized_hour,
         alert_level,
@@ -3471,17 +3471,8 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
     skip_pending_archives: usize,
 ) -> Result<HistoricalRollupMaterializationSummary> {
     let started_at = Instant::now();
-    let pending_archive_files = load_invocation_archive_files_missing_rollup_target(
-        pool,
-        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
-    )
-    .await?;
-    let pending_usage_breakdown_batches = pending_archive_files.len();
-    let bounded_skip = if pending_usage_breakdown_batches == 0 {
-        0
-    } else {
-        skip_pending_archives % pending_usage_breakdown_batches
-    };
+    // The replay selector applies the caller's page cursor while fetching max+skip rows; do not
+    // load the current backlog just to wrap this offset modulo its changing size.
 
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_usage_breakdown",
@@ -3499,7 +3490,7 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
             started_at,
             max_archive_batches,
             max_elapsed,
-            bounded_skip,
+            skip_pending_archives,
         )
         .await?;
     tx.commit().await?;
@@ -3554,13 +3545,8 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
     skip_pending_archives: usize,
 ) -> Result<HistoricalRollupMaterializationSummary> {
     let started_at = Instant::now();
-    let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
-    let bounded_skip = if pending_snapshot.legacy_archive_scan_pending == 0 {
-        0
-    } else {
-        skip_pending_archives % pending_snapshot.legacy_archive_scan_pending as usize
-    };
     if dry_run {
+        let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
         return Ok(HistoricalRollupMaterializationSummary {
             scanned_archive_batches: pending_snapshot.legacy_archive_pending as usize,
             skipped_archive_batches: 0,
@@ -3574,6 +3560,8 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         });
     }
 
+    // Normal replay is already bounded by the selector's max+skip page; an exact backlog
+    // snapshot here would turn each bounded pass back into a full pending-set read.
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_materialization",
     )
@@ -3589,7 +3577,7 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         started_at,
         max_archive_batches,
         max_elapsed,
-        bounded_skip,
+        skip_pending_archives,
     )
     .await?;
     let remaining_budget =

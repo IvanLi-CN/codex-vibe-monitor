@@ -219,9 +219,28 @@ fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[
 pub(crate) async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
     tx: &mut SqliteConnection,
 ) -> Result<Vec<String>> {
-    sqlx::query_scalar(
+    Ok(
+        load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(tx, 0)
+            .await?
+            .into_iter()
+            .map(|row| row.file_path)
+            .collect(),
+    )
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MaterializedInvocationArchiveMarkerRow {
+    id: i64,
+    file_path: String,
+}
+
+async fn load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
+    tx: &mut SqliteConnection,
+    after_id: i64,
+) -> Result<Vec<MaterializedInvocationArchiveMarkerRow>> {
+    sqlx::query_as(
         r#"
-        SELECT batches.file_path
+        SELECT batches.id, batches.file_path
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
@@ -252,14 +271,16 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
                       AND replay.file_path = batches.file_path
                 )
           )
-        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
-        LIMIT ?5
+          AND batches.id > ?5
+        ORDER BY batches.id ASC
+        LIMIT ?6
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .bind(after_id)
     .bind(HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await
@@ -270,14 +291,27 @@ pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
     let mut tx = pool.begin().await?;
-    let file_paths =
-        load_materialized_invocation_archives_missing_upstream_account_markers_tx(tx.as_mut())
+    let mut after_id = 0_i64;
+    let mut repaired = 0_usize;
+    loop {
+        let rows =
+            load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
+                tx.as_mut(),
+                after_id,
+            )
             .await?;
-    for file_path in &file_paths {
-        mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), file_path).await?;
+        let Some(last_id) = rows.last().map(|row| row.id) else {
+            break;
+        };
+        for row in &rows {
+            mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), &row.file_path)
+                .await?;
+        }
+        repaired = repaired.saturating_add(rows.len());
+        after_id = last_id;
     }
     tx.commit().await?;
-    Ok(file_paths.len())
+    Ok(repaired)
 }
 
 async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(

@@ -4113,7 +4113,7 @@ async fn usage_breakdown_materialization_advances_past_missing_parent_prefix() {
         .expect("seed missing-parent usage breakdown candidate");
     }
     let occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
-    seed_invocation_archive_batch_with_details(
+    let valid_archive_path = seed_invocation_archive_batch_with_details(
         &pool,
         &config,
         "usage-breakdown-after-missing-parent-prefix",
@@ -4159,6 +4159,23 @@ async fn usage_breakdown_materialization_advances_past_missing_parent_prefix() {
     .expect("advance to the valid archive after the missing-parent prefix");
     assert_eq!(second.scanned_archive_batches, 65);
     assert_eq!(second.skipped_archive_batches, 64);
+    assert_eq!(second.materialized_invocation_batches, 1);
+    let usage_breakdown_marker_count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND target = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(valid_archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("count usage breakdown marker for the valid archive");
+    assert_eq!(usage_breakdown_marker_count, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -4190,7 +4207,7 @@ async fn historical_rollup_materialization_advances_past_missing_parent_prefix()
         .expect("seed historical rollup missing-parent candidate");
     }
     let occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
-    seed_invocation_archive_batch_with_details(
+    let valid_archive_path = seed_invocation_archive_batch_with_details(
         &pool,
         &config,
         "historical-rollup-after-missing-parent-prefix",
@@ -4238,6 +4255,69 @@ async fn historical_rollup_materialization_advances_past_missing_parent_prefix()
     .expect("advance generic rollup to valid archive after missing-parent prefix");
     assert_eq!(second.scanned_archive_batches, 65);
     assert_eq!(second.skipped_archive_batches, 64);
+    assert_eq!(second.materialized_invocation_batches, 1);
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
+    )
+    .bind(valid_archive_path.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized timestamp for the valid archive");
+    assert!(materialized_at.is_some());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn upstream_account_archive_marker_repair_converges_across_multiple_pages() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("upstream-account-marker-multi-page").await;
+    for id in 1..=65_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at
+            )
+            VALUES (?1, 'codex_invocations', '2025-01', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("materialized-marker-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("materialized-marker-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed materialized marker repair candidate");
+    }
+
+    let repaired = repair_materialized_upstream_account_archive_markers(&pool)
+        .await
+        .expect("repair all materialized upstream account archive markers");
+    assert_eq!(repaired, 65);
+
+    for target in [
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+    ] {
+        let marker_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1",
+        )
+        .bind(target)
+        .fetch_one(&pool)
+        .await
+        .expect("count repaired upstream account archive markers");
+        assert_eq!(
+            marker_count, 65,
+            "all candidates should be repaired for {target}"
+        );
+    }
 
     cleanup_temp_test_dir(&temp_dir);
 }
