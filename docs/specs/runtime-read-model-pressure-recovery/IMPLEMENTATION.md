@@ -64,7 +64,10 @@
   or incomplete-materialized recovery uses the established 4,096 completed
   authoritative-batch ceiling per bounded replacement transaction and persists an
   archive ID cursor between pages. Restored live rows are deduplicated by ID, and
-  incomplete recovery persists its live cursor without publishing completion.
+  incomplete recovery persists its live cursor without publishing completion. The
+  backfill entrypoint resumes force pages whenever the durable archive cursor or
+  incomplete marker exists, even if the current page repaired the marker predicate;
+  it returns before additive replay until the full repair publishes completion.
   The request path never runs this proof or a broad historical scan.
 - Lifecycle: active canonical-classification recovery initiative.
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.

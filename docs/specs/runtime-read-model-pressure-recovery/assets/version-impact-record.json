@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Expose explicit degraded Summary data quality, fail closed for unproven current rank and source gaps, and repair pending invocation archive Summary rollups with SHA-aware replay reconciliation in bounded background batches.",
+    "description": "Expose explicit degraded Summary data quality, fail closed for unproven current rank and source gaps, and repair pending invocation archive Summary rollups with SHA-aware replay reconciliation in bounded background batches that resume from durable page state.",
     "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
     "affected_contracts": [
       "public-api",
@@ -32,8 +32,8 @@
         "detected": false,
         "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes; the additional fail-closed decisions narrow claims without changing the response schema."
       },
-      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. Terminal-journal proof-budget overflow preserves a degraded last-good snapshot, while source-journal loss and an unproven current rank remain unavailable. Blank or NULL replay-marker SHA values remain legacy-readable; nonblank stale SHA values and missing materialized Summary markers re-enter idempotent repair.",
-      "reassessed_at": "2026-10-09T15:09:58Z",
+      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the unchanged archive, replay-marker, and hourly-rollup tables. Terminal-journal proof-budget overflow preserves a degraded last-good snapshot, while source-journal loss and an unproven current rank remain unavailable. Blank or NULL replay-marker SHA values remain legacy-readable; nonblank stale SHA values and missing materialized Summary markers re-enter idempotent paged repair, and a durable page cursor or incomplete marker keeps the driver fail-closed until completion.",
+      "reassessed_at": "2026-10-09T15:28:55Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/summary_delta_gap.rs",
@@ -47,8 +47,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, legacy blank-marker compatibility, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
-      "verified_at": "2026-10-09T15:09:58Z",
+      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the index idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, legacy blank-marker compatibility, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary even after the marker predicate clears, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
+      "verified_at": "2026-10-09T15:28:55Z",
       "evidence": [
         "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
         "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
@@ -78,7 +78,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank legacy replay-marker SHA values remain readable, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent paged full repair of the existing rollups, bounded to 4,096 completed authoritative batches per transaction with durable archive and live repair cursors that remain durable while completion is incomplete. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
+      "state_description": "The main SQLite database gains idx_archive_batches_pending_summary_rollup_order, while bounded archive repair updates existing hourly_rollup_archive_replay and invocation_rollup_hourly rows. NULL or blank legacy replay-marker SHA values remain readable, nonblank stale SHA values re-enter repair, and a materialized archive missing either Summary marker triggers an idempotent paged full repair of the existing rollups, bounded to 4,096 completed authoritative batches per transaction with durable archive and live repair cursors that remain durable while completion is incomplete. The backfill driver resumes from those durable states before additive replay can run. No new durable allocator writeback, deployment state, table, or column encoding is part of this candidate.",
       "source_program_compatibility_range": "Supported earlier same-Minor readers of the existing archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly representations; the partial index is optional optimizer state.",
       "evidence": [
         "src/schema.rs::idx_archive_batches_pending_summary_rollup_order",
@@ -106,11 +106,11 @@
     ]
   },
   "delivery_context": {
-    "active_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
-    "previous_review_base_sha": "6447cec2e9f6790b04f4e828e9d43f440f3105f0",
+    "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
+    "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "Merged main normally after PR #1096; the shared maintenance initialization fix is content-identical, and the incoming base adds no Stats or schema surface.",
-    "required_lanes_refresh": "All required PR lanes must bind to the post-sync candidate head; prior 6447-based CI is superseded.",
+    "base_sync_scope": "Merged main normally after merged PR #1099; the incoming task-timeline performance and support changes are outside the Stats implementation surface.",
+    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the current post-sync candidate head; prior 1f388107 and older-head CI/review are superseded.",
     "release_compatibility": "Patch remains the maximum verified impact: dataQuality is optional, and candidate-written durable state remains readable by supported earlier same-Minor readers."
   }
 }

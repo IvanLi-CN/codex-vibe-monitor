@@ -7,7 +7,7 @@
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "The archive_batches optimizer index plus existing hourly_rollup_archive_replay markers and invocation_rollup_hourly derived rows used by Summary recovery; the repair path preserves legacy blank-marker readability and reopens stale nonblank archive SHA markers.",
+    "description": "The archive_batches optimizer index plus existing hourly_rollup_archive_replay markers and invocation_rollup_hourly derived rows used by Summary recovery; the repair path preserves legacy blank-marker readability, reopens stale nonblank archive SHA markers, and resumes bounded full repair from durable archive and incomplete state.",
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
@@ -38,7 +38,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a nonblank Summary marker SHA is stale or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with at most 4,096 completed authoritative batches per transaction and a durable archive ID cursor; restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Valid blank or NULL legacy markers remain readable. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
+        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a nonblank Summary marker SHA is stale or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with at most 4,096 completed authoritative batches per transaction and a durable archive ID cursor; the driver resumes while that cursor or incomplete marker exists even if the current page repairs the marker predicate, and returns before additive replay until completion. Restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Valid blank or NULL legacy markers remain readable. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
         "order": 3,
         "depends_on": [
           "ddl-001",
@@ -61,7 +61,8 @@
       "Replay-marker count and invocation_rollup_hourly totals advance together after each committed bounded pass",
       "Stale nonblank markers or materialized archives with incomplete Summary marker proof remain eligible for repair until the full existing rebuild converges",
       "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
-      "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail"
+      "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail",
+      "A full-repair page that clears the marker predicate still resumes from its durable archive cursor before any additive replay can run"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",
@@ -82,7 +83,7 @@
         "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
         "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
         "Legacy blank or NULL replay-marker SHA values remain readable, while a stale nonblank SHA and a materialized archive missing Summary marker proof are reopened for idempotent repair.",
-        "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
+        "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary even after the first page clears the marker predicate, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
         "A source Summary gap remains unavailable while a terminal in-memory gap is explicitly degraded, for both HTTP and Summary SSE.",
         "An unproven current rank and an all-time response without a hydrated baseline remain unavailable instead of falling through to an approximate resident response.",
         "No old-version allocator writeback or deployment action is part of the migration contract."
@@ -110,11 +111,11 @@
     ]
   },
   "delivery_context": {
-    "active_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
-    "previous_review_base_sha": "6447cec2e9f6790b04f4e828e9d43f440f3105f0",
+    "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
+    "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "Merged main normally after PR #1096; the shared maintenance initialization fix is content-identical, and the incoming base adds no Stats or schema surface.",
-    "required_lanes_refresh": "All required PR lanes must bind to the post-sync candidate head; prior 6447-based CI is superseded.",
+    "base_sync_scope": "Merged main normally after merged PR #1099; the incoming task-timeline performance and support changes are outside the Stats implementation surface.",
+    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the current post-sync candidate head; prior 1f388107 and older-head CI/review are superseded.",
     "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
   }
 }

@@ -1,24 +1,24 @@
 {
   "schema_version": 1,
   "kind": "current-candidate-validation",
-  "status": "base-synchronized-required-ci-refresh",
-  "active_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+  "status": "current-head-required-ci-and-tier4-pending",
+  "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
   "base_ref": "main",
   "pr_number": 1097,
   "candidate_branch": "th/pr-stats",
   "base_sync": {
-    "previous_base_sha": "6447cec2e9f6790b04f4e828e9d43f440f3105f0",
-    "merge_commit_sha": "17f059944a4ba94b022316cd65cec716714e7d4c",
+    "previous_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "merge_commit_sha": "4d97c3cfd376fbea3aedfca15c2802c0afe9a315",
     "merge_strategy": "normal-git-merge-no-ff",
     "shared_fix_deduplicated": [
       "src/maintenance_store.rs"
     ],
-    "mainline_scope": "Proxy writer/fairness changes and their support files from merged PR #1096; the shared maintenance initialization fix is content-identical to the candidate change.",
+    "mainline_scope": "Task-timeline performance and support changes from merged PR #1099; no Stats or schema additions enter the candidate from this base merge.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "The previous validation was based on 6447cec2 and is not evidence for the post-merge candidate.",
+    "refresh_reason": "The candidate was aligned by normal merge onto main@8c76ec4b, then the pagination-driver boundary at src/stats/mod.rs:5701-5711 was fixed; all required CI and five Tier4 lanes must bind to the final pushed head.",
     "contract_regressions": [
       "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
       "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
