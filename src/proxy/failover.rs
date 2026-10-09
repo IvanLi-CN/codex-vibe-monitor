@@ -3311,11 +3311,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             )
                     {
                         warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to prepare pool Codex imagegen rewrite audit"
+                        invoke_id = %pending_attempt_record.invoke_id,
+                        error = %err,
+                        "failed to prepare pool Codex imagegen rewrite audit"
                         );
                     }
+                    early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
+                        PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
+                    });
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
                         enqueue_pool_upstream_request_attempt_snapshot(
                             state.as_ref(),
@@ -3350,9 +3353,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
-                    early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
-                        PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
-                    });
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),

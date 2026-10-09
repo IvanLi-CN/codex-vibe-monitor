@@ -1940,12 +1940,16 @@ pub(crate) async fn run_sqlite_batch_writer(
     let mut transaction_sequence = 0_u64;
 
     loop {
-        drain_reliable_attempt_progress_overflow(
+        let overflow_rows = drain_reliable_attempt_progress_overflow(
             &reliable_attempt_progress_overflow,
             &mut pending,
             &accounting,
             SQLITE_BATCH_MAX_ROWS,
         );
+        if overflow_rows > 0 && pending.has_p2() {
+            p2_schedule.arm_if_idle(Instant::now());
+            accounting.update_p2_schedule(&p2_schedule);
+        }
         drain_queued_writes_before_dispatch(
             &mut write_receiver,
             &mut pending,
@@ -1956,18 +1960,6 @@ pub(crate) async fn run_sqlite_batch_writer(
         );
         tokio::select! {
             biased;
-            _ = reliable_attempt_progress_notify.notified() => {
-                drain_reliable_attempt_progress_overflow(
-                    &reliable_attempt_progress_overflow,
-                    &mut pending,
-                    &accounting,
-                    SQLITE_BATCH_MAX_ROWS,
-                );
-                if pending.has_p2() {
-                    p2_schedule.arm_if_idle(Instant::now());
-                    accounting.update_p2_schedule(&p2_schedule);
-                }
-            }
             _ = crate::db_pressure::global_db_pressure_gate()
                 .wait_for_eligibility_change(p2_eligibility_generation),
                 if pending.has_p2()
@@ -2851,6 +2843,18 @@ pub(crate) async fn run_sqlite_batch_writer(
                     accounting.update_p2_schedule(&p2_schedule);
                 } else {
                     p1_retry.succeeded();
+                }
+            }
+            _ = reliable_attempt_progress_notify.notified() => {
+                drain_reliable_attempt_progress_overflow(
+                    &reliable_attempt_progress_overflow,
+                    &mut pending,
+                    &accounting,
+                    SQLITE_BATCH_MAX_ROWS,
+                );
+                if pending.has_p2() {
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
                 }
             }
         }

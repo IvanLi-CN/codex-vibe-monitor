@@ -1273,15 +1273,15 @@ pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
             attempt_id = pending_attempt_record.attempt_id,
             "queued pool attempt streaming phase progress"
         );
-        if pending_attempt_record.attempt_id.is_some() {
-            deferred_guard = early_phase_cleanup_guard.take();
-        }
     } else {
         info!(
             invoke_id = %pending_attempt_record.invoke_id,
             attempt_id = pending_attempt_record.attempt_id,
             "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
         );
+    }
+    if pending_attempt_record.attempt_id.is_some() {
+        deferred_guard = early_phase_cleanup_guard.take();
     }
     deferred_guard
 }
