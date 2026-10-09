@@ -16,7 +16,7 @@
 - [ADR 0014: Durable Summary coverage recovery](../../adr/0014-durable-summary-coverage-recovery.md)
 - [ADR 0034: Summary Delta degraded read path](../../adr/0034-summary-delta-degraded-read-path.md)
 
-## 背景 / 问题陈述
+## Context and Scope
 
 Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summary hydration 不能因大量 archive manifest 而放弃一个本可精确恢复的快照；压力门拒绝低优先级工作也不能演变为毫秒级重试、日志风暴或无动作审计；遗留长期 interval migration 不应反复执行全窗反关联扫描并阻塞 P1。
 
@@ -91,7 +91,27 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - HTTP wire shape、owner-facing UI 和运行时部署机制的重设计。
 - 通过人工维护任务或请求期回源绕开缺失的 read-model coverage。
 
-## 需求（Requirements）
+## Requirements
+
+### REQ-RMPR-001 — Exact-memory Summary reads
+
+- The Summary HTTP and SSE read paths MUST serve published in-memory projections without request-time SQLite, archive, or file I/O. A pending in-memory Summary Delta Journal proof MAY serve the last-good projection plus acknowledged overlay only when the response is explicitly marked degraded; missing proof without a published projection remains unavailable.
+
+### REQ-RMPR-002 — Durable coverage recovery
+
+- Historical Summary and archive coverage MUST advance through generation-fenced, bounded checkpoints and preserve exact scope, manifest, replay, and snapshot proof. Independent archive, source, or classification gaps MUST remain unavailable for the affected selection rather than being represented as partial or fabricated data.
+
+### REQ-RMPR-003 — Canonical facts and pressure boundaries
+
+- Terminal classification MUST be a durable versioned fact shared by Summary, rollups, and aggregate consumers. Low-priority recovery MUST distinguish pre-access pressure defer from actual SQLite lock failures and MUST preserve bounded, event-driven retry behavior without request-path fallback I/O.
+
+### REQ-RMPR-004 — Bounded legacy migration
+
+- Legacy migration and recovery MUST use resumable cursor or seek progress, bounded transactions, cancellation, and pressure checks so P1 terminal durability and routing writes retain priority.
+
+### REQ-RMPR-005 — Promotion and observation boundary
+
+- Checkpoint promotion MUST produce GitHub artifacts only. Any post-deployment observation requires explicit owner confirmation and MUST remain read-only, with no automated deployment, restart, rollback, or server mutation.
 
 ### MUST
 
@@ -215,7 +235,39 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - `docs/specs/high-frequency-runtime-data-plane/SPEC.md`：健康 read path 的内存态边界。
 - `docs/solutions/performance/sqlite-write-pressure-backpressure.md`：pressure defer 与 lock retry 的既有设计约束。
 
-## 验收标准（Acceptance Criteria）
+## Verification
+
+### VER-RMPR-001 — Exact-memory Summary behavior
+
+- Method: lightweight and stateful SQLite tests for published projections, closed-database reads, current/rolling selection boundaries, and pending Summary Delta Journal gaps.
+- covers: `REQ-RMPR-001`
+- Pass condition: exact published selections remain zero-I/O; a pending in-memory proof gap returns last-good plus acknowledged overlay with the documented degraded `dataQuality`; no published projection or independent durable gap remains unavailable.
+
+### VER-RMPR-002 — Durable coverage and archive recovery
+
+- Method: stateful SQLite and archive-file I/O tests for manifest identity, replay proof, bounded archive repair, coverage checkpoints, and source/archive failure boundaries.
+- covers: `REQ-RMPR-002`
+- Pass condition: bounded recovery preserves committed cursors and exact scope fences; independent source, archive, or classification gaps fail closed only for affected selections; repair work uses the fixed archive batch bound and indexed manifest lookup.
+
+### VER-RMPR-003 — Canonical classification and pressure handling
+
+- Method: targeted Rust regression tests for terminal classification, rollup consumers, pressure defer, actual lock handling, scheduler eligibility, and task-run audit behavior.
+- covers: `REQ-RMPR-003`
+- Pass condition: consumers agree on the durable classification revision; defer performs no pre-read or no-op audit; actual locks use bounded retry and one pressure transition without request-path fallback.
+
+### VER-RMPR-004 — Resumable bounded maintenance
+
+- Method: stateful SQLite and archive-file I/O maintenance tests covering cursor continuation, bounded write batches, cancellation, and pressure admission.
+- covers: `REQ-RMPR-004`
+- Pass condition: interrupted work resumes from committed progress, each maintenance transaction remains bounded, and P1 writes are not displaced by legacy recovery.
+
+### VER-RMPR-005 — Delivery and observation boundary
+
+- Method: repository workflow and documentation checks plus release/observation procedure review.
+- covers: `REQ-RMPR-005`
+- Pass condition: validation produces a reviewable GitHub artifact and no automated deployment or mutable production observation is performed.
+
+## Detailed Acceptance Criteria
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
 - Given 一个 legacy completed invocation archive 具有有限 coverage、materialized timestamp 与两个 Summary replay proof、但缺少 SHA-bound global invocation proof，When 正常版本更新后的有界 startup reconciliation 完成，Then 它先验证并重置完整 source/bucket closure，再原子重建 proof 并发布 exact Projection；不需要人工 maintenance 命令，关闭 SQLite 后合法 current/1d/rolling HTTP read 仍为零 SQL/文件 I/O。
@@ -247,13 +299,9 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Given 已发布 last-good Summary Projection、已确认 terminal overlay 与 intersecting 的 Summary Delta Journal proof gap，When 请求 `/api/stats` 或 `/api/stats/summary`，Then handler 返回 last-good 加已确认 overlay、附带 `dataQuality.proofPending = true`，且关闭 SQLite 后仍不执行 SQL、archive 或文件访问。
 - Given Summary Delta Journal proof gap 仍待后台 reconciliation，When 请求路径执行，Then 不执行 archive proof、全历史扫描或 broad JSON parse；后台以固定有界批次继续恢复，首次没有已发布 Projection 的请求仍返回 `unavailable`。
 
-## 验收清单
+## Contract Coverage
 
-- [ ] Summary 的 exact-memory contract 覆盖 archive、rollup、boundary、last-good 与 HTTP zero-I/O。
-- [ ] Canonical invocation classification 覆盖 terminal writer、legacy live、immutable archive overlay、rollup coverage 与所有 aggregate consumers。
-- [ ] pressure defer、actual lock、next eligibility 与无动作审计边界明确且可测试。
-- [ ] long-term migration 的 cursor、seek、512-row transaction、pressure/cancel 合同明确且可测试。
-- [ ] 手动部署和 900 秒只读观察边界明确。
+The detailed requirements and verification entries above define the durable contract for Summary exactness, canonical classification, bounded recovery, pressure handling, migration, promotion, and observation.
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
