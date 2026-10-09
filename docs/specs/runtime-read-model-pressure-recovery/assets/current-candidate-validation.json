@@ -66,14 +66,32 @@
     "docs_pages": "The Docs & Web Demo Build and docs-pages path remain a separate pipeline-owned surface; a passing build is not production deployment authorization.",
     "production": "No production deployment, restart, observation, or mutable external write is authorized by this record."
   },
+  "base_release_evidence": {
+    "source_main_ci_run_id": 37924263178,
+    "source_main_ci_head_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "source_main_ci_conclusion": "success",
+    "source_release": "v4.3.1",
+    "source_release_url": "https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v4.3.1",
+    "source_ghcr_architectures": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "production_deployment": false,
+    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR #1097 or authorize production deployment."
+  },
   "local_validation_boundary": {
     "required_local_checks": [
       "cargo fmt --all -- --check",
       "git diff --check",
-      "cargo check --locked --all-features",
-      "bash .github/scripts/run-rust-source-quality.sh"
+      "jq empty docs/specs/runtime-read-model-pressure-recovery/assets/current-candidate-validation.json docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
+      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json"
     ],
-    "heavy_full_suite": "Not run locally because the shared VM remained unavailable under global memory pressure; current-head GitHub required Linux CI is the full validation authority.",
+    "applicable_lightweight_contract_checks": [
+      "bash .github/scripts/test-backend-test-contract.sh",
+      "bash .github/scripts/test-representative-scale-contract.sh",
+      "bash .github/scripts/test-quality-gates-contract.sh"
+    ],
+    "heavy_full_suite": "Full-target all-features check/clippy, complete backend profiles, and representative-scale execution are delegated to current-head Linux CI or a session VM; they are not repeated as local checks for this candidate.",
     "visual_evidence": "Not applicable; this is a backend/API and repository-contract change."
   }
 }
