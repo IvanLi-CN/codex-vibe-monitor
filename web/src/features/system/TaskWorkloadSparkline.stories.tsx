@@ -134,6 +134,9 @@ export const BackgroundRow: Story = {
     await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
     const body = within(canvasElement.ownerDocument.body);
     const dialog = body.getByRole("dialog", { name: /运行计量详情/ });
+    await expect(dialog).toHaveTextContent("待处理量 P");
+    await expect(dialog).toHaveTextContent("本次发现 D");
+    await expect(dialog).toHaveTextContent("本次处理 C");
     await expect(dialog).toHaveTextContent("触发时间：");
     await expect(dialog).toHaveFocus();
     await userEvent.keyboard("{Escape}");
