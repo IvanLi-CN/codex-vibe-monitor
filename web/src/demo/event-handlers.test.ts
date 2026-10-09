@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { handleDemoRequest } from "./handlers";
+import { demoModel } from "./model";
 import { resolveDemoTopicPayload } from "./topic-payloads";
 
 const requestUrl = "http://demo.invalid/events";
@@ -96,6 +97,95 @@ describe("demo topic payloads", () => {
 
     expect(ids.size).toBe(13_120);
     expect(pageCount).toBe(27);
+  });
+
+  it("serves the dense pressure scene with fixed deferral groups and open waits", async () => {
+    demoModel.setScene("task-timeline-pressure-dense");
+    const from = new Date(Date.now() - 12 * 60 * 60 * 1000).toISOString();
+    const to = new Date().toISOString();
+    const segments: Array<{
+      kind: string;
+      reason?: string | null;
+      finishedAt?: string | null;
+    }> = [];
+    let cursor: string | null = null;
+    do {
+      const query = new URLSearchParams({ from, to, limit: "500" });
+      if (cursor) query.set("cursor", cursor);
+      const response = await handleDemoRequest(
+        new Request(`http://demo.invalid/api/system/managed-tasks/timeline?${query.toString()}`),
+      );
+      const page = (await response.json()) as {
+        segments: typeof segments;
+        nextCursor: string | null;
+        watermark: number;
+      };
+      segments.push(...page.segments);
+      cursor = page.nextCursor;
+      expect(page.watermark).toBe(13_120);
+    } while (cursor);
+
+    const deferrals = segments.filter((segment) => segment.kind === "deferral");
+    expect(segments).toHaveLength(13_120);
+    expect(deferrals).toHaveLength(6_000);
+    expect(new Set(deferrals.map((segment) => segment.reason))).toEqual(
+      new Set(["resource_busy", "pressure_cooldown"]),
+    );
+    expect(deferrals.filter((segment) => segment.finishedAt == null)).toHaveLength(4);
+    demoModel.setScene("operational");
+  });
+
+  it("resets a timeline cursor when the demo scene changes", async () => {
+    demoModel.setScene("task-timeline-pressure-dense");
+    const from = new Date(Date.now() - 12 * 60 * 60 * 1_000).toISOString();
+    const to = new Date().toISOString();
+    const firstPage = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?from=${from}&to=${to}&limit=500`,
+      ),
+    );
+    const firstPayload = (await firstPage.json()) as { nextCursor: string | null };
+    expect(firstPayload.nextCursor).not.toBeNull();
+
+    demoModel.setScene("operational");
+    const continuation = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?cursor=${firstPayload.nextCursor}`,
+      ),
+    );
+    await expect(continuation.json()).resolves.toMatchObject({
+      segments: [],
+      nextCursor: null,
+      resetRequired: true,
+    });
+    demoModel.setScene("operational");
+  });
+
+  it("resets a timeline cursor when a scene is regenerated after a round trip", async () => {
+    demoModel.setScene("task-timeline-pressure-dense");
+    const from = new Date(Date.now() - 12 * 60 * 60 * 1_000).toISOString();
+    const to = new Date().toISOString();
+    const firstPage = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?from=${from}&to=${to}&limit=500`,
+      ),
+    );
+    const firstPayload = (await firstPage.json()) as { nextCursor: string | null };
+    expect(firstPayload.nextCursor).not.toBeNull();
+
+    demoModel.setScene("operational");
+    demoModel.setScene("task-timeline-pressure-dense");
+    const continuation = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?cursor=${firstPayload.nextCursor}`,
+      ),
+    );
+    await expect(continuation.json()).resolves.toMatchObject({
+      segments: [],
+      nextCursor: null,
+      resetRequired: true,
+    });
+    demoModel.setScene("operational");
   });
 
   it("keeps unversioned timeline demo subscriptions on the bounded v1 contract", async () => {

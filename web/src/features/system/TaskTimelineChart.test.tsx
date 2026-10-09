@@ -124,25 +124,31 @@ function renderChart(props: {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
-  const render = (nowMs: number) =>
-    act(() =>
+  const render = (nowMs: number, overrides: Partial<typeof props> = {}) => {
+    const next = { ...props, ...overrides };
+    return act(() =>
       root?.render(
         <MemoryRouter>
           <TaskTimelineChart
-            tasks={props.tasks ?? [task]}
-            executions={props.executions ?? []}
-            activeRuns={props.activeRuns ?? []}
-            coverage={props.coverage ?? []}
+            tasks={next.tasks ?? [task]}
+            executions={next.executions ?? []}
+            activeRuns={next.activeRuns ?? []}
+            coverage={next.coverage ?? []}
             nowMs={nowMs}
-            runtimeFresh={props.runtimeFresh ?? true}
-            runtimeBoundaryMs={props.runtimeBoundaryMs ?? nowMs}
+            runtimeFresh={next.runtimeFresh ?? true}
+            runtimeBoundaryMs={next.runtimeBoundaryMs ?? nowMs}
             runtimeObservedAt={new Date(nowMs).toISOString()}
           />
         </MemoryRouter>,
       ),
     );
+  };
   render(props.nowMs);
   return { render };
+}
+
+function settleDeferralDetail() {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, 100));
 }
 
 afterEach(() => {
@@ -247,7 +253,7 @@ describe("TaskTimelineChart", () => {
     expect(bars[0].querySelector("rect")?.getAttribute("fill")).toBe("#c2410c");
   });
 
-  it("keeps overlapping pressure causes in one shared chart row", () => {
+  it("keeps overlapping pressure causes in one shared chart row", async () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const one = deferral("resource-wait", nowMs - 60_000, nowMs - 20_000, "resource_busy");
     renderChart({
@@ -267,14 +273,178 @@ describe("TaskTimelineChart", () => {
       bars[1].querySelector("rect")?.getAttribute("y"),
     );
     expect(bars[0].getAttribute("aria-label")).toContain("资源占用等待");
+    expect(bars[0].getAttribute("aria-label")).toContain("与 1 条任务让行重叠");
+    expect(bars[0].getAttribute("aria-label")).not.toContain("开始 ");
+    act(() => bars[0].focus());
+    await settleDeferralDetail();
     expect(bars[0].getAttribute("aria-label")).toContain("压力冷却让行");
+    expect(bars[0].getAttribute("aria-label")).toContain("开始 ");
+    expect(bars[0].querySelector("title")?.textContent).toContain("开始 ");
+    act(() => bars[0].blur());
+    expect(bars[0].getAttribute("aria-label")).not.toContain("开始 ");
+    expect(bars[0].querySelector("title")?.textContent).not.toContain("开始 ");
     expect(heights).toBeGreaterThan(0);
     expect(host?.querySelector('[data-testid="task-timeline-row-labels"]')?.textContent).toContain(
       "准入 / 压力",
     );
   });
 
-  it("marks failed executions separately and exposes complete timing details", () => {
+  it("does not treat endpoint-only deferrals as overlapping", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      executions: [
+        deferral("endpoint-a", nowMs - 30_000, nowMs - 10_000, "resource_busy"),
+        deferral("endpoint-b", nowMs - 10_000, nowMs - 1_000, "pressure_cooldown"),
+      ],
+    });
+    const bars = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+    expect(bars).toHaveLength(2);
+    expect(bars[0].getAttribute("aria-label")).toContain("无重叠任务让行");
+    expect(bars[1].getAttribute("aria-label")).toContain("无重叠任务让行");
+    expect(bars[0].querySelector("rect")?.getAttribute("fill-opacity")).toBe("1");
+  });
+
+  it("does not treat zero-length deferrals as overlapping", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      executions: [
+        deferral("zero-length", nowMs - 10_000, nowMs - 10_000, "resource_busy"),
+        deferral("positive-span", nowMs - 20_000, nowMs - 1_000, "pressure_cooldown"),
+      ],
+    });
+    const spanBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="positive-span"]');
+    expect(spanBar?.getAttribute("aria-label")).toContain("无重叠任务让行");
+  });
+
+  it("includes open deferrals when calculating static overlap opacity", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const open = {
+      ...deferral("open-wait", nowMs - 60_000, nowMs - 1_000, "pressure_cooldown"),
+      status: "waiting",
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    } satisfies TaskTimelineSegment;
+    renderChart({
+      nowMs,
+      executions: [deferral("closed-wait", nowMs - 90_000, nowMs - 30_000, "resource_busy"), open],
+    });
+
+    const closedBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="closed-wait"]');
+    expect(closedBar?.getAttribute("aria-label")).toContain("与 1 条任务让行重叠");
+    expect(closedBar?.querySelector("rect")?.getAttribute("fill-opacity")).toBe("0.55");
+  });
+
+  it("keeps focused live details stable while the clock advances", async () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const live = {
+      ...deferral("focused-live", nowMs - 60_000, nowMs - 1_000, "resource_busy"),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    } satisfies TaskTimelineSegment;
+    const { render } = renderChart({ nowMs, executions: [live] });
+    const bar = host?.querySelector<SVGGElement>('[data-task-deferral-id="focused-live"]');
+    if (!bar) throw new Error("Focused live deferral bar is missing");
+    act(() => bar.focus());
+    await settleDeferralDetail();
+    const detail = bar.getAttribute("aria-label");
+    expect(detail).toContain("开始 ");
+
+    render(nowMs + 1_000);
+    expect(bar.getAttribute("aria-label")).toBe(detail);
+    expect(bar.querySelector("title")?.textContent).toBe(detail);
+  });
+
+  it("counts dense open deferrals without pairwise render work", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const openDeferrals = Array.from({ length: 600 }, (_, index) => ({
+      ...deferral(
+        `open-dense-${index}`,
+        nowMs - 60_000 + index * 10,
+        nowMs - 1_000,
+        "resource_busy",
+      ),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    }));
+    renderChart({ nowMs, executions: openDeferrals });
+
+    const firstBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="open-dense-0"]');
+    expect(firstBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+  });
+
+  it("counts mixed dense static and live deferrals without pairwise render work", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const closedDeferrals = Array.from({ length: 300 }, (_, index) =>
+      deferral(
+        `closed-dense-${index}`,
+        nowMs - 60_000 + index * 10,
+        nowMs - 1_000,
+        "resource_busy",
+      ),
+    );
+    const openDeferrals = Array.from({ length: 300 }, (_, index) => ({
+      ...deferral(
+        `live-dense-${index}`,
+        nowMs - 50_000 + index * 10,
+        nowMs - 1_000,
+        "pressure_cooldown",
+      ),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    }));
+    renderChart({ nowMs, executions: [...closedDeferrals, ...openDeferrals] });
+
+    const staticBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="closed-dense-0"]');
+    const liveBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="live-dense-0"]');
+    expect(staticBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+    expect(liveBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+  });
+
+  it("keeps high-density deferral details lazy and refreshes a focused interval", async () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const dense = Array.from({ length: 1_000 }, (_, index) => {
+      const group = Math.floor(index / 4);
+      const start = nowMs - 11 * 60 * 60_000 + group * 30_000;
+      return deferral(
+        `dense-deferral-${index}`,
+        start,
+        start + 120_000,
+        index % 2 ? "pressure_cooldown" : "resource_busy",
+      );
+    });
+    const { render } = renderChart({ nowMs, executions: dense });
+    const bars = Array.from(host?.querySelectorAll<SVGGElement>('g[role="button"]') ?? []);
+    expect(bars).toHaveLength(250);
+    expect(bars[0].getAttribute("aria-label")).not.toContain("开始 ");
+    act(() => bars[0].focus());
+    await settleDeferralDetail();
+    expect(bars[0].getAttribute("aria-label")).toContain("开始 ");
+    expect(bars[0].getAttribute("aria-label")).toContain("压力冷却让行");
+
+    const revised = dense.map((item, index) =>
+      index === 0
+        ? {
+            ...item,
+            reason: "pressure_cooldown",
+            finishedAt: new Date(nowMs - 1_000).toISOString(),
+            lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+            revision: 2,
+          }
+        : item,
+    );
+    render(nowMs, { executions: revised });
+    expect(bars[0].getAttribute("aria-label")).toContain("恢复");
+    await settleDeferralDetail();
+    expect(bars[0].getAttribute("aria-label")).toContain("恢复");
+    expect(bars[0].getAttribute("aria-label")).toContain("压力冷却让行");
+  });
+
+  it("marks failed executions separately and lazily exposes complete timing details", async () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const failed = {
       ...segment("failed-run", nowMs - 120_000, nowMs - 60_000),
@@ -288,6 +458,13 @@ describe("TaskTimelineChart", () => {
     expect(rect?.getAttribute("stroke")).toBe("#be123c");
     expect(rect?.getAttribute("stroke-dasharray")).toBe("2 1");
     expect(bar?.getAttribute("aria-label")).toContain("结果：失败");
+    expect(bar?.getAttribute("aria-label")).not.toContain("开始：");
+    expect(bar?.querySelector("title")?.textContent).not.toContain("开始：");
+
+    act(() => bar?.focus());
+    await settleDeferralDetail();
+    expect(bar?.getAttribute("aria-label")).toContain("开始：");
+    expect(bar?.querySelector("title")?.textContent).toContain("开始：");
 
     act(() => bar?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(host?.textContent).toContain("触发：manual");
@@ -295,6 +472,91 @@ describe("TaskTimelineChart", () => {
     expect(host?.textContent).toContain("实际结束：");
     expect(host?.textContent).toContain("实际用时：1 分 00 秒");
     expect(host?.textContent).toContain("结果：失败");
+  });
+
+  it("refreshes focused execution details immediately after a revision", async () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const running = {
+      ...segment("focused-execution", nowMs - 120_000, nowMs - 1_000),
+      status: "running",
+      finishedAt: null,
+      durationMs: null,
+      revision: 1,
+    } satisfies TaskTimelineSegment;
+    const { render } = renderChart({ nowMs, executions: [running] });
+    const bar = host?.querySelector<SVGGElement>('g[role="button"]');
+    if (!bar) throw new Error("Focused execution bar is missing");
+    act(() => bar.focus());
+    await settleDeferralDetail();
+    expect(bar.getAttribute("aria-label")).toContain("结果：未知");
+
+    render(nowMs, {
+      executions: [
+        {
+          ...running,
+          status: "success",
+          finishedAt: new Date(nowMs - 500).toISOString(),
+          lastObservedAt: new Date(nowMs - 500).toISOString(),
+          durationMs: 119_500,
+          revision: 2,
+        },
+      ],
+    });
+    expect(bar.getAttribute("aria-label")).toContain("结束：");
+    expect(bar.getAttribute("aria-label")).toContain("结果：成功");
+  });
+
+  it("refreshes the static window when a new historical snapshot arrives", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const { render } = renderChart({ nowMs });
+    expect(host?.querySelectorAll('g[role="button"]')).toHaveLength(0);
+
+    render(nowMs + 3_000, {
+      executions: [segment("arrived-after-mount", nowMs + 1_000, nowMs + 2_000)],
+    });
+    expect(host?.querySelectorAll('g[role="button"]')).toHaveLength(1);
+  });
+
+  it("refreshes selected deferral details from the latest revision", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const waiting = {
+      ...deferral("selected-wait", nowMs - 60_000, nowMs - 10_000, "resource_busy"),
+      status: "waiting",
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 10_000).toISOString(),
+    } satisfies TaskTimelineSegment;
+    const { render } = renderChart({ nowMs, executions: [waiting] });
+    const bar = host?.querySelector<SVGGElement>('g[role="button"]');
+    act(() => bar?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(host?.textContent).toContain("尚未确认");
+
+    render(nowMs, {
+      executions: [
+        {
+          ...waiting,
+          status: "released",
+          finishedAt: new Date(nowMs - 2_000).toISOString(),
+          lastObservedAt: new Date(nowMs - 2_000).toISOString(),
+          revision: 2,
+        },
+      ],
+    });
+    expect(host?.textContent).toContain("恢复");
+    expect(host?.textContent).not.toContain("尚未确认");
+  });
+
+  it("opens every member when a dense deferral group is selected", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      executions: Array.from({ length: 4 }, (_, index) =>
+        deferral(`dense-wait-${index}`, nowMs - 60_000, nowMs - 10_000, "resource_busy"),
+      ),
+    });
+    const group = host?.querySelector<SVGGElement>('g[role="button"]');
+    act(() => group?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(host?.textContent).toContain("4 条任务让行");
+    expect(host?.textContent).toContain("dense-wait-3");
   });
 
   it("advances an open execution bar when the shared clock advances", () => {
@@ -321,7 +583,7 @@ describe("TaskTimelineChart", () => {
     expect(after).toBeGreaterThan(before);
   });
 
-  it("stops extrapolating a runtime run after its observation expires", () => {
+  it("stops extrapolating a runtime run after its observation expires", async () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const activeRun: CurrentTaskExecution = {
       executionId: 3,
@@ -342,6 +604,8 @@ describe("TaskTimelineChart", () => {
     });
     const bar = host?.querySelector<SVGGElement>('g[role="button"]');
     expect(bar?.getAttribute("aria-label")).toContain("结果：未知");
+    act(() => bar?.focus());
+    await settleDeferralDetail();
     expect(bar?.getAttribute("aria-label")).toContain("最后观测于");
   });
 

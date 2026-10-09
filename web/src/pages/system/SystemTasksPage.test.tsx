@@ -262,6 +262,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("08:00:01");
     expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
     expect(host?.textContent).toContain("raw_compression");
+    expect(host?.textContent).not.toContain("查看运行计量");
   });
 
   it("shows manual and scheduled task modes", async () => {
@@ -292,6 +293,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("显示 1 / 2");
     expect(page.getByRole("link", { name: /原始载荷压缩/ })).toBeTruthy();
     expect(page.queryByRole("link", { name: /数据保留与归档/ })).toBeNull();
+    expect(host?.querySelector<HTMLElement>("[hidden]")?.className).toContain("!hidden");
     expect(host?.textContent).toContain("正在执行");
     expect(host?.textContent).toContain("第 1 位");
 
