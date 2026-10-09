@@ -293,6 +293,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("显示 1 / 2");
     expect(page.getByRole("link", { name: /原始载荷压缩/ })).toBeTruthy();
     expect(page.queryByRole("link", { name: /数据保留与归档/ })).toBeNull();
+    expect(host?.querySelector<HTMLElement>("[hidden]")?.className).toContain("!hidden");
     expect(host?.textContent).toContain("正在执行");
     expect(host?.textContent).toContain("第 1 位");
 

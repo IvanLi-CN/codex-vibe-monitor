@@ -8,6 +8,7 @@ import {
   type TaskWorkloadSample,
   type TaskWorkloadTrend,
 } from "../../lib/api";
+import { AppIcon } from "../shared/AppIcon";
 
 const WINDOW_MS = 24 * 60 * 60 * 1_000;
 const CACHE_FRESHNESS_MS = 30_000;
@@ -609,85 +610,81 @@ export function TaskWorkloadSparkline({
         ? "最近 200 次"
         : status
     : "进入视口加载";
-  const controls = (
-    <>
-      <div
-        className={
-          backgroundMode
-            ? "relative z-20 flex min-w-0 justify-end md:col-span-5"
-            : "relative z-10 flex min-h-12 items-start justify-between gap-2 text-[11px]"
-        }
-      >
-        <div
-          className={
-            backgroundMode
-              ? "pointer-events-auto flex max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-0.5 rounded-sm bg-base-100/45 px-1.5 py-0.5 text-[11px]"
-              : "flex min-w-0 flex-wrap gap-x-2 gap-y-0.5"
-          }
-          style={{ color: textColor }}
-        >
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />P{" "}
-            {formatMetric(latestValues.pending)} {units.pending ?? "单位未知"}
-          </span>
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />D{" "}
-            {formatMetric(latestValues.discovered)} {units.discovered ?? "单位未知"}
-          </span>
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />C{" "}
-            {formatMetric(latestValues.processed)} {units.processed ?? "单位未知"}
-          </span>
-          <span className="text-base-content/55">{statusLabel}</span>
-          <button
-            type="button"
-            className="link link-primary whitespace-nowrap text-[11px]"
-            aria-expanded={detailsOpen}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setDetailsOpen((open) => !open);
-            }}
-          >
-            查看运行计量
-          </button>
-        </div>
+  const detailsPanel = detailsOpen ? (
+    <div
+      role="dialog"
+      aria-label={`${task.title}运行计量详情`}
+      className={
+        backgroundMode
+          ? "pointer-events-auto absolute right-3 top-9 z-30 grid w-[min(28rem,calc(100%-1.5rem))] gap-x-3 gap-y-1 rounded-sm bg-base-100/95 p-2 text-[11px] text-base-content/75 shadow-lg sm:grid-cols-2"
+          : "relative z-20 mt-1 grid gap-x-3 gap-y-1 border-t border-base-300/50 pt-2 text-[11px] text-base-content/75 sm:grid-cols-2"
+      }
+    >
+      <div>触发时间：{formatTime(latestSample?.attemptedAt)}</div>
+      <div>实际用时：{formatDuration(latestSample?.durationMs)}</div>
+      <div>结果：{resultLabel(latestSample?.status)}</div>
+      <div>来源：{latestSample?.triggerKind ?? "未知"}</div>
+      <div>待处理量：{formatWorkloadMetric(latestSample?.pending)}</div>
+      <div>本次发现：{formatWorkloadMetric(latestSample?.discovered)}</div>
+      <div>本次处理：{formatWorkloadMetric(latestSample?.processed)}</div>
+      <div className="sm:col-span-2">
+        缺失原因：
+        {latestSample?.reason ?? (latestSample ? trend?.coverage : (loadFailure ?? status))}
       </div>
-      {detailsOpen ? (
-        <div
-          role="dialog"
-          aria-label={`${task.title}运行计量详情`}
-          className={
-            backgroundMode
-              ? "pointer-events-auto absolute right-3 top-9 z-30 grid w-[min(28rem,calc(100%-1.5rem))] gap-x-3 gap-y-1 rounded-sm bg-base-100/95 p-2 text-[11px] text-base-content/75 shadow-lg sm:grid-cols-2"
-              : "relative z-20 mt-1 grid gap-x-3 gap-y-1 border-t border-base-300/50 pt-2 text-[11px] text-base-content/75 sm:grid-cols-2"
-          }
+    </div>
+  ) : null;
+  const controls = (
+    <div className="relative z-10 flex min-h-12 items-start justify-between gap-2 text-[11px]">
+      <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5" style={{ color: textColor }}>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />P{" "}
+          {formatMetric(latestValues.pending)} {units.pending ?? "单位未知"}
+        </span>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />D{" "}
+          {formatMetric(latestValues.discovered)} {units.discovered ?? "单位未知"}
+        </span>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />C{" "}
+          {formatMetric(latestValues.processed)} {units.processed ?? "单位未知"}
+        </span>
+        <span className="text-base-content/55">{statusLabel}</span>
+        <button
+          type="button"
+          className="link link-primary whitespace-nowrap text-[11px]"
+          aria-expanded={detailsOpen}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDetailsOpen((open) => !open);
+          }}
         >
-          <div>触发时间：{formatTime(latestSample?.attemptedAt)}</div>
-          <div>实际用时：{formatDuration(latestSample?.durationMs)}</div>
-          <div>结果：{resultLabel(latestSample?.status)}</div>
-          <div>来源：{latestSample?.triggerKind ?? "未知"}</div>
-          <div>待处理量：{formatWorkloadMetric(latestSample?.pending)}</div>
-          <div>本次发现：{formatWorkloadMetric(latestSample?.discovered)}</div>
-          <div>本次处理：{formatWorkloadMetric(latestSample?.processed)}</div>
-          <div className="sm:col-span-2">
-            缺失原因：
-            {latestSample?.reason ?? (latestSample ? trend?.coverage : (loadFailure ?? status))}
-          </div>
-        </div>
-      ) : null}
-    </>
+          查看运行计量
+        </button>
+      </div>
+    </div>
   );
 
   if (backgroundMode) {
     return (
       <div
         ref={containerRef}
-        className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-hidden"
+        className="pointer-events-none absolute inset-0 z-20 min-w-0 overflow-hidden"
         aria-busy={activeVisible && trend == null}
         data-testid={`task-workload-sparkline-${task.taskKey}`}
       >
         {chart}
+        <button
+          type="button"
+          className="pointer-events-auto absolute right-2 top-2 z-20 inline-flex size-6 items-center justify-center rounded-sm bg-base-100/70 text-base-content/65 shadow-sm transition-colors hover:bg-base-100 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+          aria-expanded={detailsOpen}
+          aria-label={`${task.title}运行计量详情`}
+          title={`${task.title}运行计量详情`}
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          <AppIcon name="information-outline" className="size-4" aria-hidden />
+        </button>
+        {detailsPanel}
       </div>
     );
   }
@@ -701,6 +698,7 @@ export function TaskWorkloadSparkline({
     >
       {chart}
       {controls}
+      {detailsPanel}
     </div>
   );
 }

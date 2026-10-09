@@ -80,6 +80,8 @@ type DeferralIndex = {
   prefixMaxEnd: number[];
   overlapCounts: Map<string, number>;
   byId: Map<string, PositionedDeferral>;
+  dynamic?: PositionedDeferral[];
+  base?: DeferralIndex;
 };
 
 type CachedDetail = {
@@ -328,6 +330,28 @@ function mergeIntervals(
   return merged;
 }
 
+function mergeSortedIntervals(
+  first: Array<{ startMs: number; endMs: number }>,
+  second: Array<{ startMs: number; endMs: number }>,
+): Array<{ startMs: number; endMs: number }> {
+  const merged: Array<{ startMs: number; endMs: number }> = [];
+  let firstIndex = 0;
+  let secondIndex = 0;
+  while (firstIndex < first.length || secondIndex < second.length) {
+    const left = first[firstIndex];
+    const right = second[secondIndex];
+    const next =
+      right == null || (left != null && left.startMs <= right.startMs)
+        ? (first[firstIndex++] ?? null)
+        : (second[secondIndex++] ?? null);
+    if (!next || next.endMs <= next.startMs) continue;
+    const previous = merged.at(-1);
+    if (!previous || next.startMs > previous.endMs) merged.push({ ...next });
+    else previous.endMs = Math.max(previous.endMs, next.endMs);
+  }
+  return merged;
+}
+
 function subtractIntervals(
   interval: { startMs: number; endMs: number },
   blockers: Array<{ startMs: number; endMs: number }>,
@@ -380,7 +404,43 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
   };
 }
 
-function overlappingDeferrals(
+function buildLiveDeferralIndex(
+  staticIndex: DeferralIndex,
+  liveItems: PositionedDeferral[],
+): DeferralIndex {
+  if (liveItems.length === 0) return staticIndex;
+  const overlapCounts = new Map(staticIndex.overlapCounts);
+  const byId = new Map(staticIndex.byId);
+  const dynamic = [...liveItems].sort(
+    (left, right) => left.startMs - right.startMs || left.order - right.order,
+  );
+  for (const liveItem of dynamic) {
+    const staticOverlaps = overlappingDeferralsInIndex(liveItem, staticIndex);
+    const dynamicOverlaps = dynamic.filter(
+      (other) =>
+        other.segment.segmentId !== liveItem.segment.segmentId &&
+        other.startMs < liveItem.endMs &&
+        other.endMs > liveItem.startMs,
+    );
+    overlapCounts.set(liveItem.segment.segmentId, staticOverlaps.length + dynamicOverlaps.length);
+    for (const staticItem of staticOverlaps) {
+      overlapCounts.set(
+        staticItem.segment.segmentId,
+        (overlapCounts.get(staticItem.segment.segmentId) ?? 0) + 1,
+      );
+    }
+    byId.set(liveItem.segment.segmentId, liveItem);
+  }
+  return {
+    ...staticIndex,
+    overlapCounts,
+    byId,
+    dynamic,
+    base: staticIndex,
+  };
+}
+
+function overlappingDeferralsInIndex(
   item: PositionedDeferral,
   index: DeferralIndex,
 ): PositionedDeferral[] {
@@ -393,8 +453,26 @@ function overlappingDeferrals(
         other.segment.segmentId !== item.segment.segmentId &&
         other.startMs < item.endMs &&
         other.endMs > item.startMs,
-    )
-    .sort((left, right) => left.order - right.order);
+    );
+}
+
+function overlappingDeferrals(
+  item: PositionedDeferral,
+  index: DeferralIndex,
+): PositionedDeferral[] {
+  const base = index.base ?? index;
+  const matches = overlappingDeferralsInIndex(item, base);
+  if (index.dynamic) {
+    matches.push(
+      ...index.dynamic.filter(
+        (other) =>
+          other.segment.segmentId !== item.segment.segmentId &&
+          other.startMs < item.endMs &&
+          other.endMs > item.startMs,
+      ),
+    );
+  }
+  return matches.sort((left, right) => left.order - right.order);
 }
 
 function mergeCoverage(
@@ -457,6 +535,10 @@ function executionTitle(bar: ExecutionBar): string {
     .join("；");
 }
 
+function executionSummary(bar: ExecutionBar): string {
+  return `${bar.segment.title}；结果：${outcomeLabel(bar.segment.status)}；选择查看详情`;
+}
+
 function deferralDetail(item: PositionedDeferral): string {
   const { segment } = item;
   return `${segment.title}；${reasonLabel(segment.reason)}；开始 ${exactTime(item.startMs)}；${segment.finishedAt ? `恢复 ${exactTime(timestamp(segment.finishedAt, item.endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${exactTime(timestamp(segment.retryAt, item.endMs))}` : "；重试时间未知"}`;
@@ -487,8 +569,10 @@ type ExecutionLayerProps = {
   windowStart: number;
   dark: boolean;
   taskByKey: Map<string, ManagedTask>;
-  getTitle: (bar: ExecutionBar) => string;
+  getSummary: (bar: ExecutionBar) => string;
   onSelect: (bars: ExecutionBar[]) => void;
+  onActivate: (bar: ExecutionBar, node: SVGGElement) => void;
+  onDeactivate: (bar: ExecutionBar, node: SVGGElement) => void;
 };
 
 const ExecutionLayer = memo(function ExecutionLayer({
@@ -498,8 +582,10 @@ const ExecutionLayer = memo(function ExecutionLayer({
   windowStart,
   dark,
   taskByKey,
-  getTitle,
+  getSummary,
   onSelect,
+  onActivate,
+  onDeactivate,
 }: ExecutionLayerProps): JSX.Element {
   const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
   return (
@@ -510,17 +596,32 @@ const ExecutionLayer = memo(function ExecutionLayer({
         const width = Math.max(MIN_BAR_WIDTH, x(bar.endMs) - barX);
         const color = managedTaskColor(taskByKey.get(bar.segment.taskKey), dark);
         const appearance = outcomeAppearance(bar.segment.status, dark);
-        const title = getTitle(bar);
+        const summary = getSummary(bar);
         return (
           <g
             key={bar.segment.segmentId}
-            aria-label={title}
+            aria-label={summary}
             className="cursor-pointer outline-none focus-visible:opacity-75"
+            onBlur={(event) => {
+              if (
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
+              ) {
+                onDeactivate(bar, event.currentTarget);
+              }
+            }}
             onClick={() => onSelect([bar])}
+            onFocus={(event) => onActivate(bar, event.currentTarget)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
                 onSelect([bar]);
+              }
+            }}
+            onMouseEnter={(event) => onActivate(bar, event.currentTarget)}
+            onMouseLeave={(event) => {
+              if (document.activeElement !== event.currentTarget) {
+                onDeactivate(bar, event.currentTarget);
               }
             }}
             role="button"
@@ -538,7 +639,7 @@ const ExecutionLayer = memo(function ExecutionLayer({
               strokeDasharray={appearance?.dashArray}
               strokeWidth={appearance ? 1.5 : bar.active ? 1 : 0}
             />
-            <title>{title}</title>
+            <title>{summary}</title>
           </g>
         );
       })}
@@ -599,7 +700,7 @@ type DeferralLayerProps = {
   windowStart: number;
   pressureTop: number;
   overlapCounts: Map<string, number>;
-  onSelect: (segment: TaskTimelineSegment) => void;
+  onSelect: (items: PositionedDeferral[]) => void;
   onActivate: (item: PositionedDeferral, node: SVGGElement, members: PositionedDeferral[]) => void;
   onDeactivate: (
     item: PositionedDeferral,
@@ -644,12 +745,12 @@ const DeferralLayer = memo(function DeferralLayer({
                 onDeactivate(item, event.currentTarget, members);
               }
             }}
-            onClick={() => onSelect(segment)}
+            onClick={() => onSelect(members)}
             onFocus={(event) => onActivate(item, event.currentTarget, members)}
             onKeyDown={(event) => {
               if (event.key === "Enter" || event.key === " ") {
                 event.preventDefault();
-                onSelect(segment);
+                onSelect(members);
               }
             }}
             onMouseEnter={(event) => onActivate(item, event.currentTarget, members)}
@@ -699,11 +800,15 @@ export function TaskTimelineChart({
   runtimeBoundaryMs: number;
   runtimeObservedAt: string | null;
 }): JSX.Element {
-  const [selectedExecutions, setSelectedExecutions] = useState<ExecutionBar[] | null>(null);
-  const [selectedDeferral, setSelectedDeferral] = useState<TaskTimelineSegment | null>(null);
+  const [selectedExecutionIds, setSelectedExecutionIds] = useState<string[] | null>(null);
+  const [selectedDeferralIds, setSelectedDeferralIds] = useState<string[] | null>(null);
+  const activeExecutionIdRef = useRef<string | null>(null);
+  const activeExecutionNodeRef = useRef<SVGGElement | null>(null);
   const activeDeferralIdRef = useRef<string | null>(null);
   const activeDeferralNodeRef = useRef<SVGGElement | null>(null);
   const deferralIndexRef = useRef<DeferralIndex | null>(null);
+  const executionBarByIdRef = useRef(new Map<string, ExecutionBar>());
+  const executionTitleTimerRef = useRef<number | null>(null);
   const deferralTitleTimerRef = useRef<number | null>(null);
   const staticTimelineLayerRef = useRef<SVGGElement>(null);
   const executionDetailCacheRef = useRef(new Map<string, CachedDetail>());
@@ -716,6 +821,12 @@ export function TaskTimelineChart({
       document.documentElement.getAttribute("data-theme") === "vibe-dark");
   const windowStart = nowMs - TIMELINE_WINDOW_MS;
   const modelWindowStartRef = useRef(windowStart);
+  const executionSnapshotRef = useRef(executions);
+  if (executionSnapshotRef.current !== executions) {
+    executionSnapshotRef.current = executions;
+    modelWindowStartRef.current = windowStart;
+  }
+  const modelWindowStart = modelWindowStartRef.current;
   const taskByKey = useMemo(() => new Map(tasks.map((task) => [task.taskKey, task])), [tasks]);
 
   useEffect(() => {
@@ -732,6 +843,10 @@ export function TaskTimelineChart({
       if (deferralTitleTimerRef.current != null) {
         window.clearTimeout(deferralTitleTimerRef.current);
         deferralTitleTimerRef.current = null;
+      }
+      if (executionTitleTimerRef.current != null) {
+        window.clearTimeout(executionTitleTimerRef.current);
+        executionTitleTimerRef.current = null;
       }
     },
     [],
@@ -763,9 +878,9 @@ export function TaskTimelineChart({
   useEffect(() => {
     const layer = staticTimelineLayerRef.current;
     if (!layer) return;
-    const offset = ((modelWindowStartRef.current - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+    const offset = ((modelWindowStart - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
     layer.setAttribute("transform", `translate(${offset} 0)`);
-  }, [chartWidth, windowStart]);
+  }, [chartWidth, modelWindowStart, windowStart]);
 
   const executionLayout = useMemo<ExecutionLayout[]>(() => {
     const byUid = new Map<string, TaskTimelineSegment>();
@@ -835,7 +950,7 @@ export function TaskTimelineChart({
 
   const staticExecutionBars = useMemo(() => {
     const bars: ExecutionBar[] = [];
-    const staticWindowStart = modelWindowStartRef.current;
+    const staticWindowStart = modelWindowStart;
     const staticWindowEnd = staticWindowStart + TIMELINE_WINDOW_MS;
     for (const item of executionLayout) {
       if (item.active || item.current) continue;
@@ -850,7 +965,7 @@ export function TaskTimelineChart({
       });
     }
     return bars;
-  }, [executionLayout]);
+  }, [executionLayout, modelWindowStart]);
 
   const dynamicExecutionBars = useMemo(() => {
     const bars: ExecutionBar[] = [];
@@ -873,6 +988,7 @@ export function TaskTimelineChart({
     () => executions.filter((segment) => segment.kind === "deferral"),
     [executions],
   );
+  const staticRuntimeBoundary = runtimeFresh ? Number.POSITIVE_INFINITY : runtimeBoundaryMs;
   const explicitCoverageGaps = useMemo(
     () => executions.filter((segment) => segment.kind === "coverage_gap"),
     [executions],
@@ -902,7 +1018,7 @@ export function TaskTimelineChart({
     });
 
   const staticPositionedDeferrals = useMemo<PositionedDeferral[]>(() => {
-    const staticWindowStart = modelWindowStartRef.current;
+    const staticWindowStart = modelWindowStart;
     const staticWindowEnd = staticWindowStart + TIMELINE_WINDOW_MS;
     return deferrals
       .map((segment, order) => {
@@ -914,7 +1030,7 @@ export function TaskTimelineChart({
           : live
             ? Number.POSITIVE_INFINITY
             : active
-              ? Math.min(staticWindowEnd, runtimeBoundaryMs)
+              ? Math.min(staticWindowEnd, staticRuntimeBoundary)
               : timestamp(segment.lastObservedAt, startMs);
         return {
           segment,
@@ -928,38 +1044,40 @@ export function TaskTimelineChart({
         (item) => !item.live && item.endMs >= staticWindowStart && item.startMs <= staticWindowEnd,
       )
       .map(({ live: _live, ...item }) => item);
-  }, [deferrals, runtimeBoundaryMs, runtimeFresh]);
+  }, [deferrals, modelWindowStart, runtimeFresh, staticRuntimeBoundary]);
+  const openDeferrals = useMemo(
+    () =>
+      deferrals.filter(
+        (segment) => segment.status === "waiting" && !segment.finishedAt && runtimeFresh,
+      ),
+    [deferrals, runtimeFresh],
+  );
   const livePositionedDeferrals = useMemo<PositionedDeferral[]>(
     () =>
-      deferrals
-        .map((segment, order) => {
+      openDeferrals
+        .map((segment) => {
+          const order = deferrals.indexOf(segment);
           const startMs = timestamp(segment.startedAt, nowMs);
-          const live = segment.status === "waiting" && !segment.finishedAt && runtimeFresh;
           return {
             segment,
             startMs: Math.max(windowStart, startMs),
-            endMs: Math.min(nowMs, live ? nowMs : timestamp(segment.lastObservedAt, startMs)),
+            endMs: nowMs,
             order,
-            live,
           };
         })
-        .filter((item) => item.live && item.endMs >= windowStart && item.startMs <= nowMs)
-        .map(({ live: _live, ...item }) => item),
-    [deferrals, nowMs, runtimeFresh, windowStart],
+        .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs)
+        .sort((left, right) => left.startMs - right.startMs || left.order - right.order),
+    [deferrals, nowMs, openDeferrals, windowStart],
   );
-  const positionedDeferrals = useMemo(
-    () => [...staticPositionedDeferrals, ...livePositionedDeferrals],
-    [livePositionedDeferrals, staticPositionedDeferrals],
-  );
-  const deferralIndex = useMemo(
-    () => buildDeferralIndex(positionedDeferrals),
-    [positionedDeferrals],
-  );
-  deferralIndexRef.current = deferralIndex;
   const staticDeferralIndex = useMemo(
     () => buildDeferralIndex(staticPositionedDeferrals),
     [staticPositionedDeferrals],
   );
+  const deferralIndex = useMemo(
+    () => buildLiveDeferralIndex(staticDeferralIndex, livePositionedDeferrals),
+    [livePositionedDeferrals, staticDeferralIndex],
+  );
+  deferralIndexRef.current = deferralIndex;
   const staticDeferralRenderGroups = useMemo(
     () => buildDeferralRenderGroups(staticPositionedDeferrals),
     [staticPositionedDeferrals],
@@ -968,23 +1086,34 @@ export function TaskTimelineChart({
     () => buildDeferralRenderGroups(livePositionedDeferrals),
     [livePositionedDeferrals],
   );
-  const explicitCoverageIntervals = useMemo(
+  const staticExplicitCoverageIntervals = useMemo(
     () =>
       explicitCoverageGaps
         .map((gap) => ({
-          startMs: Math.max(windowStart, timestamp(gap.startedAt, nowMs)),
-          endMs: Math.min(nowMs, timestamp(gap.finishedAt, timestamp(gap.lastObservedAt, nowMs))),
+          startMs: Math.max(modelWindowStart, timestamp(gap.startedAt, modelWindowStart)),
+          endMs: Math.min(
+            modelWindowStart + TIMELINE_WINDOW_MS,
+            timestamp(gap.finishedAt, timestamp(gap.lastObservedAt, modelWindowStart)),
+          ),
         }))
         .filter((interval) => interval.endMs > interval.startMs),
-    [explicitCoverageGaps, nowMs, windowStart],
+    [explicitCoverageGaps, modelWindowStart],
+  );
+  const staticUnknownCoverageIntervals = useMemo(
+    () =>
+      mergeIntervals([
+        ...staticPositionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
+        ...staticExplicitCoverageIntervals,
+      ]),
+    [staticExplicitCoverageIntervals, staticPositionedDeferrals],
   );
   const unknownCoverageIntervals = useMemo(
     () =>
-      mergeIntervals([
-        ...positionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
-        ...explicitCoverageIntervals,
-      ]),
-    [explicitCoverageIntervals, positionedDeferrals],
+      mergeSortedIntervals(
+        staticUnknownCoverageIntervals,
+        livePositionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
+      ),
+    [livePositionedDeferrals, staticUnknownCoverageIntervals],
   );
   const visibleCoverageBands: Band[] = coverageBands.flatMap((band): Band[] => {
     if (band.status === "gap") return [band];
@@ -1011,15 +1140,14 @@ export function TaskTimelineChart({
   const timeAxisHours =
     chartWidth < 220 ? [0, 12] : chartWidth < 520 ? [0, 6, 12] : TIME_AXIS_HOURS;
   const staticExecutionDensity = useMemo(
-    () => buildExecutionDensity(staticExecutionBars, chartWidth, modelWindowStartRef.current),
-    [chartWidth, staticExecutionBars],
+    () => buildExecutionDensity(staticExecutionBars, chartWidth, modelWindowStart),
+    [chartWidth, modelWindowStart, staticExecutionBars],
   );
   const dynamicExecutionDensity = useMemo(
     () => buildExecutionDensity(dynamicExecutionBars, chartWidth, windowStart),
     [chartWidth, dynamicExecutionBars, windowStart],
   );
   const cachedExecutionTitle = useCallback((bar: ExecutionBar): string => {
-    if (bar.active) return executionTitle(bar);
     const signature = `${bar.segment.revision}:${bar.segment.status}:${bar.segment.finishedAt ?? bar.segment.lastObservedAt}:${bar.endMs}`;
     const cached = executionDetailCacheRef.current.get(bar.segment.segmentId);
     if (cached?.signature === signature) return cached.title;
@@ -1027,6 +1155,76 @@ export function TaskTimelineChart({
     executionDetailCacheRef.current.set(bar.segment.segmentId, { signature, title });
     return title;
   }, []);
+
+  const executionBarById = useMemo(() => {
+    const next = new Map<string, ExecutionBar>();
+    for (const bar of [...staticExecutionBars, ...dynamicExecutionBars]) {
+      next.set(bar.segment.segmentId, bar);
+    }
+    for (const item of executionLayout) {
+      if (next.has(item.segment.segmentId)) continue;
+      next.set(item.segment.segmentId, {
+        segment: item.segment,
+        active: item.active,
+        lane: item.lane,
+        startMs: item.startMs,
+        endMs: item.active
+          ? nowMs
+          : item.current
+            ? Math.min(nowMs, runtimeBoundaryMs, item.endMs)
+            : item.endMs,
+      });
+    }
+    return next;
+  }, [dynamicExecutionBars, executionLayout, nowMs, runtimeBoundaryMs, staticExecutionBars]);
+  executionBarByIdRef.current = executionBarById;
+
+  const updateExecutionNode = useCallback(
+    (node: SVGGElement, bar: ExecutionBar, expanded: boolean) => {
+      const summary = executionSummary(bar);
+      if (executionTitleTimerRef.current != null) {
+        window.clearTimeout(executionTitleTimerRef.current);
+        executionTitleTimerRef.current = null;
+      }
+      node.setAttribute("aria-label", expanded ? summary : summary);
+      const titleElement = node.querySelector("title");
+      if (!titleElement) return;
+      titleElement.textContent = summary;
+      if (!expanded) return;
+      executionTitleTimerRef.current = window.setTimeout(() => {
+        const currentBar = executionBarByIdRef.current.get(bar.segment.segmentId) ?? bar;
+        if (
+          activeExecutionNodeRef.current === node &&
+          activeExecutionIdRef.current === bar.segment.segmentId
+        ) {
+          const detail = cachedExecutionTitle(currentBar);
+          node.setAttribute("aria-label", detail);
+          titleElement.textContent = detail;
+        }
+        executionTitleTimerRef.current = null;
+      }, 80);
+    },
+    [cachedExecutionTitle],
+  );
+
+  const activateExecution = useCallback(
+    (bar: ExecutionBar, node: SVGGElement) => {
+      activeExecutionIdRef.current = bar.segment.segmentId;
+      activeExecutionNodeRef.current = node;
+      updateExecutionNode(node, bar, true);
+    },
+    [updateExecutionNode],
+  );
+
+  const deactivateExecution = useCallback(
+    (bar: ExecutionBar, node: SVGGElement) => {
+      if (activeExecutionIdRef.current !== bar.segment.segmentId) return;
+      activeExecutionIdRef.current = null;
+      activeExecutionNodeRef.current = null;
+      updateExecutionNode(node, bar, false);
+    },
+    [updateExecutionNode],
+  );
 
   const cachedDeferralTitle = useCallback(
     (item: PositionedDeferral, overlaps: PositionedDeferral[]): string => {
@@ -1115,13 +1313,59 @@ export function TaskTimelineChart({
   );
 
   const selectExecutions = useCallback((bars: ExecutionBar[]) => {
-    setSelectedExecutions(bars);
-    setSelectedDeferral(null);
+    setSelectedExecutionIds(bars.map((bar) => bar.segment.segmentId));
+    setSelectedDeferralIds(null);
   }, []);
-  const selectDeferral = useCallback((segment: TaskTimelineSegment) => {
-    setSelectedDeferral(segment);
-    setSelectedExecutions(null);
+  const selectDeferral = useCallback((items: PositionedDeferral[]) => {
+    setSelectedDeferralIds(items.map((item) => item.segment.segmentId));
+    setSelectedExecutionIds(null);
   }, []);
+
+  const selectedExecutions = useMemo(
+    () =>
+      selectedExecutionIds
+        ? selectedExecutionIds
+            .map((id) => executionBarById.get(id))
+            .filter((bar): bar is ExecutionBar => bar != null)
+        : null,
+    [executionBarById, selectedExecutionIds],
+  );
+  const selectedDeferrals = useMemo(
+    () =>
+      selectedDeferralIds
+        ? selectedDeferralIds
+            .map((id) => deferralIndex.byId.get(id)?.segment)
+            .filter((segment): segment is TaskTimelineSegment => segment != null)
+        : null,
+    [deferralIndex, selectedDeferralIds],
+  );
+  const selectedDeferral = selectedDeferrals?.[0] ?? null;
+
+  useEffect(() => {
+    if (selectedExecutionIds && selectedExecutions?.length !== selectedExecutionIds.length) {
+      setSelectedExecutionIds(
+        selectedExecutions?.length ? selectedExecutions.map((bar) => bar.segment.segmentId) : null,
+      );
+    }
+    if (selectedDeferralIds && selectedDeferrals?.length !== selectedDeferralIds.length) {
+      setSelectedDeferralIds(
+        selectedDeferrals?.length ? selectedDeferrals.map((segment) => segment.segmentId) : null,
+      );
+    }
+  }, [selectedDeferralIds, selectedDeferrals, selectedExecutionIds, selectedExecutions]);
+
+  useEffect(() => {
+    const activeId = activeExecutionIdRef.current;
+    const node = activeExecutionNodeRef.current;
+    if (!activeId || !node) return;
+    const bar = executionBarById.get(activeId);
+    if (!bar) {
+      activeExecutionIdRef.current = null;
+      activeExecutionNodeRef.current = null;
+      return;
+    }
+    updateExecutionNode(node, bar, true);
+  }, [executionBarById, updateExecutionNode]);
 
   useEffect(() => {
     const activeId = activeDeferralIdRef.current;
@@ -1138,8 +1382,10 @@ export function TaskTimelineChart({
 
   const selectedDescription = selectedExecutions
     ? `${selectedExecutions.length} 次任务执行`
-    : selectedDeferral
-      ? reasonLabel(selectedDeferral.reason)
+    : selectedDeferrals
+      ? selectedDeferrals.length > 1
+        ? `${selectedDeferrals.length} 条任务让行`
+        : reasonLabel(selectedDeferrals[0]?.reason)
       : null;
 
   return (
@@ -1306,16 +1552,18 @@ export function TaskTimelineChart({
                 singles={staticExecutionDensity.singles}
                 groups={staticExecutionDensity.groups}
                 chartWidth={chartWidth}
-                windowStart={modelWindowStartRef.current}
+                windowStart={modelWindowStart}
                 dark={dark}
                 taskByKey={taskByKey}
-                getTitle={cachedExecutionTitle}
+                getSummary={executionSummary}
                 onSelect={selectExecutions}
+                onActivate={activateExecution}
+                onDeactivate={deactivateExecution}
               />
               <DeferralLayer
                 groups={staticDeferralRenderGroups}
                 chartWidth={chartWidth}
-                windowStart={modelWindowStartRef.current}
+                windowStart={modelWindowStart}
                 pressureTop={pressureTop}
                 overlapCounts={staticDeferralIndex.overlapCounts}
                 onSelect={selectDeferral}
@@ -1330,8 +1578,10 @@ export function TaskTimelineChart({
               windowStart={windowStart}
               dark={dark}
               taskByKey={taskByKey}
-              getTitle={cachedExecutionTitle}
+              getSummary={executionSummary}
               onSelect={selectExecutions}
+              onActivate={activateExecution}
+              onDeactivate={deactivateExecution}
             />
             <DeferralLayer
               groups={liveDeferralRenderGroups}
@@ -1361,7 +1611,7 @@ export function TaskTimelineChart({
             <button
               type="button"
               className="text-sm text-primary hover:underline"
-              onClick={() => setSelectedExecutions(null)}
+              onClick={() => setSelectedExecutionIds(null)}
             >
               收起
             </button>
@@ -1413,42 +1663,61 @@ export function TaskTimelineChart({
             ))}
           </ul>
         </div>
-      ) : selectedDeferral ? (
+      ) : selectedDeferrals ? (
         <div
           className="flex flex-wrap items-center justify-between gap-2 border-b border-base-300/60 pb-3 text-sm"
           aria-live="polite"
         >
           <div>
-            <strong>{selectedDeferral.title}</strong>
-            <span className="ml-2 text-base-content/65">
-              {reasonLabel(selectedDeferral.reason)}
-            </span>
-            <div className="mt-1 text-xs text-base-content/60">{selectedDeferral.taskKey}</div>
-            <div className="mt-1 text-xs text-base-content/60">
-              开始：{exactTime(timestamp(selectedDeferral.startedAt, nowMs))} · 恢复：
-              {selectedDeferral.finishedAt
-                ? exactTime(timestamp(selectedDeferral.finishedAt, nowMs))
-                : "尚未确认"}
-              {" · "}重试时间：
-              {selectedDeferral.retryAt
-                ? exactTime(timestamp(selectedDeferral.retryAt, nowMs))
-                : "未知"}
-            </div>
+            <strong>
+              {selectedDeferrals.length > 1
+                ? `${selectedDeferrals.length} 条任务让行`
+                : selectedDeferral?.title}
+            </strong>
+            {selectedDeferrals.length === 1 ? (
+              <>
+                <span className="ml-2 text-base-content/65">
+                  {reasonLabel(selectedDeferral?.reason)}
+                </span>
+                <div className="mt-1 text-xs text-base-content/60">{selectedDeferral?.taskKey}</div>
+                <div className="mt-1 text-xs text-base-content/60">
+                  开始：{exactTime(timestamp(selectedDeferral?.startedAt, nowMs))} · 恢复：
+                  {selectedDeferral?.finishedAt
+                    ? exactTime(timestamp(selectedDeferral.finishedAt, nowMs))
+                    : "尚未确认"}
+                  {" · "}重试时间：
+                  {selectedDeferral?.retryAt
+                    ? exactTime(timestamp(selectedDeferral.retryAt, nowMs))
+                    : "未知"}
+                </div>
+              </>
+            ) : null}
           </div>
-          <span className="text-xs text-base-content/65">
-            受影响任务：{selectedDeferral.title}；恢复条件：
-            {selectedDeferral.finishedAt
-              ? `已于 ${compactTime(timestamp(selectedDeferral.finishedAt, nowMs))} 恢复`
-              : selectedDeferral.retryAt
-                ? `预计 ${compactTime(timestamp(selectedDeferral.retryAt, nowMs))} 后重新准入`
-                : selectedDeferral.status === "waiting"
-                  ? "等待后端确认资源释放或压力恢复"
-                  : "恢复时间未知"}
-          </span>
+          {selectedDeferrals.length === 1 && selectedDeferral ? (
+            <span className="text-xs text-base-content/65">
+              受影响任务：{selectedDeferral.title}；恢复条件：
+              {selectedDeferral.finishedAt
+                ? `已于 ${compactTime(timestamp(selectedDeferral.finishedAt, nowMs))} 恢复`
+                : selectedDeferral.retryAt
+                  ? `预计 ${compactTime(timestamp(selectedDeferral.retryAt, nowMs))} 后重新准入`
+                  : selectedDeferral.status === "waiting"
+                    ? "等待后端确认资源释放或压力恢复"
+                    : "恢复时间未知"}
+            </span>
+          ) : (
+            <ul className="text-xs text-base-content/65">
+              {selectedDeferrals.map((segment) => (
+                <li key={segment.segmentId}>
+                  {segment.title} · {segment.segmentId} · {reasonLabel(segment.reason)} ·{" "}
+                  {segment.finishedAt ? "已恢复" : "尚未确认恢复"}
+                </li>
+              ))}
+            </ul>
+          )}
           <button
             type="button"
             className="text-sm text-primary hover:underline"
-            onClick={() => setSelectedDeferral(null)}
+            onClick={() => setSelectedDeferralIds(null)}
           >
             收起
           </button>
