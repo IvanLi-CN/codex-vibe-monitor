@@ -11,7 +11,7 @@
     "description": "Archive replay SHA identities, ordered usage-breakdown repair progress, and prompt-cache staging generation fences.",
     "storage_implementation": "Additive main-database SQLite columns, one replay identity index, and one repair-progress table. No public API fields or response status values change.",
     "source_compatibility_range": {
-      "from_program_versions": "v4.3.0 origin/main schema at 6447cec2e9f6790b04f4e828e9d43f440f3105f; additive objects are readable by the same-Major schema initializer.",
+      "from_program_versions": "v4.3.0 origin/main schema at 1f3881075b1fe749e964dda3ec66ab10b710c797 (post-Proxy #1096 merge); additive objects are readable by the same-Major schema initializer.",
       "to_program_version": "Candidate branch th/pr-maintenance-incremental; final commit and PR identity are bound by the delivery record.",
       "direct_major_skips_supported": false
     }

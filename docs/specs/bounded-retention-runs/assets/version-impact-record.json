@@ -60,7 +60,7 @@
       "applicable": true,
       "impact": "minor",
       "state_description": "Replay SHA identity, ordered usage-breakdown repair cursor, and prompt-cache staging pending_generation.",
-      "source_program_compatibility_range": "v4.3.0 origin/main schema through the th/pr-maintenance-incremental candidate; direct Major skips are unsupported.",
+      "source_program_compatibility_range": "v4.3.0 origin/main schema at 1f3881075b1fe749e964dda3ec66ab10b710c797 through the th/pr-maintenance-incremental candidate; direct Major skips are unsupported.",
       "evidence": [
         "Additive/idempotent schema installation and re-entry regression.",
         "Candidate-specific migration record with repair-forward behavior.",
