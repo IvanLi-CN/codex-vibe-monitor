@@ -467,9 +467,34 @@ async fn prompt_cache_statistics_queue_hot_generation_cannot_starve_cold_keys() 
         .await
         .unwrap();
     assert_eq!(changed.defer_reason, Some("stats_generation_changed"));
-    let (requests, cursor): (i64, i64) = sqlx::query_as("SELECT request_count,(SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000') FROM prompt_cache_conversations WHERE prompt_cache_key='checkpoint-key-000'")
+    let (requests, cursor, pending_generation): (i64, i64, Option<i64>) = sqlx::query_as("SELECT request_count,(SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000'),(SELECT pending_generation FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000') FROM prompt_cache_conversations WHERE prompt_cache_key='checkpoint-key-000'")
         .fetch_one(&pool).await.unwrap();
-    assert_eq!((requests, cursor), (0, 0));
+    assert_eq!(requests, 0);
+    assert!(
+        cursor > 0,
+        "generation changes preserve the committed prefix"
+    );
+    assert!(pending_generation.is_some());
+
+    sqlx::query(
+        "UPDATE codex_invocations SET total_tokens=total_tokens+1 WHERE invoke_id='checkpoint-0-0'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let changed_again = run_prompt_cache_conversations_materialization(&pool, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(changed_again.defer_reason, Some("stats_generation_changed"));
+    let (cursor_after, pending_generation_after): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT cursor_id,pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cursor_after, cursor);
+    assert!(pending_generation_after.is_some());
 
     // A fresh control instance and schema re-entry must preserve scheduler and staging state.
     ensure_prompt_cache_conversations_schema(&pool)
@@ -496,7 +521,7 @@ async fn prompt_cache_statistics_queue_hot_generation_cannot_starve_cold_keys() 
     }
     let totals: Vec<(i64, i64)> = sqlx::query_as("SELECT request_count,total_tokens FROM prompt_cache_conversations ORDER BY prompt_cache_key")
         .fetch_all(&pool).await.unwrap();
-    assert_eq!(totals, vec![(512, 514), (37, 37), (58, 58)]);
+    assert_eq!(totals, vec![(512, 515), (37, 37), (58, 58)]);
     let (queue, staging, publications): (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue),(SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging),(SELECT COUNT(*) FROM checkpoint_publications)")
         .fetch_one(&pool).await.unwrap();
     assert_eq!((queue, staging, publications), (0, 0, 3));
@@ -1049,14 +1074,15 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
         generation_change.defer_reason,
         Some("stats_generation_changed")
     );
-    let reset_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+    let (preserved_cursor, pending_generation): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT cursor_id,pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
          WHERE prompt_cache_key='paged-materialization-key'",
     )
     .fetch_one(&pool)
     .await
-    .expect("load reset statistics staging cursor");
-    assert_eq!(reset_cursor, 0);
+    .expect("load coalesced statistics staging cursor");
+    assert_eq!(preserved_cursor, 256);
+    assert!(pending_generation.is_some());
 
     let restarted = MaintenanceStore::from_pool(maintenance.pool.clone());
     restarted

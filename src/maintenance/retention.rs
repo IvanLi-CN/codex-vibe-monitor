@@ -68,6 +68,7 @@ const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(
 const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS: i32 = 1_000;
+const RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL: Duration = Duration::from_secs(30);
 const SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT: i64 = 200;
 const SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS: usize = 500;
 const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
@@ -657,6 +658,18 @@ static RETENTION_RECOVERY_HEALTH: Lazy<std::sync::Mutex<RetentionRecoveryHealthS
     Lazy::new(|| std::sync::Mutex::new(RetentionRecoveryHealthSnapshot::default()));
 static RAW_ORPHAN_SWEEP_HEALTH: Lazy<std::sync::Mutex<RawOrphanSweepHealthSnapshot>> =
     Lazy::new(|| std::sync::Mutex::new(RawOrphanSweepHealthSnapshot::default()));
+#[cfg(not(test))]
+static RETENTION_RECOVERY_BACKLOG_CACHE: Lazy<
+    std::sync::Mutex<Option<RetentionRecoveryBacklogCache>>,
+> = Lazy::new(|| std::sync::Mutex::new(None));
+
+#[cfg(not(test))]
+struct RetentionRecoveryBacklogCache {
+    cutoff: String,
+    observed_at: Instant,
+    count: i64,
+    oldest_backlog_at: Option<String>,
+}
 
 pub(crate) fn retention_recovery_health_snapshot() -> RetentionRecoveryHealthSnapshot {
     RETENTION_RECOVERY_HEALTH
@@ -2115,6 +2128,52 @@ fn retention_live_mirror_archive_path(
     }
 }
 
+async fn load_retention_recovery_expired_backlog(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+) -> Result<(i64, Option<String>)> {
+    #[cfg(not(test))]
+    {
+        let cached = RETENTION_RECOVERY_BACKLOG_CACHE
+            .lock()
+            .expect("retention recovery backlog cache")
+            .as_ref()
+            .filter(|cached| {
+                cached.cutoff == cutoff
+                    && cached.observed_at.elapsed() < RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL
+            })
+            .map(|cached| (cached.count, cached.oldest_backlog_at.clone()));
+        if let Some(cached) = cached {
+            return Ok(cached);
+        }
+    }
+
+    let backlog = sqlx::query_as::<_, (i64, Option<String>)>(
+        r#"
+            SELECT COUNT(*), MIN(occurred_at)
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+            "#,
+    )
+    .bind(cutoff)
+    .fetch_one(pool)
+    .await?;
+
+    #[cfg(not(test))]
+    {
+        let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
+            .lock()
+            .expect("retention recovery backlog cache");
+        *cache = Some(RetentionRecoveryBacklogCache {
+            cutoff: cutoff.to_string(),
+            observed_at: Instant::now(),
+            count: backlog.0,
+            oldest_backlog_at: backlog.1.clone(),
+        });
+    }
+    Ok(backlog)
+}
+
 async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConfig) -> Result<()> {
     let (prepared_count, quarantined_count, next_retry_at) =
         sqlx::query_as::<_, (i64, i64, Option<String>)>(
@@ -2170,16 +2229,8 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
     .fetch_optional(pool)
     .await?;
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
-    let (expired_backlog_count, oldest_backlog_at) = sqlx::query_as::<_, (i64, Option<String>)>(
-        r#"
-            SELECT COUNT(*), MIN(occurred_at)
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-            "#,
-    )
-    .bind(cutoff)
-    .fetch_one(pool)
-    .await?;
+    let (expired_backlog_count, oldest_backlog_at) =
+        load_retention_recovery_expired_backlog(pool, &cutoff).await?;
     let now = Utc::now();
     let oldest_backlog_age_secs = oldest_backlog_at
         .as_deref()
@@ -4574,6 +4625,13 @@ pub(crate) struct RetentionRawDirectoryTraversal {
     root: Option<PathBuf>,
     directory: Option<ReadDir>,
     pending_candidates: VecDeque<RetentionRawDirectoryEntry>,
+}
+
+impl RetentionRawDirectoryTraversal {
+    fn reset_after_interrupted_slice(&mut self) {
+        self.directory = None;
+        self.pending_candidates.clear();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -7007,6 +7065,12 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
 
             match result {
                 Ok(pass) => {
+                    if pass.deferred || pass.failures > 0 {
+                        // A slice may have advanced the process-local ReadDir before a
+                        // candidate was durably settled. Reopen from the durable ledger on the
+                        // next retry so an interrupted suffix is never skipped in-process.
+                        traversal.reset_after_interrupted_slice();
+                    }
                     let progressed = pass.inspected_entries > 0
                         || pass.reconciliation_rows_checked > 0
                         || pass.removed > 0;
@@ -7138,6 +7202,7 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
                     }
                 }
                 Err(error) if is_retention_write_deferred(&error) => {
+                    traversal.reset_after_interrupted_slice();
                     let admission_evidence = raw_orphan_sweep_admission_details(&error);
                     let persisted = persist_raw_orphan_sweep_schedule_with_evidence(
                         &state.pool,
@@ -7178,6 +7243,7 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
                     }
                 }
                 Err(error) => {
+                    traversal.reset_after_interrupted_slice();
                     let retry_secs =
                         raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count);
                     let fingerprint = retention_error_fingerprint(&error);

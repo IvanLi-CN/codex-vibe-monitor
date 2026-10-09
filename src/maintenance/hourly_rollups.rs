@@ -1,6 +1,7 @@
 use super::*;
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE: i64 = 64;
 const LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING: &str =
     "structured_rollup_unknown_reasoning";
 const LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED: &str = "blocked_payload_required";
@@ -252,12 +253,14 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
                 )
           )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        LIMIT ?5
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .bind(HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await
     .map_err(Into::into)
@@ -291,10 +294,21 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
           AND batches.status = ?1
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
+          AND NOT EXISTS (
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS replay
+                WHERE replay.target = ?2
+                  AND replay.dataset = batches.dataset
+                  AND replay.file_path = batches.file_path
+                  AND replay.archive_sha256 = batches.sha256
+          )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        LIMIT ?3
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .bind(HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await
     .map_err(Into::into)
@@ -1551,7 +1565,16 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
 ) -> Result<Vec<ArchiveBatchFileRow>> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    load_invocation_archive_files_missing_rollup_target_with_limit(executor, target, None).await
+}
+
+async fn load_invocation_archive_files_missing_rollup_target_with_limit(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+    limit: Option<i64>,
+) -> Result<Vec<ArchiveBatchFileRow>> {
+    let limit_clause = limit.map(|_| " LIMIT ?3").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
@@ -1566,12 +1589,17 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
                   AND replay.file_path = batches.file_path
                   AND replay.archive_sha256 = batches.sha256
           )
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(target)
-    .fetch_all(executor)
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(target);
+    let archive_files = (if let Some(limit) = limit {
+        query.bind(limit).fetch_all(executor)
+    } else {
+        query.fetch_all(executor)
+    })
     .await
     .context("failed to list invocation archive batches missing historical rollup target")?;
     Ok(archive_files
@@ -2499,7 +2527,13 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let limit_clause = limit.map(|_| " LIMIT ?2").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
@@ -2507,12 +2541,15 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
           AND status = ?1
           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND historical_rollups_materialized_at IS NULL
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
-    .await?;
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql).bind(ARCHIVE_STATUS_COMPLETED);
+    let archive_files = if let Some(limit) = limit {
+        query.bind(limit).fetch_all(&mut *tx).await?
+    } else {
+        query.fetch_all(&mut *tx).await?
+    };
     replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
         tx,
         started_at,
@@ -2531,9 +2568,15 @@ pub(crate) async fn replay_invocation_usage_breakdown_archives_into_hourly_rollu
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = load_invocation_archive_files_missing_rollup_target(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let archive_files = load_invocation_archive_files_missing_rollup_target_with_limit(
         &mut *tx,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        limit,
     )
     .await?;
     replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
@@ -2561,7 +2604,13 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let limit_clause = limit.map(|_| " LIMIT ?3").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT batches.id, batches.file_path, batches.sha256, batches.coverage_start_at, batches.coverage_end_at
         FROM archive_batches AS batches
@@ -2584,13 +2633,17 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
                       )
                 )
           )
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
-    .fetch_all(&mut *tx)
-    .await?;
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS);
+    let archive_files = if let Some(limit) = limit {
+        query.bind(limit).fetch_all(&mut *tx).await?
+    } else {
+        query.fetch_all(&mut *tx).await?
+    };
 
     replay_forward_proxy_archive_files_into_hourly_rollups_tx_with_limits(
         tx,
