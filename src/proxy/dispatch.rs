@@ -3122,6 +3122,10 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     .upstream_response_header_bytes_approx
                     .and_then(|value| usize::try_from(value).ok()),
             );
+            enqueue_pool_upstream_request_attempt_snapshot(
+                state_for_task.as_ref(),
+                pending_attempt_record,
+            );
             let finished_at = shanghai_now_string();
             let attempt_status = pool_capture_attempt_status(
                 upstream_status,

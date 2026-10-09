@@ -1,6 +1,34 @@
 use super::*;
 
 impl PendingQueueAccounting {
+    pub(super) fn attempt_progress_enqueued(&self) {
+        self.attempt_progress_enqueued
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn attempt_progress_coalesced(&self, count: usize) {
+        self.attempt_progress_coalesced
+            .fetch_add(count.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn attempt_progress_dropped(&self) {
+        self.attempt_progress_dropped
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn attempt_progress_deferred(&self, count: usize) {
+        self.attempt_progress_deferred
+            .fetch_add(count.min(u64::MAX as usize) as u64, Ordering::Relaxed);
+    }
+
+    pub(super) fn observe_attempt_progress_age(&self, age_ms: u64) {
+        let _ = self.attempt_progress_oldest_age_ms.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(current.max(age_ms)),
+        );
+    }
+
     pub(super) fn observe_p1_replace(&self, old: usize, new: usize) {
         if self.observability.get().is_some_and(|m| m.enabled) {
             let _ = self.observed_p1_depth.fetch_update(
@@ -211,6 +239,13 @@ impl PendingQueueAccounting {
             write_rows: self.write_rows.load(Ordering::Relaxed),
             write_bytes: self.write_bytes.load(Ordering::Relaxed),
             write_duration_ms: self.write_duration_ms.load(Ordering::Relaxed),
+            attempt_progress_enqueued: self.attempt_progress_enqueued.load(Ordering::Relaxed),
+            attempt_progress_coalesced: self.attempt_progress_coalesced.load(Ordering::Relaxed),
+            attempt_progress_dropped: self.attempt_progress_dropped.load(Ordering::Relaxed),
+            attempt_progress_deferred: self.attempt_progress_deferred.load(Ordering::Relaxed),
+            attempt_progress_oldest_age_ms: self
+                .attempt_progress_oldest_age_ms
+                .load(Ordering::Relaxed),
             p2_wake_reason: self
                 .p2_wake_reason
                 .lock()
