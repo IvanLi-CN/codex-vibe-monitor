@@ -4709,7 +4709,6 @@ export function PromptCacheConversationHistoryDrawer({
           mutationGeneration,
         );
       const isCurrentMutationIdentity = () =>
-        bindingMutationSequence === bindingMutationSequenceRef.current &&
         conversationMutationIdentityIsCurrent(conversationMutationScopeRef.current, mutationScope);
       try {
         if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
@@ -4823,7 +4822,6 @@ export function PromptCacheConversationHistoryDrawer({
         mutationGeneration,
       );
     const isCurrentMutationIdentity = () =>
-      bindingMutationSequence === bindingMutationSequenceRef.current &&
       conversationMutationIdentityIsCurrent(conversationMutationScopeRef.current, mutationScope);
     try {
       if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();

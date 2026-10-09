@@ -2850,6 +2850,7 @@ describe("PromptCacheConversationTable", () => {
       });
     });
     await flushInteractive();
+    expect(document.body.textContent).toContain("当前：账号 Pool Alpha");
     expect(findButtonByAriaLabel("保存")?.disabled).toBe(false);
   });
 
