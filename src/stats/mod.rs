@@ -5698,8 +5698,17 @@ async fn summary_rollup_backfill_requires_full_repair(
 pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
     pool: &Pool<Sqlite>,
 ) -> Result<()> {
-    if summary_rollup_backfill_requires_full_repair(pool).await? {
-        repair_invocation_summary_rollups_with_mode(pool, true).await?;
+    let (archive_cursor_exists, _) = invocation_summary_repair_archive_cursor_state(pool).await?;
+    let incomplete_exists =
+        hourly_rollup_progress_exists(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
+            .await?;
+    if archive_cursor_exists
+        || incomplete_exists
+        || summary_rollup_backfill_requires_full_repair(pool).await?
+    {
+        if !repair_invocation_summary_rollups_with_mode(pool, true).await? {
+            return Ok(());
+        }
     }
     let archive_rows = load_invocation_archives_missing_summary_rollup_markers(pool).await?;
     if archive_rows.is_empty() {

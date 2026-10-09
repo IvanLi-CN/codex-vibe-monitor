@@ -158,6 +158,36 @@ async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
         .await
         .expect("insert force-repair archive manifest");
     }
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+    ] {
+        sqlx::query(
+            "INSERT INTO hourly_rollup_archive_replay \
+             (target, dataset, file_path, archive_sha256) \
+             SELECT ?1, dataset, file_path, sha256 FROM archive_batches \
+             WHERE dataset = 'codex_invocations' AND status = 'completed'",
+        )
+        .bind(target)
+        .execute(&pool)
+        .await
+        .expect("seed complete force-repair replay markers");
+    }
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .bind(
+        config
+            .archive_dir
+            .join("summary-rollup-force-repair-missing-1.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .execute(&pool)
+    .await
+    .expect("seed one missing force-repair marker");
 
     crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
         .await
@@ -174,22 +204,22 @@ async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
     crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
         .await
         .expect("second force-repair archive page should commit");
-    let second_cursor = sqlx::query_scalar::<_, i64>(
-        "SELECT cursor_id FROM hourly_rollup_live_progress WHERE dataset = ?1",
+    let second_cursor_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM hourly_rollup_live_progress WHERE dataset = ?1)",
     )
     .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
     .fetch_one(&pool)
     .await
-    .expect("load second force-repair archive cursor");
-    assert_eq!(second_cursor, archive_count);
+    .expect("check completed force-repair archive cursor");
+    assert_eq!(second_cursor_exists, 0);
     let repair_marker_exists = sqlx::query_scalar::<_, i64>(
         "SELECT EXISTS(SELECT 1 FROM hourly_rollup_live_progress WHERE dataset = ?1)",
     )
     .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
     .fetch_one(&pool)
     .await
-    .expect("check incomplete force-repair marker");
-    assert_eq!(repair_marker_exists, 0);
+    .expect("check completed force-repair marker");
+    assert_eq!(repair_marker_exists, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
