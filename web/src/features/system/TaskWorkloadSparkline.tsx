@@ -620,7 +620,8 @@ export function TaskWorkloadSparkline({
         : status
     : "进入视口加载";
   const detailsMetricLegend = (
-    <div className="sm:col-span-2 flex flex-wrap gap-x-3 gap-y-1" aria-label="运行计量图例">
+    <fieldset className="sm:col-span-2 flex flex-wrap gap-x-3 gap-y-1">
+      <legend className="sr-only">运行计量图例</legend>
       <span>
         <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />
         待处理量 P
@@ -633,7 +634,7 @@ export function TaskWorkloadSparkline({
         <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />
         本次处理 C
       </span>
-    </div>
+    </fieldset>
   );
   const detailsFields = (
     <>
