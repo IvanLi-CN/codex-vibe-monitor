@@ -278,7 +278,6 @@ bun run worktree:setup -- --force
 | `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
 | `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定的首次初始化默认值，默认关闭；仅在数据库中的该设置尚未初始化时生效，之后以设置页全局开关为准                        |
 | `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定所需密钥                                                                                              |
-| `RETENTION_ENABLED`                                    | 是否启用后台保留任务                                                                                                                |
 | `ARCHIVE_DIR`                                          | 归档目录                                                                                                                            |
 | `PROXY_RAW_DIR`                                        | 原始 payload 落盘目录                                                                                                               |
 | `XRAY_RUNTIME_DIR`                                     | Xray runtime 状态与配置目录；默认 `.codex/xray-forward`                                                                             |
@@ -388,3 +387,15 @@ bun run build
 ## License
 
 [MIT](LICENSE)
+
+保留维护由系统任务页的独立自动触发开关控制：数据保留与归档、调用身份清理、Raw 孤儿文件清理，以及现有 Prompt 缓存物化。新安装默认启用；升级保留已有控制与计划覆盖。暂停只停止新的自动触发，已准入的本轮工作正常结束，页面与 CLI 的手动请求仍可执行。旧 `RETENTION_ENABLED` 和 `XY_RETENTION_ENABLED` 遗留值均被忽略。
+
+```sh
+# Archive policy only; no orphan identity or raw sweep work.
+codex-vibe-monitor --retention-run-once
+codex-vibe-monitor --retention-dry-run
+codex-vibe-monitor maintenance invocation-identity-cleanup --dry-run
+codex-vibe-monitor maintenance raw-orphan-sweep --dry-run
+```
+
+CLI 在线时提交指定维护请求并等待服务执行；离线时独占业务库与维护库对应的运行态锁，仅执行指定任务。运行态无法确认或维护库不可用时返回不可用。同一数据目录的版本升级须先停止旧程序。

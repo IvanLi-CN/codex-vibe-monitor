@@ -211,6 +211,17 @@ pub(crate) async fn with_managed_task_observation<F: Future>(
         .await
 }
 
+pub(crate) fn mark_managed_maintenance_work_started() {
+    let _ = ACTIVE_MANAGED_TASK_OBSERVATION.try_with(|observation| {
+        if matches!(
+            observation.inner.task_key.as_str(),
+            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+        ) {
+            observation.mark_work_started();
+        }
+    });
+}
+
 pub(crate) fn record_managed_task_processed_work(task_keys: &[&str], count: i64) {
     if count < 0 {
         return;
@@ -264,6 +275,7 @@ struct ObservationLease {
     task_key: String,
     trigger_kind: String,
     started_clock: Instant,
+    work_started_clock: Mutex<Option<Instant>>,
     ended: AtomicBool,
 }
 
@@ -359,13 +371,18 @@ impl TaskExecutionObservation {
             started_at.clone(),
             managed_run_id,
         );
-        let sample = new_workload_sample(
+        let mut sample = new_workload_sample(
             &execution_uid,
             task_key,
             trigger_kind,
             managed_run_id,
             started_at.clone(),
         );
+        let waiting_resources = phase == "waiting_resources";
+        if waiting_resources {
+            sample.actual_started_at = None;
+            crate::task_timeline::execution_resources_pending(execution_uid.clone());
+        }
         if let Ok(mut samples) = workload_observations().lock() {
             samples.retain(|_, existing| {
                 existing.task_key != task_key || existing.status == "running"
@@ -384,6 +401,7 @@ impl TaskExecutionObservation {
                 task_key: task_key.to_string(),
                 trigger_kind: trigger_kind.to_string(),
                 started_clock,
+                work_started_clock: Mutex::new((!waiting_resources).then_some(started_clock)),
                 ended: AtomicBool::new(false),
             }),
         };
@@ -442,6 +460,47 @@ impl TaskExecutionObservation {
             execution.phase = phase.to_string();
         }
         crate::task_timeline::notify_runtime_changed();
+    }
+
+    pub(crate) fn mark_work_started(&self) {
+        let Ok(mut clock) = self.inner.work_started_clock.lock() else {
+            return;
+        };
+        if clock.is_some() {
+            return;
+        }
+        let now = Instant::now();
+        *clock = Some(now);
+        drop(clock);
+        let started_at = format_utc_iso_millis(Utc::now());
+        if let Ok(mut registry) = registry().lock()
+            && let Some(execution) = registry.active.get_mut(&self.inner.execution_id)
+        {
+            execution.phase = "processing".to_string();
+            execution.started_at = started_at.clone();
+            execution.started_clock = now;
+        }
+        update_workload_sample(
+            &self.inner.execution_uid,
+            &self.inner.task_key,
+            true,
+            |sample| {
+                sample.actual_started_at = Some(started_at.clone());
+            },
+        );
+        crate::task_timeline::execution_work_started(self.inner.execution_uid.clone(), started_at);
+    }
+
+    pub(crate) fn resource_wait_ms(&self) -> u64 {
+        self.inner
+            .work_started_clock
+            .lock()
+            .ok()
+            .and_then(|clock| *clock)
+            .unwrap_or_else(Instant::now)
+            .saturating_duration_since(self.inner.started_clock)
+            .as_millis()
+            .min(u64::MAX as u128) as u64
     }
 
     pub(crate) fn set_child(&self, task_key: &str, title: &str) {
@@ -657,10 +716,12 @@ impl TaskExecutionObservation {
             self.inner.execution_uid.clone(),
             format_utc_iso_millis(Utc::now()),
             self.inner
-                .started_clock
-                .elapsed()
-                .as_millis()
-                .min(u64::MAX as u128) as u64,
+                .work_started_clock
+                .lock()
+                .ok()
+                .and_then(|clock| *clock)
+                .map(|clock| clock.elapsed().as_millis().min(u64::MAX as u128) as u64)
+                .unwrap_or(0),
             status,
         );
         update_workload_sample(
@@ -670,13 +731,13 @@ impl TaskExecutionObservation {
             |sample| {
                 let finished_at = format_utc_iso_millis(Utc::now());
                 sample.finished_at = Some(finished_at);
-                sample.duration_ms = Some(
-                    self.inner
-                        .started_clock
-                        .elapsed()
-                        .as_millis()
-                        .min(i64::MAX as u128) as i64,
-                );
+                sample.duration_ms = self
+                    .inner
+                    .work_started_clock
+                    .lock()
+                    .ok()
+                    .and_then(|clock| *clock)
+                    .map(|clock| clock.elapsed().as_millis().min(i64::MAX as u128) as i64);
                 sample.status = status.to_string();
                 let has_metric_observation =
                     [&sample.pending, &sample.discovered, &sample.processed]
@@ -1299,6 +1360,46 @@ mod tests {
         assert_eq!(sample.reason.as_deref(), Some("background_busy"));
         assert!(sample.finished_at.is_none());
         assert!(sample.duration_ms.is_none());
+    }
+
+    #[test]
+    fn ownership_resource_wait_is_not_an_actual_start_or_zero_work_measurement() {
+        let _guard = test_lock();
+        clear_task_runtime_observation_for_tests();
+        let task = "raw_orphan_sweep";
+        let waiting = TaskExecutionObservation::begin(
+            task,
+            "Raw sweep",
+            "manual",
+            Some("maintenance_retention"),
+            "waiting_resources",
+        );
+        let sample = super::workload_sample(task).unwrap();
+        assert!(sample.actual_started_at.is_none());
+        assert!(sample.discovered.unwrap().value.is_none());
+        waiting.finish_with_status_and_reason("skipped", Some("background_busy"));
+        let sample = super::workload_sample(task).unwrap();
+        assert!(sample.actual_started_at.is_none());
+        assert!(sample.duration_ms.is_none());
+        let admitted = TaskExecutionObservation::begin(
+            task,
+            "Raw sweep",
+            "manual",
+            Some("maintenance_retention"),
+            "waiting_resources",
+        );
+        admitted.mark_work_started();
+        admitted.set_discovered_work(
+            0,
+            crate::format_utc_iso_millis(chrono::Utc::now()),
+            "run-window".to_string(),
+        );
+        admitted.set_processed_work(0);
+        admitted.finish_with_status("success");
+        let sample = super::workload_sample(task).unwrap();
+        assert!(sample.actual_started_at.is_some());
+        assert!(sample.duration_ms.is_some());
+        assert_eq!(sample.discovered.unwrap().value, Some(0));
     }
 
     #[test]

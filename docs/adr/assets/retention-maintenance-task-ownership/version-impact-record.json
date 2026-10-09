@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Split retention maintenance into four task owners and remove environmental enablement",
+    "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "major",
+      "reasoning": "Removing RETENTION_ENABLED and XY_RETENTION_ENABLED without reading or importing their old values breaks the published runtime configuration contract. The one-shot CLI changes from combined maintenance to archive-only; automatic-trigger pause permits explicit manual execution and does not truncate an admitted bounded run. New cleanup tasks default to automatically triggered. Persistent-state compatibility is assessed separately.",
+      "assessed_at": "2026-10-06T14:57:37Z",
+      "evidence": [
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
+        "README.md",
+        "src/config.rs",
+        "src/maintenance_store.rs",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "The owner clarified temporary configuration is outside the compatibility promise and approved Minor/stable continuation; no implementation scope changed."
+      },
+      "reasoning": "The owner excludes the temporary RETENTION_ENABLED and XY_RETENTION_ENABLED switches from the supported compatibility contract. Published deployment documentation describes the existing one-shot flags as archive operations and does not promise ancillary orphan cleanup. Archive flags, task identifiers, URLs and existing history remain usable; independent cleanup commands and automatic-trigger controls are additive. The documented narrowing of incidental cleanup is intentional, not a claim of identical legacy execution. Supported durable v4.x states upgrade through additive initialization.",
+      "reassessed_at": "2026-10-08T17:56:36.690753+00:00",
+      "evidence": [
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md",
+        "src/maintenance/cli.rs",
+        "src/maintenance/ownership.rs",
+        "src/maintenance_store.rs",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
+      ],
+      "description": "Owner-approved compatibility-boundary clarification; implementation and persistent-state contracts unchanged."
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "The owner excludes the temporary RETENTION_ENABLED and XY_RETENTION_ENABLED switches from the supported compatibility contract. Published deployment documentation describes the existing one-shot flags as archive operations and does not promise ancillary orphan cleanup. Archive flags, task identifiers, URLs and existing history remain usable; independent cleanup commands and automatic-trigger controls are additive. The documented narrowing of incidental cleanup is intentional, not a claim of identical legacy execution. Supported durable v4.x states upgrade through additive initialization. Fourteen individually generated released sources passed on the byte-identical production binary recorded in the existing validation evidence.",
+      "verified_at": "2026-10-08T17:56:36.690753+00:00",
+      "evidence": [
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json",
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "planned_impact": "minor",
+      "supported_consumer_range": "Supported v4.x archive CLI flags, existing task identifiers/URLs and history consumers. Temporary retention enablement environment switches and undocumented ancillary orphan cleanup are outside this compatibility promise.",
+      "evidence": [
+        "docs/adr/0034-retention-maintenance-task-ownership.md",
+        "docs/specs/retention-maintenance-task-ownership/SPEC.md",
+        "docs/deployment.md",
+        "docs/specs/retention-maintenance-task-ownership/HISTORY.md"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "planned_impact": "minor",
+      "classification_status": "verified",
+      "reasoning": "Additive maintenance controls and cleanup scopes preserve existing formats; the candidate reads every declared v4.x source state and repairs interrupted initialization forward.",
+      "state_description": "Managed task controls, schedules, initialization marker, per-task run/timeline observations, conversation orphan cursor, raw reconciliation/quarantine/release-pending state, and hourly identity state.",
+      "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51.",
+      "evidence": [
+        "docs/adr/assets/retention-maintenance-task-ownership/persistent-state-migration-record.json",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-sources.json",
+        "scripts/validate-retention-maintenance-upgrade.py",
+        "scripts/validate-retention-maintenance-runtime.py",
+        "docs/adr/assets/retention-maintenance-task-ownership/released-state-upgrade-results.json"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "retention-maintenance-task-ownership"
+    ],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "public-api=minor; owner-confirmed temporary-config exclusion and documented archive CLI scope",
+      "persistent-state=minor; fourteen individually generated released sources"
+    ]
+  }
+}

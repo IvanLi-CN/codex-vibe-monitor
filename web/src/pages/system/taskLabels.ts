@@ -27,6 +27,8 @@ export function managedTaskTriggerLabel(
       return "启动触发";
     case "adaptive":
       return "自适应";
+    case "catchup":
+      return "工作接续";
     default:
       return task.triggerMode || "未设置";
   }
@@ -61,6 +63,8 @@ export function managedTaskPhaseLabel(phase?: string | null): string {
       return "已完成";
     case "paused":
       return "已暂停";
+    case "idle":
+      return "空闲";
     default:
       return phase || "未知";
   }
@@ -123,7 +127,7 @@ export function managedTaskScheduleSourceLabel(source?: string | null): string {
 }
 
 export function managedTaskNextTriggerLabel(task: ManagedTask): string {
-  if (!task.enabled) return "已停用";
+  if (!task.enabled) return isRetentionMaintenanceTask(task.taskKey) ? "自动触发已暂停" : "已停用";
   const nextTriggerAt = task.nextTriggerAt ?? task.effectiveSchedule?.nextTriggerAt;
   if (nextTriggerAt) {
     const timestamp = Date.parse(nextTriggerAt);
@@ -146,4 +150,13 @@ export function managedTaskNextTriggerLabel(task: ManagedTask): string {
   if (task.triggerMode === "startup") return "等待启动触发";
   if (task.effectivePolicy && task.policySource !== "运维自定义") return "由 worker 决定";
   return "未设置";
+}
+
+export function isRetentionMaintenanceTask(taskKey: string): boolean {
+  return [
+    "retention_archive",
+    "invocation_identity_cleanup",
+    "raw_orphan_sweep",
+    "prompt_cache_materialization",
+  ].includes(taskKey);
 }

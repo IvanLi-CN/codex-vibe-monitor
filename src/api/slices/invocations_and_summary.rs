@@ -33628,7 +33628,9 @@ mod request_compression_query_tests {
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
-        let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+        let calendar_tz = chrono_tz::Asia::Shanghai;
+        let base_at = Utc::now() - ChronoDuration::minutes(2);
+        let occurred_at = db_occurred_at_lower_bound(base_at);
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
@@ -33645,7 +33647,8 @@ mod request_compression_query_tests {
         let mut terminal = summary_projection_test_invocation();
         terminal.id = 913_001;
         terminal.invoke_id = "summary-delta-committed-terminal".to_string();
-        terminal.occurred_at = db_occurred_at_lower_bound(Utc::now());
+        let terminal_at = Utc::now();
+        terminal.occurred_at = db_occurred_at_lower_bound(terminal_at);
         terminal.source = SOURCE_PROXY.to_string();
         terminal.status = Some("success".to_string());
         terminal.live_phase = None;
@@ -33702,6 +33705,7 @@ mod request_compression_query_tests {
 
         state.pool.close().await;
         for window in ["current", "1d", "7d", "30d", "today"] {
+            let query_day = Utc::now().with_timezone(&calendar_tz).date_naive();
             let Json(response) = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
@@ -33713,8 +33717,15 @@ mod request_compression_query_tests {
             )
             .await
             .expect("RollingDelta must serve the exact memory projection");
-            assert_eq!(response.total_count, 2, "{window} exact count");
-            assert_eq!(response.total_tokens, 40, "{window} exact tokens");
+            // The older seed may belong to yesterday near Shanghai midnight.
+            let base_in_window =
+                window != "today" || base_at.with_timezone(&calendar_tz).date_naive() == query_day;
+            let terminal_in_window = window != "today"
+                || terminal_at.with_timezone(&calendar_tz).date_naive() == query_day;
+            let count = i64::from(base_in_window) + i64::from(terminal_in_window);
+            let tokens = 17 * i64::from(base_in_window) + 23 * i64::from(terminal_in_window);
+            assert_eq!(response.total_count, count, "{window} exact count");
+            assert_eq!(response.total_tokens, tokens, "{window} exact tokens");
         }
         let all_time = fetch_summary(
             State(state),
@@ -33738,7 +33749,9 @@ mod request_compression_query_tests {
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
         .await;
-        let occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+        let calendar_tz = chrono_tz::Asia::Shanghai;
+        let base_at = Utc::now() - ChronoDuration::minutes(2);
+        let occurred_at = db_occurred_at_lower_bound(base_at);
         sqlx::query(
             "INSERT INTO codex_invocations \
              (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
@@ -33755,7 +33768,8 @@ mod request_compression_query_tests {
         let mut terminal = summary_projection_test_invocation();
         terminal.id = 913_002;
         terminal.invoke_id = "summary-replayed-terminal".to_string();
-        terminal.occurred_at = db_occurred_at_lower_bound(Utc::now());
+        let terminal_at = Utc::now();
+        terminal.occurred_at = db_occurred_at_lower_bound(terminal_at);
         terminal.source = SOURCE_PROXY.to_string();
         terminal.status = Some("success".to_string());
         terminal.live_phase = None;
@@ -33809,6 +33823,7 @@ mod request_compression_query_tests {
 
         state.pool.close().await;
         for window in ["current", "1d", "7d", "30d", "today"] {
+            let query_day = Utc::now().with_timezone(&calendar_tz).date_naive();
             let Json(response) = fetch_summary(
                 State(state.clone()),
                 Query(SummaryQuery {
@@ -33820,8 +33835,15 @@ mod request_compression_query_tests {
             )
             .await
             .expect("replayed delta must serve the exact memory projection");
-            assert_eq!(response.total_count, 2, "{window} exact count");
-            assert_eq!(response.total_tokens, 40, "{window} exact tokens");
+            // The older seed may belong to yesterday near Shanghai midnight.
+            let base_in_window =
+                window != "today" || base_at.with_timezone(&calendar_tz).date_naive() == query_day;
+            let terminal_in_window = window != "today"
+                || terminal_at.with_timezone(&calendar_tz).date_naive() == query_day;
+            let count = i64::from(base_in_window) + i64::from(terminal_in_window);
+            let tokens = 17 * i64::from(base_in_window) + 23 * i64::from(terminal_in_window);
+            assert_eq!(response.total_count, count, "{window} exact count");
+            assert_eq!(response.total_tokens, tokens, "{window} exact tokens");
         }
     }
 

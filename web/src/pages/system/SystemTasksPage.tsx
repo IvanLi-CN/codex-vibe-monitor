@@ -17,7 +17,11 @@ import {
   type TaskRuntimeSnapshot,
 } from "../../lib/api";
 import { requestImmediateReconnect } from "../../lib/sse";
-import { managedTaskExecutionClassLabel, managedTaskTriggerLabel } from "./taskLabels";
+import {
+  isRetentionMaintenanceTask,
+  managedTaskExecutionClassLabel,
+  managedTaskTriggerLabel,
+} from "./taskLabels";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
 const triggerOptions = ["manual", "interval", "cron", "event", "startup", "adaptive"] as const;
@@ -621,7 +625,13 @@ export default function SystemTasksPage(): JSX.Element {
                     <span
                       className={`text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
                     >
-                      {task.enabled ? "已启用" : "已停用"}
+                      {isRetentionMaintenanceTask(task.taskKey)
+                        ? task.enabled
+                          ? "自动触发已启用"
+                          : "自动触发已暂停"
+                        : task.enabled
+                          ? "已启用"
+                          : "已停用"}
                     </span>
                   </div>
                   <Link

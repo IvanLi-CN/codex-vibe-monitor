@@ -41,7 +41,7 @@ description: 自部署与开发时最常见的问题、症状与排查入口。
 
 ## 磁盘持续增长，不知道该从哪里收口
 
-默认情况下，retention / archive 不是自动开启的。
+新安装的归档、调用身份清理、raw 孤儿文件清理和 Prompt 缓存物化默认自动启用；可在系统任务页分别暂停自动触发，暂停后仍可手动执行。升级保留已有任务控制与计划覆盖。
 
 - 长期运行前先决定 `DATABASE_PATH`、`ARCHIVE_DIR` 和 retention 窗口。
 - 如果只备份主库，不备份 archive 目录，后续做冷热分层后数据链路会不完整。
@@ -51,13 +51,13 @@ description: 自部署与开发时最常见的问题、症状与排查入口。
 
 下面这几个最常见：
 
-| failureKind | 典型含义 |
-| --- | --- |
-| `request_body_read_timeout` | 客户端上传过慢，或者前置代理链路在读请求体阶段阻塞 |
-| `request_body_stream_error_client_closed` | 客户端在上传阶段主动断开 |
-| `failed_contact_upstream` | 服务到上游连接失败 |
-| `upstream_handshake_timeout` | 上游在握手或首响应阶段太慢 |
-| `upstream_stream_error` | 上游开始返回后又在流式阶段中途失败 |
+| failureKind                               | 典型含义                                           |
+| ----------------------------------------- | -------------------------------------------------- |
+| `request_body_read_timeout`               | 客户端上传过慢，或者前置代理链路在读请求体阶段阻塞 |
+| `request_body_stream_error_client_closed` | 客户端在上传阶段主动断开                           |
+| `failed_contact_upstream`                 | 服务到上游连接失败                                 |
+| `upstream_handshake_timeout`              | 上游在握手或首响应阶段太慢                         |
+| `upstream_stream_error`                   | 上游开始返回后又在流式阶段中途失败                 |
 
 如果你是在生产环境里追这类问题，优先结合 Records 明细、Stats 趋势和网关日志一起看，不要只盯单个错误字符串。
 

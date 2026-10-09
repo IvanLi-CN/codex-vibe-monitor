@@ -263,6 +263,10 @@ pub(crate) struct MaintenanceCliArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum MaintenanceCommand {
+    /// Release orphan conversation identities and ended hourly invocation prefixes.
+    InvocationIdentityCleanup(MaintenanceDryRunArgs),
+    /// Inspect and safely release orphan raw payload files.
+    RawOrphanSweep(MaintenanceDryRunArgs),
     /// Compress cold raw payload backlog without running the full retention pipeline.
     RawCompression(MaintenanceDryRunArgs),
     /// Rebuild codex_invocations archive upstream-activity manifests.
@@ -318,7 +322,6 @@ pub(crate) struct AppConfig {
     pub(crate) user_agent: String,
     pub(crate) static_dir: Option<PathBuf>,
     pub(crate) public_origin: Option<String>,
-    pub(crate) retention_enabled: bool,
     pub(crate) retention_dry_run: bool,
     pub(crate) retention_interval: Duration,
     pub(crate) retention_batch_rows: usize,
@@ -597,8 +600,6 @@ impl AppConfig {
                     None
                 }
             });
-        let retention_enabled =
-            parse_bool_env_var(ENV_RETENTION_ENABLED, DEFAULT_RETENTION_ENABLED)?;
         let retention_dry_run = overrides.retention_dry_run
             || parse_bool_env_var(ENV_RETENTION_DRY_RUN, DEFAULT_RETENTION_DRY_RUN)?;
         let retention_interval = Duration::from_secs(parse_u64_env_var(
@@ -766,7 +767,6 @@ impl AppConfig {
             user_agent,
             static_dir,
             public_origin,
-            retention_enabled,
             retention_dry_run,
             retention_interval,
             retention_batch_rows,

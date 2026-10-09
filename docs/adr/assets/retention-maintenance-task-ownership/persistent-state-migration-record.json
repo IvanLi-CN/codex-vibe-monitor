@@ -1,0 +1,140 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Introduce independent cleanup task controls without importing retired environment enablement",
+    "release_unit_description": "Independent retention maintenance ownership and task-only operator controls",
+    "version_impact": "minor",
+    "status": "implemented-validated"
+  },
+  "durable_state": {
+    "description": "Existing archive/materialization controls, additive identity/raw cleanup controls, separate inspection/catch-up/safety retry eligibility, ownership initialization marker, durable hourly cleanup scope, and existing archive/raw correctness proofs.",
+    "storage_implementation": "SQLite maintenance store for operational controls and observations; existing business SQLite and archive/raw stores for correctness state.",
+    "source_compatibility_range": {
+      "from_program_versions": [
+        "v4.0.0",
+        "v4.0.1",
+        "v4.0.2",
+        "v4.0.3",
+        "v4.0.4",
+        "v4.0.5",
+        "v4.0.6",
+        "v4.1.0",
+        "v4.1.1",
+        "v4.1.2",
+        "v4.1.3",
+        "v4.2.0",
+        "v4.2.1",
+        "v4.2.2"
+      ],
+      "to_program_version": "code candidate 263e275593767332e7a7aeb60ddb3f2f9be94b03 (binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51)",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "maintenance-owner-retry-state",
+        "description": "Idempotently create maintenance_owner_retry_state(task_key PRIMARY KEY,failure_count,next_eligible_at,reason) in the maintenance database; no existing deployed migration is edited.",
+        "order": 0
+      }
+    ],
+    "structural_change_assessment": "One additive maintenance table; no business table format changes. Existing business cleanup-state table receives an additional invocation_hour_prefixes scope before automatic admission.",
+    "dml_changes": [
+      {
+        "id": "initialize-hour-prefix-scope",
+        "description": "INSERT OR IGNORE invocation_hour_prefixes in the existing business orphan-cleanup state table; formal cursor remains unchanged during previews.",
+        "order": 0,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "initialize-cleanup-controls",
+        "description": "Idempotently introduce enabled-by-default cleanup controls and their own schedules, preserving every existing task control and administrator override. Do not read, reject, or import RETENTION_ENABLED or XY_RETENTION_ENABLED.",
+        "order": 1,
+        "depends_on": [],
+        "observable": true,
+        "pauseable": true
+      },
+      {
+        "id": "record-task-ownership-initialization",
+        "description": "Record completed initialization so subsequent starts and upgrades cannot reset an operator's new task choices. Only initialized task owners may be automatically admitted.",
+        "order": 2,
+        "depends_on": [
+          "initialize-cleanup-controls"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [],
+    "historical_state_policy": "Retain old combined history and existing correctness cursors, quarantine facts, release-pending state, and failure backoff. Do not fabricate independent historical runs or reset pending recovery.",
+    "status": "validated"
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "existing-schema-initialization",
+      "maintenance-owner-retry-state",
+      "initialize-hour-prefix-scope",
+      "initialize-cleanup-controls",
+      "record-task-ownership-initialization",
+      "admit-task-owners"
+    ],
+    "progress_signals": [
+      "Task catalog exposes four responsibility owners with effective controls.",
+      "Initialization completion is observable and idempotent.",
+      "Actual work and resource deferral are attributed to the executing owner.",
+      "Legacy history is identifiable and remains readable."
+    ],
+    "pause_points": [
+      "Before automatic task admission while control initialization is incomplete.",
+      "Between bounded runs when automatic triggers are paused; explicit manual runs remain permitted.",
+      "At safe committed work boundaries for actual process shutdown or resource/budget settlement."
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "status": "validated",
+    "design_cases": [
+      "New installations and newly introduced cleanup rows default to enabled.",
+      "Old RETENTION_ENABLED=false and XY_RETENTION_ENABLED values have no effect and are not imported.",
+      "Existing disabled rows and schedule overrides remain unchanged.",
+      "Repeated starts do not overwrite operator edits.",
+      "A stop during initialization safely resumes without starting duplicate owners.",
+      "Conversation references, active occupancy, hourly identity fences, raw quarantine and release-pending recovery remain valid.",
+      "Old combined records remain readable and are never split into invented task runs.",
+      "Each owner has its own completion, measurements, budget, retry state and history.",
+      "Pausing automatic triggers permits an admitted bounded run to finish and blocks later automatic rounds.",
+      "Explicit manual requests remain permitted while paused, retain single-instance admission, and do not resume automatic triggers.",
+      "An accepted manual request is not cancelled by a later automatic-trigger pause.",
+      "Task-specific CLI and dry-run scopes match their respective task ownership; preview does not advance live correctness cursors."
+    ],
+    "major": {
+      "required_test_evidence": [
+        "Declare and test durable source state from the immediately preceding Major.",
+        "Reject direct multi-Major skips or require explicit intermediate upgrades.",
+        "Verify forward repair of interrupted initialization and work.",
+        "The current release is Minor after the owner-confirmed supported-consumer clarification; persistent-state compatibility is independently verified Minor by all fourteen released-source upgrades and interrupted forward reentry. The generic Major requirements do not change the current release classification."
+      ]
+    },
+    "evidence": [
+      "src/tests/stateful_sqlite/retention_maintenance_ownership.rs",
+      "src/tests/archive_file_io/maintenance_runtime_ownership.rs",
+      "scripts/validate-retention-maintenance-upgrade.py",
+      "scripts/generate-retention-maintenance-release-fixtures.py",
+      "scripts/validate-retention-maintenance-runtime.py",
+      "docs/adr/assets/retention-maintenance-task-ownership/current-candidate-validation.json"
+    ]
+  },
+  "classification_status": "verified",
+  "source_program_compatibility_range": "Fourteen individual released sources v4.0.0..v4.0.6, v4.1.0..v4.1.3, v4.2.0..v4.2.2; base ed00c68fed0975aaf0617981db8ad7fd75ce1a1f; current candidate binary 4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51.",
+  "verified_at": "2026-10-08T15:43:32.296919Z"
+}

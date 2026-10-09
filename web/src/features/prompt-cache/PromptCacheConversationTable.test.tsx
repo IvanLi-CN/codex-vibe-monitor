@@ -2156,7 +2156,10 @@ describe("PromptCacheConversationTable", () => {
       "pck-binding-fallback",
       expect.any(AbortSignal),
     );
-    expect(document.body.textContent).toContain("当前：分组 http-fallback-group");
+    await vi.waitFor(async () => {
+      await flushInteractive();
+      expect(document.body.textContent).toContain("当前：分组 http-fallback-group");
+    });
     expect(document.body.textContent).not.toContain("stale-topic-group");
   });
 
