@@ -314,7 +314,16 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
                   AND replay.file_path = batches.file_path
                   AND replay.archive_sha256 = batches.sha256
           )
-        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        ORDER BY CASE WHEN EXISTS (
+                     SELECT 1
+                     FROM hourly_rollup_archive_replay AS stale
+                     WHERE stale.dataset = batches.dataset
+                       AND stale.file_path = batches.file_path
+                       AND stale.archive_sha256 IS NOT NULL
+                       AND TRIM(stale.archive_sha256) <> ''
+                       AND stale.archive_sha256 <> batches.sha256
+                   ) THEN 1 ELSE 0 END ASC,
+                 batches.month_key ASC, batches.created_at ASC, batches.id ASC
         LIMIT ?3
         "#,
     )

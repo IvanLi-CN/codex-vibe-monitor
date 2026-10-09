@@ -3427,6 +3427,7 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         .iter()
         .filter(|row| Path::new(&row.file_path).exists())
         .count() as u64;
+    let legacy_archive_scan_pending = pending_rows.len() as u64;
     let legacy_invocation_pending = pending_rows
         .iter()
         .filter(|row| Path::new(&row.file_path).exists())
@@ -3455,6 +3456,7 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
     Ok(HistoricalRollupBackfillSnapshot {
         pending_buckets,
         legacy_archive_pending,
+        legacy_archive_scan_pending,
         pending_usage_breakdown_batches,
         last_materialized_hour,
         alert_level,
@@ -3553,10 +3555,10 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
 ) -> Result<HistoricalRollupMaterializationSummary> {
     let started_at = Instant::now();
     let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
-    let bounded_skip = if pending_snapshot.legacy_archive_pending == 0 {
+    let bounded_skip = if pending_snapshot.legacy_archive_scan_pending == 0 {
         0
     } else {
-        skip_pending_archives % pending_snapshot.legacy_archive_pending as usize
+        skip_pending_archives % pending_snapshot.legacy_archive_scan_pending as usize
     };
     if dry_run {
         return Ok(HistoricalRollupMaterializationSummary {
@@ -3572,19 +3574,6 @@ pub(crate) async fn materialize_historical_rollups_bounded_from_skip(
         });
     }
 
-    let pending_archive_paths = sqlx::query_scalar::<_, String>(
-        "SELECT file_path FROM archive_batches WHERE status = ?1 AND historical_rollups_materialized_at IS NULL AND dataset IN ('codex_invocations', 'forward_proxy_attempts')",
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(pool)
-    .await?;
-    if pending_archive_paths.iter().any(|path| {
-        Path::new(path)
-            .parent()
-            .is_none_or(|parent| !parent.exists())
-    }) {
-        return Ok(HistoricalRollupMaterializationSummary::default());
-    }
     let Some(admission) = super::super::retention::acquire_retention_write_admission(
         "historical_rollup_materialization",
     )

@@ -3847,6 +3847,63 @@ async fn usage_breakdown_repair_skips_quarantined_prefix_and_reaches_verified_ar
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_prioritizes_recoverable_candidates_over_stale_prefix() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-stale-prefix").await;
+    for id in 1..=65_i64 {
+        let file_path = temp_dir.join(format!("stale-prefix-{id}.sqlite.gz"));
+        let file_path = file_path.to_string_lossy().to_string();
+        let sha256 = format!("current-sha-{id}");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(&file_path)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed stale-prefix materialized archive");
+        if id <= 64 {
+            sqlx::query(
+                r#"
+                INSERT INTO hourly_rollup_archive_replay (
+                    target, dataset, file_path, archive_sha256, replayed_at
+                )
+                VALUES (?1, 'codex_invocations', ?2, ?3, datetime('now'))
+                "#,
+            )
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+            .bind(&file_path)
+            .bind(format!("stale-sha-{id}"))
+            .execute(&pool)
+            .await
+            .expect("seed stale replay marker");
+        }
+    }
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair should prioritize the recoverable candidate");
+    assert_eq!(touched, 1);
+    let clean_archive_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE id = 65",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recoverable archive state");
+    assert!(clean_archive_materialized_at.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_prefix() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("historical-rollup-bounded-selection").await;
@@ -4100,6 +4157,85 @@ async fn usage_breakdown_materialization_advances_past_missing_parent_prefix() {
     )
     .await
     .expect("advance to the valid archive after the missing-parent prefix");
+    assert_eq!(second.scanned_archive_batches, 65);
+    assert_eq!(second.skipped_archive_batches, 64);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn historical_rollup_materialization_advances_past_missing_parent_prefix() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("historical-rollup-missing-parent-prefix").await;
+    for id in 1..=64_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+            )
+            VALUES (?1, 'codex_invocations', '2025-01', ?2, ?3, 1, 'completed', 'unknown')
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("historical-rollup-missing-parent-{id}"))
+                .join("archive.sqlite.gz")
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("historical-rollup-missing-parent-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed historical rollup missing-parent candidate");
+    }
+    let occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-after-missing-parent-prefix",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-after-missing-parent-prefix",
+            occurred_at: &occurred_at,
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 42,
+            cost: 0.42,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let first = materialize_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        false,
+        Some(64),
+        Some(Duration::from_secs(6)),
+        0,
+    )
+    .await
+    .expect("process the generic missing-parent candidate page");
+    assert_eq!(first.scanned_archive_batches, 64);
+    assert_eq!(first.blocked_archive_batches, 64);
+
+    let second = materialize_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        false,
+        Some(64),
+        Some(Duration::from_secs(6)),
+        first.scanned_archive_batches,
+    )
+    .await
+    .expect("advance generic rollup to valid archive after missing-parent prefix");
     assert_eq!(second.scanned_archive_batches, 65);
     assert_eq!(second.skipped_archive_batches, 64);
 

@@ -1008,6 +1008,7 @@ fn historical_rollup_backfill_run_state_backs_off_when_only_blocked_archives_rem
     let before = HistoricalRollupBackfillSnapshot {
         pending_buckets: 2,
         legacy_archive_pending: 1,
+        legacy_archive_scan_pending: 1,
         pending_usage_breakdown_batches: 1,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Critical,
@@ -1033,6 +1034,7 @@ fn historical_rollup_backfill_run_state_stays_active_while_catching_up() {
     let before = HistoricalRollupBackfillSnapshot {
         pending_buckets: 8,
         legacy_archive_pending: 3,
+        legacy_archive_scan_pending: 3,
         pending_usage_breakdown_batches: 3,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Critical,
@@ -1040,6 +1042,7 @@ fn historical_rollup_backfill_run_state_stays_active_while_catching_up() {
     let after = HistoricalRollupBackfillSnapshot {
         pending_buckets: 4,
         legacy_archive_pending: 2,
+        legacy_archive_scan_pending: 2,
         pending_usage_breakdown_batches: 2,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Warn,
@@ -1065,6 +1068,7 @@ fn historical_rollup_backfill_run_state_stays_active_when_partial_scan_found_onl
     let before = HistoricalRollupBackfillSnapshot {
         pending_buckets: 8,
         legacy_archive_pending: 3,
+        legacy_archive_scan_pending: 3,
         pending_usage_breakdown_batches: 3,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Critical,
@@ -1091,6 +1095,7 @@ fn historical_rollup_backfill_run_state_does_not_back_off_when_only_blocked_arch
     let before = HistoricalRollupBackfillSnapshot {
         pending_buckets: 8,
         legacy_archive_pending: 2,
+        legacy_archive_scan_pending: 2,
         pending_usage_breakdown_batches: 2,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Critical,
@@ -1117,6 +1122,7 @@ fn historical_rollup_backfill_run_state_backs_off_after_blocked_cycle_across_mul
     let before = HistoricalRollupBackfillSnapshot {
         pending_buckets: 8,
         legacy_archive_pending: 2,
+        legacy_archive_scan_pending: 2,
         pending_usage_breakdown_batches: 2,
         last_materialized_hour: None,
         alert_level: HistoricalRollupBackfillAlertLevel::Critical,
