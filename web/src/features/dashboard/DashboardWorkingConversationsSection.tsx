@@ -4271,8 +4271,10 @@ export function DashboardWorkingConversationsSection({
     }
     return ids;
   }, [cards]);
+  // Account activity can reference keys outside the bounded working-conversation page.
+  // The local page cap therefore cannot prove that the identity mapping is complete.
   const conversationIdentityDataIsComplete =
-    (!hasMore || !canLoadMore) && !isLoading && !isLoadingMore && error == null;
+    !hasMore && !isLoading && !isLoadingMore && error == null;
   const selectedConversationCount = selectedConversationIdentities.length;
   const closeConversationBulkDialogs = useCallback(() => {
     setRouteBindDialogOpen(false);
@@ -5644,7 +5646,7 @@ export function DashboardWorkingConversationsSection({
     [cards, conversationIdByPromptCacheKey],
   );
 
-  if (error && cards.length === 0) {
+  if (activeView === "conversations" && error && cards.length === 0) {
     return (
       <section className="surface-panel" data-testid="dashboard-working-conversations">
         <div className="surface-panel-body gap-4 desktop:!p-5">
@@ -5778,7 +5780,7 @@ export function DashboardWorkingConversationsSection({
           </div>
         </div>
 
-        {error && cards.length > 0 ? (
+        {error && (cards.length > 0 || activeView === "upstreamAccounts") ? (
           <Alert variant="error">
             <span>{error}</span>
           </Alert>

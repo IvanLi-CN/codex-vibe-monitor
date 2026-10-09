@@ -2492,7 +2492,7 @@ describe("DashboardWorkingConversationsSection", () => {
           { conversationId: "conv-upstream-running" },
         ),
       ]),
-      { onOpenConversation, onOpenInvocation, hasMore: true, canLoadMore: false },
+      { onOpenConversation, onOpenInvocation, hasMore: false },
     );
 
     const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
@@ -2558,6 +2558,73 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(onOpenInvocation.mock.calls[0]?.[0]?.promptCacheKey).not.toBe("acct-invoke-1");
     expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
+  it("keeps upstream recent conversation actions closed at the working-set page cap", () => {
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+    const onOpenInvocation = vi.fn();
+
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-upstream-running",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-upstream-anchor",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-upstream-running" },
+        ),
+      ]),
+      { hasMore: true, canLoadMore: false, onOpenInvocation },
+    );
+
+    const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
+      node.textContent?.includes("上游账号"),
+    );
+    if (!(accountTab instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream account tab");
+    }
+
+    act(() => {
+      fireEvent.click(accountTab);
+    });
+
+    const identityChip = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-identity-chip"]',
+    );
+    expect(identityChip).toBeNull();
+
+    const rowAction = host?.querySelector(
+      '[data-testid="dashboard-upstream-account-recent-row-action"]',
+    );
+    if (!(rowAction instanceof HTMLButtonElement)) {
+      throw new Error("missing upstream recent row action");
+    }
+
+    act(() => {
+      rowAction.click();
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: null,
+        promptCacheKey: "pck-upstream-running",
+      }),
+    );
+  });
+
+  it("keeps upstream account activity visible when conversation identity loading fails", () => {
+    window.localStorage.setItem(DASHBOARD_WORKSPACE_VIEW_STORAGE_KEY, "upstreamAccounts");
+    upstreamAccountActivityMock.data = createUpstreamAccountActivityResponse();
+
+    renderSection(createResponse([]), { error: "conversation identity unavailable" });
+
+    expect(host?.querySelector('[data-testid="dashboard-upstream-account-grid"]')).not.toBeNull();
+    expect(host?.textContent).toContain("conversation identity unavailable");
   });
 
   it("opens conversation detail from the upstream recent identity chip only", () => {
