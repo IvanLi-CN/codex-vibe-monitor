@@ -20,7 +20,7 @@ function StorySurface({ children }: { children: ReactNode }) {
 }
 
 const meta = {
-  title: "Account Pool/Pages/Upstream Account Create/Batch OAuth Action",
+  title: "Account Pool/Components/Batch OAuth Action Button",
   component: BatchOauthActionButton,
   tags: ["autodocs"],
   decorators: [

@@ -509,7 +509,9 @@ fn startup_backfill_pressure_defer_outcome_at(
     reason: crate::db_pressure::DbPressureDenyReason,
     retry_at: DateTime<Utc>,
 ) -> StartupBackfillTaskRunOutcome {
-    scheduler.defer_for_pressure(task, retry_at);
+    if !crate::maintenance::maintenance_execution_is_manual() {
+        scheduler.defer_for_pressure(task, retry_at);
+    }
     info!(
         task = task.log_label(),
         reason = %reason,
@@ -535,7 +537,9 @@ fn startup_backfill_coordinator_defer_outcome(
 ) -> StartupBackfillTaskRunOutcome {
     let reason = crate::db_pressure::DbPressureDenyReason::BackgroundBusy;
     let retry_at = startup_backfill_pressure_retry_at(gate, reason);
-    scheduler.defer_for_background_busy(task, retry_at);
+    if !crate::maintenance::maintenance_execution_is_manual() {
+        scheduler.defer_for_background_busy(task, retry_at);
+    }
     info!(
         task = task.log_label(),
         reason = %reason,
@@ -559,7 +563,9 @@ fn startup_backfill_coordinator_defer_outcome_at(
     reason: crate::db_pressure::DbPressureDenyReason,
     retry_at: DateTime<Utc>,
 ) -> StartupBackfillTaskRunOutcome {
-    scheduler.defer_for_background_busy(task, retry_at);
+    if !crate::maintenance::maintenance_execution_is_manual() {
+        scheduler.defer_for_background_busy(task, retry_at);
+    }
     info!(
         task = task.log_label(),
         reason = %reason,
@@ -1297,6 +1303,12 @@ pub(crate) async fn mark_startup_backfill_running(
     let Some(pool) = startup_backfill_progress_pool(pool) else {
         return Ok(());
     };
+    if task_name == StartupBackfillTask::PromptCacheConversationsMaterialization.name() {
+        return prompt_cache_control::mark_prompt_cache_materialization_running(
+            pool, task_name, cursor_id,
+        )
+        .await;
+    }
     let now = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -1882,22 +1894,6 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
             STARTUP_BACKFILL_SCHEDULER.clear_next_due(*task);
             continue;
         }
-        let prompt_cache_control_generation =
-            if *task == StartupBackfillTask::PromptCacheConversationsMaterialization {
-                crate::maintenance_store::global().and_then(|store| {
-                    store
-                        .prompt_cache_materialization_control
-                        .snapshot()
-                        .map(|snapshot| {
-                            (
-                                Arc::clone(&store.prompt_cache_materialization_control),
-                                snapshot.generation,
-                            )
-                        })
-                })
-            } else {
-                None
-            };
         let task_result = tokio::select! {
             biased;
             _ = cancel.cancelled() => break,
@@ -1911,7 +1907,9 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         };
         let apply_task_result = || match task_result {
             Ok((outcome, task_detail)) => {
-                STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
+                if !crate::maintenance::maintenance_execution_is_manual() {
+                    STARTUP_BACKFILL_SCHEDULER.record_next_due(*task, outcome.next_due);
+                }
                 ran_actionable_task |= outcome.actionable;
                 had_failure |= outcome.failed;
                 had_deferred_task |= outcome.deferred;
@@ -1929,29 +1927,17 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
             Err(err) => {
                 had_failure = true;
                 STARTUP_BACKFILL_SCHEDULER.record_task_result(*task, true, false);
-                STARTUP_BACKFILL_SCHEDULER.record_next_due(
-                    *task,
-                    Utc::now()
-                        + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-                );
+                if !crate::maintenance::maintenance_execution_is_manual() {
+                    STARTUP_BACKFILL_SCHEDULER.record_next_due(
+                        *task,
+                        Utc::now()
+                            + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+                    );
+                }
                 warn!(task = task.log_label(), error = %err, "startup backfill supervisor pass failed");
             }
         };
-        if let Some((control, expected_generation)) = prompt_cache_control_generation {
-            if control
-                .with_current_generation(expected_generation, apply_task_result)
-                .is_none()
-            {
-                debug!(
-                    task = task.log_label(),
-                    expected_generation,
-                    "discarded a stale prompt-cache materialization scheduler result"
-                );
-                continue;
-            }
-        } else {
-            apply_task_result();
-        }
+        apply_task_result();
     }
 
     if ran_actionable_task {
@@ -2193,72 +2179,73 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
         ));
     }
 
-    let prompt_cache_materialization_control =
-        if task == StartupBackfillTask::PromptCacheConversationsMaterialization {
-            let retry_at =
-                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
-            let Some(store) = prompt_cache_store else {
-                STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
-                warn!(
-                    task = task.log_label(),
-                    defer_reason = "maintenance_database_unavailable",
-                    next_eligibility = %retry_at,
-                    "prompt-cache materialization control is unavailable"
-                );
-                return Ok((
-                    StartupBackfillTaskRunOutcome {
-                        actionable: false,
-                        failed: false,
-                        deferred: true,
-                        completed: true,
-                        next_due: retry_at,
-                    },
-                    None,
-                ));
-            };
-            let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
-                STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
-                warn!(
-                    task = task.log_label(),
-                    defer_reason = "maintenance_database_unavailable",
-                    next_eligibility = %retry_at,
-                    "prompt-cache materialization control has not been initialized"
-                );
-                return Ok((
-                    StartupBackfillTaskRunOutcome {
-                        actionable: false,
-                        failed: false,
-                        deferred: true,
-                        completed: true,
-                        next_due: retry_at,
-                    },
-                    None,
-                ));
-            };
-            if !snapshot.enabled {
-                store
-                    .prompt_cache_materialization_control
-                    .with_current_generation(snapshot.generation, || {
-                        STARTUP_BACKFILL_SCHEDULER.clear_pending(task)
-                    });
-                return Ok((
-                    StartupBackfillTaskRunOutcome {
-                        actionable: false,
-                        failed: false,
-                        deferred: false,
-                        completed: true,
-                        next_due: Utc::now() + ChronoDuration::days(3650),
-                    },
-                    None,
-                ));
-            }
-            Some((
-                Arc::clone(&store.prompt_cache_materialization_control),
-                snapshot.generation,
-            ))
-        } else {
-            None
+    let prompt_cache_materialization_control = if task
+        == StartupBackfillTask::PromptCacheConversationsMaterialization
+    {
+        let retry_at =
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
+        let Some(store) = prompt_cache_store else {
+            STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+            warn!(
+                task = task.log_label(),
+                defer_reason = "maintenance_database_unavailable",
+                next_eligibility = %retry_at,
+                "prompt-cache materialization control is unavailable"
+            );
+            return Ok((
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: false,
+                    deferred: true,
+                    completed: true,
+                    next_due: retry_at,
+                },
+                None,
+            ));
         };
+        let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
+            STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+            warn!(
+                task = task.log_label(),
+                defer_reason = "maintenance_database_unavailable",
+                next_eligibility = %retry_at,
+                "prompt-cache materialization control has not been initialized"
+            );
+            return Ok((
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: false,
+                    deferred: true,
+                    completed: true,
+                    next_due: retry_at,
+                },
+                None,
+            ));
+        };
+        if !snapshot.enabled && !crate::maintenance::maintenance_execution_is_admitted() {
+            store
+                .prompt_cache_materialization_control
+                .with_current_generation(snapshot.generation, || {
+                    STARTUP_BACKFILL_SCHEDULER.clear_pending(task)
+                });
+            return Ok((
+                StartupBackfillTaskRunOutcome {
+                    actionable: false,
+                    failed: false,
+                    deferred: false,
+                    completed: true,
+                    next_due: Utc::now() + ChronoDuration::days(3650),
+                },
+                None,
+            ));
+        }
+        Some((
+            crate::maintenance_store::PromptCacheMaterializationControl::admitted_control(snapshot),
+            snapshot.generation,
+        ))
+    } else {
+        None
+    };
 
     if task == StartupBackfillTask::AccountActivityV2Coverage {
         return run_startup_backfill_coverage_repair_if_due(
@@ -2345,7 +2332,10 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
             record_startup_backfill_pressure_error(gate, err);
         })?;
     let now = Utc::now();
-    if !progress.is_due(now) {
+    if !(progress.is_due(now)
+        || task == StartupBackfillTask::PromptCacheConversationsMaterialization
+            && crate::maintenance::maintenance_execution_is_manual())
+    {
         debug!(
             task = task.log_label(),
             task_name = %progress.task_name,
@@ -2578,7 +2568,9 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 if run.defer_reason == Some("maintenance_database_unavailable") {
                     let retry_at = Utc::now()
                         + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64);
-                    STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+                    if !crate::maintenance::maintenance_execution_is_manual() {
+                        STARTUP_BACKFILL_SCHEDULER.record_next_due(task, retry_at);
+                    }
                     return Ok((
                         StartupBackfillTaskRunOutcome {
                             actionable: false,
@@ -3706,3 +3698,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
 
 #[cfg(test)]
 mod startup_backfill_tests;
+
+#[cfg(test)]
+#[path = "../tests/lightweight/retention_maintenance_controls.rs"]
+mod retention_maintenance_controls;

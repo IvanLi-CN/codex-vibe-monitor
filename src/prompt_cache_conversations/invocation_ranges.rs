@@ -106,7 +106,6 @@ struct Memory {
     allocations: HashMap<Owner, usize>,
     active_ids: HashSet<String>,
     active_prefixes: HashMap<String, usize>,
-    hourly_cleanup_cursor: Option<i64>,
     activity: HashMap<String, i64>,
     activity_order: std::collections::BTreeSet<(i64, String)>,
 }
@@ -122,7 +121,6 @@ impl Default for Memory {
             allocations: HashMap::new(),
             active_ids: HashSet::new(),
             active_prefixes: HashMap::new(),
-            hourly_cleanup_cursor: None,
             activity: HashMap::new(),
             activity_order: std::collections::BTreeSet::new(),
         }

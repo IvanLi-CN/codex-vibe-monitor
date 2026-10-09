@@ -3,7 +3,7 @@
 ## 当前真相源
 
 - 完整产品路由、跨页面工作流与最终整页视觉证据使用 mock-only Web Demo：`cd web && bun run demo:dev`。它以 `VITE_APP_RUNTIME=demo` 启动，不连接真实后端。
-- Storybook 继续作为组件、页面状态、局部浮层与 `play` 交互回归面；它不替代 Web Demo 的整页产品证据。
+- Storybook 继续作为组件、局部状态、局部浮层与 `play` 交互回归面；它不替代 Web Demo 的整页产品证据。
 
 ### 全局运行约束
 
@@ -20,11 +20,11 @@
 
 - Shell / Layout：`web/src/features/app-shell/AppLayout.stories.tsx`
 - Segmented control family：`web/src/components/ui/segmented-control.stories.tsx`
-- Settings：`web/src/features/settings/SettingsPage.stories.tsx`
-- Records：`web/src/features/records/RecordsPage.stories.tsx`
+- Settings：`web/src/features/settings/PoolRoutingSettingsCard.stories.tsx`
+- Records：`web/src/features/records/InvocationRecordsSummaryCards.stories.tsx`、`web/src/features/records/InvocationRecordsTable.stories.tsx`
 - Invocation list：`web/src/features/invocations/InvocationTable.stories.tsx`
 - Dashboard KPI：`web/src/features/dashboard/TodayStatsOverview.stories.tsx`
-- Account pool 页面：`web/src/features/account-pool/UpstreamAccountsPage.list.stories.tsx`、`web/src/features/account-pool/GroupsPage.stories.tsx`
+- Account pool 组件与浮层：`web/src/features/account-pool/UpstreamAccountsTable.stories.tsx`、`web/src/features/account-pool/UpstreamAccountsGroupedRoster.stories.tsx`、`web/src/features/account-pool/UpstreamAccountsPage.overlays.stories.tsx`
 - 基础输入组件：`web/src/components/ui/select-field.stories.tsx`、`web/src/components/ui/filterable-combobox.stories.tsx`、`web/src/components/ui/form-field-feedback.stories.tsx`、`web/src/components/ui/info-tooltip.stories.tsx`
 - 基础导航/切换组件：`web/src/components/ui/segmented-control.stories.tsx`
 
@@ -42,11 +42,11 @@
 - 新增通用组件或页面模式时，优先补 story，再在 `docs/ui/` 回链该 story 作为可复核入口。
 - simple dropdown 统一以 `web/src/components/ui/select-field.stories.tsx` 作为真相源；页面与业务 stories 不再直接展示 low-level `ui/select.tsx` primitives。
 - 任何 story 如果承担“视觉真相源”角色，就要保证数据、文案和状态足够稳定，不依赖真实网络。
-- 页面 story 应优先 mock API、SSE、session storage 与 router，而不是要求人工准备后端环境。
+- 需要 API、SSE、session storage 或 router 的局部状态 story 应使用稳定 mock，而不是要求人工准备后端环境。
 - 新视觉证据要尽量沿用现有 viewport 命名，避免每个 feature 发明一套自己的截图尺寸口径。
 
 ## 已知例外 / 待治理
 
-- 不是所有 `web/src/components/ui/` 组件都有独立 story；目前仍有部分组件依赖页面 story 间接验证。
+- 不是所有 `web/src/components/ui/` 组件都有独立 story；目前仍有部分基础组件依赖 feature 或组合组件 story 间接验证。
 - 个别交互细节仍需浏览器真实环境复核，Storybook 只能提供大部分视觉与结构证据。
 - 现有 stories 的命名与层级已足够支撑文档，但还没有单独的“UI guideline showcase”合集页。

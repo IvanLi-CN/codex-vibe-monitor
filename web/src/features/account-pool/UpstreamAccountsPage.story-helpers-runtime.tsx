@@ -742,29 +742,6 @@ export function StorybookUpstreamAccountsMock({
       if (path === "/api/pool/upstream-accounts/oauth/mailbox-sessions" && method === "POST") {
         const body = parseBody<{ emailAddress?: string }>(init?.body, {});
         const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? "";
-        const shouldDelayMailboxAttach =
-          storyId === "account-pool-pages-upstream-account-create-oauth--mailbox-attach-flow" ||
-          storyId === "account-pool-pages-upstream-account-create-oauth--mailbox-attach-pending" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-flow" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-batch-oauth--mailbox-popover-edit" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-pending";
-        const shouldDelayMailboxGenerate =
-          storyId === "account-pool-pages-upstream-account-create-oauth--mailbox-generate-flow" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-oauth--mailbox-generate-pending" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-flow" ||
-          storyId ===
-            "account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-pending";
-        if (requestedAddress && shouldDelayMailboxAttach) {
-          await wait(900);
-        }
-        if (!requestedAddress && shouldDelayMailboxGenerate) {
-          await wait(900);
-        }
         if (requestedAddress) {
           if (!requestedAddress.includes("@")) {
             return jsonResponse(
@@ -934,12 +911,8 @@ export function StorybookUpstreamAccountsMock({
         }
         const nextId = session.accountId ?? store.nextId++;
         const existing = store.details[nextId];
-        const emailChoiceStory =
-          storyId === "account-pool-pages-upstream-account-create-oauth--completed-email-choice";
         const chosenEmail = session.email?.trim() || existing?.email || "new-login@example.com";
-        const verifiedEmail = emailChoiceStory
-          ? "verified@storybook.example.com"
-          : (existing?.verifiedEmail ?? chosenEmail);
+        const verifiedEmail = existing?.verifiedEmail ?? chosenEmail;
         const detail = createOauthAccount(nextId, {
           displayName: session.displayName || existing?.displayName || "Codex Pro - New login",
           email: chosenEmail,

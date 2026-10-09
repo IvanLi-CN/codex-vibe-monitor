@@ -218,6 +218,29 @@ impl Drop for LifecycleConnection {
 }
 
 impl InvocationRangeManager {
+    pub(crate) fn owner_release_eligible(&self, owner: &Owner, prefix: &str) -> bool {
+        let memory = self.memory.lock().expect("invocation range memory");
+        !(memory.allocations.contains_key(owner)
+            || memory.active_prefixes.contains_key(prefix)
+            || matches!(owner, Owner::Conversation(key) if memory.leases.contains_key(key))
+            || pending_prefix(prefix)
+            || prefix_owner_count(prefix)
+                > usize::from(
+                    memory
+                        .entries
+                        .get(owner)
+                        .is_some_and(|entry| entry.namespace.is_some()),
+                )
+            || memory.entries.get(owner).is_some_and(|entry| {
+                entry.operation
+                    || entry.retiring
+                    || entry
+                        .prefix
+                        .as_deref()
+                        .is_some_and(|existing| existing != prefix)
+            }))
+    }
+
     pub(crate) fn freeze_owner(
         self: &Arc<Self>,
         owner: Owner,
@@ -273,43 +296,70 @@ impl InvocationRangeManager {
         self: &Arc<Self>,
         pool: &Pool<Sqlite>,
         dry_run: bool,
-    ) -> Result<()> {
-        if dry_run {
-            return Ok(());
-        }
+    ) -> Result<HourlyIdentityCleanupResult> {
+        use crate::maintenance::identity_cleanup_query as bounded;
+        const SCOPE: &str = "invocation_hour_prefixes";
         let current_hour = Utc::now().timestamp().div_euclid(3600);
-        let cursor = self
-            .memory
-            .lock()
-            .expect("invocation range memory")
-            .hourly_cleanup_cursor;
-        let rows = sqlx::query_as::<_, (i64, String)>("SELECT utc_hour,prefix FROM hourly_invoke_prefixes WHERE utc_hour<?1 AND (?2 IS NULL OR utc_hour>?2) ORDER BY utc_hour LIMIT 32")
-            .bind(current_hour).bind(cursor).fetch_all(pool).await?;
-        self.memory
-            .lock()
-            .expect("invocation range memory")
-            .hourly_cleanup_cursor = if rows.len() == 32 {
-            rows.last().map(|(hour, _)| *hour)
-        } else {
+        let cursor: Option<String> = if dry_run {
             None
+        } else {
+            bounded(sqlx::query_scalar("SELECT cursor_key FROM prompt_cache_conversation_orphan_cleanup_state WHERE scope=?")
+                .bind(SCOPE).fetch_optional(pool)).await?.flatten()
         };
+        let cursor = cursor.as_deref().map(str::parse::<i64>).transpose()?;
+        let rows = bounded(sqlx::query_as::<_, (i64, String)>("SELECT utc_hour,prefix FROM hourly_invoke_prefixes WHERE utc_hour<?1 AND (?2 IS NULL OR utc_hour>?2) ORDER BY utc_hour LIMIT 32")
+            .bind(current_hour).bind(cursor).fetch_all(pool)).await?;
+        let mut result = HourlyIdentityCleanupResult {
+            checked: rows.len(),
+            released: 0,
+            has_more: rows.len() == 32,
+        };
+        let next_cursor = result.has_more.then(|| rows.last().unwrap().0.to_string());
+        let mut fences = Vec::new();
+        let mut eligible = Vec::new();
         for (hour, prefix) in rows {
-            let Some(fence) = self.freeze_owner(Owner::Hour(hour), &prefix) else {
+            if !self.owner_release_eligible(&Owner::Hour(hour), &prefix) {
                 continue;
+            }
+            let fence = if dry_run {
+                None
+            } else {
+                self.freeze_owner(Owner::Hour(hour), &prefix)
             };
-            let mut scope = LifecycleConnection::new(vec![fence]);
-            scope.connection = Some(pool.acquire().await?);
-            sqlx::query("BEGIN IMMEDIATE")
-                .execute(scope.connection())
-                .await?;
-            let deleted = sqlx::query("DELETE FROM hourly_invoke_prefixes WHERE utc_hour=?1 AND prefix=?2 AND NOT EXISTS(SELECT 1 FROM codex_invocations WHERE length(invoke_id)=10 AND invoke_id>=?2 AND invoke_id < (?2 || '['))")
-                .bind(hour).bind(&prefix).execute(scope.connection()).await?.rows_affected();
-            sqlx::query("COMMIT").execute(scope.connection()).await?;
-            scope.committed();
-            if deleted != 0 {
-                info!(owner_type = "hour", utc_hour = hour, prefix = %prefix, "ended hourly invocation namespace released");
+            if !dry_run && fence.is_none() {
+                continue;
+            }
+            let referenced: bool = bounded(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM codex_invocations WHERE length(invoke_id)=10 AND invoke_id>=?1 AND invoke_id < (?1 || '['))")
+                .bind(&prefix).fetch_one(pool)).await?;
+            if !referenced {
+                eligible.push((hour, prefix));
+                if let Some(fence) = fence {
+                    fences.push(fence);
+                }
             }
         }
-        Ok(())
+        if dry_run {
+            result.released = eligible.len();
+            return Ok(result);
+        }
+        let mut scope = LifecycleConnection::new(fences);
+        scope.connection = Some(bounded(pool.acquire()).await?);
+        bounded(sqlx::query("BEGIN IMMEDIATE").execute(scope.connection())).await?;
+        for (hour, prefix) in eligible {
+            result.released += bounded(sqlx::query("DELETE FROM hourly_invoke_prefixes WHERE utc_hour=?1 AND prefix=?2 AND NOT EXISTS(SELECT 1 FROM codex_invocations WHERE length(invoke_id)=10 AND invoke_id>=?2 AND invoke_id < (?2 || '['))")
+                .bind(hour).bind(prefix).execute(scope.connection())).await?.rows_affected() as usize;
+        }
+        bounded(sqlx::query("INSERT INTO prompt_cache_conversation_orphan_cleanup_state(scope,cursor_key,epoch,updated_at) VALUES(?,?,?,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(scope) DO UPDATE SET cursor_key=excluded.cursor_key,epoch=epoch+excluded.epoch,updated_at=excluded.updated_at")
+            .bind(SCOPE).bind(next_cursor).bind(i64::from(!result.has_more)).execute(scope.connection())).await?;
+        bounded(sqlx::query("COMMIT").execute(scope.connection())).await?;
+        scope.committed();
+        Ok(result)
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct HourlyIdentityCleanupResult {
+    pub(crate) checked: usize,
+    pub(crate) released: usize,
+    pub(crate) has_more: bool,
 }

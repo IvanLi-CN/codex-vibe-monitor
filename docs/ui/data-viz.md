@@ -26,7 +26,7 @@
 
 - KPI、表格数字、tooltip 数值默认使用等宽数字语义。
 - token、cost、latency 这类指标在表格里应右对齐或使用统一的数字列视觉节奏，避免列宽跳动。
-- `TodayStatsOverview`、`InvocationTable`、`RecordsPage` stories 是当前数据展示模式的主要参考。
+- `TodayStatsOverview`、`InvocationTable`、`InvocationRecordsSummaryCards` 与 `InvocationRecordsTable` stories 是当前数据展示模式的主要参考。
 
 ### 交互与 tooltip
 
@@ -44,5 +44,5 @@
 ## 已知例外 / 待治理
 
 - 当前图表 token 主要集中在 `web/src/lib/chartTheme.ts`，与全局 CSS 语义 token 之间还没有单独的中间映射层。
-- 某些页面故事同时承担交互验证与视觉证明职责，说明图表规范还不够完全组件化。
+- 某些 feature stories 同时承担交互验证与视觉证明职责，说明图表规范还不够完全组件化。
 - 如果未来新增更多财务或配额维度，需要先评估是扩充现有 cost/token 语义，还是建立新的二级图例规则。

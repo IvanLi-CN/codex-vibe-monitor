@@ -1,0 +1,32 @@
+{
+  "candidateSha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
+  "source": {
+    "tag": "v4.2.2",
+    "image": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.2.2",
+    "digest": "ghcr.io/ivanli-cn/codex-vibe-monitor@sha256:001c9b1a06167fde31594f278c8f5049821a9a97750f6f902148b1657710a823",
+    "generator": "released maintenance verify-archive-storage --dry-run",
+    "exitCode": 0
+  },
+  "status": "passed",
+  "claims": [
+    "online-cli-does-not-initialize-unavailable-store",
+    "online-three-read-only-scopes",
+    "online-archive-only",
+    "four-paused-manual-owners",
+    "cli-page-request-competition",
+    "no-startup-recovery",
+    "no-manual-continuation",
+    "graceful-lock-release"
+  ],
+  "codeCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03",
+  "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
+  "binaryLocalPath": ".codex/evidence/retention-maintenance/repair6/candidate-repair6",
+  "retainedForCodeCandidateSha": "3d7ee15a3ca09c85f910e15cc5625222f3dd0029",
+  "retentionProof": {
+    "productionBinaryByteIdentical": true,
+    "currentBuildSha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51",
+    "delta": "Only two existing lightweight cfg(test) fixture functions; production behavior unchanged.",
+    "scopeProof": ".codex/evidence/retention-maintenance/repair7/retained-scope-proof.json",
+    "executionSourceCandidateSha": "263e275593767332e7a7aeb60ddb3f2f9be94b03"
+  }
+}

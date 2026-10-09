@@ -1894,13 +1894,39 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
     context: &mut PromptCacheConversationMaterializationContext<'_>,
     progress: &PromptCacheConversationMigrationProgressRow,
 ) -> Result<PromptCacheConversationMaterializationRun> {
-    let prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
-        "SELECT prompt_cache_key FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
-         ORDER BY prompt_cache_key LIMIT ?1"
-    ))
-    .bind(context.page_limit as i64)
-    .fetch_all(context.pool)
-    .await?;
+    // Two indexed seeks form a circular queue. This cursor records admission, not
+    // completion: queued work remains durable even if its source page fails.
+    let (seek, limit_placeholder) = if progress.cursor_key.is_some() {
+        ("WHERE prompt_cache_key > ?1", "?2")
+    } else {
+        ("", "?1")
+    };
+    let keys_sql = format!(
+        "SELECT prompt_cache_key,enqueued_at FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
+         {seek} ORDER BY prompt_cache_key LIMIT {limit_placeholder}"
+    );
+    let mut query = sqlx::query_as(&keys_sql);
+    if let Some(cursor) = progress.cursor_key.as_deref() {
+        query = query.bind(cursor);
+    }
+    let mut prompt_cache_keys: Vec<(String, String)> = query
+        .bind(context.page_limit as i64)
+        .fetch_all(context.pool)
+        .await?;
+    if let Some(cursor) = progress.cursor_key.as_deref()
+        && prompt_cache_keys.len() < context.page_limit
+    {
+        let remaining = context.page_limit - prompt_cache_keys.len();
+        let wrapped: Vec<(String, String)> = sqlx::query_as(&format!(
+            "SELECT prompt_cache_key,enqueued_at FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} \
+             WHERE prompt_cache_key <= ?1 ORDER BY prompt_cache_key LIMIT ?2"
+        ))
+        .bind(cursor)
+        .bind(remaining as i64)
+        .fetch_all(context.pool)
+        .await?;
+        prompt_cache_keys.extend(wrapped);
+    }
     if prompt_cache_keys.is_empty() {
         if (context.should_yield)() {
             return Ok(PromptCacheConversationMaterializationRun {
@@ -1942,6 +1968,10 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
             mark_prompt_cache_conversation_completed_keys_on_connection(tx.as_mut()).await?;
             mark_prompt_cache_conversation_stats_fresh_on_connection(tx.as_mut()).await?;
             tx.commit().await?;
+            info!(
+                queue_pending = 0,
+                "prompt-cache statistics queue drained and freshness published"
+            );
             return Ok(PromptCacheConversationMaterializationRun {
                 phase: PROMPT_CACHE_CONVERSATIONS_PHASE_COMPLETE.to_string(),
                 complete: true,
@@ -1966,14 +1996,169 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
         });
     }
 
-    run_prompt_cache_conversation_adaptive_key_batches(
-        context,
-        PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
-        progress.source_max_invocation_id,
-        false,
-        &prompt_cache_keys,
-    )
-    .await
+    let oldest_selected_enqueue_age_ms = prompt_cache_keys
+        .iter()
+        .filter_map(|(_, enqueued_at)| DateTime::parse_from_rfc3339(enqueued_at).ok())
+        .map(|enqueued_at| {
+            (Utc::now() - enqueued_at.with_timezone(&Utc))
+                .num_milliseconds()
+                .max(0)
+        })
+        .max();
+    info!(
+        queue_pending_lower_bound = prompt_cache_keys.len(),
+        backlog_sample_full = prompt_cache_keys.len() == context.page_limit,
+        oldest_selected_enqueue_age_ms,
+        cursor_fingerprint = progress
+            .cursor_key
+            .as_deref()
+            .map(prompt_cache_key_fingerprint),
+        "prompt-cache statistics fair queue selected"
+    );
+    let mut result = PromptCacheConversationMaterializationRun {
+        phase: PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN.to_string(),
+        hit_scan_limit: true,
+        ..Default::default()
+    };
+    let mut continuation_reason = None;
+    let mut pending: VecDeque<&String> = prompt_cache_keys.iter().map(|(key, _)| key).collect();
+    let mut visited = HashSet::new();
+    while let Some(prompt_cache_key) = pending.pop_front() {
+        if prompt_cache_conversation_materialization_budget_exhausted(
+            context.started_at,
+            context.max_elapsed,
+        ) {
+            result.deferred = true;
+            result.defer_reason = Some("stats_budget_exhausted");
+            return Ok(result);
+        }
+        if (context.should_yield)() {
+            result.deferred = true;
+            result.defer_reason = Some("coordinator_priority");
+            return Ok(result);
+        }
+        // Commit the next rotation before attempting potentially interrupted SQL.
+        // Failure here starts no page; failure afterwards cannot lose the queue item.
+        if let Err(stop) = update_prompt_cache_conversation_migration_progress_with_control(
+            context.pool,
+            PROMPT_CACHE_CONVERSATIONS_PHASE_QUEUE_DRAIN,
+            progress.source_max_invocation_id,
+            Some(prompt_cache_key),
+            context.control,
+            context.control_generation,
+        )
+        .await?
+        {
+            result.deferred = true;
+            result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+            result.control_generation_changed =
+                stop == PromptCacheMaterializationControlStop::GenerationChanged;
+            return Ok(result);
+        }
+        let identity_step = match prompt_cache_conversation_begin_control_step(
+            context.control,
+            context.control_generation,
+        ) {
+            Ok(step) => step,
+            Err(stop) => {
+                result.deferred = true;
+                result.defer_reason = prompt_cache_materialization_defer_reason(stop);
+                result.control_generation_changed =
+                    stop == PromptCacheMaterializationControlStop::GenerationChanged;
+                return Ok(result);
+            }
+        };
+        {
+            let namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
+            let mut tx = context.pool.begin().await?;
+            let identity_exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE prompt_cache_key = ?1)",
+            )
+            .bind(prompt_cache_key)
+            .fetch_one(tx.as_mut())
+            .await?
+                != 0;
+            if !identity_exists {
+                create_prompt_cache_conversation_row_on_connection_with_exclusions(
+                    tx.as_mut(),
+                    prompt_cache_key,
+                    &namespace,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+        }
+        drop(identity_step);
+        let started_at = Instant::now();
+        let page = match refresh_prompt_cache_conversation_stats_bounded_page(
+            context.pool,
+            prompt_cache_key,
+            context.control,
+            context.control_generation,
+            PromptCacheStatsPageOptions {
+                checkpoint_source_max_invocation_id: None,
+                run_deadline: context
+                    .max_elapsed
+                    .map(|budget| context.started_at + budget),
+            },
+        )
+        .await
+        {
+            Ok(page) => page,
+            Err(error) if prompt_cache_statistics_budget_error(&error) => {
+                PromptCacheStatsPageOutcome::BudgetExhausted.into()
+            }
+            Err(error) => return Err(error),
+        };
+        result.scanned += u64::from(page.visited && visited.insert(prompt_cache_key));
+        result.updated +=
+            u64::from(page.committed && page.outcome == PromptCacheStatsPageOutcome::Complete);
+        result.batch_count += u64::from(page.visited);
+        result.last_batch_size = usize::from(page.visited);
+        result.max_batch_size = result.max_batch_size.max(result.last_batch_size);
+        result.batch_elapsed_ms = result
+            .batch_elapsed_ms
+            .saturating_add(started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64);
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            rows_read = page.rows_read,
+            committed = page.committed,
+            outcome = ?page.outcome,
+            "prompt-cache statistics queue quantum finished"
+        );
+        match page.outcome {
+            PromptCacheStatsPageOutcome::Complete => {}
+            PromptCacheStatsPageOutcome::Pending => {
+                // Every selected peer gets its quantum before this key continues.
+                pending.push_back(prompt_cache_key);
+            }
+            PromptCacheStatsPageOutcome::GenerationChanged => {
+                continuation_reason = Some("stats_generation_changed");
+            }
+            outcome => {
+                result.deferred = true;
+                result.defer_reason = match outcome {
+                    PromptCacheStatsPageOutcome::BudgetExhausted => Some("stats_budget_exhausted"),
+                    PromptCacheStatsPageOutcome::Disabled => Some("operator_disabled"),
+                    PromptCacheStatsPageOutcome::Unavailable => {
+                        Some("maintenance_database_unavailable")
+                    }
+                    PromptCacheStatsPageOutcome::ControlGenerationChanged => None,
+                    _ => unreachable!(),
+                };
+                result.control_generation_changed =
+                    outcome == PromptCacheStatsPageOutcome::ControlGenerationChanged;
+                return Ok(result);
+            }
+        }
+        if !pending.is_empty() {
+            tokio::time::sleep(PROMPT_CACHE_CONVERSATION_BATCH_BOUNDARY_PAUSE).await;
+        }
+    }
+    result.page_complete = true;
+    result.deferred = continuation_reason.is_some();
+    result.defer_reason = continuation_reason;
+    Ok(result)
 }
 
 fn prompt_cache_conversation_never_yields() -> bool {
@@ -3056,6 +3241,12 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         }
     };
     if source_generation_changed {
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            source_generation = expected_generation,
+            restart_cursor_id = 0,
+            "prompt-cache statistics staging restarted after generation change"
+        );
         connection.close_on_drop();
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,
@@ -3176,6 +3367,14 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        info!(
+            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+            previous_generation = expected_generation,
+            source_generation = next_generation,
+            discarded_rows = page.len(),
+            restart_cursor_id = 0,
+            "prompt-cache statistics source changed before page publication"
+        );
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,
             rows_read: page.len(),
@@ -3737,7 +3936,9 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations(
 }
 
 #[derive(Debug, Default)]
-struct PromptCacheConversationOrphanCleanupResult {
+pub(crate) struct PromptCacheConversationOrphanCleanupResult {
+    checked: usize,
+    has_more: bool,
     released: usize,
     deleted_prompt_cache_identities: Vec<(String, String)>,
 }
@@ -3748,41 +3949,35 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
     active_prompt_cache_keys: &HashSet<String>,
     cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<PromptCacheConversationOrphanCleanupResult> {
-    async fn bounded_query<T, E, F>(future: F) -> Result<T>
-    where
-        E: Into<anyhow::Error>,
-        F: std::future::Future<Output = std::result::Result<T, E>>,
-    {
-        let value = if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
-            tokio::time::timeout(remaining, future)
-                .await
-                .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))?
-                .map_err(Into::into)?
-        } else {
-            future.await.map_err(Into::into)?
-        };
-        Ok(value)
-    }
+    use crate::maintenance::identity_cleanup_query as bounded_query;
 
     let prompt_key_expr = invocation_prompt_cache_key_expr_sql("i");
     let mut result = PromptCacheConversationOrphanCleanupResult::default();
-    let cursor_key = bounded_query(sqlx::query_scalar::<_, Option<String>>(&format!(
+    let cursor_key = if dry_run {
+        None
+    } else {
+        bounded_query(sqlx::query_scalar::<_, Option<String>>(&format!(
         "SELECT cursor_key FROM {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} WHERE scope='prompt_cache_conversations'"
     ))
     .fetch_one(pool))
-    .await?;
+    .await?
+    };
     let candidates = bounded_query(sqlx::query_as::<_, (String, String)>(&format!(
         "SELECT prompt_cache_key,conversation_id FROM prompt_cache_conversations WHERE (last_invocation_at IS NOT NULL OR created_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes')) AND updated_at < STRFTIME('%Y-%m-%dT%H:%M:%fZ','now','-{PROMPT_CACHE_CONVERSATION_ORPHAN_GRACE_MINUTES} minutes') AND (?1 IS NULL OR prompt_cache_key > ?1) ORDER BY prompt_cache_key LIMIT {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE}"
     ))
     .bind(cursor_key.as_deref())
     .fetch_all(pool))
     .await?;
+    result.checked = candidates.len();
+    result.has_more = candidates.len() == PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE;
     if candidates.is_empty() {
-        bounded_query(sqlx::query(&format!(
+        if !dry_run {
+            bounded_query(sqlx::query(&format!(
             "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=NULL,epoch=epoch+1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
         ))
         .execute(pool))
         .await?;
+        }
         return Ok(result);
     }
     let mut eligible = Vec::new();
@@ -3815,22 +4010,16 @@ async fn cleanup_orphan_prompt_cache_conversations_with_active_keys(
         }
     }
     if dry_run {
+        if let Some(cache) = cache {
+            let manager = cache.lock().await.identity_cache.range_manager.clone();
+            eligible.retain(|(key, prefix)| {
+                manager.owner_release_eligible(
+                    &invocation_ranges::Owner::Conversation(key.clone()),
+                    prefix,
+                )
+            });
+        }
         result.released = eligible.len();
-        let full_page = candidates.len() == PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_PAGE_SIZE;
-        let next_cursor = full_page.then(|| {
-            candidates
-                .last()
-                .expect("non-empty candidate page")
-                .0
-                .clone()
-        });
-        bounded_query(sqlx::query(&format!(
-            "UPDATE {PROMPT_CACHE_CONVERSATION_ORPHAN_CLEANUP_STATE_TABLE} SET cursor_key=?1,epoch=epoch+CASE WHEN ?2 THEN 0 ELSE 1 END,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE scope='prompt_cache_conversations'"
-        ))
-        .bind(next_cursor)
-        .bind(full_page)
-        .execute(pool))
-        .await?;
     } else {
         let manager = match cache {
             Some(cache) => Some(cache.lock().await.identity_cache.range_manager.clone()),
@@ -3925,13 +4114,7 @@ pub(crate) async fn cleanup_orphan_prompt_cache_conversations_with_cache(
     )
     .await?;
     let manager = cache.lock().await.identity_cache.range_manager.clone();
-    if let Some(remaining) = crate::maintenance::retention_run_remaining_budget() {
-        tokio::time::timeout(remaining, manager.cleanup_hours(pool, dry_run))
-            .await
-            .map_err(|_| anyhow!(PROMPT_CACHE_ORPHAN_CLEANUP_BUDGET_EXPIRED))??;
-    } else {
-        manager.cleanup_hours(pool, dry_run).await?;
-    }
+    manager.cleanup_hours(pool, dry_run).await?;
     if !dry_run && cleanup.released > 0 {
         for (key, prefix) in &cleanup.deleted_prompt_cache_identities {
             info!(owner_type = "conversation", prefix = %prefix, prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(key), "retained invocation rows gone; conversation namespace released");
@@ -4210,4 +4393,53 @@ mod tests {
         );
         assert_eq!(controller.next_batch_size(7), 7);
     }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct InvocationIdentityCleanupResult {
+    pub(crate) conversations_checked: usize,
+    pub(crate) conversations_released: usize,
+    pub(crate) hours_checked: Option<usize>,
+    pub(crate) hours_released: Option<usize>,
+    pub(crate) has_more: bool,
+    pub(crate) budget_exhausted: bool,
+}
+
+pub(crate) async fn cleanup_invocation_identities(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+) -> Result<InvocationIdentityCleanupResult> {
+    let (active, manager) = {
+        let cache = cache.lock().await;
+        (
+            cache
+                .identity_cache
+                .active_prompt_cache_keys
+                .keys()
+                .cloned()
+                .collect::<HashSet<_>>(),
+            cache.identity_cache.range_manager.clone(),
+        )
+    };
+    let conversations = cleanup_orphan_prompt_cache_conversations_with_active_keys(
+        pool,
+        dry_run,
+        &active,
+        Some(cache),
+    )
+    .await?;
+    let hours = match manager.cleanup_hours(pool, dry_run).await {
+        Ok(hours) => Some(hours),
+        Err(error) if error.to_string().contains("work budget") => None,
+        Err(error) => return Err(error),
+    };
+    Ok(InvocationIdentityCleanupResult {
+        conversations_checked: conversations.checked,
+        conversations_released: conversations.released,
+        hours_checked: hours.as_ref().map(|hours| hours.checked),
+        hours_released: hours.as_ref().map(|hours| hours.released),
+        has_more: conversations.has_more || hours.as_ref().is_none_or(|hours| hours.has_more),
+        budget_exhausted: hours.is_none(),
+    })
 }

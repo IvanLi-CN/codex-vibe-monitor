@@ -75,7 +75,9 @@ let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 let compactViewport = false;
 
-beforeAll(() => {
+beforeAll(async () => {
+  // Keep first-use module compilation outside the interaction assertion deadline.
+  await import("./ModelPerformanceDetails");
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,

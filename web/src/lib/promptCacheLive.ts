@@ -28,6 +28,27 @@ export type PromptCacheConversationHistoryByKey = Record<
   Pick<PromptCacheConversation, "createdAt" | "lastActivityAt">
 >;
 
+export function hasPromptCacheConversationDelayedStatistics(
+  response: Pick<PromptCacheConversationsResponse, "conversations"> | null | undefined,
+): boolean {
+  return (
+    response?.conversations.some((conversation) => {
+      if (conversation.successCount == null) return true;
+      const materializedAt = Date.parse(conversation.lastInvocationAt ?? "");
+      if (!Number.isFinite(materializedAt)) return false;
+      return conversation.recentInvocations.some((invocation) => {
+        const outcome = resolvePromptCacheInvocationOutcome(
+          buildInvocationFromPromptCachePreview(invocation),
+        );
+        return (
+          (outcome === "success" || outcome === "failure") &&
+          Date.parse(invocation.occurredAt) > materializedAt
+        );
+      });
+    }) ?? false
+  );
+}
+
 type PromptCacheConversationPreviewExtras = Partial<
   Pick<
     ApiInvocation,

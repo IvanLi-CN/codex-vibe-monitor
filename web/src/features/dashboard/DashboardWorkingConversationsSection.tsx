@@ -161,6 +161,7 @@ interface DashboardWorkingConversationsSectionProps {
   cards: DashboardWorkingConversationCardModel[];
   totalMatched?: number;
   hasMore?: boolean;
+  hasDelayedStatistics?: boolean;
   recentPreviewLimit?: number;
   isLoading: boolean;
   isLoadingMore?: boolean;
@@ -4080,6 +4081,7 @@ export function DashboardWorkingConversationsSection({
   cards,
   totalMatched,
   hasMore = false,
+  hasDelayedStatistics = false,
   isLoading,
   isLoadingMore = false,
   error,
@@ -5609,6 +5611,12 @@ export function DashboardWorkingConversationsSection({
         {error && cards.length > 0 ? (
           <Alert variant="error">
             <span>{error}</span>
+          </Alert>
+        ) : null}
+
+        {activeView === "conversations" && hasDelayedStatistics && cards.length > 0 ? (
+          <Alert variant="info" data-testid="dashboard-working-conversations-statistics-pending">
+            <span>{t("dashboard.workingConversations.statisticsPending")}</span>
           </Alert>
         ) : null}
 

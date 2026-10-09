@@ -75,9 +75,11 @@ hotpath = { path = "vendor/hotpath" }
 debug = "line-tables-only"
 strip = false
 
+[dependencies.libsqlite3-sys]
+version = "=0.30.1"
+
 [dev-dependencies]
 filetime = "0.2"
-libsqlite3-sys = "=0.30.1"
 regex-lite = "=0.1.9"
 
 [profile.test]

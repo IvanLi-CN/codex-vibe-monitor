@@ -15,6 +15,111 @@ async fn open_file_pool(path: &std::path::Path, busy_timeout: Duration) -> sqlx:
         .expect("connect file-backed SQLite pool")
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_cache_fair_queue_file_lock_preserves_staging_and_resumes_next_key() {
+    let temp_dir = crate::tests::make_temp_test_dir("prompt-cache-fair-queue-lock");
+    let path = temp_dir.join("business.sqlite");
+    let pool = open_file_pool(&path, Duration::from_millis(100)).await;
+    crate::ensure_schema(&pool).await.unwrap();
+    let mut tx = pool.begin().await.unwrap();
+    for (key, count) in [("a-hot", 512), ("z-cold", 1)] {
+        for index in 0..count {
+            sqlx::query("INSERT INTO codex_invocations (invoke_id,occurred_at,source,status,total_tokens,payload,raw_response) VALUES (?1,'2026-09-01T00:00:00Z',?2,'success',1,?3,'{}')")
+                .bind(format!("fair-{key}-{index}"))
+                .bind(crate::SOURCE_PROXY)
+                .bind(serde_json::json!({"promptCacheKey":key}).to_string())
+                .execute(&mut *tx).await.unwrap();
+        }
+    }
+    tx.commit().await.unwrap();
+    crate::run_prompt_cache_conversations_materialization(&pool, 2, None)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE prompt_cache_conversation_migration_progress SET phase='queue_drain',cursor_key=NULL")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT OR IGNORE INTO schema_refresh_migrations (migration_name) VALUES ('prompt_cache_conversations_v1')")
+        .execute(&pool).await.unwrap();
+    let should_yield = || {
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current().block_on(async {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='a-hot' AND cursor_id > 0")
+                .fetch_one(&pool).await.unwrap() > 0
+        })
+        })
+    };
+    let first = crate::run_prompt_cache_conversations_materialization_with_pressure(
+        &pool,
+        1,
+        None,
+        &should_yield,
+    )
+    .await
+    .unwrap();
+    assert_eq!((first.scanned, first.updated), (1, 0));
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let started = std::time::Instant::now();
+    let error = crate::run_prompt_cache_conversations_materialization(
+        &pool,
+        400,
+        Some(Duration::from_secs(3)),
+    )
+    .await
+    .expect_err("business write lock must stop the attempt");
+    let error_debug = format!("{error:#?}").to_ascii_lowercase();
+    assert!(
+        error_debug.contains("locked"),
+        "business write lock returned unexpected error: {error:#?}"
+    );
+    assert!(started.elapsed() < Duration::from_secs(1));
+    let (cursor, staged, queued): (String, i64, i64) = sqlx::query_as("SELECT cursor_key,(SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='a-hot'),(SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue) FROM prompt_cache_conversation_migration_progress")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(cursor, "a-hot");
+    assert!(staged > 0);
+    assert_eq!(queued, 2);
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
+    pool.close().await;
+
+    let restarted = open_file_pool(&path, Duration::from_millis(100)).await;
+    crate::ensure_prompt_cache_conversations_schema(&restarted)
+        .await
+        .unwrap();
+    let next = crate::run_prompt_cache_conversations_materialization(&restarted, 1, None)
+        .await
+        .unwrap();
+    assert_eq!((next.scanned, next.updated), (1, 1));
+    for _ in 0..8 {
+        if crate::run_prompt_cache_conversations_materialization(&restarted, 400, None)
+            .await
+            .unwrap()
+            .complete
+        {
+            break;
+        }
+    }
+    assert!(
+        crate::prompt_cache_conversation_materialization_is_complete(&restarted)
+            .await
+            .unwrap()
+    );
+    let counts: Vec<i64> = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations ORDER BY prompt_cache_key",
+    )
+    .fetch_all(&restarted)
+    .await
+    .unwrap();
+    assert_eq!(counts, vec![512, 1]);
+    restarted.close().await;
+    crate::tests::cleanup_temp_test_dir(&temp_dir);
+}
+
 #[tokio::test]
 async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() {
     use crate::prompt_cache_conversations::invocation_ranges::InvocationRangeManager;

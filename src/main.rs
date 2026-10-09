@@ -129,10 +129,6 @@ mod share_links;
 mod summary_source_change;
 mod system_storage;
 pub(crate) use dashboard_network_speed::*;
-#[expect(
-    clippy::large_enum_variant,
-    reason = "Batch variants preserve established channel payload ownership."
-)]
 mod sqlite_batch_writer;
 #[expect(
     clippy::type_complexity,
@@ -276,8 +272,6 @@ const LEGACY_ENV_USER_AGENT: &str = "XY_USER_AGENT";
 const ENV_STATIC_DIR: &str = "STATIC_DIR";
 const LEGACY_ENV_STATIC_DIR: &str = "XY_STATIC_DIR";
 const ENV_PUBLIC_ORIGIN: &str = "PUBLIC_ORIGIN";
-const ENV_RETENTION_ENABLED: &str = "RETENTION_ENABLED";
-const LEGACY_ENV_RETENTION_ENABLED: &str = "XY_RETENTION_ENABLED";
 const ENV_RETENTION_DRY_RUN: &str = "RETENTION_DRY_RUN";
 const LEGACY_ENV_RETENTION_DRY_RUN: &str = "XY_RETENTION_DRY_RUN";
 const ENV_RETENTION_INTERVAL_SECS: &str = "RETENTION_INTERVAL_SECS";
@@ -334,7 +328,6 @@ const DETAIL_LEVEL_FULL: &str = "full";
 const DETAIL_LEVEL_STRUCTURED_ONLY: &str = "structured_only";
 const DETAIL_PRUNE_REASON_SUCCESS_OVER_30D: &str = "success_over_30d";
 const DETAIL_PRUNE_REASON_MAX_AGE_ARCHIVED: &str = "max_age_archived";
-const DEFAULT_RETENTION_ENABLED: bool = false;
 const DEFAULT_RETENTION_DRY_RUN: bool = false;
 const DEFAULT_RETENTION_INTERVAL_SECS: u64 = 60 * 60;
 const DEFAULT_RETENTION_BATCH_ROWS: usize = 1000;
@@ -573,7 +566,6 @@ const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
     (LEGACY_ENV_LIST_LIMIT_MAX, ENV_LIST_LIMIT_MAX),
     (LEGACY_ENV_USER_AGENT, ENV_USER_AGENT),
     (LEGACY_ENV_STATIC_DIR, ENV_STATIC_DIR),
-    (LEGACY_ENV_RETENTION_ENABLED, ENV_RETENTION_ENABLED),
     (LEGACY_ENV_RETENTION_DRY_RUN, ENV_RETENTION_DRY_RUN),
     (
         LEGACY_ENV_RETENTION_INTERVAL_SECS,

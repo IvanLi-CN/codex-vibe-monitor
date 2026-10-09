@@ -30,8 +30,6 @@ pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
-#[path = "retention/task_runner.rs"]
-mod task_runner;
 #[path = "retention/workload.rs"]
 mod workload;
 use sqlx::FromRow;
@@ -49,7 +47,6 @@ pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{BatchCommitProbe, RETENTION_TEST_BATCH_COMMIT};
 
-pub(crate) use task_runner::run_data_retention_maintenance_best_effort;
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
 
 #[cfg(unix)]
@@ -325,7 +322,6 @@ fn retention_test_raw_removal_evidence_should_fail() -> bool {
 
 static RETENTION_DEFER_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-static RAW_ORPHAN_SWEEP_WORKER_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Advisory directory lock shared by archive publishers and cleanup finalizers. SQLite admission
 /// serializes database writers, while this lock also fences their filesystem rename/delete window.
@@ -4793,6 +4789,7 @@ async fn acquire_raw_orphan_sweep_pass_context() -> Result<RawOrphanSweepPassCon
     };
     drop(write_permit);
 
+    crate::task_runtime_observation::mark_managed_maintenance_work_started();
     Ok(RawOrphanSweepPassContext {
         _pressure_permit: pressure_permit,
         candidate_deadline: Instant::now() + RETENTION_RAW_RECONCILIATION_CANDIDATE_BUDGET,
@@ -5636,6 +5633,7 @@ async fn persist_missing_raw_reconciliation_release_evidence(
 
 #[derive(Debug, Default)]
 pub(crate) struct RawOrphanSweepPassResult {
+    pub(crate) file_candidates_checked: usize,
     pub(crate) inspected_entries: usize,
     pub(crate) reconciliation_rows_checked: usize,
     pub(crate) reconciliation_has_more: bool,
@@ -5826,6 +5824,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
                 .extend(candidate_entries.iter().skip(candidate_index).cloned());
             break;
         }
+        result.file_candidates_checked += 1;
         let path = normalize_path_for_compare(path);
         let metadata = match retention_raw_file_metadata_with_budget(&context, &path).await {
             Ok(Ok(metadata)) if metadata.file_type().is_file() => metadata,
@@ -5964,7 +5963,13 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
         let Some(existing) = existing else {
             continue;
         };
-        if dry_run || !retention_raw_quarantine_due(&existing.quarantined_at) {
+        if !retention_raw_quarantine_due(&existing.quarantined_at) {
+            continue;
+        }
+
+        if dry_run {
+            result.removed = result.removed.saturating_add(1);
+            result.removed_bytes = result.removed_bytes.saturating_add(byte_size as u64);
             continue;
         }
 
@@ -6915,326 +6920,144 @@ fn raw_orphan_sweep_removal_snapshot(
     })
 }
 
-async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationToken) {
-    if !state.config.retention_enabled {
-        return;
-    }
-    if RAW_ORPHAN_SWEEP_WORKER_ACTIVE
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
+/// The managed executor keeps this traversal across admitted requests. There is no
+/// autonomous raw sweep loop: controls and scheduling belong to the maintenance store.
+pub(crate) async fn run_managed_raw_orphan_sweep(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    cancel: &CancellationToken,
+    circuit: Arc<RawCaptureCircuitBreaker>,
+    options: MaintenanceExecutionOptions,
+    traversal: &mut RetentionRawDirectoryTraversal,
+) -> Result<(RawOrphanSweepPassResult, i64)> {
+    let dry_run = options.dry_run;
+    let schedule = load_raw_orphan_sweep_schedule(pool).await?;
+    if !options.manual
+        && !dry_run
+        && schedule.retry_after_secs > 0
+        && matches!(
+            schedule.defer_reason.as_deref(),
+            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE | RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
+        )
     {
-        warn!("raw orphan sweep worker is already active in this process");
-        return;
+        return Ok((
+            RawOrphanSweepPassResult {
+                deferred: true,
+                admission_stage: Some("safe_retry".to_string()),
+                admission_cause: schedule.defer_reason.clone(),
+                ..Default::default()
+            },
+            schedule.retry_after_secs,
+        ));
     }
-    let _worker_guard = RawOrphanSweepWorkerGuard;
-    let future = async {
-        let mut traversal = RetentionRawDirectoryTraversal::default();
-        loop {
-            if cancel.is_cancelled() {
-                return;
-            }
-            let schedule = match load_raw_orphan_sweep_schedule(&state.pool).await {
-                Ok(schedule) => schedule,
-                Err(error) => {
-                    let fingerprint = retention_error_fingerprint(&error);
-                    raw_orphan_sweep_set_health(
-                        "degraded",
-                        RawOrphanSweepHealthUpdate {
-                            defer_reason: Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
-                            failure_fingerprint: Some(fingerprint),
-                            ..Default::default()
-                        },
-                    );
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return,
-                        _ = sleep(Duration::from_secs(RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS[0] as u64)) => {}
-                    }
-                    continue;
-                }
+    let result = RETENTION_SHUTDOWN
+        .scope(
+            cancel.clone(),
+            RETENTION_RAW_CAPTURE_CIRCUIT.scope(
+                RefCell::new(Some(circuit)),
+                sweep_orphan_proxy_raw_files_slice(
+                    pool,
+                    config,
+                    config.database_path.parent(),
+                    dry_run,
+                    traversal,
+                ),
+            ),
+        )
+        .await;
+    match result {
+        Ok(pass) => {
+            let progressed = pass.inspected_entries > 0
+                || pass.reconciliation_rows_checked > 0
+                || pass.removed > 0;
+            let retry = if pass.deferred {
+                RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
+            } else {
+                raw_orphan_sweep_next_retry_secs(&pass, schedule.consecutive_failure_count)
             };
-            if schedule.retry_after_secs > 0 {
-                let status = if schedule.defer_reason.as_deref()
-                    == Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF)
-                {
-                    "degraded"
-                } else if schedule.defer_reason.as_deref()
-                    == Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE)
-                {
+            let transition = if pass.deferred {
+                RawOrphanSweepScheduleTransition::Pressure
+            } else if pass.failures > 0 {
+                RawOrphanSweepScheduleTransition::Failure {
+                    fingerprint: "raw_orphan_sweep_candidate_failure".to_string(),
+                    progressed,
+                }
+            } else {
+                RawOrphanSweepScheduleTransition::Success { progressed }
+            };
+            if !dry_run {
+                let persisted = persist_raw_orphan_sweep_schedule_with_evidence_and_removal(
+                    pool,
+                    retry,
+                    transition,
+                    (!pass.deferred).then_some(&pass),
+                    Some(&pass),
+                    pass.admission_stage
+                        .as_deref()
+                        .zip(pass.admission_cause.as_deref()),
+                )
+                .await?;
+                if persisted.is_none() {
+                    bail!("raw orphan sweep settlement unavailable");
+                }
+            }
+            let updated = load_raw_orphan_sweep_schedule(pool).await?;
+            raw_orphan_sweep_set_health(
+                if pass.deferred {
                     "deferred"
+                } else if pass.failures > 0 {
+                    "degraded"
                 } else {
                     "idle"
-                };
-                raw_orphan_sweep_set_health(
-                    status,
-                    RawOrphanSweepHealthUpdate {
-                        schedule: Some(&schedule),
-                        ..Default::default()
-                    },
-                );
-                tokio::select! {
-                    biased;
-                    _ = cancel.cancelled() => return,
-                    _ = sleep(Duration::from_secs(schedule.retry_after_secs as u64)) => {}
-                }
-                continue;
-            }
-
-            raw_orphan_sweep_set_health(
-                "scanning",
+                },
                 RawOrphanSweepHealthUpdate {
-                    schedule: Some(&schedule),
-                    clear_admission: true,
-                    clear_defer_reason: true,
+                    inspected_entries: Some(pass.inspected_entries),
+                    referenced_skipped: Some(pass.referenced_skipped),
+                    quarantined: Some(pass.quarantined),
+                    removed: (!dry_run).then_some(pass.removed),
+                    removed_bytes: (!dry_run).then_some(pass.removed_bytes),
+                    schedule: Some(&updated),
+                    settled_pass: (!dry_run && !pass.deferred)
+                        .then(|| raw_orphan_sweep_settled_pass_snapshot(&pass)),
+                    nonzero_removal: (!dry_run)
+                        .then(|| raw_orphan_sweep_removal_snapshot(&pass))
+                        .flatten(),
+                    admission_stage: pass.admission_stage.as_deref(),
+                    admission_cause: pass.admission_cause.as_deref(),
+                    clear_admission: !pass.deferred,
+                    clear_defer_reason: !pass.deferred && pass.failures == 0,
                     ..Default::default()
                 },
             );
-            let result = RETENTION_SHUTDOWN
-                .scope(
-                    cancel.clone(),
-                    RETENTION_RAW_CAPTURE_CIRCUIT.scope(
-                        RefCell::new(Some(state.raw_capture_circuit.clone())),
-                        sweep_orphan_proxy_raw_files_slice(
-                            &state.pool,
-                            &state.config,
-                            state.config.database_path.parent(),
-                            state.config.retention_dry_run,
-                            &mut traversal,
-                        ),
-                    ),
-                )
-                .await;
-
-            match result {
-                Ok(pass) => {
-                    let progressed = pass.inspected_entries > 0
-                        || pass.reconciliation_rows_checked > 0
-                        || pass.removed > 0;
-                    let admission_evidence = pass
-                        .admission_stage
-                        .as_deref()
-                        .zip(pass.admission_cause.as_deref());
-                    let (
-                        mut status,
-                        mut defer_reason,
-                        mut fingerprint,
-                        next_retry_secs,
-                        transition,
-                    ) = if pass.deferred {
-                        (
-                            "deferred",
-                            Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
-                            None,
-                            RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
-                            RawOrphanSweepScheduleTransition::Pressure,
-                        )
-                    } else if pass.failures > 0 {
-                        let fingerprint = retention_error_fingerprint(&anyhow!(
-                            "raw orphan sweep item operation failed"
-                        ));
-                        (
-                            "degraded",
-                            Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
-                            Some(fingerprint.clone()),
-                            raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count),
-                            RawOrphanSweepScheduleTransition::Failure {
-                                fingerprint,
-                                progressed,
-                            },
-                        )
-                    } else {
-                        (
-                            "idle",
-                            None,
-                            None,
-                            raw_orphan_sweep_next_retry_secs(
-                                &pass,
-                                schedule.consecutive_failure_count,
-                            ),
-                            RawOrphanSweepScheduleTransition::Success { progressed },
-                        )
-                    };
-                    let settled_pass_for_persistence = (!pass.deferred).then_some(&pass);
-                    let settled_pass = settled_pass_for_persistence
-                        .map(|_| raw_orphan_sweep_settled_pass_snapshot(&pass));
-                    let nonzero_removal = raw_orphan_sweep_removal_snapshot(&pass);
-                    let mut schedule_persistence_fingerprint = None;
-                    let mut updated = None;
-                    if !state.config.retention_dry_run {
-                        match persist_raw_orphan_sweep_schedule_with_evidence_and_removal(
-                            &state.pool,
-                            next_retry_secs,
-                            transition,
-                            settled_pass_for_persistence,
-                            Some(&pass),
-                            admission_evidence,
-                        )
-                        .await
-                        {
-                            Ok(Some(_)) => {
-                                match load_raw_orphan_sweep_schedule(&state.pool).await {
-                                    Ok(schedule) => updated = Some(schedule),
-                                    Err(error) => {
-                                        schedule_persistence_fingerprint =
-                                            Some(retention_error_fingerprint(&error));
-                                    }
-                                }
-                            }
-                            Ok(None) => {
-                                schedule_persistence_fingerprint =
-                                    Some(retention_error_fingerprint(&anyhow!(
-                                        "raw orphan sweep schedule admission unavailable"
-                                    )));
-                            }
-                            Err(error) => {
-                                schedule_persistence_fingerprint =
-                                    Some(retention_error_fingerprint(&error));
-                            }
-                        }
-                    }
-                    if let Some(persistence_fingerprint) = schedule_persistence_fingerprint {
-                        warn!(
-                            error_fingerprint = %persistence_fingerprint,
-                            "raw orphan sweep schedule persistence failed"
-                        );
-                        status = "degraded";
-                        defer_reason = Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF);
-                        fingerprint = Some(persistence_fingerprint);
-                    }
-                    raw_orphan_sweep_set_health(
-                        status,
-                        RawOrphanSweepHealthUpdate {
-                            inspected_entries: Some(pass.inspected_entries),
-                            referenced_skipped: Some(pass.referenced_skipped),
-                            quarantined: Some(pass.quarantined),
-                            removed: Some(pass.removed),
-                            removed_bytes: Some(pass.removed_bytes),
-                            schedule: updated.as_ref(),
-                            defer_reason,
-                            failure_fingerprint: fingerprint.clone(),
-                            admission_stage: pass.admission_stage.as_deref(),
-                            admission_cause: pass.admission_cause.as_deref(),
-                            settled_pass,
-                            nonzero_removal,
-                            clear_admission: !pass.deferred,
-                            clear_defer_reason: !pass.deferred && pass.failures == 0,
-                        },
-                    );
-                    if pass.removed > 0 {
-                        invalidate_system_status_cache(state.as_ref()).await;
-                    }
-                    let wait_secs = if state.config.retention_dry_run {
-                        next_retry_secs as u64
-                    } else {
-                        updated
-                            .as_ref()
-                            .map(|schedule| schedule.retry_after_secs as u64)
-                            .unwrap_or(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS as u64)
-                    };
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return,
-                        _ = sleep(Duration::from_secs(wait_secs)) => {}
-                    }
-                }
-                Err(error) if is_retention_write_deferred(&error) => {
-                    let admission_evidence = raw_orphan_sweep_admission_details(&error);
-                    let persisted = persist_raw_orphan_sweep_schedule_with_evidence(
-                        &state.pool,
-                        RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
-                        RawOrphanSweepScheduleTransition::Pressure,
-                        None,
-                        admission_evidence,
-                    )
-                    .await;
-                    match persisted {
-                        Ok(Some(_)) => {}
-                        Ok(None) => warn!(
-                            error_fingerprint = %retention_error_fingerprint(&anyhow!(
-                                "raw orphan sweep schedule admission unavailable"
-                            )),
-                            "raw orphan sweep defer persistence unavailable"
-                        ),
-                        Err(persist_error) => warn!(
-                            error_fingerprint = %retention_error_fingerprint(&persist_error),
-                            "raw orphan sweep defer persistence failed"
-                        ),
-                    }
-                    let updated = load_raw_orphan_sweep_schedule(&state.pool).await.ok();
-                    raw_orphan_sweep_set_health(
-                        "deferred",
-                        RawOrphanSweepHealthUpdate {
-                            schedule: updated.as_ref(),
-                            defer_reason: Some(RETENTION_RECOVERY_DEFER_SQLITE_PRESSURE),
-                            admission_stage: admission_evidence.map(|(stage, _)| stage),
-                            admission_cause: admission_evidence.map(|(_, cause)| cause),
-                            ..Default::default()
-                        },
-                    );
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return,
-                        _ = sleep(Duration::from_secs(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS as u64)) => {}
-                    }
-                }
-                Err(error) => {
-                    let retry_secs =
-                        raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count);
-                    let fingerprint = retention_error_fingerprint(&error);
-                    let updated = if state.config.retention_dry_run {
-                        None
-                    } else {
-                        let persisted = persist_raw_orphan_sweep_schedule(
-                            &state.pool,
-                            retry_secs,
-                            RawOrphanSweepScheduleTransition::Failure {
-                                fingerprint: fingerprint.clone(),
-                                progressed: false,
-                            },
-                        )
-                        .await;
-                        match persisted {
-                            Ok(Some(_)) => {}
-                            Ok(None) => warn!(
-                                error_fingerprint = %retention_error_fingerprint(&anyhow!(
-                                    "raw orphan sweep schedule admission unavailable"
-                                )),
-                                "raw orphan sweep failure persistence unavailable"
-                            ),
-                            Err(persist_error) => warn!(
-                                error_fingerprint = %retention_error_fingerprint(&persist_error),
-                                "raw orphan sweep failure persistence failed"
-                            ),
-                        }
-                        load_raw_orphan_sweep_schedule(&state.pool).await.ok()
-                    };
-                    raw_orphan_sweep_set_health(
-                        "degraded",
-                        RawOrphanSweepHealthUpdate {
-                            schedule: updated.as_ref(),
-                            defer_reason: Some(RETENTION_RECOVERY_DEFER_RETRY_BACKOFF),
-                            failure_fingerprint: Some(fingerprint),
-                            clear_admission: true,
-                            ..Default::default()
-                        },
-                    );
-                    tokio::select! {
-                        biased;
-                        _ = cancel.cancelled() => return,
-                        _ = sleep(Duration::from_secs(retry_secs as u64)) => {}
-                    }
-                }
-            }
+            Ok((pass, retry))
         }
-    };
-    RETENTION_SHUTDOWN.scope(cancel.clone(), future).await;
-}
-
-struct RawOrphanSweepWorkerGuard;
-
-impl Drop for RawOrphanSweepWorkerGuard {
-    fn drop(&mut self) {
-        RAW_ORPHAN_SWEEP_WORKER_ACTIVE.store(false, Ordering::Release);
+        Err(error) => {
+            if !dry_run {
+                let pressure = is_retention_write_deferred(&error);
+                let retry = if pressure {
+                    RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS
+                } else {
+                    raw_orphan_sweep_failure_retry_secs(schedule.consecutive_failure_count)
+                };
+                let transition = if pressure {
+                    RawOrphanSweepScheduleTransition::Pressure
+                } else {
+                    RawOrphanSweepScheduleTransition::Failure {
+                        fingerprint: retention_error_fingerprint(&error),
+                        progressed: false,
+                    }
+                };
+                persist_raw_orphan_sweep_schedule_with_evidence(
+                    pool,
+                    retry,
+                    transition,
+                    None,
+                    raw_orphan_sweep_admission_details(&error),
+                )
+                .await?;
+            }
+            Err(error)
+        }
     }
 }
 
@@ -8538,61 +8361,6 @@ pub(crate) fn spawn_retention_backlog_observer(
     })
 }
 
-pub(crate) fn spawn_data_retention_maintenance(
-    state: Arc<AppState>,
-    cancel: CancellationToken,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        if !state.config.retention_enabled {
-            info!("data retention maintenance is disabled");
-            cancel.cancelled().await;
-            return;
-        }
-
-        let raw_orphan_sweep =
-            tokio::spawn(run_raw_orphan_sweep_worker(state.clone(), cancel.clone()));
-        let retention_task = async {
-            if cancel.is_cancelled() {
-                info!("data retention maintenance skipped because shutdown is already in progress");
-                return;
-            }
-            loop {
-                if run_data_retention_maintenance_best_effort(&state, &cancel, "startup").await {
-                    break;
-                }
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        info!("data retention maintenance received shutdown");
-                        return;
-                    }
-                    _ = sleep(Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)) => {}
-                }
-            }
-
-            let mut ticker = interval(state.config.retention_interval);
-            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            ticker.tick().await;
-            loop {
-                tokio::select! {
-                    _ = cancel.cancelled() => {
-                        info!("data retention maintenance received shutdown");
-                        break;
-                    }
-                    _ = ticker.tick() => {
-                        run_data_retention_maintenance_best_effort(
-                            &state,
-                            &cancel,
-                            "interval",
-                        ).await;
-                    }
-                }
-            }
-        };
-        retention_task.await;
-        let _ = raw_orphan_sweep.await;
-    })
-}
-
 pub(crate) fn should_stop_data_retention_maintenance(shutdown: Option<&CancellationToken>) -> bool {
     let should_stop = shutdown.is_some_and(CancellationToken::is_cancelled);
     if should_stop {
@@ -8745,7 +8513,7 @@ async fn run_data_retention_maintenance_inner(
     config: &AppConfig,
     dry_run_override: Option<bool>,
     shutdown: Option<&CancellationToken>,
-    prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
+    _prompt_cache_conversation_cache: Option<&Arc<Mutex<PromptCacheConversationsCacheState>>>,
 ) -> Result<RetentionRunSummary> {
     let dry_run = dry_run_override.unwrap_or(config.retention_dry_run);
     let mut summary = RetentionRunSummary {
@@ -8859,13 +8627,6 @@ async fn run_data_retention_maintenance_inner(
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
-    }
-
-    if dry_run {
-        match sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, true).await {
-            Ok(removed) => summary.orphan_raw_files_removed += removed,
-            Err(error) => retention_recovery_record_failure("orphan_sweep", &error),
-        }
     }
 
     if should_stop_data_retention_maintenance(shutdown) {
@@ -9110,39 +8871,6 @@ async fn run_data_retention_maintenance_inner(
     summary.archive_batches_touched += pruned.1;
     summary.raw_files_removed += pruned.2;
     retention_recovery_clear_current_prepared_key();
-    let orphan_cleanup = match prompt_cache_conversation_cache {
-        Some(cache) => {
-            cleanup_orphan_prompt_cache_conversations_with_cache(pool, dry_run, cache).await
-        }
-        None => cleanup_orphan_prompt_cache_conversations(pool, dry_run).await,
-    };
-    summary.prompt_cache_conversations_released = match orphan_cleanup {
-        Ok(released) => {
-            summary.orphan_cleanup_completed = true;
-            released
-        }
-        Err(error)
-            if error
-                .to_string()
-                .contains("orphan cleanup exceeded the retention work budget") =>
-        {
-            summary.deferred = true;
-            summary.wait_reason = Some("retention_work_budget".to_string());
-            0
-        }
-        Err(error) => {
-            retention_record_error("prompt_cache_conversation_cleanup", &error);
-            return Err(error)
-                .context("failed to release orphan prompt-cache conversation identities");
-        }
-    };
-    if summary.prompt_cache_conversations_released > 0 {
-        info!(
-            dry_run,
-            released = summary.prompt_cache_conversations_released,
-            "prompt-cache conversation identity retention completed"
-        );
-    }
     if !dry_run {
         let preserve_recovery_stage = matches!(
             retention_recovery_health_snapshot().stage.as_deref(),

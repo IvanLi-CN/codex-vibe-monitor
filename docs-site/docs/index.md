@@ -48,7 +48,7 @@ Codex Vibe Monitor 是一套面向自部署的 OpenAI 兼容代理观测工作�
 - `GET /health` 是 readiness，不是“进程活着”探针；初始化未完成时会返回 `503 starting`。
 - 生产建议只暴露网关，不要把应用监听端口直接暴露到公网。
 - 如果你要新增账号、更新账号或使用 OAuth 账号池，`UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET` 不是可选项。
-- retention / archive 默认不是自动帮你开好的；长期运行前要先决定 `DATABASE_PATH`、`ARCHIVE_DIR` 和保留窗口。
+- 新安装的四项保留维护任务默认自动启用，可在系统任务页独立暂停；长期运行前要先决定 `DATABASE_PATH`、`ARCHIVE_DIR` 和保留窗口，升级保留已有控制。
 
 ## 文档地图
 

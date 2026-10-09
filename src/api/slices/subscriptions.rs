@@ -3757,6 +3757,7 @@ enum SubscriptionTopic {
     ManagedTaskCatalog,
     ManagedTaskRuntime,
     ManagedTaskTimeline,
+    ManagedTaskTimelineV2,
     ManagedTaskDetail {
         task_key: String,
     },
@@ -6135,16 +6136,6 @@ impl SubscriptionHub {
         } = topic
         {
             let mut transaction = state.pool.begin().await?;
-            if !prompt_cache_conversation_materialization_is_complete_on_connection(
-                transaction.as_mut(),
-            )
-            .await
-            .map_err(ApiError::from)?
-            {
-                return Err(ApiError::unavailable(anyhow!(
-                    "prompt-cache conversation history is still materializing"
-                )));
-            }
             let baseline_row_id =
                 sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                     .fetch_one(transaction.as_mut())
@@ -6569,6 +6560,15 @@ impl SubscriptionHub {
                 BuiltSubscriptionTopicPayload::Json(event_payload)
             };
             (payload, None, None)
+        } else if matches!(&topic, SubscriptionTopic::ManagedTaskTimelineV2) {
+            let payload = match build_managed_task_timeline_revision_topic_payload().await {
+                Ok(payload) => payload,
+                Err(error) => {
+                    self.clear_managed_task_refresh_schedule(&topic_key).await;
+                    return Err(error);
+                }
+            };
+            (BuiltSubscriptionTopicPayload::Json(payload), None, None)
         } else {
             let payload = match topic.build_cached_payload(state.clone()).await {
                 Ok(payload) => payload,
@@ -8299,6 +8299,7 @@ fn is_managed_task_refresh_topic(topic: &SubscriptionTopic) -> bool {
         SubscriptionTopic::ManagedTaskCatalog
             | SubscriptionTopic::ManagedTaskRuntime
             | SubscriptionTopic::ManagedTaskTimeline
+            | SubscriptionTopic::ManagedTaskTimelineV2
             | SubscriptionTopic::ManagedTaskDetail { .. }
             | SubscriptionTopic::ManagedTaskWorkload { .. }
     )
@@ -12283,6 +12284,7 @@ pub(crate) async fn topic_sse_stream(
                 SubscriptionTopic::ManagedTaskCatalog
                     | SubscriptionTopic::ManagedTaskRuntime
                     | SubscriptionTopic::ManagedTaskTimeline
+                    | SubscriptionTopic::ManagedTaskTimelineV2
                     | SubscriptionTopic::ManagedTaskDetail { .. }
                     | SubscriptionTopic::ManagedTaskWorkload { .. }
             )
@@ -12502,6 +12504,7 @@ impl SubscriptionTopic {
             | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
+            | Self::ManagedTaskTimelineV2
             | Self::ManagedTaskDetail { .. }
             | Self::ManagedTaskWorkload { .. }
             | Self::InvocationWindow { .. }
@@ -12599,6 +12602,7 @@ impl SubscriptionTopic {
             | Self::ManagedTaskCatalog
             | Self::ManagedTaskRuntime
             | Self::ManagedTaskTimeline
+            | Self::ManagedTaskTimelineV2
             | Self::ManagedTaskDetail { .. }
             | Self::ManagedTaskWorkload { .. } => Vec::new(),
             Self::PromptCacheWindow { .. } => vec![
@@ -12651,7 +12655,15 @@ impl SubscriptionTopic {
             "quota.current" => Ok(Self::QuotaCurrent),
             "system.managed-tasks.catalog" => Ok(Self::ManagedTaskCatalog),
             "system.managed-tasks.runtime" => Ok(Self::ManagedTaskRuntime),
-            "system.managed-tasks.timeline" => Ok(Self::ManagedTaskTimeline),
+            "system.managed-tasks.timeline" => {
+                match parse_i64_param(params, "schemaVersion", Some(1))? {
+                    1 => Ok(Self::ManagedTaskTimeline),
+                    2 => Ok(Self::ManagedTaskTimelineV2),
+                    _ => Err(ApiError::bad_request(anyhow!(
+                        "managed task timeline schemaVersion must be 1 or 2"
+                    ))),
+                }
+            }
             "system.managed-tasks.detail" => Ok(Self::ManagedTaskDetail {
                 task_key: parse_required_text_param(params, "taskKey")?,
             }),
@@ -12852,6 +12864,10 @@ impl SubscriptionTopic {
                     params: BTreeMap::new(),
                 }
             }
+            Self::ManagedTaskTimelineV2 => SubscriptionTopicDescriptor {
+                topic: self.name().to_string(),
+                params: btree_map_from_pairs([("schemaVersion", "2".to_string())]),
+            },
             Self::ManagedTaskDetail { task_key } => SubscriptionTopicDescriptor {
                 topic: self.name().to_string(),
                 params: btree_map_from_pairs([("taskKey", task_key.clone())]),
@@ -13133,6 +13149,7 @@ impl SubscriptionTopic {
             Self::ManagedTaskCatalog => "system.managed-tasks.catalog",
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime",
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline",
+            Self::ManagedTaskTimelineV2 => "system.managed-tasks.timeline",
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail",
             Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload",
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current",
@@ -13169,6 +13186,7 @@ impl SubscriptionTopic {
             Self::ManagedTaskCatalog => "system.managed-tasks.catalog/v1".to_string(),
             Self::ManagedTaskRuntime => "system.managed-tasks.runtime/v1".to_string(),
             Self::ManagedTaskTimeline => "system.managed-tasks.timeline/v1".to_string(),
+            Self::ManagedTaskTimelineV2 => "system.managed-tasks.timeline/v2".to_string(),
             Self::ManagedTaskDetail { .. } => "system.managed-tasks.detail/v1".to_string(),
             Self::ManagedTaskWorkload { .. } => "system.managed-tasks.workload/v1".to_string(),
             Self::DashboardActivityCurrent { .. } => "dashboard.activity.current/v3".to_string(),
@@ -13241,6 +13259,7 @@ impl SubscriptionTopic {
                     | Self::ManagedTaskCatalog
                     | Self::ManagedTaskRuntime
                     | Self::ManagedTaskTimeline
+                    | Self::ManagedTaskTimelineV2
                     | Self::ManagedTaskDetail { .. }
                     | Self::ManagedTaskWorkload { .. }
                     | Self::PromptCacheConversationBindingCurrent { .. }
@@ -13326,6 +13345,13 @@ async fn build_managed_task_timeline_topic_payload(
             "maintenance database unavailable"
         )));
     };
+    managed_task_timeline_page_payload(store, after_revision).await
+}
+
+async fn managed_task_timeline_page_payload(
+    store: &crate::maintenance_store::MaintenanceStore,
+    after_revision: Option<i64>,
+) -> Result<Value, ApiError> {
     let window_end = Utc::now();
     let window_start = window_end - ChronoDuration::hours(12);
     let from = format_utc_iso_millis(window_start);
@@ -13336,6 +13362,7 @@ async fn build_managed_task_timeline_topic_payload(
         after_revision,
         Some(&from),
         Some(&to),
+        None,
         500,
     )
     .await
@@ -13343,10 +13370,17 @@ async fn build_managed_task_timeline_topic_payload(
     let mut segments = std::mem::take(&mut page.segments);
     let mut cursor = page.next_cursor.take();
     while let Some(next_cursor) = cursor {
-        let next =
-            crate::task_timeline::timeline_page(store, Some(&next_cursor), None, None, None, 500)
-                .await
-                .map_err(ApiError::from)?;
+        let next = crate::task_timeline::timeline_page(
+            store,
+            Some(&next_cursor),
+            None,
+            None,
+            None,
+            None,
+            500,
+        )
+        .await
+        .map_err(ApiError::from)?;
         if next.reset_required {
             return Err(ApiError::unavailable(anyhow!(
                 "managed task timeline pagination expired; a fresh snapshot is required"
@@ -13369,6 +13403,25 @@ async fn build_managed_task_timeline_topic_payload(
         object.insert("replace".to_string(), Value::Bool(after_revision.is_none()));
     }
     Ok(payload)
+}
+
+async fn build_managed_task_timeline_revision_topic_payload() -> Result<Value, ApiError> {
+    let Some(store) = crate::maintenance_store::global() else {
+        return Err(ApiError::unavailable(anyhow!(
+            "maintenance database unavailable"
+        )));
+    };
+    managed_task_timeline_revision_payload(store).await
+}
+
+async fn managed_task_timeline_revision_payload(
+    store: &crate::maintenance_store::MaintenanceStore,
+) -> Result<Value, ApiError> {
+    let watermark = store.timeline_revision().await.map_err(ApiError::from)?;
+    Ok(serde_json::json!({
+        "watermark": watermark,
+        "observedAt": format_utc_iso_millis(Utc::now()),
+    }))
 }
 
 fn merge_managed_task_timeline_payload(
@@ -13541,7 +13594,9 @@ fn managed_task_change_matches_topic(
         crate::task_timeline::TaskObservationChange::Timeline => {
             matches!(
                 topic,
-                SubscriptionTopic::ManagedTaskCatalog | SubscriptionTopic::ManagedTaskTimeline
+                SubscriptionTopic::ManagedTaskCatalog
+                    | SubscriptionTopic::ManagedTaskTimeline
+                    | SubscriptionTopic::ManagedTaskTimelineV2
             )
         }
         crate::task_timeline::TaskObservationChange::Workload(task_key) => match topic {
@@ -13936,6 +13991,9 @@ mod tests {
 
     #[path = "prompt_cache_projection.rs"]
     mod prompt_cache_projection;
+
+    #[path = "managed_task_timeline.rs"]
+    mod managed_task_timeline;
 
     #[test]
     fn all_time_account_overflow_markers_stay_bounded() {
@@ -20638,6 +20696,13 @@ mod tests {
             .entry(topic_key)
             .or_default()
             .insert(delta.identity.clone(), delta);
+        sqlx::query(
+            "INSERT OR REPLACE INTO prompt_cache_conversation_stats_refresh_queue (prompt_cache_key) VALUES (?1)",
+        )
+        .bind("runtime-overlay-pending-key")
+        .execute(&state.pool)
+        .await
+        .expect("queue prompt-cache statistics refresh before SSE baseline");
 
         let cached = state
             .subscription_hub
@@ -21158,7 +21223,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn working_conversations_bounded_hydration_defers_while_statistics_materialize() {
+    async fn working_conversations_bounded_hydration_reads_while_statistics_materialize() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -21189,7 +21254,7 @@ mod tests {
         let source_scope = resolve_default_source_scope(&state.pool)
             .await
             .expect("resolve default source scope");
-        let error = hydrate_working_prompt_cache_conversation_for_key(
+        let conversation = hydrate_working_prompt_cache_conversation_for_key(
             state.as_ref(),
             source_scope,
             "queued-working-hydration",
@@ -21199,9 +21264,12 @@ mod tests {
             None,
         )
         .await
-        .expect_err("bounded hydration must defer while statistics are queued");
+        .expect("bounded hydration should keep serving while statistics are queued")
+        .expect("queued runtime-only working conversation should remain visible");
 
-        assert!(format!("{error:?}").contains("still materializing"));
+        assert_eq!(conversation.prompt_cache_key, "queued-working-hydration");
+        assert_eq!(conversation.request_count, 1);
+        assert_eq!(conversation.success_count, None);
     }
 
     #[tokio::test]
@@ -21701,97 +21769,10 @@ mod tests {
     }
 
     #[test]
-    fn managed_task_sse_topics_have_stable_bounded_contracts() {
-        let cases = [
-            (
-                "system.managed-tasks.runtime",
-                "system.managed-tasks.runtime/v1",
-            ),
-            (
-                "system.managed-tasks.timeline",
-                "system.managed-tasks.timeline/v1",
-            ),
-            (
-                "system.managed-tasks.catalog",
-                "system.managed-tasks.catalog/v1",
-            ),
-        ];
-        for (name, epoch) in cases {
-            let descriptor = SubscriptionTopicDescriptor {
-                topic: name.to_string(),
-                params: BTreeMap::new(),
-            };
-            let topic = SubscriptionTopic::from_descriptor(&descriptor)
-                .expect("managed task topic should parse");
-            assert_eq!(topic.descriptor(), descriptor);
-            assert_eq!(topic.name(), name);
-            assert_eq!(topic.class(), SubscriptionTopicClass::BoundedColdHydrate);
-            assert_eq!(topic.schema_epoch(), epoch);
-            assert!(topic.runtime_topic_dependencies().is_empty());
-        }
-
-        let detail_descriptor = SubscriptionTopicDescriptor {
-            topic: "system.managed-tasks.detail".to_string(),
-            params: btree_map_from_pairs([("taskKey", "retention_archive".to_string())]),
-        };
-        let detail = SubscriptionTopic::from_descriptor(&detail_descriptor)
-            .expect("managed task detail topic should parse");
-        assert_eq!(detail.descriptor(), detail_descriptor);
-        assert_eq!(detail.schema_epoch(), "system.managed-tasks.detail/v1");
-        assert_eq!(detail.class(), SubscriptionTopicClass::BoundedColdHydrate);
-        assert!(detail.runtime_topic_dependencies().is_empty());
-        assert!(
-            SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
-                topic: "system.managed-tasks.detail".to_string(),
-                params: BTreeMap::new(),
-            })
-            .is_err()
-        );
-
-        let workload_descriptor = SubscriptionTopicDescriptor {
-            topic: "system.managed-tasks.workload".to_string(),
-            params: btree_map_from_pairs([
-                ("taskKey", "retention_archive".to_string()),
-                ("windowHours", "24".to_string()),
-                ("limit", "200".to_string()),
-            ]),
-        };
-        let workload = SubscriptionTopic::from_descriptor(&workload_descriptor)
-            .expect("managed task workload topic should parse");
-        assert_eq!(workload.descriptor(), workload_descriptor);
-        assert_eq!(workload.schema_epoch(), "system.managed-tasks.workload/v1");
-        assert_eq!(workload.class(), SubscriptionTopicClass::BoundedColdHydrate);
-        assert!(workload.runtime_topic_dependencies().is_empty());
-        for params in [
-            btree_map_from_pairs([
-                ("taskKey", "retention_archive".to_string()),
-                ("windowHours", "23".to_string()),
-                ("limit", "200".to_string()),
-            ]),
-            btree_map_from_pairs([
-                ("taskKey", "retention_archive".to_string()),
-                ("windowHours", "24".to_string()),
-                ("limit", "201".to_string()),
-            ]),
-            btree_map_from_pairs([
-                ("windowHours", "24".to_string()),
-                ("limit", "200".to_string()),
-            ]),
-        ] {
-            assert!(
-                SubscriptionTopic::from_descriptor(&SubscriptionTopicDescriptor {
-                    topic: "system.managed-tasks.workload".to_string(),
-                    params,
-                })
-                .is_err()
-            );
-        }
-    }
-
-    #[test]
     fn managed_task_observation_changes_refresh_only_the_matching_sse_topic() {
         let runtime = SubscriptionTopic::ManagedTaskRuntime;
         let timeline = SubscriptionTopic::ManagedTaskTimeline;
+        let timeline_v2 = SubscriptionTopic::ManagedTaskTimelineV2;
         let catalog = SubscriptionTopic::ManagedTaskCatalog;
         let detail = SubscriptionTopic::ManagedTaskDetail {
             task_key: "retention_archive".to_string(),
@@ -21808,6 +21789,7 @@ mod tests {
         assert!(managed_task_change_matches_topic(&Runtime, &catalog));
         assert!(!managed_task_change_matches_topic(&Timeline, &runtime));
         assert!(managed_task_change_matches_topic(&Timeline, &timeline));
+        assert!(managed_task_change_matches_topic(&Timeline, &timeline_v2));
         assert!(managed_task_change_matches_topic(&Timeline, &catalog));
         assert!(managed_task_change_matches_topic(
             &crate::task_timeline::TaskObservationChange::Workload("retention_archive".to_string()),
@@ -21838,6 +21820,7 @@ mod tests {
             SubscriptionTopic::ManagedTaskCatalog,
             SubscriptionTopic::ManagedTaskRuntime,
             SubscriptionTopic::ManagedTaskTimeline,
+            SubscriptionTopic::ManagedTaskTimelineV2,
             SubscriptionTopic::ManagedTaskDetail {
                 task_key: "retention_archive".to_string(),
             },
@@ -21871,7 +21854,7 @@ mod tests {
         )
         .await;
         let hub = state.subscription_hub.clone();
-        let topic = SubscriptionTopic::ManagedTaskTimeline;
+        let topic = SubscriptionTopic::ManagedTaskTimelineV2;
         let topic_key = topic.cache_key().expect("managed task timeline key");
         let mut cached = seeded_cached_topic(topic.clone(), &[], Utc::now());
         cached.dirty = true;
@@ -21897,82 +21880,6 @@ mod tests {
         assert!(
             !cached.refresh_scheduled,
             "failed refresh must release the retry latch"
-        );
-    }
-
-    #[test]
-    fn managed_task_timeline_sse_delta_preserves_and_replaces_cached_segments() {
-        let previous = json!({
-            "watermark": 2,
-            "windowStart": "2026-10-01T01:00:00.000Z",
-            "windowEnd": "2026-10-01T12:00:00.000Z",
-            "segments": [
-                {
-                    "segmentId": "keep-and-update",
-                    "startedAt": "2026-10-01T02:00:00.000Z",
-                    "finishedAt": "2026-10-01T03:00:00.000Z",
-                    "revision": 1
-                },
-                {
-                    "segmentId": "expired",
-                    "startedAt": "2026-09-30T20:00:00.000Z",
-                    "finishedAt": "2026-09-30T21:00:00.000Z",
-                    "revision": 1
-                }
-            ],
-            "coverage": [{"sessionId": "old-session"}]
-        });
-        let update = json!({
-            "replace": false,
-            "watermark": 4,
-            "windowStart": "2026-10-01T03:00:00.000Z",
-            "windowEnd": "2026-10-01T15:00:00.000Z",
-            "segments": [
-                {
-                    "segmentId": "keep-and-update",
-                    "startedAt": "2026-10-01T02:00:00.000Z",
-                    "finishedAt": "2026-10-01T04:00:00.000Z",
-                    "revision": 3
-                },
-                {
-                    "segmentId": "new-segment",
-                    "startedAt": "2026-10-01T14:00:00.000Z",
-                    "finishedAt": "2026-10-01T14:10:00.000Z",
-                    "revision": 4
-                }
-            ],
-            "coverage": [{"sessionId": "new-session"}]
-        });
-
-        let merged = merge_managed_task_timeline_payload(&previous, &update)
-            .expect("timeline delta should merge into the cached snapshot");
-        let segments = merged
-            .get("segments")
-            .and_then(Value::as_array)
-            .expect("merged segments");
-        assert_eq!(merged.get("replace").and_then(Value::as_bool), Some(true));
-        assert_eq!(merged.get("watermark").and_then(Value::as_i64), Some(4));
-        assert_eq!(segments.len(), 2);
-        assert_eq!(segments[0].get("revision").and_then(Value::as_i64), Some(3));
-        assert_eq!(
-            segments[1].get("segmentId").and_then(Value::as_str),
-            Some("new-segment")
-        );
-        assert_eq!(merged["coverage"][0]["sessionId"], "new-session");
-
-        let delta = BuiltSubscriptionTopicPayload::JsonDelta {
-            event_payload: update.clone(),
-            snapshot_payload: merged.clone(),
-        };
-        assert_eq!(
-            delta.serialize(None, None, None).expect("serialize delta"),
-            serde_json::to_vec(&update).expect("encode event delta")
-        );
-        assert_eq!(
-            delta
-                .serialize_snapshot(None, None, None)
-                .expect("serialize full cached snapshot"),
-            serde_json::to_vec(&merged).expect("encode full snapshot")
         );
     }
 

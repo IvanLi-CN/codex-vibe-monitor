@@ -1118,6 +1118,26 @@ _Avoid_: 会话统计刷新, 全部维护完成, 文件写出即完成
 The aggregate refresh and orphan-conversation cleanup required after retained invocation facts change. It preserves exact conversation statistics and deletion safety independently of Retention Core completion.
 _Avoid_: Prompt token 缓存失效, 调用归档, 在线请求阻塞步骤
 
+**孤儿提示缓存对话（Orphan Prompt-cache Conversation）**:
+A retained Prompt-cache Conversation with no retained invocation reference through either its Prompt Cache Key or Conversation ID, no active invocation occupancy, and no remaining retention protection. A stale aggregate or an empty displayed count alone does not establish that a conversation is orphaned.
+_Avoid_: 不活跃对话, 统计待刷新对话, raw 孤儿文件
+
+**孤儿提示缓存对话清理（Orphan Prompt-cache Conversation Cleanup）**:
+The maintenance responsibility that releases eligible orphan conversation identities after verifying their references and protections. Its work and completion are distinct from archival and conversation-statistics materialization.
+_Avoid_: 会话统计刷新, 归档核心, 孤儿文件清理
+
+**孤儿调用身份清理（Orphan Invocation Identity Cleanup）**:
+The maintenance responsibility that releases both eligible orphan Prompt-cache Conversation identities and ended Hourly Invocation Prefixes with no remaining invocation references or active occupancy. Conversation identities and hourly prefixes remain distinct populations within this responsibility.
+_Avoid_: 仅对话身份清理, 调用行归档, raw 孤儿文件清理
+
+**孤儿原始载荷文件（Orphan Raw Payload File）**:
+A raw request or response payload file proven to have no remaining live, archived, or in-flight owner under the raw-storage ownership rules. Age, a missing displayed invocation, or a single absent live reference alone does not prove that the file is orphaned.
+_Avoid_: 冷载荷文件, 过期调用, 孤儿提示缓存对话
+
+**孤儿原始载荷文件清理（Orphan Raw Payload File Cleanup）**:
+The maintenance responsibility that finds and removes proven orphan raw payload files while preserving ownership safety and physical inventory accuracy. It is distinct from conversation-identity cleanup and raw-file release committed as part of an archive transition.
+_Avoid_: 会话清理, 原始载荷指标盘点, 归档时关联文件释放
+
 **运行积压快照（Run Backlog Snapshot）**:
 The observed expired invocation population associated with a retention run, with its observation time and scope. It is a denominator in invocation rows, not a sum of conversation keys, archive batches, or raw files.
 _Avoid_: 永久总量, 全局完成率, 混合单位总数
@@ -1131,7 +1151,7 @@ The longest time an invocation still awaiting archival has remained eligible for
 _Avoid_: 最老请求年龄, 请求耗时, 未知即零
 
 **自动归档追赶（Automatic Archive Catch-up）**:
-Continuation of bounded retention rounds while eligible archival backlog remains, with one execution owner, between-round yielding, and pressure-aware retry. An inspection schedule discovers work; it does not restrict catch-up to scheduled occurrences. Disabling retention stops admission of subsequent catch-up work at a safe committed boundary.
+Continuation of bounded retention rounds while eligible archival backlog remains, with one execution owner, between-round yielding, and pressure-aware retry. An inspection schedule discovers work; it does not restrict catch-up to scheduled occurrences. Pausing automatic triggers prevents later automatic rounds while an already admitted bounded run retains its normal completion scope.
 _Avoid_: 错过计划补跑, 第二套归档调度器, 绕过压力保护
 
 **小时积压观测（Hourly Backlog Observation）**:
@@ -1227,6 +1247,10 @@ _Avoid_: 永不完成任务, 无限循环
 **安全边界暂停（Safe-Boundary Pause）**:
 A task control state that prevents new work and lets the active batch or checkpoint commit before the run becomes paused. It does not forcefully interrupt an in-flight database operation.
 _Avoid_: 强制取消, 事务中断, 立即杀死任务
+
+**自动触发暂停（Automatic Trigger Pause）**:
+The retention-maintenance control state that prevents new automatic Task Runs, including startup, event, inspection, catch-up, and retry triggers. Explicit manual runs remain permitted, and an already admitted bounded run retains its normal scope without turning the automatic triggers back on.
+_Avoid_: 禁止手动运行, 取消当前运行, 安全边界暂停, 删除任务
 
 **任务触发模式（Task Trigger Mode）**:
 The declared way a Managed Task becomes eligible: event wake, fixed interval, cron schedule, or startup. Event-driven tasks retain their event wake path and may use interval or cron only for bounded fallback probes.

@@ -196,6 +196,15 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some((task_key, dry_run)) = selected_owned_maintenance(&cli)? {
+        return run_owned_maintenance_cli(&config, task_key, dry_run).await;
+    }
+    let MaintenanceRuntimeRoute::Offline(mut runtime_lock) =
+        MaintenanceRuntimeLock::route(&config, false)?
+    else {
+        bail!("service runtime is already active");
+    };
+    runtime_lock.publish_role("service:ownership-v1:initializing")?;
     let spawn_background_hourly_rollup_bootstrap =
         should_spawn_background_startup_hourly_rollup_bootstrap(&cli);
     let (backend_ver, frontend_ver) = detect_versions(config.static_dir.as_deref());
@@ -207,282 +216,289 @@ pub(crate) async fn run() -> Result<()> {
         &database_url,
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
     )?;
+    let connect_opts = runtime_lock.sqlite_connect_options(&config.database_path, connect_opts)?;
     let db_connect_started_at = Instant::now();
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect_with(connect_opts)
         .await
         .context("failed to open sqlite database")?;
-    log_startup_phase("db_connect", db_connect_started_at);
+    let mut maintenance_pool = None;
+    let outcome = async {
+        log_startup_phase("db_connect", db_connect_started_at);
 
-    let schema_started_at = Instant::now();
-    ensure_schema(&pool).await?;
-    let _maintenance_store = match crate::maintenance_store::open(&config).await {
-        Ok(store) => {
-            if let Err(error) = store.migrate_legacy_state(&pool).await {
-                warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
-            } else if let Err(error) = store.apply_initial_task_defaults().await {
-                warn!(error = %error, "initial managed task defaults could not be applied; keeping maintenance observation unavailable until the next startup retry");
-            } else {
-                match store.recover_incomplete_runs().await {
-                    Ok(recovered_runs) => {
-                        if recovered_runs > 0 {
-                            warn!(
-                                recovered_runs,
-                                "recovered incomplete managed task runs at startup"
-                            );
+        let schema_started_at = Instant::now();
+        ensure_schema(&pool).await?;
+        initialize_invocation_identity_cleanup_state(&pool).await?;
+        let _maintenance_store = match crate::maintenance_store::open_owned(&config, &mut runtime_lock).await {
+            Ok(store) => {
+                maintenance_pool = Some(store.pool.clone());
+                if let Err(error) = store.migrate_legacy_state(&pool).await {
+                    warn!(error = %error, "legacy task state migration did not complete; keeping maintenance observation unavailable until the next startup retry");
+                } else if let Err(error) = store.apply_initial_task_defaults().await {
+                    warn!(error = %error, "initial managed task defaults could not be applied; keeping maintenance observation unavailable until the next startup retry");
+                } else {
+                    match store.recover_incomplete_runs().await {
+                        Ok(recovered_runs) => {
+                            if recovered_runs > 0 {
+                                warn!(
+                                    recovered_runs,
+                                    "recovered incomplete managed task runs at startup"
+                                );
+                            }
+                            let task =
+                                crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
+                            let task_name = task.name();
+                            let task_suffix =
+                                crate::maintenance_store::managed_startup_backfill_suffix(task_name)
+                                    .expect("prompt-cache materialization has a managed task key");
+                            let task_key = format!("startup_backfill.{task_suffix}");
+                            match store
+                                .initialize_prompt_cache_materialization_control(&task_key, task_name)
+                                .await
+                            {
+                                Ok(_) => crate::maintenance_store::set_global(Arc::new(store.clone())),
+                                Err(error) => warn!(
+                                    error = %error,
+                                    "prompt-cache materialization control could not be initialized; maintenance control remains unavailable"
+                                ),
+                            }
                         }
-                        let task =
-                            crate::StartupBackfillTask::PromptCacheConversationsMaterialization;
-                        let task_name = task.name();
-                        let task_suffix =
-                            crate::maintenance_store::managed_startup_backfill_suffix(task_name)
-                                .expect("prompt-cache materialization has a managed task key");
-                        let task_key = format!("startup_backfill.{task_suffix}");
-                        match store
-                            .initialize_prompt_cache_materialization_control(&task_key, task_name)
-                            .await
-                        {
-                            Ok(_) => crate::maintenance_store::set_global(Arc::new(store.clone())),
-                            Err(error) => warn!(
-                                error = %error,
-                                "prompt-cache materialization control could not be initialized; maintenance control remains unavailable"
-                            ),
+                        Err(error) => {
+                            warn!(error = %error, "incomplete managed task runs could not be recovered; keeping maintenance observation unavailable until the next startup retry");
                         }
-                    }
-                    Err(error) => {
-                        warn!(error = %error, "incomplete managed task runs could not be recovered; keeping maintenance observation unavailable until the next startup retry");
                     }
                 }
+                Some(Arc::new(store))
             }
-            Some(Arc::new(store))
+            Err(error) => {
+                warn!(error = %error, path = %config.maintenance_database_path().display(), "maintenance database unavailable; operational observation will be stale");
+                None
+            }
+        };
+        log_startup_phase("schema", schema_started_at);
+        if should_recover_pending_pool_attempts_on_startup(&cli) {
+            let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
+            if recovered_running_invocations > 0 {
+                warn!(
+                    recovered_running_invocations,
+                    "recovered orphaned running invocation rows at startup"
+                );
+            }
+            let recovered_pending_pool_attempts =
+                recover_orphaned_pool_upstream_request_attempts(&pool).await?;
+            if recovered_pending_pool_attempts > 0 {
+                warn!(
+                    recovered_pending_pool_attempts,
+                    "recovered orphaned pending pool attempt rows at startup"
+                );
+            }
         }
-        Err(error) => {
-            warn!(error = %error, path = %config.maintenance_database_path().display(), "maintenance database unavailable; operational observation will be stale");
-            None
-        }
-    };
-    log_startup_phase("schema", schema_started_at);
-    if should_recover_pending_pool_attempts_on_startup(&cli) {
-        let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
-        if recovered_running_invocations > 0 {
-            warn!(
-                recovered_running_invocations,
-                "recovered orphaned running invocation rows at startup"
-            );
-        }
-        let recovered_pending_pool_attempts =
-            recover_orphaned_pool_upstream_request_attempts(&pool).await?;
-        if recovered_pending_pool_attempts > 0 {
-            warn!(
-                recovered_pending_pool_attempts,
-                "recovered orphaned pending pool attempt rows at startup"
-            );
-        }
-    }
-    if should_run_blocking_startup_persistent_prep(&cli) {
-        let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
-        info!(
-            stale_archive_temp_files_removed = prep_summary.stale_archive_temp_files_removed,
-            refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
-            refreshed_manifest_account_rows = prep_summary.refreshed_manifest_account_rows,
-            missing_manifest_files = prep_summary.missing_manifest_files,
-            backfilled_archive_expiries = prep_summary.backfilled_archive_expiries,
-            bootstrapped_hourly_rollups = prep_summary.bootstrapped_hourly_rollups,
-            pending_manifest_batches = prep_summary.pending_manifest_batches,
-            pending_historical_rollup_archive_batches =
-                prep_summary.pending_historical_rollup_archive_batches,
-            "startup persistent prep finished"
-        );
-        if prep_summary.pending_historical_rollup_archive_batches > 0 {
-            warn!(
+        if should_run_blocking_startup_persistent_prep(&cli) {
+            let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
+            info!(
+                stale_archive_temp_files_removed = prep_summary.stale_archive_temp_files_removed,
+                refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
+                refreshed_manifest_account_rows = prep_summary.refreshed_manifest_account_rows,
+                missing_manifest_files = prep_summary.missing_manifest_files,
+                backfilled_archive_expiries = prep_summary.backfilled_archive_expiries,
+                bootstrapped_hourly_rollups = prep_summary.bootstrapped_hourly_rollups,
+                pending_manifest_batches = prep_summary.pending_manifest_batches,
                 pending_historical_rollup_archive_batches =
                     prep_summary.pending_historical_rollup_archive_batches,
-                "legacy archive batches still need historical rollup materialization"
+                "startup persistent prep finished"
             );
+            if prep_summary.pending_historical_rollup_archive_batches > 0 {
+                warn!(
+                    pending_historical_rollup_archive_batches =
+                        prep_summary.pending_historical_rollup_archive_batches,
+                    "legacy archive batches still need historical rollup materialization"
+                );
+            }
         }
-    }
-    if cli.retention_run_once && cli.command.is_some() {
-        bail!("--retention-run-once cannot be combined with maintenance subcommands");
-    }
-    if let Some(command) = &cli.command {
-        run_cli_command(&pool, &config, command).await?;
-        return Ok(());
-    }
-    if cli.retention_run_once {
-        let summary =
-            run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
-                .await?;
-        info!(?summary, "retention maintenance run-once finished");
-        return Ok(());
-    }
+        if let Some(command) = &cli.command {
+            run_cli_command(&pool, &config, command).await?;
+            return Ok(());
+        }
+        if crate::maintenance_store::global().is_some() {
+            runtime_lock.refresh_inode_pair_lock()?;
+            runtime_lock.publish_role("service:ownership-v1:ready")?;
+        }
 
-    let pricing_catalog = load_pricing_catalog(&pool).await?;
-    ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
-    let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
-    let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
-    let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
-    let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
-    let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
-        forward_proxy_settings,
-        forward_proxy_runtime,
-        config.forward_proxy_algo,
-    )));
-    let resolved_proxy_raw_dir = config.resolved_proxy_raw_dir();
-    fs::create_dir_all(&resolved_proxy_raw_dir).with_context(|| {
-        format!(
-            "failed to create proxy raw payload directory: {}",
-            resolved_proxy_raw_dir.display()
+        let pricing_catalog = load_pricing_catalog(&pool).await?;
+        ensure_proxy_encrypted_session_owner_routing_setting_initialized(&pool, &config).await?;
+        let proxy_model_settings = Arc::new(RwLock::new(load_proxy_model_settings(&pool).await?));
+        let forward_proxy_settings = load_forward_proxy_settings(&pool).await?;
+        let forward_proxy_runtime = load_forward_proxy_runtime_states(&pool).await?;
+        let oauth_installation_seed = oauth_bridge::load_or_init_oauth_installation_seed(&pool).await?;
+        let forward_proxy = Arc::new(Mutex::new(ForwardProxyManager::with_algo(
+            forward_proxy_settings,
+            forward_proxy_runtime,
+            config.forward_proxy_algo,
+        )));
+        let resolved_proxy_raw_dir = config.resolved_proxy_raw_dir();
+        fs::create_dir_all(&resolved_proxy_raw_dir).with_context(|| {
+            format!(
+                "failed to create proxy raw payload directory: {}",
+                resolved_proxy_raw_dir.display()
+            )
+        })?;
+        let pricing_catalog = Arc::new(RwLock::new(pricing_catalog));
+
+        let http_clients = HttpClients::build(&config)?;
+        let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
+        let (tx, _rx) = broadcast::channel(128);
+        let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+        let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
+        let shutdown = CancellationToken::new();
+        let process_started_at_utc = Utc::now();
+        let observability = ObservabilityRuntime::new(config.observability.enabled);
+        observability
+            .initialize_traces(config.observability.traces.clone())
+            .await;
+
+        observability.start_exporter(&config.observability, shutdown.clone());
+
+        let prompt_cache_conversation_cache =
+            Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+        prompt_cache_conversation_cache
+            .lock()
+            .await
+            .identity_cache
+            .range_manager
+            .start_sizing(&pool, shutdown.clone());
+        let proxy_runtime_invocations =
+            Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
+        let dashboard_network_speed_cache =
+            Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
+        proxy_runtime_invocations
+            .bind_dashboard_network_speed_cache(dashboard_network_speed_cache.clone())?;
+        let dashboard_activity_snapshot_cache =
+            Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
+        let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
+        let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
+        let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .bind_observability(observability.clone())?;
+        let sqlite_batch_writer = SqliteBatchWriter::spawn(
+            pool.clone(),
+            shutdown.clone(),
+            prompt_cache_conversation_cache.clone(),
+            pricing_catalog.clone(),
+            &config.database_path,
+        );
+        sqlite_batch_writer.bind_observability(observability.clone());
+        sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
+        sqlite_batch_writer
+            .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
+        sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
+        let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
+        let subscription_hub = Arc::new(SubscriptionHub::new());
+        sqlite_batch_writer.set_summary_delta_hub(subscription_hub.clone());
+        terminal_projection_hub.set_runtime_mutation_bus(subscription_hub.runtime_mutation_bus());
+
+        let state = Arc::new(AppState {
+            system_storage: Arc::new(SystemStorageRuntime::new(&config)),
+            config: config.clone(),
+            pool: pool.clone(),
+            process_started_at_utc,
+            observability,
+            sqlite_batch_writer,
+            pool_account_selection_runtime,
+            proxy_runtime_invocations,
+            dashboard_network_speed_cache,
+            oauth_installation_seed,
+            hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+            http_clients,
+            broadcaster: tx.clone(),
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
+            subscription_hub: subscription_hub.clone(),
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+            proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+            dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
+            startup_ready: Arc::new(AtomicBool::new(false)),
+            shutdown: shutdown.clone(),
+            semaphore: semaphore.clone(),
+            proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+            proxy_raw_async_semaphore,
+            raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
+                config.resolved_proxy_raw_dir(),
+            )),
+            proxy_model_settings,
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy,
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                config.xray_binary.clone(),
+                config.xray_runtime_dir.clone(),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog,
+            prompt_cache_conversation_cache,
+            dashboard_activity_snapshot_cache,
+            terminal_projection_hub,
+            long_term_projection_runtime,
+            memory_diagnostics,
+            maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+            system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
+            pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
+            pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
+            pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
+            pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            pool_group_429_retry_delay_override: None,
+            #[cfg(test)]
+            fallback_proxy_429_retry_delay_override: None,
+            pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
+            upstream_accounts,
+        });
+        if let Some(store) = crate::maintenance_store::global().cloned() {
+            crate::task_timeline::start_recorder(store).await;
+        }
+        // Listen for shutdown before the readiness-gated hydration loop so an unavailable
+        // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
+        let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
+        // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
+        // the early routing and dashboard reads before progressing through the remaining startup
+        // stages. Summary/System Status hydration itself is intentionally deferred to the final
+        // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
+        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+        warm_dashboard_runtime_projection(state.as_ref()).await;
+        if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
+            warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
+        }
+        recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
+        crate::api::register_dashboard_runtime_projection_handle(
+            spawn_dashboard_runtime_projection_reconcile(state.clone()),
+        );
+        spawn_subscription_broadcast_listener(state.clone());
+        spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
+        spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
+        spawn_observability_sampler(state.clone());
+        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+
+        run_runtime_until_shutdown(
+            state,
+            startup_started_at,
+            spawn_background_hourly_rollup_bootstrap,
+            async move {
+                let _ = signal_listener.await;
+            },
         )
-    })?;
-    let pricing_catalog = Arc::new(RwLock::new(pricing_catalog));
-
-    let http_clients = HttpClients::build(&config)?;
-    let upstream_accounts = Arc::new(UpstreamAccountsRuntime::from_env()?);
-    let (tx, _rx) = broadcast::channel(128);
-    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
-    let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
-    let shutdown = CancellationToken::new();
-    let process_started_at_utc = Utc::now();
-    let observability = ObservabilityRuntime::new(config.observability.enabled);
-    observability
-        .initialize_traces(config.observability.traces.clone())
-        .await;
-
-    observability.start_exporter(&config.observability, shutdown.clone());
-
-    let prompt_cache_conversation_cache =
-        Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
-    prompt_cache_conversation_cache
-        .lock()
         .await
-        .identity_cache
-        .range_manager
-        .start_sizing(&pool, shutdown.clone());
-    let proxy_runtime_invocations =
-        Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
-    let dashboard_network_speed_cache =
-        Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
-    proxy_runtime_invocations
-        .bind_dashboard_network_speed_cache(dashboard_network_speed_cache.clone())?;
-    let dashboard_activity_snapshot_cache =
-        Arc::new(Mutex::new(DashboardActivitySnapshotCacheState::default()));
-    let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
-    let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
-    let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
-    crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-        .bind_observability(observability.clone())?;
-    let sqlite_batch_writer = SqliteBatchWriter::spawn(
-        pool.clone(),
-        shutdown.clone(),
-        prompt_cache_conversation_cache.clone(),
-        pricing_catalog.clone(),
-        &config.database_path,
-    );
-    sqlite_batch_writer.bind_observability(observability.clone());
-    sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
-    sqlite_batch_writer
-        .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
-    sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
-    let pool_account_selection_runtime = Arc::new(PoolAccountSelectionRuntime::default());
-    let subscription_hub = Arc::new(SubscriptionHub::new());
-    sqlite_batch_writer.set_summary_delta_hub(subscription_hub.clone());
-    terminal_projection_hub.set_runtime_mutation_bus(subscription_hub.runtime_mutation_bus());
-
-    let state = Arc::new(AppState {
-        system_storage: Arc::new(SystemStorageRuntime::new(&config)),
-        config: config.clone(),
-        pool,
-        process_started_at_utc,
-        observability,
-        sqlite_batch_writer,
-        pool_account_selection_runtime,
-        proxy_runtime_invocations,
-        dashboard_network_speed_cache,
-        oauth_installation_seed,
-        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
-        http_clients,
-        broadcaster: tx.clone(),
-        broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
-        subscription_hub: subscription_hub.clone(),
-        proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
-        proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
-        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
-        dashboard_activity_live_broadcast_seq: Arc::new(AtomicU64::new(0)),
-        dashboard_activity_live_broadcast_running: Arc::new(AtomicBool::new(false)),
-        startup_ready: Arc::new(AtomicBool::new(false)),
-        shutdown: shutdown.clone(),
-        semaphore: semaphore.clone(),
-        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_raw_async_semaphore,
-        raw_capture_circuit: Arc::new(RawCaptureCircuitBreaker::new(
-            config.resolved_proxy_raw_dir(),
-        )),
-        proxy_model_settings,
-        proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
-        forward_proxy,
-        xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
-            config.xray_binary.clone(),
-            config.xray_runtime_dir.clone(),
-        ))),
-        forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
-        forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
-        pricing_settings_update_lock: Arc::new(Mutex::new(())),
-        pricing_catalog,
-        prompt_cache_conversation_cache,
-        dashboard_activity_snapshot_cache,
-        terminal_projection_hub,
-        long_term_projection_runtime,
-        memory_diagnostics,
-        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
-        system_status_cache: Arc::new(Mutex::new(SystemStatusCacheState::default())),
-        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
-        pool_routing_availability: PoolRoutingAvailabilitySignal::default(),
-        pool_routing_runtime_cache: Arc::new(Mutex::new(None)),
-        #[cfg(test)]
-        pool_routing_test_data_version_connection: Arc::new(Mutex::new(None)),
-        pool_model_routing_cache_write_lock: Arc::new(Mutex::new(())),
-        pool_live_attempt_ids: Arc::new(std::sync::Mutex::new(HashSet::new())),
-        pool_group_429_retry_delay_override: None,
-        #[cfg(test)]
-        fallback_proxy_429_retry_delay_override: None,
-        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
-        upstream_accounts,
-    });
-    if let Some(store) = crate::maintenance_store::global().cloned() {
-        crate::task_timeline::start_recorder(store).await;
     }
-    // Listen for shutdown before the readiness-gated hydration loop so an unavailable
-    // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
-    let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
-    // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
-    // the early routing and dashboard reads before progressing through the remaining startup
-    // stages. Summary/System Status hydration itself is intentionally deferred to the final
-    // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
-    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
-    warm_dashboard_runtime_projection(state.as_ref()).await;
-    if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
-        warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
+    .await;
+    // The process lifetime lock also covers SQL workers left by startup failures or shutdown.
+    pool.close().await;
+    if let Some(maintenance_pool) = maintenance_pool {
+        maintenance_pool.close().await;
     }
-    recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
-    crate::api::register_dashboard_runtime_projection_handle(
-        spawn_dashboard_runtime_projection_reconcile(state.clone()),
-    );
-    spawn_subscription_broadcast_listener(state.clone());
-    spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
-    spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
-    spawn_observability_sampler(state.clone());
-    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
-
-    run_runtime_until_shutdown(
-        state,
-        startup_started_at,
-        spawn_background_hourly_rollup_bootstrap,
-        async move {
-            let _ = signal_listener.await;
-        },
-    )
-    .await
+    outcome
 }
 
 pub(crate) const POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
@@ -894,10 +910,8 @@ where
     }
 
     let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-        Some(spawn_data_retention_maintenance(
-            state.clone(),
-            cancel.clone(),
-        ))
+        // The dispatcher is the sole automatic executor of all owned maintenance.
+        None
     })
     .await;
     let retention_shutdown_requested = match retention_stage {
@@ -1163,10 +1177,7 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 );
                 pending_finishes.push_back(finish);
             }
-            if let Err(error) = store
-                .enqueue_due_runs_with_retention_enabled(state.config.retention_enabled)
-                .await
-            {
+            if let Err(error) = store.enqueue_due_runs().await {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
             }
             if let Err(error) = store.cleanup_expired_history_if_due().await {
@@ -1202,35 +1213,15 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             };
             let execution_started_at = Instant::now();
             let initial_stages = (task_key == "retention_archive").then(|| {
-                vec![
-                    crate::maintenance_store::TaskStage {
-                        name: "archive".to_string(),
-                        status: "running".to_string(),
-                        completed: None,
-                        total: None,
-                        elapsed_ms: None,
-                        wait_reason: None,
-                        checkpoint: Some("admitted".to_string()),
-                    },
-                    crate::maintenance_store::TaskStage {
-                        name: "prompt_cache".to_string(),
-                        status: "pending".to_string(),
-                        completed: None,
-                        total: None,
-                        elapsed_ms: None,
-                        wait_reason: Some("materialization_owner".to_string()),
-                        checkpoint: None,
-                    },
-                    crate::maintenance_store::TaskStage {
-                        name: "orphan_cleanup".to_string(),
-                        status: "pending".to_string(),
-                        completed: None,
-                        total: None,
-                        elapsed_ms: None,
-                        wait_reason: None,
-                        checkpoint: None,
-                    },
-                ]
+                vec![crate::maintenance_store::TaskStage {
+                    name: "archive".to_string(),
+                    status: "running".to_string(),
+                    completed: None,
+                    total: None,
+                    elapsed_ms: None,
+                    wait_reason: None,
+                    checkpoint: Some("admitted".to_string()),
+                }]
             });
             if let Err(error) = store
                 .publish_progress(
@@ -1254,20 +1245,37 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 &crate::maintenance_store::task_title_for_observation(&task_key),
                 &trigger_kind,
                 crate::maintenance_store::task_execution_class(&task_key),
-                "processing",
+                if matches!(
+                    task_key.as_str(),
+                    "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+                ) {
+                    "waiting_resources"
+                } else {
+                    "processing"
+                },
                 Some(run_id),
             );
-            let result = tokio::select! {
-                biased;
-                _ = state.shutdown.cancelled() => {
-                    Err(anyhow!("managed task cancelled during shutdown"))
+            let result = if matches!(
+                task_key.as_str(),
+                "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            ) {
+                // These owners settle file/transaction work at their own cancellation boundaries.
+                // Dropping their future here could release admission before in-flight IO drains.
+                run_managed_task_once_with_observation(&state, &task_key, run_id, &observation)
+                    .await
+            } else {
+                tokio::select! {
+                    biased;
+                    _ = state.shutdown.cancelled() => {
+                        Err(anyhow!("managed task cancelled during shutdown"))
+                    }
+                    result = run_managed_task_once_with_observation(
+                        &state,
+                        &task_key,
+                        run_id,
+                        &observation,
+                    ) => result,
                 }
-                result = run_managed_task_once_with_observation(
-                    &state,
-                    &task_key,
-                    run_id,
-                    &observation,
-                ) => result,
             };
             let (status, summary, detail, completion, core_completion, details) = match result {
                 Ok(execution) => {
@@ -1285,14 +1293,27 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                         execution.details,
                     )
                 }
-                Err(error) => (
-                    SystemTaskStatus::Failed,
-                    Some(format!("{task_key} 手动运行失败")),
-                    Some(error.to_string()),
-                    None,
-                    None,
-                    None,
-                ),
+                Err(error) => {
+                    if trigger_kind != "manual"
+                        && matches!(
+                            task_key.as_str(),
+                            "invocation_identity_cleanup" | "raw_orphan_sweep"
+                        )
+                        && let Err(retry_error) = store
+                            .record_owned_retry(&task_key, is_retention_write_deferred(&error))
+                            .await
+                    {
+                        warn!(error=%retry_error, task=%task_key, "maintenance safety retry could not be recorded");
+                    }
+                    (
+                        SystemTaskStatus::Failed,
+                        Some(format!("{task_key} 执行失败")),
+                        Some(error.to_string()),
+                        None,
+                        None,
+                        None,
+                    )
+                }
             };
             let workload_reason = details
                 .as_ref()
@@ -1355,58 +1376,19 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                     _ if finish.status == SystemTaskStatus::Failed => "failed",
                     _ => "completed",
                 };
-                vec![
-                    crate::maintenance_store::TaskStage {
-                        name: "archive".to_string(),
-                        status: archive_status.to_string(),
-                        completed: progress_completed,
-                        total: progress_total,
-                        elapsed_ms: finish
-                            .details
-                            .as_ref()
-                            .and_then(|details| details.get("elapsedMs"))
-                            .and_then(Value::as_i64),
-                        wait_reason: progress_wait_reason.map(str::to_string),
-                        checkpoint: Some("finished".to_string()),
-                    },
-                    crate::maintenance_store::TaskStage {
-                        name: "prompt_cache".to_string(),
-                        status: finish
-                            .details
-                            .as_ref()
-                            .and_then(|details| details.get("promptCacheStats"))
-                            .and_then(|stats| stats.get("state"))
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown")
-                            .to_string(),
-                        completed: None,
-                        total: None,
-                        elapsed_ms: None,
-                        wait_reason: Some("materialization_owner".to_string()),
-                        checkpoint: None,
-                    },
-                    crate::maintenance_store::TaskStage {
-                        name: "orphan_cleanup".to_string(),
-                        status: finish
-                            .details
-                            .as_ref()
-                            .and_then(|details| details.get("orphanCleanupState"))
-                            .and_then(Value::as_str)
-                            .unwrap_or(if finish.status == SystemTaskStatus::Failed {
-                                "failed"
-                            } else if matches!(finish.completion.as_deref(), Some("deferred")) {
-                                "deferred"
-                            } else {
-                                "unknown"
-                            })
-                            .to_string(),
-                        completed: None,
-                        total: None,
-                        elapsed_ms: None,
-                        wait_reason: None,
-                        checkpoint: None,
-                    },
-                ]
+                vec![crate::maintenance_store::TaskStage {
+                    name: "archive".to_string(),
+                    status: archive_status.to_string(),
+                    completed: progress_completed,
+                    total: progress_total,
+                    elapsed_ms: finish
+                        .details
+                        .as_ref()
+                        .and_then(|details| details.get("elapsedMs"))
+                        .and_then(Value::as_i64),
+                    wait_reason: progress_wait_reason.map(str::to_string),
+                    checkpoint: Some("finished".to_string()),
+                }]
             });
             let completion_phase =
                 finish
@@ -1597,6 +1579,9 @@ impl ManagedTaskExecution {
 }
 
 async fn persist_retention_catchup_schedule(summary: &crate::maintenance::RetentionRunSummary) {
+    if maintenance_execution_is_manual() {
+        return;
+    }
     let Some(store) = crate::maintenance_store::global() else {
         return;
     };
@@ -1623,11 +1608,56 @@ async fn run_managed_task_once_with_observation(
     run_id: i64,
     observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
-    crate::with_managed_task_observation(
-        observation.clone(),
-        run_managed_task_once_with_scoped_observation(state, task_key, run_id, observation),
+    let store = crate::maintenance_store::global().context("maintenance store unavailable")?;
+    let (trigger, details): (String, Option<String>) =
+        sqlx::query_as("SELECT trigger_kind,details FROM managed_task_runs WHERE id=?")
+            .bind(run_id)
+            .fetch_one(&store.pool)
+            .await?;
+    let details: Value = details
+        .and_then(|d| serde_json::from_str(&d).ok())
+        .unwrap_or(Value::Null);
+    let options = MaintenanceExecutionOptions {
+        manual: trigger == "manual",
+        admitted: true,
+        dry_run: if trigger == "manual" {
+            details
+                .get("dryRun")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+        } else {
+            matches!(
+                task_key,
+                "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+            ) && state.config.retention_dry_run
+        },
+    };
+    if crate::maintenance_store::is_retention_maintenance_task(task_key) {
+        sqlx::query("UPDATE managed_task_runs SET details=? WHERE id=?")
+            .bind(json!({"ownershipVersion": 1,"ownerScope": task_key,"dryRun": options.dry_run,"manual": options.manual}).to_string())
+            .bind(run_id).execute(&store.pool).await?;
+    }
+    let mut execution = with_maintenance_execution_options(
+        options,
+        crate::with_managed_task_observation(
+            observation.clone(),
+            Box::pin(run_managed_task_once_with_scoped_observation(
+                state,
+                task_key,
+                run_id,
+                observation,
+            )),
+        ),
     )
-    .await
+    .await?;
+    if crate::maintenance_store::is_retention_maintenance_task(task_key) {
+        let details = execution.details.get_or_insert_with(|| json!({}));
+        details["ownershipVersion"] = json!(1);
+        details["ownerScope"] = json!(task_key);
+        details["dryRun"] = json!(options.dry_run);
+        details["manual"] = json!(options.manual);
+    }
+    Ok(execution)
 }
 
 async fn run_managed_task_once_with_scoped_observation(
@@ -1636,89 +1666,78 @@ async fn run_managed_task_once_with_scoped_observation(
     run_id: i64,
     observation: &crate::TaskExecutionObservation,
 ) -> Result<ManagedTaskExecution> {
-    if task_key == "retention_archive" {
-        let summary = run_data_retention_maintenance_with_circuit_and_prompt_cache(
-            &state.pool,
-            &state.config,
-            Some(false),
-            Some(&state.shutdown),
-            state.raw_capture_circuit.clone(),
-            Some(&state.prompt_cache_conversation_cache),
+    if matches!(
+        task_key,
+        "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+    ) {
+        let options = maintenance_execution_options();
+        let raw_traversal = managed_raw_traversal();
+        let execution = Box::pin(execute_owned_maintenance(
+            OwnedMaintenanceContext {
+                pool: &state.pool,
+                config: &state.config,
+                cache: &state.prompt_cache_conversation_cache,
+                circuit: state.raw_capture_circuit.clone(),
+                shutdown: &state.shutdown,
+                raw_traversal,
+            },
+            task_key,
+            options,
             Some(observation.clone()),
-        )
+        ))
         .await?;
-        persist_retention_catchup_schedule(&summary).await;
-        let (brief, detail) = crate::api::summarize_retention_run_for_system_task(&summary);
-        let prompt_cache_pending = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue",
-        )
-        .fetch_one(&state.pool)
-        .await
-        .ok();
-        let prompt_cache_enabled = crate::maintenance_store::global()
-            .and_then(|store| store.prompt_cache_materialization_control.snapshot())
-            .map(|control| control.enabled);
-        let prompt_cache_state = match (prompt_cache_enabled, prompt_cache_pending) {
-            (Some(false), _) => ("unavailable", "materialization_disabled"),
-            (Some(true), Some(pending)) if pending > 0 => {
-                ("unavailable", "materialization_pending")
-            }
-            (Some(true), Some(_)) => ("available", "fresh"),
-            _ => ("unknown", "stats_query_failed"),
-        };
-        let completion = if summary.completion() == "completed"
-            && (prompt_cache_pending.is_some_and(|pending| pending > 0)
-                || prompt_cache_state.0 == "unknown")
+        if matches!(task_key, "invocation_identity_cleanup" | "raw_orphan_sweep")
+            && !options.manual
+            && !options.dry_run
+            && let Some(store) = crate::maintenance_store::global()
         {
-            "partial"
-        } else {
-            summary.completion()
-        };
-        let details = json!({
-            "completion": completion,
-            "coreCompletion": summary.core_completion(),
-            "budgetMs": summary.work_budget_ms,
-            "elapsedMs": summary.elapsed_ms,
-            "settlementMs": summary.settlement_ms,
-            "budgetExhausted": summary.budget_exhausted,
-            "recoverableFailure": summary.recoverable_failure,
-            "waitReason": summary.wait_reason,
-            "processedCount": summary.processed_row_count(),
-            "total": summary.backlog_total,
-            "completed": summary.invocation_rows_archived,
-            "backlogRemaining": summary.backlog_total.map(|total| {
-                total.saturating_sub(summary.invocation_rows_archived as i64)
-            }),
-            "observedAt": summary.backlog_observed_at,
-            "sourceMaxInvocationId": summary.source_max_invocation_id,
-            "invocationRowsArchived": summary.invocation_rows_archived,
-            "invocationDetailsPruned": summary.invocation_details_pruned,
-            "archiveBatchesTouched": summary.archive_batches_touched,
-            "archiveBatches": summary.batches,
-            "timeoutCount": summary.timeout_count,
-            "rawFilesRemoved": summary.raw_files_removed,
-            "promptCacheConversationsReleased": summary.prompt_cache_conversations_released,
-            "summary": detail,
-            "fatalError": summary.fatal_error.clone(),
-            "orphanCleanupState": if summary.orphan_cleanup_completed {
-                "completed"
-            } else if summary.budget_exhausted || summary.deferred {
-                "deferred"
+            if task_key == "raw_orphan_sweep"
+                && (execution.completion == "deferred"
+                    || execution
+                        .details
+                        .get("failures")
+                        .and_then(Value::as_u64)
+                        .is_some_and(|count| count > 0))
+            {
+                store
+                    .record_owned_retry_delay(
+                        task_key,
+                        execution.next_work_secs.unwrap_or(300),
+                        "raw_safety_retry",
+                    )
+                    .await?;
+            } else if execution.completion == "deferred" {
+                store.record_owned_retry(task_key, true).await?;
+            } else if execution
+                .details
+                .get("failures")
+                .and_then(Value::as_u64)
+                .is_some_and(|count| count > 0)
+            {
+                store.record_owned_retry(task_key, false).await?;
             } else {
-                "unknown"
-            },
-            "promptCacheStats": {
-                "state": prompt_cache_state.0,
-                "pending": prompt_cache_pending,
-                "reason": prompt_cache_state.1,
-            },
-        });
+                store.clear_owned_retry(task_key).await?;
+            }
+        }
+        if !options.manual
+            && !options.dry_run
+            && let Some(retry) = execution.next_work_secs
+            && let Some(store) = crate::maintenance_store::global()
+        {
+            store
+                .schedule_owned_work(task_key, retry, "work_remaining")
+                .await?;
+        }
         return Ok(ManagedTaskExecution {
-            summary: brief,
-            detail: Some(detail),
-            completion: Some(completion.to_string()),
-            core_completion: Some(summary.core_completion().to_string()),
-            details: Some(details),
+            summary: execution.summary,
+            detail: None,
+            completion: Some(execution.completion.to_string()),
+            core_completion: execution
+                .details
+                .get("coreCompletion")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            details: Some(execution.details),
         });
     }
     if task_key == "long_term_projection" {

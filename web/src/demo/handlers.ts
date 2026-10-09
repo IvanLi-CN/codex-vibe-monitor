@@ -20,6 +20,7 @@ import { demoSearchParamsFromLocation } from "./runtime";
 
 const DEMO_INVOCATION_REQUEST_BODY_SIZE = 8_681_416;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DEMO_TASK_TIMELINE_SEGMENT_COUNT = 13_120;
 const DEMO_INVOCATION_REQUEST_BODY_TRANSMITTED_BYTES = 3_039_648;
 const DEMO_INVOCATION_RESPONSE_BODY_SIZE = 138_649;
 const demoResetModelRoutes = new Set<string>();
@@ -2594,6 +2595,8 @@ const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
 let nextManagedTaskRunId = 100;
 const DEMO_DEFAULT_ENABLED_TASKS = new Set([
   "retention_archive",
+  "invocation_identity_cleanup",
+  "raw_orphan_sweep",
   "upstream_account_maintenance",
   "forward_proxy_subscription_refresh",
   "pool_orphan_recovery",
@@ -2680,6 +2683,12 @@ function demoDefaultTaskPolicy(
         policySource: "系统默认",
         effectivePolicy: "自适应恢复；按覆盖和压力准入唤醒",
       };
+    case "invocation_identity_cleanup":
+    case "raw_orphan_sweep":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "300 秒巡检；有待办时让行后接续，安全重试独立计时",
+      };
     case "prompt_cache_materialization":
       return { policySource: "系统默认", effectivePolicy: "事件对账与 60 秒检查" };
     case "startup_backfill":
@@ -2700,6 +2709,8 @@ function demoDefaultTaskPolicy(
 function demoTaskExecutionClass(taskKey: string): string | null {
   switch (taskKey) {
     case "retention_archive":
+    case "invocation_identity_cleanup":
+    case "raw_orphan_sweep":
     case "upstream_account_maintenance":
     case "pool_orphan_recovery":
     case "invocation_timeline_snapshot":
@@ -2746,6 +2757,20 @@ export function managedTasks() {
     executionObservation?: string;
   };
   const tasks: Array<[string, string, string, string, boolean]> = [
+    [
+      "invocation_identity_cleanup",
+      "调用身份清理",
+      "释放无引用的对话身份与已结束小时前缀",
+      "interval",
+      false,
+    ],
+    [
+      "raw_orphan_sweep",
+      "Raw 孤儿文件清理",
+      "按所有权证明与隔离规则清理无引用的原始载荷文件",
+      "interval",
+      false,
+    ],
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
     [
       "upstream_account_maintenance",
@@ -2878,6 +2903,8 @@ export function managedTasks() {
         const enabled = override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey);
         const scheduleEditable = [
           "retention_archive",
+          "invocation_identity_cleanup",
+          "raw_orphan_sweep",
           "upstream_account_maintenance",
           "pool_orphan_recovery",
           "system_status_snapshot",
@@ -2891,28 +2918,37 @@ export function managedTasks() {
               ? null
               : taskKey === "retention_archive"
                 ? 3600
-                : null;
+                : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                  ? 300
+                  : null;
         const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
         const effectiveIntervalSecs =
           intervalSecs ?? (taskKey === "retention_archive" ? 3600 : null);
         const triggerKinds =
-          taskKey === "retention_archive" || taskKey === "upstream_account_maintenance"
-            ? ["startup", "interval"]
-            : taskKey === "forward_proxy_subscription_refresh"
-              ? ["startup", "interval"]
-              : taskKey === "dashboard_runtime_projection_reconcile"
-                ? ["interval", "adaptive"]
-                : taskKey === "summary_snapshot" || taskKey === "prompt_cache_materialization"
-                  ? ["event", "interval"]
-                  : taskKey === "summary_coverage_recovery" || taskKey === "long_term_projection"
-                    ? ["adaptive", "interval"]
-                    : taskKey === "timeseries_minute_projection"
-                      ? ["startup", "interval", "adaptive"]
-                      : taskKey === "startup_backfill"
-                        ? ["startup", "event", "adaptive"]
-                        : isManual
-                          ? ["manual"]
-                          : [triggerMode];
+          taskKey === "retention_archive"
+            ? ["startup", "interval", "catchup", "manual"]
+            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+              ? ["interval", "catchup", "manual"]
+              : taskKey === "upstream_account_maintenance"
+                ? ["startup", "interval"]
+                : taskKey === "forward_proxy_subscription_refresh"
+                  ? ["startup", "interval"]
+                  : taskKey === "dashboard_runtime_projection_reconcile"
+                    ? ["interval", "adaptive"]
+                    : taskKey === "prompt_cache_materialization"
+                      ? ["event", "interval", "manual"]
+                      : taskKey === "summary_snapshot"
+                        ? ["event", "interval"]
+                        : taskKey === "summary_coverage_recovery" ||
+                            taskKey === "long_term_projection"
+                          ? ["adaptive", "interval"]
+                          : taskKey === "timeseries_minute_projection"
+                            ? ["startup", "interval", "adaptive"]
+                            : taskKey === "startup_backfill"
+                              ? ["startup", "event", "adaptive"]
+                              : isManual
+                                ? ["manual"]
+                                : [triggerMode];
         const defaultPolicy = demoDefaultTaskPolicy(taskKey, isManual);
         const hasScheduleOverride =
           override?.intervalSecs !== undefined || override?.cronExpr !== undefined;
@@ -2998,12 +3034,19 @@ export function managedTasks() {
     const hue = stableHueByTask.get(task.taskKey) ?? 0;
     const latestRun = managedTaskRuns.get(task.taskKey)?.[0];
     const fallbackStartedAt = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
-    const fallbackFinishedAt = new Date(Date.parse(fallbackStartedAt) + 31_000).toISOString();
+    const fallbackDurationMs = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(
+      task.taskKey,
+    )
+      ? 1_800
+      : 31_000;
+    const fallbackFinishedAt = new Date(
+      Date.parse(fallbackStartedAt) + fallbackDurationMs,
+    ).toISOString();
     const run = latestRun ?? {
       id: index + 1,
       startedAt: fallbackStartedAt,
       finishedAt: fallbackFinishedAt,
-      durationMs: 31_000,
+      durationMs: fallbackDurationMs,
       triggerKind: task.isManual ? "manual" : task.triggerMode,
       status: "success",
       errorDetail: null,
@@ -3025,6 +3068,29 @@ export function managedTasks() {
         reason: run.errorDetail,
       },
       executionObservation: "observed",
+      ...(["invocation_identity_cleanup", "raw_orphan_sweep"].includes(task.taskKey)
+        ? {
+            measurementCapabilities: {
+              pending: { supported: false, unit: null, scope: null },
+              discovered: {
+                supported: true,
+                unit:
+                  task.taskKey === "invocation_identity_cleanup"
+                    ? "conversation identities"
+                    : "raw payload files",
+                scope: task.taskKey,
+              },
+              processed: {
+                supported: true,
+                unit:
+                  task.taskKey === "invocation_identity_cleanup"
+                    ? "conversation identities"
+                    : "raw payload files",
+                scope: task.taskKey,
+              },
+            },
+          }
+        : {}),
     };
   });
 }
@@ -3085,7 +3151,126 @@ function demoTaskOperationsRuntime() {
   };
 }
 
-function demoTaskOperationsTimeline() {
+const DEMO_DENSE_DEFERRAL_COUNT = 6_000;
+const DEMO_DENSE_GROUP_COUNT = DEMO_DENSE_DEFERRAL_COUNT / 4;
+type DemoTaskOperationsTimeline =
+  | ReturnType<typeof createDemoTaskOperationsTimeline>
+  | ReturnType<typeof createDenseTaskOperationsTimeline>;
+let cachedDemoTaskOperationsTimeline: {
+  state: object;
+  scene: string;
+  snapshotId: number;
+  snapshot: DemoTaskOperationsTimeline;
+} | null = null;
+let demoTaskOperationsTimelineSnapshotId = 0;
+
+function createDenseTaskOperationsTimeline() {
+  const now = Date.now();
+  const twelveHoursMs = 12 * 60 * 60_000;
+  const iso = (timeMs: number) => new Date(timeMs).toISOString();
+  const active = demoTaskOperationsRuntime().activeRuns[0];
+  const deferralStep = (twelveHoursMs - 120_000) / DEMO_DENSE_GROUP_COUNT;
+  const deferralTasks = [
+    ["long_term_projection", "长期统计投影"],
+    ["timeseries_minute_projection", "分钟时序投影"],
+    ["summary_snapshot", "汇总快照"],
+    ["raw_payload_metrics_inventory", "原始响应指标盘点"],
+  ] as const;
+  const deferrals = Array.from({ length: DEMO_DENSE_GROUP_COUNT }, (_, group) => {
+    const startMs = now - twelveHoursMs + 30_000 + group * deferralStep;
+    const open = group === DEMO_DENSE_GROUP_COUNT - 1;
+    return deferralTasks.map(([taskKey, title], member) => ({
+      segmentId: `demo-pressure-dense-${group}-${member}`,
+      kind: "deferral" as const,
+      taskKey,
+      title,
+      startedAt: iso(startMs),
+      lastObservedAt: iso(open ? now : startMs + 120_000),
+      finishedAt: open ? null : iso(startMs + 120_000),
+      durationMs: open ? null : 120_000,
+      status: open ? "waiting" : "released",
+      triggerKind: null,
+      executionClass: null,
+      reason: member % 2 === 0 ? "resource_busy" : "pressure_cooldown",
+      retryAt: open && member % 2 === 1 ? iso(now + 30_000) : null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: null,
+      sessionId: "demo-pressure-dense",
+      revision: group * 4 + member + 1,
+    }));
+  }).flat();
+  const executionCount = DEMO_TASK_TIMELINE_SEGMENT_COUNT - deferrals.length;
+  const executions = Array.from({ length: executionCount - 1 }, (_, index) => {
+    const startMs =
+      now - twelveHoursMs + 45_000 + index * ((twelveHoursMs - 90_000) / executionCount);
+    const durationMs = 1_000 + (index % 1_500);
+    return {
+      segmentId: `demo-pressure-execution-${index}`,
+      kind: "execution" as const,
+      taskKey: index % 2 ? "summary_snapshot" : "timeseries_minute_projection",
+      title: index % 2 ? "汇总快照" : "分钟时序投影",
+      startedAt: iso(startMs),
+      lastObservedAt: iso(startMs + durationMs),
+      finishedAt: iso(startMs + durationMs),
+      durationMs,
+      status: index % 97 === 0 ? "failed" : "success",
+      triggerKind: "event",
+      executionClass: "p2_derived",
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 20_000 + index,
+      sessionId: "demo-pressure-dense",
+      revision: DEMO_DENSE_DEFERRAL_COUNT + index + 1,
+    };
+  });
+  const segments = [
+    {
+      segmentId: active.executionUid,
+      kind: "execution" as const,
+      taskKey: active.taskKey,
+      title: active.title,
+      startedAt: active.startedAt,
+      lastObservedAt: iso(now),
+      finishedAt: null,
+      durationMs: null,
+      status: "running",
+      triggerKind: active.triggerKind,
+      executionClass: active.executionClass,
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 20_000 + executionCount,
+      sessionId: "demo-pressure-dense",
+      revision: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
+    },
+    ...executions,
+    ...deferrals,
+  ];
+  return {
+    observedAt: iso(now),
+    windowStart: iso(now - twelveHoursMs),
+    windowEnd: iso(now),
+    watermark: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
+    segments,
+    coverage: [
+      {
+        sessionId: "demo-pressure-dense",
+        startedAt: iso(now - twelveHoursMs),
+        lastSeenAt: iso(now),
+        endedAt: null,
+        droppedEvents: 0,
+      },
+    ],
+    nextCursor: null,
+    resetRequired: false,
+  };
+}
+
+function createDemoTaskOperationsTimeline() {
   const now = Date.now();
   const iso = (ageMs: number) => new Date(now - ageMs).toISOString();
   const active = demoTaskOperationsRuntime().activeRuns[0];
@@ -3108,7 +3293,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: 901,
       sessionId: "demo-session",
-      revision: 91,
+      revision: 13_120,
     },
     {
       segmentId: "demo-failed-retention",
@@ -3128,7 +3313,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: 812,
       sessionId: "demo-session",
-      revision: 90,
+      revision: 13_119,
     },
     {
       segmentId: "demo-interrupted-backfill",
@@ -3148,7 +3333,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 89,
+      revision: 13_118,
     },
     {
       segmentId: "demo-deferral-pressure",
@@ -3168,7 +3353,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 88,
+      revision: 13_117,
     },
     {
       segmentId: "demo-deferral-resource",
@@ -3188,7 +3373,7 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 87,
+      revision: 13_116,
     },
     {
       segmentId: "demo-observation-gap",
@@ -3208,20 +3393,24 @@ function demoTaskOperationsTimeline() {
       activeChildTitle: null,
       managedRunId: null,
       sessionId: "demo-session",
-      revision: 86,
+      revision: 13_115,
     },
-    ...Array.from({ length: 14 }, (_, index) => {
-      const startedAt = now - (210_000 - index * 12_000);
+    ...Array.from({ length: DEMO_TASK_TIMELINE_SEGMENT_COUNT - 6 }, (_, index) => {
+      const startedAt =
+        now -
+        DAY_MS / 2 +
+        60_000 +
+        index * ((DAY_MS / 2 - 120_000) / (DEMO_TASK_TIMELINE_SEGMENT_COUNT - 6));
       return {
         segmentId: `demo-dense-${index}`,
         kind: "execution",
         taskKey: index % 2 ? "summary_snapshot" : "timeseries_minute_projection",
         title: index % 2 ? "汇总快照" : "分钟时序投影",
         startedAt: new Date(startedAt).toISOString(),
-        lastObservedAt: new Date(startedAt + 4_000).toISOString(),
-        finishedAt: new Date(startedAt + 4_000).toISOString(),
-        durationMs: 4_000,
-        status: index % 6 === 0 ? "failed" : "success",
+        lastObservedAt: new Date(startedAt + 1_500 + (index % 1_200)).toISOString(),
+        finishedAt: new Date(startedAt + 1_500 + (index % 1_200)).toISOString(),
+        durationMs: 1_500 + (index % 1_200),
+        status: index % 97 === 0 ? "failed" : "success",
         triggerKind: "event",
         executionClass: "p2_derived",
         reason: null,
@@ -3230,15 +3419,15 @@ function demoTaskOperationsTimeline() {
         activeChildTitle: null,
         managedRunId: 850 + index,
         sessionId: "demo-session",
-        revision: 70 + index,
+        revision: index + 1,
       };
     }),
   ];
   return {
     observedAt: new Date(now).toISOString(),
-    windowStart: iso(DAY_MS),
+    windowStart: iso(DAY_MS / 2),
     windowEnd: new Date(now).toISOString(),
-    watermark: 91,
+    watermark: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
     segments,
     coverage: [
       {
@@ -3250,6 +3439,86 @@ function demoTaskOperationsTimeline() {
       },
     ],
     nextCursor: null,
+    resetRequired: false,
+  };
+}
+
+function demoTaskOperationsTimeline() {
+  const state = demoModel.snapshot;
+  const scene = state.scene;
+  if (cachedDemoTaskOperationsTimeline?.state === state) {
+    return cachedDemoTaskOperationsTimeline.snapshot;
+  }
+  const snapshot =
+    scene === "task-timeline-pressure-dense"
+      ? createDenseTaskOperationsTimeline()
+      : createDemoTaskOperationsTimeline();
+  cachedDemoTaskOperationsTimeline = {
+    state,
+    scene,
+    snapshotId: ++demoTaskOperationsTimelineSnapshotId,
+    snapshot,
+  };
+  return snapshot;
+}
+
+function demoTaskOperationsTimelinePage(url: URL) {
+  const scene = demoModel.snapshot.scene;
+  const snapshot = demoTaskOperationsTimeline();
+  const snapshotId = cachedDemoTaskOperationsTimeline?.snapshotId ?? 0;
+  const cursor = url.searchParams.get("cursor");
+  let offset = 0;
+  let afterRevision: number | undefined;
+  let from = url.searchParams.get("from") ?? snapshot.windowStart;
+  let to = url.searchParams.get("to") ?? snapshot.windowEnd;
+  if (cursor) {
+    try {
+      const decoded = JSON.parse(decodeURIComponent(cursor)) as {
+        scene?: string;
+        snapshotId?: number;
+        offset?: number;
+        afterRevision?: number;
+        from?: string;
+        to?: string;
+      };
+      if (decoded.scene !== scene || decoded.snapshotId !== snapshotId) {
+        return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+      }
+      offset = Number(decoded.offset) || 0;
+      afterRevision = decoded.afterRevision;
+      from = decoded.from ?? from;
+      to = decoded.to ?? to;
+    } catch {
+      return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+    }
+  } else {
+    const revision = url.searchParams.get("afterRevision");
+    afterRevision = revision == null ? undefined : Number(revision);
+  }
+  const pageSize = Math.min(500, Math.max(1, Number(url.searchParams.get("limit")) || 500));
+  const startBound = Date.parse(from);
+  const endBound = Date.parse(to);
+  const matching = snapshot.segments.filter((segment) => {
+    const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
+    return (
+      (afterRevision == null || segment.revision > afterRevision) &&
+      Date.parse(segment.startedAt) <= endBound &&
+      end >= startBound
+    );
+  });
+  const segments = matching.slice(offset, offset + pageSize);
+  const nextOffset = offset + segments.length;
+  return {
+    ...snapshot,
+    windowStart: from,
+    windowEnd: to,
+    segments,
+    nextCursor:
+      nextOffset < matching.length
+        ? encodeURIComponent(
+            JSON.stringify({ scene, snapshotId, offset: nextOffset, afterRevision, from, to }),
+          )
+        : null,
     resetRequired: false,
   };
 }
@@ -3323,7 +3592,41 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     }
     return sample;
   });
-  const workloadSamples = retentionFixture?.samples ?? backfillSamples;
+  const isOwnedCleanup = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey);
+  const cleanupUnit =
+    taskKey === "invocation_identity_cleanup" ? "conversation identities" : "raw payload files";
+  const cleanupMetric = (value: number): TaskWorkloadMetric => ({
+    value,
+    unit: cleanupUnit,
+    scope: taskKey,
+    range: "bounded scan",
+    observedAt: at,
+    coverage: "window",
+  });
+  const cleanupSamples: TaskWorkloadSample[] = isOwnedCleanup
+    ? [
+        {
+          sampleId: `demo:${taskKey}:owned`,
+          executionUid: `demo-execution-${taskKey}`,
+          managedRunId: 1,
+          taskKey,
+          triggerKind: "interval",
+          attemptedAt: at,
+          actualStartedAt: new Date(Date.parse(demoNow()) - 1800).toISOString(),
+          finishedAt: demoNow(),
+          status: "success",
+          reason: null,
+          sequence: 1,
+          pending: null,
+          discovered: cleanupMetric(32),
+          processed: cleanupMetric(taskKey === "invocation_identity_cleanup" ? 8 : 3),
+          subsetRelation: "unknown",
+        },
+      ]
+    : [];
+  const workloadSamples = isOwnedCleanup
+    ? cleanupSamples
+    : (retentionFixture?.samples ?? backfillSamples);
   const retentionBacklogTrend = retentionFixture?.backlog;
   const latestSample = [...workloadSamples].reverse().find((sample) => sample.status !== "skipped");
   const latestObservedAt =
@@ -3391,6 +3694,13 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
           }
         : null,
   };
+  if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
+    defaultRun.details = demoOwnedMaintenanceDetails(taskKey, false);
+    defaultRun.completion = "completed";
+    defaultRun.coreCompletion = null;
+    defaultRun.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
+    defaultRun.updatedCount = defaultRun.processedCount;
+  }
   const latestPending = latestSample?.pending ?? null;
   const latestProcessed = latestSample?.processed ?? null;
   const completeAttempts = workloadSamples
@@ -3441,58 +3751,96 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
           scope: isRetention ? "expired_invocations:retention_policy" : null,
         },
         discovered: {
-          supported: isRetention,
-          unit: isRetention ? "invocation rows" : null,
-          scope: isRetention ? "expired_invocations:retention_policy" : null,
-        },
-        processed: {
-          supported: isRetention || isRowBackfill,
-          unit: isRetention || isRowBackfill ? "invocation rows" : null,
+          supported:
+            isRetention || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit: isRetention
+            ? "invocation rows"
+            : taskKey === "invocation_identity_cleanup"
+              ? "conversation identities"
+              : taskKey === "raw_orphan_sweep"
+                ? "raw payload files"
+                : null,
           scope: isRetention
             ? "expired_invocations:retention_policy"
-            : isRowBackfill
+            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+              ? taskKey
+              : null,
+        },
+        processed: {
+          supported:
+            isRetention ||
+            isRowBackfill ||
+            ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit:
+            isRetention || isRowBackfill
+              ? "invocation rows"
+              : taskKey === "invocation_identity_cleanup"
+                ? "conversation identities"
+                : taskKey === "raw_orphan_sweep"
+                  ? "raw payload files"
+                  : null,
+          scope: isRetention
+            ? "expired_invocations:retention_policy"
+            : isRowBackfill || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
               ? taskKey
               : null,
         },
       },
     },
-    progress: task.isManual
+    progress: isOwnedCleanup
       ? {
           total: null,
-          completed: null,
-          phase: "manual",
+          completed: latestSample?.processed?.value ?? null,
+          phase: "idle",
           checkpoint: null,
           etaSeconds: null,
           updatedAt: latestObservedAt,
           freshness: "fresh",
-          unit: "invocations",
-          sourceScope: "expired_invocations",
+          unit: cleanupUnit,
+          sourceScope: taskKey,
           waitReason: null,
           nextInspectionAt: task.nextTriggerAt,
           nextCatchupAt: task.nextCatchupAt ?? null,
-          catchupState: task.enabled ? "scheduled" : "disabled",
+          catchupState: task.enabled ? "idle" : "disabled",
           stages: [],
         }
-      : {
-          total: 2547,
-          completed: 1842,
-          phase: "processing",
-          checkpoint: "cursor:1842",
-          etaSeconds: 420,
-          updatedAt: latestObservedAt,
-          freshness: "fresh",
-          unit: "invocations",
-          sourceScope: "expired_invocations",
-          lastProgressAt: latestObservedAt,
-          waitReason: null,
-          nextInspectionAt: task.nextTriggerAt,
-          nextCatchupAt: task.nextCatchupAt ?? null,
-          catchupState: task.enabled ? "scheduled" : "disabled",
-          stages: [
-            { name: "archive", status: "running", completed: 1842, total: 2547 },
-            { name: "statistics", status: "pending" },
-          ],
-        },
+      : task.isManual
+        ? {
+            total: null,
+            completed: null,
+            phase: "manual",
+            checkpoint: null,
+            etaSeconds: null,
+            updatedAt: latestObservedAt,
+            freshness: "fresh",
+            unit: "invocations",
+            sourceScope: "expired_invocations",
+            waitReason: null,
+            nextInspectionAt: task.nextTriggerAt,
+            nextCatchupAt: task.nextCatchupAt ?? null,
+            catchupState: task.enabled ? "scheduled" : "disabled",
+            stages: [],
+          }
+        : {
+            total: 2547,
+            completed: 1842,
+            phase: "processing",
+            checkpoint: "cursor:1842",
+            etaSeconds: 420,
+            updatedAt: latestObservedAt,
+            freshness: "fresh",
+            unit: "invocations",
+            sourceScope: "expired_invocations",
+            lastProgressAt: latestObservedAt,
+            waitReason: null,
+            nextInspectionAt: task.nextTriggerAt,
+            nextCatchupAt: task.nextCatchupAt ?? null,
+            catchupState: task.enabled ? "scheduled" : "disabled",
+            stages: [
+              { name: "archive", status: "running", completed: 1842, total: 2547 },
+              { name: "statistics", status: "pending" },
+            ],
+          },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
     retentionBacklogTrend,
     workloadTrend: retentionFixture?.trend ?? backfillTrend,
@@ -4850,7 +5198,7 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/system/managed-tasks/runtime" && request.method === "GET")
     return json(demoTaskOperationsRuntime());
   if (pathname === "/api/system/managed-tasks/timeline" && request.method === "GET")
-    return json(demoTaskOperationsTimeline());
+    return json(demoTaskOperationsTimelinePage(url));
   const managedTaskWorkloadMatch = pathname.match(
     /^\/api\/system\/managed-tasks\/([^/]+)\/workload$/,
   );
@@ -4956,6 +5304,18 @@ export async function handleDemoRequest(request: Request) {
     ) {
       return json({ error: "task already has an active run" }, { status: 409 });
     }
+    if (
+      !detail.task.enabled &&
+      ![
+        "retention_archive",
+        "invocation_identity_cleanup",
+        "raw_orphan_sweep",
+        "prompt_cache_materialization",
+      ].includes(taskKey) &&
+      !detail.task.isManual
+    ) {
+      return json({ error: "task is disabled" }, { status: 409 });
+    }
     const startedAt = demoNow();
     const run: DemoManagedTaskRun = {
       id: nextManagedTaskRunId++,
@@ -4993,6 +5353,22 @@ export async function handleDemoRequest(request: Request) {
               reason: "materialization_pending_or_disabled",
             },
           };
+      if (
+        [
+          "retention_archive",
+          "invocation_identity_cleanup",
+          "raw_orphan_sweep",
+          "prompt_cache_materialization",
+        ].includes(taskKey)
+      ) {
+        run.completion = "completed";
+        run.coreCompletion = taskKey === "retention_archive" ? "completed" : null;
+        run.details = demoOwnedMaintenanceDetails(taskKey);
+        if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
+          run.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
+          run.updatedCount = run.processedCount;
+        }
+      }
     }, 600);
     return json(managedTaskDetail(taskKey));
   }
@@ -5264,5 +5640,31 @@ export async function handleDemoRequest(request: Request) {
 
 export const apiHandlers = [
   http.get("/favicon.ico", () => new HttpResponse(null, { status: 204 })),
-  http.all(/\/api\/.*/, ({ request }) => handleDemoRequest(request)),
+  http.all(/^https?:\/\/[^/]+\/(?:codex-vibe-monitor\/demo\/)?api(?:\/|$)/, ({ request }) =>
+    handleDemoRequest(request),
+  ),
 ];
+
+function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<string, unknown> {
+  const base = { ownershipVersion: 1, ownerScope: taskKey, dryRun: false, manual };
+  if (taskKey === "invocation_identity_cleanup")
+    return {
+      ...base,
+      conversationIdentitiesChecked: 32,
+      conversationIdentitiesReleased: 8,
+      hourPrefixesChecked: 32,
+      hourPrefixesReleased: 4,
+      coverage: "bounded_scan",
+      overallRemaining: null,
+    };
+  if (taskKey === "raw_orphan_sweep")
+    return {
+      ...base,
+      filesChecked: 32,
+      filesReleased: 3,
+      bytesReleased: 65536,
+      coverage: "bounded_scan",
+      overallRemaining: null,
+    };
+  return { ...base, budgetMs: 60000, elapsedMs: 1200 };
+}

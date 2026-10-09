@@ -6,6 +6,7 @@ import { ListBodyState } from "../../features/shared/ListBodyState";
 import { managedTaskColor } from "../../features/system/managedTaskColor";
 import { TaskTimelineChart } from "../../features/system/TaskTimelineChart";
 import { TaskWorkloadSparkline } from "../../features/system/TaskWorkloadSparkline";
+import { useManagedTaskTimeline } from "../../hooks/useManagedTaskTimeline";
 import useSseStatus from "../../hooks/useSseStatus";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
@@ -14,12 +15,13 @@ import {
   type ManagedTask,
   type TaskAdmissionWait,
   type TaskRuntimeSnapshot,
-  type TaskTimelineCoverage,
-  type TaskTimelinePage,
-  type TaskTimelineSegment,
 } from "../../lib/api";
 import { requestImmediateReconnect } from "../../lib/sse";
-import { managedTaskExecutionClassLabel, managedTaskTriggerLabel } from "./taskLabels";
+import {
+  isRetentionMaintenanceTask,
+  managedTaskExecutionClassLabel,
+  managedTaskTriggerLabel,
+} from "./taskLabels";
 
 type EnabledFilter = "all" | "enabled" | "disabled";
 const triggerOptions = ["manual", "interval", "cron", "event", "startup", "adaptive"] as const;
@@ -222,8 +224,6 @@ function admissionReason(wait: TaskAdmissionWait): string {
 
 export default function SystemTasksPage(): JSX.Element {
   const [tasks, setTasks] = useState<ManagedTask[]>([]);
-  const [timeline, setTimeline] = useState<TaskTimelineSegment[]>([]);
-  const [coverage, setCoverage] = useState<TaskTimelineCoverage[]>([]);
   const [runtimeReceivedAt, setRuntimeReceivedAt] = useState<number | null>(null);
   const [lastRuntimeObservedAt, setLastRuntimeObservedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -239,13 +239,13 @@ export default function SystemTasksPage(): JSX.Element {
   const catalogTopic = useSubscriptionTopic<ManagedTask[]>({
     topic: "system.managed-tasks.catalog",
   });
-  const timelineTopic = useSubscriptionTopic<TaskTimelinePage>({
-    topic: "system.managed-tasks.timeline",
-  });
+  const timelineTopic = useManagedTaskTimeline();
+  const timeline = timelineTopic.segments;
+  const coverage = timelineTopic.coverage;
+  const timelineWatermark = timelineTopic.watermark;
   const runtime = runtimeTopic.data;
   const sseStatus = useSseStatus();
   const connectionLostAt = useRef<number | null>(null);
-  const timelineWatermark = useRef<number | null>(null);
   const catalogEpoch = useRef(0);
 
   useEffect(() => {
@@ -254,38 +254,6 @@ export default function SystemTasksPage(): JSX.Element {
       setLastRuntimeObservedAt(runtime.observedAt);
     }
   }, [runtime]);
-
-  useEffect(() => {
-    const page = timelineTopic.data;
-    if (!page) return;
-    if (page.replace === false && timelineWatermark.current == null) {
-      timelineTopic.refresh();
-      return;
-    }
-    const currentWatermark = timelineWatermark.current;
-    if (currentWatermark != null && page.watermark < currentWatermark) return;
-    const replace = page.replace !== false || currentWatermark == null;
-    timelineWatermark.current = page.watermark;
-    setCoverage(page.coverage);
-    setTimeline((current) => {
-      const merged = new Map<string, TaskTimelineSegment>();
-      if (!replace) {
-        for (const segment of current) {
-          const end = Date.parse(segment.finishedAt ?? segment.lastObservedAt);
-          if (!Number.isFinite(end) || end >= Date.parse(page.windowStart)) {
-            merged.set(segment.segmentId, segment);
-          }
-        }
-      }
-      for (const segment of page.segments) {
-        const existing = merged.get(segment.segmentId);
-        if (!existing || segment.revision >= existing.revision) {
-          merged.set(segment.segmentId, segment);
-        }
-      }
-      return [...merged.values()];
-    });
-  }, [timelineTopic.data, timelineTopic.refresh]);
 
   useEffect(() => {
     if (sseStatus.phase === "connected") {
@@ -357,6 +325,10 @@ export default function SystemTasksPage(): JSX.Element {
         return enabledMatches && triggerMatchesSelection;
       }),
     [enabledFilter, selectedTriggers, tasks],
+  );
+  const visibleTaskKeys = useMemo(
+    () => new Set(filteredTasks.map((task) => task.taskKey)),
+    [filteredTasks],
   );
   const dark = useDarkColorMode();
   const disconnectedAt =
@@ -575,9 +547,12 @@ export default function SystemTasksPage(): JSX.Element {
         />
         {timelineTopic.error ? (
           <Alert variant="warning">
-            时间线实时数据暂不可用，显示最后一次确认的区间：{timelineTopic.error}
+            时间线同步暂不可用，保留最后一次完整区间：{timelineTopic.error}
           </Alert>
-        ) : timelineTopic.lastReceivedAt == null && !loading && !timelineTopic.isLoading ? (
+        ) : timelineWatermark == null &&
+          timelineTopic.lastReceivedAt == null &&
+          !loading &&
+          !timelineTopic.isLoading ? (
           <Alert variant="warning">尚无可用的时间线记录，当前区间会以观测缺口呈现。</Alert>
         ) : null}
 
@@ -636,13 +611,15 @@ export default function SystemTasksPage(): JSX.Element {
             <ListBodyState variant="empty" title="没有匹配的任务" />
           ) : null}
           <div className="divide-y divide-base-300/60 overflow-hidden rounded-md border border-base-300/70">
-            {filteredTasks.map((task) => (
+            {tasks.map((task) => (
               <div
                 key={task.taskKey}
-                className="relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center"
+                data-task-catalog-row={task.taskKey}
+                hidden={!visibleTaskKeys.has(task.taskKey)}
+                className={`relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center ${visibleTaskKeys.has(task.taskKey) ? "" : "!hidden"}`}
               >
                 <TaskWorkloadSparkline task={task} dark={dark} mode="background" />
-                <div className="relative z-10 min-w-0">
+                <div className="relative z-10 min-w-0 pr-8 md:pr-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
@@ -654,7 +631,13 @@ export default function SystemTasksPage(): JSX.Element {
                     <span
                       className={`text-xs font-semibold ${task.enabled ? "text-success" : "text-base-content/50"}`}
                     >
-                      {task.enabled ? "已启用" : "已停用"}
+                      {isRetentionMaintenanceTask(task.taskKey)
+                        ? task.enabled
+                          ? "自动触发已启用"
+                          : "自动触发已暂停"
+                        : task.enabled
+                          ? "已启用"
+                          : "已停用"}
                     </span>
                   </div>
                   <Link
@@ -704,7 +687,7 @@ export default function SystemTasksPage(): JSX.Element {
                     </div>
                   )}
                 </div>
-                <div className="relative z-10 text-sm md:text-right">
+                <div className="relative z-10 text-sm md:pr-8 md:text-right">
                   <div className="text-xs text-base-content/55">级别</div>
                   <div className="mt-1">{managedTaskExecutionClassLabel(task.executionClass)}</div>
                 </div>

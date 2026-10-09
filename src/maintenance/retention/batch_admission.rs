@@ -160,6 +160,7 @@ pub(super) async fn acquire_write_admission(
         }
         match gate.try_begin_background(operation) {
             Ok(pressure_permit) => {
+                crate::task_runtime_observation::mark_managed_maintenance_work_started();
                 return Some(RetentionWriteAdmission {
                     write_permit,
                     _pressure_permit: pressure_permit,

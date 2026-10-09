@@ -14,7 +14,7 @@
 - `生效计划`: worker 默认规则与维护库自定义覆盖合并后的可展示策略，包含来源、触发机制和编辑能力。
 - 待执行请求、准入延后任务、任务执行区间、任务标识色和任务让行状态采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。
 - 任务工作量趋势、任务待处理量、本次发现量、本次处理量、任务计量范围和固定清理存量采用 [CONTEXT.md](../../../CONTEXT.md) 的定义。页面图例统一使用“待处理量 / 本次发现 / 本次处理”。
-- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors and bounded latest-run summaries. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark pages of at most 500 segments and `afterRevision` incremental updates; an expired cursor returns `resetRequired` so the client can resynchronize. `GET /api/system/managed-tasks/{task_key}/workload?windowHours=24&limit=200` reads the task-scoped workload window with limit validation and shared HTTP/SSE semantics. `system.managed-tasks.catalog/v1` and `system.managed-tasks.workload/v1` publish the list and visible-row revisions. Existing task detail interfaces and control `PATCH` retain their prior fields and behavior.
+- Interface: `GET /api/system/managed-tasks/runtime` returns process-local executions plus separately available FIFO requests and admission waits; task catalog responses add persisted light/dark identity colors and bounded latest-run summaries. `GET /api/system/managed-tasks/timeline` reads RFC 3339 windows up to 24 hours, with fixed-watermark keyset pages of at most 500 segments and `afterRevision` incremental updates; `windowHours=12` lets the server choose a rolling window after reading its watermark, and every cursor page reuses the returned bounds. An expired or legacy offset cursor returns `resetRequired` so the client can resynchronize. `GET /api/system/managed-tasks/{task_key}/workload?windowHours=24&limit=200` reads the task-scoped workload window with limit validation and shared HTTP/SSE semantics. `system.managed-tasks.catalog/v1` and `system.managed-tasks.workload/v1` publish the list and visible-row revisions. Existing task detail interfaces and control `PATCH` retain their prior fields and behavior.
 
 ## Requirements
 
@@ -58,9 +58,14 @@
 - 时间图 MUST 展示滚动最近 12 小时内与窗口相交的实际任务执行区间，包括已经结束的运行和当前执行实例。跨越窗口边界的区间须裁剪显示并保留真实起止信息；不得将计划检查或排队时间画为实际执行。后端查询和持久历史可保留更长窗口，以支持分页、增量读取和恢复。
 - 时间图 MUST 使用紧凑多泳道，按执行区间的重叠关系分配行；行不固定归属某个任务。同一任务的多次运行使用同色独立区间，同时发生的运行不得互相遮蔽。
 - 前端 MUST 每秒本地推进时间轴、当前时间标记和仍在执行的色条终点；执行状态以后台观测为准，本地计时不得制造结束结果或继续延伸已知过期的运行观测。页面恢复前台时立即校准，图表的每秒更新不得要求每秒重新获取目录或整段历史。
-- 当前执行、dispatcher 队列、准入等待与执行时间线 MUST 通过 SSE 主题传输：连接时提供当前快照，后续运行边界、等待变化和持久历史修订通过事件增量推送；它们不得依赖固定周期的 HTTP 轮询。任务目录是静态配置，可独立按需通过 HTTP 读取。
+- 当前执行、dispatcher 队列与准入等待 MUST 通过 SSE 主题传输：连接时提供当前快照，后续运行边界和等待变化通过事件推送；它们不得依赖固定周期的 HTTP 轮询。任务目录是静态配置，可独立按需通过 HTTP 读取。
+- 执行时间线区间 MUST 通过 `GET /api/system/managed-tasks/timeline` 的固定水位 keyset 游标分页加载，每页最多 500 条；游标顺序 MUST 为稳定的 `(startedAt, segmentId)`，以免较早页中的区间修订后移动出水位结果集并跳过后续区间。后续修订 MUST 通过 `afterRevision` 分页读取。一次基线或增量遍历的所有页 MUST 共用固定的 RFC 3339 `from` / `to`；所有 `afterRevision` 页 MUST 复用已提交基线的 `from` / `to`，只有游标重置并启动新基线时才选择新的窗口。整轮完整后方可提交；`windowHours=12` MUST 由服务端先读取水位、再选定滚动窗口，避免浏览器时钟决定已提交水位的时间边界。已过期或不含 keyset 位置的旧 offset 游标（包括 `offset=0`）MUST 丢弃未完成遍历并重启基线。
+- `system.managed-tasks.timeline` SSE descriptor 未指定 `schemaVersion` 时 MUST 保持现有 `/v1` schema epoch、区间快照/增量载荷及 10,000 条容量边界，以兼容既有消费者。descriptor 显式指定 `schemaVersion: "2"` 时 MUST 使用 `/v2` epoch，且只发送维护库 `watermark` 与 `observedAt`，作为 HTTP 增量读取通知；SSE MUST NOT 包含或聚合区间数据。内置任务页面 MUST 使用 v2。客户端 MUST 先建立 SSE 订阅，再立即独立读取完整 HTTP 基线，不得等待首个 SSE 水位通知；基线期间及增量读取期间到达的修订通知 MUST 合并至目标水位，按 `segmentId` 保留最高 `revision`，并在追平通知水位前继续读取。SSE 重连后的水位通知 MUST 补回断线期间错过的修订。
+- 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。成功提交 HTTP 基线后，即使首个 SSE 水位通知尚未到达，也 MUST 将其视为已知快照而不提示时间线不可用。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
 - SSE 静默期间，前端 MUST 继续推进可见当前时间以及连接仍有效的运行/等待时长，不得把“没有新事件”误判为无任务或失联。SSE 断开时 MUST 显示连接状态与最后确认时间；短暂重连窗口后冻结开放状态的外推并标记为未知，重连快照恢复后立即校准。
 - 色条详情 MUST 提供任务名称、触发来源、真实起止时间、实际执行用时与结果；缺少的历史字段保持未知。短于实时刷新周期的任务也须能由执行边界记录进入历史；极短区间的可见标记不得改变原始耗时。
+- 前端 MUST 模块级复用紧凑时间和精确时间两种格式化器；已结束区间的完整详情 MUST 按区间身份及 `revision` 缓存，并在修订、快照淘汰或组件卸载时失效。历史几何 MUST 与每秒时钟投影分离，时钟推进只更新开放区间终点、滚动窗口裁剪和当前时间，不得每秒重排不变的历史泳道。
+- 未交互的执行和让行区间 MUST 只提供轻量无障碍摘要；鼠标进入或键盘聚焦后，当前区间才生成完整原生 Tooltip 与无障碍详情。完整详情 MUST 保留自身优先、其余按原记录顺序，并在聚焦期间收到更高 `revision` 时立即更新。
 - 已结束区间 MUST 保留成功、失败、取消或其他已观测结果的区别，不得只展示成功记录。共享一个执行实例的父子任务不得画成两个并行任务；当前子任务身份须在对应实例详情中可辨认。
 - 密集区间 MAY 采用像素级聚合标记，但 MUST 展示聚合数量并支持查阅其包含的实际运行；聚合不得改写真实起止、合并运行身份或静默丢弃记录。
 - 目录筛选 MUST 保持当前执行和等待区的完整性；时间图默认展示全部任务的窗口内执行，色条须可关联到对应任务详情。窄屏 MUST 隐藏冗余文字泳道标签，时间图 MUST 适配可用宽度且不得引入横向滚动；泳道含义须通过无障碍名称保留。
@@ -71,6 +76,7 @@
 - 此行 MUST 聚焦会延后任务的压力、资源占用和准入限制；系统总体健康或与任务等待无关的告警不得直接作为让行状态。悬停须展示对应时间范围、原因、可确认的受影响任务以及可确认的恢复资格时间。
 - 相邻且状态与原因一致的区间 SHOULD 合并。同一时段存在多种限制时须保留原因集合，不得在汇总为单条横条后丢失具体让行原因；未观测的时段不得标为正常。
 - 当前状态 MUST 随后台观测刷新，前端每秒推进仍有效的开放区间；一般累计压力计数或性能时间桶不得冒充精确的状态起止区间。
+- 让行重叠计算 MUST 使用按起止索引的二分或线性扫描，保持 `start < otherEnd && otherStart < end` 的严格相交语义；仅端点相接不得算重叠。覆盖正常区间扣除等待与缺口前 MUST 合并未知区间后线性求差，不得在渲染中对每个区间逐条全量遍历。
 
 ### REQ-TASK-OPS-009 — 持久区间与观测覆盖
 
@@ -140,6 +146,7 @@
 - 被数量上限省略的早期区域 MUST 与无运行、功能启用前无计量和采集缺口可区分；不得把显示截断解释为零工作量或没有触发。单个有效样本和真实零值须可辨认，缺失指标不补零，不跨采集缺口或单位／范围变化连接面积。
 - 面积颜色 MUST 表示工作量指标；目录 Dot 继续表示任务身份，结果采用独立文字或标记。不同单位不得合成同一数量轴或通过任意缩放相加，点详情须注明单位与范围，跨任务数量不得暗示同一尺度。
 - 背景 MUST 保持目录文字、链接和筛选可用，不降低文字对比度，不因加载改变行高或引入窄屏横向滚动。点详情须支持指针、键盘与触屏查看时间、触发来源、结果、三项原始值、单位、观测性质及有界原因。
+- 背景行 MUST 隐藏持续显示的 P/D/C 数值、状态和文字版“查看运行计量”图例，避免重复占用目录空间；仍须保留每行可聚焦、可点击且带可访问名称的紧凑详情控件，完整点详情仅在交互时生成。
 
 ### REQ-TASK-OPS-017 — 目录工作量数据与保留
 
@@ -153,6 +160,7 @@
 - 背景的历史获取和图表挂载 MUST 在目录行进入可见范围后按需执行。未显示、被筛掉或尚未进入可见范围的行不得预先读取完整历史、挂载画布或订阅完整任务详情；不得只延迟绘图而提前读取全部任务历史。
 - 请求和订阅 MUST 有界，重复进入可见范围复用仍有效的缓存，同一任务相同窗口的并发读取去重；离开可见范围或卸载后不得继续无意义的逐行刷新。
 - 可见背景及最近执行摘要 MUST 沿用已有运行边界、计量修订和 SSE 重连信号及时更新，不引入逐行固定周期 HTTP 轮询。恢复前台后校准时间窗、观测与缓存；缓存过期、失联和请求失败不得伪装为新鲜空结果。
+- 工作量 SSE 通知的 `revision` 未前进时 MUST 复用当前背景缓存，不得因重复通知重算未变化的三条曲线；更高修订才触发对应任务的背景更新。
 - 前端时间推进不得要求每秒重新读取目录或完整背景历史；懒加载错误须限于对应背景，已知摘要、目录筛选与跳转继续可用。
 
 ### REQ-TASK-OPS-019 — 工作量空值原因与成功记录
@@ -260,10 +268,23 @@
 - covers: `REQ-TASK-OPS-019`, `REQ-TASK-OPS-020`
 - Pass condition: unsupported, unobserved, no-run, legacy-unknown, gap and error states are distinct; known outcomes remain visible; supported observations survive persistence and rendering; reliable per-task collectors reuse real work boundaries, preserve committed work once, record zero only with proof, and do not introduce chart-only scans or fabricate mixed-unit counts.
 
+### VER-TASK-OPS-016
+
+- Method: Rust HTTP/SSE transport tests including revision during a keyset traversal, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
+- covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-009`
+- Pass condition: the HTTP baseline starts immediately after subscribing and commits even before the first SSE marker; all baseline rows load in 500-row fixed-watermark keyset pages even if an earlier row is revised during pagination; server-selected 12-hour bounds remain fixed within each traversal; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired and legacy offset cursors without a keyset position, including `offset=0`, restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
+
+### VER-TASK-OPS-017
+
+- Method: focused frontend regressions, the `task-timeline-pressure-dense` demo and Storybook state, plus production demo Chromium sampling at `1280x900` and `393x852` with a 10-second warm-up, 30-second observation window and revision injection every three seconds.
+- covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, and the performance constraints in this Spec.
+- Pass condition: two module-level formatters remain stable; dense waits preserve task identities, two reasons, open intervals, strict overlap semantics and one-second clock progression; history is not recomputed on each tick; complete details appear only on hover/focus and refresh on revision; application main-thread occupancy stays below 20%, no application long task exceeds 200 ms, and hover, keyboard focus and task filtering remain below 100 ms p95 on both viewports.
+
 ## Related ADRs
 
 - [Task Runtime Observation and Effective Schedules](../../adr/0024-task-runtime-observation-and-effective-schedules.md)
 - [Durable Task Execution and Deferral Timelines](../../adr/0026-durable-task-execution-and-deferral-timelines.md)
+- [Versioned Managed Task Timeline SSE Compatibility](../../adr/0030-versioned-managed-task-timeline-sse-compatibility.md)
 
 ## Visual Evidence
 
@@ -281,6 +302,28 @@
   - `./assets/task-operations-runtime-mobile-393x852.png`
   - `./assets/task-operations-sse-connecting-desktop.png`
 - `docs/solutions/maintenance/task-schedule-and-running-observation.md`
+
+### Managed Task Timeline — 13,120 Interval Regression
+
+- source_type: `ui_demo`
+- target_program: `vite_web_demo`
+- capture_scope: `browser-viewport`
+- viewport_strategy: `ui-demo-source + devtools-emulate`
+- requested_viewport: `1440x900` and `393x852`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- sensitive_exclusion: `N/A`
+- comparison_base: `d8aa9e7ffec8d24b499e93db633486827a87ba7c`
+- comparison: `current-only`; the locked baseline has no images at the new exact destination paths
+- rendered_candidate: `3d449f6d`
+- owner_confirmation: confirmed in chat on 2026-10-07 ("没问题。")
+- submission_gate: `approved`
+- state: demo timeline rendered 13,120 intervals across 27 pages with no unavailable warning; desktop dark, mobile light, and an expanded 94-run dense group with inspectable run IDs
+- validation: `web/src/demo/event-handlers.test.ts` asserts 13,120 unique intervals across 27 fixed-watermark pages
+- images:
+  - ![Managed task timeline, desktop dark, 13,120 intervals](./assets/task-operations-timeline-13120-desktop-dark.png)
+  - ![Managed task timeline, mobile light, 393x852 viewport](./assets/task-operations-timeline-13120-mobile-393x852.png)
+  - ![Managed task timeline, expanded dense group with run IDs](./assets/task-operations-timeline-dense-group-details-desktop.png)
 
 ### Task Workload Trend Charts — Desktop
 
@@ -338,25 +381,43 @@
 
 ### Task Catalog Workload Background — Desktop and Mobile
 
-- source_type: `storybook_canvas`
-- story_id_or_title: `System/SystemWorkspace/Tasks`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport` for desktop, `element` for row and mobile
-- viewport_strategy: `storybook-viewport`
-- requested_viewport: `1440x900` and `393x852`
+- source_type: `ui_demo`
+- story_id_or_title: `task-timeline-pressure-dense`
+- target_program: `vite_web_demo`
+- capture_scope: `browser-viewport` for desktop and mobile, `element` for row
+- viewport_strategy: `ui-demo-source`
+- requested_viewport: `1280x900` and `393x852`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
 - sensitive_exclusion: `N/A`
 - comparison_base: `1b5a4056391b5e7fbdcd66d44655907747173ac0`
 - comparison: `current-only`; the locked baseline contains no catalog-background image at these exact paths
-- rendered_candidate: `d4299e32`
-- owner_confirmation: confirmed in chat on 2026-10-06 ("看起来没问题了，允许提交视觉证据。")
+- rendered_candidate: `aeb63f51`
+- owner_confirmation: confirmed in chat on 2026-10-09 ("图没问题。")
 - submission_gate: `approved`
-- state: 37-task catalog with visible-row lazy-loaded P/D/C background, corrected area closure, and workload detail inspection
+- state: 39-task catalog with visible-row lazy-loaded P/D/C background, no persistent legend, corrected area closure, and workload detail inspection
 - images:
   - ![Task catalog workload background, desktop](./assets/task-catalog-workload-background-desktop.png)
   - ![Task catalog workload background, row](./assets/task-catalog-workload-background-row.png)
   - ![Task catalog workload background, mobile](./assets/task-catalog-workload-background-mobile-393x852.png)
+
+### Task Workload Sparkline Markers — Online Candidate
+
+- source_type: `ui_demo`
+- target_program: `vite_web_demo`
+- capture_scope: `element`
+- viewport_strategy: `devtools-emulate`
+- requested_viewport: `1440x900`
+- margin_policy: `trim_only`
+- evidence_surface: `page`
+- sensitive_exclusion: `N/A`
+- state: live task-directory rows rendered from the online read-only data path
+- rendered_candidate: `4e7415f051d2e2ba43b1b368d95289345c13f52b`
+- owner_confirmation: confirmed in chat for the current visual evidence and merge continuation on 2026-10-08
+- submission_gate: `approved`
+- images:
+  - ![Online raw payload metrics inventory workload row](./assets/task-workload-sparkline-online-raw-payload-metrics-inventory.png)
+  - ![Online retention archive workload row](./assets/task-workload-sparkline-online-retention-archive.png)
 
 ## References
 

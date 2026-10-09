@@ -19,7 +19,7 @@
 
 ### 列表 / 表格 / 详情展开
 
-- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/records/InvocationRecordsTable.stories.tsx`、`web/src/features/account-pool/UpstreamAccountsPage.list.stories.tsx`。
+- 数据密集列表同时兼顾桌面表格与移动端卡片/堆叠布局，代表参考是 `web/src/features/invocations/InvocationTable.stories.tsx`、`web/src/features/records/InvocationRecordsTable.stories.tsx`、`web/src/features/account-pool/UpstreamAccountsTable.stories.tsx`。
 - 详情信息优先以内联展开、抽屉或卡片二级区块呈现，不鼓励跳转到无上下文的新页面。
 - 长文本、代理名、endpoint、token key 等字段默认允许截断，但必须保留可在详情区或 tooltip 中复核的路径。
 

@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Keep current prompt-cache HTTP and dashboard SSE conversation lists available while background statistics materialization is pending.",
+    "release_unit_description": "Current prompt-cache conversation read availability and delayed-statistics presentation.",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Restore current-read availability through existing durable working-set and runtime overlay contracts without changing response shape, selection modes, historical snapshot semantics or persistent state.",
+      "assessed_at": "2026-10-07T18:44:39Z",
+      "evidence": [
+        "docs/adr/0033-prompt-cache-live-read-materialization-overlay.md",
+        "docs/specs/proxy-invocation-identity/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "Legacy current selections include durable working-set keys and retain a transaction-pinned snapshot; in-flight visibility, persisted-row deduplication, genuine errors and explicit historical gates remain in scope."
+      },
+      "reasoning": "Existing consumers continue to read the same fields. Delayed statistics remain optional or stale; UI freshness notices are additive. No schema, durable encoding, materialization scheduler, queue fairness, allocator or range-reservation write path changes.",
+      "reassessed_at": "2026-10-07T18:44:39Z",
+      "evidence": [
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/aggregate_queries.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/response.rs",
+        "src/api/slices/subscriptions.rs",
+        "web/src/lib/promptCacheLive.ts"
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Initial Stateful SQLite coverage passes all 1445 tests and Lightweight coverage passes 1294 tests plus two permission-negative rechecks without DAC bypass capabilities. The final cache-failure repair passes the targeted HTTP regression for queued refresh, explicit historical gating and warm-cache database failure, followed by fresh format, locked check and Clippy. Frontend render inputs are unchanged; focused regressions verify absent/stale statistics, visible rows and Sticky Key notice exclusion.",
+      "verified_at": "2026-10-07T19:53:30Z",
+      "status": "passed",
+      "evidence": [
+        "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
+        "src/tests/stateful_sqlite/prompt_cache_conversation_queries.rs",
+        "src/tests/stateful_sqlite/prompt_cache_live_reads.rs",
+        "src/api/slices/subscriptions.rs",
+        "web/src/lib/promptCacheLive.test.ts",
+        "web/src/features/prompt-cache/PromptCacheConversationTable.test.tsx",
+        "web/src/features/dashboard/DashboardWorkingConversationsSection.test.tsx",
+        "web/src/features/prompt-cache/StickyKeyConversationTable.test.tsx",
+        "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite",
+        "bash .github/scripts/run-backend-tests.sh --profile lightweight",
+        "setpriv --bounding-set=-dac_override,-dac_read_search bash .github/scripts/run-backend-tests.sh --profile lightweight --test-filter 'test(search_raw_script_reports_plain_file_read_errors) or test(search_raw_script_reports_find_enumeration_errors)'",
+        "cargo test prompt_cache_conversation_reads_serve_current_but_gate_history_while_refresh_queue_is_pending -- --nocapture",
+        "cargo fmt --all -- --check",
+        "cargo check --locked --all-targets --all-features",
+        "cargo clippy --locked --all-targets --all-features -- -D warnings"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing consumers within Major 4 retain the response shape and selection modes; explicit historical snapshots remain gated while current reads regain availability.",
+      "evidence": [
+        "docs/specs/proxy-invocation-identity/SPEC.md",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/request.rs",
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/response.rs"
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Read-only changes to existing working-set, invocation and rollup state; no durable schema, encoding or write-path changes.",
+      "source_program_compatibility_range": "Not applicable; existing persisted state remains unchanged and readable by earlier supported programs.",
+      "evidence": [
+        "src/api/slices/prompt_cache_and_timeseries/prompt_cache_conversations/aggregate_queries.rs",
+        "docs/adr/0033-prompt-cache-live-read-materialization-overlay.md"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "docs/specs/proxy-invocation-identity/assets/live-read-version-impact-record.json"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "verified public_api=patch",
+      "persistent_state=not_applicable",
+      "highest applicable verified impact=patch"
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 import type { JSX } from "react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSubscriptionTopic } from "../../hooks/useSubscriptionTopic";
 import {
   fetchManagedTaskWorkload,
@@ -8,6 +9,7 @@ import {
   type TaskWorkloadSample,
   type TaskWorkloadTrend,
 } from "../../lib/api";
+import { AppIcon } from "../shared/AppIcon";
 
 const WINDOW_MS = 24 * 60 * 60 * 1_000;
 const CACHE_FRESHNESS_MS = 30_000;
@@ -153,7 +155,28 @@ function sampleTime(sample: TaskWorkloadSample): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function trendWindowEnd(
+  trend: TaskWorkloadTrend | null,
+  samples: TaskWorkloadSample[],
+): number | null {
+  const timestamps = [
+    trend?.windowEnd,
+    trend?.observedAt,
+    trend?.latestObservedAt,
+    ...samples.map((sample) => sample.attemptedAt),
+  ]
+    .map((value) => (value ? Date.parse(value) : Number.NaN))
+    .filter((value): value is number => Number.isFinite(value));
+  return timestamps.length > 0 ? Math.max(...timestamps) : null;
+}
+
 type SparklineMetric = "pending" | "discovered" | "processed";
+
+const METRIC_LABELS: Record<SparklineMetric, string> = {
+  pending: "P",
+  discovered: "D",
+  processed: "C",
+};
 
 interface ChartPath {
   d: string;
@@ -361,6 +384,14 @@ export function TaskWorkloadSparkline({
   const trendRevisionRef = useRef(trend?.revision ?? -1);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const detailsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const detailsPanelRef = useRef<HTMLDivElement | null>(null);
+  const detailsFocusPendingRef = useRef(false);
+  const [detailsPosition, setDetailsPosition] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
   const [topicSlotAcquired, setTopicSlotAcquired] = useState(false);
   const activeVisible = visible && pageVisible;
   const applyTrend = useCallback(
@@ -372,6 +403,7 @@ export function TaskWorkloadSparkline({
         return false;
       }
       if (next.revision < trendRevisionRef.current) return false;
+      if (source === "topic" && next.revision === trendRevisionRef.current) return false;
       trendRevisionRef.current = next.revision;
       setTrend(next);
       cacheTrend(task.taskKey, next, source);
@@ -478,13 +510,18 @@ export function TaskWorkloadSparkline({
     },
     {} as Record<SparklineMetric, number>,
   );
+  // Keep fixed snapshots visible, while current snapshots continue to slide
+  // with the browser clock as new runs arrive.
+  const observedWindowEnd = trendWindowEnd(trend, samples);
+  const chartNow =
+    observedWindowEnd != null && now - observedWindowEnd > WINDOW_MS ? observedWindowEnd : now;
   const paths = useMemo(
     () => ({
       pending: chartPaths(
         samples,
         "pending",
         maxValues.pending,
-        now,
+        chartNow,
         units.pending,
         trend?.coverageGaps,
       ),
@@ -492,7 +529,7 @@ export function TaskWorkloadSparkline({
         samples,
         "discovered",
         maxValues.discovered,
-        now,
+        chartNow,
         units.discovered,
         trend?.coverageGaps,
       ),
@@ -500,12 +537,12 @@ export function TaskWorkloadSparkline({
         samples,
         "processed",
         maxValues.processed,
-        now,
+        chartNow,
         units.processed,
         trend?.coverageGaps,
       ),
     }),
-    [maxValues, now, samples, trend?.coverageGaps, units],
+    [chartNow, maxValues, samples, trend?.coverageGaps, units],
   );
   const latest = samples.at(-1);
   const latestValues = {
@@ -522,7 +559,7 @@ export function TaskWorkloadSparkline({
       : coverageLabel(trend?.coverage ?? "loading");
   const hasSeries = Object.values(paths).some((series) => series.length > 0);
   const unitLabel = (["pending", "discovered", "processed"] as const)
-    .map((metric) => `${metric[0].toUpperCase()}:${units[metric] ?? "未知"}`)
+    .map((metric) => `${METRIC_LABELS[metric]}:${units[metric] ?? "未知"}`)
     .join("，");
   const textColor = dark ? "#d8e4f0" : "#344454";
   const chart =
@@ -553,6 +590,8 @@ export function TaskWorkloadSparkline({
         ).flatMap(([metric, color, fillOpacity, strokeWidth]) =>
           paths[metric].flatMap((path) => {
             const pathKey = `${metric}-${path.firstX}-${path.lastX}-${path.points.length}`;
+            const point = path.points[0];
+            const markerDelta = point.x >= 319.99 ? -0.01 : 0.01;
             return [
               path.points.length > 1 ? (
                 <path
@@ -569,15 +608,20 @@ export function TaskWorkloadSparkline({
                   fill="none"
                   stroke={color}
                   strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   vectorEffect="non-scaling-stroke"
                 />
               ) : (
-                <circle
+                <path
                   key={`${pathKey}-point`}
-                  cx={path.points[0].x}
-                  cy={path.points[0].y}
-                  r="2.2"
-                  fill={color}
+                  data-chart-marker="point"
+                  d={`M ${point.x.toFixed(2)},${point.y.toFixed(2)} h ${markerDelta.toFixed(2)}`}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={backgroundMode ? 3.4 : 4}
+                  strokeLinecap="round"
+                  vectorEffect="non-scaling-stroke"
                 />
               ),
             ];
@@ -602,74 +646,169 @@ export function TaskWorkloadSparkline({
         ? "最近 200 次"
         : status
     : "进入视口加载";
-  const controls = (
+  const detailsMetricLegend = (
+    <fieldset className="sm:col-span-2 flex flex-wrap gap-x-3 gap-y-1">
+      <legend className="sr-only">运行计量图例</legend>
+      <span>
+        <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />
+        待处理量 P
+      </span>
+      <span>
+        <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />
+        本次发现 D
+      </span>
+      <span>
+        <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />
+        本次处理 C
+      </span>
+    </fieldset>
+  );
+  const detailsFields = (
     <>
-      <div
-        className={
-          backgroundMode
-            ? "pointer-events-none absolute inset-x-3 top-2 z-20 flex justify-end"
-            : "relative z-10 flex min-h-12 items-start justify-between gap-2 text-[11px]"
-        }
-      >
-        <div
-          className={
-            backgroundMode
-              ? "pointer-events-auto flex max-w-full flex-wrap items-center justify-end gap-x-2 gap-y-0.5 rounded-sm bg-base-100/45 px-1.5 py-0.5 text-[11px]"
-              : "flex min-w-0 flex-wrap gap-x-2 gap-y-0.5"
-          }
-          style={{ color: textColor }}
-        >
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />P{" "}
-            {formatMetric(latestValues.pending)} {units.pending ?? "单位未知"}
-          </span>
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />D{" "}
-            {formatMetric(latestValues.discovered)} {units.discovered ?? "单位未知"}
-          </span>
-          <span>
-            <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />C{" "}
-            {formatMetric(latestValues.processed)} {units.processed ?? "单位未知"}
-          </span>
-          <span className="text-base-content/55">{statusLabel}</span>
-          <button
-            type="button"
-            className="link link-primary whitespace-nowrap text-[11px]"
-            aria-expanded={detailsOpen}
-            onClick={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setDetailsOpen((open) => !open);
-            }}
-          >
-            查看运行计量
-          </button>
-        </div>
+      {detailsMetricLegend}
+      <div>触发时间：{formatTime(latestSample?.attemptedAt)}</div>
+      <div>实际用时：{formatDuration(latestSample?.durationMs)}</div>
+      <div>结果：{resultLabel(latestSample?.status)}</div>
+      <div>来源：{latestSample?.triggerKind ?? "未知"}</div>
+      <div>待处理量：{formatWorkloadMetric(latestSample?.pending)}</div>
+      <div>本次发现：{formatWorkloadMetric(latestSample?.discovered)}</div>
+      <div>本次处理：{formatWorkloadMetric(latestSample?.processed)}</div>
+      <div className="sm:col-span-2">
+        缺失原因：
+        {latestSample?.reason ?? (latestSample ? trend?.coverage : (loadFailure ?? status))}
       </div>
-      {detailsOpen ? (
-        <div
-          role="dialog"
-          aria-label={`${task.title}运行计量详情`}
-          className={
-            backgroundMode
-              ? "pointer-events-auto absolute right-3 top-9 z-30 grid w-[min(28rem,calc(100%-1.5rem))] gap-x-3 gap-y-1 rounded-sm bg-base-100/95 p-2 text-[11px] text-base-content/75 shadow-lg sm:grid-cols-2"
-              : "relative z-20 mt-1 grid gap-x-3 gap-y-1 border-t border-base-300/50 pt-2 text-[11px] text-base-content/75 sm:grid-cols-2"
-          }
-        >
-          <div>触发时间：{formatTime(latestSample?.attemptedAt)}</div>
-          <div>实际用时：{formatDuration(latestSample?.durationMs)}</div>
-          <div>结果：{resultLabel(latestSample?.status)}</div>
-          <div>来源：{latestSample?.triggerKind ?? "未知"}</div>
-          <div>待处理量：{formatWorkloadMetric(latestSample?.pending)}</div>
-          <div>本次发现：{formatWorkloadMetric(latestSample?.discovered)}</div>
-          <div>本次处理：{formatWorkloadMetric(latestSample?.processed)}</div>
-          <div className="sm:col-span-2">
-            缺失原因：
-            {latestSample?.reason ?? (latestSample ? trend?.coverage : (loadFailure ?? status))}
-          </div>
-        </div>
-      ) : null}
     </>
+  );
+  const detailsPanel =
+    detailsOpen && !backgroundMode ? (
+      <div
+        ref={detailsPanelRef}
+        role="dialog"
+        tabIndex={-1}
+        aria-label={`${task.title}运行计量详情`}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          setDetailsOpen(false);
+          detailsButtonRef.current?.focus();
+        }}
+        className="relative z-20 mt-1 grid gap-x-3 gap-y-1 border-t border-base-300/50 pt-2 text-[11px] text-base-content/75 sm:grid-cols-2"
+      >
+        {detailsFields}
+      </div>
+    ) : null;
+  useLayoutEffect(() => {
+    if (!backgroundMode || !detailsOpen || typeof window === "undefined") {
+      setDetailsPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const button = detailsButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const margin = 12;
+      const width = Math.min(448, Math.max(0, window.innerWidth - margin * 2));
+      const availableHeight = Math.max(0, window.innerHeight - margin * 2);
+      const panelHeightHint = Math.min(240, availableHeight);
+      const top = Math.max(
+        margin,
+        Math.min(rect.bottom + 8, window.innerHeight - margin - panelHeightHint),
+      );
+      const maxLeft = Math.max(margin, window.innerWidth - margin - width);
+      const left = Math.min(Math.max(margin, rect.right - width), maxLeft);
+      setDetailsPosition({ top, left, width });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [backgroundMode, detailsOpen]);
+  useEffect(() => {
+    detailsFocusPendingRef.current = detailsOpen;
+  }, [detailsOpen]);
+  useEffect(() => {
+    if (!detailsOpen || !detailsFocusPendingRef.current) return;
+    if (backgroundMode && detailsPosition == null) return;
+    const panel = detailsPanelRef.current;
+    if (!panel) return;
+    panel.focus({ preventScroll: true });
+    detailsFocusPendingRef.current = false;
+  }, [backgroundMode, detailsOpen, detailsPosition]);
+  useEffect(() => {
+    if (!backgroundMode || !detailsOpen || typeof MutationObserver === "undefined") return;
+    const button = detailsButtonRef.current;
+    const row = button?.closest("[data-task-catalog-row]");
+    if (!button || !row) return;
+    const closeIfHidden = () => {
+      const rowHidden =
+        row.hasAttribute("hidden") ||
+        row.getAttribute("aria-hidden") === "true" ||
+        getComputedStyle(row).display === "none";
+      if (rowHidden || button.getClientRects().length === 0) {
+        setDetailsOpen(false);
+      }
+    };
+    closeIfHidden();
+    const observer = new MutationObserver(closeIfHidden);
+    observer.observe(row, { attributes: true, attributeFilter: ["hidden", "class", "style"] });
+    return () => observer.disconnect();
+  }, [backgroundMode, detailsOpen]);
+  const backgroundDetailsPanel =
+    backgroundMode && detailsOpen && detailsPosition && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={detailsPanelRef}
+            role="dialog"
+            tabIndex={-1}
+            aria-label={`${task.title}运行计量详情`}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              setDetailsOpen(false);
+              detailsButtonRef.current?.focus();
+            }}
+            className="pointer-events-auto fixed z-[70] grid max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-1.5rem)] gap-x-3 gap-y-1 overflow-auto rounded-sm bg-base-100/95 p-2 text-[11px] text-base-content/75 shadow-lg sm:grid-cols-2"
+            style={detailsPosition}
+          >
+            {detailsFields}
+          </div>,
+          document.body,
+        )
+      : null;
+  const controls = (
+    <div className="relative z-10 flex min-h-12 items-start justify-between gap-2 text-[11px]">
+      <div className="flex min-w-0 flex-wrap gap-x-2 gap-y-0.5" style={{ color: textColor }}>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-sky-400" />P{" "}
+          {formatMetric(latestValues.pending)} {units.pending ?? "单位未知"}
+        </span>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-violet-400" />D{" "}
+          {formatMetric(latestValues.discovered)} {units.discovered ?? "单位未知"}
+        </span>
+        <span>
+          <i className="mr-1 inline-block size-1.5 rounded-full bg-emerald-400" />C{" "}
+          {formatMetric(latestValues.processed)} {units.processed ?? "单位未知"}
+        </span>
+        <span className="text-base-content/55">{statusLabel}</span>
+        <button
+          ref={detailsButtonRef}
+          type="button"
+          className="link link-primary whitespace-nowrap text-[11px]"
+          aria-expanded={detailsOpen}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDetailsOpen((open) => !open);
+          }}
+        >
+          查看运行计量
+        </button>
+      </div>
+    </div>
   );
 
   if (backgroundMode) {
@@ -677,13 +816,24 @@ export function TaskWorkloadSparkline({
       <>
         <div
           ref={containerRef}
-          className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-hidden"
+          className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-visible"
           aria-busy={activeVisible && trend == null}
           data-testid={`task-workload-sparkline-${task.taskKey}`}
         >
           {chart}
         </div>
-        {controls}
+        <button
+          ref={detailsButtonRef}
+          type="button"
+          className="pointer-events-auto absolute right-2 top-2 z-20 inline-flex size-6 items-center justify-center rounded-sm bg-base-100/70 text-base-content/65 shadow-sm transition-colors hover:bg-base-100 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
+          aria-expanded={detailsOpen}
+          aria-label={`${task.title}运行计量详情`}
+          title={`${task.title}运行计量详情`}
+          onClick={() => setDetailsOpen((open) => !open)}
+        >
+          <AppIcon name="information-outline" className="size-4" aria-hidden />
+        </button>
+        {backgroundDetailsPanel}
       </>
     );
   }
@@ -697,6 +847,7 @@ export function TaskWorkloadSparkline({
     >
       {chart}
       {controls}
+      {detailsPanel}
     </div>
   );
 }

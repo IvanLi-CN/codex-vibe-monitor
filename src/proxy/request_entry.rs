@@ -1290,7 +1290,7 @@ pub(crate) fn store_pool_failover_error(
     *last_error = Some(err);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
     pub(crate) attempt_public_id: Option<String>,
@@ -1305,6 +1305,9 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) group_name_snapshot: Option<String>,
     pub(crate) proxy_binding_key_snapshot: Option<String>,
     pub(crate) request_model: Option<String>,
+    pub(crate) upstream_request_model: Option<String>,
+    pub(crate) model_mapping_pattern: Option<String>,
+    pub(crate) request_summary_json: Option<String>,
     pub(crate) upstream_account_id: i64,
     pub(crate) upstream_route_key: String,
     pub(crate) attempt_index: i64,

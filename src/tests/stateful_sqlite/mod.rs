@@ -115,6 +115,7 @@ mod pricing_catalog_and_models_passthrough;
     reason = "Test insertion helpers mirror persisted prompt-cache fields."
 )]
 mod prompt_cache_conversation_queries;
+mod prompt_cache_live_reads;
 mod prompt_cache_materialization_control;
 mod prompt_cache_working_set_trigger;
 #[expect(
@@ -130,6 +131,7 @@ mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;
 mod retention_admission_deadline;
 mod retention_batch_admission;
+mod retention_maintenance_ownership;
 mod retention_node_health_deltas;
 mod retention_scale_benchmark;
 #[expect(
