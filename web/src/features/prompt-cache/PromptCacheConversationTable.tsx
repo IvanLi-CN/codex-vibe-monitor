@@ -2401,6 +2401,7 @@ function PromptCacheConversationActivityOverview({
 export function PromptCacheConversationHistoryDrawer({
   open,
   conversationKey,
+  conversationId,
   conversationLabel,
   initialTab = "overview",
   presentation = "overlay",
@@ -2409,9 +2410,12 @@ export function PromptCacheConversationHistoryDrawer({
   t,
   onOpenUpstreamAccount,
   historyQueryForConversationKey,
+  readOnly = false,
+  discardPendingMutations = false,
 }: {
   open: boolean;
   conversationKey: string | null;
+  conversationId?: string | null;
   conversationLabel?: string | null;
   initialTab?: PromptCacheConversationDrawerTab;
   presentation?: "overlay" | "page";
@@ -2420,6 +2424,8 @@ export function PromptCacheConversationHistoryDrawer({
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
+  readOnly?: boolean;
+  discardPendingMutations?: boolean;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -2488,11 +2494,16 @@ export function PromptCacheConversationHistoryDrawer({
     patch: ConversationInlinePatch;
     fields: Set<ConversationInlinePolicyField>;
   } | null>(null);
+  const inlinePolicyMutationResourceKey =
+    conversationId === undefined
+      ? conversationKey
+      : JSON.stringify([conversationKey, conversationId]);
   const inlinePolicyMutation = useLatestDebouncedMutation<
     ConversationInlineMutationEntry,
     PromptCacheConversationBindingResponse
   >({
-    resourceKey: conversationKey,
+    resourceKey: inlinePolicyMutationResourceKey,
+    cancelOnResourceChange: discardPendingMutations || conversationId !== undefined,
     mutate: (entry) =>
       updatePromptCacheConversationBinding(entry.conversationKey, {
         ...conversationBindingPayloadBase(binding),
@@ -2588,9 +2599,13 @@ export function PromptCacheConversationHistoryDrawer({
   }, [inlinePolicyMutation.revert]);
 
   useEffect(() => {
+    if (discardPendingMutations) {
+      inlinePolicyMutation.revert();
+      return;
+    }
     if (open) return;
     void inlinePolicyMutation.flush();
-  }, [inlinePolicyMutation.flush, open]);
+  }, [discardPendingMutations, inlinePolicyMutation.flush, inlinePolicyMutation.revert, open]);
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [affinityResetConfirmOpen, setAffinityResetConfirmOpen] = useState(false);
   const [bindingRemoteConflict, setBindingRemoteConflict] =
@@ -2641,20 +2656,29 @@ export function PromptCacheConversationHistoryDrawer({
   }, [open]);
 
   useEffect(() => {
+    if (!readOnly) return;
+    setBindingOwnerConfirmOpen(false);
+    setAffinityResetConfirmOpen(false);
+  }, [readOnly]);
+
+  useEffect(() => {
     setBindingOwnerConfirmOpen(false);
   }, []);
 
   useEffect(() => {
     if (!open) return;
-    setActiveTab(initialTab);
-  }, [initialTab, open]);
+    setActiveTab(
+      readOnly && (initialTab === "routing" || initialTab === "settings") ? "overview" : initialTab,
+    );
+  }, [initialTab, open, readOnly]);
 
   const handleSelectTab = useCallback(
     (nextTab: PromptCacheConversationDrawerTab) => {
+      if (readOnly && (nextTab === "routing" || nextTab === "settings")) return;
       setActiveTab(nextTab);
       onTabChange?.(nextTab);
     },
-    [onTabChange],
+    [onTabChange, readOnly],
   );
 
   const clearPendingRefreshTimer = useCallback(() => {
@@ -3378,6 +3402,7 @@ export function PromptCacheConversationHistoryDrawer({
   const availableModelsOverrideEmpty =
     availableModelsMode === "override" && availableModelsOverrideList.length === 0;
   const bindingSubmitDisabled =
+    readOnly ||
     !conversationKey ||
     !binding ||
     bindingLoading ||
@@ -3428,7 +3453,7 @@ export function PromptCacheConversationHistoryDrawer({
   );
   const saveConversationInlinePolicy = useCallback(
     (field: ConversationInlinePolicyField, patch: ConversationInlinePatch) => {
-      if (!conversationKey || !binding || bindingSaving) return;
+      if (readOnly || !conversationKey || !binding || bindingSaving) return;
       const existingDraft = inlinePolicyDraftRef.current;
       const nextPatch = mergeConversationInlinePatch(existingDraft?.patch ?? null, patch);
       const nextFields = new Set(existingDraft?.fields ?? []);
@@ -3454,7 +3479,7 @@ export function PromptCacheConversationHistoryDrawer({
         patch: nextPatch,
       });
     },
-    [binding, bindingSaving, conversationKey, inlinePolicyMutation.schedule],
+    [binding, bindingSaving, conversationKey, inlinePolicyMutation.schedule, readOnly],
   );
   const conversationEffectiveRoutingRule = useMemo(
     () => buildConversationEffectiveRoutingRule(binding),
@@ -4499,7 +4524,7 @@ export function PromptCacheConversationHistoryDrawer({
   );
   const saveBinding = useCallback(
     async (options?: { skipOwnerWarning?: boolean; allowRemoteOverwrite?: boolean }) => {
-      if (!conversationKey || bindingSubmitDisabled) return;
+      if (readOnly || !conversationKey || bindingSubmitDisabled) return;
       if (bindingRemoteConflict && !options?.allowRemoteOverwrite) return;
       if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
       if (
@@ -4576,6 +4601,7 @@ export function PromptCacheConversationHistoryDrawer({
       inlinePolicyMutation.hasPending,
       inlinePolicyMutation.flush,
       inlinePolicyMutation.reconcile,
+      readOnly,
     ],
   );
   const revealPendingCalls = useCallback(() => {
@@ -4589,7 +4615,7 @@ export function PromptCacheConversationHistoryDrawer({
   }, [drawerBodyElement, liveRecords]);
 
   const resetAffinity = useCallback(async () => {
-    if (!conversationKey || bindingSaving) return;
+    if (readOnly || !conversationKey || bindingSaving) return;
     if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
     setBindingSaving(true);
     setBindingError(null);
@@ -4632,6 +4658,7 @@ export function PromptCacheConversationHistoryDrawer({
     inlinePolicyMutation.hasPending,
     inlinePolicyMutation.flush,
     inlinePolicyMutation.reconcile,
+    readOnly,
   ]);
 
   return (
@@ -4703,6 +4730,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "routing"}
+                disabled={readOnly}
                 className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "routing"}
@@ -4714,6 +4742,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "settings"}
+                disabled={readOnly}
                 className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "settings"}

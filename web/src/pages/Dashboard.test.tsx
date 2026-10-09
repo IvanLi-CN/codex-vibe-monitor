@@ -256,15 +256,19 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   PromptCacheConversationHistoryDrawer: ({
     open,
     conversationKey,
+    conversationId,
     conversationLabel,
     initialTab,
+    readOnly,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
     conversationKey: string | null;
+    conversationId?: string | null;
     conversationLabel?: string | null;
     initialTab?: "overview" | "calls" | "settings" | "operations";
+    readOnly?: boolean;
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -275,8 +279,14 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
     open ? (
       <div data-testid="dashboard-conversation-history-drawer-mock">
         <span data-testid="dashboard-conversation-drawer-key">{conversationKey}</span>
+        <span data-testid="dashboard-conversation-drawer-conversation-id">
+          {conversationId ?? "none"}
+        </span>
         <span data-testid="dashboard-conversation-drawer-label">{conversationLabel}</span>
         <span data-testid="dashboard-conversation-drawer-tab">{initialTab ?? "overview"}</span>
+        <span data-testid="dashboard-conversation-drawer-read-only">
+          {String(readOnly ?? false)}
+        </span>
         <button type="button" data-testid="dashboard-conversation-drawer-close" onClick={onClose}>
           close conversation drawer
         </button>
@@ -296,12 +306,17 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
     open,
     invocationId,
     selection,
+    conversationId,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
     invocationId?: string | null;
-    selection: { invocation: { record: { invokeId: string } } } | null;
+    selection: {
+      conversationId: string | null;
+      invocation: { record: { invokeId: string } };
+    } | null;
+    conversationId?: string | null;
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -313,6 +328,9 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
       <div data-testid="dashboard-invocation-detail-drawer-mock">
         <span data-testid="dashboard-invocation-drawer-selection">
           {selection?.invocation.record.invokeId ?? "none"}
+        </span>
+        <span data-testid="dashboard-invocation-drawer-conversation-id">
+          {selection?.conversationId ?? conversationId ?? "none"}
         </span>
         <span data-testid="dashboard-invocation-drawer-route-id">{invocationId ?? "none"}</span>
         <button type="button" data-testid="dashboard-invocation-drawer-close" onClick={onClose}>
@@ -747,6 +765,30 @@ describe("DashboardPage", () => {
     expect(host?.querySelector('[data-testid="dashboard-location-path"]')?.textContent).toBe(
       "/dashboard",
     );
+  });
+
+  it("hydrates the persisted conversation id for a direct invocation route", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard/invocations/invoke-dashboard-current");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-selection"]')?.textContent,
+    ).toBe("invoke-dashboard-current");
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-conversation-id"]')
+        ?.textContent,
+    ).toBe("ABCD12");
   });
 
   it("passes the blocked-binding route filter into the working conversations subscription hook", () => {
@@ -1392,6 +1434,9 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
     ).toBe("ABCD12");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-read-only"]')?.textContent,
+    ).toBe("true");
 
     currentError = null;
     currentCards = [card];
@@ -1402,6 +1447,10 @@ describe("DashboardPage", () => {
     ).not.toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-conversation-id"]')
+        ?.textContent,
     ).toBe("ABCD12");
   });
 
@@ -1426,6 +1475,36 @@ describe("DashboardPage", () => {
     expect(
       host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
     ).toBeNull();
+  });
+
+  it("opens a visible persisted conversation route at the backend page cap", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [card],
+      totalMatched: 101,
+      hasMore: true,
+      canLoadMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+
+    expect(loadMore).not.toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-read-only"]')?.textContent,
+    ).toBe("false");
   });
 
   it("hydrates the persisted conversation label for a direct conversation route", () => {
@@ -1538,7 +1617,7 @@ describe("DashboardPage", () => {
 
     render(
       <DashboardPage />,
-      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+      "/dashboard?promptCacheConversationKey=pck-hidden&promptCacheConversationId=ABCD12",
     );
 
     expect(loadMore).not.toHaveBeenCalled();

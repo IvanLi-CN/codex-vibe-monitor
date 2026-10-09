@@ -7,6 +7,7 @@ export type DebouncedMutationStatus = "idle" | "pending" | "saving" | "error";
 export interface UseLatestDebouncedMutationOptions<TPayload, TResult> {
   delayMs?: number;
   resourceKey?: string | number | null;
+  cancelOnResourceChange?: boolean;
   mutate: (payload: TPayload) => Promise<TResult>;
   onSuccess?: (result: TResult, payload: TPayload) => void;
   onError?: (error: unknown, payload: TPayload) => void;
@@ -42,6 +43,7 @@ function resourceKeyId(resourceKey: string | number | null | undefined): string 
 export function useLatestDebouncedMutation<TPayload, TResult>({
   delayMs = DEFAULT_DEBOUNCED_MUTATION_DELAY_MS,
   resourceKey = null,
+  cancelOnResourceChange = false,
   mutate,
   onSuccess,
   onError,
@@ -236,6 +238,19 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
     const previousResourceKey = resourceKeyId(resourceKeyRef.current);
     resourceKeyRef.current = resourceKey;
     latestSequenceRef.current += 1;
+    if (cancelOnResourceChange) {
+      clearTimer();
+      queueRef.current.delete(previousResourceKey);
+      if (failedEntryRef.current?.resourceKey === previousResourceKey) {
+        failedEntryRef.current = null;
+      }
+      if (mountedRef.current) {
+        setStatus("idle");
+        setError(null);
+        updatePendingState();
+      }
+      return;
+    }
     void flush().then(() => {
       queueRef.current.delete(previousResourceKey);
       if (failedEntryRef.current?.resourceKey === previousResourceKey) {
@@ -247,7 +262,7 @@ export function useLatestDebouncedMutation<TPayload, TResult>({
         updatePendingState();
       }
     });
-  }, [flush, resourceKey, updatePendingState]);
+  }, [cancelOnResourceChange, clearTimer, flush, resourceKey, updatePendingState]);
 
   useEffect(() => {
     const flushOnPageExit = () => {

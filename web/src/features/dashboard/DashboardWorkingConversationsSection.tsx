@@ -4593,10 +4593,31 @@ export function DashboardWorkingConversationsSection({
         const succeededKeys = new Set(
           response.items.filter((item) => item.ok).map((item) => item.promptCacheKey),
         );
+        const succeededIdentities = new Set(
+          response.items
+            .filter((item) => item.ok)
+            .map((item) =>
+              validSelectionIdentities.find(
+                (selection) => selection.promptCacheKey === item.promptCacheKey,
+              ),
+            )
+            .filter(
+              (selection): selection is (typeof validSelectionIdentities)[number] =>
+                selection != null,
+            )
+            .map(({ promptCacheKey, conversationId }) =>
+              buildDashboardWorkingConversationCardIdentity(promptCacheKey, conversationId),
+            ),
+        );
         const failedItems = response.items.filter((item) => !item.ok);
         if (succeededKeys.size > 0) {
           setSelectedConversationIdentities((current) =>
-            current.filter(({ promptCacheKey }) => !succeededKeys.has(promptCacheKey)),
+            current.filter(
+              ({ promptCacheKey, conversationId }) =>
+                !succeededIdentities.has(
+                  buildDashboardWorkingConversationCardIdentity(promptCacheKey, conversationId),
+                ),
+            ),
           );
           onConversationsChanged?.();
           if (payload.action === "bind" && payload.bindingKind !== "none") {

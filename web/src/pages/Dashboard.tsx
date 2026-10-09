@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
@@ -74,6 +74,27 @@ export default function DashboardPage() {
     refresh: refreshWorkingConversations,
   } = useDashboardWorkingConversations(blockedBindingFilter);
   const canLoadMore = canLoadMoreFromHook ?? hasMore;
+  const routeInvocationSelection = useMemo(() => {
+    if (routeInvokeId == null) return null;
+    for (const card of cards) {
+      const candidates = [
+        ["current", card.currentInvocation],
+        ["previous", card.previousInvocation],
+        ["earlier", card.earlierInvocation],
+      ] as const;
+      const match = candidates.find(
+        ([, invocation]) => invocation?.record.invokeId === routeInvokeId,
+      );
+      if (match == null || match[1] == null) continue;
+      return {
+        slotKind: match[0],
+        conversationId: card.conversationId,
+        promptCacheKey: card.promptCacheKey,
+        invocation: match[1],
+      };
+    }
+    return null;
+  }, [cards, routeInvokeId]);
   const dashboardActivityEnabled = activeRange !== "usage";
   const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
@@ -118,6 +139,21 @@ export default function DashboardPage() {
     promptCacheConversationKey,
     workingCardsError,
   ]);
+  useEffect(() => {
+    if (routeInvokeId == null || routeInvocationSelection == null) return;
+    setSelectedInvocation((current) => {
+      if (
+        current?.invocation.record.invokeId === routeInvokeId &&
+        current.conversationId === routeInvocationSelection.conversationId &&
+        current.promptCacheKey === routeInvocationSelection.promptCacheKey &&
+        current.slotKind === routeInvocationSelection.slotKind
+      ) {
+        return current;
+      }
+      return routeInvocationSelection;
+    });
+  }, [routeInvocationSelection, routeInvokeId]);
+
   useEffect(() => {
     if (
       selectedInvocation != null &&
@@ -293,9 +329,21 @@ export default function DashboardPage() {
     verifiedConversationRoute?.key === promptCacheConversationKey &&
     verifiedConversationRoute?.conversationId === promptCacheConversationId &&
     verifiedRouteMatchesCurrentCards;
+  const conversationRouteIdentityIsWritable =
+    !workingCardsLoading &&
+    !workingCardsLoadingMore &&
+    !canLoadMore &&
+    workingCardsError == null &&
+    promptCacheConversationId != null &&
+    visibleRouteIdentityIsUnique &&
+    routeConversationId === promptCacheConversationId;
+  const conversationRouteReadOnly = !conversationRouteIdentityIsWritable;
+  const discardConversationRoutePendingMutations =
+    promptCacheConversationKey != null && conversationRouteReadOnly;
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
     verifiedConversationRouteIsActive ||
+    conversationRouteIdentityIsWritable ||
     (conversationDataIsComplete &&
       visibleRouteIdentityIsUnique &&
       (promptCacheConversationId == null || routeConversationId === promptCacheConversationId));
@@ -338,6 +386,7 @@ export default function DashboardPage() {
           open
           presentation="page"
           conversationKey={promptCacheConversationKey}
+          conversationId={promptCacheConversationId}
           conversationLabel={selectedConversation?.label ?? null}
           initialTab={promptCacheConversationTab}
           onTabChange={(tab) =>
@@ -352,6 +401,8 @@ export default function DashboardPage() {
           }}
           t={t}
           onOpenUpstreamAccount={handleOpenUpstreamAccount}
+          readOnly={conversationRouteReadOnly}
+          discardPendingMutations={discardConversationRoutePendingMutations}
         />
       </div>
     );
@@ -487,6 +538,7 @@ export default function DashboardPage() {
           promptCacheConversationKey != null && upstreamAccountId == null && conversationRouteIsSafe
         }
         conversationKey={promptCacheConversationKey}
+        conversationId={promptCacheConversationId}
         conversationLabel={selectedConversation?.label ?? null}
         initialTab={promptCacheConversationTab}
         onTabChange={(tab) => {
@@ -502,6 +554,8 @@ export default function DashboardPage() {
         }}
         t={t}
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
+        readOnly={conversationRouteReadOnly}
+        discardPendingMutations={discardConversationRoutePendingMutations}
       />
       {upstreamAccountId != null ? (
         <SharedUpstreamAccountDetailDrawer
