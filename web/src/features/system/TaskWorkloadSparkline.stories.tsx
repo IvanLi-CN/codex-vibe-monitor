@@ -132,6 +132,7 @@ export const BackgroundRow: Story = {
     await expect(canvas.queryByRole("button", { name: "查看运行计量" })).toBeNull();
     const title = canvas.getByRole("heading", { name: task.title });
     await expect(title).toBeVisible();
+    await waitFor(() => expect(canvasElement.querySelector("svg.absolute")).not.toBeNull());
     await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
     const body = within(canvasElement.ownerDocument.body);
     const dialog = body.getByRole("dialog", { name: /运行计量详情/ });

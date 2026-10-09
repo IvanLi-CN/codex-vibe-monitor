@@ -155,7 +155,28 @@ function sampleTime(sample: TaskWorkloadSample): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+function trendWindowEnd(
+  trend: TaskWorkloadTrend | null,
+  samples: TaskWorkloadSample[],
+): number | null {
+  const timestamps = [
+    trend?.windowEnd,
+    trend?.observedAt,
+    trend?.latestObservedAt,
+    ...samples.map((sample) => sample.attemptedAt),
+  ]
+    .map((value) => (value ? Date.parse(value) : Number.NaN))
+    .filter((value): value is number => Number.isFinite(value));
+  return timestamps.length > 0 ? Math.max(...timestamps) : null;
+}
+
 type SparklineMetric = "pending" | "discovered" | "processed";
+
+const METRIC_LABELS: Record<SparklineMetric, string> = {
+  pending: "P",
+  discovered: "D",
+  processed: "C",
+};
 
 interface ChartPath {
   d: string;
@@ -489,13 +510,17 @@ export function TaskWorkloadSparkline({
     },
     {} as Record<SparklineMetric, number>,
   );
+  // Keep fixed or delayed snapshots visible by anchoring the window to their
+  // own observation time; live snapshots still advance with the browser clock.
+  const observedWindowEnd = trendWindowEnd(trend, samples);
+  const chartNow = observedWindowEnd == null ? now : Math.min(now, observedWindowEnd);
   const paths = useMemo(
     () => ({
       pending: chartPaths(
         samples,
         "pending",
         maxValues.pending,
-        now,
+        chartNow,
         units.pending,
         trend?.coverageGaps,
       ),
@@ -503,7 +528,7 @@ export function TaskWorkloadSparkline({
         samples,
         "discovered",
         maxValues.discovered,
-        now,
+        chartNow,
         units.discovered,
         trend?.coverageGaps,
       ),
@@ -511,12 +536,12 @@ export function TaskWorkloadSparkline({
         samples,
         "processed",
         maxValues.processed,
-        now,
+        chartNow,
         units.processed,
         trend?.coverageGaps,
       ),
     }),
-    [maxValues, now, samples, trend?.coverageGaps, units],
+    [chartNow, maxValues, samples, trend?.coverageGaps, units],
   );
   const latest = samples.at(-1);
   const latestValues = {
@@ -533,7 +558,7 @@ export function TaskWorkloadSparkline({
       : coverageLabel(trend?.coverage ?? "loading");
   const hasSeries = Object.values(paths).some((series) => series.length > 0);
   const unitLabel = (["pending", "discovered", "processed"] as const)
-    .map((metric) => `${metric[0].toUpperCase()}:${units[metric] ?? "未知"}`)
+    .map((metric) => `${METRIC_LABELS[metric]}:${units[metric] ?? "未知"}`)
     .join("，");
   const textColor = dark ? "#d8e4f0" : "#344454";
   const chart =
