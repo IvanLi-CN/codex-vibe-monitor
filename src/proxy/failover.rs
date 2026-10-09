@@ -988,7 +988,7 @@ fn spawn_pool_attempt_response_capture(
             response_content_encoding.as_deref(),
         );
         let progress_admitted =
-            enqueue_pool_upstream_request_attempt_snapshot_reliably(state.as_ref(), &pending).await;
+            enqueue_pool_upstream_request_attempt_snapshot_reliably(state.as_ref(), &pending);
         if progress_admitted
             && let Err(err) = state.sqlite_batch_writer.flush_now(&state.pool).await
         {
@@ -2082,7 +2082,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
             let attempt_started_at: String;
             let attempt_index: i64;
             let mut pending_attempt_record: Option<PendingPoolAttemptRecord>;
-            let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
+            let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard> = None;
             let live_attempt_activity_lease: Option<PoolLiveAttemptActivityLease>;
             let prepared_request_body = match prepare_pool_request_body_for_account(
                 proxy_request_id,
@@ -2421,6 +2421,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to prepare pool Codex imagegen rewrite audit"
                             );
                         }
+                        early_phase_cleanup_guard = Some(PoolEarlyPhaseOrphanCleanupGuard::new(
+                            state.clone(),
+                            pending_attempt_record.clone(),
+                        ));
                         enqueue_pool_upstream_request_attempt_snapshot(
                             state.as_ref(),
                             pending_attempt_record,
@@ -2454,9 +2458,6 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         )
                         .await;
                     }
-                    early_phase_cleanup_guard = pending_attempt_record.as_ref().map(|pending| {
-                        PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone())
-                    });
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),

@@ -1,5 +1,135 @@
 use super::*;
 
+impl SqliteBatchWriter {
+    pub(crate) fn enqueue_attempt_progress_reliably(
+        &self,
+        progress: BatchedAttemptProgress,
+    ) -> bool {
+        self.accounting.attempt_progress_enqueued();
+
+        #[cfg(test)]
+        if let Some(buffered_writes) = &self.buffered_writes {
+            let _attempt_progress_send_guard = self
+                .attempt_progress_send_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
+            let estimated_bytes = write.estimated_memory_bytes();
+            match buffered_writes.lock() {
+                Ok(mut guard) => {
+                    guard.push(write);
+                    self.accounting.enqueue(estimated_bytes);
+                    return true;
+                }
+                Err(err) => {
+                    self.accounting.attempt_progress_dropped();
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        error = %err,
+                        dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
+                        "sqlite batch writer test buffer poisoned; dropped reliable attempt progress"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        let _attempt_progress_send_guard = self
+            .attempt_progress_send_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
+        let estimated_bytes = write.estimated_memory_bytes();
+        self.accounting.enqueue(estimated_bytes);
+        match self.write_sender.try_send(write) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(write)) => {
+                self.accounting.attempt_progress_deferred(1);
+                if self.admit_reliable_attempt_progress_overflow(write) {
+                    true
+                } else {
+                    self.accounting.rollback_enqueue(estimated_bytes);
+                    self.accounting.attempt_progress_dropped();
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        queue_depth = self.accounting.snapshot().pending_depth,
+                        dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
+                        "reliable attempt progress overflow is full; dropped derived progress"
+                    );
+                    false
+                }
+            }
+            Err(mpsc::error::TrySendError::Closed(_write)) => {
+                self.accounting.rollback_enqueue(estimated_bytes);
+                self.accounting.attempt_progress_dropped();
+                self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
+                    "sqlite batch writer closed; dropped reliable attempt progress"
+                );
+                false
+            }
+        }
+    }
+
+    fn admit_reliable_attempt_progress_overflow(&self, write: SqliteBatchWrite) -> bool {
+        let SqliteBatchWrite::AttemptProgress(progress) = write else {
+            return false;
+        };
+        let Ok(mut overflow) = self.reliable_attempt_progress_overflow.lock() else {
+            return false;
+        };
+        let mut candidate = overflow.clone();
+        candidate.push(SqliteBatchWrite::AttemptProgress(progress.clone()));
+        if candidate.logical_rows() > SQLITE_RELIABLE_ATTEMPT_PROGRESS_OVERFLOW_MAX_ROWS
+            || candidate.estimated_memory_bytes() > SQLITE_BATCH_MAX_BYTES
+        {
+            return false;
+        }
+        overflow.push_accounted(
+            SqliteBatchWrite::AttemptProgress(progress),
+            &self.accounting,
+        );
+        self.reliable_attempt_progress_notify.notify_one();
+        true
+    }
+}
+
+pub(super) fn drain_reliable_attempt_progress_overflow(
+    overflow: &Arc<std::sync::Mutex<PendingBatch>>,
+    pending: &mut PendingBatch,
+    accounting: &PendingQueueAccounting,
+    max_rows: usize,
+) -> usize {
+    if max_rows == 0 {
+        return 0;
+    }
+    let overflow_batch = {
+        let Ok(mut overflow) = overflow.lock() else {
+            return 0;
+        };
+        if overflow.is_empty() {
+            return 0;
+        }
+        overflow.take_p2_chunk(max_rows, SQLITE_BATCH_MAX_BYTES)
+    };
+    if overflow_batch.is_empty() {
+        return 0;
+    }
+    let overflow_rows = overflow_batch.logical_rows();
+    let overflow_bytes = overflow_batch.estimated_memory_bytes();
+    let pending_rows = pending.logical_rows();
+    let pending_bytes = pending.estimated_memory_bytes();
+    pending.merge_p2(overflow_batch);
+    accounting.replace_batch(
+        pending_rows.saturating_add(overflow_rows),
+        pending.logical_rows(),
+        pending_bytes.saturating_add(overflow_bytes),
+        pending.estimated_memory_bytes(),
+    );
+    overflow_rows
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct AttemptProgressFieldSequences {
     pub(crate) phase: u64,

@@ -1155,8 +1155,7 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     if pending.attempt_id.is_some() {
         let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
             state, pending, phase, None, None, None, None,
-        )
-        .await;
+        );
         if !phase_enqueued {
             warn!(
                 invoke_id = %pending.invoke_id,
@@ -1204,7 +1203,7 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot(
     )
 }
 
-pub(crate) async fn enqueue_pool_upstream_request_attempt_progress_reliably(
+pub(crate) fn enqueue_pool_upstream_request_attempt_progress_reliably(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
     phase: &str,
@@ -1226,10 +1225,9 @@ pub(crate) async fn enqueue_pool_upstream_request_attempt_progress_reliably(
     state
         .sqlite_batch_writer
         .enqueue_attempt_progress_reliably(progress)
-        .await
 }
 
-pub(crate) async fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
+pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
 ) -> bool {
@@ -1246,7 +1244,6 @@ pub(crate) async fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
     state
         .sqlite_batch_writer
         .enqueue_attempt_progress_reliably(progress)
-        .await
 }
 
 pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
@@ -1269,8 +1266,7 @@ pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
         Some(first_byte_latency_ms),
         None,
         None,
-    )
-    .await;
+    );
     if phase_enqueued {
         debug!(
             invoke_id = %pending_attempt_record.invoke_id,
