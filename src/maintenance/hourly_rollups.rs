@@ -1,4 +1,5 @@
 use super::*;
+use sha2::{Digest, Sha256};
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
 const HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE: i64 = 64;
@@ -454,21 +455,14 @@ async fn load_materialized_invocation_archive_for_usage_breakdown_repair_after_i
         if after_cursor {
             query.push(
                 " \
-               AND ( \
-                    batches.month_key > ",
+               AND (batches.month_key, batches.created_at, batches.id) > (",
             );
             query.push_bind(&cursor.month_key);
-            query.push(" OR (batches.month_key = ");
-            query.push_bind(&cursor.month_key);
-            query.push(" AND batches.created_at > ");
+            query.push(", ");
             query.push_bind(&cursor.created_at);
-            query.push(" ) OR (batches.month_key = ");
-            query.push_bind(&cursor.month_key);
-            query.push(" AND batches.created_at = ");
-            query.push_bind(&cursor.created_at);
-            query.push(" AND batches.id > ");
+            query.push(", ");
             query.push_bind(cursor.id);
-            query.push(" ) )");
+            query.push(")");
         }
         query.push(
             " ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC LIMIT 1",
@@ -1390,24 +1384,30 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
     coverage_end_at: Option<&str>,
     started_at: Instant,
     max_elapsed: Option<Duration>,
-) -> Result<Option<Vec<String>>> {
-    if !invocation_archive_file_is_readable_with_budget(
+) -> Result<InvocationArchiveReopenResult> {
+    match invocation_archive_file_is_readable_with_budget(
         Path::new(file_path),
         started_at,
         max_elapsed,
     )
     .await
     {
-        return Ok(None);
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenResult::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+        }
     }
     let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
     else {
-        return Ok(None);
+        return Ok(InvocationArchiveReopenResult::Rejected);
     };
     let Some(mut bucket_start_epochs) =
         usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
     else {
-        return Ok(None);
+        return Ok(InvocationArchiveReopenResult::Rejected);
     };
     let mut reopened_file_paths = Vec::new();
     let mut reopened_file_path_set = HashSet::new();
@@ -1431,34 +1431,40 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             else {
                 // An unverifiable overlap cannot be replayed after its rows are cleared.
                 // Leave the complete closure quarantined rather than partially rebuilding it.
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::Rejected);
             };
             if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                 continue;
             }
             if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::BudgetExhausted);
             }
             let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(
                 &overlapping_archive.file_path,
             )) {
                 Ok(value) => value,
-                Err(_) => return Ok(None),
+                Err(_) => return Ok(InvocationArchiveReopenResult::Rejected),
             };
             if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::BudgetExhausted);
             }
             if actual_sha256 != expected_sha256 {
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::Rejected);
             }
-            if !invocation_archive_file_is_readable_with_budget(
+            match invocation_archive_file_is_readable_with_budget(
                 Path::new(&overlapping_archive.file_path),
                 started_at,
                 max_elapsed,
             )
             .await
             {
-                return Ok(None);
+                InvocationArchiveReadability::Readable => {}
+                InvocationArchiveReadability::Rejected => {
+                    return Ok(InvocationArchiveReopenResult::Rejected);
+                }
+                InvocationArchiveReadability::BudgetExhausted => {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                }
             }
             let Some(overlap_bucket_start_epochs) =
                 usage_breakdown_repair_bucket_epochs_from_bounds(
@@ -1466,12 +1472,12 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
                     &overlapping_archive.coverage_end_at,
                 )?
             else {
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::Rejected);
             };
             reopened_file_paths.push(overlapping_archive.file_path);
             bucket_start_epochs.extend(overlap_bucket_start_epochs);
             if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::Rejected);
             }
             expanded = true;
         }
@@ -1480,11 +1486,11 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
         }
     }
     if !reopened_file_path_set.contains(file_path) {
-        return Ok(None);
+        return Ok(InvocationArchiveReopenResult::Rejected);
     }
     clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
     reset_invocation_archive_replay_state_tx(tx, &reopened_file_paths).await?;
-    Ok(Some(reopened_file_paths))
+    Ok(InvocationArchiveReopenResult::Reopened(reopened_file_paths))
 }
 
 async fn invocation_archive_is_missing_summary_projection_proof_tx(
@@ -1513,22 +1519,28 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     coverage_end_at: Option<&str>,
     started_at: Instant,
     max_elapsed: Option<Duration>,
-) -> Result<Option<Vec<String>>> {
-    if !invocation_archive_file_is_readable_with_budget(
+) -> Result<InvocationArchiveReopenResult> {
+    match invocation_archive_file_is_readable_with_budget(
         Path::new(file_path),
         started_at,
         max_elapsed,
     )
     .await
     {
-        return Ok(None);
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenResult::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+        }
     }
     let mut reopened_file_paths = vec![file_path.to_string()];
     if let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at) {
         let Some(mut bucket_start_epochs) =
             usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
         else {
-            return Ok(None);
+            return Ok(InvocationArchiveReopenResult::Rejected);
         };
         let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
 
@@ -1547,20 +1559,28 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                     .as_deref()
                     .is_none_or(|sha256| sha256.trim().is_empty())
                 {
-                    return Ok(None);
+                    return Ok(InvocationArchiveReopenResult::Rejected);
                 }
                 if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                     continue;
                 }
-                if historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
-                    || !invocation_archive_file_is_readable_with_budget(
-                        Path::new(&overlapping_archive.file_path),
-                        started_at,
-                        max_elapsed,
-                    )
-                    .await
+                if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                }
+                match invocation_archive_file_is_readable_with_budget(
+                    Path::new(&overlapping_archive.file_path),
+                    started_at,
+                    max_elapsed,
+                )
+                .await
                 {
-                    return Ok(None);
+                    InvocationArchiveReadability::Readable => {}
+                    InvocationArchiveReadability::Rejected => {
+                        return Ok(InvocationArchiveReopenResult::Rejected);
+                    }
+                    InvocationArchiveReadability::BudgetExhausted => {
+                        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                    }
                 }
                 let Some(overlap_bucket_start_epochs) =
                     usage_breakdown_repair_bucket_epochs_from_bounds(
@@ -1568,12 +1588,12 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                         &overlapping_archive.coverage_end_at,
                     )?
                 else {
-                    return Ok(None);
+                    return Ok(InvocationArchiveReopenResult::Rejected);
                 };
                 reopened_file_paths.push(overlapping_archive.file_path);
                 bucket_start_epochs.extend(overlap_bucket_start_epochs);
                 if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
-                    return Ok(None);
+                    return Ok(InvocationArchiveReopenResult::Rejected);
                 }
                 expanded = true;
             }
@@ -1596,7 +1616,7 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     for reopened_file_path in &reopened_file_paths {
         reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopened_file_path).await?;
     }
-    Ok(Some(reopened_file_paths))
+    Ok(InvocationArchiveReopenResult::Reopened(reopened_file_paths))
 }
 
 pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state(
@@ -1723,10 +1743,14 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                     )
                     .await?
                 };
-                if let Some(reopened) = reopened {
-                    touched_batches = touched_batches.saturating_add(reopened.len());
-                } else if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-                    budget_exhausted = true;
+                match reopened {
+                    InvocationArchiveReopenResult::Reopened(reopened) => {
+                        touched_batches = touched_batches.saturating_add(reopened.len());
+                    }
+                    InvocationArchiveReopenResult::BudgetExhausted => {
+                        budget_exhausted = true;
+                    }
+                    InvocationArchiveReopenResult::Rejected => {}
                 }
             }
         }
@@ -1919,34 +1943,44 @@ pub(crate) async fn open_historical_rollup_archive_pool(
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InvocationArchiveReadability {
+    Readable,
+    Rejected,
+    BudgetExhausted,
+}
+
+#[derive(Debug)]
+enum InvocationArchiveReopenResult {
+    Reopened(Vec<String>),
+    Rejected,
+    BudgetExhausted,
+}
+
+fn invocation_archive_validation_temp_path(archive_path: &Path) -> PathBuf {
+    let digest = Sha256::digest(archive_path.as_os_str().to_string_lossy().as_bytes());
+    std::env::temp_dir().join(format!("codex-invocation-archive-check-{digest:x}.sqlite"))
+}
+
 async fn invocation_archive_file_is_readable_with_budget(
     archive_path: &Path,
     started_at: Instant,
     max_elapsed: Option<Duration>,
-) -> bool {
+) -> InvocationArchiveReadability {
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-        return false;
+        return InvocationArchiveReadability::BudgetExhausted;
     }
-    let temp_path = std::env::temp_dir().join(format!(
-        "codex-invocation-archive-check-{}.sqlite",
-        nanoid::nanoid!()
-    ));
-    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
-    let archive_pool = match open_historical_rollup_archive_pool_with_budget(
-        archive_path,
-        &temp_path,
-        started_at,
-        max_elapsed,
-    )
-    .await
-    {
-        Ok(Some(pool)) => pool,
-        Err(_) => return false,
-        Ok(None) => return false,
+    let temp_path = invocation_archive_validation_temp_path(archive_path);
+    let archive_pool = match open_historical_rollup_archive_pool(archive_path, &temp_path).await {
+        Ok(pool) => pool,
+        Err(_) => {
+            remove_temp_sqlite_artifacts(&temp_path);
+            return InvocationArchiveReadability::Rejected;
+        }
     };
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         archive_pool.close().await;
-        return false;
+        return InvocationArchiveReadability::BudgetExhausted;
     }
     let readable = match load_sqlite_table_columns(&archive_pool, "codex_invocations").await {
         Ok(columns)
@@ -1962,7 +1996,14 @@ async fn invocation_archive_file_is_readable_with_budget(
         _ => false,
     };
     archive_pool.close().await;
-    readable && !historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+    if !readable {
+        remove_temp_sqlite_artifacts(&temp_path);
+        return InvocationArchiveReadability::Rejected;
+    }
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        return InvocationArchiveReadability::BudgetExhausted;
+    }
+    InvocationArchiveReadability::Readable
 }
 
 async fn open_historical_rollup_archive_pool_with_budget(
@@ -2703,7 +2744,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A stale marker or missing Summary proof on a materialized archive means a prior
             // contribution may remain. Reset the verified overlap closure before inspecting
             // pending targets so an incremental replay cannot double count old rows.
-            let Some(_) = reopen_replaced_materialized_invocation_archive_tx(
+            let reopened = reopen_replaced_materialized_invocation_archive_tx(
                 tx,
                 &archive_file.file_path,
                 archive_file.coverage_start_at.as_deref(),
@@ -2713,10 +2754,17 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 // closure before the outer batch budget gates the next archive.
                 None,
             )
-            .await?
-            else {
-                summary.blocked_batches += 1;
-                continue;
+            .await?;
+            match reopened {
+                InvocationArchiveReopenResult::Reopened(_) => {}
+                InvocationArchiveReopenResult::Rejected => {
+                    summary.blocked_batches += 1;
+                    continue;
+                }
+                InvocationArchiveReopenResult::BudgetExhausted => {
+                    summary.hit_budget = true;
+                    break;
+                }
             };
         }
         let mut pending_targets = Vec::new();

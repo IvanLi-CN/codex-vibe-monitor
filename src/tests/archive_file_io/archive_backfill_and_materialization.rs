@@ -5727,8 +5727,16 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
 
     let blocked = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
         .await
-        .expect("unreadable replacement must be deferred");
+        .expect("unreadable replacement must be rejected");
     assert_eq!(blocked, 0);
+    let deferred_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count rejected archive deferred entries");
+    assert_eq!(deferred_count, 0);
     let materialized_at: Option<String> = sqlx::query_scalar(
         "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
     )

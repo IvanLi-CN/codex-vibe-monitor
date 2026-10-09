@@ -67,7 +67,7 @@
       },
       {
         "id": "dml-002",
-        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, persist budget-exhausted candidates in the deferred queue, retry deferred candidates without starving later recoverable rows, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap; pending cursor or deferred work defers the runtime task for a cancellation-aware retry.",
+        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision; the shared elapsed budget gates selection of the next candidate while a selected candidate completes its validation and overlap closure as one transaction; retain and retry explicitly budget-interrupted deferred candidates without starving later recoverable rows, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap; pending cursor or deferred work defers the runtime task for a cancellation-aware retry.",
         "order": 6,
         "depends_on": [
           "ddl-002",
@@ -90,7 +90,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages, with real archive readability checks under the shared per-page elapsed budget before rollup clearing; unverified legacy markers remain quarantined until a verified replay.",
+        "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages; the shared per-page elapsed budget gates candidate selection, while the selected archive validation and overlap closure may exceed that boundary and commit as one durable transaction, reusing source-bound temporary copies across cancellation and retry; unverified legacy markers remain quarantined until a verified replay.",
         "order": 8,
         "depends_on": [
           "dml-001",

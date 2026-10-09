@@ -3090,6 +3090,7 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
           AND historical_rollups_materialized_at IS NOT NULL
           AND sha256 IS NOT NULL
           AND TRIM(sha256) <> ''
+          AND (month_key, created_at, id) > ('2026-01', '2026-01-01 00:00:00', 0)
         ORDER BY month_key ASC, created_at ASC, id ASC
         LIMIT 1
         "#,
@@ -3105,6 +3106,11 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
             .iter()
             .any(|detail| detail.contains("idx_archive_batches_usage_breakdown_repair_candidates")),
         "usage breakdown repair should use the candidate partial index: {repair_plan:?}"
+    );
+    assert!(
+        repair_plan.iter().any(|detail| detail.contains("SEARCH")
+            && detail.contains("idx_archive_batches_usage_breakdown_repair_candidates")),
+        "deep repair cursors should use an index range seek: {repair_plan:?}"
     );
     assert!(
         repair_plan
