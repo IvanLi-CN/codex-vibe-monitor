@@ -64,6 +64,8 @@
 - 基线和增量页在完整提交前 MUST 保持暂存状态；HTTP 失败 MUST 保留最后一次完整时间线并标记为过期，不得显示成空数据或观测缺口。成功提交 HTTP 基线后，即使首个 SSE 水位通知尚未到达，也 MUST 将其视为已知快照而不提示时间线不可用。可选时间戳缺失或为 null 时 MUST 保持兼容的未知值；非空时间戳无法解析时 MUST 将整页视为读取失败并保留上一完整快照。任务执行时间线不得依赖固定周期 HTTP 轮询。
 - SSE 静默期间，前端 MUST 继续推进可见当前时间以及连接仍有效的运行/等待时长，不得把“没有新事件”误判为无任务或失联。SSE 断开时 MUST 显示连接状态与最后确认时间；短暂重连窗口后冻结开放状态的外推并标记为未知，重连快照恢复后立即校准。
 - 色条详情 MUST 提供任务名称、触发来源、真实起止时间、实际执行用时与结果；缺少的历史字段保持未知。短于实时刷新周期的任务也须能由执行边界记录进入历史；极短区间的可见标记不得改变原始耗时。
+- 前端 MUST 模块级复用紧凑时间和精确时间两种格式化器；已结束区间的完整详情 MUST 按区间身份及 `revision` 缓存，并在修订、快照淘汰或组件卸载时失效。历史几何 MUST 与每秒时钟投影分离，时钟推进只更新开放区间终点、滚动窗口裁剪和当前时间，不得每秒重排不变的历史泳道。
+- 未交互的执行和让行区间 MUST 只提供轻量无障碍摘要；鼠标进入或键盘聚焦后，当前区间才生成完整原生 Tooltip 与无障碍详情。完整详情 MUST 保留自身优先、其余按原记录顺序，并在聚焦期间收到更高 `revision` 时立即更新。
 - 已结束区间 MUST 保留成功、失败、取消或其他已观测结果的区别，不得只展示成功记录。共享一个执行实例的父子任务不得画成两个并行任务；当前子任务身份须在对应实例详情中可辨认。
 - 密集区间 MAY 采用像素级聚合标记，但 MUST 展示聚合数量并支持查阅其包含的实际运行；聚合不得改写真实起止、合并运行身份或静默丢弃记录。
 - 目录筛选 MUST 保持当前执行和等待区的完整性；时间图默认展示全部任务的窗口内执行，色条须可关联到对应任务详情。窄屏 MUST 隐藏冗余文字泳道标签，时间图 MUST 适配可用宽度且不得引入横向滚动；泳道含义须通过无障碍名称保留。
@@ -74,6 +76,7 @@
 - 此行 MUST 聚焦会延后任务的压力、资源占用和准入限制；系统总体健康或与任务等待无关的告警不得直接作为让行状态。悬停须展示对应时间范围、原因、可确认的受影响任务以及可确认的恢复资格时间。
 - 相邻且状态与原因一致的区间 SHOULD 合并。同一时段存在多种限制时须保留原因集合，不得在汇总为单条横条后丢失具体让行原因；未观测的时段不得标为正常。
 - 当前状态 MUST 随后台观测刷新，前端每秒推进仍有效的开放区间；一般累计压力计数或性能时间桶不得冒充精确的状态起止区间。
+- 让行重叠计算 MUST 使用按起止索引的二分或线性扫描，保持 `start < otherEnd && otherStart < end` 的严格相交语义；仅端点相接不得算重叠。覆盖正常区间扣除等待与缺口前 MUST 合并未知区间后线性求差，不得在渲染中对每个区间逐条全量遍历。
 
 ### REQ-TASK-OPS-009 — 持久区间与观测覆盖
 
@@ -268,6 +271,12 @@
 - Method: Rust HTTP/SSE transport tests including revision during a keyset traversal, frontend timeline synchronization tests, and an isolated local service/browser run with at least 13,120 intervals.
 - covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-009`
 - Pass condition: the HTTP baseline starts immediately after subscribing and commits even before the first SSE marker; all baseline rows load in 500-row fixed-watermark keyset pages even if an earlier row is revised during pagination; server-selected 12-hour bounds remain fixed within each traversal; SSE `/v2` contains only `watermark` and `observedAt`; revisions arriving during paging and after reconnect are applied once; expired and legacy offset cursors without a keyset position, including `offset=0`, restart the baseline; absent/null optional timestamps remain compatible, malformed non-null timestamps reject the page while the last complete timeline remains visible and stale; more than 10,000 intervals do not produce an unavailable timeline.
+
+### VER-TASK-OPS-017
+
+- Method: focused frontend regressions, the `task-timeline-pressure-dense` demo and Storybook state, plus production demo Chromium sampling at `1280x900` and `393x852` with a 10-second warm-up, 30-second observation window and revision injection every three seconds.
+- covers: `REQ-TASK-OPS-007`, `REQ-TASK-OPS-008`, and the performance constraints in this Spec.
+- Pass condition: two module-level formatters remain stable; dense waits preserve task identities, two reasons, open intervals, strict overlap semantics and one-second clock progression; history is not recomputed on each tick; complete details appear only on hover/focus and refresh on revision; application main-thread occupancy stays below 20%, no application long task exceeds 200 ms, and hover, keyboard focus and task filtering remain below 100 ms p95 on both viewports.
 
 ## Related ADRs
 

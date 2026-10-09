@@ -681,17 +681,14 @@ export function TaskWorkloadSparkline({
 
   if (backgroundMode) {
     return (
-      <>
-        <div
-          ref={containerRef}
-          className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-hidden"
-          aria-busy={activeVisible && trend == null}
-          data-testid={`task-workload-sparkline-${task.taskKey}`}
-        >
-          {chart}
-        </div>
-        {controls}
-      </>
+      <div
+        ref={containerRef}
+        className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-hidden"
+        aria-busy={activeVisible && trend == null}
+        data-testid={`task-workload-sparkline-${task.taskKey}`}
+      >
+        {chart}
+      </div>
     );
   }
 

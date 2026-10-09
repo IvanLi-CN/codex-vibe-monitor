@@ -3151,8 +3151,119 @@ function demoTaskOperationsRuntime() {
   };
 }
 
-let cachedDemoTaskOperationsTimeline: ReturnType<typeof createDemoTaskOperationsTimeline> | null =
-  null;
+const DEMO_DENSE_DEFERRAL_COUNT = 6_000;
+const DEMO_DENSE_GROUP_COUNT = DEMO_DENSE_DEFERRAL_COUNT / 4;
+const cachedDemoTaskOperationsTimelines = new Map<
+  string,
+  | ReturnType<typeof createDemoTaskOperationsTimeline>
+  | ReturnType<typeof createDenseTaskOperationsTimeline>
+>();
+
+function createDenseTaskOperationsTimeline() {
+  const now = Date.now();
+  const twelveHoursMs = 12 * 60 * 60_000;
+  const iso = (timeMs: number) => new Date(timeMs).toISOString();
+  const active = demoTaskOperationsRuntime().activeRuns[0];
+  const deferralStep = (twelveHoursMs - 120_000) / DEMO_DENSE_GROUP_COUNT;
+  const deferralTasks = [
+    ["long_term_projection", "长期统计投影"],
+    ["timeseries_minute_projection", "分钟时序投影"],
+    ["summary_snapshot", "汇总快照"],
+    ["raw_payload_metrics_inventory", "原始响应指标盘点"],
+  ] as const;
+  const deferrals = Array.from({ length: DEMO_DENSE_GROUP_COUNT }, (_, group) => {
+    const startMs = now - twelveHoursMs + 30_000 + group * deferralStep;
+    const open = group === DEMO_DENSE_GROUP_COUNT - 1;
+    return deferralTasks.map(([taskKey, title], member) => ({
+      segmentId: `demo-pressure-dense-${group}-${member}`,
+      kind: "deferral" as const,
+      taskKey,
+      title,
+      startedAt: iso(startMs),
+      lastObservedAt: iso(open ? now : startMs + 120_000),
+      finishedAt: open ? null : iso(startMs + 120_000),
+      durationMs: open ? null : 120_000,
+      status: open ? "waiting" : "released",
+      triggerKind: null,
+      executionClass: null,
+      reason: member % 2 === 0 ? "resource_busy" : "pressure_cooldown",
+      retryAt: open && member % 2 === 1 ? iso(now + 30_000) : null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: null,
+      sessionId: "demo-pressure-dense",
+      revision: group * 4 + member + 1,
+    }));
+  }).flat();
+  const executionCount = DEMO_TASK_TIMELINE_SEGMENT_COUNT - deferrals.length;
+  const executions = Array.from({ length: executionCount - 1 }, (_, index) => {
+    const startMs =
+      now - twelveHoursMs + 45_000 + index * ((twelveHoursMs - 90_000) / executionCount);
+    const durationMs = 1_000 + (index % 1_500);
+    return {
+      segmentId: `demo-pressure-execution-${index}`,
+      kind: "execution" as const,
+      taskKey: index % 2 ? "summary_snapshot" : "timeseries_minute_projection",
+      title: index % 2 ? "汇总快照" : "分钟时序投影",
+      startedAt: iso(startMs),
+      lastObservedAt: iso(startMs + durationMs),
+      finishedAt: iso(startMs + durationMs),
+      durationMs,
+      status: index % 97 === 0 ? "failed" : "success",
+      triggerKind: "event",
+      executionClass: "p2_derived",
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 20_000 + index,
+      sessionId: "demo-pressure-dense",
+      revision: DEMO_DENSE_DEFERRAL_COUNT + index + 1,
+    };
+  });
+  const segments = [
+    {
+      segmentId: active.executionUid,
+      kind: "execution" as const,
+      taskKey: active.taskKey,
+      title: active.title,
+      startedAt: active.startedAt,
+      lastObservedAt: iso(now),
+      finishedAt: null,
+      durationMs: null,
+      status: "running",
+      triggerKind: active.triggerKind,
+      executionClass: active.executionClass,
+      reason: null,
+      retryAt: null,
+      activeChildTaskKey: null,
+      activeChildTitle: null,
+      managedRunId: 20_000 + executionCount,
+      sessionId: "demo-pressure-dense",
+      revision: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
+    },
+    ...executions,
+    ...deferrals,
+  ];
+  return {
+    observedAt: iso(now),
+    windowStart: iso(now - twelveHoursMs),
+    windowEnd: iso(now),
+    watermark: DEMO_TASK_TIMELINE_SEGMENT_COUNT,
+    segments,
+    coverage: [
+      {
+        sessionId: "demo-pressure-dense",
+        startedAt: iso(now - twelveHoursMs),
+        lastSeenAt: iso(now),
+        endedAt: null,
+        droppedEvents: 0,
+      },
+    ],
+    nextCursor: null,
+    resetRequired: false,
+  };
+}
 
 function createDemoTaskOperationsTimeline() {
   const now = Date.now();
@@ -3328,8 +3439,15 @@ function createDemoTaskOperationsTimeline() {
 }
 
 function demoTaskOperationsTimeline() {
-  cachedDemoTaskOperationsTimeline ??= createDemoTaskOperationsTimeline();
-  return cachedDemoTaskOperationsTimeline;
+  const scene = demoModel.snapshot.scene;
+  const cached = cachedDemoTaskOperationsTimelines.get(scene);
+  if (cached) return cached;
+  const snapshot =
+    scene === "task-timeline-pressure-dense"
+      ? createDenseTaskOperationsTimeline()
+      : createDemoTaskOperationsTimeline();
+  cachedDemoTaskOperationsTimelines.set(scene, snapshot);
+  return snapshot;
 }
 
 function demoTaskOperationsTimelinePage(url: URL) {

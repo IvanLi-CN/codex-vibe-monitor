@@ -262,6 +262,7 @@ describe("SystemTasksPage", () => {
     expect(host?.textContent).toContain("08:00:01");
     expect(within(host as HTMLElement).getAllByText("第 1 位 · 手动")).toHaveLength(1);
     expect(host?.textContent).toContain("raw_compression");
+    expect(host?.textContent).not.toContain("查看运行计量");
   });
 
   it("shows manual and scheduled task modes", async () => {

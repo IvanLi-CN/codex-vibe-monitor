@@ -1,4 +1,13 @@
-import { type CSSProperties, type JSX, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type JSX,
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Link } from "react-router-dom";
 import type {
   CurrentTaskExecution,
@@ -27,6 +36,15 @@ type ExecutionBar = {
   active: boolean;
 };
 
+type ExecutionLayout = {
+  segment: TaskTimelineSegment;
+  startMs: number;
+  endMs: number;
+  lane: number;
+  active: boolean;
+  current: boolean;
+};
+
 type Band = {
   startMs: number;
   endMs: number;
@@ -44,32 +62,60 @@ type DensityGroup = {
   endMs: number;
 };
 
+type PositionedDeferral = {
+  segment: TaskTimelineSegment;
+  startMs: number;
+  endMs: number;
+  order: number;
+};
+
+type DeferralRenderGroup = {
+  item: PositionedDeferral;
+  members: PositionedDeferral[];
+};
+
+type DeferralIndex = {
+  sorted: PositionedDeferral[];
+  starts: number[];
+  prefixMaxEnd: number[];
+  overlapCounts: Map<string, number>;
+  byId: Map<string, PositionedDeferral>;
+};
+
+type CachedDetail = {
+  signature: string;
+  title: string;
+};
+
 function timestamp(value: string | null | undefined, fallback: number): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+const compactTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: "Asia/Shanghai",
+});
+const exactTimeFormatter = new Intl.DateTimeFormat("zh-CN", {
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hour12: false,
+  timeZone: "Asia/Shanghai",
+});
+
 function compactTime(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(value));
+  return compactTimeFormatter.format(new Date(value));
 }
 
 function exactTime(value: number): string {
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(new Date(value));
+  return exactTimeFormatter.format(new Date(value));
 }
 
 function durationLabel(durationMs: number): string {
@@ -171,6 +217,186 @@ function packLanes<T extends { startMs: number; endMs: number }>(
     });
 }
 
+function buildExecutionDensity(
+  bars: ExecutionBar[],
+  chartWidth: number,
+  windowStart: number,
+): { groups: DensityGroup[]; singles: ExecutionBar[] } {
+  const groups: DensityGroup[] = [];
+  const singles: ExecutionBar[] = [];
+  const barsByLane = new Map<number, ExecutionBar[]>();
+  const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+  for (const bar of bars) {
+    const laneBars = barsByLane.get(bar.lane) ?? [];
+    laneBars.push(bar);
+    barsByLane.set(bar.lane, laneBars);
+  }
+  for (const [lane, laneBars] of barsByLane) {
+    laneBars.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+    let members: ExecutionBar[] = [];
+    let groupStartMs = 0;
+    let groupEndMs = 0;
+    const finishGroup = () => {
+      if (members.length === 1) {
+        singles.push(members[0]);
+      } else if (members.length > 1) {
+        const taskKey = members[0].segment.taskKey;
+        groups.push({
+          key: `${lane}:${members[0].segment.segmentId}`,
+          taskKey: members.every((member) => member.segment.taskKey === taskKey) ? taskKey : null,
+          lane,
+          members,
+          startMs: groupStartMs,
+          endMs: groupEndMs,
+        });
+      }
+      members = [];
+    };
+
+    for (const bar of laneBars) {
+      const barX = x(bar.startMs);
+      const groupStartX = x(groupStartMs);
+      const groupEndX = x(groupEndMs);
+      const groupWidth = members.length > 1 ? DENSITY_GROUP_MIN_WIDTH : MIN_BAR_WIDTH;
+      const visibleGroupEndX = members.length
+        ? Math.max(groupEndX, groupStartX + groupWidth)
+        : Number.NEGATIVE_INFINITY;
+      if (members.length > 0 && barX > visibleGroupEndX) finishGroup();
+      if (members.length === 0) {
+        groupStartMs = bar.startMs;
+        groupEndMs = bar.endMs;
+      } else {
+        groupEndMs = Math.max(groupEndMs, bar.endMs);
+      }
+      members.push(bar);
+    }
+    finishGroup();
+  }
+  return { groups, singles };
+}
+
+function buildDeferralRenderGroups(items: PositionedDeferral[]): DeferralRenderGroup[] {
+  const groups = new Map<string, DeferralRenderGroup>();
+  for (const item of items) {
+    const key = `${item.startMs}:${item.endMs}`;
+    const existing = groups.get(key);
+    if (existing) existing.members.push(item);
+    else groups.set(key, { item, members: [item] });
+  }
+  return [...groups.values()].flatMap((group) =>
+    group.members.length >= 4 ? [group] : group.members.map((item) => ({ item, members: [item] })),
+  );
+}
+
+function lowerBound(values: number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] < target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function upperBound(values: number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (values[middle] <= target) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function mergeIntervals(
+  intervals: Array<{ startMs: number; endMs: number }>,
+): Array<{ startMs: number; endMs: number }> {
+  const sorted = intervals
+    .filter((interval) => interval.endMs > interval.startMs)
+    .sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
+  const merged: Array<{ startMs: number; endMs: number }> = [];
+  for (const interval of sorted) {
+    const previous = merged.at(-1);
+    if (!previous || interval.startMs > previous.endMs) {
+      merged.push({ ...interval });
+    } else {
+      previous.endMs = Math.max(previous.endMs, interval.endMs);
+    }
+  }
+  return merged;
+}
+
+function subtractIntervals(
+  interval: { startMs: number; endMs: number },
+  blockers: Array<{ startMs: number; endMs: number }>,
+): Array<{ startMs: number; endMs: number }> {
+  const remaining: Array<{ startMs: number; endMs: number }> = [];
+  let cursor = interval.startMs;
+  for (const blocker of blockers) {
+    if (blocker.endMs <= cursor) continue;
+    if (blocker.startMs >= interval.endMs) break;
+    if (blocker.startMs > cursor) {
+      remaining.push({ startMs: cursor, endMs: Math.min(blocker.startMs, interval.endMs) });
+    }
+    cursor = Math.max(cursor, blocker.endMs);
+    if (cursor >= interval.endMs) break;
+  }
+  if (cursor < interval.endMs) remaining.push({ startMs: cursor, endMs: interval.endMs });
+  return remaining;
+}
+
+function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
+  const sorted = [...items].sort(
+    (left, right) => left.startMs - right.startMs || left.order - right.order,
+  );
+  const starts = sorted.map((item) => item.startMs);
+  const endSorted = [...sorted].sort(
+    (left, right) => left.endMs - right.endMs || left.order - right.order,
+  );
+  const ends = endSorted.map((item) => item.endMs);
+  const prefixMaxEnd: number[] = [];
+  let maxEnd = Number.NEGATIVE_INFINITY;
+  for (const item of sorted) {
+    maxEnd = Math.max(maxEnd, item.endMs);
+    prefixMaxEnd.push(maxEnd);
+  }
+  const overlapCounts = new Map<string, number>();
+  for (const item of sorted) {
+    const startsBeforeEnd = lowerBound(starts, item.endMs);
+    const endsAtOrBeforeStart = upperBound(ends, item.startMs);
+    overlapCounts.set(
+      item.segment.segmentId,
+      Math.max(0, startsBeforeEnd - endsAtOrBeforeStart - 1),
+    );
+  }
+  return {
+    sorted,
+    starts,
+    prefixMaxEnd,
+    overlapCounts,
+    byId: new Map(sorted.map((item) => [item.segment.segmentId, item])),
+  };
+}
+
+function overlappingDeferrals(
+  item: PositionedDeferral,
+  index: DeferralIndex,
+): PositionedDeferral[] {
+  const firstPossible = upperBound(index.prefixMaxEnd, item.startMs);
+  const beforeEnd = lowerBound(index.starts, item.endMs);
+  return index.sorted
+    .slice(firstPossible, beforeEnd)
+    .filter(
+      (other) =>
+        other.segment.segmentId !== item.segment.segmentId &&
+        other.startMs < item.endMs &&
+        other.endMs > item.startMs,
+    )
+    .sort((left, right) => left.order - right.order);
+}
+
 function mergeCoverage(
   coverage: TaskTimelineCoverage[],
   nowMs: number,
@@ -231,6 +457,229 @@ function executionTitle(bar: ExecutionBar): string {
     .join("；");
 }
 
+function deferralDetail(item: PositionedDeferral): string {
+  const { segment } = item;
+  return `${segment.title}；${reasonLabel(segment.reason)}；开始 ${exactTime(item.startMs)}；${segment.finishedAt ? `恢复 ${exactTime(timestamp(segment.finishedAt, item.endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${exactTime(timestamp(segment.retryAt, item.endMs))}` : "；重试时间未知"}`;
+}
+
+function deferralTitle(item: PositionedDeferral, overlaps: PositionedDeferral[]): string {
+  return [item, ...overlaps].map(deferralDetail).join("\n");
+}
+
+function deferralSummary(
+  item: PositionedDeferral,
+  overlapCount: number,
+  members: PositionedDeferral[] = [],
+): string {
+  const overlapLabel = overlapCount ? `与 ${overlapCount} 条任务让行重叠` : "无重叠任务让行";
+  const reasons = [
+    ...new Set([item, ...members].map((member) => reasonLabel(member.segment.reason))),
+  ];
+  const concurrentLabel =
+    members.length > 1 ? `；并发 ${members.length} 条任务让行（${reasons.join("、")}）` : "";
+  return `${item.segment.title}；${reasonLabel(item.segment.reason)}${concurrentLabel}；${overlapLabel}；选择查看详情`;
+}
+
+type ExecutionLayerProps = {
+  singles: ExecutionBar[];
+  groups: DensityGroup[];
+  chartWidth: number;
+  windowStart: number;
+  dark: boolean;
+  taskByKey: Map<string, ManagedTask>;
+  getTitle: (bar: ExecutionBar) => string;
+  onSelect: (bars: ExecutionBar[]) => void;
+};
+
+const ExecutionLayer = memo(function ExecutionLayer({
+  singles,
+  groups,
+  chartWidth,
+  windowStart,
+  dark,
+  taskByKey,
+  getTitle,
+  onSelect,
+}: ExecutionLayerProps): JSX.Element {
+  const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+  return (
+    <>
+      {singles.map((bar) => {
+        const barX = x(bar.startMs);
+        const barY = AXIS_HEIGHT + bar.lane * LANE_HEIGHT + 3;
+        const width = Math.max(MIN_BAR_WIDTH, x(bar.endMs) - barX);
+        const color = managedTaskColor(taskByKey.get(bar.segment.taskKey), dark);
+        const appearance = outcomeAppearance(bar.segment.status, dark);
+        const title = getTitle(bar);
+        return (
+          <g
+            key={bar.segment.segmentId}
+            aria-label={title}
+            className="cursor-pointer outline-none focus-visible:opacity-75"
+            onClick={() => onSelect([bar])}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect([bar]);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <rect
+              x={barX}
+              y={barY}
+              width={width}
+              height={11}
+              rx={2}
+              fill={color}
+              fillOpacity={bar.active ? 1 : 0.82}
+              stroke={appearance?.stroke ?? (bar.active ? color : "none")}
+              strokeDasharray={appearance?.dashArray}
+              strokeWidth={appearance ? 1.5 : bar.active ? 1 : 0}
+            />
+            <title>{title}</title>
+          </g>
+        );
+      })}
+      {groups.map((group) => {
+        const barX = x(group.startMs);
+        const barY = AXIS_HEIGHT + group.lane * LANE_HEIGHT + 3;
+        const width = Math.max(DENSITY_GROUP_MIN_WIDTH, x(group.endMs) - barX);
+        const color = group.taskKey
+          ? managedTaskColor(taskByKey.get(group.taskKey), dark)
+          : dark
+            ? "#94a3b8"
+            : "#64748b";
+        const outcome = aggregateOutcome(group.members);
+        const appearance = outcomeAppearance(outcome.status, dark);
+        const groupTitle = group.taskKey
+          ? (taskByKey.get(group.taskKey)?.title ?? group.taskKey)
+          : "多任务";
+        return (
+          <g
+            key={group.key}
+            aria-label={`${group.members.length} 次${groupTitle}执行；${outcome.summary}；选择查看详情`}
+            className="cursor-pointer outline-none focus-visible:opacity-75"
+            onClick={() => onSelect(group.members)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(group.members);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <rect
+              x={barX}
+              y={barY}
+              width={width}
+              height={11}
+              rx={2}
+              fill={color}
+              stroke={appearance?.stroke ?? "none"}
+              strokeDasharray={appearance?.dashArray}
+              strokeWidth={appearance ? 1.5 : 0}
+            />
+            <text x={barX + width + 2} y={barY + 9} fill="currentColor" fontSize="9">
+              ×{group.members.length}
+            </text>
+            <title>{`${group.members.length} 次密集执行；选择查看每次执行`}</title>
+          </g>
+        );
+      })}
+    </>
+  );
+});
+
+type DeferralLayerProps = {
+  groups: DeferralRenderGroup[];
+  chartWidth: number;
+  windowStart: number;
+  pressureTop: number;
+  overlapCounts: Map<string, number>;
+  onSelect: (segment: TaskTimelineSegment) => void;
+  onActivate: (item: PositionedDeferral, node: SVGGElement, members: PositionedDeferral[]) => void;
+  onDeactivate: (
+    item: PositionedDeferral,
+    node: SVGGElement,
+    members: PositionedDeferral[],
+  ) => void;
+};
+
+const DeferralLayer = memo(function DeferralLayer({
+  groups,
+  chartWidth,
+  windowStart,
+  pressureTop,
+  overlapCounts,
+  onSelect,
+  onActivate,
+  onDeactivate,
+}: DeferralLayerProps): JSX.Element {
+  const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+  return (
+    <>
+      {groups.map(({ item, members }) => {
+        const { segment, startMs, endMs } = item;
+        const resourceBusy = segment.reason === "resource_busy";
+        const color = resourceBusy ? "#d08700" : "#d63850";
+        const bandY = pressureTop + 2;
+        const bandX = x(startMs);
+        const width = Math.max(MIN_BAR_WIDTH, x(endMs) - bandX);
+        const overlapCount = overlapCounts.get(segment.segmentId) ?? 0;
+        const title = deferralSummary(item, overlapCount, members);
+        return (
+          <g
+            key={segment.segmentId}
+            data-task-deferral-id={segment.segmentId}
+            aria-label={title}
+            className="cursor-pointer outline-none focus-visible:opacity-75"
+            onBlur={(event) => {
+              if (
+                !(event.relatedTarget instanceof Node) ||
+                !event.currentTarget.contains(event.relatedTarget)
+              ) {
+                onDeactivate(item, event.currentTarget, members);
+              }
+            }}
+            onClick={() => onSelect(segment)}
+            onFocus={(event) => onActivate(item, event.currentTarget, members)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onSelect(segment);
+              }
+            }}
+            onMouseEnter={(event) => onActivate(item, event.currentTarget, members)}
+            onMouseLeave={(event) => {
+              if (document.activeElement !== event.currentTarget) {
+                onDeactivate(item, event.currentTarget, members);
+              }
+            }}
+            role="button"
+            tabIndex={0}
+          >
+            <rect
+              x={bandX}
+              y={bandY}
+              width={width}
+              height={8}
+              rx={2}
+              fill={color}
+              fillOpacity={overlapCount ? 0.55 : 1}
+              stroke={color}
+              strokeWidth={1}
+            />
+            <title>{title}</title>
+          </g>
+        );
+      })}
+    </>
+  );
+});
+
 export function TaskTimelineChart({
   tasks,
   executions,
@@ -252,6 +701,13 @@ export function TaskTimelineChart({
 }): JSX.Element {
   const [selectedExecutions, setSelectedExecutions] = useState<ExecutionBar[] | null>(null);
   const [selectedDeferral, setSelectedDeferral] = useState<TaskTimelineSegment | null>(null);
+  const activeDeferralIdRef = useRef<string | null>(null);
+  const activeDeferralNodeRef = useRef<SVGGElement | null>(null);
+  const deferralIndexRef = useRef<DeferralIndex | null>(null);
+  const deferralTitleTimerRef = useRef<number | null>(null);
+  const staticTimelineLayerRef = useRef<SVGGElement>(null);
+  const executionDetailCacheRef = useRef(new Map<string, CachedDetail>());
+  const deferralDetailCacheRef = useRef(new Map<string, CachedDetail>());
   const timelineContainerRef = useRef<HTMLDivElement>(null);
   const [chartWidth, setChartWidth] = useState(DEFAULT_CHART_WIDTH);
   const dark =
@@ -259,7 +715,27 @@ export function TaskTimelineChart({
     (document.documentElement.getAttribute("data-color-mode") === "dark" ||
       document.documentElement.getAttribute("data-theme") === "vibe-dark");
   const windowStart = nowMs - TIMELINE_WINDOW_MS;
+  const modelWindowStartRef = useRef(windowStart);
   const taskByKey = useMemo(() => new Map(tasks.map((task) => [task.taskKey, task])), [tasks]);
+
+  useEffect(() => {
+    const currentIds = new Set(executions.map((segment) => segment.segmentId));
+    for (const cache of [executionDetailCacheRef.current, deferralDetailCacheRef.current]) {
+      for (const id of cache.keys()) {
+        if (!currentIds.has(id)) cache.delete(id);
+      }
+    }
+  }, [executions]);
+
+  useEffect(
+    () => () => {
+      if (deferralTitleTimerRef.current != null) {
+        window.clearTimeout(deferralTitleTimerRef.current);
+        deferralTitleTimerRef.current = null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     const container = timelineContainerRef.current;
@@ -284,7 +760,14 @@ export function TaskTimelineChart({
     return () => observer.disconnect();
   }, []);
 
-  const executionBars = useMemo(() => {
+  useEffect(() => {
+    const layer = staticTimelineLayerRef.current;
+    if (!layer) return;
+    const offset = ((modelWindowStartRef.current - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
+    layer.setAttribute("transform", `translate(${offset} 0)`);
+  }, [chartWidth, windowStart]);
+
+  const executionLayout = useMemo<ExecutionLayout[]>(() => {
     const byUid = new Map<string, TaskTimelineSegment>();
     for (const segment of executions) {
       if (segment.kind === "execution") byUid.set(segment.segmentId, segment);
@@ -293,8 +776,8 @@ export function TaskTimelineChart({
       const prior = byUid.get(run.executionUid);
       if (prior && prior.status !== "running") continue;
       const observedAt = Math.max(
-        timestamp(runtimeObservedAt, timestamp(run.startedAt, nowMs)),
-        timestamp(prior?.lastObservedAt, timestamp(run.startedAt, nowMs)),
+        timestamp(runtimeObservedAt, timestamp(run.startedAt, 0)),
+        timestamp(prior?.lastObservedAt, timestamp(run.startedAt, 0)),
       );
       byUid.set(run.executionUid, {
         segmentId: run.executionUid,
@@ -321,45 +804,70 @@ export function TaskTimelineChart({
     const currentUids = new Set(activeRuns.map((run) => run.executionUid));
     const activeUids = new Set(runtimeFresh ? activeRuns.map((run) => run.executionUid) : []);
     const packed = packLanes(
-      [...byUid.values()]
-        .map((segment) => {
-          const startMs = timestamp(segment.startedAt, nowMs);
-          const isActive = activeUids.has(segment.segmentId);
-          const displaySegment =
-            !isActive && segment.status === "running" && !segment.finishedAt
-              ? { ...segment, status: "unknown" }
-              : segment;
-          const endedMs = segment.finishedAt
-            ? timestamp(segment.finishedAt, nowMs)
-            : isActive
-              ? nowMs
-              : currentUids.has(segment.segmentId)
-                ? Math.min(nowMs, runtimeBoundaryMs)
-                : timestamp(segment.lastObservedAt, startMs);
-          return {
-            segment: displaySegment,
-            active: isActive,
-            startMs: Math.max(windowStart, startMs),
-            endMs: Math.min(nowMs, Math.max(startMs, endedMs)),
-            realStartMs: startMs,
-          };
-        })
-        .filter((item) => item.endMs >= windowStart && item.realStartMs <= nowMs)
-        .map(({ realStartMs: _realStartMs, ...item }) => item),
+      [...byUid.values()].map((segment) => {
+        const startMs = timestamp(segment.startedAt, timestamp(runtimeObservedAt, 0));
+        const isActive = activeUids.has(segment.segmentId);
+        const displaySegment =
+          !isActive && segment.status === "running" && !segment.finishedAt
+            ? { ...segment, status: "unknown" }
+            : segment;
+        const endMs = segment.finishedAt
+          ? timestamp(segment.finishedAt, startMs)
+          : timestamp(segment.lastObservedAt, startMs);
+        return {
+          segment: displaySegment,
+          active: isActive,
+          current: currentUids.has(segment.segmentId),
+          startMs,
+          endMs: isActive ? Number.POSITIVE_INFINITY : Math.max(startMs, endMs),
+        };
+      }),
     );
-    return packed.map((item) => ({
-      ...item,
-      startMs: Math.max(windowStart, item.startMs),
+    return packed.map(({ segment, active, current, startMs, endMs, lane }) => ({
+      segment,
+      active,
+      current,
+      startMs,
+      endMs,
+      lane,
     }));
-  }, [
-    activeRuns,
-    executions,
-    nowMs,
-    runtimeBoundaryMs,
-    runtimeFresh,
-    runtimeObservedAt,
-    windowStart,
-  ]);
+  }, [activeRuns, executions, runtimeFresh, runtimeObservedAt]);
+
+  const staticExecutionBars = useMemo(() => {
+    const bars: ExecutionBar[] = [];
+    const staticWindowStart = modelWindowStartRef.current;
+    const staticWindowEnd = staticWindowStart + TIMELINE_WINDOW_MS;
+    for (const item of executionLayout) {
+      if (item.active || item.current) continue;
+      const endMs = item.endMs;
+      if (endMs < staticWindowStart || item.startMs > staticWindowEnd) continue;
+      bars.push({
+        segment: item.segment,
+        active: false,
+        lane: item.lane,
+        startMs: Math.max(staticWindowStart, item.startMs),
+        endMs: Math.min(staticWindowEnd, Math.max(item.startMs, endMs)),
+      });
+    }
+    return bars;
+  }, [executionLayout]);
+
+  const dynamicExecutionBars = useMemo(() => {
+    const bars: ExecutionBar[] = [];
+    for (const item of executionLayout) {
+      if (!item.active && !item.current) continue;
+      const endMs = item.active ? nowMs : Math.min(nowMs, runtimeBoundaryMs, item.endMs);
+      if (endMs < windowStart || item.startMs > nowMs) continue;
+      bars.push({
+        segment: item.segment,
+        active: item.active,
+        lane: item.lane,
+        startMs: Math.max(windowStart, item.startMs),
+        endMs: Math.min(nowMs, Math.max(item.startMs, endMs)),
+      });
+    }
+    return bars;
+  }, [executionLayout, nowMs, runtimeBoundaryMs, windowStart]);
 
   const deferrals = useMemo(
     () => executions.filter((segment) => segment.kind === "deferral"),
@@ -393,51 +901,94 @@ export function TaskTimelineChart({
       lane: 0,
     });
 
-  const positionedDeferrals = deferrals
-    .map((segment) => {
-      const startMs = timestamp(segment.startedAt, nowMs);
-      const active = segment.status === "waiting";
-      const endMs = segment.finishedAt
-        ? timestamp(segment.finishedAt, nowMs)
-        : active && runtimeFresh
-          ? nowMs
-          : active
-            ? Math.min(nowMs, runtimeBoundaryMs)
-            : timestamp(segment.lastObservedAt, startMs);
-      return {
-        segment,
-        startMs: Math.max(windowStart, startMs),
-        endMs: Math.min(nowMs, endMs),
-      };
-    })
-    .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs);
+  const staticPositionedDeferrals = useMemo<PositionedDeferral[]>(() => {
+    const staticWindowStart = modelWindowStartRef.current;
+    const staticWindowEnd = staticWindowStart + TIMELINE_WINDOW_MS;
+    return deferrals
+      .map((segment, order) => {
+        const startMs = timestamp(segment.startedAt, staticWindowStart);
+        const active = segment.status === "waiting";
+        const live = active && !segment.finishedAt && runtimeFresh;
+        const endMs = segment.finishedAt
+          ? timestamp(segment.finishedAt, startMs)
+          : live
+            ? Number.POSITIVE_INFINITY
+            : active
+              ? Math.min(staticWindowEnd, runtimeBoundaryMs)
+              : timestamp(segment.lastObservedAt, startMs);
+        return {
+          segment,
+          startMs: Math.max(staticWindowStart, startMs),
+          endMs: Math.min(staticWindowEnd, endMs),
+          order,
+          live,
+        };
+      })
+      .filter(
+        (item) => !item.live && item.endMs >= staticWindowStart && item.startMs <= staticWindowEnd,
+      )
+      .map(({ live: _live, ...item }) => item);
+  }, [deferrals, runtimeBoundaryMs, runtimeFresh]);
+  const livePositionedDeferrals = useMemo<PositionedDeferral[]>(
+    () =>
+      deferrals
+        .map((segment, order) => {
+          const startMs = timestamp(segment.startedAt, nowMs);
+          const live = segment.status === "waiting" && !segment.finishedAt && runtimeFresh;
+          return {
+            segment,
+            startMs: Math.max(windowStart, startMs),
+            endMs: Math.min(nowMs, live ? nowMs : timestamp(segment.lastObservedAt, startMs)),
+            order,
+            live,
+          };
+        })
+        .filter((item) => item.live && item.endMs >= windowStart && item.startMs <= nowMs)
+        .map(({ live: _live, ...item }) => item),
+    [deferrals, nowMs, runtimeFresh, windowStart],
+  );
+  const positionedDeferrals = useMemo(
+    () => [...staticPositionedDeferrals, ...livePositionedDeferrals],
+    [livePositionedDeferrals, staticPositionedDeferrals],
+  );
+  const deferralIndex = useMemo(
+    () => buildDeferralIndex(positionedDeferrals),
+    [positionedDeferrals],
+  );
+  deferralIndexRef.current = deferralIndex;
+  const staticDeferralIndex = useMemo(
+    () => buildDeferralIndex(staticPositionedDeferrals),
+    [staticPositionedDeferrals],
+  );
+  const staticDeferralRenderGroups = useMemo(
+    () => buildDeferralRenderGroups(staticPositionedDeferrals),
+    [staticPositionedDeferrals],
+  );
+  const liveDeferralRenderGroups = useMemo(
+    () => buildDeferralRenderGroups(livePositionedDeferrals),
+    [livePositionedDeferrals],
+  );
+  const explicitCoverageIntervals = useMemo(
+    () =>
+      explicitCoverageGaps
+        .map((gap) => ({
+          startMs: Math.max(windowStart, timestamp(gap.startedAt, nowMs)),
+          endMs: Math.min(nowMs, timestamp(gap.finishedAt, timestamp(gap.lastObservedAt, nowMs))),
+        }))
+        .filter((interval) => interval.endMs > interval.startMs),
+    [explicitCoverageGaps, nowMs, windowStart],
+  );
+  const unknownCoverageIntervals = useMemo(
+    () =>
+      mergeIntervals([
+        ...positionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
+        ...explicitCoverageIntervals,
+      ]),
+    [explicitCoverageIntervals, positionedDeferrals],
+  );
   const visibleCoverageBands: Band[] = coverageBands.flatMap((band): Band[] => {
     if (band.status === "gap") return [band];
-    let clearIntervals = [{ startMs: band.startMs, endMs: band.endMs }];
-    const unknownIntervals = [
-      ...positionedDeferrals.map(({ startMs, endMs }) => ({ startMs, endMs })),
-      ...explicitCoverageGaps.map((gap) => ({
-        startMs: Math.max(windowStart, timestamp(gap.startedAt, nowMs)),
-        endMs: Math.min(nowMs, timestamp(gap.finishedAt, timestamp(gap.lastObservedAt, nowMs))),
-      })),
-    ];
-    for (const deferral of unknownIntervals) {
-      const next: Array<{ startMs: number; endMs: number }> = [];
-      for (const interval of clearIntervals) {
-        if (deferral.endMs <= interval.startMs || deferral.startMs >= interval.endMs) {
-          next.push(interval);
-          continue;
-        }
-        if (deferral.startMs > interval.startMs) {
-          next.push({ startMs: interval.startMs, endMs: deferral.startMs });
-        }
-        if (deferral.endMs < interval.endMs) {
-          next.push({ startMs: deferral.endMs, endMs: interval.endMs });
-        }
-      }
-      clearIntervals = next;
-    }
-    return clearIntervals.map((interval) => ({
+    return subtractIntervals(band, unknownCoverageIntervals).map((interval) => ({
       ...interval,
       status: "normal",
       lane: 0,
@@ -453,62 +1004,137 @@ export function TaskTimelineChart({
     })),
   );
 
-  const laneCount = Math.max(1, ...executionBars.map((item) => item.lane + 1));
+  const laneCount = Math.max(1, ...executionLayout.map((item) => item.lane + 1));
   const pressureTop = AXIS_HEIGHT + laneCount * LANE_HEIGHT + 18;
   const chartHeight = pressureTop + 12 + 12;
   const x = (time: number) => ((time - windowStart) / TIMELINE_WINDOW_MS) * chartWidth;
   const timeAxisHours =
     chartWidth < 220 ? [0, 12] : chartWidth < 520 ? [0, 6, 12] : TIME_AXIS_HOURS;
-  const executionDensityGroups: DensityGroup[] = [];
-  const singleExecutionBars: ExecutionBar[] = [];
-  const barsByLane = new Map<number, ExecutionBar[]>();
-  for (const bar of executionBars) {
-    const laneBars = barsByLane.get(bar.lane) ?? [];
-    laneBars.push(bar);
-    barsByLane.set(bar.lane, laneBars);
-  }
-  for (const [lane, laneBars] of barsByLane) {
-    laneBars.sort((left, right) => left.startMs - right.startMs || left.endMs - right.endMs);
-    let members: ExecutionBar[] = [];
-    let groupStartMs = 0;
-    let groupEndMs = 0;
-    const finishGroup = () => {
-      if (members.length === 1) {
-        singleExecutionBars.push(members[0]);
-      } else if (members.length > 1) {
-        const taskKey = members[0].segment.taskKey;
-        executionDensityGroups.push({
-          key: `${lane}:${members[0].segment.segmentId}`,
-          taskKey: members.every((member) => member.segment.taskKey === taskKey) ? taskKey : null,
-          lane,
-          members,
-          startMs: groupStartMs,
-          endMs: groupEndMs,
-        });
-      }
-      members = [];
-    };
+  const staticExecutionDensity = useMemo(
+    () => buildExecutionDensity(staticExecutionBars, chartWidth, modelWindowStartRef.current),
+    [chartWidth, staticExecutionBars],
+  );
+  const dynamicExecutionDensity = useMemo(
+    () => buildExecutionDensity(dynamicExecutionBars, chartWidth, windowStart),
+    [chartWidth, dynamicExecutionBars, windowStart],
+  );
+  const cachedExecutionTitle = useCallback((bar: ExecutionBar): string => {
+    if (bar.active) return executionTitle(bar);
+    const signature = `${bar.segment.revision}:${bar.segment.status}:${bar.segment.finishedAt ?? bar.segment.lastObservedAt}:${bar.endMs}`;
+    const cached = executionDetailCacheRef.current.get(bar.segment.segmentId);
+    if (cached?.signature === signature) return cached.title;
+    const title = executionTitle(bar);
+    executionDetailCacheRef.current.set(bar.segment.segmentId, { signature, title });
+    return title;
+  }, []);
 
-    for (const bar of laneBars) {
-      const barX = x(bar.startMs);
-      const groupStartX = x(groupStartMs);
-      const groupEndX = x(groupEndMs);
-      const groupWidth = members.length > 1 ? DENSITY_GROUP_MIN_WIDTH : MIN_BAR_WIDTH;
-      const visibleGroupEndX = members.length
-        ? Math.max(groupEndX, groupStartX + groupWidth)
-        : Number.NEGATIVE_INFINITY;
-      if (members.length > 0 && barX > visibleGroupEndX) finishGroup();
-      if (members.length === 0) {
-        groupStartMs = bar.startMs;
-        groupEndMs = bar.endMs;
-      } else {
-        groupEndMs = Math.max(groupEndMs, bar.endMs);
+  const cachedDeferralTitle = useCallback(
+    (item: PositionedDeferral, overlaps: PositionedDeferral[]): string => {
+      const signature = [
+        item.segment.revision,
+        item.startMs,
+        item.endMs,
+        ...overlaps.flatMap((overlap) => [overlap.segment.segmentId, overlap.segment.revision]),
+      ].join(":");
+      const cached = deferralDetailCacheRef.current.get(item.segment.segmentId);
+      if (cached?.signature === signature) return cached.title;
+      const title = deferralTitle(item, overlaps);
+      deferralDetailCacheRef.current.set(item.segment.segmentId, { signature, title });
+      return title;
+    },
+    [],
+  );
+
+  const updateDeferralNode = useCallback(
+    (
+      node: SVGGElement,
+      item: PositionedDeferral,
+      expanded: boolean,
+      members: PositionedDeferral[] = [],
+    ) => {
+      const index = deferralIndexRef.current;
+      if (!index) return;
+      const summary = deferralSummary(
+        item,
+        index.overlapCounts.get(item.segment.segmentId) ?? 0,
+        members,
+      );
+      if (!expanded) node.setAttribute("aria-label", summary);
+      if (deferralTitleTimerRef.current != null) {
+        window.clearTimeout(deferralTitleTimerRef.current);
+        deferralTitleTimerRef.current = null;
       }
-      members.push(bar);
+      const titleElement = node.querySelector("title");
+      if (!titleElement) return;
+      if (!expanded) {
+        titleElement.textContent = summary;
+        return;
+      }
+      deferralTitleTimerRef.current = window.setTimeout(() => {
+        const currentIndex = deferralIndexRef.current;
+        const currentItem = currentIndex?.byId.get(item.segment.segmentId) ?? item;
+        if (expanded) {
+          if (
+            activeDeferralNodeRef.current === node &&
+            activeDeferralIdRef.current === item.segment.segmentId &&
+            currentIndex
+          ) {
+            const detail = cachedDeferralTitle(
+              currentItem,
+              overlappingDeferrals(currentItem, currentIndex),
+            );
+            node.setAttribute("aria-label", detail);
+            titleElement.textContent = detail;
+          }
+        } else if (activeDeferralNodeRef.current !== node) {
+          titleElement.textContent = summary;
+        }
+        deferralTitleTimerRef.current = null;
+      }, 80);
+    },
+    [cachedDeferralTitle],
+  );
+
+  const activateDeferral = useCallback(
+    (item: PositionedDeferral, node: SVGGElement, members: PositionedDeferral[]) => {
+      activeDeferralIdRef.current = item.segment.segmentId;
+      activeDeferralNodeRef.current = node;
+      updateDeferralNode(node, item, true, members);
+    },
+    [updateDeferralNode],
+  );
+
+  const deactivateDeferral = useCallback(
+    (item: PositionedDeferral, node: SVGGElement, members: PositionedDeferral[]) => {
+      if (activeDeferralIdRef.current !== item.segment.segmentId) return;
+      activeDeferralIdRef.current = null;
+      activeDeferralNodeRef.current = null;
+      updateDeferralNode(node, item, false, members);
+    },
+    [updateDeferralNode],
+  );
+
+  const selectExecutions = useCallback((bars: ExecutionBar[]) => {
+    setSelectedExecutions(bars);
+    setSelectedDeferral(null);
+  }, []);
+  const selectDeferral = useCallback((segment: TaskTimelineSegment) => {
+    setSelectedDeferral(segment);
+    setSelectedExecutions(null);
+  }, []);
+
+  useEffect(() => {
+    const activeId = activeDeferralIdRef.current;
+    const node = activeDeferralNodeRef.current;
+    if (!activeId || !node) return;
+    const item = deferralIndex.byId.get(activeId);
+    if (!item) {
+      activeDeferralIdRef.current = null;
+      activeDeferralNodeRef.current = null;
+      return;
     }
-    finishGroup();
-  }
-  const densityGroups = executionDensityGroups;
+    updateDeferralNode(node, item, true);
+  }, [deferralIndex, updateDeferralNode]);
 
   const selectedDescription = selectedExecutions
     ? `${selectedExecutions.length} 次任务执行`
@@ -675,153 +1301,48 @@ export function TaskTimelineChart({
                 </title>
               </rect>
             ))}
-            {singleExecutionBars.map((bar) => {
-              const barX = x(bar.startMs);
-              const barY = AXIS_HEIGHT + bar.lane * LANE_HEIGHT + 3;
-              const width = Math.max(MIN_BAR_WIDTH, x(bar.endMs) - barX);
-              const color = managedTaskColor(taskByKey.get(bar.segment.taskKey), dark);
-              const appearance = outcomeAppearance(bar.segment.status, dark);
-              return (
-                <g
-                  key={bar.segment.segmentId}
-                  aria-label={executionTitle(bar)}
-                  className="cursor-pointer outline-none focus-visible:opacity-75"
-                  onClick={() => {
-                    setSelectedExecutions([bar]);
-                    setSelectedDeferral(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedExecutions([bar]);
-                      setSelectedDeferral(null);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <rect
-                    x={barX}
-                    y={barY}
-                    width={width}
-                    height={11}
-                    rx={2}
-                    fill={color}
-                    fillOpacity={bar.active ? 1 : 0.82}
-                    stroke={appearance?.stroke ?? (bar.active ? color : "none")}
-                    strokeDasharray={appearance?.dashArray}
-                    strokeWidth={appearance ? 1.5 : bar.active ? 1 : 0}
-                  />
-                  <title>{executionTitle(bar)}</title>
-                </g>
-              );
-            })}
-            {densityGroups.map((group) => {
-              const barX = x(group.startMs);
-              const barY = AXIS_HEIGHT + group.lane * LANE_HEIGHT + 3;
-              const width = Math.max(DENSITY_GROUP_MIN_WIDTH, x(group.endMs) - barX);
-              const color = group.taskKey
-                ? managedTaskColor(taskByKey.get(group.taskKey), dark)
-                : dark
-                  ? "#94a3b8"
-                  : "#64748b";
-              const outcome = aggregateOutcome(group.members);
-              const appearance = outcomeAppearance(outcome.status, dark);
-              const groupTitle = group.taskKey
-                ? (taskByKey.get(group.taskKey)?.title ?? group.taskKey)
-                : "多任务";
-              return (
-                <g
-                  key={group.key}
-                  aria-label={`${group.members.length} 次${groupTitle}执行；${outcome.summary}；选择查看详情`}
-                  className="cursor-pointer outline-none focus-visible:opacity-75"
-                  onClick={() => {
-                    setSelectedExecutions(group.members);
-                    setSelectedDeferral(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedExecutions(group.members);
-                      setSelectedDeferral(null);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <rect
-                    x={barX}
-                    y={barY}
-                    width={width}
-                    height={11}
-                    rx={2}
-                    fill={color}
-                    stroke={appearance?.stroke ?? "none"}
-                    strokeDasharray={appearance?.dashArray}
-                    strokeWidth={appearance ? 1.5 : 0}
-                  />
-                  <text x={barX + width + 2} y={barY + 9} fill="currentColor" fontSize="9">
-                    ×{group.members.length}
-                  </text>
-                  <title>{`${group.members.length} 次密集执行；选择查看每次执行`}</title>
-                </g>
-              );
-            })}
-            {positionedDeferrals.map(({ segment, startMs, endMs }) => {
-              const resourceBusy = segment.reason === "resource_busy";
-              const color = resourceBusy ? "#d08700" : "#d63850";
-              const bandY = pressureTop + 2;
-              const bandX = x(startMs);
-              const width = Math.max(MIN_BAR_WIDTH, x(endMs) - bandX);
-              const overlapping = positionedDeferrals.filter(
-                (other) =>
-                  other.segment.segmentId !== segment.segmentId &&
-                  other.startMs < endMs &&
-                  other.endMs > startMs,
-              );
-              const detail = (item: (typeof positionedDeferrals)[number]) =>
-                `${item.segment.title}；${reasonLabel(item.segment.reason)}；开始 ${exactTime(item.startMs)}；${item.segment.finishedAt ? `恢复 ${exactTime(timestamp(item.segment.finishedAt, item.endMs))}` : "尚未确认恢复"}${item.segment.retryAt ? `；重试时间 ${exactTime(timestamp(item.segment.retryAt, item.endMs))}` : "；重试时间未知"}`;
-              const title = [
-                positionedDeferrals.find((item) => item.segment.segmentId === segment.segmentId),
-                ...overlapping,
-              ]
-                .filter((item): item is (typeof positionedDeferrals)[number] => item != null)
-                .map(detail)
-                .join("\n");
-              return (
-                <g
-                  key={segment.segmentId}
-                  aria-label={title}
-                  className="cursor-pointer outline-none focus-visible:opacity-75"
-                  onClick={() => {
-                    setSelectedDeferral(segment);
-                    setSelectedExecutions(null);
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      setSelectedDeferral(segment);
-                      setSelectedExecutions(null);
-                    }
-                  }}
-                  role="button"
-                  tabIndex={0}
-                >
-                  <rect
-                    x={bandX}
-                    y={bandY}
-                    width={width}
-                    height={8}
-                    rx={2}
-                    fill={color}
-                    fillOpacity={overlapping.length ? 0.55 : 1}
-                    stroke={color}
-                    strokeWidth={1}
-                  />
-                  <title>{title}</title>
-                </g>
-              );
-            })}
+            <g ref={staticTimelineLayerRef}>
+              <ExecutionLayer
+                singles={staticExecutionDensity.singles}
+                groups={staticExecutionDensity.groups}
+                chartWidth={chartWidth}
+                windowStart={modelWindowStartRef.current}
+                dark={dark}
+                taskByKey={taskByKey}
+                getTitle={cachedExecutionTitle}
+                onSelect={selectExecutions}
+              />
+              <DeferralLayer
+                groups={staticDeferralRenderGroups}
+                chartWidth={chartWidth}
+                windowStart={modelWindowStartRef.current}
+                pressureTop={pressureTop}
+                overlapCounts={staticDeferralIndex.overlapCounts}
+                onSelect={selectDeferral}
+                onActivate={activateDeferral}
+                onDeactivate={deactivateDeferral}
+              />
+            </g>
+            <ExecutionLayer
+              singles={dynamicExecutionDensity.singles}
+              groups={dynamicExecutionDensity.groups}
+              chartWidth={chartWidth}
+              windowStart={windowStart}
+              dark={dark}
+              taskByKey={taskByKey}
+              getTitle={cachedExecutionTitle}
+              onSelect={selectExecutions}
+            />
+            <DeferralLayer
+              groups={liveDeferralRenderGroups}
+              chartWidth={chartWidth}
+              windowStart={windowStart}
+              pressureTop={pressureTop}
+              overlapCounts={deferralIndex.overlapCounts}
+              onSelect={selectDeferral}
+              onActivate={activateDeferral}
+              onDeactivate={deactivateDeferral}
+            />
             <line
               x1={chartWidth}
               x2={chartWidth}

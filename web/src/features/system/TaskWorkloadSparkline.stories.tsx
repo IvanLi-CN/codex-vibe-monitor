@@ -120,11 +120,9 @@ export const BackgroundRow: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const control = await canvas.findByRole("button", { name: "查看运行计量" });
+    await expect(canvas.queryByRole("button", { name: "查看运行计量" })).toBeNull();
     const title = canvas.getByRole("heading", { name: task.title });
-    await expect(control.getBoundingClientRect().bottom).toBeLessThanOrEqual(
-      title.getBoundingClientRect().top,
-    );
+    await expect(title).toBeVisible();
   },
 };
 

@@ -326,6 +326,10 @@ export default function SystemTasksPage(): JSX.Element {
       }),
     [enabledFilter, selectedTriggers, tasks],
   );
+  const visibleTaskKeys = useMemo(
+    () => new Set(filteredTasks.map((task) => task.taskKey)),
+    [filteredTasks],
+  );
   const dark = useDarkColorMode();
   const disconnectedAt =
     sseStatus.phase === "connected"
@@ -607,9 +611,10 @@ export default function SystemTasksPage(): JSX.Element {
             <ListBodyState variant="empty" title="没有匹配的任务" />
           ) : null}
           <div className="divide-y divide-base-300/60 overflow-hidden rounded-md border border-base-300/70">
-            {filteredTasks.map((task) => (
+            {tasks.map((task) => (
               <div
                 key={task.taskKey}
+                hidden={!visibleTaskKeys.has(task.taskKey)}
                 className="relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center"
               >
                 <TaskWorkloadSparkline task={task} dark={dark} mode="background" />
