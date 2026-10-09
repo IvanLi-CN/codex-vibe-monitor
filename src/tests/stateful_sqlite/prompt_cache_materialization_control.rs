@@ -26,6 +26,71 @@ async fn prompt_cache_materialization_maintenance_store(enabled: bool) -> Mainte
     store
 }
 
+#[tokio::test]
+async fn prompt_cache_schema_adds_pending_generation_to_legacy_staging_table() {
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let database_url =
+        format!("sqlite:file:prompt-cache-legacy-staging-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePool::connect(&database_url)
+        .await
+        .expect("connect legacy prompt-cache staging database");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query("CREATE TABLE schema_refresh_migrations (migration_name TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("create schema refresh migration registry");
+    sqlx::query(
+        r#"
+        CREATE TABLE prompt_cache_conversation_stats_refresh_staging (
+            prompt_cache_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            source_max_invocation_id INTEGER NOT NULL,
+            cursor_occurred_at TEXT,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            accumulator_json TEXT NOT NULL,
+            page_size INTEGER NOT NULL DEFAULT 256,
+            updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy prompt-cache staging table");
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversation_stats_refresh_staging \
+         (prompt_cache_key,generation,source_max_invocation_id,accumulator_json) \
+         VALUES ('legacy-staging-key',7,42,'{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy prompt-cache staging row");
+
+    ensure_prompt_cache_conversations_schema(&pool)
+        .await
+        .expect("upgrade legacy prompt-cache staging schema");
+
+    let pending_generation_column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('prompt_cache_conversation_stats_refresh_staging') \
+         WHERE name = 'pending_generation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect upgraded staging columns");
+    assert_eq!(pending_generation_column_count, 1);
+    let preserved: (i64, i64, Option<i64>) = sqlx::query_as(
+        "SELECT generation,cursor_id,pending_generation \
+         FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key = 'legacy-staging-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy staging row");
+    assert_eq!(preserved, (7, 0, None));
+}
+
 async fn prompt_cache_statistics_checkpoint_fixture(counts: &[usize]) -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

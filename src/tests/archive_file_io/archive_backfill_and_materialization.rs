@@ -3908,6 +3908,184 @@ async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_pref
 }
 
 #[tokio::test]
+async fn replay_usage_breakdown_archives_bounded_selection_reaches_after_blocked_prefix() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("usage-breakdown-bounded-selection").await;
+    for id in 1..=65_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, ?3, 1, 'completed', 'unknown')
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("usage-breakdown-blocked-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("usage-breakdown-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed usage breakdown bounded replay candidate");
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin usage breakdown bounded replay transaction");
+    let first = replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        0,
+    )
+    .await
+    .expect("scan the first usage breakdown candidate page");
+    assert_eq!(first.scanned_batches, 64);
+    assert_eq!(first.blocked_batches, 64);
+
+    let second = replay_invocation_usage_breakdown_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        first.scanned_batches as usize,
+    )
+    .await
+    .expect("scan beyond the first usage breakdown candidate page");
+    assert_eq!(second.scanned_batches, 65);
+    assert_eq!(second.skipped_batches, 64);
+    assert_eq!(second.blocked_batches, 1);
+    tx.rollback()
+        .await
+        .expect("rollback usage breakdown bounded replay transaction");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn replay_forward_proxy_archives_bounded_selection_reaches_after_blocked_prefix() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("forward-proxy-bounded-selection").await;
+    for id in 1..=65_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status
+            )
+            VALUES (?1, 'forward_proxy_attempts', '2026-01', ?2, ?3, 1, 'completed')
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("forward-proxy-blocked-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("forward-proxy-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed forward proxy bounded replay candidate");
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin forward proxy bounded replay transaction");
+    let first = replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        0,
+    )
+    .await
+    .expect("scan the first forward proxy candidate page");
+    assert_eq!(first.scanned_batches, 64);
+    assert_eq!(first.blocked_batches, 64);
+
+    let second = replay_forward_proxy_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        first.scanned_batches as usize,
+    )
+    .await
+    .expect("scan beyond the first forward proxy candidate page");
+    assert_eq!(second.scanned_batches, 65);
+    assert_eq!(second.skipped_batches, 64);
+    assert_eq!(second.blocked_batches, 1);
+    tx.rollback()
+        .await
+        .expect("rollback forward proxy bounded replay transaction");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutoff() {
+    let (pool, mut config, temp_dir) =
+        retention_memory_test_pool_and_config("retention-recovery-backlog-cache").await;
+    let initial_days = config.invocation_max_days;
+    let first_occurred_at = shanghai_local_days_ago((initial_days + 10) as i64, 9, 0, 0);
+    let second_occurred_at =
+        shanghai_local_days_ago(initial_days.saturating_sub(1) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "retention-recovery-backlog-cache-first",
+        &first_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        None,
+        Some(1),
+        Some(0.01),
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "retention-recovery-backlog-cache-second",
+        &second_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        None,
+        Some(2),
+        Some(0.02),
+    )
+    .await;
+
+    let first = retention_test_refresh_recovery_counts(&pool, &config)
+        .await
+        .expect("load initial recovery backlog");
+    assert_eq!(first.expired_backlog_count, Some(1));
+
+    let cached = retention_test_refresh_recovery_counts(&pool, &config)
+        .await
+        .expect("reuse recovery backlog cache");
+    assert_eq!(cached.expired_backlog_count, Some(1));
+
+    config.invocation_max_days = initial_days.saturating_sub(2);
+    let refreshed = retention_test_refresh_recovery_counts(&pool, &config)
+        .await
+        .expect("refresh recovery backlog after cutoff change");
+    assert_eq!(refreshed.expired_backlog_count, Some(2));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn bootstrap_hourly_rollups_reopens_materialized_batches_missing_usage_breakdown_backfill() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("bootstrap-repairs-account-markers").await;

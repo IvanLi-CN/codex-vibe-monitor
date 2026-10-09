@@ -658,12 +658,12 @@ static RETENTION_RECOVERY_HEALTH: Lazy<std::sync::Mutex<RetentionRecoveryHealthS
     Lazy::new(|| std::sync::Mutex::new(RetentionRecoveryHealthSnapshot::default()));
 static RAW_ORPHAN_SWEEP_HEALTH: Lazy<std::sync::Mutex<RawOrphanSweepHealthSnapshot>> =
     Lazy::new(|| std::sync::Mutex::new(RawOrphanSweepHealthSnapshot::default()));
-#[cfg(not(test))]
 static RETENTION_RECOVERY_BACKLOG_CACHE: Lazy<
     std::sync::Mutex<Option<RetentionRecoveryBacklogCache>>,
 > = Lazy::new(|| std::sync::Mutex::new(None));
 
 struct RetentionRecoveryBacklogCache {
+    database_key: String,
     cutoff: String,
     observed_at: Instant,
     count: i64,
@@ -671,8 +671,14 @@ struct RetentionRecoveryBacklogCache {
 }
 
 impl RetentionRecoveryBacklogCache {
-    fn value_if_fresh(&self, cutoff: &str, now: Instant) -> Option<(i64, Option<String>)> {
-        (self.cutoff == cutoff
+    fn value_if_fresh(
+        &self,
+        database_key: &str,
+        cutoff: &str,
+        now: Instant,
+    ) -> Option<(i64, Option<String>)> {
+        (self.database_key == database_key
+            && self.cutoff == cutoff
             && now.duration_since(self.observed_at) < RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL)
             .then(|| (self.count, self.oldest_backlog_at.clone()))
     }
@@ -2139,16 +2145,18 @@ async fn load_retention_recovery_expired_backlog(
     pool: &Pool<Sqlite>,
     cutoff: &str,
 ) -> Result<(i64, Option<String>)> {
-    #[cfg(not(test))]
-    {
-        let cached = RETENTION_RECOVERY_BACKLOG_CACHE
-            .lock()
-            .expect("retention recovery backlog cache")
-            .as_ref()
-            .and_then(|cached| cached.value_if_fresh(cutoff, Instant::now()));
-        if let Some(cached) = cached {
-            return Ok(cached);
-        }
+    let database_key = pool
+        .connect_options()
+        .get_filename()
+        .to_string_lossy()
+        .into_owned();
+    let cached = RETENTION_RECOVERY_BACKLOG_CACHE
+        .lock()
+        .expect("retention recovery backlog cache")
+        .as_ref()
+        .and_then(|cached| cached.value_if_fresh(&database_key, cutoff, Instant::now()));
+    if let Some(cached) = cached {
+        return Ok(cached);
     }
 
     let backlog = sqlx::query_as::<_, (i64, Option<String>)>(
@@ -2162,19 +2170,26 @@ async fn load_retention_recovery_expired_backlog(
     .fetch_one(pool)
     .await?;
 
-    #[cfg(not(test))]
-    {
-        let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
-            .lock()
-            .expect("retention recovery backlog cache");
-        *cache = Some(RetentionRecoveryBacklogCache {
-            cutoff: cutoff.to_string(),
-            observed_at: Instant::now(),
-            count: backlog.0,
-            oldest_backlog_at: backlog.1.clone(),
-        });
-    }
+    let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
+        .lock()
+        .expect("retention recovery backlog cache");
+    *cache = Some(RetentionRecoveryBacklogCache {
+        database_key,
+        cutoff: cutoff.to_string(),
+        observed_at: Instant::now(),
+        count: backlog.0,
+        oldest_backlog_at: backlog.1.clone(),
+    });
     Ok(backlog)
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_refresh_recovery_counts(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<RetentionRecoveryHealthSnapshot> {
+    retention_recovery_refresh_counts(pool, config).await?;
+    Ok(retention_recovery_health_snapshot())
 }
 
 async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConfig) -> Result<()> {
@@ -6976,6 +6991,18 @@ fn raw_orphan_sweep_removal_snapshot(
     })
 }
 
+fn reset_raw_orphan_sweep_traversal_after_interrupted_pass(
+    traversal: &mut RetentionRawDirectoryTraversal,
+    pass: &RawOrphanSweepPassResult,
+) {
+    if pass.deferred || pass.failures > 0 {
+        // A slice may have advanced the process-local ReadDir before a candidate was durably
+        // settled. Reopen from the durable ledger on the next retry so an interrupted suffix is
+        // never skipped in-process.
+        traversal.reset_after_interrupted_slice();
+    }
+}
+
 async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationToken) {
     if !state.config.retention_enabled {
         return;
@@ -7068,12 +7095,7 @@ async fn run_raw_orphan_sweep_worker(state: Arc<AppState>, cancel: CancellationT
 
             match result {
                 Ok(pass) => {
-                    if pass.deferred || pass.failures > 0 {
-                        // A slice may have advanced the process-local ReadDir before a
-                        // candidate was durably settled. Reopen from the durable ledger on the
-                        // next retry so an interrupted suffix is never skipped in-process.
-                        traversal.reset_after_interrupted_slice();
-                    }
+                    reset_raw_orphan_sweep_traversal_after_interrupted_pass(&mut traversal, &pass);
                     let progressed = pass.inspected_entries > 0
                         || pass.reconciliation_rows_checked > 0
                         || pass.removed > 0;
@@ -10953,6 +10975,7 @@ mod retention_summary_tests {
     use super::{
         RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL, RetentionRawDirectoryEntry,
         RetentionRawDirectoryTraversal, RetentionRecoveryBacklogCache, RetentionRunSummary,
+        reset_raw_orphan_sweep_traversal_after_interrupted_pass,
         retention_backlog_max_overdue_seconds,
     };
 
@@ -10960,22 +10983,28 @@ mod retention_summary_tests {
     fn recovery_backlog_cache_reuses_only_matching_fresh_cutoffs() {
         let observed_at = Instant::now();
         let cache = RetentionRecoveryBacklogCache {
+            database_key: "database-a".to_string(),
             cutoff: "2026-10-01 00:00:00".to_string(),
             observed_at,
             count: 12,
             oldest_backlog_at: Some("2026-09-01 00:00:00".to_string()),
         };
         assert_eq!(
-            cache.value_if_fresh("2026-10-01 00:00:00", observed_at + Duration::from_secs(29)),
+            cache.value_if_fresh(
+                "database-a",
+                "2026-10-01 00:00:00",
+                observed_at + Duration::from_secs(29),
+            ),
             Some((12, Some("2026-09-01 00:00:00".to_string())))
         );
         assert_eq!(
-            cache.value_if_fresh("2026-09-30 00:00:00", observed_at),
+            cache.value_if_fresh("database-a", "2026-09-30 00:00:00", observed_at),
             None,
             "a changed cutoff must force a fresh backlog query"
         );
         assert_eq!(
             cache.value_if_fresh(
+                "database-a",
                 "2026-10-01 00:00:00",
                 observed_at + RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL,
             ),
@@ -10993,9 +11022,31 @@ mod retention_summary_tests {
                 path: std::env::temp_dir().join("unsettled.raw"),
             }]),
         };
-        traversal.reset_after_interrupted_slice();
+        let pass = super::RawOrphanSweepPassResult {
+            deferred: true,
+            ..Default::default()
+        };
+        reset_raw_orphan_sweep_traversal_after_interrupted_pass(&mut traversal, &pass);
         assert!(traversal.directory.is_none());
         assert!(traversal.pending_candidates.is_empty());
+
+        let mut failure_traversal = RetentionRawDirectoryTraversal {
+            root: Some(std::env::temp_dir()),
+            directory: Some(std::fs::read_dir(std::env::temp_dir()).expect("read temp directory")),
+            pending_candidates: std::collections::VecDeque::from([RetentionRawDirectoryEntry {
+                path: std::env::temp_dir().join("failed.raw"),
+            }]),
+        };
+        let failed_pass = super::RawOrphanSweepPassResult {
+            failures: 1,
+            ..Default::default()
+        };
+        reset_raw_orphan_sweep_traversal_after_interrupted_pass(
+            &mut failure_traversal,
+            &failed_pass,
+        );
+        assert!(failure_traversal.directory.is_none());
+        assert!(failure_traversal.pending_candidates.is_empty());
     }
 
     #[test]

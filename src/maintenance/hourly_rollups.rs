@@ -1614,10 +1614,10 @@ async fn load_invocation_archive_files_missing_rollup_target_with_limit(
     })
     .await
     .context("failed to list invocation archive batches missing historical rollup target")?;
-    Ok(archive_files
-        .into_iter()
-        .filter(|archive_file| Path::new(&archive_file.file_path).exists())
-        .collect())
+    // Keep missing sources in bounded candidate pages. The replay stage records them as blocked,
+    // allowing its durable/keyset caller to advance past the page; filtering after LIMIT would
+    // hide the scanned prefix and starve later recoverable archives.
+    Ok(archive_files)
 }
 
 pub(crate) fn legacy_compatible_archive_select_expr(
