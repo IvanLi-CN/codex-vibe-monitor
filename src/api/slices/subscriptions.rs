@@ -5093,7 +5093,7 @@ impl SubscriptionHub {
         } else {
             false
         };
-        if overflowed && !overflow_is_covered && all_time {
+        if overflowed && (!all_time || !overflow_is_covered) {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));

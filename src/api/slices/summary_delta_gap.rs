@@ -16,10 +16,12 @@ pub(crate) fn summary_delta_gap_affects_selection(
     upstream_account_id: Option<i64>,
     gap_kind: SummaryDeltaGapKind,
 ) -> bool {
+    // A row-scoped source proof remains a bounded in-memory gap; only broad source loss is
+    // unavailable, because it has no durable identity that can localize the affected range.
     let gap_matches = |gap: &DeltaGapProof| match gap_kind {
         SummaryDeltaGapKind::Any => true,
-        SummaryDeltaGapKind::Source => gap.source_gap,
-        SummaryDeltaGapKind::Terminal => !gap.source_gap,
+        SummaryDeltaGapKind::Source => gap.source_gap && gap.row_id.is_none(),
+        SummaryDeltaGapKind::Terminal => !gap.source_gap || gap.row_id.is_some(),
     };
     if let SummaryWindow::Current(limit) = window {
         return gaps.iter().any(|gap| {
