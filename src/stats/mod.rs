@@ -4956,6 +4956,10 @@ pub(crate) async fn load_materialized_failure_rollup_row_counts_for_keys(
     Ok((counts, unreadable_bucket_start_epochs))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Archive rollup rebuild keeps transaction, archive, scope, deduplication, clearing, target, replacement, and persistence state explicit."
+)]
 pub(crate) async fn rebuild_invocation_summary_rollups_from_archive_batch(
     tx: &mut SqliteConnection,
     archive_row: &ArchiveBatchPathRow,

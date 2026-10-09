@@ -8895,6 +8895,20 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
         )],
     )
     .await;
+    let first_archive_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load first archive SHA for replay markers");
+    let second_archive_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(second_archive_path.to_string_lossy().to_string())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load second archive SHA for replay markers");
 
     let bucket_start_epoch = invocation_bucket_start_epoch(&archived_success_at)
         .expect("bucket start epoch should be derivable");
@@ -8930,37 +8944,43 @@ async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_m
 
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay
+            (target, dataset, file_path, archive_sha256, replayed_at)
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(first_archive_path.to_string_lossy().to_string())
+    .bind(&first_archive_sha)
     .execute(&state.pool)
     .await
     .expect("mark first archive overall replay target as already repaired");
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay
+            (target, dataset, file_path, archive_sha256, replayed_at)
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(second_archive_path.to_string_lossy().to_string())
+    .bind(&second_archive_sha)
     .execute(&state.pool)
     .await
     .expect("mark second archive overall replay target as already repaired");
     sqlx::query(
         r#"
-        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
-        VALUES (?1, ?2, ?3, datetime('now'))
+        INSERT INTO hourly_rollup_archive_replay
+            (target, dataset, file_path, archive_sha256, replayed_at)
+        VALUES (?1, ?2, ?3, ?4, datetime('now'))
         "#,
     )
     .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(second_archive_path.to_string_lossy().to_string())
+    .bind(&second_archive_sha)
     .execute(&state.pool)
     .await
     .expect("mark second archive failure replay target as already repaired");
@@ -23267,15 +23287,16 @@ async fn summary_projection_pages_exact_boundary_manifests_beyond_admission() {
         }],
     )
     .await;
+    let coverage_end = crate::db_occurred_at_lower_bound(
+        archived_bucket_start + ChronoDuration::hours(1) - ChronoDuration::seconds(1),
+    );
     sqlx::query(
         "UPDATE archive_batches \
          SET coverage_start_at = ?1, coverage_end_at = ?2, historical_rollups_materialized_at = datetime('now') \
          WHERE dataset = 'codex_invocations' AND file_path = ?3",
     )
     .bind(crate::stats::db_occurred_at_lower_bound(archived_bucket_start))
-    .bind(crate::db_occurred_at_upper_bound(
-        archived_bucket_start + ChronoDuration::hours(1),
-    ))
+    .bind(&coverage_end)
     .bind(archive_path.to_string_lossy().to_string())
     .execute(&state.pool)
     .await
