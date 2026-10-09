@@ -2873,6 +2873,65 @@ describe("DashboardWorkingConversationsSection", () => {
     ).toBe(false);
   });
 
+  it("keeps duplicate composite anchors tied to their invocation identity after reordering", () => {
+    const renderDuplicateCompositeResponse = (firstOccurredAt: string, secondOccurredAt: string) =>
+      createResponse([
+        createConversation(
+          "pck-duplicate-composite-reorder",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-duplicate-composite-a",
+              occurredAt: firstOccurredAt,
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-composite-reorder" },
+        ),
+        createConversation(
+          "pck-duplicate-composite-reorder",
+          [
+            createPreview({
+              id: 2,
+              invokeId: "invoke-duplicate-composite-b",
+              occurredAt: secondOccurredAt,
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-duplicate-composite-reorder" },
+        ),
+      ]);
+
+    const readAnchorsByInvocationId = () =>
+      new Map(
+        Array.from(
+          host?.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-card"]',
+          ) ?? [],
+        ).map((card) => {
+          const invocationId = [
+            "invoke-duplicate-composite-a",
+            "invoke-duplicate-composite-b",
+          ].find((candidate) => card.querySelector(`[aria-label*="${candidate}"]`));
+          if (!invocationId) throw new Error("missing duplicate composite invocation");
+          return [
+            invocationId,
+            (card as HTMLElement & { __dashboardWorkingConversationAnchorKey?: string })
+              .__dashboardWorkingConversationAnchorKey,
+          ] as const;
+        }),
+      );
+
+    renderSection(renderDuplicateCompositeResponse("2026-04-04T10:04:00Z", "2026-04-04T10:03:00Z"));
+    const initialAnchors = readAnchorsByInvocationId();
+
+    rerenderSection(
+      renderDuplicateCompositeResponse("2026-04-04T10:03:00Z", "2026-04-04T10:05:00Z"),
+    );
+
+    expect(readAnchorsByInvocationId()).toEqual(initialAnchors);
+  });
+
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
     upstreamAccountActivityMock.data = {
       range: "today",

@@ -1166,7 +1166,43 @@ describe("DashboardPage", () => {
     ).toBe("99");
   });
 
-  it("refreshes the conversation drawer label when the persisted id changes for the same key", () => {
+  it("loads remaining working-conversation pages before opening a clicked conversation", () => {
+    installSummaryMocks();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 21,
+      hasMore: true,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    const openConversationButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation"]',
+    );
+    if (!(openConversationButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation trigger");
+    }
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    expect(loadMore).toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+  });
+
+  it("closes the conversation drawer when its explicit persisted id becomes stale", () => {
     installSummaryMocks();
     const initialCard = createWorkingConversationCard();
     const updatedCard = { ...initialCard, conversationId: "EFGH34" };
@@ -1202,7 +1238,13 @@ describe("DashboardPage", () => {
 
     expect(
       host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
-    ).toBe("EFGH34");
+    ).toBeUndefined();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
   });
 
   it("hydrates the persisted conversation label for a direct conversation route", () => {
@@ -1243,8 +1285,8 @@ describe("DashboardPage", () => {
 
     render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
     expect(
-      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
-    ).toBe("");
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
 
     currentCards = [card];
     rerender(<DashboardPage />);
@@ -1264,6 +1306,29 @@ describe("DashboardPage", () => {
       totalMatched: 2,
       hasMore: false,
       isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("keeps an ambiguous conversation route closed while the working set is loading", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({ conversationId: "CONV-A" }),
+        createWorkingConversationCard({ conversationId: "CONV-B" }),
+      ],
+      totalMatched: 2,
+      hasMore: false,
+      isLoading: true,
       isLoadingMore: false,
       error: null,
       loadMore: vi.fn(),

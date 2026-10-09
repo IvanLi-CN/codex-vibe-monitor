@@ -39,6 +39,10 @@ export default function DashboardPage() {
     key: string;
     label: string | null;
   } | null>(null);
+  const [pendingConversationSelection, setPendingConversationSelection] = useState<{
+    key: string;
+    conversationId: string;
+  } | null>(null);
   const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] = useState(false);
   const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
@@ -83,6 +87,8 @@ export default function DashboardPage() {
     includeUpstreamAccountActivity,
   );
   usePageObservation("dashboard", overviewSnapshotRuntime.bundle);
+  const conversationDataIsComplete =
+    !workingCardsLoading && !workingCardsLoadingMore && !hasMore && workingCardsError == null;
   useEffect(() => {
     if (
       selectedInvocation != null &&
@@ -97,12 +103,48 @@ export default function DashboardPage() {
     if (upstreamAccountId != null) {
       setSelectedInvocation(null);
       setSelectedConversation(null);
+      setPendingConversationSelection(null);
     }
   }, [upstreamAccountId]);
 
   useEffect(() => {
+    if (pendingConversationSelection == null) return;
+    if (
+      promptCacheConversationKey != null &&
+      (promptCacheConversationKey !== pendingConversationSelection.key ||
+        (promptCacheConversationId != null &&
+          promptCacheConversationId !== pendingConversationSelection.conversationId))
+    ) {
+      setPendingConversationSelection(null);
+      return;
+    }
+    if (workingCardsError != null) {
+      setPendingConversationSelection(null);
+      return;
+    }
+    if (conversationDataIsComplete) {
+      setPendingConversationSelection(null);
+      return;
+    }
+    if (!workingCardsLoading && !workingCardsLoadingMore && hasMore) {
+      loadMore();
+    }
+  }, [
+    conversationDataIsComplete,
+    hasMore,
+    loadMore,
+    pendingConversationSelection,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    workingCardsError,
+    workingCardsLoading,
+    workingCardsLoadingMore,
+  ]);
+
+  useEffect(() => {
     if (promptCacheConversationKey == null) {
       setSelectedConversation(null);
+      setPendingConversationSelection(null);
       return;
     }
     const conversationIds = new Set(
@@ -111,15 +153,22 @@ export default function DashboardPage() {
         .map((card) => card.conversationId.trim())
         .filter(Boolean),
     );
-    const conversationLabel =
-      conversationIds.size === 1
-        ? (conversationIds.values().next().value ?? null)
-        : promptCacheConversationId != null && conversationIds.has(promptCacheConversationId)
+    const singleConversationId =
+      conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
+    const conversationLabel = conversationDataIsComplete
+      ? promptCacheConversationId != null
+        ? conversationIds.has(promptCacheConversationId)
           ? promptCacheConversationId
-          : null;
-    if (conversationLabel != null && conversationLabel !== promptCacheConversationId) {
+          : null
+        : singleConversationId
+      : null;
+    if (
+      promptCacheConversationId == null &&
+      conversationDataIsComplete &&
+      singleConversationId != null
+    ) {
       openPromptCacheConversation(promptCacheConversationKey, {
-        conversationId: conversationLabel,
+        conversationId: singleConversationId,
         replace: true,
         tab: promptCacheConversationTab,
       });
@@ -138,6 +187,7 @@ export default function DashboardPage() {
     });
   }, [
     cards,
+    conversationDataIsComplete,
     openPromptCacheConversation,
     promptCacheConversationId,
     promptCacheConversationKey,
@@ -152,9 +202,7 @@ export default function DashboardPage() {
   );
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
-    workingCardsLoading ||
-    (!workingCardsLoadingMore &&
-      !hasMore &&
+    (conversationDataIsComplete &&
       conversationIdsForRoute.size === 1 &&
       (promptCacheConversationId == null ||
         conversationIdsForRoute.has(promptCacheConversationId)));
@@ -205,7 +253,10 @@ export default function DashboardPage() {
               tab,
             })
           }
-          onClose={() => closePromptCacheConversation()}
+          onClose={() => {
+            setPendingConversationSelection(null);
+            closePromptCacheConversation();
+          }}
           t={t}
           onOpenUpstreamAccount={handleOpenUpstreamAccount}
         />
@@ -256,11 +307,20 @@ export default function DashboardPage() {
         onOpenConversation={(selection) => {
           closeUpstreamAccount({ replace: true });
           setSelectedInvocation(null);
+          setPendingConversationSelection(
+            hasMore
+              ? {
+                  key: selection.promptCacheKey,
+                  conversationId: selection.conversationId,
+                }
+              : null,
+          );
           setSelectedConversation({
             key: selection.promptCacheKey,
             label: selection.conversationId,
           });
           if (routeInvokeId != null) {
+            setPendingConversationSelection(null);
             const search = new URLSearchParams({
               promptCacheConversationKey: selection.promptCacheKey,
               promptCacheConversationId: selection.conversationId,
@@ -281,6 +341,7 @@ export default function DashboardPage() {
           closeUpstreamAccount({ replace: true });
           closePromptCacheConversation({ replace: true });
           setSelectedConversation(null);
+          setPendingConversationSelection(null);
           setSelectedInvocation(selection);
           navigate(
             `/dashboard/invocations/${encodeURIComponent(selection.invocation.record.invokeId)}`,
@@ -341,7 +402,10 @@ export default function DashboardPage() {
             tab,
           });
         }}
-        onClose={() => closePromptCacheConversation()}
+        onClose={() => {
+          setPendingConversationSelection(null);
+          closePromptCacheConversation();
+        }}
         t={t}
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
       />

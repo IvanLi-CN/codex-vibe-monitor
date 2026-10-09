@@ -4045,12 +4045,16 @@ function buildDashboardWorkingConversationCardIdentity(
   return JSON.stringify([promptCacheKey, conversationId]);
 }
 
-function buildDashboardWorkingConversationCardAnchorKey(
-  promptCacheKey: string,
-  conversationId: string,
-  occurrence: number,
+function buildDashboardWorkingConversationCardInstanceIdentity(
+  card: DashboardWorkingConversationCardModel,
 ) {
-  return JSON.stringify([promptCacheKey, conversationId, occurrence]);
+  return JSON.stringify([
+    card.promptCacheKey,
+    card.conversationId,
+    card.currentInvocation.record.invokeId,
+    card.previousInvocation?.record.invokeId ?? null,
+    card.earlierInvocation?.record.invokeId ?? null,
+  ]);
 }
 
 type DashboardVisibleAnchorKind = "conversation" | "upstreamAccount";
@@ -4742,7 +4746,12 @@ export function DashboardWorkingConversationsSection({
         (compositeIdentityCounts.get(compositeIdentity) ?? 0) + 1,
       );
     }
-    const compositeOccurrences = new Map<string, number>();
+    const cardInstanceCounts = new Map<string, number>();
+    for (const card of sortedCards) {
+      const instanceIdentity = buildDashboardWorkingConversationCardInstanceIdentity(card);
+      cardInstanceCounts.set(instanceIdentity, (cardInstanceCounts.get(instanceIdentity) ?? 0) + 1);
+    }
+    const cardInstanceOccurrences = new Map<string, number>();
     const keys = new Map<
       DashboardWorkingConversationCardModel,
       { anchorKey: string; reactKey: string }
@@ -4752,22 +4761,21 @@ export function DashboardWorkingConversationsSection({
         card.promptCacheKey,
         card.conversationId,
       );
-      const occurrence = compositeOccurrences.get(compositeIdentity) ?? 0;
-      compositeOccurrences.set(compositeIdentity, occurrence + 1);
+      const instanceIdentity = buildDashboardWorkingConversationCardInstanceIdentity(card);
+      const occurrence = cardInstanceOccurrences.get(instanceIdentity) ?? 0;
+      cardInstanceOccurrences.set(instanceIdentity, occurrence + 1);
       const isExactCompositeDuplicate = (compositeIdentityCounts.get(compositeIdentity) ?? 0) > 1;
+      const isExactInstanceDuplicate = (cardInstanceCounts.get(instanceIdentity) ?? 0) > 1;
+      const duplicateInstanceIdentity = isExactInstanceDuplicate
+        ? JSON.stringify([instanceIdentity, occurrence])
+        : instanceIdentity;
       keys.set(card, {
-        reactKey: isExactCompositeDuplicate
-          ? JSON.stringify([compositeIdentity, occurrence])
-          : compositeIdentity,
+        reactKey: isExactCompositeDuplicate ? duplicateInstanceIdentity : compositeIdentity,
         anchorKey:
           promptCacheKeyCounts.get(card.promptCacheKey) === 1
             ? JSON.stringify([card.promptCacheKey])
             : isExactCompositeDuplicate
-              ? buildDashboardWorkingConversationCardAnchorKey(
-                  card.promptCacheKey,
-                  card.conversationId,
-                  occurrence,
-                )
+              ? duplicateInstanceIdentity
               : compositeIdentity,
       });
     }

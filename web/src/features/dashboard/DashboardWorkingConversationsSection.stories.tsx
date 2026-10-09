@@ -6257,11 +6257,12 @@ export const ErrorSummaryTooltips: Story = {
 };
 
 export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
+  tags: ["test"],
   args: UpstreamAccountTab.args,
   render: () => (
     <DrawerPreviewStory
       response={createResponse([
-        createConversation("pck-story-upstream-account", [
+        createConversation("story-account-1", [
           createPreview({
             id: 9801,
             invokeId: "story-working-invoke",
@@ -6291,10 +6292,10 @@ export const UpstreamAccountRecentIdentityChipOpensConversation: Story = {
     await waitFor(() => {
       expect(
         document.body.querySelector('[data-testid="story-drawer-state"]')?.textContent,
-      ).toContain("conversation:pck-upstream-running");
+      ).toContain("conversation:story-account-1");
     });
     await expect(canvas.getByTestId("story-drawer-state")).toHaveTextContent(
-      "conversation:pck-upstream-running",
+      "conversation:story-account-1",
     );
 
     const firstRow = canvas.getAllByTestId("dashboard-upstream-account-recent-row")[0];
