@@ -158,6 +158,10 @@ fn is_p1_terminal_write(write: &SqliteBatchWrite) -> bool {
     matches!(write, SqliteBatchWrite::TerminalInvocation(_))
 }
 
+fn is_attempt_progress_write(write: &SqliteBatchWrite) -> bool {
+    matches!(write, SqliteBatchWrite::AttemptProgress(_))
+}
+
 fn decrement_queued_p1_count(queued_p1_count: &AtomicUsize) {
     let _ = queued_p1_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
         count.checked_sub(1)
@@ -269,6 +273,11 @@ pub(crate) struct PendingQueueAccountingSnapshot {
     pub(crate) write_rows: u64,
     pub(crate) write_bytes: u64,
     pub(crate) write_duration_ms: u64,
+    pub(crate) attempt_progress_enqueued: u64,
+    pub(crate) attempt_progress_coalesced: u64,
+    pub(crate) attempt_progress_dropped: u64,
+    pub(crate) attempt_progress_deferred: u64,
+    pub(crate) attempt_progress_oldest_age_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) p2_wake_reason: Option<String>,
     pub(crate) invariant_violation_count: u64,
@@ -299,6 +308,11 @@ pub(crate) struct PendingQueueAccounting {
     write_rows: AtomicU64,
     write_bytes: AtomicU64,
     write_duration_ms: AtomicU64,
+    attempt_progress_enqueued: AtomicU64,
+    attempt_progress_coalesced: AtomicU64,
+    attempt_progress_dropped: AtomicU64,
+    attempt_progress_deferred: AtomicU64,
+    attempt_progress_oldest_age_ms: AtomicU64,
     p2_wake_reason: std::sync::Mutex<Option<String>>,
     invariant_violation_count: AtomicU64,
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
@@ -331,15 +345,32 @@ impl FlushReason {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct BatchedAttemptProgress {
     pub(crate) attempt_id: i64,
     pub(crate) pending_status: &'static str,
-    pub(crate) phase: String,
+    pub(crate) phase: Option<String>,
     pub(crate) connect_latency_ms: Option<f64>,
     pub(crate) first_byte_latency_ms: Option<f64>,
     pub(crate) compact_support_status: Option<String>,
     pub(crate) compact_support_reason: Option<String>,
+    pub(crate) request_model: Option<String>,
+    pub(crate) upstream_request_model: Option<String>,
+    pub(crate) model_mapping_pattern: Option<String>,
+    pub(crate) request_summary_json: Option<String>,
+    pub(crate) upstream_request_compression_algorithm: Option<String>,
+    pub(crate) upstream_request_compression_mode: Option<String>,
+    pub(crate) upstream_request_logical_body_bytes: Option<i64>,
+    pub(crate) upstream_request_transmitted_body_bytes: Option<i64>,
+    pub(crate) upstream_request_header_bytes_approx: Option<i64>,
+    pub(crate) upstream_response_body_bytes: Option<i64>,
+    pub(crate) upstream_response_header_bytes_approx: Option<i64>,
+    pub(crate) response_raw_path: Option<String>,
+    pub(crate) response_raw_codec: Option<String>,
+    pub(crate) response_raw_size: Option<i64>,
+    pub(crate) response_raw_truncated: Option<bool>,
+    pub(crate) response_raw_truncated_reason: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +477,7 @@ pub(crate) struct PendingBatch {
     startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
     enqueued_rows: usize,
     coalesced_rows: usize,
+    attempt_progress_coalesced_rows: usize,
     estimated_bytes: usize,
     terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
@@ -592,13 +624,17 @@ impl PendingBatch {
                 estimate_change.0
             }
             SqliteBatchWrite::AttemptProgress(progress) => {
-                let old = self.attempt_progress.insert(progress.attempt_id, progress);
-                if let Some(old) = old {
-                    let old_bytes = estimated_attempt_progress_memory_bytes(&old);
-                    self.replace_estimate(old_bytes, write_bytes, false);
+                let attempt_id = progress.attempt_id;
+                if let Some(existing) = self.attempt_progress.get_mut(&attempt_id) {
+                    let old_bytes = estimated_attempt_progress_memory_bytes(existing);
+                    merge_attempt_progress(existing, progress);
+                    let new_bytes = estimated_attempt_progress_memory_bytes(existing);
+                    self.replace_estimate(old_bytes, new_bytes, false);
                     self.coalesced_rows += 1;
+                    self.attempt_progress_coalesced_rows += 1;
                     old_bytes
                 } else {
+                    self.attempt_progress.insert(attempt_id, progress);
                     self.add_estimate(write_bytes, false);
                     0
                 }
@@ -782,9 +818,12 @@ impl PendingBatch {
         }
 
         let oldest_at = self.oldest_at;
+        let attempt_progress_coalesced_rows = self.attempt_progress_coalesced_rows;
+        self.attempt_progress_coalesced_rows = 0;
         let mut chunk = Self {
             oldest_at,
             retained_for_retry: self.retained_for_retry,
+            attempt_progress_coalesced_rows,
             ..Self::default()
         };
         let mut selected_rows = 0_usize;
@@ -877,7 +916,21 @@ impl PendingBatch {
     }
 
     fn merge_p2(&mut self, mut other: Self) {
-        self.attempt_progress.extend(other.attempt_progress.drain());
+        let attempt_progress = std::mem::take(&mut other.attempt_progress);
+        for progress in attempt_progress.into_values() {
+            let write_bytes = estimated_attempt_progress_memory_bytes(&progress);
+            if let Some(existing) = self.attempt_progress.get_mut(&progress.attempt_id) {
+                let old_bytes = estimated_attempt_progress_memory_bytes(existing);
+                merge_attempt_progress(existing, progress);
+                let new_bytes = estimated_attempt_progress_memory_bytes(existing);
+                self.replace_estimate(old_bytes, new_bytes, false);
+                self.coalesced_rows += 1;
+                self.attempt_progress_coalesced_rows += 1;
+            } else {
+                self.add_estimate(write_bytes, false);
+                self.attempt_progress.insert(progress.attempt_id, progress);
+            }
+        }
         self.invocation_derived.extend(other.invocation_derived);
         self.account_selected_touches
             .extend(other.account_selected_touches.drain());
@@ -886,6 +939,9 @@ impl PendingBatch {
         self.add_startup_backfill_wake_tasks(&other.startup_backfill_wake_tasks);
         self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
         self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
+        self.attempt_progress_coalesced_rows = self
+            .attempt_progress_coalesced_rows
+            .saturating_add(other.attempt_progress_coalesced_rows);
         self.recalculate_estimates();
         self.oldest_at = match (self.oldest_at, other.oldest_at) {
             (Some(current), Some(other)) => Some(current.min(other)),
@@ -1021,13 +1077,152 @@ impl SqliteBatchWrite {
 
 fn estimated_attempt_progress_memory_bytes(progress: &BatchedAttemptProgress) -> usize {
     std::mem::size_of::<BatchedAttemptProgress>()
-        .saturating_add(progress.phase.capacity())
+        .saturating_add(estimated_option_string_bytes(&progress.phase))
         .saturating_add(estimated_option_string_bytes(
             &progress.compact_support_status,
         ))
         .saturating_add(estimated_option_string_bytes(
             &progress.compact_support_reason,
         ))
+        .saturating_add(estimated_option_string_bytes(&progress.request_model))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.upstream_request_model,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.model_mapping_pattern,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.request_summary_json,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.upstream_request_compression_algorithm,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.upstream_request_compression_mode,
+        ))
+        .saturating_add(estimated_option_string_bytes(&progress.response_raw_path))
+        .saturating_add(estimated_option_string_bytes(&progress.response_raw_codec))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.response_raw_truncated_reason,
+        ))
+        .saturating_add(estimated_option_string_bytes(
+            &progress.response_content_encoding,
+        ))
+}
+
+fn attempt_phase_rank(phase: &str) -> u8 {
+    match phase {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING => 0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST => 1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE => 2,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE => 3,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+        | POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED => 4,
+        _ => 1,
+    }
+}
+
+fn merge_optional_string(current: &mut Option<String>, incoming: Option<String>) {
+    if incoming.is_some() {
+        *current = incoming;
+    }
+}
+
+fn merge_max_f64(current: &mut Option<f64>, incoming: Option<f64>) {
+    if let Some(incoming) = incoming
+        && current.is_none_or(|current| current < incoming)
+    {
+        *current = Some(incoming);
+    }
+}
+
+fn merge_max_i64(current: &mut Option<i64>, incoming: Option<i64>) {
+    if let Some(incoming) = incoming
+        && current.is_none_or(|current| current < incoming)
+    {
+        *current = Some(incoming);
+    }
+}
+
+fn merge_attempt_progress(current: &mut BatchedAttemptProgress, incoming: BatchedAttemptProgress) {
+    let should_replace_phase = match (current.phase.as_deref(), incoming.phase.as_deref()) {
+        (None, Some(_)) => true,
+        (Some(current), Some(incoming)) => {
+            attempt_phase_rank(incoming) >= attempt_phase_rank(current)
+        }
+        _ => false,
+    };
+    if should_replace_phase {
+        current.phase = incoming.phase;
+    }
+    merge_max_f64(&mut current.connect_latency_ms, incoming.connect_latency_ms);
+    merge_max_f64(
+        &mut current.first_byte_latency_ms,
+        incoming.first_byte_latency_ms,
+    );
+    merge_optional_string(
+        &mut current.compact_support_status,
+        incoming.compact_support_status,
+    );
+    merge_optional_string(
+        &mut current.compact_support_reason,
+        incoming.compact_support_reason,
+    );
+    merge_optional_string(&mut current.request_model, incoming.request_model);
+    merge_optional_string(
+        &mut current.upstream_request_model,
+        incoming.upstream_request_model,
+    );
+    merge_optional_string(
+        &mut current.model_mapping_pattern,
+        incoming.model_mapping_pattern,
+    );
+    merge_optional_string(
+        &mut current.request_summary_json,
+        incoming.request_summary_json,
+    );
+    merge_optional_string(
+        &mut current.upstream_request_compression_algorithm,
+        incoming.upstream_request_compression_algorithm,
+    );
+    merge_optional_string(
+        &mut current.upstream_request_compression_mode,
+        incoming.upstream_request_compression_mode,
+    );
+    merge_max_i64(
+        &mut current.upstream_request_logical_body_bytes,
+        incoming.upstream_request_logical_body_bytes,
+    );
+    merge_max_i64(
+        &mut current.upstream_request_transmitted_body_bytes,
+        incoming.upstream_request_transmitted_body_bytes,
+    );
+    merge_max_i64(
+        &mut current.upstream_request_header_bytes_approx,
+        incoming.upstream_request_header_bytes_approx,
+    );
+    merge_max_i64(
+        &mut current.upstream_response_body_bytes,
+        incoming.upstream_response_body_bytes,
+    );
+    merge_max_i64(
+        &mut current.upstream_response_header_bytes_approx,
+        incoming.upstream_response_header_bytes_approx,
+    );
+    merge_optional_string(&mut current.response_raw_path, incoming.response_raw_path);
+    merge_optional_string(&mut current.response_raw_codec, incoming.response_raw_codec);
+    merge_max_i64(&mut current.response_raw_size, incoming.response_raw_size);
+    if incoming.response_raw_truncated.is_some() {
+        current.response_raw_truncated = incoming.response_raw_truncated;
+    }
+    merge_optional_string(
+        &mut current.response_raw_truncated_reason,
+        incoming.response_raw_truncated_reason,
+    );
+    merge_optional_string(
+        &mut current.response_content_encoding,
+        incoming.response_content_encoding,
+    );
 }
 
 fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedWrites) -> usize {
@@ -1270,6 +1465,10 @@ impl SqliteBatchWriter {
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
         let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
+        let is_attempt_progress = is_attempt_progress_write(&write);
+        if is_attempt_progress {
+            self.accounting.attempt_progress_enqueued();
+        }
         let _p1_priority_guard = is_p1.then(|| {
             self.p1_priority_gate
                 .lock()
@@ -1285,6 +1484,9 @@ impl SqliteBatchWriter {
                     return true;
                 }
                 Err(err) => {
+                    if is_attempt_progress {
+                        self.accounting.attempt_progress_dropped();
+                    }
                     self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                     warn!(
                         error = %err,
@@ -1309,6 +1511,9 @@ impl SqliteBatchWriter {
                 }
                 self.accounting.rollback_enqueue(estimated_bytes);
                 self.accounting.observe_p1_replace(usize::from(is_p1), 0);
+                if is_attempt_progress {
+                    self.accounting.attempt_progress_dropped();
+                }
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     error = %err,
@@ -3163,6 +3368,10 @@ pub(crate) async fn flush_pending_batch(
     let system_task_count = batch.system_task_finishes.len();
     let system_task_scope = summarize_system_task_batch_scope(&batch);
     let oldest_age_ms = batch.age().as_millis() as u64;
+    if attempt_count > 0 {
+        accounting.attempt_progress_coalesced(batch.attempt_progress_coalesced_rows);
+        accounting.observe_attempt_progress_age(oldest_age_ms);
+    }
 
     let flush_reason = reason.as_str();
     let p2_pending_before_p1 = batch.has_p2();
@@ -3629,6 +3838,10 @@ pub(crate) async fn flush_pending_batch(
     if deferred_batch.is_empty() {
         None
     } else {
+        if !deferred_batch.attempt_progress.is_empty() {
+            accounting.attempt_progress_deferred(deferred_batch.attempt_progress.len());
+            accounting.observe_attempt_progress_age(deferred_batch.age().as_millis() as u64);
+        }
         Some(RetainedBatch::new(deferred_batch, false))
     }
 }
@@ -4026,38 +4239,120 @@ pub(crate) async fn flush_pending_batch_inner(
             r#"
             UPDATE pool_upstream_request_attempts
             SET
-                phase = ?2,
+                phase = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?2, phase)
+                    ELSE phase
+                END,
                 connect_latency_ms = CASE
-                    WHEN ?4 IS NULL THEN connect_latency_ms
-                    WHEN connect_latency_ms IS NULL OR connect_latency_ms < ?4 THEN ?4
+                    WHEN status = ?3 AND finished_at IS NULL AND ?4 IS NOT NULL
+                        AND (connect_latency_ms IS NULL OR connect_latency_ms < ?4) THEN ?4
                     ELSE connect_latency_ms
                 END,
                 first_byte_latency_ms = CASE
-                    WHEN ?5 IS NULL THEN first_byte_latency_ms
-                    WHEN first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5 THEN ?5
+                    WHEN status = ?3 AND finished_at IS NULL AND ?5 IS NOT NULL
+                        AND (first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5) THEN ?5
                     ELSE first_byte_latency_ms
                 END,
-                compact_support_status = COALESCE(?6, compact_support_status),
-                compact_support_reason = COALESCE(?7, compact_support_reason)
+                compact_support_status = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?6, compact_support_status)
+                    ELSE compact_support_status
+                END,
+                compact_support_reason = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?7, compact_support_reason)
+                    ELSE compact_support_reason
+                END,
+                request_model = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?8, request_model)
+                    ELSE request_model
+                END,
+                upstream_request_model = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?9, upstream_request_model)
+                    ELSE upstream_request_model
+                END,
+                model_mapping_pattern = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?10, model_mapping_pattern)
+                    ELSE model_mapping_pattern
+                END,
+                request_summary_json = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?11, request_summary_json)
+                    ELSE request_summary_json
+                END,
+                upstream_request_compression_algorithm = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?12, upstream_request_compression_algorithm)
+                    ELSE upstream_request_compression_algorithm
+                END,
+                upstream_request_compression_mode = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?13, upstream_request_compression_mode)
+                    ELSE upstream_request_compression_mode
+                END,
+                upstream_request_logical_body_bytes = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?14, upstream_request_logical_body_bytes)
+                    ELSE upstream_request_logical_body_bytes
+                END,
+                upstream_request_transmitted_body_bytes = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?15, upstream_request_transmitted_body_bytes)
+                    ELSE upstream_request_transmitted_body_bytes
+                END,
+                upstream_request_header_bytes_approx = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?16, upstream_request_header_bytes_approx)
+                    ELSE upstream_request_header_bytes_approx
+                END,
+                upstream_response_body_bytes = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?17, upstream_response_body_bytes)
+                    ELSE upstream_response_body_bytes
+                END,
+                upstream_response_header_bytes_approx = CASE
+                    WHEN status = ?3 AND finished_at IS NULL THEN COALESCE(?18, upstream_response_header_bytes_approx)
+                    ELSE upstream_response_header_bytes_approx
+                END,
+                response_raw_path = COALESCE(?19, response_raw_path),
+                response_raw_codec = COALESCE(?20, response_raw_codec),
+                response_raw_size = COALESCE(?21, response_raw_size),
+                response_raw_truncated = COALESCE(?22, response_raw_truncated),
+                response_raw_truncated_reason = COALESCE(?23, response_raw_truncated_reason),
+                response_content_encoding = COALESCE(?24, response_content_encoding)
             WHERE id = ?1
-              AND status = ?3
-              AND finished_at IS NULL
               AND (
-                    COALESCE(phase, '') <> ?2
-                    OR (?4 IS NOT NULL AND (connect_latency_ms IS NULL OR connect_latency_ms < ?4))
-                    OR (?5 IS NOT NULL AND (first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5))
-                    OR (?6 IS NOT NULL AND COALESCE(compact_support_status, '') <> ?6)
-                    OR (?7 IS NOT NULL AND COALESCE(compact_support_reason, '') <> ?7)
+                    (status = ?3 AND finished_at IS NULL)
+                    OR ?19 IS NOT NULL
+                    OR ?20 IS NOT NULL
+                    OR ?21 IS NOT NULL
+                    OR ?22 IS NOT NULL
+                    OR ?23 IS NOT NULL
+                    OR ?24 IS NOT NULL
                   )
             "#,
         )
         .bind(progress.attempt_id)
-        .bind(&progress.phase)
+        .bind(progress.phase.as_deref())
         .bind(progress.pending_status)
         .bind(progress.connect_latency_ms)
         .bind(progress.first_byte_latency_ms)
         .bind(progress.compact_support_status.as_deref())
         .bind(progress.compact_support_reason.as_deref())
+        .bind(progress.request_model.as_deref())
+        .bind(progress.upstream_request_model.as_deref())
+        .bind(progress.model_mapping_pattern.as_deref())
+        .bind(progress.request_summary_json.as_deref())
+        .bind(progress.upstream_request_compression_algorithm.as_deref())
+        .bind(progress.upstream_request_compression_mode.as_deref())
+        .bind(progress.upstream_request_logical_body_bytes)
+        .bind(progress.upstream_request_transmitted_body_bytes)
+        .bind(progress.upstream_request_header_bytes_approx)
+        .bind(progress.upstream_response_body_bytes)
+        .bind(progress.upstream_response_header_bytes_approx)
+        .bind(progress.response_raw_path.as_deref())
+        .bind(progress.response_raw_codec.as_deref())
+        .bind(progress.response_raw_size)
+        .bind(progress.response_raw_truncated.map(|value| {
+            if value {
+                1_i64
+            } else {
+                0_i64
+            }
+        }))
+        .bind(progress.response_raw_truncated_reason.as_deref())
+        .bind(progress.response_content_encoding.as_deref())
         .execute(tx.as_mut())
         .await?;
     }
@@ -5282,6 +5577,35 @@ mod tests {
         let pool = test_pool().await;
         let pending = pending_attempt(&pool, "batch-progress-coalesce").await;
         let attempt_id = pending.attempt_id.expect("attempt id");
+        sqlx::query(
+            "CREATE TABLE attempt_progress_write_counter (writes INTEGER NOT NULL DEFAULT 0)",
+        )
+        .execute(&pool)
+        .await
+        .expect("create attempt progress counter");
+        sqlx::query("INSERT INTO attempt_progress_write_counter DEFAULT VALUES")
+            .execute(&pool)
+            .await
+            .expect("seed attempt progress counter");
+        sqlx::query(
+            r#"
+            CREATE TRIGGER attempt_progress_write_counter_trigger
+            AFTER UPDATE OF phase, request_model, upstream_request_model, model_mapping_pattern,
+                request_summary_json, upstream_request_compression_algorithm,
+                upstream_request_compression_mode, upstream_request_logical_body_bytes,
+                upstream_request_transmitted_body_bytes, upstream_request_header_bytes_approx,
+                upstream_response_body_bytes, upstream_response_header_bytes_approx,
+                response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated,
+                response_raw_truncated_reason, response_content_encoding
+            ON pool_upstream_request_attempts
+            BEGIN
+                UPDATE attempt_progress_write_counter SET writes = writes + 1;
+            END
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create attempt progress write counter trigger");
 
         SqliteBatchWriter::flush_for_test(
             &pool,
@@ -5289,20 +5613,47 @@ mod tests {
                 SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                     attempt_id,
                     pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                    phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string(),
+                    phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string()),
                     connect_latency_ms: Some(12.0),
                     first_byte_latency_ms: None,
                     compact_support_status: None,
                     compact_support_reason: None,
+                    request_model: Some("requested-model".to_string()),
+                    upstream_request_model: Some("upstream-model-a".to_string()),
+                    model_mapping_pattern: Some("map-a".to_string()),
+                    request_summary_json: Some(r#"{"rewrite":"a"}"#.to_string()),
+                    upstream_request_compression_algorithm: Some("gzip".to_string()),
+                    upstream_request_compression_mode: Some("auto".to_string()),
+                    upstream_request_logical_body_bytes: Some(100),
+                    upstream_request_transmitted_body_bytes: Some(80),
+                    upstream_request_header_bytes_approx: Some(12),
+                    ..Default::default()
                 }),
                 SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                     attempt_id,
                     pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                    phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                    phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
                     connect_latency_ms: Some(18.0),
                     first_byte_latency_ms: Some(33.0),
                     compact_support_status: Some("supported".to_string()),
                     compact_support_reason: Some("cached_probe".to_string()),
+                    request_model: Some("requested-model".to_string()),
+                    upstream_request_model: Some("upstream-model-b".to_string()),
+                    model_mapping_pattern: Some("map-b".to_string()),
+                    request_summary_json: Some(r#"{"rewrite":"b"}"#.to_string()),
+                    upstream_request_compression_algorithm: Some("br".to_string()),
+                    upstream_request_compression_mode: Some("forced".to_string()),
+                    upstream_request_logical_body_bytes: Some(140),
+                    upstream_request_transmitted_body_bytes: Some(120),
+                    upstream_request_header_bytes_approx: Some(16),
+                    upstream_response_body_bytes: Some(320),
+                    upstream_response_header_bytes_approx: Some(24),
+                    response_raw_path: Some("captures/attempt.raw".to_string()),
+                    response_raw_codec: Some("zstd".to_string()),
+                    response_raw_size: Some(320),
+                    response_raw_truncated: Some(true),
+                    response_raw_truncated_reason: Some("limit".to_string()),
+                    response_content_encoding: Some("gzip".to_string()),
                 }),
             ],
         )
@@ -5337,13 +5688,101 @@ mod tests {
         assert_eq!(row.2, Some(33.0));
         assert_eq!(row.3.as_deref(), Some("supported"));
         assert_eq!(row.4.as_deref(), Some("cached_probe"));
+
+        let metadata = sqlx::query_as::<
+            _,
+            (
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+                Option<i64>,
+            ),
+        >(
+            r#"
+            SELECT
+                request_model, upstream_request_model, model_mapping_pattern, request_summary_json,
+                upstream_request_compression_algorithm, upstream_request_compression_mode,
+                upstream_request_logical_body_bytes, upstream_request_transmitted_body_bytes,
+                upstream_request_header_bytes_approx, upstream_response_body_bytes,
+                upstream_response_header_bytes_approx
+            FROM pool_upstream_request_attempts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load coalesced attempt metadata");
+
+        assert_eq!(metadata.0.as_deref(), Some("requested-model"));
+        assert_eq!(metadata.1.as_deref(), Some("upstream-model-b"));
+        assert_eq!(metadata.2.as_deref(), Some("map-b"));
+        assert_eq!(metadata.3.as_deref(), Some(r#"{"rewrite":"b"}"#));
+        assert_eq!(metadata.4.as_deref(), Some("br"));
+        assert_eq!(metadata.5.as_deref(), Some("forced"));
+        assert_eq!(metadata.6, Some(140));
+        assert_eq!(metadata.7, Some(120));
+        assert_eq!(metadata.8, Some(16));
+        assert_eq!(metadata.9, Some(320));
+        assert_eq!(metadata.10, Some(24));
+
+        let raw_metadata = sqlx::query_as::<
+            _,
+            (
+                Option<String>,
+                Option<String>,
+                Option<i64>,
+                Option<i64>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT response_raw_path, response_raw_codec, response_raw_size,
+                   response_raw_truncated, response_raw_truncated_reason,
+                   response_content_encoding
+            FROM pool_upstream_request_attempts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load coalesced attempt raw metadata");
+        assert_eq!(raw_metadata.0.as_deref(), Some("captures/attempt.raw"));
+        assert_eq!(raw_metadata.1.as_deref(), Some("zstd"));
+        assert_eq!(raw_metadata.2, Some(320));
+        assert_eq!(raw_metadata.3, Some(1));
+        assert_eq!(raw_metadata.4.as_deref(), Some("limit"));
+        assert_eq!(raw_metadata.5.as_deref(), Some("gzip"));
+
+        let writes =
+            sqlx::query_scalar::<_, i64>("SELECT writes FROM attempt_progress_write_counter")
+                .fetch_one(&pool)
+                .await
+                .expect("load attempt progress write count");
+        assert_eq!(
+            writes, 1,
+            "coalesced progress should execute one SQL update"
+        );
     }
 
     #[tokio::test]
     async fn attempt_progress_batch_does_not_overwrite_terminal_finalize() {
         let pool = test_pool().await;
-        let pending = pending_attempt(&pool, "batch-progress-terminal-cover").await;
+        let mut pending = pending_attempt(&pool, "batch-progress-terminal-cover").await;
         let attempt_id = pending.attempt_id.expect("attempt id");
+        pending.request_model = Some("terminal-request-model".to_string());
+        pending.upstream_request_model = Some("terminal-upstream-model".to_string());
+        pending.model_mapping_pattern = Some("terminal-map".to_string());
+        pending.request_summary_json = Some(r#"{"rewrite":"terminal"}"#.to_string());
 
         finalize_pool_upstream_request_attempt(
             &pool,
@@ -5370,11 +5809,18 @@ mod tests {
             vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string()),
                 connect_latency_ms: Some(99.0),
                 first_byte_latency_ms: Some(99.0),
                 compact_support_status: Some("stale".to_string()),
                 compact_support_reason: Some("should_not_apply".to_string()),
+                request_model: Some("stale-request-model".to_string()),
+                upstream_request_model: Some("stale-upstream-model".to_string()),
+                model_mapping_pattern: Some("stale-map".to_string()),
+                request_summary_json: Some(r#"{"rewrite":"stale"}"#.to_string()),
+                upstream_request_compression_algorithm: Some("stale-compression".to_string()),
+                upstream_request_compression_mode: Some("stale-mode".to_string()),
+                ..Default::default()
             })],
         )
         .await;
@@ -5422,6 +5868,45 @@ mod tests {
         assert_eq!(row.5, Some(188.0));
         assert_eq!(row.6.as_deref(), Some("req_terminal"));
         assert_eq!(row.7, None);
+
+        let terminal_metadata = sqlx::query_as::<
+            _,
+            (
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ),
+        >(
+            r#"
+            SELECT request_model, upstream_request_model, model_mapping_pattern,
+                   request_summary_json, upstream_request_compression_algorithm,
+                   upstream_request_compression_mode
+            FROM pool_upstream_request_attempts
+            WHERE id = ?1
+            "#,
+        )
+        .bind(attempt_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load terminal metadata");
+        assert_eq!(
+            terminal_metadata.0.as_deref(),
+            Some("terminal-request-model")
+        );
+        assert_eq!(
+            terminal_metadata.1.as_deref(),
+            Some("terminal-upstream-model")
+        );
+        assert_eq!(terminal_metadata.2.as_deref(), Some("terminal-map"));
+        assert_eq!(
+            terminal_metadata.3.as_deref(),
+            Some(r#"{"rewrite":"terminal"}"#)
+        );
+        assert_eq!(terminal_metadata.4, None);
+        assert_eq!(terminal_metadata.5, None);
     }
 
     #[tokio::test]
@@ -5442,11 +5927,12 @@ mod tests {
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
                 connect_latency_ms: Some(21.0),
                 first_byte_latency_ms: Some(34.0),
                 compact_support_status: None,
                 compact_support_reason: None,
+                ..Default::default()
             }))
         );
 
@@ -5496,11 +5982,12 @@ mod tests {
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
                 connect_latency_ms: Some(23.0),
                 first_byte_latency_ms: Some(37.0),
                 compact_support_status: None,
                 compact_support_reason: None,
+                ..Default::default()
             }))
         );
 

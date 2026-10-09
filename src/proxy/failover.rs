@@ -68,7 +68,7 @@ async fn record_pool_request_prepare_failure_attempt(
     let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
     let upstream_route_key = account.upstream_route_key();
     let started_at = format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
-    let pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
+    let mut pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
         &state.pool,
         &attempt_trace,
         group_name_snapshot.as_deref(),
@@ -84,13 +84,10 @@ async fn record_pool_request_prepare_failure_attempt(
     )
     .await;
     if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-        &state.pool,
-        &pending,
+        &mut pending,
         None,
         model_mapping_pattern,
-    )
-    .await
-    {
+    ) {
         warn!(
             invoke_id = %pending.invoke_id,
             error = %err,
@@ -990,26 +987,20 @@ fn spawn_pool_attempt_response_capture(
             &raw_meta,
             response_content_encoding.as_deref(),
         );
-        match persist_pool_upstream_request_attempt_response_capture(&state.pool, &pending).await {
-            Ok(()) => {
-                if let Err(err) =
-                    broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id)
-                        .await
-                {
-                    warn!(
-                        invoke_id = %pending.invoke_id,
-                        error = %err,
-                        "failed to broadcast asynchronous pool attempt response capture"
-                    );
-                }
-            }
-            Err(err) => {
-                warn!(
-                    invoke_id = %pending.invoke_id,
-                    error = %err,
-                    "failed to persist asynchronous pool attempt response capture"
-                );
-            }
+        if !enqueue_pool_upstream_request_attempt_snapshot(state.as_ref(), &pending) {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                "deferred pool attempt response capture was not admitted to the batch writer"
+            );
+        }
+        if let Err(err) =
+            broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id).await
+        {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                error = %err,
+                "failed to broadcast asynchronous pool attempt response capture"
+            );
         }
     });
 }
@@ -2367,50 +2358,44 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                        && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-                            &state.pool,
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                        if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
                             pending_attempt_record,
                             upstream_request_model,
                             model_mapping_pattern,
-                        )
-                        .await
-                    {
-                        warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to persist pool model mapping attempt metadata"
-                        );
-                    }
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
-                        && let Err(err) =
-                            annotate_pool_upstream_request_attempt_request_compression(
-                                &state.pool,
-                                pending_attempt_record,
-                                outbound_request_body.content_encoding.algorithm().as_str(),
-                                outbound_request_body.compression_mode.as_str(),
-                            )
-                            .await
-                    {
-                        warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to persist pool request compression metadata"
-                        );
-                    }
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                        && let Err(err) =
+                        ) {
+                            warn!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to prepare pool model mapping attempt metadata"
+                            );
+                        }
+                        if let Err(err) = annotate_pool_upstream_request_attempt_request_compression(
+                            pending_attempt_record,
+                            outbound_request_body.content_encoding.algorithm().as_str(),
+                            outbound_request_body.compression_mode.as_str(),
+                        ) {
+                            warn!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to prepare pool request compression metadata"
+                            );
+                        }
+                        if let Err(err) =
                             annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
-                                &state.pool,
                                 pending_attempt_record,
                                 attempted_codex_imagegen_rewrite.as_ref(),
                             )
-                            .await
-                    {
-                        warn!(
-                            invoke_id = %pending_attempt_record.invoke_id,
-                            error = %err,
-                            "failed to persist pool Codex imagegen rewrite audit"
+                        {
+                            warn!(
+                                invoke_id = %pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to prepare pool Codex imagegen rewrite audit"
+                            );
+                        }
+                        enqueue_pool_upstream_request_attempt_snapshot(
+                            state.as_ref(),
+                            pending_attempt_record,
                         );
                     }
                     let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
@@ -2521,6 +2506,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     None,
                                     Some(response_header_bytes_approx),
                                 );
+                                enqueue_pool_upstream_request_attempt_snapshot(
+                                    state.as_ref(),
+                                    pending_attempt_record,
+                                );
                             }
                             (
                                 ProxyUpstreamResponseBody::Axum(response.response),
@@ -2547,6 +2536,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     Some(request_header_bytes_approx),
                                     None,
                                     None,
+                                );
+                                enqueue_pool_upstream_request_attempt_snapshot(
+                                    state.as_ref(),
+                                    pending_attempt_record,
                                 );
                             }
                             record_pool_account_forward_proxy_result(
@@ -2766,6 +2759,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     Some(request_header_bytes_approx),
                                     None,
                                     None,
+                                );
+                                enqueue_pool_upstream_request_attempt_snapshot(
+                                    state.as_ref(),
+                                    pending_attempt_record,
                                 );
                             }
                             record_pool_account_forward_proxy_result(
@@ -3245,19 +3242,17 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     } else {
                         None
                     };
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
                         && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-                            &state.pool,
                             pending_attempt_record,
                             upstream_request_model,
                             model_mapping_pattern,
                         )
-                        .await
                     {
                         warn!(
                             invoke_id = %pending_attempt_record.invoke_id,
                             error = %err,
-                            "failed to persist pool model mapping attempt metadata"
+                            "failed to prepare pool model mapping attempt metadata"
                         );
                     }
                     let forwarded_request_compression = (method != Method::GET)
@@ -3268,32 +3263,34 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         forwarded_request_compression,
                     ) && let Err(err) =
                         annotate_pool_upstream_request_attempt_request_compression(
-                            &state.pool,
                             pending_attempt_record,
                             algorithm,
                             mode,
                         )
-                        .await
                     {
                         warn!(
                             invoke_id = %pending_attempt_record.invoke_id,
                             error = %err,
-                            "failed to persist pool OAuth request compression metadata"
+                            "failed to prepare pool OAuth request compression metadata"
                         );
                     }
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
                         && let Err(err) =
                             annotate_pool_upstream_request_attempt_codex_imagegen_rewrite(
-                                &state.pool,
                                 pending_attempt_record,
                                 attempted_codex_imagegen_rewrite.as_ref(),
                             )
-                            .await
                     {
                         warn!(
                             invoke_id = %pending_attempt_record.invoke_id,
                             error = %err,
-                            "failed to persist pool Codex imagegen rewrite audit"
+                            "failed to prepare pool Codex imagegen rewrite audit"
+                        );
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                        enqueue_pool_upstream_request_attempt_snapshot(
+                            state.as_ref(),
+                            pending_attempt_record,
                         );
                     }
                     let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
@@ -3748,6 +3745,10 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             pending.compact_support_reason = compact_support_observation
                                 .as_ref()
                                 .and_then(|value| value.reason.clone());
+                            enqueue_pool_upstream_request_attempt_snapshot(
+                                state.as_ref(),
+                                &pending,
+                            );
                             pending
                         }),
                         deferred_early_phase_cleanup_guard,
@@ -4718,6 +4719,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     pending.compact_support_reason = compact_support_observation
                         .as_ref()
                         .and_then(|value| value.reason.clone());
+                    enqueue_pool_upstream_request_attempt_snapshot(state.as_ref(), &pending);
                     pending
                 }),
                 deferred_early_phase_cleanup_guard,

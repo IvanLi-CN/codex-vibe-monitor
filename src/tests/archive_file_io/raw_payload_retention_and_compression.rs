@@ -4889,6 +4889,9 @@ async fn finalize_pool_upstream_request_attempt_fallback_preserves_scope_snapsho
         requester_ip: Some("192.168.31.10".to_string()),
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: Some("prod".to_string()),
         proxy_binding_key_snapshot: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
         upstream_account_id: account_id,
@@ -5223,11 +5226,12 @@ async fn advance_pool_upstream_request_attempt_phase_buffers_progress_without_im
         vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
             attempt_id: pending.attempt_id.expect("pending attempt id"),
             pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string(),
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string()),
             connect_latency_ms: None,
             first_byte_latency_ms: None,
             compact_support_status: None,
             compact_support_reason: None,
+            ..Default::default()
         })],
     )
     .await;
@@ -6024,6 +6028,9 @@ async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
@@ -7261,6 +7268,9 @@ async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_w
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: account_id,
@@ -7333,6 +7343,9 @@ async fn finalize_deferred_pool_early_phase_cleanup_guard_after_terminal_invocat
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 18,
@@ -7405,6 +7418,9 @@ async fn complete_deferred_pool_early_phase_cleanup_guard_marks_terminal_and_dis
         requester_ip: Some("192.168.31.6".to_string()),
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 17,
@@ -7500,6 +7516,9 @@ async fn attempt_completion_preserves_synthetic_runtime_until_request_cleanup() 
         requester_ip: None,
         upstream_base_url_host: None,
         request_model: None,
+        upstream_request_model: None,
+        model_mapping_pattern: None,
+        request_summary_json: None,
         group_name_snapshot: None,
         proxy_binding_key_snapshot: None,
         upstream_account_id: 19,
@@ -9191,11 +9210,12 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_phase_b
         vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
             attempt_id,
             pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
             connect_latency_ms: None,
             first_byte_latency_ms: None,
             compact_support_status: None,
             compact_support_reason: None,
+            ..Default::default()
         })],
     )
     .await;
@@ -9312,11 +9332,12 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_attempt
         vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
             attempt_id,
             pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string()),
             connect_latency_ms: None,
             first_byte_latency_ms: None,
             compact_support_status: None,
             compact_support_reason: None,
+            ..Default::default()
         })],
     )
     .await;
@@ -9450,11 +9471,12 @@ async fn recover_stale_pool_upstream_request_attempt_candidates_rechecks_invocat
         vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
             attempt_id,
             pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string()),
             connect_latency_ms: None,
             first_byte_latency_ms: None,
             compact_support_status: None,
             compact_support_reason: None,
+            ..Default::default()
         })],
     )
     .await;
