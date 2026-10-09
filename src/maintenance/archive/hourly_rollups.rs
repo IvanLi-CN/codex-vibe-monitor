@@ -6071,7 +6071,53 @@ mod retention_breakdown_materialization_tests {
         .execute(&pool)
         .await
         .expect("create hourly_rollup_archive_progress table");
+        sqlx::query(
+            r#"
+            CREATE TABLE hourly_rollup_archive_repair_progress (
+                scope TEXT PRIMARY KEY,
+                cursor_id INTEGER NOT NULL DEFAULT 0,
+                cursor_stale_rank INTEGER NOT NULL DEFAULT 0,
+                cursor_month_key TEXT NOT NULL DEFAULT '',
+                cursor_created_at TEXT NOT NULL DEFAULT '',
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create hourly_rollup_archive_repair_progress table");
         pool
+    }
+
+    async fn write_valid_invocation_archive(file_path: &str) {
+        let source_path = PathBuf::from(format!("{file_path}.source.sqlite"));
+        let _ = fs::remove_file(&source_path);
+        fs::File::create(&source_path).expect("create invocation archive source file");
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&source_path))
+            .await
+            .expect("open invocation archive source sqlite");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+             id INTEGER PRIMARY KEY, invoke_id TEXT NOT NULL, occurred_at TEXT NOT NULL,\
+             raw_response TEXT NOT NULL)",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create invocation archive source schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, raw_response) \
+             VALUES (1, ?1, '2026-07-01 15:10:00', '{}')",
+        )
+        .bind(file_path)
+        .execute(&archive_pool)
+        .await
+        .expect("insert invocation archive source row");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&source_path, Path::new(file_path))
+            .expect("compress invocation archive source");
+        let _ = fs::remove_file(source_path);
     }
 
     #[tokio::test]
@@ -6995,6 +7041,7 @@ mod retention_breakdown_materialization_tests {
                 "usage-breakdown-overlap-second-sha",
             ),
         ] {
+            write_valid_invocation_archive(file_path).await;
             sqlx::query(
                 r#"
                 INSERT INTO archive_batches (

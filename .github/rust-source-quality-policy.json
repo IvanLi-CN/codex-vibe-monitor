@@ -39,7 +39,7 @@
     {
       "path": "src/maintenance/archive/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 7189,
+      "line_budget": 7210,
       "next_module_workstream": "Split archive hourly rollup entry, account activity, network, replay, and retention."
     },
     {
