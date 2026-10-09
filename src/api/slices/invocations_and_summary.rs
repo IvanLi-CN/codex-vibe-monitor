@@ -33950,6 +33950,33 @@ mod request_compression_query_tests {
             ),
             "an all-time gap must fail closed for both HTTP and Summary SSE"
         );
+        let mut scoped_source_gap = gap.clone();
+        scoped_source_gap.source_gap = true;
+        scoped_source_gap.terminal_sequence = None;
+        assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&scoped_source_gap),
+                &[],
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+                SummaryDeltaGapKind::Source,
+            ),
+            "a durable-identity source proof must remain unavailable for its selection"
+        );
+        assert!(
+            !summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&scoped_source_gap),
+                &[],
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+                SummaryDeltaGapKind::Terminal,
+            ),
+            "a source proof must not be downgraded to a terminal-only gap"
+        );
         assert!(
             !summary_delta_gap_affects_selection(
                 projection.as_ref(),

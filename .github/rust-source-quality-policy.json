@@ -15,13 +15,13 @@
     {
       "path": "src/api/slices/invocations_and_summary.rs",
       "role": "production",
-      "line_budget": 40548,
+      "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
     },
     {
       "path": "src/api/slices/subscriptions.rs",
       "role": "production",
-      "line_budget": 24405,
+      "line_budget": 24427,
       "next_module_workstream": "Split subscription runtime, hub materialization, topic projection, and query assembly."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 5855,
+      "line_budget": 5963,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {
@@ -141,7 +141,7 @@
     {
       "path": "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs",
       "role": "test_helper",
-      "line_budget": 23829,
+      "line_budget": 23971,
       "next_module_workstream": "Split parallel work stats/timeseries fixtures by archive fallback, windows, repairs, and concurrency."
     },
     {

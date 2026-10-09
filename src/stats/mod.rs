@@ -7,6 +7,7 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &s
     "codex_invocations_summary_rollup_v2_live_cursor";
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
+const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = 128;
 
 #[derive(Debug, Clone)]
 pub(crate) enum SummaryWindow {
@@ -5045,20 +5046,66 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_live_rows(
     Ok(cursor_id)
 }
 
-pub(crate) async fn mark_materialized_invocation_summary_archive_replayed_tx(
+async fn mark_materialized_invocation_summary_archive_replayed_tx(
     tx: &mut SqliteConnection,
     archive_row: &ArchiveBatchPathRow,
-) -> Result<()> {
+) -> Result<bool> {
+    let can_repair_markers = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1
+            FROM archive_batches AS batches
+            WHERE batches.dataset = ?1
+              AND batches.file_path = ?2
+              AND batches.status = ?3
+              AND batches.historical_rollups_materialized_at IS NOT NULL
+              AND batches.sha256 IS NOT NULL
+              AND TRIM(batches.sha256) <> ''
+              AND EXISTS(
+                  SELECT 1
+                  FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target = ?4
+                    AND replay.dataset = batches.dataset
+                    AND replay.file_path = batches.file_path
+                    AND replay.archive_sha256 = batches.sha256
+              )
+              AND NOT EXISTS(
+                  SELECT 1
+                  FROM hourly_rollup_archive_replay AS replay
+                  WHERE replay.target IN (?4, ?5)
+                    AND replay.dataset = batches.dataset
+                    AND replay.file_path = batches.file_path
+                    AND (
+                        replay.archive_sha256 IS NULL
+                        OR TRIM(replay.archive_sha256) = ''
+                        OR replay.archive_sha256 <> batches.sha256
+                    )
+              )
+        )
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(archive_row.file_path())
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_one(&mut *tx)
+    .await?
+        != 0;
+    if !can_repair_markers {
+        return Ok(false);
+    }
+
     for target in INVOCATION_SUMMARY_ROLLUP_TARGETS {
         mark_hourly_rollup_archive_replayed_tx(
             tx,
             target,
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &archive_row.file_path,
+            archive_row.file_path(),
         )
         .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 pub(crate) async fn hourly_rollup_progress_exists(
@@ -5173,11 +5220,41 @@ async fn repair_invocation_summary_rollups_with_mode(
         tx.commit().await?;
         return Ok(());
     }
-    let archive_rows = load_completed_invocation_archive_paths(tx.as_mut()).await?;
-    let preserve_materialized_archives = archive_rows.iter().any(|archive_row| {
-        archive_row.historical_rollups_materialized_at.is_some()
-            && !PathBuf::from(&archive_row.file_path).exists()
-    });
+    let archive_rows = if force_rebuild {
+        let archive_rows = load_completed_archive_paths_for_dataset_in_range_with_limit(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            None,
+            Some(SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT),
+        )
+        .await?;
+        if archive_rows.len() > SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT {
+            bail!(
+                "summary rollup force rebuild is bounded to {} archive batches",
+                SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT
+            );
+        }
+        archive_rows
+    } else {
+        load_completed_invocation_archive_paths(tx.as_mut()).await?
+    };
+    let mut missing_materialized_bucket_epochs = HashSet::new();
+    let mut missing_materialized_archive_has_unknown_scope = false;
+    for archive_row in &archive_rows {
+        if archive_row.historical_rollups_materialized_at.is_none()
+            || PathBuf::from(archive_row.file_path()).exists()
+        {
+            continue;
+        }
+        let bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+        if bucket_epochs.is_empty() {
+            missing_materialized_archive_has_unknown_scope = true;
+        } else {
+            missing_materialized_bucket_epochs.extend(bucket_epochs);
+        }
+    }
+    let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
+        || missing_materialized_archive_has_unknown_scope;
     let shared_live_cursor =
         load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
 
@@ -5192,13 +5269,27 @@ async fn repair_invocation_summary_rollups_with_mode(
 
     let mut seen_ids = HashSet::new();
     let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
+    let mut repair_incomplete = false;
     for archive_row in &archive_rows {
-        let preserve_materialized_archive =
-            archive_row.historical_rollups_materialized_at.is_some()
-                && !PathBuf::from(&archive_row.file_path).exists();
-        if preserve_materialized_archive {
-            mark_materialized_invocation_summary_archive_replayed_tx(tx.as_mut(), archive_row)
-                .await?;
+        let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+        let archive_path = PathBuf::from(archive_row.file_path());
+        if materialized_archive && !archive_path.exists() {
+            if !mark_materialized_invocation_summary_archive_replayed_tx(tx.as_mut(), archive_row)
+                .await?
+            {
+                repair_incomplete = true;
+            }
+            continue;
+        }
+        let archive_bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+        let overlaps_missing_materialized_archive = missing_materialized_archive_has_unknown_scope
+            || archive_bucket_epochs
+                .iter()
+                .any(|bucket| missing_materialized_bucket_epochs.contains(bucket));
+        if preserve_materialized_archives && overlaps_missing_materialized_archive {
+            // Replacing a shared bucket would erase the contribution of a missing materialized
+            // archive. Leave both archives for a later pass with a complete source set.
+            repair_incomplete = true;
             continue;
         }
         rebuild_invocation_summary_rollups_from_archive_batch(
@@ -5208,7 +5299,7 @@ async fn repair_invocation_summary_rollups_with_mode(
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-            preserve_materialized_archives,
+            true,
         )
         .await?;
     }
@@ -5240,18 +5331,20 @@ async fn repair_invocation_summary_rollups_with_mode(
         },
     )
     .await?;
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-        live_cursor_id.max(shared_live_cursor),
-    )
-    .await?;
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
-    )
-    .await?;
+    if !repair_incomplete {
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+            live_cursor_id.max(shared_live_cursor),
+        )
+        .await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+    }
     tx.commit().await?;
     Ok(())
 }
@@ -5293,6 +5386,21 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
         tx.rollback().await?;
         return Ok(());
     }
+    let mut missing_materialized_bucket_epochs = HashSet::new();
+    let mut missing_materialized_archive_has_unknown_scope = false;
+    for archive_row in &archive_rows {
+        if archive_row.historical_rollups_materialized_at.is_none()
+            || PathBuf::from(archive_row.file_path()).exists()
+        {
+            continue;
+        }
+        let bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+        if bucket_epochs.is_empty() {
+            missing_materialized_archive_has_unknown_scope = true;
+        } else {
+            missing_materialized_bucket_epochs.extend(bucket_epochs);
+        }
+    }
     // This query is an archive-count budget, not a complete rollup bucket boundary. Keep the
     // repair additive so a later bounded pass cannot clear contributions from archives replayed
     // by an earlier pass in the same hour/source bucket.
@@ -5311,17 +5419,17 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
         if targets.is_empty() {
             continue;
         }
-        let archive_path = PathBuf::from(&archive_row.file_path);
-        if archive_row.historical_rollups_materialized_at.is_some() && !archive_path.exists() {
-            for target in &targets {
-                mark_hourly_rollup_archive_replayed_tx(
-                    tx.as_mut(),
-                    target,
-                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                    &archive_row.file_path,
-                )
-                .await?;
-            }
+        let archive_bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+        let overlaps_missing_materialized_archive = missing_materialized_archive_has_unknown_scope
+            || archive_bucket_epochs
+                .iter()
+                .any(|bucket| missing_materialized_bucket_epochs.contains(bucket));
+        if archive_row.historical_rollups_materialized_at.is_some()
+            || overlaps_missing_materialized_archive
+        {
+            // A materialized archive needs the bounded replacement path above to establish both
+            // current Summary target markers. Also defer any peer sharing a bucket with a missing
+            // materialized archive so additive replay cannot duplicate the preserved aggregate.
             continue;
         }
         rebuild_invocation_summary_rollups_from_archive_batch(

@@ -5100,7 +5100,7 @@ impl SubscriptionHub {
         } else {
             false
         };
-        if overflowed && (!all_time || !overflow_is_covered) {
+        if all_time && overflowed && !overflow_is_covered {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
@@ -19432,6 +19432,28 @@ mod tests {
                 .await,
             Err(ApiError::Unavailable(_))
         ));
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn rolling_overlay_overflow_stays_selection_local() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard.summary_delta_journal.overflowed_through_sequence = Some(42);
+        }
+        let projection = SummaryProjection::default();
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, false, None)
+                .await
+                .is_ok(),
+            "rolling overflow must be reconciled by the selection-local gap proof"
+        );
         state.pool.close().await;
     }
 

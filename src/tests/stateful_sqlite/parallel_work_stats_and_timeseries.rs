@@ -8665,6 +8665,149 @@ async fn all_time_summary_missing_summary_markers_do_not_replay_materialized_arc
 }
 
 #[tokio::test]
+async fn summary_rollup_repair_preserves_shared_bucket_when_materialized_archive_is_missing() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(12))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid shared archived hour");
+    let first_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(5))
+            .expect("first archived time"),
+    );
+    let second_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(25))
+            .expect("second archived time"),
+    );
+    let first_archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-shared-bucket-missing-materialized-a",
+        &[(
+            1_i64,
+            "summary-shared-bucket-missing-a",
+            first_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let second_archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "summary-shared-bucket-missing-materialized-b",
+        &[(
+            2_i64,
+            "summary-shared-bucket-missing-b",
+            second_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            20_i64,
+            0.20_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    for archive_path in [&first_archive_path, &second_archive_path] {
+        sqlx::query(
+            "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+             WHERE dataset = 'codex_invocations' AND file_path = ?1",
+        )
+        .bind(archive_path.to_string_lossy().to_string())
+        .execute(&state.pool)
+        .await
+        .expect("mark shared-bucket archives as materialized");
+    }
+
+    let bucket_start_epoch = invocation_bucket_start_epoch(&first_occurred_at)
+        .expect("shared bucket start epoch should be derivable");
+    let empty_histogram =
+        encode_approx_histogram(&empty_approx_histogram()).expect("encode empty histogram");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, 2, 2, 0, 30, 0.30, 0, 0, 0, ?3)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(empty_histogram)
+    .execute(&state.pool)
+    .await
+    .expect("seed complete shared-bucket summary rollup");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_archive_replay \
+         (target, dataset, file_path, archive_sha256, replayed_at) \
+         VALUES (?1, 'codex_invocations', ?2, 'stale-sha', datetime('now'))",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .execute(&state.pool)
+    .await
+    .expect("seed stale marker for missing materialized archive");
+
+    fs::remove_file(&first_archive_path).expect("remove first materialized archive");
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&state.pool)
+        .await
+        .expect("defer shared-bucket repair without losing existing rollups");
+
+    let rollup_total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1",
+    )
+    .bind(bucket_start_epoch)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved shared-bucket rollup");
+    assert_eq!(rollup_total_count, 2);
+
+    let first_marker: String = sqlx::query_scalar(
+        "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+         WHERE target = ?1 AND dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(first_archive_path.to_string_lossy().to_string())
+    .fetch_one(&state.pool)
+    .await
+    .expect("load preserved stale marker");
+    assert_eq!(first_marker, "stale-sha");
+
+    let second_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1 \
+           AND target IN (?2, ?3)",
+    )
+    .bind(second_archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count deferred peer markers");
+    assert_eq!(second_marker_count, 0);
+}
+
+#[tokio::test]
 async fn all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing() {
     let mut config = test_config();
     config.openai_upstream_base_url =
