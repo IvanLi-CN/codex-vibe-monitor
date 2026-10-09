@@ -111,7 +111,7 @@
     {
       "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
       "role": "test_helper",
-      "line_budget": 12578,
+      "line_budget": 12827,
       "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
     },
     {
