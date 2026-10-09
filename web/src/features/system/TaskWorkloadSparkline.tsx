@@ -365,6 +365,7 @@ export function TaskWorkloadSparkline({
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsButtonRef = useRef<HTMLButtonElement | null>(null);
   const detailsPanelRef = useRef<HTMLDivElement | null>(null);
+  const detailsFocusPendingRef = useRef(false);
   const [detailsPosition, setDetailsPosition] = useState<{
     top: number;
     left: number;
@@ -700,8 +701,14 @@ export function TaskWorkloadSparkline({
     };
   }, [backgroundMode, detailsOpen]);
   useEffect(() => {
-    if (!detailsOpen) return;
-    detailsPanelRef.current?.focus({ preventScroll: true });
+    detailsFocusPendingRef.current = detailsOpen;
+  }, [detailsOpen]);
+  useEffect(() => {
+    if (!detailsOpen || !detailsFocusPendingRef.current) return;
+    const panel = detailsPanelRef.current;
+    if (!panel) return;
+    panel.focus({ preventScroll: true });
+    detailsFocusPendingRef.current = false;
   }, [backgroundMode, detailsOpen, detailsPosition]);
   useEffect(() => {
     if (!backgroundMode || !detailsOpen || typeof MutationObserver === "undefined") return;

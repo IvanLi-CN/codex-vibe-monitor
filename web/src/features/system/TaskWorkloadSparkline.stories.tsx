@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { ReactNode } from "react";
+import { act } from "react";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import { managedTasks } from "../../demo/handlers";
 import type { ManagedTask, TaskWorkloadTrend } from "../../lib/api";
@@ -139,9 +140,16 @@ export const BackgroundRow: Story = {
     await expect(dialog).toHaveTextContent("本次处理 C");
     await expect(dialog).toHaveTextContent("触发时间：");
     await expect(dialog).toHaveFocus();
+    const detailsButton = canvas.getByRole("button", { name: /运行计量详情/ });
+    await act(async () => {
+      detailsButton.focus();
+      canvasElement.ownerDocument.defaultView?.dispatchEvent(new Event("resize"));
+    });
+    await expect(detailsButton).toHaveFocus();
+    await act(async () => dialog.focus());
     await userEvent.keyboard("{Escape}");
     await expect(body.queryByRole("dialog", { name: /运行计量详情/ })).toBeNull();
-    await expect(canvas.getByRole("button", { name: /运行计量详情/ })).toHaveFocus();
+    await expect(detailsButton).toHaveFocus();
     await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
     canvasElement.querySelector<HTMLElement>("[data-task-catalog-row]")?.setAttribute("hidden", "");
     await waitFor(() => expect(body.queryByRole("dialog", { name: /运行计量详情/ })).toBeNull());
