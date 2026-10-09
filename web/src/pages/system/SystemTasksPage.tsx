@@ -618,7 +618,7 @@ export default function SystemTasksPage(): JSX.Element {
                 className={`relative isolate grid gap-3 bg-base-100/35 px-4 py-4 transition-colors hover:bg-primary/5 md:grid-cols-[minmax(0,1.15fr)_minmax(0,.85fr)_minmax(0,1.05fr)_minmax(0,1.3fr)_auto] md:items-center ${visibleTaskKeys.has(task.taskKey) ? "" : "!hidden"}`}
               >
                 <TaskWorkloadSparkline task={task} dark={dark} mode="background" />
-                <div className="relative z-10 min-w-0">
+                <div className="relative z-10 min-w-0 pr-8 md:pr-0">
                   <div className="flex flex-wrap items-center gap-2">
                     <Link
                       to={`/system/tasks/${encodeURIComponent(task.taskKey)}`}
@@ -686,7 +686,7 @@ export default function SystemTasksPage(): JSX.Element {
                     </div>
                   )}
                 </div>
-                <div className="relative z-10 text-sm md:text-right">
+                <div className="relative z-10 text-sm md:pr-8 md:text-right">
                   <div className="text-xs text-base-content/55">级别</div>
                   <div className="mt-1">{managedTaskExecutionClassLabel(task.executionClass)}</div>
                 </div>

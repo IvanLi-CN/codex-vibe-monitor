@@ -3153,11 +3153,13 @@ function demoTaskOperationsRuntime() {
 
 const DEMO_DENSE_DEFERRAL_COUNT = 6_000;
 const DEMO_DENSE_GROUP_COUNT = DEMO_DENSE_DEFERRAL_COUNT / 4;
-const cachedDemoTaskOperationsTimelines = new Map<
-  string,
+type DemoTaskOperationsTimeline =
   | ReturnType<typeof createDemoTaskOperationsTimeline>
-  | ReturnType<typeof createDenseTaskOperationsTimeline>
->();
+  | ReturnType<typeof createDenseTaskOperationsTimeline>;
+let cachedDemoTaskOperationsTimeline: {
+  scene: string;
+  snapshot: DemoTaskOperationsTimeline;
+} | null = null;
 
 function createDenseTaskOperationsTimeline() {
   const now = Date.now();
@@ -3440,13 +3442,14 @@ function createDemoTaskOperationsTimeline() {
 
 function demoTaskOperationsTimeline() {
   const scene = demoModel.snapshot.scene;
-  const cached = cachedDemoTaskOperationsTimelines.get(scene);
-  if (cached) return cached;
+  if (cachedDemoTaskOperationsTimeline?.scene === scene) {
+    return cachedDemoTaskOperationsTimeline.snapshot;
+  }
   const snapshot =
     scene === "task-timeline-pressure-dense"
       ? createDenseTaskOperationsTimeline()
       : createDemoTaskOperationsTimeline();
-  cachedDemoTaskOperationsTimelines.set(scene, snapshot);
+  cachedDemoTaskOperationsTimeline = { scene, snapshot };
   return snapshot;
 }
 

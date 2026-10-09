@@ -386,6 +386,23 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
     maxEnd = Math.max(maxEnd, item.endMs);
     prefixMaxEnd.push(maxEnd);
   }
+  const overlapCounts = buildOverlapCounts(sorted, starts, ends);
+  return {
+    sorted,
+    starts,
+    prefixMaxEnd,
+    overlapCounts,
+    byId: new Map(sorted.map((item) => [item.segment.segmentId, item])),
+  };
+}
+
+function buildOverlapCounts(
+  sorted: PositionedDeferral[],
+  starts = sorted.map((item) => item.startMs),
+  ends = [...sorted]
+    .sort((left, right) => left.endMs - right.endMs || left.order - right.order)
+    .map((item) => item.endMs),
+): Map<string, number> {
   const overlapCounts = new Map<string, number>();
   for (const item of sorted) {
     const startsBeforeEnd = lowerBound(starts, item.endMs);
@@ -395,13 +412,7 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
       Math.max(0, startsBeforeEnd - endsAtOrBeforeStart - 1),
     );
   }
-  return {
-    sorted,
-    starts,
-    prefixMaxEnd,
-    overlapCounts,
-    byId: new Map(sorted.map((item) => [item.segment.segmentId, item])),
-  };
+  return overlapCounts;
 }
 
 function buildLiveDeferralIndex(
@@ -414,15 +425,13 @@ function buildLiveDeferralIndex(
   const dynamic = [...liveItems].sort(
     (left, right) => left.startMs - right.startMs || left.order - right.order,
   );
+  const dynamicOverlapCounts = buildOverlapCounts(dynamic);
   for (const liveItem of dynamic) {
     const staticOverlaps = overlappingDeferralsInIndex(liveItem, staticIndex);
-    const dynamicOverlaps = dynamic.filter(
-      (other) =>
-        other.segment.segmentId !== liveItem.segment.segmentId &&
-        other.startMs < liveItem.endMs &&
-        other.endMs > liveItem.startMs,
+    overlapCounts.set(
+      liveItem.segment.segmentId,
+      staticOverlaps.length + (dynamicOverlapCounts.get(liveItem.segment.segmentId) ?? 0),
     );
-    overlapCounts.set(liveItem.segment.segmentId, staticOverlaps.length + dynamicOverlaps.length);
     for (const staticItem of staticOverlaps) {
       overlapCounts.set(
         staticItem.segment.segmentId,
@@ -1565,7 +1574,7 @@ export function TaskTimelineChart({
                 chartWidth={chartWidth}
                 windowStart={modelWindowStart}
                 pressureTop={pressureTop}
-                overlapCounts={staticDeferralIndex.overlapCounts}
+                overlapCounts={deferralIndex.overlapCounts}
                 onSelect={selectDeferral}
                 onActivate={activateDeferral}
                 onDeactivate={deactivateDeferral}

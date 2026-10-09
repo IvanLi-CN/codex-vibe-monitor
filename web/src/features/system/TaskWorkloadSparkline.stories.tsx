@@ -124,9 +124,9 @@ export const BackgroundRow: Story = {
     const title = canvas.getByRole("heading", { name: task.title });
     await expect(title).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
-    await expect(canvas.getByRole("dialog", { name: /运行计量详情/ })).toHaveTextContent(
-      "触发时间：",
-    );
+    await expect(
+      within(canvasElement.ownerDocument.body).getByRole("dialog", { name: /运行计量详情/ }),
+    ).toHaveTextContent("触发时间：");
   },
 };
 

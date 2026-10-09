@@ -305,6 +305,43 @@ describe("TaskTimelineChart", () => {
     expect(bars[0].querySelector("rect")?.getAttribute("fill-opacity")).toBe("1");
   });
 
+  it("includes open deferrals when calculating static overlap opacity", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const open = {
+      ...deferral("open-wait", nowMs - 60_000, nowMs - 1_000, "pressure_cooldown"),
+      status: "waiting",
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    } satisfies TaskTimelineSegment;
+    renderChart({
+      nowMs,
+      executions: [deferral("closed-wait", nowMs - 90_000, nowMs - 30_000, "resource_busy"), open],
+    });
+
+    const closedBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="closed-wait"]');
+    expect(closedBar?.getAttribute("aria-label")).toContain("与 1 条任务让行重叠");
+    expect(closedBar?.querySelector("rect")?.getAttribute("fill-opacity")).toBe("0.55");
+  });
+
+  it("counts dense open deferrals without pairwise render work", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const openDeferrals = Array.from({ length: 600 }, (_, index) => ({
+      ...deferral(
+        `open-dense-${index}`,
+        nowMs - 60_000 + index * 10,
+        nowMs - 1_000,
+        "resource_busy",
+      ),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    }));
+    renderChart({ nowMs, executions: openDeferrals });
+
+    const firstBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="open-dense-0"]');
+    expect(firstBar?.getAttribute("aria-label")).toContain("与 599 条任务让行重叠");
+  });
+
   it("keeps high-density deferral details lazy and refreshes a focused interval", async () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const dense = Array.from({ length: 1_000 }, (_, index) => {
