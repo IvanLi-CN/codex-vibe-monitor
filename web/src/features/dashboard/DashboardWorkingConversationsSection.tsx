@@ -4047,9 +4047,10 @@ function buildDashboardWorkingConversationCardIdentity(
 
 function buildDashboardWorkingConversationCardAnchorKey(
   promptCacheKey: string,
+  conversationId: string,
   occurrence: number,
 ) {
-  return JSON.stringify([promptCacheKey, occurrence]);
+  return JSON.stringify([promptCacheKey, conversationId, occurrence]);
 }
 
 type DashboardVisibleAnchorKind = "conversation" | "upstreamAccount";
@@ -4723,14 +4724,33 @@ export function DashboardWorkingConversationsSection({
     [cards, conversationSort],
   );
   const cardAnchorKeys = useMemo(() => {
-    const occurrences = new Map<string, number>();
+    const promptCacheKeyCounts = new Map<string, number>();
+    for (const card of sortedCards) {
+      promptCacheKeyCounts.set(
+        card.promptCacheKey,
+        (promptCacheKeyCounts.get(card.promptCacheKey) ?? 0) + 1,
+      );
+    }
+    const compositeOccurrences = new Map<string, number>();
     const keys = new Map<DashboardWorkingConversationCardModel, string>();
     for (const card of sortedCards) {
-      const occurrence = occurrences.get(card.promptCacheKey) ?? 0;
-      occurrences.set(card.promptCacheKey, occurrence + 1);
+      if (promptCacheKeyCounts.get(card.promptCacheKey) === 1) {
+        keys.set(card, JSON.stringify([card.promptCacheKey]));
+        continue;
+      }
+      const compositeIdentity = buildDashboardWorkingConversationCardIdentity(
+        card.promptCacheKey,
+        card.conversationId,
+      );
+      const occurrence = compositeOccurrences.get(compositeIdentity) ?? 0;
+      compositeOccurrences.set(compositeIdentity, occurrence + 1);
       keys.set(
         card,
-        buildDashboardWorkingConversationCardAnchorKey(card.promptCacheKey, occurrence),
+        buildDashboardWorkingConversationCardAnchorKey(
+          card.promptCacheKey,
+          card.conversationId,
+          occurrence,
+        ),
       );
     }
     return keys;
@@ -5858,6 +5878,11 @@ export function DashboardWorkingConversationsSection({
                           card.conversationId,
                         );
                         const cardAnchorKey = cardAnchorKeys.get(card) ?? cardIdentity;
+                        const canOpenConversation =
+                          onOpenConversation != null &&
+                          !selectionModeEnabled &&
+                          conversationIdByPromptCacheKey.get(card.promptCacheKey) ===
+                            card.conversationId;
                         const isCardSelected = selectedPromptCacheKeySet.has(card.promptCacheKey);
                         const displayConversationId = card.conversationId;
                         const currentStatusLabel = currentStatusMeta.labelKey
@@ -5945,7 +5970,7 @@ export function DashboardWorkingConversationsSection({
                               ) : null}
                               <div className="flex min-w-0 items-center justify-between gap-3">
                                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                                  {onOpenConversation && !selectionModeEnabled ? (
+                                  {canOpenConversation ? (
                                     <button
                                       type="button"
                                       data-testid="dashboard-working-conversation-conversation-button"
@@ -5953,7 +5978,7 @@ export function DashboardWorkingConversationsSection({
                                       aria-label={conversationActionLabel}
                                       title={conversationActionLabel}
                                       onClick={() => {
-                                        onOpenConversation({
+                                        onOpenConversation?.({
                                           conversationId: card.conversationId,
                                           promptCacheKey: card.promptCacheKey,
                                         });
@@ -5969,7 +5994,7 @@ export function DashboardWorkingConversationsSection({
                                     </div>
                                   )}
                                   {manualBindingChipMeta ? (
-                                    onOpenConversation && !selectionModeEnabled ? (
+                                    canOpenConversation ? (
                                       <Chip
                                         asChild
                                         size="compact"
@@ -5984,7 +6009,7 @@ export function DashboardWorkingConversationsSection({
                                           className="min-w-0 max-w-[20rem] truncate whitespace-nowrap appearance-none text-left"
                                           onClick={(event) => {
                                             event.stopPropagation();
-                                            onOpenConversation({
+                                            onOpenConversation?.({
                                               conversationId: card.conversationId,
                                               promptCacheKey: card.promptCacheKey,
                                               tab: "settings",

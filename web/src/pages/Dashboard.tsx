@@ -113,8 +113,15 @@ export default function DashboardPage() {
     const conversationLabel =
       conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
     setSelectedConversation((current) => {
-      if (current?.key !== promptCacheConversationKey) return null;
-      if (current.label === conversationLabel) return current;
+      if (conversationLabel == null) {
+        if (current?.key !== promptCacheConversationKey) return null;
+        if (current.label === null) return current;
+      } else if (
+        current?.key === promptCacheConversationKey &&
+        current.label === conversationLabel
+      ) {
+        return current;
+      }
       return { key: promptCacheConversationKey, label: conversationLabel };
     });
   }, [cards, promptCacheConversationKey]);

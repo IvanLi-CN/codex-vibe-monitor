@@ -2703,6 +2703,8 @@ describe("DashboardWorkingConversationsSection", () => {
   });
 
   it("keeps duplicate prompt cache cards distinct when their order changes", () => {
+    const onOpenConversation = vi.fn();
+    let layout: "initial" | "reordered" = "initial";
     const initialResponse = createResponse([
       createConversation(
         "pck-duplicate-card",
@@ -2730,7 +2732,36 @@ describe("DashboardWorkingConversationsSection", () => {
       ),
     ]);
 
-    renderSection(initialResponse);
+    const rectFor = (top: number, height = 160) =>
+      ({
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 1200,
+        width: 1200,
+        height,
+        toJSON: () => ({}),
+      }) satisfies DOMRect;
+
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      if (this.getAttribute("data-testid") === "dashboard-working-conversations-grid") {
+        return rectFor(0, 600);
+      }
+      if (this.getAttribute("data-testid") === "dashboard-working-conversation-card") {
+        const conversationId = this.getAttribute("data-conversation-id");
+        if (layout === "initial") {
+          return rectFor(conversationId === "conv-duplicate-a" ? -20 : 40);
+        }
+        return rectFor(conversationId === "conv-duplicate-a" ? 40 : -20);
+      }
+      return rectFor(0, 0);
+    });
+
+    renderSection(initialResponse, { onOpenConversation });
 
     const readCardConversationIds = () =>
       Array.from(
@@ -2740,6 +2771,12 @@ describe("DashboardWorkingConversationsSection", () => {
       ).map((card) => card.getAttribute("data-conversation-id"));
 
     expect(readCardConversationIds()).toEqual(["conv-duplicate-a", "conv-duplicate-b"]);
+    expect(
+      host?.querySelectorAll('[data-testid="dashboard-working-conversation-conversation-button"]'),
+    ).toHaveLength(0);
+
+    const scrollBy = vi.spyOn(window, "scrollBy");
+    layout = "reordered";
 
     rerenderSection(
       createResponse([
@@ -2771,6 +2808,8 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     expect(readCardConversationIds()).toEqual(["conv-duplicate-b", "conv-duplicate-a"]);
+    expect(onOpenConversation).not.toHaveBeenCalled();
+    expect(scrollBy).toHaveBeenCalledWith(0, 60);
   });
 
   it("spreads identity chip tones for prompt cache keys that used to collide on the same low-bit slot", () => {
