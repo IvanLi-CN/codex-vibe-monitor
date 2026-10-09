@@ -743,6 +743,7 @@ export function TaskWorkloadSparkline({
         </span>
         <span className="text-base-content/55">{statusLabel}</span>
         <button
+          ref={detailsButtonRef}
           type="button"
           className="link link-primary whitespace-nowrap text-[11px]"
           aria-expanded={detailsOpen}

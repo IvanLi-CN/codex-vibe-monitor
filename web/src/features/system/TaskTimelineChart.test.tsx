@@ -323,6 +323,27 @@ describe("TaskTimelineChart", () => {
     expect(closedBar?.querySelector("rect")?.getAttribute("fill-opacity")).toBe("0.55");
   });
 
+  it("keeps focused live details stable while the clock advances", async () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    const live = {
+      ...deferral("focused-live", nowMs - 60_000, nowMs - 1_000, "resource_busy"),
+      status: "waiting" as const,
+      finishedAt: null,
+      lastObservedAt: new Date(nowMs - 1_000).toISOString(),
+    } satisfies TaskTimelineSegment;
+    const { render } = renderChart({ nowMs, executions: [live] });
+    const bar = host?.querySelector<SVGGElement>('[data-task-deferral-id="focused-live"]');
+    if (!bar) throw new Error("Focused live deferral bar is missing");
+    act(() => bar.focus());
+    await settleDeferralDetail();
+    const detail = bar.getAttribute("aria-label");
+    expect(detail).toContain("开始 ");
+
+    render(nowMs + 1_000);
+    expect(bar.getAttribute("aria-label")).toBe(detail);
+    expect(bar.querySelector("title")?.textContent).toBe(detail);
+  });
+
   it("counts dense open deferrals without pairwise render work", () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const openDeferrals = Array.from({ length: 600 }, (_, index) => ({

@@ -106,9 +106,12 @@ export const Loaded: Story = {
     );
     await waitFor(() => expect(canvasElement.querySelector("svg")).not.toBeNull());
     await userEvent.click(canvas.getByRole("button", { name: "查看运行计量" }));
-    await expect(canvas.getByRole("dialog", { name: /运行计量详情/ })).toHaveTextContent(
-      "触发时间：",
-    );
+    const dialog = canvas.getByRole("dialog", { name: /运行计量详情/ });
+    await expect(dialog).toHaveTextContent("触发时间：");
+    await expect(dialog).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect(canvas.queryByRole("dialog", { name: /运行计量详情/ })).toBeNull();
+    await expect(canvas.getByRole("button", { name: "查看运行计量" })).toHaveFocus();
   },
 };
 

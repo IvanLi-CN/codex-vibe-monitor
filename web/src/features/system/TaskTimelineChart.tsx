@@ -565,6 +565,19 @@ function deferralDetail(item: PositionedDeferral): string {
   return `${segment.title}；${reasonLabel(segment.reason)}；开始 ${exactTime(item.startMs)}；${segment.finishedAt ? `恢复 ${exactTime(timestamp(segment.finishedAt, item.endMs))}` : "尚未确认恢复"}${segment.retryAt ? `；重试时间 ${exactTime(timestamp(segment.retryAt, item.endMs))}` : "；重试时间未知"}`;
 }
 
+function deferralSegmentSignature(segment: TaskTimelineSegment): string {
+  return JSON.stringify([
+    segment.segmentId,
+    segment.revision,
+    segment.status,
+    segment.startedAt,
+    segment.lastObservedAt,
+    segment.finishedAt,
+    segment.retryAt,
+    segment.reason,
+  ]);
+}
+
 function deferralTitle(item: PositionedDeferral, overlaps: PositionedDeferral[]): string {
   return [item, ...overlaps].map(deferralDetail).join("\n");
 }
@@ -831,6 +844,7 @@ export function TaskTimelineChart({
   const executionBarByIdRef = useRef(new Map<string, ExecutionBar>());
   const executionTitleTimerRef = useRef<number | null>(null);
   const deferralTitleTimerRef = useRef<number | null>(null);
+  const deferralDetailRevisionRef = useRef("");
   const staticTimelineLayerRef = useRef<SVGGElement>(null);
   const executionDetailCacheRef = useRef(new Map<string, CachedDetail>());
   const deferralDetailCacheRef = useRef(new Map<string, CachedDetail>());
@@ -1092,6 +1106,10 @@ export function TaskTimelineChart({
     () => buildLiveDeferralIndex(staticDeferralIndex, livePositionedDeferrals),
     [livePositionedDeferrals, staticDeferralIndex],
   );
+  const deferralDetailRevision = useMemo(
+    () => `${runtimeFresh}:${deferrals.map(deferralSegmentSignature).join("|")}`,
+    [deferrals, runtimeFresh],
+  );
   deferralIndexRef.current = deferralIndex;
   const staticDeferralRenderGroups = useMemo(
     () => buildDeferralRenderGroups(staticPositionedDeferrals),
@@ -1244,10 +1262,8 @@ export function TaskTimelineChart({
   const cachedDeferralTitle = useCallback(
     (item: PositionedDeferral, overlaps: PositionedDeferral[]): string => {
       const signature = [
-        item.segment.revision,
-        item.startMs,
-        item.endMs,
-        ...overlaps.flatMap((overlap) => [overlap.segment.segmentId, overlap.segment.revision]),
+        deferralSegmentSignature(item.segment),
+        ...overlaps.map((overlap) => deferralSegmentSignature(overlap.segment)),
       ].join(":");
       const cached = deferralDetailCacheRef.current.get(item.segment.segmentId);
       if (cached?.signature === signature) return cached.title;
@@ -1386,14 +1402,27 @@ export function TaskTimelineChart({
     const activeId = activeDeferralIdRef.current;
     const node = activeDeferralNodeRef.current;
     if (!activeId || !node) return;
+    const detailRevisionChanged = deferralDetailRevisionRef.current !== deferralDetailRevision;
+    deferralDetailRevisionRef.current = deferralDetailRevision;
     const item = deferralIndex.byId.get(activeId);
     if (!item) {
       activeDeferralIdRef.current = null;
       activeDeferralNodeRef.current = null;
       return;
     }
+    if (detailRevisionChanged) {
+      deferralDetailCacheRef.current.delete(activeId);
+    } else {
+      const cached = deferralDetailCacheRef.current.get(activeId);
+      const titleElement = node.querySelector("title");
+      if (cached && titleElement) {
+        node.setAttribute("aria-label", cached.title);
+        titleElement.textContent = cached.title;
+        return;
+      }
+    }
     updateDeferralNode(node, item, true);
-  }, [deferralIndex, updateDeferralNode]);
+  }, [deferralDetailRevision, deferralIndex, updateDeferralNode]);
 
   const selectedDescription = selectedExecutions
     ? `${selectedExecutions.length} 次任务执行`
