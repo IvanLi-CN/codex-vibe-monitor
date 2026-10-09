@@ -2559,6 +2559,10 @@ export function PromptCacheConversationHistoryDrawer({
     readOnly,
     discardPendingMutations,
   });
+  const previousMutationScope = bindingMutationGenerationScopeRef.current;
+  const mutationIdentityChanged =
+    previousMutationScope.conversationKey !== currentConversationMutationScope.conversationKey ||
+    previousMutationScope.conversationId !== currentConversationMutationScope.conversationId;
   if (
     !conversationMutationScopeEquals(
       bindingMutationGenerationScopeRef.current,
@@ -2566,8 +2570,10 @@ export function PromptCacheConversationHistoryDrawer({
     )
   ) {
     bindingMutationGenerationRef.current += 1;
-    bindingMutationSequenceRef.current += 1;
-    bindingMutationInFlightRef.current = false;
+    if (mutationIdentityChanged) {
+      bindingMutationSequenceRef.current += 1;
+      bindingMutationInFlightRef.current = false;
+    }
     bindingMutationGenerationScopeRef.current = currentConversationMutationScope;
   }
   conversationMutationScopeRef.current = currentConversationMutationScope;
@@ -2580,7 +2586,7 @@ export function PromptCacheConversationHistoryDrawer({
     PromptCacheConversationBindingResponse
   >({
     resourceKey: inlinePolicyMutationResourceKey,
-    cancelOnResourceChange: discardPendingMutations || conversationId !== undefined,
+    cancelOnResourceChange: discardPendingMutations || (open && conversationId !== undefined),
     mutate: (entry) =>
       updatePromptCacheConversationBinding(entry.conversationKey, {
         ...conversationBindingPayloadBase(binding),
@@ -2669,7 +2675,7 @@ export function PromptCacheConversationHistoryDrawer({
     ) {
       return;
     }
-    setBindingSaving(false);
+    if (!bindingMutationInFlightRef.current) setBindingSaving(false);
   }, [conversationId, conversationKey, discardPendingMutations, readOnly]);
   useEffect(() => {
     return () => {
@@ -4744,7 +4750,7 @@ export function PromptCacheConversationHistoryDrawer({
         bindingDraftDirtyRef.current = true;
         setBindingError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (isCurrentMutation()) {
+        if (bindingMutationSequence === bindingMutationSequenceRef.current) {
           bindingMutationInFlightRef.current = false;
           setBindingSaving(false);
         }
@@ -4824,7 +4830,7 @@ export function PromptCacheConversationHistoryDrawer({
       if (!isCurrentMutation()) return;
       setBindingError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (isCurrentMutation()) {
+      if (bindingMutationSequence === bindingMutationSequenceRef.current) {
         bindingMutationInFlightRef.current = false;
         setBindingSaving(false);
       }

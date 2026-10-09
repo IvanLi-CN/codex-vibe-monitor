@@ -6,7 +6,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { I18nProvider } from "../../i18n";
+import { I18nProvider, useTranslation } from "../../i18n";
 import type {
   PromptCacheConversation,
   PromptCacheConversationBindingResponse,
@@ -2548,6 +2548,194 @@ describe("PromptCacheConversationTable", () => {
 
     expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1);
     expect(document.body.textContent).toContain("当前：账号 Pool Alpha");
+  });
+
+  it("flushes pending inline policy edits before a normal drawer close", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-close-flush",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      fastModeRewriteMode: "keep_original",
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    let resolveUpdate: ((value: PromptCacheConversationBindingResponse) => void) | undefined;
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      () =>
+        new Promise<PromptCacheConversationBindingResponse>((resolve) => {
+          resolveUpdate = resolve;
+        }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    function CloseableDrawer() {
+      const { t } = useTranslation();
+      const [route, setRoute] = useState({
+        open: true,
+        conversationKey: "pck-close-flush" as string | null,
+        conversationId: "persisted-close" as string | null,
+      });
+      return (
+        <PromptCacheConversationHistoryDrawer
+          open={route.open}
+          conversationKey={route.conversationKey}
+          conversationId={route.conversationId}
+          initialTab="settings"
+          onClose={() =>
+            setRoute({
+              open: false,
+              conversationKey: null,
+              conversationId: null,
+            })
+          }
+          t={t}
+        />
+      );
+    }
+
+    renderInteractiveElement(<CloseableDrawer />);
+    await flushInteractive();
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(findButtonByAriaLabel("编辑对话覆盖: FAST 模式")!);
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="FAST 模式"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("强制添加")!);
+    expect(apiMocks.updatePromptCacheConversationBinding).not.toHaveBeenCalled();
+
+    await act(async () => {
+      findButtonByAriaLabel("关闭调用记录抽屉")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await vi.waitFor(() =>
+      expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1),
+    );
+
+    await act(async () => {
+      resolveUpdate?.({
+        promptCacheKey: "pck-close-flush",
+        bindingKind: "none",
+        groupName: null,
+        upstreamAccountId: null,
+        upstreamAccountName: null,
+        fastModeRewriteMode: "force_add",
+        updatedAt: "2026-03-02T12:01:00Z",
+      });
+    });
+    await flushInteractive();
+  });
+
+  it("keeps an in-flight binding save locked across a read-only round trip", async () => {
+    detailTopicMocks.current.isSseUnavailable = true;
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding-lock",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    let resolveSave: ((value: PromptCacheConversationBindingResponse) => void) | undefined;
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      () =>
+        new Promise<PromptCacheConversationBindingResponse>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    function ToggleableDrawer() {
+      const { t } = useTranslation();
+      const [readOnly, setReadOnly] = useState(false);
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="toggle-binding-read-only"
+            onClick={() => setReadOnly((current) => !current)}
+          />
+          <PromptCacheConversationHistoryDrawer
+            open
+            conversationKey="pck-binding-lock"
+            conversationId="persisted-lock"
+            initialTab="routing"
+            onClose={() => undefined}
+            t={t}
+            readOnly={readOnly}
+            discardPendingMutations={readOnly}
+          />
+        </>
+      );
+    }
+
+    renderInteractiveElement(<ToggleableDrawer />);
+    await flushInteractive();
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="绑定类型"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("上游账号")!);
+    await flushInteractive();
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="账号绑定目标"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("Pool Alpha")!);
+    await act(async () => {
+      findButtonByAriaLabel("保存")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1);
+
+    await user.click(document.querySelector('[data-testid="toggle-binding-read-only"]')!);
+    await user.click(document.querySelector('[data-testid="toggle-binding-read-only"]')!);
+    await flushInteractive();
+
+    const saveButton = findButtonByAriaLabel("保存");
+    expect(saveButton?.disabled).toBe(true);
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSave?.({
+        promptCacheKey: "pck-binding-lock",
+        bindingKind: "upstreamAccount",
+        groupName: null,
+        upstreamAccountId: 42,
+        upstreamAccountName: "Pool Alpha",
+        updatedAt: "2026-03-02T12:01:00Z",
+      });
+    });
+    await flushInteractive();
   });
 
   it("opens account detail from a current routing target", async () => {

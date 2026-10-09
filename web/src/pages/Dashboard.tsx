@@ -402,7 +402,7 @@ export default function DashboardPage() {
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <div
         data-testid="dashboard-main-content"
-        className={compactConversationRouteIsOpen ? "hidden" : undefined}
+        className={compactConversationRouteIsOpen ? "hidden" : "flex flex-col gap-6"}
       >
         <DashboardActivityOverview
           activeRange={activeRange}
