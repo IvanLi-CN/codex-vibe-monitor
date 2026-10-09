@@ -705,6 +705,7 @@ export function TaskWorkloadSparkline({
   }, [detailsOpen]);
   useEffect(() => {
     if (!detailsOpen || !detailsFocusPendingRef.current) return;
+    if (backgroundMode && detailsPosition == null) return;
     const panel = detailsPanelRef.current;
     if (!panel) return;
     panel.focus({ preventScroll: true });
