@@ -1556,6 +1556,9 @@ describe("DashboardPage", () => {
       expect(
         host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
       ).not.toBeNull();
+      expect(host?.querySelector('[data-testid="dashboard-main-content"]')?.className).toContain(
+        "hidden",
+      );
 
       currentError = "working-conversations unavailable";
       rerender(<DashboardPage />, route);
@@ -1567,6 +1570,9 @@ describe("DashboardPage", () => {
         host?.querySelector('[data-testid="dashboard-conversation-drawer-discarding"]')
           ?.textContent,
       ).toBe("true");
+      expect(
+        host?.querySelector('[data-testid="dashboard-main-content"]')?.className,
+      ).not.toContain("hidden");
     } finally {
       Object.defineProperty(window, "matchMedia", {
         configurable: true,

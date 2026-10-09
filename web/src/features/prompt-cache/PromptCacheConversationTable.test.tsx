@@ -2452,6 +2452,104 @@ describe("PromptCacheConversationTable", () => {
     expect(findButtonByAriaLabel("清除对话覆盖: 代理")).toBeNull();
   });
 
+  it("does not start a second binding save while the first request is pending", async () => {
+    apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({
+      promptCacheKey: "pck-binding-concurrent",
+      bindingKind: "none",
+      groupName: null,
+      upstreamAccountId: null,
+      upstreamAccountName: null,
+      updatedAt: "2026-03-02T12:00:00Z",
+    });
+    apiMocks.fetchUpstreamAccounts.mockResolvedValue({
+      writesEnabled: true,
+      items: [createUpstreamAccountSummary(42, "Pool Alpha", "prod")],
+      groups: [{ groupName: "prod", accountCount: 1 }],
+      forwardProxyNodes: [],
+      hasUngroupedAccounts: false,
+      total: 1,
+      page: 1,
+      pageSize: 500,
+      metrics: { total: 1, oauth: 0, apiKey: 1, attention: 0 },
+      routing: null,
+    });
+    let resolveSave: ((value: PromptCacheConversationBindingResponse) => void) | undefined;
+    apiMocks.updatePromptCacheConversationBinding.mockImplementation(
+      () =>
+        new Promise<PromptCacheConversationBindingResponse>((resolve) => {
+          resolveSave = resolve;
+        }),
+    );
+    apiMocks.fetchInvocationRecords.mockResolvedValue({
+      snapshotId: 1,
+      total: 0,
+      page: 1,
+      pageSize: 200,
+      records: [],
+    });
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-binding-concurrent",
+          requestCount: 1,
+          totalTokens: 100,
+          totalCost: 0.01,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    await act(async () => {
+      findButtonByAriaLabel("打开全部调用记录")?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushInteractive();
+    await clickDrawerTab("路由");
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="绑定类型"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("上游账号")!);
+    await flushInteractive();
+    await user.click(
+      document.querySelector('[role="combobox"][aria-label="账号绑定目标"]') as HTMLElement,
+    );
+    await user.click(findSelectOption("Pool Alpha")!);
+
+    const saveButton = findButtonByAriaLabel("保存");
+    await act(async () => {
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      saveButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolveSave?.({
+        promptCacheKey: "pck-binding-concurrent",
+        bindingKind: "upstreamAccount",
+        groupName: null,
+        upstreamAccountId: 42,
+        upstreamAccountName: "Pool Alpha",
+        updatedAt: "2026-03-02T12:01:00Z",
+      });
+    });
+    await flushInteractive();
+
+    expect(apiMocks.updatePromptCacheConversationBinding).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).toContain("当前：账号 Pool Alpha");
+  });
+
   it("opens account detail from a current routing target", async () => {
     const onOpenUpstreamAccount = vi.fn();
     apiMocks.fetchPromptCacheConversationBinding.mockResolvedValue({

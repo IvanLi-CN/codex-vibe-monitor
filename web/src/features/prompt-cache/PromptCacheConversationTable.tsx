@@ -2552,6 +2552,7 @@ export function PromptCacheConversationHistoryDrawer({
     currentConversationMutationScope,
   );
   const bindingMutationSequenceRef = useRef(0);
+  const bindingMutationInFlightRef = useRef(false);
   const bindingMutationScopeStateRef = useRef({
     conversationKey,
     conversationId,
@@ -2566,6 +2567,7 @@ export function PromptCacheConversationHistoryDrawer({
   ) {
     bindingMutationGenerationRef.current += 1;
     bindingMutationSequenceRef.current += 1;
+    bindingMutationInFlightRef.current = false;
     bindingMutationGenerationScopeRef.current = currentConversationMutationScope;
   }
   conversationMutationScopeRef.current = currentConversationMutationScope;
@@ -4668,45 +4670,37 @@ export function PromptCacheConversationHistoryDrawer({
       const mutationGeneration = bindingMutationGenerationRef.current;
       if (mutationScope.blocked || !conversationKey || bindingSubmitDisabled) return;
       if (bindingRemoteConflict && !options?.allowRemoteOverwrite) return;
-      if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
-      if (
-        !conversationMutationGenerationIsCurrent(
+      if (bindingMutationInFlightRef.current) return;
+      const bindingMutationSequence = ++bindingMutationSequenceRef.current;
+      bindingMutationInFlightRef.current = true;
+      setBindingSaving(true);
+      setBindingError(null);
+      setBindingRemoteConflict(null);
+      const isCurrentMutation = () =>
+        bindingMutationSequence === bindingMutationSequenceRef.current &&
+        conversationMutationGenerationIsCurrent(
           conversationMutationScopeRef.current,
           mutationScope,
           bindingMutationGenerationRef.current,
           mutationGeneration,
-        )
-      ) {
-        return;
-      }
-      if (
-        !options?.skipOwnerWarning &&
-        nextBindingWouldOverrideEncryptedOwner(
-          binding,
-          bindingKind,
-          bindingGroupName,
-          bindingAccountId,
-        )
-      ) {
-        setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
-        setBindingOwnerConfirmOpen(true);
-        return;
-      }
-      const bindingMutationSequence = ++bindingMutationSequenceRef.current;
-      setBindingSaving(true);
-      setBindingError(null);
-      setBindingRemoteConflict(null);
+        );
       try {
+        if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
+        if (!isCurrentMutation()) return;
         if (
-          !conversationMutationGenerationIsCurrent(
-            conversationMutationScopeRef.current,
-            mutationScope,
-            bindingMutationGenerationRef.current,
-            mutationGeneration,
+          !options?.skipOwnerWarning &&
+          nextBindingWouldOverrideEncryptedOwner(
+            binding,
+            bindingKind,
+            bindingGroupName,
+            bindingAccountId,
           )
         ) {
+          setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
+          setBindingOwnerConfirmOpen(true);
           return;
         }
+        if (!isCurrentMutation()) return;
         const nextBinding = await updatePromptCacheConversationBinding(
           conversationKey,
           bindingKind === "group"
@@ -4721,16 +4715,7 @@ export function PromptCacheConversationHistoryDrawer({
                 }
               : { bindingKind: "none" },
         );
-        if (
-          !conversationMutationGenerationIsCurrent(
-            conversationMutationScopeRef.current,
-            mutationScope,
-            bindingMutationGenerationRef.current,
-            mutationGeneration,
-          )
-        ) {
-          return;
-        }
+        if (!isCurrentMutation()) return;
         inlinePolicyMutation.reconcile(nextBinding);
         confirmedBindingRef.current = nextBinding;
         setBinding(nextBinding);
@@ -4755,28 +4740,12 @@ export function PromptCacheConversationHistoryDrawer({
         bindingDraftDirtyRef.current = false;
         setBindingRemoteConflict(null);
       } catch (err) {
-        if (
-          !conversationMutationGenerationIsCurrent(
-            conversationMutationScopeRef.current,
-            mutationScope,
-            bindingMutationGenerationRef.current,
-            mutationGeneration,
-          )
-        ) {
-          return;
-        }
+        if (!isCurrentMutation()) return;
         bindingDraftDirtyRef.current = true;
         setBindingError(err instanceof Error ? err.message : String(err));
       } finally {
-        if (
-          bindingMutationSequence === bindingMutationSequenceRef.current &&
-          conversationMutationGenerationIsCurrent(
-            conversationMutationScopeRef.current,
-            mutationScope,
-            bindingMutationGenerationRef.current,
-            mutationGeneration,
-          )
-        ) {
+        if (isCurrentMutation()) {
+          bindingMutationInFlightRef.current = false;
           setBindingSaving(false);
         }
       }
@@ -4809,33 +4778,24 @@ export function PromptCacheConversationHistoryDrawer({
   const resetAffinity = useCallback(async () => {
     const mutationScope = conversationMutationScopeRef.current;
     const mutationGeneration = bindingMutationGenerationRef.current;
-    if (mutationScope.blocked || !conversationKey || bindingSaving) return;
-    if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
-    if (
-      !conversationMutationGenerationIsCurrent(
+    if (mutationScope.blocked || !conversationKey || bindingMutationInFlightRef.current) return;
+    const bindingMutationSequence = ++bindingMutationSequenceRef.current;
+    bindingMutationInFlightRef.current = true;
+    setBindingSaving(true);
+    setBindingError(null);
+    const isCurrentMutation = () =>
+      bindingMutationSequence === bindingMutationSequenceRef.current &&
+      conversationMutationGenerationIsCurrent(
         conversationMutationScopeRef.current,
         mutationScope,
         bindingMutationGenerationRef.current,
         mutationGeneration,
-      )
-    ) {
-      return;
-    }
-    const bindingMutationSequence = ++bindingMutationSequenceRef.current;
-    setBindingSaving(true);
-    setBindingError(null);
+      );
     try {
+      if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
+      if (!isCurrentMutation()) return;
       const nextBinding = await resetPromptCacheConversationAffinity(conversationKey);
-      if (
-        !conversationMutationGenerationIsCurrent(
-          conversationMutationScopeRef.current,
-          mutationScope,
-          bindingMutationGenerationRef.current,
-          mutationGeneration,
-        )
-      ) {
-        return;
-      }
+      if (!isCurrentMutation()) return;
       inlinePolicyMutation.reconcile(nextBinding);
       confirmedBindingRef.current = nextBinding;
       setBinding(nextBinding);
@@ -4861,34 +4821,17 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingRemoteConflict(null);
       setAffinityResetConfirmOpen(false);
     } catch (err) {
-      if (
-        !conversationMutationGenerationIsCurrent(
-          conversationMutationScopeRef.current,
-          mutationScope,
-          bindingMutationGenerationRef.current,
-          mutationGeneration,
-        )
-      ) {
-        return;
-      }
+      if (!isCurrentMutation()) return;
       setBindingError(err instanceof Error ? err.message : String(err));
     } finally {
-      if (
-        bindingMutationSequence === bindingMutationSequenceRef.current &&
-        conversationMutationGenerationIsCurrent(
-          conversationMutationScopeRef.current,
-          mutationScope,
-          bindingMutationGenerationRef.current,
-          mutationGeneration,
-        )
-      ) {
+      if (isCurrentMutation()) {
+        bindingMutationInFlightRef.current = false;
         setBindingSaving(false);
       }
     }
   }, [
     bindingAccounts,
     bindingGroups,
-    bindingSaving,
     conversationKey,
     inlinePolicyMutation.hasPending,
     inlinePolicyMutation.flush,
