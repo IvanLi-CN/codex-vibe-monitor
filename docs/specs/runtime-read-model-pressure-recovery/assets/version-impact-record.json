@@ -106,6 +106,8 @@
     ]
   },
   "delivery_context": {
+    "candidate_head_sha": "f7e5ec064c9f6bb35cefb3432a43965ec7ea5f44",
+    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
     "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
     "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
     "candidate_validation_record": "assets/current-candidate-validation.json",

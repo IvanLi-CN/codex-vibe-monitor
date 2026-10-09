@@ -2,6 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-required-ci-and-tier4-pending",
+  "candidate_head_sha": "f7e5ec064c9f6bb35cefb3432a43965ec7ea5f44",
+  "implementation_commit": "f7e5ec064c9f6bb35cefb3432a43965ec7ea5f44",
   "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
   "base_ref": "main",
   "pr_number": 1097,
