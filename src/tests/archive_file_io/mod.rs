@@ -137,6 +137,97 @@ async fn bounded_summary_archive_repair_preserves_same_bucket_totals_across_pass
 }
 
 #[tokio::test]
+async fn summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("summary-rollup-unknown-replay-sha").await;
+    let occurred_at = "2026-01-15 08:10:00";
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "summary-rollup-unknown-replay-sha",
+        &[(
+            1_i64,
+            "summary-rollup-unknown-replay-sha-row",
+            occurred_at,
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let file_path = archive_path.to_string_lossy().to_string();
+    let archive_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load unknown replay SHA fixture");
+    sqlx::query(
+        "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&file_path)
+    .execute(&pool)
+    .await
+    .expect("mark archive materialized for unknown replay SHA test");
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("materialize initial Summary replay markers");
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(occurred_at).expect("derive unknown replay SHA bucket");
+    sqlx::query(
+        "UPDATE hourly_rollup_archive_replay SET archive_sha256 = CASE target \
+         WHEN ?1 THEN NULL ELSE ' ' END \
+         WHERE dataset = 'codex_invocations' AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(&file_path)
+    .execute(&pool)
+    .await
+    .expect("seed NULL and blank replay SHAs");
+    sqlx::query(
+        "UPDATE invocation_rollup_hourly SET total_count = 0, total_tokens = 0, total_cost = 0 \
+         WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("corrupt Summary rollup behind unknown replay SHAs");
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("fail-closed marker repair should rebuild the Summary rollup");
+
+    let repaired_total: i64 = sqlx::query_scalar(
+        "SELECT total_count FROM invocation_rollup_hourly \
+         WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired Summary rollup after unknown replay SHAs");
+    assert_eq!(repaired_total, 1);
+    let repaired_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1 \
+           AND archive_sha256 = ?2",
+    )
+    .bind(&file_path)
+    .bind(&archive_sha)
+    .fetch_one(&pool)
+    .await
+    .expect("load repaired replay SHA markers");
+    assert_eq!(repaired_marker_count, 2);
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("summary-rollup-force-repair-pages").await;
@@ -221,6 +312,241 @@ async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
     .expect("check completed force-repair marker");
     assert_eq!(repair_marker_exists, 1);
 
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn summary_rollup_force_repair_deduplicates_source_ids_across_pages() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("summary-rollup-force-repair-cross-page-dedup").await;
+    let occurred_at = "2026-01-15 08:10:00";
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "summary-rollup-force-repair-cross-page-dedup-source",
+        &[(
+            1_i64,
+            "summary-rollup-force-repair-cross-page-row",
+            occurred_at,
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let file_path = archive_path.to_string_lossy().to_string();
+    let archive_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load cross-page dedup archive SHA");
+    sqlx::query(
+        "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now') \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&file_path)
+    .execute(&pool)
+    .await
+    .expect("mark cross-page dedup archive materialized");
+    let duplicate_path = config
+        .archive_dir
+        .join("summary-rollup-force-repair-cross-page-dedup-duplicate.sqlite.gz");
+    fs::copy(&archive_path, &duplicate_path).expect("copy cross-page dedup archive");
+    let duplicate_file_path = duplicate_path.to_string_lossy().to_string();
+    for id in 2_i64..=4_096_i64 {
+        sqlx::query(
+            "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, row_count, status, historical_rollups_materialized_at, coverage_start_at, coverage_end_at) \
+             VALUES (?1, 'codex_invocations', ?2, ?3, ?4, 1, 'completed', datetime('now'), ?5, ?5)",
+        )
+        .bind(id)
+        .bind(format!("2020-{id:04}"))
+        .bind(format!("{file_path}.missing-{id}"))
+        .bind(format!("missing-sha-{id}"))
+        .bind("2020-01-01 00:00:00")
+        .execute(&pool)
+        .await
+        .expect("insert cross-page dedup missing materialized archive");
+    }
+    sqlx::query(
+        "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, row_count, status, historical_rollups_materialized_at, coverage_start_at, coverage_end_at) \
+         VALUES (4097, 'codex_invocations', '2099-01', ?1, ?2, 1, 'completed', datetime('now'), ?3, ?3)",
+    )
+    .bind(&duplicate_file_path)
+    .bind(&archive_sha)
+    .bind(occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert duplicate source archive on second repair page");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND file_path IN (?1, ?2)",
+    )
+    .bind(&file_path)
+    .bind(&duplicate_file_path)
+    .execute(&pool)
+    .await
+    .expect("open cross-page dedup repair");
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("run first cross-page dedup repair page");
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("run second cross-page dedup repair page");
+
+    let total_count: i64 =
+        sqlx::query_scalar("SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly")
+            .fetch_one(&pool)
+            .await
+            .expect("load cross-page deduplicated rollup total");
+    assert_eq!(total_count, 1);
+    let seen_id_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hourly_rollup_repair_seen_invocation_ids")
+            .fetch_one(&pool)
+            .await
+            .expect("load durable cross-page seen IDs");
+    assert_eq!(seen_id_count, 1);
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn summary_rollup_force_repair_clears_safe_buckets_before_later_pages() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("summary-rollup-force-repair-safe-bucket").await;
+    let protected_at = "2026-01-15 08:10:00";
+    let safe_at = "2026-01-16 08:10:00";
+    let missing_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "summary-rollup-force-repair-protected-source",
+        &[(
+            1_i64,
+            "summary-rollup-force-repair-protected-row",
+            protected_at,
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    let missing_file_path = missing_path.to_string_lossy().to_string();
+    sqlx::query(
+        "UPDATE archive_batches SET historical_rollups_materialized_at = datetime('now'), \
+             coverage_start_at = ?2, coverage_end_at = ?2 \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&missing_file_path)
+    .bind(protected_at)
+    .execute(&pool)
+    .await
+    .expect("mark protected archive materialized");
+    fs::remove_file(&missing_path).expect("remove protected materialized archive");
+    let protected_bucket =
+        invocation_bucket_start_epoch(protected_at).expect("derive protected bucket");
+    let safe_archive_path = {
+        for id in 2_i64..=4_096_i64 {
+            sqlx::query(
+                "INSERT INTO archive_batches (id, dataset, month_key, file_path, sha256, row_count, status, historical_rollups_materialized_at, coverage_start_at, coverage_end_at) \
+                 VALUES (?1, 'codex_invocations', ?2, ?3, ?4, 1, 'completed', datetime('now'), ?5, ?5)",
+            )
+            .bind(id)
+            .bind(format!("2020-{id:04}"))
+            .bind(config.archive_dir.join(format!("safe-bucket-missing-{id}.sqlite.gz")).to_string_lossy().to_string())
+            .bind(format!("safe-bucket-missing-sha-{id}"))
+            .bind(protected_at)
+            .execute(&pool)
+            .await
+            .expect("insert protected bucket filler archive");
+        }
+        seed_invocation_archive_batch(
+            &pool,
+            &config,
+            "summary-rollup-force-repair-safe-source",
+            &[(
+                2_i64,
+                "summary-rollup-force-repair-safe-row",
+                safe_at,
+                SOURCE_PROXY,
+                "success",
+                20_i64,
+                0.20_f64,
+                Some(120.0),
+            )],
+        )
+        .await
+    };
+    let safe_file_path = safe_archive_path.to_string_lossy().to_string();
+    sqlx::query(
+        "UPDATE archive_batches SET coverage_start_at = ?2, coverage_end_at = ?2 \
+         WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&safe_file_path)
+    .bind(safe_at)
+    .execute(&pool)
+    .await
+    .expect("set safe archive coverage");
+    let safe_bucket = invocation_bucket_start_epoch(safe_at).expect("derive safe bucket");
+    let empty_histogram =
+        encode_approx_histogram(&empty_approx_histogram()).expect("encode safe-bucket histogram");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, first_byte_sample_count, first_byte_sum_ms, first_byte_max_ms, first_byte_histogram) \
+         VALUES (?1, ?2, 99, 99, 0, 990, 9.90, 0, 0, 0, ?3)",
+    )
+    .bind(safe_bucket)
+    .bind(SOURCE_PROXY)
+    .bind(empty_histogram)
+    .execute(&pool)
+    .await
+    .expect("seed stale safe-bucket rollup");
+    sqlx::query(
+        "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, first_byte_sample_count, first_byte_sum_ms, first_byte_max_ms, first_byte_histogram) \
+         VALUES (?1, ?2, 1, 1, 0, 10, 0.10, 0, 0, 0, ?3)",
+    )
+    .bind(protected_bucket)
+    .bind(SOURCE_PROXY)
+    .bind(encode_approx_histogram(&empty_approx_histogram()).expect("encode protected histogram"))
+    .execute(&pool)
+    .await
+    .expect("seed preserved protected-bucket rollup");
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND file_path IN (?1, ?2)",
+    )
+    .bind(&missing_file_path)
+    .bind(&safe_file_path)
+    .execute(&pool)
+    .await
+    .expect("open safe-bucket force repair");
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("run first protected-bucket repair page");
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("run later safe-bucket repair page");
+
+    let safe_total: i64 = sqlx::query_scalar(
+        "SELECT total_count FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(safe_bucket)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt safe-bucket rollup");
+    assert_eq!(safe_total, 1);
+    let protected_total: i64 = sqlx::query_scalar(
+        "SELECT total_count FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(protected_bucket)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved protected-bucket rollup");
+    assert_eq!(protected_total, 1);
     cleanup_temp_test_dir(&temp_dir);
 }
 

@@ -59,12 +59,15 @@
   approximate. A range intersecting only a `DeltaGapProof` serves the published
   last-good base plus acknowledged overlay with explicit `dataQuality` degraded
   status; `/api/stats` uses the same all-time memory path.
-- Summary archive replay-marker repair is ordered by a partial SQLite index and
-  reads at most 128 pending candidates per additive background turn. Stale-marker
-  or incomplete-materialized recovery uses the established 4,096 completed
+- Summary archive replay-marker repair is ordered by dedicated partial SQLite
+  indexes, and replay admission requires a nonblank marker matching the current
+  archive SHA; NULL or blank markers fail closed. Additive repair reads at most 128
+  pending candidates per background turn. Stale-marker or incomplete-materialized recovery uses the established 4,096 completed
   authoritative-batch ceiling per bounded replacement transaction and persists an
-  archive ID cursor between pages. Restored live rows are deduplicated by ID, and
-  incomplete recovery persists its live cursor without publishing completion. The
+  archive ID cursor between pages. Force repair persists source invocation IDs
+  across pages, clears safe rollup buckets before rebuilding when a materialized
+  authority bucket is missing, and restores live rows without duplicate totals.
+  Incomplete recovery persists its live cursor without publishing completion. The
   backfill entrypoint resumes force pages whenever the durable archive cursor or
   incomplete marker exists, even if the current page repaired the marker predicate;
   it returns before additive replay until the full repair publishes completion.

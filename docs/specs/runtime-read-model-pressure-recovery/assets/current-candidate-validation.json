@@ -18,7 +18,7 @@
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "The candidate was aligned by normal merge onto main@8c76ec4b, then the pagination-driver boundary at src/stats/mod.rs:5701-5711 was fixed; all required CI and five Tier4 lanes must bind to the final pushed head.",
+    "refresh_reason": "The candidate was aligned by normal merge onto main@8c76ec4b, then Summary replay identity, cross-page force-repair deduplication, safe-bucket replacement, and archive-ID seek indexing were fixed; all required CI and five Tier4 lanes must bind to the final pushed head.",
     "contract_regressions": [
       "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
       "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
@@ -35,6 +35,9 @@
       "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
       "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
       "summary_rollup_force_repair_pages_past_archive_batch_budget",
+      "summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown",
+      "summary_rollup_force_repair_deduplicates_source_ids_across_pages",
+      "summary_rollup_force_repair_clears_safe_buckets_before_later_pages",
       "summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
       "summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
     ]

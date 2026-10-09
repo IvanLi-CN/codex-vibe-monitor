@@ -24,7 +24,7 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
                     WHERE replay.target = ?2
                       AND replay.dataset = 'codex_invocations'
                       AND replay.file_path = batches.file_path
-                      AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                      AND replay.archive_sha256 = batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_overall,
@@ -35,7 +35,7 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
                     WHERE replay.target = ?3
                       AND replay.dataset = 'codex_invocations'
                       AND replay.file_path = batches.file_path
-                      AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                      AND replay.archive_sha256 = batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_failures
@@ -52,7 +52,7 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
                 WHERE replay.target = ?2
                   AND replay.dataset = 'codex_invocations'
                   AND replay.file_path = batches.file_path
-                  AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                  AND replay.archive_sha256 = batches.sha256
             )
             OR NOT EXISTS(
                 SELECT 1
@@ -60,7 +60,7 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
                 WHERE replay.target = ?3
                   AND replay.dataset = 'codex_invocations'
                   AND replay.file_path = batches.file_path
-                  AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                  AND replay.archive_sha256 = batches.sha256
             )
           )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
@@ -121,6 +121,31 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
         "bounded Summary archive query must use the partial index: {bounded_plan:?}"
     );
 
+    let seek_plan: Vec<(i64, i64, i64, String)> = sqlx::query_as(
+        r#"EXPLAIN QUERY PLAN
+        SELECT id
+        FROM archive_batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+          AND id > ?1
+        ORDER BY id ASC
+        LIMIT ?2"#,
+    )
+    .bind(0_i64)
+    .bind(128_i64)
+    .fetch_all(&pool)
+    .await
+    .expect("explain paged Summary repair query");
+    assert!(
+        seek_plan.iter().any(|(_, _, _, detail)| {
+            detail.contains("idx_archive_batches_summary_rollup_repair_seek")
+        }),
+        "paged Summary repair query must use the seek index: {seek_plan:?}"
+    );
+
     ensure_schema(&pool).await.expect("repeat schema migration");
     let index_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_master \
@@ -133,6 +158,22 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
         index_count, 1,
         "re-entry must not duplicate the partial index"
     );
+    let seek_index_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'index' AND name = 'idx_archive_batches_summary_rollup_repair_seek'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count Summary repair seek indexes");
+    assert_eq!(seek_index_count, 1);
+    let seen_ids_table_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master \
+         WHERE type = 'table' AND name = 'hourly_rollup_repair_seen_invocation_ids'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count Summary repair seen-ID tables");
+    assert_eq!(seen_ids_table_count, 1);
     pool.close().await;
 }
 

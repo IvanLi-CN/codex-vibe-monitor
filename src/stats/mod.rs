@@ -9,6 +9,8 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_archive_cursor";
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET: &str =
     "codex_invocations_summary_rollup_v2_incomplete";
+const INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET: &str =
+    "codex_invocations_summary_rollup_v2_seen_ids";
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
 const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES;
@@ -1265,6 +1267,85 @@ impl ClearedSummaryRollupBuckets {
     }
 }
 
+async fn load_invocation_summary_repair_seen_ids(
+    tx: &mut SqliteConnection,
+) -> Result<HashSet<i64>> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        "SELECT invocation_id FROM hourly_rollup_repair_seen_invocation_ids WHERE dataset = ?1",
+    )
+    .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET)
+    .fetch_all(&mut *tx)
+    .await?
+    .into_iter()
+    .collect())
+}
+
+async fn persist_invocation_summary_repair_seen_ids(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "INSERT OR IGNORE INTO hourly_rollup_repair_seen_invocation_ids (dataset, invocation_id) ",
+    );
+    query.push_values(rows, |mut bind, row| {
+        bind.push_bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET)
+            .push_bind(row.id);
+    });
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn clear_invocation_summary_repair_seen_ids(tx: &mut SqliteConnection) -> Result<()> {
+    sqlx::query("DELETE FROM hourly_rollup_repair_seen_invocation_ids WHERE dataset = ?1")
+        .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+async fn clear_invocation_summary_rollups_outside_buckets(
+    tx: &mut SqliteConnection,
+    preserved_bucket_epochs: &HashSet<i64>,
+) -> Result<ClearedSummaryRollupBuckets> {
+    let mut cleared = ClearedSummaryRollupBuckets::default();
+    for table in [
+        "invocation_rollup_hourly",
+        "invocation_failure_rollup_hourly",
+    ] {
+        let mut select = QueryBuilder::<Sqlite>::new(format!(
+            "SELECT bucket_start_epoch, source FROM {table} WHERE bucket_start_epoch NOT IN ("
+        ));
+        let mut ids = select.separated(", ");
+        for bucket_epoch in preserved_bucket_epochs {
+            ids.push_bind(bucket_epoch);
+        }
+        ids.push_unseparated(")");
+        let keys = select
+            .build_query_as::<(i64, String)>()
+            .fetch_all(&mut *tx)
+            .await?;
+        for (bucket_start_epoch, source) in keys {
+            let key = (bucket_start_epoch, source);
+            cleared.overall.insert(key.clone());
+            cleared.failures.insert(key);
+        }
+
+        let mut delete = QueryBuilder::<Sqlite>::new(format!(
+            "DELETE FROM {table} WHERE bucket_start_epoch NOT IN ("
+        ));
+        let mut ids = delete.separated(", ");
+        for bucket_epoch in preserved_bucket_epochs {
+            ids.push_bind(bucket_epoch);
+        }
+        ids.push_unseparated(")");
+        delete.build().execute(&mut *tx).await?;
+    }
+    Ok(cleared)
+}
+
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET: &str =
     "codex_invocations_summary_rollup_v2";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE: i64 = 1;
@@ -1717,19 +1798,17 @@ async fn load_completed_invocation_summary_repair_page(
             coverage_start_at,
             coverage_end_at,
             historical_rollups_materialized_at
-        FROM archive_batches
-        WHERE dataset = ?1
-          AND status = ?2
+        FROM archive_batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
           AND sha256 IS NOT NULL
           AND TRIM(sha256) <> ''
           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
-          AND id > ?3
+          AND id > ?1
         ORDER BY id ASC
-        LIMIT ?4
+        LIMIT ?2
         "#,
     )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(after_archive_id)
     .bind((limit.saturating_add(1)) as i64)
     .fetch_all(executor)
@@ -1796,7 +1875,7 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                     FROM hourly_rollup_archive_replay AS replay
                     WHERE replay.target = ?2
                       AND replay.dataset = 'codex_invocations'
-                      AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                      AND replay.file_path = batches.file_path AND replay.archive_sha256 = batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_overall,
@@ -1806,7 +1885,7 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                     FROM hourly_rollup_archive_replay AS replay
                     WHERE replay.target = ?3
                       AND replay.dataset = 'codex_invocations'
-                      AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                      AND replay.file_path = batches.file_path AND replay.archive_sha256 = batches.sha256
                 ) THEN 0
                 ELSE 1
             END AS needs_failures
@@ -1822,14 +1901,14 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
                 FROM hourly_rollup_archive_replay AS replay
                 WHERE replay.target = ?2
                   AND replay.dataset = 'codex_invocations'
-                  AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                  AND replay.file_path = batches.file_path AND replay.archive_sha256 = batches.sha256
             )
             OR NOT EXISTS(
                 SELECT 1
                 FROM hourly_rollup_archive_replay AS replay
                 WHERE replay.target = ?3
                   AND replay.dataset = 'codex_invocations'
-                  AND replay.file_path = batches.file_path AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256
+                  AND replay.file_path = batches.file_path AND replay.archive_sha256 = batches.sha256
             )
           )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC LIMIT 128
@@ -4885,6 +4964,7 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_archive_batch(
     cleared_rollup_buckets: &mut ClearedSummaryRollupBuckets,
     targets: &[&str],
     replace_existing_rollups: bool,
+    persist_seen_ids: bool,
 ) -> Result<()> {
     if targets.is_empty() {
         return Ok(());
@@ -4931,6 +5011,9 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_archive_batch(
         rows.retain(|row| seen_ids.insert(row.id));
         if rows.is_empty() {
             continue;
+        }
+        if persist_seen_ids {
+            persist_invocation_summary_repair_seen_ids(tx, &rows).await?;
         }
         if replace_existing_rollups {
             for row in &rows {
@@ -5091,6 +5174,7 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_live_rows(
     seen_ids: &mut HashSet<i64>,
     targets: &[&str],
     start_after_id: i64,
+    persist_seen_ids: bool,
 ) -> Result<i64> {
     let mut cursor_id = start_after_id;
     loop {
@@ -5108,6 +5192,9 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_live_rows(
         rows.retain(|row| seen_ids.insert(row.id));
         if rows.is_empty() {
             continue;
+        }
+        if persist_seen_ids {
+            persist_invocation_summary_repair_seen_ids(tx, &rows).await?;
         }
         upsert_invocation_hourly_rollups_tx(tx, &rows, targets).await?;
     }
@@ -5402,6 +5489,7 @@ async fn repair_invocation_summary_rollups_with_mode(
             &mut cleared_rollup_buckets,
             &INVOCATION_SUMMARY_ROLLUP_TARGETS,
             true,
+            false,
         )
         .await?;
     }
@@ -5432,6 +5520,7 @@ async fn repair_invocation_summary_rollups_with_mode(
         &mut seen_ids,
         &INVOCATION_SUMMARY_ROLLUP_TARGETS,
         live_rebuild_start_id,
+        false,
     )
     .await?;
     save_hourly_rollup_live_progress_tx(
@@ -5505,13 +5594,25 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
     }
     let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
         || missing_materialized_archive_has_unknown_scope;
-    if first_page && !preserve_materialized_archives {
-        sqlx::query("DELETE FROM invocation_rollup_hourly")
-            .execute(tx.as_mut())
-            .await?;
-        sqlx::query("DELETE FROM invocation_failure_rollup_hourly")
-            .execute(tx.as_mut())
-            .await?;
+    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
+    if first_page {
+        clear_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
+        if preserve_materialized_archives {
+            if !missing_materialized_archive_has_unknown_scope {
+                cleared_rollup_buckets = clear_invocation_summary_rollups_outside_buckets(
+                    tx.as_mut(),
+                    &missing_materialized_bucket_epochs,
+                )
+                .await?;
+            }
+        } else {
+            sqlx::query("DELETE FROM invocation_rollup_hourly")
+                .execute(tx.as_mut())
+                .await?;
+            sqlx::query("DELETE FROM invocation_failure_rollup_hourly")
+                .execute(tx.as_mut())
+                .await?;
+        }
     }
     let mut page_rows = load_completed_invocation_summary_repair_page(
         tx.as_mut(),
@@ -5534,8 +5635,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         .await?;
         (shared_live_cursor, repair_live_cursor)
     };
-    let mut seen_ids = HashSet::new();
-    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
+    let mut seen_ids = load_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
     let mut repair_incomplete = incomplete_exists && !first_page;
     for (_, archive_row) in &page_rows {
         let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
@@ -5566,7 +5666,8 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-            first_page,
+            false,
+            true,
         )
         .await?;
     }
@@ -5590,6 +5691,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             .await?;
         restored_live_rows.retain(|row| seen_ids.insert(row.id));
         if !restored_live_rows.is_empty() {
+            persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
             upsert_invocation_hourly_rollups_tx(
                 tx.as_mut(),
                 &restored_live_rows,
@@ -5604,6 +5706,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         &mut seen_ids,
         &INVOCATION_SUMMARY_ROLLUP_TARGETS,
         live_rebuild_start_id,
+        true,
     )
     .await?;
     save_hourly_rollup_live_progress_tx(
@@ -5664,6 +5767,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
         .execute(tx.as_mut())
         .await?;
+    clear_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
     save_hourly_rollup_live_progress_tx(
         tx.as_mut(),
         INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
@@ -5685,7 +5789,7 @@ async fn summary_rollup_backfill_requires_full_repair(
               AND TRIM(replay.archive_sha256) <> '' AND replay.archive_sha256 IS NOT batches.sha256)
             OR (batches.historical_rollups_materialized_at IS NOT NULL AND (SELECT COUNT(*) FROM hourly_rollup_archive_replay AS replay
               WHERE replay.target IN (?2, ?3) AND replay.dataset = batches.dataset AND replay.file_path = batches.file_path
-                AND COALESCE(NULLIF(TRIM(replay.archive_sha256), ''), batches.sha256) IS batches.sha256) < 2)))
+                AND replay.archive_sha256 = batches.sha256) < 2)))
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
@@ -5772,6 +5876,7 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
             &mut seen_ids,
             &mut cleared_rollup_buckets,
             &targets,
+            false,
             false,
         )
         .await?;

@@ -93,7 +93,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6653,
+      "line_budget": 6667,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 6297,
+      "line_budget": 6401,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {

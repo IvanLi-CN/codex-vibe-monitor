@@ -2533,6 +2533,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .await
     .context("failed to ensure pending summary rollup order index")?;
 
+    // Force-repair pages seek by the archive primary key and retain that order across commits.
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_summary_rollup_repair_seek
+        ON archive_batches (dataset, status, id)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure summary rollup repair seek index")?;
+
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS retention_prepared_archives (
@@ -4358,6 +4371,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure hourly_rollup_live_progress table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_repair_seen_invocation_ids (
+            dataset TEXT NOT NULL,
+            invocation_id INTEGER NOT NULL,
+            PRIMARY KEY (dataset, invocation_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly_rollup_repair_seen_invocation_ids table existence")?;
 
     sqlx::query(
         r#"
