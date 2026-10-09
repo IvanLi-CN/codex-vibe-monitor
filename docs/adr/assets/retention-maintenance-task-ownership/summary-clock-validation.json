@@ -1,0 +1,106 @@
+{
+  "status": "passed-six-boundary-probes-and-complete-lightweight-profile",
+  "baseSha": "ed00c68fed0975aaf0617981db8ad7fd75ce1a1f",
+  "codeCandidateSha": "3d7ee15a3ca09c85f910e15cc5625222f3dd0029",
+  "priorPrHeadSha": "ed7688f3e2f8d03be55337cb246ae417fd618291",
+  "originalCiFailure": {
+    "runId": 37804395271,
+    "jobId": 113407926800,
+    "atUtc": "2026-10-08T16:01:16Z",
+    "atShanghai": "2026-10-09T00:01:16+08:00",
+    "failedTests": [
+      "summary_projection_rolling_delta_publishes_without_full_live_admission",
+      "summary_projection_replayed_delta_publishes_without_full_live_admission"
+    ],
+    "actualTodayCount": 1,
+    "incorrectExpectedTodayCount": 2
+  },
+  "diagnosis": {
+    "naturalClock": "2 passed",
+    "priorCandidateAdvancingClockEpoch1791475260": "2 failed, same today count 1 vs 2",
+    "minimalReplayedCaseEpoch1791475260": "1 failed, same assertion",
+    "priorCandidateAdvancingClockEpoch1791475380": "2 passed",
+    "rootCause": "Two-minute-old fixture can belong to yesterday in the first two Shanghai-day minutes; today is a calendar-day window, while current/rolling/all-time include both rows.",
+    "discardedFrozenClockProbe": "Frozen realtime failed on the rolling endpoint upper bound; it is not evidence reproducing the CI symptom."
+  },
+  "fix": {
+    "scope": "Only two existing #[cfg(test)] fixture functions; no shared test initializers or production code changed.",
+    "todayOracle": "Independently count each seeded row whose Shanghai calendar date equals the query date, sum its 17 or 23 tokens.",
+    "rollingOracle": "current/1d/7d/30d remain exactly 2 rows and 40 tokens; existing all-time assertion remains unchanged.",
+    "skipsRetriesLimitsChanged": false
+  },
+  "clockMethod": {
+    "source": "linux-realtime-clock-offset.c",
+    "sourceSha256": "bb13da278c8acfe9812048c0fc8df27b8abcf1ddf21cc7f23d2914549ce150cf",
+    "compile": "cc -shared -fPIC -O2 linux-realtime-clock-offset.c -o realtime-clock.so",
+    "invoke": "CVM_TEST_REALTIME_EPOCH=<epoch> LD_PRELOAD=<absolute realtime-clock.so> timeout 30 <test-binary> delta_publishes_without_full_live_admission --test-threads=1 --nocapture",
+    "isolation": "Process-only CLOCK_REALTIME offset; realtime continues advancing, CLOCK_MONOTONIC/Instant/Tokio and host/guest system clocks remain unchanged."
+  },
+  "passedProbes": [
+    {
+      "epoch": 1791475200,
+      "shanghaiTime": "00:00",
+      "passed": 2,
+      "failed": 0,
+      "log": "repair7-clock-1791475200.log"
+    },
+    {
+      "epoch": 1791475260,
+      "shanghaiTime": "00:01",
+      "passed": 2,
+      "failed": 0,
+      "log": "repair7-clock-1791475260.log"
+    },
+    {
+      "epoch": 1791475380,
+      "shanghaiTime": "00:03",
+      "passed": 2,
+      "failed": 0,
+      "log": "repair7-clock-1791475380.log"
+    },
+    {
+      "epoch": 1791518400,
+      "shanghaiTime": "12:00",
+      "passed": 2,
+      "failed": 0,
+      "log": "repair7-clock-1791518400.log"
+    },
+    {
+      "epoch": 1791561590,
+      "shanghaiTime": "23:59:50",
+      "passed": 2,
+      "failed": 0,
+      "log": "repair7-clock-1791561590.log"
+    },
+    {
+      "epoch": 1791561598,
+      "shanghaiTime": "23:59:58, process crosses midnight",
+      "passed": 2,
+      "failed": 0,
+      "seconds": 4.94,
+      "log": "repair7-clock-1791561598.log"
+    }
+  ],
+  "completeLightweight": {
+    "passed": 1302,
+    "failed": 0,
+    "testSeconds": 295.673,
+    "profileSeconds": 303,
+    "runner": "bash .github/scripts/run-backend-tests.sh --profile lightweight",
+    "execution": "Whole runner pinned to guest CPU5; root DAC override removed; existing profile and assertions unchanged."
+  },
+  "evidenceLocator": ".codex/evidence/retention-maintenance/repair7",
+  "logSha256": {
+    "repair7-clock-1791475260.log": "2dfd94411bb8b0a99fad36f35d2a857dceb2461c31b5ef36e29676b79532cac8",
+    "repair7-clock-1791561598.log": "e1c57edfa977a93fd20a45d20f5f28ede2977ee67a887bc7f84258f10bb609e2",
+    "repair7-clock-1791475200.log": "b4f1813a87b813ce507f177e871086ea001adb97663b0490838c5da087e62bd4",
+    "repair7-clock-1791518400.log": "5b878c3756430af1eb3aafc179d36de342eddaeb7b443c561c6850e7b7ca6f1a",
+    "repair7-clock-1791475380.log": "dc40530dd7b40958556a4d0fa84952d2a8b908b50753a96b64aedf3795c0435c",
+    "ci-summary-delta-natural-clock.log": "f33a69a368a709c7d61d542e91929f9307e94db03cac0ec70374f042295e9c1a",
+    "repair7-clock-1791561590.log": "35636ad0d9037ec947284e3cd47ad213c3765f3270a5296cf3e080095aaa2050",
+    "ci-summary-delta-boundary-advancing-red.log": "ea4003228baafc0a4803f0fa48adf9c82caae0346831077b322e418e3607ec62",
+    "ci-summary-delta-minimal-red.log": "031b30753881c6e275ae122057f9eeea903c9b328356f4736234d729465a9875",
+    "ci-summary-delta-boundary-red.log": "8efebc08edaefc29fb1ff16e240f5d1072db81d2bc7946985a856c3ab53f9fcd",
+    "ci-summary-delta-three-minutes-green.log": "34f6a8f57057d39a47534d6c6f040b01e587d4726c32a78a7bfe2f53a58ca916"
+  }
+}

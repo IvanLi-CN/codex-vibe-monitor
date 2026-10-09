@@ -67,6 +67,13 @@ pub(crate) enum TimelineEvent {
         duration_ms: u64,
         status: String,
     },
+    ExecutionResourcesPending {
+        id: String,
+    },
+    ExecutionWorkStarted {
+        id: String,
+        started_at: String,
+    },
     ExecutionUnknown {
         id: String,
         last_observed_at: String,
@@ -205,6 +212,15 @@ pub(crate) fn execution_finished(id: String, finished_at: String, duration_ms: u
     notify_runtime_changed();
 }
 
+pub(crate) fn execution_resources_pending(id: String) {
+    send_event(TimelineEvent::ExecutionResourcesPending { id });
+}
+
+pub(crate) fn execution_work_started(id: String, started_at: String) {
+    send_event(TimelineEvent::ExecutionWorkStarted { id, started_at });
+    notify_runtime_changed();
+}
+
 pub(crate) fn execution_child_changed(id: String, task_key: Option<String>, title: Option<String>) {
     send_event(TimelineEvent::ExecutionChildChanged {
         id,
@@ -311,7 +327,7 @@ fn task_key_for_pressure_source(source: &str) -> Option<&'static str> {
         }
         "retention_archive" | "retention" => "retention_archive",
         "data_retention_maintenance" | "system_task_run_retention" => "retention_archive",
-        "raw_orphan_sweep" | "raw_sweep_directory_probe" => "retention_archive",
+        "raw_orphan_sweep" | "raw_sweep_directory_probe" => "raw_orphan_sweep",
         "hourly_rollup_refresh" => "startup_hourly_rollup_bootstrap",
         "upstream_account_maintenance" => "upstream_account_maintenance",
         "account_activity_v2_priority_repair" => "startup_backfill",

@@ -1869,7 +1869,6 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         (ENV_LIST_LIMIT_MAX, Some("321")),
         (ENV_USER_AGENT, Some("custom-agent/1.0")),
         (ENV_STATIC_DIR, Some("/tmp/static")),
-        (ENV_RETENTION_ENABLED, Some("true")),
         (ENV_RETENTION_DRY_RUN, Some("true")),
         (ENV_RETENTION_INTERVAL_SECS, Some("7200")),
         (ENV_RETENTION_BATCH_ROWS, Some("2222")),
@@ -1920,7 +1919,6 @@ fn app_config_from_sources_reads_renamed_public_envs() {
     assert_eq!(config.list_limit_max, 321);
     assert_eq!(config.user_agent, "custom-agent/1.0");
     assert_eq!(config.static_dir, Some(PathBuf::from("/tmp/static")));
-    assert!(config.retention_enabled);
     assert!(config.retention_dry_run);
     assert_eq!(config.retention_interval, Duration::from_secs(7200));
     assert_eq!(config.retention_batch_rows, 2222);
@@ -2376,7 +2374,6 @@ pub(crate) fn test_config() -> AppConfig {
         user_agent: "codex-test".to_string(),
         static_dir: None,
         public_origin: None,
-        retention_enabled: DEFAULT_RETENTION_ENABLED,
         retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
         retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
         retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
@@ -4050,4 +4047,27 @@ impl DatabaseError for FakeSqliteCodeDatabaseError {
 
 pub(crate) fn write_backfill_response_payload(path: &Path) {
     write_backfill_response_payload_with_service_tier(path, None);
+}
+
+#[test]
+fn app_config_ignores_retired_retention_switches_for_all_values() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    for name in ["RETENTION_ENABLED", "XY_RETENTION_ENABLED"] {
+        let previous = env::var_os(name);
+        for value in ["true", "false", "invalid-retired-value"] {
+            unsafe {
+                env::set_var(name, value);
+            }
+            AppConfig::from_sources(&CliArgs::default())
+                .expect("retired switches cannot gate or reject configuration");
+        }
+        match previous {
+            Some(value) => unsafe {
+                env::set_var(name, value);
+            },
+            None => unsafe {
+                env::remove_var(name);
+            },
+        }
+    }
 }

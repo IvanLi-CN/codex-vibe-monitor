@@ -2595,6 +2595,8 @@ const managedTaskRuns = new Map<string, DemoManagedTaskRun[]>();
 let nextManagedTaskRunId = 100;
 const DEMO_DEFAULT_ENABLED_TASKS = new Set([
   "retention_archive",
+  "invocation_identity_cleanup",
+  "raw_orphan_sweep",
   "upstream_account_maintenance",
   "forward_proxy_subscription_refresh",
   "pool_orphan_recovery",
@@ -2681,6 +2683,12 @@ function demoDefaultTaskPolicy(
         policySource: "系统默认",
         effectivePolicy: "自适应恢复；按覆盖和压力准入唤醒",
       };
+    case "invocation_identity_cleanup":
+    case "raw_orphan_sweep":
+      return {
+        policySource: "系统默认",
+        effectivePolicy: "300 秒巡检；有待办时让行后接续，安全重试独立计时",
+      };
     case "prompt_cache_materialization":
       return { policySource: "系统默认", effectivePolicy: "事件对账与 60 秒检查" };
     case "startup_backfill":
@@ -2701,6 +2709,8 @@ function demoDefaultTaskPolicy(
 function demoTaskExecutionClass(taskKey: string): string | null {
   switch (taskKey) {
     case "retention_archive":
+    case "invocation_identity_cleanup":
+    case "raw_orphan_sweep":
     case "upstream_account_maintenance":
     case "pool_orphan_recovery":
     case "invocation_timeline_snapshot":
@@ -2747,6 +2757,20 @@ export function managedTasks() {
     executionObservation?: string;
   };
   const tasks: Array<[string, string, string, string, boolean]> = [
+    [
+      "invocation_identity_cleanup",
+      "调用身份清理",
+      "释放无引用的对话身份与已结束小时前缀",
+      "interval",
+      false,
+    ],
+    [
+      "raw_orphan_sweep",
+      "Raw 孤儿文件清理",
+      "按所有权证明与隔离规则清理无引用的原始载荷文件",
+      "interval",
+      false,
+    ],
     ["retention_archive", "数据保留与归档", "按保留策略归档并清理历史数据", "interval", false],
     [
       "upstream_account_maintenance",
@@ -2879,6 +2903,8 @@ export function managedTasks() {
         const enabled = override?.enabled ?? DEMO_DEFAULT_ENABLED_TASKS.has(taskKey);
         const scheduleEditable = [
           "retention_archive",
+          "invocation_identity_cleanup",
+          "raw_orphan_sweep",
           "upstream_account_maintenance",
           "pool_orphan_recovery",
           "system_status_snapshot",
@@ -2892,28 +2918,37 @@ export function managedTasks() {
               ? null
               : taskKey === "retention_archive"
                 ? 3600
-                : null;
+                : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+                  ? 300
+                  : null;
         const cronExpr = override?.cronExpr !== undefined ? override.cronExpr : null;
         const effectiveIntervalSecs =
           intervalSecs ?? (taskKey === "retention_archive" ? 3600 : null);
         const triggerKinds =
-          taskKey === "retention_archive" || taskKey === "upstream_account_maintenance"
-            ? ["startup", "interval"]
-            : taskKey === "forward_proxy_subscription_refresh"
-              ? ["startup", "interval"]
-              : taskKey === "dashboard_runtime_projection_reconcile"
-                ? ["interval", "adaptive"]
-                : taskKey === "summary_snapshot" || taskKey === "prompt_cache_materialization"
-                  ? ["event", "interval"]
-                  : taskKey === "summary_coverage_recovery" || taskKey === "long_term_projection"
-                    ? ["adaptive", "interval"]
-                    : taskKey === "timeseries_minute_projection"
-                      ? ["startup", "interval", "adaptive"]
-                      : taskKey === "startup_backfill"
-                        ? ["startup", "event", "adaptive"]
-                        : isManual
-                          ? ["manual"]
-                          : [triggerMode];
+          taskKey === "retention_archive"
+            ? ["startup", "interval", "catchup", "manual"]
+            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+              ? ["interval", "catchup", "manual"]
+              : taskKey === "upstream_account_maintenance"
+                ? ["startup", "interval"]
+                : taskKey === "forward_proxy_subscription_refresh"
+                  ? ["startup", "interval"]
+                  : taskKey === "dashboard_runtime_projection_reconcile"
+                    ? ["interval", "adaptive"]
+                    : taskKey === "prompt_cache_materialization"
+                      ? ["event", "interval", "manual"]
+                      : taskKey === "summary_snapshot"
+                        ? ["event", "interval"]
+                        : taskKey === "summary_coverage_recovery" ||
+                            taskKey === "long_term_projection"
+                          ? ["adaptive", "interval"]
+                          : taskKey === "timeseries_minute_projection"
+                            ? ["startup", "interval", "adaptive"]
+                            : taskKey === "startup_backfill"
+                              ? ["startup", "event", "adaptive"]
+                              : isManual
+                                ? ["manual"]
+                                : [triggerMode];
         const defaultPolicy = demoDefaultTaskPolicy(taskKey, isManual);
         const hasScheduleOverride =
           override?.intervalSecs !== undefined || override?.cronExpr !== undefined;
@@ -2999,12 +3034,19 @@ export function managedTasks() {
     const hue = stableHueByTask.get(task.taskKey) ?? 0;
     const latestRun = managedTaskRuns.get(task.taskKey)?.[0];
     const fallbackStartedAt = new Date(Date.parse(demoNow()) - 3 * 60_000).toISOString();
-    const fallbackFinishedAt = new Date(Date.parse(fallbackStartedAt) + 31_000).toISOString();
+    const fallbackDurationMs = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(
+      task.taskKey,
+    )
+      ? 1_800
+      : 31_000;
+    const fallbackFinishedAt = new Date(
+      Date.parse(fallbackStartedAt) + fallbackDurationMs,
+    ).toISOString();
     const run = latestRun ?? {
       id: index + 1,
       startedAt: fallbackStartedAt,
       finishedAt: fallbackFinishedAt,
-      durationMs: 31_000,
+      durationMs: fallbackDurationMs,
       triggerKind: task.isManual ? "manual" : task.triggerMode,
       status: "success",
       errorDetail: null,
@@ -3026,6 +3068,29 @@ export function managedTasks() {
         reason: run.errorDetail,
       },
       executionObservation: "observed",
+      ...(["invocation_identity_cleanup", "raw_orphan_sweep"].includes(task.taskKey)
+        ? {
+            measurementCapabilities: {
+              pending: { supported: false, unit: null, scope: null },
+              discovered: {
+                supported: true,
+                unit:
+                  task.taskKey === "invocation_identity_cleanup"
+                    ? "conversation identities"
+                    : "raw payload files",
+                scope: task.taskKey,
+              },
+              processed: {
+                supported: true,
+                unit:
+                  task.taskKey === "invocation_identity_cleanup"
+                    ? "conversation identities"
+                    : "raw payload files",
+                scope: task.taskKey,
+              },
+            },
+          }
+        : {}),
     };
   });
 }
@@ -3388,7 +3453,41 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     }
     return sample;
   });
-  const workloadSamples = retentionFixture?.samples ?? backfillSamples;
+  const isOwnedCleanup = ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey);
+  const cleanupUnit =
+    taskKey === "invocation_identity_cleanup" ? "conversation identities" : "raw payload files";
+  const cleanupMetric = (value: number): TaskWorkloadMetric => ({
+    value,
+    unit: cleanupUnit,
+    scope: taskKey,
+    range: "bounded scan",
+    observedAt: at,
+    coverage: "window",
+  });
+  const cleanupSamples: TaskWorkloadSample[] = isOwnedCleanup
+    ? [
+        {
+          sampleId: `demo:${taskKey}:owned`,
+          executionUid: `demo-execution-${taskKey}`,
+          managedRunId: 1,
+          taskKey,
+          triggerKind: "interval",
+          attemptedAt: at,
+          actualStartedAt: new Date(Date.parse(demoNow()) - 1800).toISOString(),
+          finishedAt: demoNow(),
+          status: "success",
+          reason: null,
+          sequence: 1,
+          pending: null,
+          discovered: cleanupMetric(32),
+          processed: cleanupMetric(taskKey === "invocation_identity_cleanup" ? 8 : 3),
+          subsetRelation: "unknown",
+        },
+      ]
+    : [];
+  const workloadSamples = isOwnedCleanup
+    ? cleanupSamples
+    : (retentionFixture?.samples ?? backfillSamples);
   const retentionBacklogTrend = retentionFixture?.backlog;
   const latestSample = [...workloadSamples].reverse().find((sample) => sample.status !== "skipped");
   const latestObservedAt =
@@ -3456,6 +3555,13 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
           }
         : null,
   };
+  if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
+    defaultRun.details = demoOwnedMaintenanceDetails(taskKey, false);
+    defaultRun.completion = "completed";
+    defaultRun.coreCompletion = null;
+    defaultRun.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
+    defaultRun.updatedCount = defaultRun.processedCount;
+  }
   const latestPending = latestSample?.pending ?? null;
   const latestProcessed = latestSample?.processed ?? null;
   const completeAttempts = workloadSamples
@@ -3506,58 +3612,96 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
           scope: isRetention ? "expired_invocations:retention_policy" : null,
         },
         discovered: {
-          supported: isRetention,
-          unit: isRetention ? "invocation rows" : null,
-          scope: isRetention ? "expired_invocations:retention_policy" : null,
-        },
-        processed: {
-          supported: isRetention || isRowBackfill,
-          unit: isRetention || isRowBackfill ? "invocation rows" : null,
+          supported:
+            isRetention || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit: isRetention
+            ? "invocation rows"
+            : taskKey === "invocation_identity_cleanup"
+              ? "conversation identities"
+              : taskKey === "raw_orphan_sweep"
+                ? "raw payload files"
+                : null,
           scope: isRetention
             ? "expired_invocations:retention_policy"
-            : isRowBackfill
+            : ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
+              ? taskKey
+              : null,
+        },
+        processed: {
+          supported:
+            isRetention ||
+            isRowBackfill ||
+            ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey),
+          unit:
+            isRetention || isRowBackfill
+              ? "invocation rows"
+              : taskKey === "invocation_identity_cleanup"
+                ? "conversation identities"
+                : taskKey === "raw_orphan_sweep"
+                  ? "raw payload files"
+                  : null,
+          scope: isRetention
+            ? "expired_invocations:retention_policy"
+            : isRowBackfill || ["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)
               ? taskKey
               : null,
         },
       },
     },
-    progress: task.isManual
+    progress: isOwnedCleanup
       ? {
           total: null,
-          completed: null,
-          phase: "manual",
+          completed: latestSample?.processed?.value ?? null,
+          phase: "idle",
           checkpoint: null,
           etaSeconds: null,
           updatedAt: latestObservedAt,
           freshness: "fresh",
-          unit: "invocations",
-          sourceScope: "expired_invocations",
+          unit: cleanupUnit,
+          sourceScope: taskKey,
           waitReason: null,
           nextInspectionAt: task.nextTriggerAt,
           nextCatchupAt: task.nextCatchupAt ?? null,
-          catchupState: task.enabled ? "scheduled" : "disabled",
+          catchupState: task.enabled ? "idle" : "disabled",
           stages: [],
         }
-      : {
-          total: 2547,
-          completed: 1842,
-          phase: "processing",
-          checkpoint: "cursor:1842",
-          etaSeconds: 420,
-          updatedAt: latestObservedAt,
-          freshness: "fresh",
-          unit: "invocations",
-          sourceScope: "expired_invocations",
-          lastProgressAt: latestObservedAt,
-          waitReason: null,
-          nextInspectionAt: task.nextTriggerAt,
-          nextCatchupAt: task.nextCatchupAt ?? null,
-          catchupState: task.enabled ? "scheduled" : "disabled",
-          stages: [
-            { name: "archive", status: "running", completed: 1842, total: 2547 },
-            { name: "statistics", status: "pending" },
-          ],
-        },
+      : task.isManual
+        ? {
+            total: null,
+            completed: null,
+            phase: "manual",
+            checkpoint: null,
+            etaSeconds: null,
+            updatedAt: latestObservedAt,
+            freshness: "fresh",
+            unit: "invocations",
+            sourceScope: "expired_invocations",
+            waitReason: null,
+            nextInspectionAt: task.nextTriggerAt,
+            nextCatchupAt: task.nextCatchupAt ?? null,
+            catchupState: task.enabled ? "scheduled" : "disabled",
+            stages: [],
+          }
+        : {
+            total: 2547,
+            completed: 1842,
+            phase: "processing",
+            checkpoint: "cursor:1842",
+            etaSeconds: 420,
+            updatedAt: latestObservedAt,
+            freshness: "fresh",
+            unit: "invocations",
+            sourceScope: "expired_invocations",
+            lastProgressAt: latestObservedAt,
+            waitReason: null,
+            nextInspectionAt: task.nextTriggerAt,
+            nextCatchupAt: task.nextCatchupAt ?? null,
+            catchupState: task.enabled ? "scheduled" : "disabled",
+            stages: [
+              { name: "archive", status: "running", completed: 1842, total: 2547 },
+              { name: "statistics", status: "pending" },
+            ],
+          },
     recentRuns: managedTaskRuns.get(taskKey) ?? [defaultRun],
     retentionBacklogTrend,
     workloadTrend: retentionFixture?.trend ?? backfillTrend,
@@ -5021,6 +5165,18 @@ export async function handleDemoRequest(request: Request) {
     ) {
       return json({ error: "task already has an active run" }, { status: 409 });
     }
+    if (
+      !detail.task.enabled &&
+      ![
+        "retention_archive",
+        "invocation_identity_cleanup",
+        "raw_orphan_sweep",
+        "prompt_cache_materialization",
+      ].includes(taskKey) &&
+      !detail.task.isManual
+    ) {
+      return json({ error: "task is disabled" }, { status: 409 });
+    }
     const startedAt = demoNow();
     const run: DemoManagedTaskRun = {
       id: nextManagedTaskRunId++,
@@ -5058,6 +5214,22 @@ export async function handleDemoRequest(request: Request) {
               reason: "materialization_pending_or_disabled",
             },
           };
+      if (
+        [
+          "retention_archive",
+          "invocation_identity_cleanup",
+          "raw_orphan_sweep",
+          "prompt_cache_materialization",
+        ].includes(taskKey)
+      ) {
+        run.completion = "completed";
+        run.coreCompletion = taskKey === "retention_archive" ? "completed" : null;
+        run.details = demoOwnedMaintenanceDetails(taskKey);
+        if (["invocation_identity_cleanup", "raw_orphan_sweep"].includes(taskKey)) {
+          run.processedCount = taskKey === "invocation_identity_cleanup" ? 8 : 3;
+          run.updatedCount = run.processedCount;
+        }
+      }
     }, 600);
     return json(managedTaskDetail(taskKey));
   }
@@ -5329,5 +5501,31 @@ export async function handleDemoRequest(request: Request) {
 
 export const apiHandlers = [
   http.get("/favicon.ico", () => new HttpResponse(null, { status: 204 })),
-  http.all(/\/api\/.*/, ({ request }) => handleDemoRequest(request)),
+  http.all(/^https?:\/\/[^/]+\/(?:codex-vibe-monitor\/demo\/)?api(?:\/|$)/, ({ request }) =>
+    handleDemoRequest(request),
+  ),
 ];
+
+function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<string, unknown> {
+  const base = { ownershipVersion: 1, ownerScope: taskKey, dryRun: false, manual };
+  if (taskKey === "invocation_identity_cleanup")
+    return {
+      ...base,
+      conversationIdentitiesChecked: 32,
+      conversationIdentitiesReleased: 8,
+      hourPrefixesChecked: 32,
+      hourPrefixesReleased: 4,
+      coverage: "bounded_scan",
+      overallRemaining: null,
+    };
+  if (taskKey === "raw_orphan_sweep")
+    return {
+      ...base,
+      filesChecked: 32,
+      filesReleased: 3,
+      bytesReleased: 65536,
+      coverage: "bounded_scan",
+      overallRemaining: null,
+    };
+  return { ...base, budgetMs: 60000, elapsedMs: 1200 };
+}

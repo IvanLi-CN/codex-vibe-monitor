@@ -17,6 +17,7 @@ import {
   updateManagedTask,
 } from "../../lib/api";
 import {
+  isRetentionMaintenanceTask,
   managedTaskCompletionLabel,
   managedTaskExecutionClassLabel,
   managedTaskFreshnessLabel,
@@ -130,7 +131,11 @@ export default function SystemTaskDetailPage() {
     return () => window.clearInterval(elapsedTimer);
   }, [activeRuntime]);
 
-  const hasActiveRun = activeRuntime != null;
+  const hasActiveRun =
+    activeRuntime != null ||
+    (isRetentionMaintenanceTask(taskKey) &&
+      detail?.recentRuns.some((run) => run.status === "requested" || run.status === "running") ===
+        true);
   const displayedElapsedMs =
     activeRuntime && runtimeSampleElapsedMs != null && runtimeSampleClock != null
       ? runtimeSampleElapsedMs + Math.max(0, runtimeNow - runtimeSampleClock)
@@ -212,10 +217,37 @@ export default function SystemTaskDetailPage() {
               disabled={saving || runningNow}
               onClick={() => void save({ enabled: !task.enabled })}
             >
-              {saving ? "保存中…" : task.enabled ? "停用任务" : "启用任务"}
+              {saving
+                ? "保存中…"
+                : isRetentionMaintenanceTask(task.taskKey)
+                  ? task.enabled
+                    ? "暂停自动触发"
+                    : "恢复自动触发"
+                  : task.enabled
+                    ? "停用任务"
+                    : "启用任务"}
             </Button>
           </div>
         </div>
+        {isRetentionMaintenanceTask(task.taskKey) ? (
+          <p className="text-sm text-base-content/65">
+            自动触发{task.enabled ? "已启用" : "已暂停"}
+            。暂停后仍可立即运行，已准入的本轮工作会正常结束。
+          </p>
+        ) : null}
+        {taskKey === "retention_archive" ? (
+          <nav aria-label="关联维护任务" className="flex flex-wrap gap-3 text-sm">
+            <Link className="text-primary" to="/system/tasks/prompt_cache_materialization">
+              Prompt 缓存物化
+            </Link>
+            <Link className="text-primary" to="/system/tasks/invocation_identity_cleanup">
+              调用身份清理
+            </Link>
+            <Link className="text-primary" to="/system/tasks/raw_orphan_sweep">
+              Raw 孤儿文件清理
+            </Link>
+          </nav>
+        ) : null}
         {error ? <Alert variant="error">{error}</Alert> : null}
         {!error && runtimeError ? <Alert variant="error">{runtimeError}</Alert> : null}
         <Card>
@@ -285,7 +317,9 @@ export default function SystemTaskDetailPage() {
                 {progress?.catchupState === "scheduled"
                   ? `原因：${task.catchupReason ?? progress.waitReason ?? "积压仍在"}`
                   : progress?.catchupState === "disabled"
-                    ? "任务已停用"
+                    ? isRetentionMaintenanceTask(task.taskKey)
+                      ? "自动触发已暂停"
+                      : "任务已停用"
                     : "积压清空后回到巡检计划"}
               </div>
             </div>
@@ -477,7 +511,7 @@ export default function SystemTaskDetailPage() {
                       等待：{String(run.details.waitReason)}
                     </div>
                   ) : null}
-                  {run.details?.promptCacheStats ? (
+                  {run.details?.ownershipVersion == null && run.details?.promptCacheStats ? (
                     <div className="text-xs text-base-content/65">
                       Prompt 缓存统计：
                       {run.details.promptCacheStats.state === "available"
@@ -486,6 +520,22 @@ export default function SystemTaskDetailPage() {
                           ? `暂不可用（积压 ${String(run.details.promptCacheStats.pending ?? "未知")}）`
                           : "未知"}
                     </div>
+                  ) : null}
+                  {run.details?.ownershipVersion === 1 ? (
+                    <div className="text-xs text-base-content/65">
+                      {run.details.dryRun ? "只读预演" : "实际运行"} · 本任务范围
+                      {taskKey === "invocation_identity_cleanup"
+                        ? ` · 对话身份 ${String(run.details.conversationIdentitiesChecked ?? "未知")} 个已检查 / ${String(run.details.conversationIdentitiesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；小时前缀 ${String(run.details.hourPrefixesChecked ?? "未知")} 个已检查 / ${String(run.details.hourPrefixesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}`
+                        : null}
+                      {taskKey === "raw_orphan_sweep"
+                        ? ` · 文件 ${String(run.details.filesChecked ?? "未知")} 个已检查 / ${String(run.details.filesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；${String(run.details.bytesReleased ?? "未知")} 字节`
+                        : null}
+                      {run.details.coverage === "bounded_scan"
+                        ? " · 有界扫描，总体剩余量未知"
+                        : null}
+                    </div>
+                  ) : taskKey === "retention_archive" ? (
+                    <div className="text-xs text-base-content/50">旧版组合范围，保留原始结果</div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
                   {taskKey === "retention_archive" ? (
