@@ -381,21 +381,21 @@
 
 ### Task Catalog Workload Background — Desktop and Mobile
 
-- source_type: `storybook_canvas`
-- story_id_or_title: `System/SystemWorkspace/Tasks`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport` for desktop, `element` for row and mobile
-- viewport_strategy: `storybook-viewport`
-- requested_viewport: `1440x900` and `393x852`
+- source_type: `ui_demo`
+- story_id_or_title: `task-timeline-pressure-dense`
+- target_program: `vite_web_demo`
+- capture_scope: `browser-viewport` for desktop and mobile, `element` for row
+- viewport_strategy: `ui-demo-source`
+- requested_viewport: `1280x900` and `393x852`
 - margin_policy: `trim_only`
 - evidence_surface: `page`
 - sensitive_exclusion: `N/A`
 - comparison_base: `1b5a4056391b5e7fbdcd66d44655907747173ac0`
 - comparison: `current-only`; the locked baseline contains no catalog-background image at these exact paths
-- rendered_candidate: `d4299e32`
-- owner_confirmation: confirmed in chat on 2026-10-06 ("看起来没问题了，允许提交视觉证据。")
+- rendered_candidate: `aeb63f51`
+- owner_confirmation: confirmed in chat on 2026-10-09 ("图没问题。")
 - submission_gate: `approved`
-- state: 37-task catalog with visible-row lazy-loaded P/D/C background, corrected area closure, and workload detail inspection
+- state: 39-task catalog with visible-row lazy-loaded P/D/C background, no persistent legend, corrected area closure, and workload detail inspection
 - images:
   - ![Task catalog workload background, desktop](./assets/task-catalog-workload-background-desktop.png)
   - ![Task catalog workload background, row](./assets/task-catalog-workload-background-row.png)
