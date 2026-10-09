@@ -373,6 +373,7 @@ export function TaskWorkloadSparkline({
         return false;
       }
       if (next.revision < trendRevisionRef.current) return false;
+      if (source === "topic" && next.revision === trendRevisionRef.current) return false;
       trendRevisionRef.current = next.revision;
       setTrend(next);
       cacheTrend(task.taskKey, next, source);
