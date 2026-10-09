@@ -46,6 +46,13 @@ describe("demo runtime selection", () => {
     expect(sceneFromLocation(location)).toBe("runtime-pressure-accounting-error");
   });
 
+  it("accepts the dense task timeline pressure scene", () => {
+    const location = new URL(
+      "https://demo.invalid/#/system/tasks?demoScene=task-timeline-pressure-dense",
+    ) as unknown as Location;
+    expect(sceneFromLocation(location)).toBe("task-timeline-pressure-dense");
+  });
+
   it("keeps raw inventory preparation independent from storage scanning", () => {
     const rawLocation = new URL(
       "https://demo.invalid/#/system/status?demoScene=system-raw-inventory-preparing",

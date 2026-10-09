@@ -1568,28 +1568,30 @@ fn maintenance_connect_options(config: &AppConfig) -> Result<SqliteConnectOption
 }
 
 async fn open_with_options(options: SqliteConnectOptions) -> Result<MaintenanceStore> {
+    // Keep initialization single-connection so an early error cannot race
+    // several SQLx worker returns; reopen the steady-state pool afterward.
+    let initialization_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.clone())
+        .await?;
+    let outcome = async {
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&initialization_pool)
+            .await?;
+        ensure_schema(&initialization_pool).await?;
+        record_prompt_cache_materialization_control_origin(&initialization_pool).await?;
+        seed_tasks(&initialization_pool).await?;
+        ensure_task_colors(&initialization_pool).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    initialization_pool.close().await;
+    outcome?;
     let pool = SqlitePoolOptions::new()
         .max_connections(3)
         .connect_with(options)
         .await?;
-    let outcome = async {
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&pool)
-            .await?;
-        ensure_schema(&pool).await?;
-        record_prompt_cache_materialization_control_origin(&pool).await?;
-        seed_tasks(&pool).await?;
-        ensure_task_colors(&pool).await?;
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    match outcome {
-        Ok(()) => Ok(MaintenanceStore::from_pool(pool)),
-        Err(error) => {
-            pool.close().await;
-            Err(error)
-        }
-    }
+    Ok(MaintenanceStore::from_pool(pool))
 }
 
 /// Online maintenance clients may only connect to an initialized observation store.
