@@ -94,6 +94,7 @@ export function createConversation(
   );
   return {
     promptCacheKey,
+    conversationId: `e2e-conversation-${promptCacheKey}`,
     requestCount: recentInvocations.length,
     totalTokens: recentInvocations.reduce(
       (sum, invocation) => sum + (invocation.totalTokens ?? 0),
