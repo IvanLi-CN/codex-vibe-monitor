@@ -172,7 +172,7 @@ fn request_diagnostics_detail_limits_preserve_summary_and_private_attributes() {
         context.phase(Phase::Connect).complete();
         context.waiting(Resource::DbPool).complete();
     }
-    assert_eq!(context.state().longest.len(), WAIT_LIMIT);
+    assert!(context.state().longest.len() <= WAIT_LIMIT);
     assert!(context.state().bytes <= BYTE_LIMIT);
     let persistence = context.persistence();
     context.finish_response("cancelled", "2xx");

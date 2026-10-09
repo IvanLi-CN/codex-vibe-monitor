@@ -367,6 +367,8 @@ impl IntervalUnion {
 struct State {
     root: Option<Span>,
     parent: Option<SpanContext>,
+    detail_bucket: u8,
+    normal_candidate: bool,
     ended: Option<Duration>,
     waits: [WaitStats; 7],
     wait_union: IntervalUnion,
@@ -443,6 +445,14 @@ impl DiagnosticContext {
                 &OtelContext::new(),
             )
         });
+        let (detail_bucket, normal_candidate) = root
+            .as_ref()
+            .map(|span| {
+                let trace_byte = span.span_context().trace_id().to_bytes()[0];
+                (trace_byte & 63, trace_byte & 15 == 0)
+            })
+            .unwrap_or((u8::MAX, false));
+        let collect_detail = trace_details && detail_bucket <= 4;
         let parent = root.as_ref().map(|s| s.span_context().clone());
         Some(Self(Arc::new(Inner {
             metrics,
@@ -454,16 +464,18 @@ impl DiagnosticContext {
             state: std::sync::Mutex::new(State {
                 root,
                 parent,
+                detail_bucket,
+                normal_candidate,
                 ended: None,
                 waits: [WaitStats::default(); 7],
                 wait_union: IntervalUnion::default(),
                 phase_union: IntervalUnion::default(),
-                longest: if trace_details {
+                longest: if collect_detail {
                     Vec::with_capacity(WAIT_LIMIT)
                 } else {
                     Vec::new()
                 },
-                phases: if trace_details {
+                phases: if collect_detail {
                     Vec::with_capacity(PHASE_INTERVAL_LIMIT)
                 } else {
                     Vec::new()
@@ -573,6 +585,8 @@ impl DiagnosticContext {
         let at = self.at();
         let (
             mut root,
+            detail_bucket,
+            normal_candidate,
             waits,
             longest,
             phases,
@@ -599,6 +613,8 @@ impl DiagnosticContext {
             }
             (
                 state.root.take(),
+                state.detail_bucket,
+                state.normal_candidate,
                 waits,
                 std::mem::take(&mut state.longest),
                 std::mem::take(&mut state.phases),
@@ -645,23 +661,20 @@ impl DiagnosticContext {
             }
         }
         if let Some(root) = root.as_mut() {
-            let trace_hash = root.span_context().trace_id().to_bytes()[0];
-            let sample_bucket = trace_hash & 31;
-            let random_candidate = sample_bucket == 0;
             // Select one deterministic category per request. Root spans retain the full
             // lightweight record; only the selected category receives waterfall children.
             let detailed = if truncated {
                 false
             } else if outcome != "complete" {
-                sample_bucket == 1
+                detail_bucket == 1
             } else if attempts > 1 {
-                sample_bucket == 2
+                detail_bucket == 2
             } else if wait_total >= Duration::from_millis(250) {
-                sample_bucket == 3
+                detail_bucket == 3
             } else if at >= Duration::from_secs(30) {
-                sample_bucket == 4
+                detail_bucket == 4
             } else {
-                random_candidate
+                detail_bucket == 0
             };
             if detailed {
                 for interval in phases {
@@ -700,7 +713,7 @@ impl DiagnosticContext {
                 KeyValue::new("cvm.high_wait", wait_total >= Duration::from_millis(250)),
                 KeyValue::new(
                     "cvm.normal_candidate",
-                    random_candidate
+                    normal_candidate
                         && outcome == "complete"
                         && status_class == "2xx"
                         && attempts <= 1
@@ -846,18 +859,23 @@ impl Drop for Guard {
                     end,
                     lower_bound: !self.complete,
                 };
-                if state.longest.len() < WAIT_LIMIT {
-                    state.longest.push(interval);
-                } else if let Some((index, shortest)) = state
-                    .longest
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, i)| i.duration())
-                    && duration > shortest.duration()
-                {
-                    state.longest[index] = interval;
+                if state.detail_bucket <= 4 {
+                    if state.longest.len() < WAIT_LIMIT {
+                        state.longest.push(interval);
+                    } else if let Some((index, shortest)) = state
+                        .longest
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, i)| i.duration())
+                        && duration > shortest.duration()
+                    {
+                        state.longest[index] = interval;
+                    }
                 }
-            } else if self.detail && self.context.0.traces.tracer.is_some() {
+            } else if self.detail
+                && self.context.0.traces.tracer.is_some()
+                && state.detail_bucket <= 4
+            {
                 if state.phases.len() < PHASE_INTERVAL_LIMIT {
                     if let Kind::Phase(phase) = self.kind {
                         state.phases.push(PhaseInterval {
