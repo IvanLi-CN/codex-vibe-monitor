@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct BatchedAttemptProgress {
     pub(crate) attempt_id: i64,
     pub(crate) pending_status: &'static str,
+    pub(crate) enqueue_sequence: u64,
     pub(crate) phase: Option<String>,
     pub(crate) connect_latency_ms: Option<f64>,
     pub(crate) first_byte_latency_ms: Option<f64>,
@@ -75,8 +76,13 @@ fn attempt_phase_rank(phase: &str) -> u8 {
     }
 }
 
-fn merge_optional_string(current: &mut Option<String>, incoming: Option<String>) {
-    if incoming.is_some() {
+fn merge_latest_optional_string(
+    current: &mut Option<String>,
+    incoming: Option<String>,
+    current_sequence: u64,
+    incoming_sequence: u64,
+) {
+    if incoming.is_some() && incoming_sequence >= current_sequence {
         *current = incoming;
     }
 }
@@ -98,6 +104,8 @@ fn merge_max_i64(current: &mut Option<i64>, incoming: Option<i64>) {
 }
 
 pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttemptProgress) {
+    let current_sequence = current.enqueue_sequence;
+    let incoming_sequence = incoming.enqueue_sequence;
     let should_replace_phase = match (current.phase.as_deref(), incoming.phase.as_deref()) {
         (None, Some(_)) => true,
         (Some(current), Some(incoming)) => {
@@ -113,34 +121,53 @@ pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttem
         &mut current.first_byte_latency_ms,
         incoming.first_byte_latency_ms,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.compact_support_status,
         incoming.compact_support_status,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.compact_support_reason,
         incoming.compact_support_reason,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(&mut current.request_model, incoming.request_model);
-    merge_optional_string(
+    merge_latest_optional_string(
+        &mut current.request_model,
+        incoming.request_model,
+        current_sequence,
+        incoming_sequence,
+    );
+    merge_latest_optional_string(
         &mut current.upstream_request_model,
         incoming.upstream_request_model,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.model_mapping_pattern,
         incoming.model_mapping_pattern,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.request_summary_json,
         incoming.request_summary_json,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.upstream_request_compression_algorithm,
         incoming.upstream_request_compression_algorithm,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.upstream_request_compression_mode,
         incoming.upstream_request_compression_mode,
+        current_sequence,
+        incoming_sequence,
     );
     merge_max_i64(
         &mut current.upstream_request_logical_body_bytes,
@@ -162,20 +189,35 @@ pub(crate) fn merge(current: &mut BatchedAttemptProgress, incoming: BatchedAttem
         &mut current.upstream_response_header_bytes_approx,
         incoming.upstream_response_header_bytes_approx,
     );
-    merge_optional_string(&mut current.response_raw_path, incoming.response_raw_path);
-    merge_optional_string(&mut current.response_raw_codec, incoming.response_raw_codec);
+    merge_latest_optional_string(
+        &mut current.response_raw_path,
+        incoming.response_raw_path,
+        current_sequence,
+        incoming_sequence,
+    );
+    merge_latest_optional_string(
+        &mut current.response_raw_codec,
+        incoming.response_raw_codec,
+        current_sequence,
+        incoming_sequence,
+    );
     merge_max_i64(&mut current.response_raw_size, incoming.response_raw_size);
-    if incoming.response_raw_truncated.is_some() {
+    if incoming.response_raw_truncated.is_some() && incoming_sequence >= current_sequence {
         current.response_raw_truncated = incoming.response_raw_truncated;
     }
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.response_raw_truncated_reason,
         incoming.response_raw_truncated_reason,
+        current_sequence,
+        incoming_sequence,
     );
-    merge_optional_string(
+    merge_latest_optional_string(
         &mut current.response_content_encoding,
         incoming.response_content_encoding,
+        current_sequence,
+        incoming_sequence,
     );
+    current.enqueue_sequence = current_sequence.max(incoming_sequence);
 }
 
 pub(crate) async fn persist(
@@ -377,6 +419,7 @@ mod tests {
             |phase: &str, upstream_model: &str, compression: &str| BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                enqueue_sequence: 0,
                 phase: Some(phase.to_string()),
                 connect_latency_ms: Some(18.0),
                 first_byte_latency_ms: Some(33.0),
@@ -565,5 +608,73 @@ mod tests {
         assert_eq!(row.4.as_deref(), Some("terminal-upstream-model"));
         assert_eq!(row.5.as_deref(), Some("terminal-map"));
         assert_eq!(row.6.as_deref(), Some(r#"{"rewrite":"terminal"}"#));
+    }
+
+    #[test]
+    fn retained_older_progress_cannot_overwrite_newer_metadata() {
+        let mut newer = BatchedAttemptProgress {
+            attempt_id: 7,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            enqueue_sequence: 20,
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
+            request_model: Some("new-request-model".to_string()),
+            upstream_request_model: Some("new-upstream-model".to_string()),
+            model_mapping_pattern: Some("new-map".to_string()),
+            request_summary_json: Some(r#"{"rewrite":"new"}"#.to_string()),
+            upstream_request_compression_algorithm: Some("br".to_string()),
+            response_raw_path: Some("captures/new.raw".to_string()),
+            response_raw_codec: Some("zstd".to_string()),
+            response_raw_size: Some(200),
+            response_raw_truncated: Some(false),
+            response_raw_truncated_reason: None,
+            response_content_encoding: Some("br".to_string()),
+            ..Default::default()
+        };
+        let older = BatchedAttemptProgress {
+            attempt_id: 7,
+            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+            enqueue_sequence: 10,
+            phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string()),
+            request_model: Some("old-request-model".to_string()),
+            upstream_request_model: Some("old-upstream-model".to_string()),
+            model_mapping_pattern: Some("old-map".to_string()),
+            request_summary_json: Some(r#"{"rewrite":"old"}"#.to_string()),
+            upstream_request_compression_algorithm: Some("gzip".to_string()),
+            response_raw_path: Some("captures/old.raw".to_string()),
+            response_raw_codec: Some("gzip".to_string()),
+            response_raw_size: Some(100),
+            response_raw_truncated: Some(true),
+            response_raw_truncated_reason: Some("old-limit".to_string()),
+            response_content_encoding: Some("gzip".to_string()),
+            ..Default::default()
+        };
+
+        merge(&mut newer, older);
+
+        assert_eq!(newer.enqueue_sequence, 20);
+        assert_eq!(
+            newer.phase.as_deref(),
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+        );
+        assert_eq!(newer.request_model.as_deref(), Some("new-request-model"));
+        assert_eq!(
+            newer.upstream_request_model.as_deref(),
+            Some("new-upstream-model")
+        );
+        assert_eq!(newer.model_mapping_pattern.as_deref(), Some("new-map"));
+        assert_eq!(
+            newer.request_summary_json.as_deref(),
+            Some(r#"{"rewrite":"new"}"#)
+        );
+        assert_eq!(
+            newer.upstream_request_compression_algorithm.as_deref(),
+            Some("br")
+        );
+        assert_eq!(newer.response_raw_path.as_deref(), Some("captures/new.raw"));
+        assert_eq!(newer.response_raw_codec.as_deref(), Some("zstd"));
+        assert_eq!(newer.response_raw_size, Some(200));
+        assert_eq!(newer.response_raw_truncated, Some(false));
+        assert_eq!(newer.response_raw_truncated_reason, None);
+        assert_eq!(newer.response_content_encoding.as_deref(), Some("br"));
     }
 }

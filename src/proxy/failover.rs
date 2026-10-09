@@ -987,10 +987,29 @@ fn spawn_pool_attempt_response_capture(
             &raw_meta,
             response_content_encoding.as_deref(),
         );
-        if !enqueue_pool_upstream_request_attempt_snapshot(state.as_ref(), &pending) {
+        let mut progress_persisted =
+            enqueue_pool_upstream_request_attempt_snapshot_reliably(state.as_ref(), &pending).await;
+        if progress_persisted
+            && let Err(err) = state.sqlite_batch_writer.flush_now(&state.pool).await
+        {
             warn!(
                 invoke_id = %pending.invoke_id,
-                "deferred pool attempt response capture was not admitted to the batch writer"
+                error = %err,
+                "failed to flush deferred pool attempt response capture"
+            );
+            progress_persisted = false;
+        }
+        if !progress_persisted
+            && let Err(err) = persist_pool_upstream_request_attempt_response_capture_fallback(
+                &state.pool,
+                &pending,
+            )
+            .await
+        {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                error = %err,
+                "failed to persist fallback pool attempt response capture"
             );
         }
         if let Err(err) =
@@ -3535,44 +3554,20 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         })?;
                     let first_chunk = error_body_bytes.filter(|bytes| !bytes.is_empty());
 
-                    let mut deferred_early_phase_cleanup_guard = None;
-                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
-                        if pending_attempt_record.attempt_id.is_none() {
-                            deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
-                        }
-                        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress(
-                            state.as_ref(),
-                            pending_attempt_record,
-                            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
-                            Some(connect_latency_ms),
-                            Some(first_byte_latency_ms),
-                            None,
-                            None,
-                        );
-                        if phase_enqueued {
-                            debug!(
-                                invoke_id = %pending_attempt_record.invoke_id,
-                                attempt_id = pending_attempt_record.attempt_id,
-                                "queued pool attempt streaming phase progress"
-                            );
-                            if pending_attempt_record.attempt_id.is_some() {
-                                deferred_early_phase_cleanup_guard =
-                                    early_phase_cleanup_guard.take();
-                            }
+                    let deferred_early_phase_cleanup_guard =
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                            enqueue_pool_streaming_phase_and_defer_guard(
+                                state.as_ref(),
+                                pending_attempt_record,
+                                &mut early_phase_cleanup_guard,
+                                connect_latency_ms,
+                                first_byte_latency_ms,
+                            )
+                            .await
                         } else {
-                            info!(
-                                invoke_id = %pending_attempt_record.invoke_id,
-                                attempt_id = pending_attempt_record.attempt_id,
-                                "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
-                            );
-                            if pending_attempt_record.attempt_id.is_some() {
-                                deferred_early_phase_cleanup_guard =
-                                    early_phase_cleanup_guard.take();
-                            }
-                        }
-                    } else {
-                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                    }
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                            None
+                        };
 
                     let compact_support_observation = classify_compact_support_observation(
                         original_uri,
@@ -3862,7 +3857,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to record Codex imagegen capability observation"
                     );
                 }
-                if let Some(response_body) = error_body_bytes.as_ref()
+                let response_capture_scheduled = if let Some(response_body) =
+                    error_body_bytes.as_ref()
                     && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 {
                     let response_body_logging_enabled = state
@@ -3880,8 +3876,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         response_body_logging_enabled,
                         response_content_encoding.map(str::to_string),
                     );
-                }
-                if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                    true
+                } else {
+                    false
+                };
+                if !response_capture_scheduled
+                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
                         state.as_ref(),
                         &pending_attempt_record.invoke_id,
@@ -4412,21 +4412,26 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to persist pool retryable response.failed attempt"
                             );
                         }
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
-                            let response_body_logging_enabled = state
-                                .proxy_model_settings
-                                .read()
-                                .await
-                                .response_body_logging_enabled;
-                            spawn_pool_attempt_response_capture(
-                                state.clone(),
-                                pending_attempt_record.clone(),
-                                raw_body.clone(),
-                                response_body_logging_enabled,
-                                response_content_encoding_for_attempt.clone(),
-                            );
-                        }
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        let response_capture_scheduled =
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                                let response_body_logging_enabled = state
+                                    .proxy_model_settings
+                                    .read()
+                                    .await
+                                    .response_body_logging_enabled;
+                                spawn_pool_attempt_response_capture(
+                                    state.clone(),
+                                    pending_attempt_record.clone(),
+                                    raw_body.clone(),
+                                    response_body_logging_enabled,
+                                    response_content_encoding_for_attempt.clone(),
+                                );
+                                true
+                            } else {
+                                false
+                            };
+                        if !response_capture_scheduled
+                            && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                             && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
                                 state.as_ref(),
                                 &pending_attempt_record.invoke_id,
@@ -4633,42 +4638,20 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }
                 };
 
-            let mut deferred_early_phase_cleanup_guard = None;
-            if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
-                if pending_attempt_record.attempt_id.is_none() {
-                    deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
-                }
-                let phase_enqueued = enqueue_pool_upstream_request_attempt_progress(
-                    state.as_ref(),
-                    pending_attempt_record,
-                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
-                    Some(connect_latency_ms),
-                    Some(first_byte_latency_ms),
-                    None,
-                    None,
-                );
-                if phase_enqueued {
-                    debug!(
-                        invoke_id = %pending_attempt_record.invoke_id,
-                        attempt_id = pending_attempt_record.attempt_id,
-                        "queued pool attempt streaming phase progress"
-                    );
-                    if pending_attempt_record.attempt_id.is_some() {
-                        deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
-                    }
+            let deferred_early_phase_cleanup_guard =
+                if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
+                    enqueue_pool_streaming_phase_and_defer_guard(
+                        state.as_ref(),
+                        pending_attempt_record,
+                        &mut early_phase_cleanup_guard,
+                        connect_latency_ms,
+                        first_byte_latency_ms,
+                    )
+                    .await
                 } else {
-                    info!(
-                        invoke_id = %pending_attempt_record.invoke_id,
-                        attempt_id = pending_attempt_record.attempt_id,
-                        "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
-                    );
-                    if pending_attempt_record.attempt_id.is_some() {
-                        deferred_early_phase_cleanup_guard = early_phase_cleanup_guard.take();
-                    }
-                }
-            } else {
-                disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-            }
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                    None
+                };
 
             let compact_support_observation =
                 classify_compact_support_observation(original_uri, Some(status), None);

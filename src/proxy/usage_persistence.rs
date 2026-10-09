@@ -935,6 +935,65 @@ pub(crate) fn pool_attempt_response_capture_key(pending: &PendingPoolAttemptReco
     })
 }
 
+pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallback(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    let attempt_id = match pending.attempt_id {
+        Some(attempt_id) => Some(attempt_id),
+        None => sqlx::query_scalar::<_, Option<i64>>(
+            r#"
+            SELECT id
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id = ?1
+              AND occurred_at = ?2
+              AND attempt_index = ?3
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(&pending.invoke_id)
+        .bind(&pending.occurred_at)
+        .bind(pending.attempt_index)
+        .fetch_optional(pool)
+        .await?
+        .flatten(),
+    };
+    let Some(attempt_id) = attempt_id else {
+        return Ok(());
+    };
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            response_raw_path = ?2,
+            response_raw_codec = COALESCE(?3, response_raw_codec),
+            response_raw_size = ?4,
+            response_raw_truncated = ?5,
+            response_raw_truncated_reason = ?6,
+            response_content_encoding = ?7
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(pending.response_raw_path.as_deref())
+    .bind(pending.response_raw_codec.as_deref())
+    .bind(pending.response_raw_size)
+    .bind(if pending.response_raw_truncated {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(pending.response_raw_truncated_reason.as_deref())
+    .bind(pending.response_content_encoding.as_deref())
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn update_pending_pool_upstream_request_attempt_http_bytes(
     pending: &mut PendingPoolAttemptRecord,
     logical_body_bytes: Option<usize>,
@@ -999,7 +1058,20 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     pending: &PendingPoolAttemptRecord,
     phase: &str,
 ) -> Result<()> {
-    enqueue_pool_upstream_request_attempt_progress(state, pending, phase, None, None, None, None);
+    if pending.attempt_id.is_some() {
+        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
+            state, pending, phase, None, None, None, None,
+        )
+        .await;
+        if !phase_enqueued {
+            warn!(
+                invoke_id = %pending.invoke_id,
+                attempt_id = pending.attempt_id,
+                phase,
+                "failed to enqueue pool attempt phase progress"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -1038,6 +1110,92 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot(
     )
 }
 
+pub(crate) async fn enqueue_pool_upstream_request_attempt_progress_reliably(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: &str,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> bool {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        Some(phase),
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status,
+        compact_support_reason,
+    ) else {
+        return false;
+    };
+    state
+        .sqlite_batch_writer
+        .enqueue_attempt_progress_reliably(progress)
+        .await
+}
+
+pub(crate) async fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        None,
+        (pending.connect_latency_ms > 0.0).then_some(pending.connect_latency_ms),
+        (pending.first_byte_latency_ms > 0.0).then_some(pending.first_byte_latency_ms),
+        pending.compact_support_status.as_deref(),
+        pending.compact_support_reason.as_deref(),
+    ) else {
+        return false;
+    };
+    state
+        .sqlite_batch_writer
+        .enqueue_attempt_progress_reliably(progress)
+        .await
+}
+
+pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
+    state: &AppState,
+    pending_attempt_record: &PendingPoolAttemptRecord,
+    early_phase_cleanup_guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+    connect_latency_ms: f64,
+    first_byte_latency_ms: f64,
+) -> Option<PoolEarlyPhaseOrphanCleanupGuard> {
+    let mut deferred_guard = if pending_attempt_record.attempt_id.is_none() {
+        early_phase_cleanup_guard.take()
+    } else {
+        None
+    };
+    let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
+        state,
+        pending_attempt_record,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+        Some(connect_latency_ms),
+        Some(first_byte_latency_ms),
+        None,
+        None,
+    )
+    .await;
+    if phase_enqueued {
+        debug!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            "queued pool attempt streaming phase progress"
+        );
+        if pending_attempt_record.attempt_id.is_some() {
+            deferred_guard = early_phase_cleanup_guard.take();
+        }
+    } else {
+        info!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            attempt_id = pending_attempt_record.attempt_id,
+            "streaming phase was not enqueued; relying on invocation cleanup guards for post-first-byte recovery"
+        );
+    }
+    deferred_guard
+}
+
 fn enqueue_pool_upstream_request_attempt_progress_with_phase(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
@@ -1047,46 +1205,65 @@ fn enqueue_pool_upstream_request_attempt_progress_with_phase(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> bool {
-    let Some(attempt_id) = pending.attempt_id else {
+    let Some(progress) = build_pool_upstream_request_attempt_progress(
+        pending,
+        phase,
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status,
+        compact_support_reason,
+    ) else {
         return false;
     };
+    state
+        .sqlite_batch_writer
+        .enqueue(SqliteBatchWrite::AttemptProgress(progress))
+}
+
+fn build_pool_upstream_request_attempt_progress(
+    pending: &PendingPoolAttemptRecord,
+    phase: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> Option<BatchedAttemptProgress> {
+    let attempt_id = pending.attempt_id?;
     let response_raw_capture_present = pending.response_raw_path.is_some()
         || pending.response_raw_size.is_some()
         || pending.response_raw_truncated
         || pending.response_raw_truncated_reason.is_some()
         || pending.response_content_encoding.is_some();
-    state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
-            attempt_id,
-            pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-            phase: phase.map(ToOwned::to_owned),
-            connect_latency_ms,
-            first_byte_latency_ms,
-            compact_support_status: compact_support_status.map(ToOwned::to_owned),
-            compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
-            request_model: pending.request_model.clone(),
-            upstream_request_model: pending.upstream_request_model.clone(),
-            model_mapping_pattern: pending.model_mapping_pattern.clone(),
-            request_summary_json: pending.request_summary_json.clone(),
-            upstream_request_compression_algorithm: pending
-                .upstream_request_compression_algorithm
-                .clone(),
-            upstream_request_compression_mode: pending.upstream_request_compression_mode.clone(),
-            upstream_request_logical_body_bytes: pending.upstream_request_logical_body_bytes,
-            upstream_request_transmitted_body_bytes: pending
-                .upstream_request_transmitted_body_bytes,
-            upstream_request_header_bytes_approx: pending.upstream_request_header_bytes_approx,
-            upstream_response_body_bytes: pending.upstream_response_body_bytes,
-            upstream_response_header_bytes_approx: pending.upstream_response_header_bytes_approx,
-            response_raw_path: pending.response_raw_path.clone(),
-            response_raw_codec: pending.response_raw_codec.clone(),
-            response_raw_size: pending.response_raw_size,
-            response_raw_truncated: response_raw_capture_present
-                .then_some(pending.response_raw_truncated),
-            response_raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
-            response_content_encoding: pending.response_content_encoding.clone(),
-        }))
+    Some(BatchedAttemptProgress {
+        attempt_id,
+        pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+        enqueue_sequence: 0,
+        phase: phase.map(ToOwned::to_owned),
+        connect_latency_ms,
+        first_byte_latency_ms,
+        compact_support_status: compact_support_status.map(ToOwned::to_owned),
+        compact_support_reason: compact_support_reason.map(ToOwned::to_owned),
+        request_model: pending.request_model.clone(),
+        upstream_request_model: pending.upstream_request_model.clone(),
+        model_mapping_pattern: pending.model_mapping_pattern.clone(),
+        request_summary_json: pending.request_summary_json.clone(),
+        upstream_request_compression_algorithm: pending
+            .upstream_request_compression_algorithm
+            .clone(),
+        upstream_request_compression_mode: pending.upstream_request_compression_mode.clone(),
+        upstream_request_logical_body_bytes: pending.upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes: pending.upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx: pending.upstream_request_header_bytes_approx,
+        upstream_response_body_bytes: pending.upstream_response_body_bytes,
+        upstream_response_header_bytes_approx: pending.upstream_response_header_bytes_approx,
+        response_raw_path: pending.response_raw_path.clone(),
+        response_raw_codec: pending.response_raw_codec.clone(),
+        response_raw_size: pending.response_raw_size,
+        response_raw_truncated: response_raw_capture_present
+            .then_some(pending.response_raw_truncated),
+        response_raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
+        response_content_encoding: pending.response_content_encoding.clone(),
+    })
 }
 
 pub(crate) enum PoolAttemptRecoveryScope<'a> {

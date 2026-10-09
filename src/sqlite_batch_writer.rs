@@ -1087,6 +1087,7 @@ impl PendingBatch {
 #[derive(Debug)]
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
+    attempt_progress_sequence: AtomicU64,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
@@ -1178,6 +1179,7 @@ impl SqliteBatchWriter {
         ));
         let writer = Arc::new(Self {
             write_sender,
+            attempt_progress_sequence: AtomicU64::new(0),
             queued_p1_count,
             p1_priority_gate,
             control_sender,
@@ -1224,6 +1226,7 @@ impl SqliteBatchWriter {
         let (control_sender, _control_receiver) = mpsc::channel(1);
         Arc::new(Self {
             write_sender,
+            attempt_progress_sequence: AtomicU64::new(0),
             queued_p1_count: Arc::new(AtomicUsize::new(0)),
             p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
             control_sender,
@@ -1291,6 +1294,7 @@ impl SqliteBatchWriter {
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
+        let write = self.stamp_attempt_progress(write);
         let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
         let is_attempt_progress = is_attempt_progress_write(&write);
@@ -1351,6 +1355,69 @@ impl SqliteBatchWriter {
                 );
                 false
             }
+        }
+    }
+
+    pub(crate) async fn enqueue_attempt_progress_reliably(
+        &self,
+        progress: BatchedAttemptProgress,
+    ) -> bool {
+        let write = self.stamp_attempt_progress(SqliteBatchWrite::AttemptProgress(progress));
+        let estimated_bytes = write.estimated_memory_bytes();
+        self.accounting.attempt_progress_enqueued();
+        let deferred = self.write_sender.capacity() == 0;
+        if deferred {
+            self.accounting.attempt_progress_deferred(1);
+        }
+
+        #[cfg(test)]
+        if let Some(buffered_writes) = &self.buffered_writes {
+            match buffered_writes.lock() {
+                Ok(mut guard) => {
+                    guard.push(write);
+                    self.accounting.enqueue(estimated_bytes);
+                    return true;
+                }
+                Err(err) => {
+                    self.accounting.attempt_progress_dropped();
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        error = %err,
+                        dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
+                        "sqlite batch writer test buffer poisoned; dropped reliable attempt progress"
+                    );
+                    return false;
+                }
+            }
+        }
+
+        self.accounting.enqueue(estimated_bytes);
+        match self.write_sender.send(write).await {
+            Ok(()) => true,
+            Err(err) => {
+                self.accounting.rollback_enqueue(estimated_bytes);
+                self.accounting.attempt_progress_dropped();
+                self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    error = %err,
+                    dropped_writes = self.dropped_writes.load(Ordering::Relaxed),
+                    "sqlite batch writer closed; dropped reliable attempt progress"
+                );
+                false
+            }
+        }
+    }
+
+    fn stamp_attempt_progress(&self, write: SqliteBatchWrite) -> SqliteBatchWrite {
+        match write {
+            SqliteBatchWrite::AttemptProgress(mut progress) => {
+                progress.enqueue_sequence = self
+                    .attempt_progress_sequence
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                SqliteBatchWrite::AttemptProgress(progress)
+            }
+            other => other,
         }
     }
 
