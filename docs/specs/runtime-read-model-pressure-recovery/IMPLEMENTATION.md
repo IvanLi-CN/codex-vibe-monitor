@@ -96,6 +96,7 @@
 
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
+- The active delivery base is `main@1f3881075b1fe749e964dda3ec66ab10b710c797`; it supersedes the pre-merge `6447cec2e9f6790b04f4e828e9d43f440f3105f0` review base. The normal merge of PR #1096 deduplicated the content-identical `src/maintenance_store.rs` fix, and introduced no Stats or schema surface; current required-lane evidence is tracked in `assets/current-candidate-validation.json`.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary

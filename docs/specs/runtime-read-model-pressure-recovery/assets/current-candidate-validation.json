@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "kind": "current-candidate-validation",
+  "status": "base-synchronized-required-ci-refresh",
+  "active_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+  "base_ref": "main",
+  "pr_number": 1097,
+  "candidate_branch": "th/pr-stats",
+  "base_sync": {
+    "previous_base_sha": "6447cec2e9f6790b04f4e828e9d43f440f3105f0",
+    "merge_commit_sha": "17f059944a4ba94b022316cd65cec716714e7d4c",
+    "merge_strategy": "normal-git-merge-no-ff",
+    "shared_fix_deduplicated": [
+      "src/maintenance_store.rs"
+    ],
+    "mainline_scope": "Proxy writer/fairness changes and their support files from merged PR #1096; the shared maintenance initialization fix is content-identical to the candidate change.",
+    "stats_or_schema_additions_from_base": false,
+    "supersedes_previous_review_base": true
+  },
+  "affected_validation": {
+    "refresh_reason": "The previous validation was based on 6447cec2 and is not evidence for the post-merge candidate.",
+    "contract_regressions": [
+      "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
+      "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
+      "hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+      "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
+      "all_time_overlay_overflow_does_not_block_rolling_summary",
+      "stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+      "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
+    ],
+    "migration_and_compatibility_regressions": [
+      "ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+      "summary_rollup_repair_reopens_stale_archive_sha_markers",
+      "all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
+      "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
+      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes"
+    ]
+  },
+  "required_lanes": [
+    "Backend Tests (Archive / File I/O)",
+    "Backend Tests (Lightweight)",
+    "Backend Tests (Representative Scale)",
+    "Backend Tests (Stateful SQLite)",
+    "Build Artifacts",
+    "Docs & Web Demo Build",
+    "Front-end Tests",
+    "Lint & Format Check",
+    "Records Overlay E2E",
+    "Repository Tooling Checks",
+    "Review Policy Gate",
+    "Storybook Accessibility Tests",
+    "Validate PR labels"
+  ],
+  "release_compatibility": {
+    "semver_record": "assets/version-impact-record.json",
+    "persistent_state_record": "assets/persistent-state-migration-record.json",
+    "public_api_impact": "patch",
+    "persistent_state_impact": "patch",
+    "same_minor_candidate_state_readable": true,
+    "migration_idempotent_and_reentry_safe": true,
+    "old_version_allocator_writeback": false,
+    "deployment_scope": "none"
+  },
+  "deployment_surfaces": {
+    "github_release_and_ghcr": "Release and dual-platform GHCR publication remain release-workflow-owned and require successful CI Main plus release policy; this PR does not authorize publication.",
+    "docs_pages": "The Docs & Web Demo Build and docs-pages path remain a separate pipeline-owned surface; a passing build is not production deployment authorization.",
+    "production": "No production deployment, restart, observation, or mutable external write is authorized by this record."
+  },
+  "local_validation_boundary": {
+    "required_local_checks": [
+      "cargo fmt --all -- --check",
+      "git diff --check",
+      "cargo check --locked --all-features",
+      "bash .github/scripts/run-rust-source-quality.sh"
+    ],
+    "heavy_full_suite": "Not run locally because the shared VM remained unavailable under global memory pressure; current-head GitHub required Linux CI is the full validation authority.",
+    "visual_evidence": "Not applicable; this is a backend/API and repository-contract change."
+  }
+}

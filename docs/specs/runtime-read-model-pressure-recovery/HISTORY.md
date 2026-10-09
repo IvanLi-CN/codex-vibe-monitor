@@ -1,5 +1,6 @@
 # Runtime Read-Model Pressure Recovery - History
 
+- The active PR #1097 validation base is now `main@1f3881075b1fe749e964dda3ec66ab10b710c797`, after a normal merge of merged Proxy PR #1096; the old `6447cec2e9f6790b04f4e828e9d43f440f3105f0` review base is superseded, and all required lanes must be refreshed against the post-sync candidate head.
 - The Initiative adopts an exact-read-model contract: Summary availability may not be obtained by returning partial, empty or request-time reconstructed data.
 - Summary Delta Journal proof gaps now preserve a published last-good snapshot and acknowledged terminal overlay as an explicitly degraded, proof-pending response; legacy `/api/stats` shares the all-time memory path, while archive proof remains a bounded background task.
 - Summary compact admission revealed that legacy failure classification was still reader-derived: payload-aware full aggregation and payload-free compact projection could disagree. The durable contract now requires one revisioned canonical classification, bounded live/archive compatibility materialization and shared reader consumption; raw diagnostics remain confined to that controlled background path.

@@ -103,5 +103,13 @@
       "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
       "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap"
     ]
+  },
+  "delivery_context": {
+    "active_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "previous_review_base_sha": "6447cec2e9f6790b04f4e828e9d43f440f3105f0",
+    "candidate_validation_record": "assets/current-candidate-validation.json",
+    "base_sync_scope": "Merged main normally after PR #1096; the shared maintenance initialization fix is content-identical, and the incoming base adds no Stats or schema surface.",
+    "required_lanes_refresh": "All required PR lanes must bind to the post-sync candidate head; prior 6447-based CI is superseded.",
+    "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
   }
 }
