@@ -1281,7 +1281,7 @@ describe("DashboardPage", () => {
     );
   });
 
-  it("keeps a verified history route open when its working card expires", () => {
+  it("closes a verified history route when its working card expires", () => {
     installSummaryMocks();
     const card = createWorkingConversationCard();
     let currentCards: DashboardWorkingConversationCardModel[] = [card];
@@ -1307,6 +1307,52 @@ describe("DashboardPage", () => {
     ).not.toBeNull();
 
     currentCards = [];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("keeps a verified history route through a transient working-conversation error", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    let currentCards: DashboardWorkingConversationCardModel[] = [card];
+    let currentError: string | null = null;
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: currentError,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />);
+    act(() => {
+      host
+        ?.querySelector<HTMLButtonElement>('[data-testid="dashboard-open-conversation"]')
+        ?.click();
+    });
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+
+    currentCards = [];
+    currentError = "working-conversations unavailable";
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+
+    currentError = null;
+    currentCards = [card];
     rerender(<DashboardPage />);
 
     expect(
@@ -1432,7 +1478,7 @@ describe("DashboardPage", () => {
     );
   });
 
-  it("opens a unique persisted conversation after the backend page cap", () => {
+  it("keeps a persisted conversation route closed after the backend page cap", () => {
     installSummaryMocks();
     const card = createWorkingConversationCard();
     const loadMore = vi.fn();
@@ -1456,10 +1502,7 @@ describe("DashboardPage", () => {
     expect(loadMore).not.toHaveBeenCalled();
     expect(
       host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
-    ).not.toBeNull();
-    expect(
-      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
-    ).toBe("ABCD12");
+    ).toBeNull();
   });
 
   it("hydrates the persisted conversation label when direct-route cards arrive later", () => {

@@ -94,10 +94,7 @@ export default function DashboardPage() {
   );
   usePageObservation("dashboard", overviewSnapshotRuntime.bundle);
   const conversationDataIsComplete =
-    !workingCardsLoading &&
-    !workingCardsLoadingMore &&
-    (!hasMore || !canLoadMore) &&
-    workingCardsError == null;
+    !workingCardsLoading && !workingCardsLoadingMore && !hasMore && workingCardsError == null;
   useEffect(() => {
     if (
       promptCacheConversationKey == null ||
@@ -204,12 +201,11 @@ export default function DashboardPage() {
       verifiedConversationRoute?.conversationId === promptCacheConversationId;
     const conversationLabel = conversationDataIsComplete
       ? promptCacheConversationId != null
-        ? singleConversationId === promptCacheConversationId ||
-          (matchingConversationCards.length === 0 && previouslyVerifiedRoute)
+        ? singleConversationId === promptCacheConversationId
           ? promptCacheConversationId
           : null
         : singleConversationId
-      : workingCardsError == null && previouslyVerifiedRoute
+      : previouslyVerifiedRoute
         ? promptCacheConversationId
         : null;
     if (
@@ -235,10 +231,11 @@ export default function DashboardPage() {
       }
       return { key: promptCacheConversationKey, label: conversationLabel };
     });
-    if (
-      workingCardsError != null ||
-      (promptCacheConversationId != null && conversationLabel == null)
-    ) {
+    if (workingCardsError != null) {
+      if (!previouslyVerifiedRoute) {
+        setVerifiedConversationRoute(null);
+      }
+    } else if (promptCacheConversationId != null && conversationLabel == null) {
       setVerifiedConversationRoute(null);
     } else if (
       conversationDataIsComplete &&
@@ -279,13 +276,13 @@ export default function DashboardPage() {
     routeConversationId != null &&
     conversationCardsForRoute.length > 0 &&
     conversationCardsForRoute.every((card) => card.conversationId?.trim() === routeConversationId);
-  const verifiedRouteMatchesCurrentCards =
-    conversationCardsForRoute.length === 0 ||
-    (visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId);
+  const verifiedRouteMatchesCurrentCards = conversationDataIsComplete
+    ? visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId
+    : conversationCardsForRoute.length === 0 ||
+      (visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId);
   // History and settings are queried by prompt-cache key, so an ID-only deep link is not enough
   // to authorize a route after the working-set identity has disappeared.
   const verifiedConversationRouteIsActive =
-    workingCardsError == null &&
     pendingConversationSelection == null &&
     promptCacheConversationId != null &&
     verifiedConversationRoute?.key === promptCacheConversationKey &&
