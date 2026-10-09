@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Incremental archive repair identity/cursor fencing and prompt-cache generation-safe publication.",
+    "description": "Incremental archive repair identity/cursor fencing with deferred candidates and prompt-cache generation-safe publication.",
     "release_unit_description": "One direct maintenance PR.",
     "affected_contracts": [
       "public-api",
@@ -17,7 +17,7 @@
     ],
     "planned": {
       "impact": "minor",
-      "reasoning": "The public API remains compatible, but the candidate adds durable replay identity, repair cursor, and generation-fence state. The additions are idempotent and repair-forward; same-Major older readers may open the schema but are not assumed to preserve the new protocol.",
+      "reasoning": "The public API remains compatible, but the candidate adds durable replay identity, ordered repair indexes, repair cursor/deferred-candidate state, and generation-fence state. The additions are idempotent and repair-forward; same-Major older readers may open the schema but are not assumed to preserve the new protocol.",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/persistent-state-migration-record.json"
       ]
@@ -28,7 +28,7 @@
         "detected": true,
         "description": "The candidate includes durable cursor/index and pending-generation changes in addition to bounded maintenance behavior."
       },
-      "reasoning": "Public HTTP and task-response contracts remain unchanged. Persistent state has additive schema and continuation semantics that require a forward-repair-capable reader, so the maximum impact is minor.",
+      "reasoning": "Public HTTP and task-response contracts remain unchanged. Persistent state has additive schema, ordered candidate indexes, and continuation semantics that require a forward-repair-capable reader, so the maximum impact is minor.",
       "evidence": [
         "src/schema.rs",
         "src/maintenance/hourly_rollups.rs",
@@ -38,7 +38,7 @@
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "Public API impact is patch-level, while persistent-state impact is minor-level because the schema adds archive identity/index state, ordered repair continuation, and a generation fence. Final candidate CI and Tier 4 review remain delivery gates.",
+      "reasoning": "Public API impact is patch-level, while persistent-state impact is minor-level because the schema adds archive identity/index state, ordered repair continuation with deferred candidates, and a generation fence. Final candidate CI and Tier 4 review remain delivery gates.",
       "evidence": [
         "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
         "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
@@ -59,7 +59,7 @@
     "persistent_state": {
       "applicable": true,
       "impact": "minor",
-      "state_description": "Replay SHA identity, ordered usage-breakdown repair cursor, and prompt-cache staging pending_generation.",
+      "state_description": "Replay SHA identity, ordered usage-breakdown repair cursor and deferred-candidate queue, repair-candidate indexes, and prompt-cache staging pending_generation.",
       "source_program_compatibility_range": "v4.3.0 origin/main schema at 1f3881075b1fe749e964dda3ec66ab10b710c797 through the th/pr-maintenance-incremental candidate; direct Major skips are unsupported.",
       "evidence": [
         "Additive/idempotent schema installation and re-entry regression.",

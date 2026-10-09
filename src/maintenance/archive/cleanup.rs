@@ -2685,7 +2685,9 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
         &temp_path,
         started_at,
         Some(max_elapsed),
-    )? {
+    )
+    .await?
+    {
         drop(temp_cleanup);
         return Ok(LegacyDetailMirrorProof::BudgetExhausted);
     }

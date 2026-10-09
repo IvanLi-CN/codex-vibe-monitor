@@ -4390,6 +4390,168 @@ async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-large-overlap-closure").await;
+    let source_archive_path = temp_dir.join("large-overlap-source.sqlite.gz");
+    write_valid_invocation_archive(&source_archive_path, "large-overlap-source").await;
+    let archive_sha = sha256_hex_file(&source_archive_path).expect("hash overlap source archive");
+
+    for id in 1..=65_i64 {
+        let archive_path = temp_dir.join(format!("large-overlap-{id}.sqlite.gz"));
+        fs::copy(&source_archive_path, &archive_path).expect("copy overlap archive fixture");
+        let file_path = archive_path.to_string_lossy().into_owned();
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, coverage_start_at, coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-08', ?2, ?3, 1, 'completed',
+                    'unknown', '2026-08-01 08:00:00', '2026-08-01 08:30:00', datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(&file_path)
+        .bind(&archive_sha)
+        .execute(&pool)
+        .await
+        .expect("seed large overlap archive batch");
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (
+                target, dataset, file_path, archive_sha256, replayed_at
+            )
+            VALUES (?1, 'codex_invocations', ?2, 'stale-overlap-sha', datetime('now'))
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+        .bind(&file_path)
+        .execute(&pool)
+        .await
+        .expect("seed stale large overlap replay marker");
+    }
+
+    let mut attempts = 0;
+    loop {
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+            .await
+            .expect("repair large overlap closure");
+        attempts += 1;
+        if !usage_breakdown_repair_is_pending(&pool)
+            .await
+            .expect("inspect large overlap closure repair state")
+        {
+            break;
+        }
+        assert!(attempts < 8, "large overlap closure did not converge");
+    }
+
+    let remaining_materialized: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' \
+           AND historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count large overlap materialized batches");
+    assert_eq!(remaining_materialized, 0);
+    let deferred_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred large overlap batches");
+    assert_eq!(deferred_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn usage_breakdown_repair_deferred_candidate_does_not_starve_recoverable_tail() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-deferred-tail").await;
+    let deferred_path = temp_dir.join("deferred-tail-missing.sqlite.gz");
+    let recoverable_path = temp_dir.join("deferred-tail-recoverable.sqlite.gz");
+    write_valid_invocation_archive(&recoverable_path, "deferred-tail-recoverable").await;
+    let recoverable_file_path = recoverable_path.to_string_lossy().into_owned();
+    let recoverable_sha =
+        sha256_hex_file(&recoverable_path).expect("hash recoverable tail archive");
+
+    for (id, month_key, file_path, sha256) in [
+        (
+            1_i64,
+            "2026-08",
+            deferred_path.to_string_lossy().into_owned(),
+            "deferred-tail-missing-sha".to_string(),
+        ),
+        (
+            2_i64,
+            "2026-09",
+            recoverable_file_path.clone(),
+            recoverable_sha.clone(),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, coverage_start_at, coverage_end_at,
+                historical_rollups_materialized_at
+            )
+            VALUES (?1, 'codex_invocations', ?2, ?3, ?4, 1, 'completed',
+                    'unknown', ?5, ?6, datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(month_key)
+        .bind(file_path)
+        .bind(sha256)
+        .bind(format!("{month_key}-01 08:00:00"))
+        .bind(format!("{month_key}-01 08:30:00"))
+        .execute(&pool)
+        .await
+        .expect("seed deferred-tail archive batch");
+    }
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_deferred (
+            scope, archive_id, stale_rank, month_key, created_at, file_path
+        )
+        VALUES ('invocation_archive_usage_breakdown', 1, 0, '2026-08', datetime('now'), ?1)
+        "#,
+    )
+    .bind(deferred_path.to_string_lossy().as_ref())
+    .execute(&pool)
+    .await
+    .expect("seed deferred-tail queue entry");
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair recoverable tail while deferred candidate exists");
+    assert_eq!(touched, 1);
+    let recoverable_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE id = 2",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load recoverable tail materialization state");
+    assert!(recoverable_materialized_at.is_none());
+    let deferred_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count deferred-tail queue entries");
+    assert_eq!(deferred_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_prefix() {
     let (pool, _config, temp_dir) =
         retention_memory_test_pool_and_config("historical-rollup-bounded-selection").await;

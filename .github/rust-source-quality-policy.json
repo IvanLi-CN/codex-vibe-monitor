@@ -45,7 +45,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 5059,
+      "line_budget": 5252,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -93,7 +93,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6696,
+      "line_budget": 6735,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
       "role": "test_helper",
-      "line_budget": 12235,
+      "line_budget": 12397,
       "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
     },
     {

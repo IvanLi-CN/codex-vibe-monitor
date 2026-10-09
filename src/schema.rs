@@ -2883,6 +2883,20 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_usage_breakdown_repair_candidates
+        ON archive_batches (month_key, created_at, id)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND historical_rollups_materialized_at IS NOT NULL
+          AND TRIM(sha256) <> ''
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_usage_breakdown_repair_candidates")?;
+
+    sqlx::query(
+        r#"
         CREATE INDEX IF NOT EXISTS idx_archive_batches_summary_source_coverage
         ON archive_batches (
             dataset,
@@ -4400,6 +4414,31 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to normalize the initial hourly rollup archive repair cursor")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_archive_repair_deferred (
+            scope TEXT NOT NULL,
+            archive_id INTEGER NOT NULL,
+            stale_rank INTEGER NOT NULL,
+            month_key TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            deferred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+            PRIMARY KEY (scope, archive_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly rollup archive deferred repair table existence")?;
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_hourly_rollup_archive_repair_deferred_order \
+         ON hourly_rollup_archive_repair_deferred (scope, deferred_at, archive_id)",
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly rollup archive deferred repair index")?;
 
     sqlx::query(
         r#"

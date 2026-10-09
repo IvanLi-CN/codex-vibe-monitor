@@ -1855,6 +1855,27 @@ async fn run_managed_task_once_with_scoped_observation(
             ManagedTaskExecution::simple(format!("{task_key} 处理完成"))
         });
     }
+    if task_key == "startup_hourly_rollup_bootstrap" {
+        crate::maintenance::bootstrap_hourly_rollups_for_runtime_startup_with_work(
+            &state.pool,
+            Some(state.config.invocation_max_days),
+        )
+        .await?;
+        if crate::maintenance::usage_breakdown_repair_is_pending(&state.pool).await? {
+            return Ok(ManagedTaskExecution {
+                summary: "启动时小时汇总补齐已延后".to_string(),
+                detail: Some("保留归档 usage breakdown 修复游标，等待下一次运行继续".to_string()),
+                completion: Some("deferred".to_string()),
+                core_completion: None,
+                details: Some(json!({
+                    "waitReason": "archive_usage_breakdown_repair",
+                })),
+            });
+        }
+        return Ok(ManagedTaskExecution::simple(
+            "启动时小时汇总补齐完成".to_string(),
+        ));
+    }
     match task_key {
         "pool_orphan_recovery" => {
             let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;

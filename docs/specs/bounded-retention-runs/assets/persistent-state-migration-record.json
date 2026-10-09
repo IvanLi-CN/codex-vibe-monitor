@@ -3,13 +3,13 @@
   "kind": "persistent-state-migration-record",
   "status": "candidate-evidence-pending-ci",
   "migration": {
-    "description": "Add archive identity proofs, a resumable bounded usage-breakdown repair cursor, and generation-safe prompt-cache statistics publication.",
+    "description": "Add archive identity proofs, a resumable bounded usage-breakdown repair cursor with deferred candidates, and generation-safe prompt-cache statistics publication.",
     "release_unit_description": "Incremental maintenance repair and prompt-cache publication fencing.",
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Archive replay SHA identities, ordered usage-breakdown repair progress, and prompt-cache staging generation fences.",
-    "storage_implementation": "Additive main-database SQLite columns, one replay identity index, and one repair-progress table. No public API fields or response status values change.",
+    "description": "Archive replay SHA identities, ordered usage-breakdown repair progress with deferred candidates, and prompt-cache staging generation fences.",
+    "storage_implementation": "Additive main-database SQLite columns, replay identity and ordered repair-candidate indexes, a repair-progress table, and a deferred archive-repair queue with its ordering index. No public API fields or response status values change.",
     "source_compatibility_range": {
       "from_program_versions": "v4.3.0 origin/main schema at 1f3881075b1fe749e964dda3ec66ab10b710c797 (post-Proxy #1096 merge); additive objects are readable by the same-Major schema initializer.",
       "to_program_version": "Candidate branch th/pr-maintenance-incremental; final commit and PR identity are bound by the delivery record.",
@@ -45,13 +45,20 @@
         "order": 3,
         "observable": true,
         "pauseable": true
+      },
+      {
+        "id": "ddl-004",
+        "description": "Install the ordered archive-batch repair-candidate indexes and create hourly_rollup_archive_repair_deferred with its per-scope retry ordering index. Deferred candidates preserve budget-exhausted work while the main cursor advances to later candidates.",
+        "order": 4,
+        "observable": true,
+        "pauseable": true
       }
     ],
     "dml_changes": [
       {
         "id": "dml-001",
         "description": "Write replay markers with the completed manifest SHA; upstream-account marker repair fills only absent target rows and preserves stale or unknown markers, while usage-breakdown repair treats stale identities as full-rebuild work.",
-        "order": 4,
+        "order": 5,
         "depends_on": [
           "ddl-001"
         ],
@@ -60,10 +67,11 @@
       },
       {
         "id": "dml-002",
-        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap; a still-pending cursor defers the runtime task for a cancellation-aware retry.",
-        "order": 5,
+        "description": "Advance the ordered repair cursor in the same transaction as each candidate decision, persist budget-exhausted candidates in the deferred queue, retry deferred candidates without starving later recoverable rows, roll back safely on interruption, reset only after the ordered set is exhausted, and continue a bounded number of pages during bootstrap; pending cursor or deferred work defers the runtime task for a cancellation-aware retry.",
+        "order": 6,
         "depends_on": [
-          "ddl-002"
+          "ddl-002",
+          "ddl-004"
         ],
         "observable": true,
         "pauseable": true
@@ -71,7 +79,7 @@
       {
         "id": "dml-003",
         "description": "Record pending_generation before discarding a page whose source generation changed, and publish only when the generation fence still matches. A stopped release is repaired forward by the next run.",
-        "order": 6,
+        "order": 7,
         "depends_on": [
           "ddl-003"
         ],
@@ -83,10 +91,11 @@
       {
         "id": "backfill-001",
         "description": "No readiness-wide historical scan is performed. Existing materialized archives are revisited only through bounded repair pages, with real archive readability checks under the shared per-page elapsed budget before rollup clearing; unverified legacy markers remain quarantined until a verified replay.",
-        "order": 7,
+        "order": 8,
         "depends_on": [
           "dml-001",
-          "dml-002"
+          "dml-002",
+          "ddl-004"
         ],
         "observable": true,
         "pauseable": true
@@ -99,6 +108,7 @@
       "ddl-001",
       "ddl-002",
       "ddl-003",
+      "ddl-004",
       "dml-001",
       "dml-002",
       "dml-003",
@@ -107,6 +117,7 @@
     "progress_signals": [
       "Replay marker SHA equality with the current archive manifest",
       "Durable repair cursor stale rank, month, creation time and archive id",
+      "Deferred archive-repair queue count, oldest deferred candidate, and retry outcome",
       "Prompt-cache staging pending_generation and generation outcome",
       "Committed candidate/page counts and deferred unreadable archives"
     ],
@@ -128,9 +139,10 @@
     },
     "minor": {
       "required_test_evidence": [
-        "Repeated schema installation creates or upgrades replay identity, repair cursor, and pending-generation structures without changing legacy unverified marker values.",
+        "Repeated schema installation creates or upgrades replay identity, repair-candidate indexes, repair cursor, deferred queue, and pending-generation structures without changing legacy unverified marker values; the candidate query plan uses the ordered partial index.",
         "A file-backed restart preserves the repair cursor and a stopped prompt-cache generation cannot publish a stale page.",
         "A corrupted or unreadable archive leaves its materialized timestamp, replay marker, and last-good rollup rows intact.",
+        "A closure larger than one archive query page converges, and a deferred candidate does not starve a later recoverable candidate.",
         "Current candidate Linux backend profiles and the required source-quality checks pass on the pushed commit."
       ]
     },
