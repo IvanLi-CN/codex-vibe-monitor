@@ -2522,6 +2522,19 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_pending_summary_rollup_order
+        ON archive_batches (dataset, status, month_key, created_at, id)
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pending summary rollup order index")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS retention_prepared_archives (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             prepared_key TEXT NOT NULL UNIQUE,

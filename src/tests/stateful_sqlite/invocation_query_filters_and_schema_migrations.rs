@@ -5793,6 +5793,7 @@ async fn stats_endpoints_preserve_historical_xy_records() {
     .await
     .expect("insert historical xy stats row");
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("fetch_stats should include historical xy rows");

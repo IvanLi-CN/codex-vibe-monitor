@@ -3,6 +3,128 @@ use super::*;
 const SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT: usize = 8;
 
 #[tokio::test]
+async fn stats_serves_last_good_snapshot_while_summary_delta_proof_is_pending() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let base_occurred_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(2));
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
+         VALUES ('stats-pending-proof-base', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
+    )
+    .bind(base_occurred_at)
+    .execute(&state.pool)
+    .await
+    .expect("seed published stats snapshot");
+    hydrate_stats_snapshot_for_test(&state).await;
+
+    let mut terminal = summary_projection_test_invocation();
+    terminal.id = 913_101;
+    terminal.invoke_id = "stats-pending-proof-overlay".to_string();
+    terminal.occurred_at = db_occurred_at_lower_bound(Utc::now());
+    terminal.source = SOURCE_PROXY.to_string();
+    terminal.status = Some("success".to_string());
+    terminal.live_phase = None;
+    terminal.total_tokens = Some(23);
+    terminal.output_tokens = Some(11);
+    terminal.cost = Some(2.5);
+    sqlx::query(
+        "INSERT INTO codex_invocations \
+         (id, invoke_id, occurred_at, source, status, total_tokens, output_tokens, cost, payload, raw_response, detail_level) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '{}', '', 'full')",
+    )
+    .bind(terminal.id)
+    .bind(&terminal.invoke_id)
+    .bind(&terminal.occurred_at)
+    .bind(&terminal.source)
+    .bind(terminal.status.as_deref())
+    .bind(terminal.total_tokens)
+    .bind(terminal.output_tokens)
+    .bind(terminal.cost)
+    .execute(&state.pool)
+    .await
+    .expect("persist stats overlay row");
+    let delta = apply_dashboard_activity_terminal_record(state.as_ref(), &terminal)
+        .await
+        .terminal_delta
+        .expect("materialize stats overlay delta");
+    state
+        .subscription_hub
+        .acknowledge_summary_delta(delta)
+        .await;
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_102)
+        .await;
+    state.pool.close().await;
+
+    let Json(summary) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("pending proof should serve the last-good summary snapshot");
+    assert_eq!(summary.total_count, 2);
+    assert_eq!(summary.total_tokens, 40);
+    assert_eq!(
+        summary.data_quality,
+        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+
+    let Json(stats) = fetch_stats(State(state))
+        .await
+        .expect("legacy stats should share the degraded memory-only path");
+    assert_eq!(stats.total_count, 2);
+    assert_eq!(stats.total_tokens, 40);
+    assert_eq!(
+        stats.data_quality,
+        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+}
+
+#[tokio::test]
+async fn summary_rollup_repair_reads_a_bounded_archive_batch() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    sqlx::query(
+        r#"WITH RECURSIVE rows(value) AS (
+               SELECT 1
+               UNION ALL
+               SELECT value + 1 FROM rows WHERE value < 129
+           )
+           INSERT INTO archive_batches (
+               dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+           )
+           SELECT
+               'codex_invocations',
+               '2026-01',
+               'stats-bounded-archive-' || value,
+               'hash-' || value,
+               1,
+               'completed',
+               'unknown'
+           FROM rows"#,
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert archive repair batch fixture");
+
+    let rows = load_invocation_archives_missing_summary_rollup_markers(&state.pool)
+        .await
+        .expect("load bounded archive repair batch");
+    assert_eq!(rows.len(), 128);
+}
+
+#[tokio::test]
 async fn summary_account_live_tail_admission_fails_closed_above_budget() {
     with_summary_projection_test_exact_record_limit(
         SUMMARY_PROJECTION_TEST_EXACT_RECORD_LIMIT,

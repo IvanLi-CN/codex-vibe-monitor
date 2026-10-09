@@ -5,6 +5,7 @@ pub(crate) const STATS_TERMINAL_STATUS_SQL: &str =
     "(LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending'))";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_live_cursor";
+const INVOCATION_SUMMARY_ROLLUP_ARCHIVE_REPAIR_BATCH_SIZE: i64 = 128;
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
 
@@ -1762,11 +1763,13 @@ pub(crate) async fn load_invocation_archives_missing_summary_rollup_markers(
             )
           )
         ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        LIMIT ?4
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
     .bind(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES)
+    .bind(INVOCATION_SUMMARY_ROLLUP_ARCHIVE_REPAIR_BATCH_SIZE)
     .fetch_all(executor)
     .await
     .map_err(Into::into)

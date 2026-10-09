@@ -1,6 +1,7 @@
 # Runtime Read-Model Pressure Recovery - History
 
 - The Initiative adopts an exact-read-model contract: Summary availability may not be obtained by returning partial, empty or request-time reconstructed data.
+- Summary Delta Journal proof gaps now preserve a published last-good snapshot and acknowledged terminal overlay as an explicitly degraded, proof-pending response; legacy `/api/stats` shares the all-time memory path, while archive proof remains a bounded background task.
 - Summary compact admission revealed that legacy failure classification was still reader-derived: payload-aware full aggregation and payload-free compact projection could disagree. The durable contract now requires one revisioned canonical classification, bounded live/archive compatibility materialization and shared reader consumption; raw diagnostics remain confined to that controlled background path.
 - A bounded recent index records its first omitted live timestamp; rolling and account windows reaching that boundary fail closed while later fully retained windows continue from memory.
 - The newest-N `current` view is isolated from rolling exact-boundary admission so dense historical boundaries do not abort unrelated current hydration; both resident views share one byte budget, and later runtime truncation preserves the newest omitted timestamp rather than relaxing an earlier durable boundary.

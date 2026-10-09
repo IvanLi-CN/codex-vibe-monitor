@@ -9645,14 +9645,11 @@ async fn all_time_stats_tolerate_unreadable_pending_archives_while_summary_fails
 
     fs::write(&archive_path, b"not-a-gzip-archive").expect("corrupt pending archive batch");
 
-    let Json(stats) = fetch_stats(State(state.clone()))
-        .await
-        .expect("fetch stats with unreadable pending archive");
-    assert_eq!(stats.total_count, 1);
-    assert_eq!(stats.success_count, 1);
-    assert_eq!(stats.failure_count, 0);
-    assert_eq!(stats.total_tokens, 10);
-    assert!((stats.total_cost - 0.10).abs() < 1e-9);
+    let stats = fetch_stats(State(state.clone())).await;
+    assert!(
+        matches!(stats, Err(ApiError::Unavailable(_))),
+        "stats must fail closed before an unreadable archive has a published proof"
+    );
 
     let summary = fetch_summary_from_memory_snapshot(
         State(state),
@@ -12726,6 +12723,7 @@ async fn summary_reports_invocation_based_in_progress_counts() {
         .expect("insert in-progress summary row");
     }
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("fetch stats with in-progress invocations");
@@ -20554,6 +20552,7 @@ async fn runtime_summary_phase_ignores_zero_placeholder_before_positive_timing()
         .await
         .expect("store runtime phase snapshot in memory");
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(stats) = fetch_stats(State(state))
         .await
         .expect("fetch stats with memory runtime phase snapshot");

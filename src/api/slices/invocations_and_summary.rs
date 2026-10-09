@@ -3744,25 +3744,16 @@ pub(crate) async fn fetch_invocation_suggestions(
 pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let totals = query_combined_totals(&state.pool, StatsFilter::All, source_scope).await?;
-    let mut response = totals.into_response();
-    response.non_success_cost = Some(totals.non_success_cost);
-    let augmentation = load_summary_live_augmentation(
-        state.as_ref(),
-        source_scope,
-        None,
-        None,
-        SummaryLiveAugmentationPolicy {
-            include_in_progress: true,
-            include_non_success_tokens: false,
-        },
-        None,
+    fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        }),
     )
-    .await?;
-    apply_summary_live_augmentation(&mut response, augmentation);
-    response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
-    Ok(Json(response))
+    .await
 }
 
 pub(crate) async fn load_in_progress_conversation_count(
@@ -5529,8 +5520,9 @@ impl SummaryProjection {
                     None
                 },
             );
-            if all_time_refreshed_at
-                .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+            if !rolling_delta_is_exact
+                && all_time_refreshed_at
+                    .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
             {
                 return Err(ApiError::unavailable(anyhow!(
                     "summary all-time last-good snapshot exceeded the freshness budget"
@@ -17709,6 +17701,7 @@ pub(crate) async fn build_empty_summary_response(
         non_success_cost: Some(0.0),
         non_success_tokens: None,
         maintenance: Some(load_stats_maintenance_response(state).await?),
+        data_quality: None,
     };
     let augmentation = load_summary_live_augmentation(
         state,
@@ -23477,6 +23470,7 @@ impl DashboardActivitySnapshot {
                     non_success_cost: None,
                     non_success_tokens: None,
                     maintenance: None,
+                    data_quality: None,
                 },
                 tokens_per_minute: None,
                 spend_rate: None,
@@ -26691,6 +26685,7 @@ pub(crate) fn build_dashboard_activity_summary(
                 .sum(),
         ),
         maintenance: None,
+        data_quality: None,
     };
 
     DashboardActivitySummaryResponse {
@@ -30344,22 +30339,18 @@ pub(crate) async fn fetch_summary(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        if summary_delta_gap_affects_selection(
+        let delta_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
             &gaps,
             &deltas,
             &window,
             reporting_tz,
             params.upstream_account_id,
-        ) {
-            return Err(ApiError::unavailable(anyhow!(
-                "summary delta journal has an unproven change for the requested all-time selection"
-            )));
-        }
+        );
         let mut response = projection.response_for_query_with_rolling_delta(
             &params,
             state.config.list_limit_max as i64,
-            true,
+            delta_gap_pending,
         )?;
         let mut terminal_sequence = 0;
         apply_dashboard_terminal_slice_to_summary_response(
@@ -30374,6 +30365,9 @@ pub(crate) async fn fetch_summary(
                 deltas,
             },
         );
+        if delta_gap_pending {
+            response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+        }
         return Ok(Json(response));
     }
 
@@ -30392,28 +30386,25 @@ pub(crate) async fn fetch_summary(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    if summary_delta_gap_affects_selection(
+    let delta_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
         &deltas,
         &window,
         reporting_tz,
         account_id,
-    ) {
-        return Err(ApiError::unavailable(anyhow!(
-            "summary delta journal has an unproven change for the requested selection"
-        )));
-    }
+    );
+    let delta_overlay_affects_selection = summary_delta_affects_selection(
+        projection.as_ref(),
+        &deltas,
+        &window,
+        reporting_tz,
+        account_id,
+    );
     let mut response = projection.response_for_query_with_rolling_delta(
         &params,
         state.config.list_limit_max as i64,
-        summary_delta_affects_selection(
-            projection.as_ref(),
-            &deltas,
-            &window,
-            reporting_tz,
-            account_id,
-        ),
+        delta_gap_pending || delta_overlay_affects_selection,
     )?;
     if let SummaryWindow::Current(limit) = window {
         projection.apply_rolling_delta_to_current_response(
@@ -30422,6 +30413,9 @@ pub(crate) async fn fetch_summary(
             account_id,
             &deltas,
         )?;
+        if delta_gap_pending {
+            response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+        }
         return Ok(Json(response));
     }
     let mut terminal_sequence = 0;
@@ -30437,6 +30431,9 @@ pub(crate) async fn fetch_summary(
             deltas,
         },
     );
+    if delta_gap_pending {
+        response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+    }
     Ok(Json(response))
 }
 
@@ -37107,9 +37104,12 @@ mod request_compression_query_tests {
             }),
         )
         .await;
-        assert!(
-            matches!(affected, Err(ApiError::Unavailable(_))),
-            "the localized gap remains fail-closed until background coverage completes",
+        let Json(affected) = affected
+            .expect("a Summary Delta proof gap should serve the last-good range as degraded");
+        assert_eq!(affected.total_count, 2);
+        assert_eq!(
+            affected.data_quality,
+            Some(StatsDataQualityResponse::summary_delta_journal_pending())
         );
         state.pool.close().await;
     }
