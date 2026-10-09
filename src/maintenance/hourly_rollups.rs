@@ -294,6 +294,18 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
           AND batches.status = ?1
           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
           AND batches.historical_rollups_materialized_at IS NOT NULL
+          AND batches.sha256 IS NOT NULL
+          AND TRIM(batches.sha256) <> ''
+          AND NOT EXISTS (
+                SELECT 1
+                FROM hourly_rollup_archive_replay AS unverified
+                WHERE unverified.dataset = batches.dataset
+                  AND unverified.file_path = batches.file_path
+                  AND (
+                        unverified.archive_sha256 IS NULL
+                        OR TRIM(unverified.archive_sha256) = ''
+                  )
+          )
           AND NOT EXISTS (
                 SELECT 1
                 FROM hourly_rollup_archive_replay AS replay

@@ -3782,6 +3782,132 @@ async fn usage_breakdown_priority_materialization_drains_backlog_without_clearin
 }
 
 #[tokio::test]
+async fn usage_breakdown_repair_skips_quarantined_prefix_and_reaches_verified_archive() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("breakdown-repair-bounded-prefix").await;
+    for id in 1..=65_i64 {
+        let file_path = temp_dir.join(format!("archive-{id}.sqlite.gz"));
+        let file_path = file_path.to_string_lossy().to_string();
+        let sha256 = format!("sha-{id}");
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(&file_path)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed materialized archive batch");
+        if id <= 64 {
+            sqlx::query(
+                r#"
+                INSERT INTO hourly_rollup_archive_replay (
+                    target, dataset, file_path, archive_sha256, replayed_at
+                )
+                VALUES (?1, 'codex_invocations', ?2, NULL, datetime('now'))
+                "#,
+            )
+            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
+            .bind(&file_path)
+            .execute(&pool)
+            .await
+            .expect("seed quarantined replay marker");
+        }
+    }
+
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair should skip quarantined prefix");
+    assert_eq!(touched, 1);
+
+    let verified_materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE id = 65",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load verified archive state");
+    assert!(verified_materialized_at.is_none());
+
+    let quarantined_materialized_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE id < 65 AND historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count quarantined archive states");
+    assert_eq!(quarantined_materialized_count, 64);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn replay_invocation_archives_bounded_selection_reaches_after_blocked_prefix() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("historical-rollup-bounded-selection").await;
+    for id in 1..=65_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+            )
+            VALUES (?1, 'codex_invocations', '2026-01', ?2, ?3, 1, 'completed', 'unknown')
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("blocked-{id}.sqlite.gz"))
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed bounded replay candidate");
+    }
+
+    let mut tx = pool
+        .begin()
+        .await
+        .expect("begin bounded replay transaction");
+    let first = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        0,
+    )
+    .await
+    .expect("scan the first bounded replay candidate page");
+    assert_eq!(first.scanned_batches, 64);
+    assert_eq!(first.blocked_batches, 64);
+
+    let second = replay_invocation_archives_into_hourly_rollups_tx_with_limits(
+        tx.as_mut(),
+        Instant::now(),
+        Some(64),
+        None,
+        first.scanned_batches as usize,
+    )
+    .await
+    .expect("scan beyond the first bounded replay candidate page");
+    assert_eq!(second.scanned_batches, 65);
+    assert_eq!(second.skipped_batches, 64);
+    assert_eq!(second.blocked_batches, 1);
+    tx.rollback()
+        .await
+        .expect("rollback bounded replay transaction");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn bootstrap_hourly_rollups_reopens_materialized_batches_missing_usage_breakdown_backfill() {
     let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("bootstrap-repairs-account-markers").await;

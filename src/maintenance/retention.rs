@@ -663,12 +663,19 @@ static RETENTION_RECOVERY_BACKLOG_CACHE: Lazy<
     std::sync::Mutex<Option<RetentionRecoveryBacklogCache>>,
 > = Lazy::new(|| std::sync::Mutex::new(None));
 
-#[cfg(not(test))]
 struct RetentionRecoveryBacklogCache {
     cutoff: String,
     observed_at: Instant,
     count: i64,
     oldest_backlog_at: Option<String>,
+}
+
+impl RetentionRecoveryBacklogCache {
+    fn value_if_fresh(&self, cutoff: &str, now: Instant) -> Option<(i64, Option<String>)> {
+        (self.cutoff == cutoff
+            && now.duration_since(self.observed_at) < RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL)
+            .then(|| (self.count, self.oldest_backlog_at.clone()))
+    }
 }
 
 pub(crate) fn retention_recovery_health_snapshot() -> RetentionRecoveryHealthSnapshot {
@@ -2138,11 +2145,7 @@ async fn load_retention_recovery_expired_backlog(
             .lock()
             .expect("retention recovery backlog cache")
             .as_ref()
-            .filter(|cached| {
-                cached.cutoff == cutoff
-                    && cached.observed_at.elapsed() < RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL
-            })
-            .map(|cached| (cached.count, cached.oldest_backlog_at.clone()));
+            .and_then(|cached| cached.value_if_fresh(cutoff, Instant::now()));
         if let Some(cached) = cached {
             return Ok(cached);
         }
@@ -10945,8 +10948,55 @@ pub(crate) struct ArchiveExpiryBackfillCandidate {
 #[cfg(test)]
 mod retention_summary_tests {
     use chrono::{TimeZone, Utc};
+    use std::time::{Duration, Instant};
 
-    use super::{RetentionRunSummary, retention_backlog_max_overdue_seconds};
+    use super::{
+        RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL, RetentionRawDirectoryEntry,
+        RetentionRawDirectoryTraversal, RetentionRecoveryBacklogCache, RetentionRunSummary,
+        retention_backlog_max_overdue_seconds,
+    };
+
+    #[test]
+    fn recovery_backlog_cache_reuses_only_matching_fresh_cutoffs() {
+        let observed_at = Instant::now();
+        let cache = RetentionRecoveryBacklogCache {
+            cutoff: "2026-10-01 00:00:00".to_string(),
+            observed_at,
+            count: 12,
+            oldest_backlog_at: Some("2026-09-01 00:00:00".to_string()),
+        };
+        assert_eq!(
+            cache.value_if_fresh("2026-10-01 00:00:00", observed_at + Duration::from_secs(29)),
+            Some((12, Some("2026-09-01 00:00:00".to_string())))
+        );
+        assert_eq!(
+            cache.value_if_fresh("2026-09-30 00:00:00", observed_at),
+            None,
+            "a changed cutoff must force a fresh backlog query"
+        );
+        assert_eq!(
+            cache.value_if_fresh(
+                "2026-10-01 00:00:00",
+                observed_at + RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL,
+            ),
+            None,
+            "the cache must expire at its freshness boundary"
+        );
+    }
+
+    #[test]
+    fn raw_orphan_traversal_reset_discards_unsettled_directory_state() {
+        let mut traversal = RetentionRawDirectoryTraversal {
+            root: Some(std::env::temp_dir()),
+            directory: Some(std::fs::read_dir(std::env::temp_dir()).expect("read temp directory")),
+            pending_candidates: std::collections::VecDeque::from([RetentionRawDirectoryEntry {
+                path: std::env::temp_dir().join("unsettled.raw"),
+            }]),
+        };
+        traversal.reset_after_interrupted_slice();
+        assert!(traversal.directory.is_none());
+        assert!(traversal.pending_candidates.is_empty());
+    }
 
     #[test]
     fn selected_batch_completion_does_not_complete_captured_backlog() {
