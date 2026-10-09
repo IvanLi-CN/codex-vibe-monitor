@@ -2769,8 +2769,26 @@ describe("DashboardWorkingConversationsSection", () => {
           '[data-testid="dashboard-working-conversation-card"]',
         ) ?? [],
       ).map((card) => card.getAttribute("data-conversation-id"));
+    const readCardByConversationId = () =>
+      new Map(
+        Array.from(
+          host?.querySelectorAll<HTMLElement>(
+            '[data-testid="dashboard-working-conversation-card"]',
+          ) ?? [],
+        ).map((card) => [card.getAttribute("data-conversation-id"), card] as const),
+      );
+    const readAnchorKey = (card: HTMLElement) =>
+      (card as HTMLElement & { __dashboardWorkingConversationAnchorKey?: string })
+        .__dashboardWorkingConversationAnchorKey;
 
     expect(readCardConversationIds()).toEqual(["conv-duplicate-a", "conv-duplicate-b"]);
+    const initialCardsByConversationId = readCardByConversationId();
+    const initialAnchorKeysByConversationId = new Map(
+      Array.from(initialCardsByConversationId.entries()).map(([conversationId, card]) => [
+        conversationId,
+        readAnchorKey(card),
+      ]),
+    );
     expect(
       host?.querySelectorAll('[data-testid="dashboard-working-conversation-conversation-button"]'),
     ).toHaveLength(0);
@@ -2808,6 +2826,10 @@ describe("DashboardWorkingConversationsSection", () => {
     );
 
     expect(readCardConversationIds()).toEqual(["conv-duplicate-b", "conv-duplicate-a"]);
+    const reorderedCardsByConversationId = readCardByConversationId();
+    for (const [conversationId, card] of reorderedCardsByConversationId) {
+      expect(readAnchorKey(card)).toBe(initialAnchorKeysByConversationId.get(conversationId));
+    }
     expect(onOpenConversation).not.toHaveBeenCalled();
     expect(scrollBy).toHaveBeenCalledWith(0, 60);
   });

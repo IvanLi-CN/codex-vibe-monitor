@@ -649,12 +649,14 @@ function installSummaryMocks() {
 
 function createWorkingConversationCard(options?: {
   endpoint?: string;
+  promptCacheKey?: string;
+  conversationId?: string;
   upstreamAccountName?: string;
 }): DashboardWorkingConversationCardModel {
   return {
-    promptCacheKey: "pck-drawer-switch",
-    normalizedPromptCacheKey: "pck-drawer-switch",
-    conversationId: "ABCD12",
+    promptCacheKey: options?.promptCacheKey ?? "pck-drawer-switch",
+    normalizedPromptCacheKey: options?.promptCacheKey ?? "pck-drawer-switch",
+    conversationId: options?.conversationId ?? "ABCD12",
     currentInvocation: {
       preview: {
         id: 101,
@@ -1252,6 +1254,29 @@ describe("DashboardPage", () => {
     ).toBe("ABCD12");
   });
 
+  it("does not open a key-only history drawer for ambiguous persisted conversation ids", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({ conversationId: "CONV-A" }),
+        createWorkingConversationCard({ conversationId: "CONV-B" }),
+      ],
+      totalMatched: 2,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
   it("opens the shared drawer on the routing tab and keeps the tab in the URL", () => {
     installSummaryMocks();
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
@@ -1338,7 +1363,7 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
     ).toBe("settings");
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12&promptCacheConversationTab=settings",
     );
   });
 
@@ -1392,7 +1417,7 @@ describe("DashboardPage", () => {
         host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
       ).toBe("settings");
       expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-        "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+        "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12&promptCacheConversationTab=settings",
       );
     } finally {
       Object.defineProperty(window, "matchMedia", {
@@ -1428,7 +1453,7 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
     ).toBe("operations");
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations",
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations&promptCacheConversationId=ABCD12",
     );
   });
 

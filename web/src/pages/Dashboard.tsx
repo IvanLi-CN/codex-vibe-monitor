@@ -44,6 +44,7 @@ export default function DashboardPage() {
     useUpstreamAccountDetailRoute();
   const {
     promptCacheConversationKey,
+    promptCacheConversationId,
     promptCacheConversationTab,
     blockedBindingFilter,
     openPromptCacheConversation,
@@ -111,7 +112,18 @@ export default function DashboardPage() {
         .filter(Boolean),
     );
     const conversationLabel =
-      conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
+      conversationIds.size === 1
+        ? (conversationIds.values().next().value ?? null)
+        : promptCacheConversationId != null && conversationIds.has(promptCacheConversationId)
+          ? promptCacheConversationId
+          : null;
+    if (conversationLabel != null && conversationLabel !== promptCacheConversationId) {
+      openPromptCacheConversation(promptCacheConversationKey, {
+        conversationId: conversationLabel,
+        replace: true,
+        tab: promptCacheConversationTab,
+      });
+    }
     setSelectedConversation((current) => {
       if (conversationLabel == null) {
         if (current?.key !== promptCacheConversationKey) return null;
@@ -124,7 +136,28 @@ export default function DashboardPage() {
       }
       return { key: promptCacheConversationKey, label: conversationLabel };
     });
-  }, [cards, promptCacheConversationKey]);
+  }, [
+    cards,
+    openPromptCacheConversation,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    promptCacheConversationTab,
+  ]);
+
+  const conversationIdsForRoute = new Set(
+    cards
+      .filter((card) => card.promptCacheKey === promptCacheConversationKey)
+      .map((card) => card.conversationId.trim())
+      .filter(Boolean),
+  );
+  const conversationRouteIsSafe =
+    promptCacheConversationKey == null ||
+    workingCardsLoading ||
+    (!workingCardsLoadingMore &&
+      !hasMore &&
+      conversationIdsForRoute.size === 1 &&
+      (promptCacheConversationId == null ||
+        conversationIdsForRoute.has(promptCacheConversationId)));
 
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();
@@ -157,7 +190,7 @@ export default function DashboardPage() {
     });
   };
 
-  if (isCompactViewport && promptCacheConversationKey != null) {
+  if (isCompactViewport && promptCacheConversationKey != null && conversationRouteIsSafe) {
     return (
       <div className="mx-auto flex w-full max-w-full flex-col gap-6">
         <PromptCacheConversationHistoryDrawer
@@ -230,6 +263,7 @@ export default function DashboardPage() {
           if (routeInvokeId != null) {
             const search = new URLSearchParams({
               promptCacheConversationKey: selection.promptCacheKey,
+              promptCacheConversationId: selection.conversationId,
             });
             navigate(
               { pathname: "/dashboard", search: `?${search.toString()}` },
@@ -238,6 +272,7 @@ export default function DashboardPage() {
             return;
           }
           openPromptCacheConversation(selection.promptCacheKey, {
+            conversationId: selection.conversationId,
             tab: selection.tab,
             clearUpstreamAccount: true,
           });
@@ -293,7 +328,9 @@ export default function DashboardPage() {
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
       />
       <PromptCacheConversationHistoryDrawer
-        open={promptCacheConversationKey != null && upstreamAccountId == null}
+        open={
+          promptCacheConversationKey != null && upstreamAccountId == null && conversationRouteIsSafe
+        }
         conversationKey={promptCacheConversationKey}
         conversationLabel={selectedConversation?.label ?? null}
         initialTab={promptCacheConversationTab}

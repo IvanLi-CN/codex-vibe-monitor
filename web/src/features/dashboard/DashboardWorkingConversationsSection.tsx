@@ -4731,6 +4731,17 @@ export function DashboardWorkingConversationsSection({
         (promptCacheKeyCounts.get(card.promptCacheKey) ?? 0) + 1,
       );
     }
+    const compositeIdentityCounts = new Map<string, number>();
+    for (const card of sortedCards) {
+      const compositeIdentity = buildDashboardWorkingConversationCardIdentity(
+        card.promptCacheKey,
+        card.conversationId,
+      );
+      compositeIdentityCounts.set(
+        compositeIdentity,
+        (compositeIdentityCounts.get(compositeIdentity) ?? 0) + 1,
+      );
+    }
     const compositeOccurrences = new Map<string, number>();
     const keys = new Map<
       DashboardWorkingConversationCardModel,
@@ -4743,16 +4754,21 @@ export function DashboardWorkingConversationsSection({
       );
       const occurrence = compositeOccurrences.get(compositeIdentity) ?? 0;
       compositeOccurrences.set(compositeIdentity, occurrence + 1);
+      const isExactCompositeDuplicate = (compositeIdentityCounts.get(compositeIdentity) ?? 0) > 1;
       keys.set(card, {
-        reactKey: JSON.stringify([card.promptCacheKey, card.conversationId, occurrence]),
+        reactKey: isExactCompositeDuplicate
+          ? JSON.stringify([compositeIdentity, occurrence])
+          : compositeIdentity,
         anchorKey:
           promptCacheKeyCounts.get(card.promptCacheKey) === 1
             ? JSON.stringify([card.promptCacheKey])
-            : buildDashboardWorkingConversationCardAnchorKey(
-                card.promptCacheKey,
-                card.conversationId,
-                occurrence,
-              ),
+            : isExactCompositeDuplicate
+              ? buildDashboardWorkingConversationCardAnchorKey(
+                  card.promptCacheKey,
+                  card.conversationId,
+                  occurrence,
+                )
+              : compositeIdentity,
       });
     }
     return keys;
