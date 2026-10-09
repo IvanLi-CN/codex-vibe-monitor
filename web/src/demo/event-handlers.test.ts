@@ -135,6 +135,32 @@ describe("demo topic payloads", () => {
     demoModel.setScene("operational");
   });
 
+  it("resets a timeline cursor when the demo scene changes", async () => {
+    demoModel.setScene("task-timeline-pressure-dense");
+    const from = new Date(Date.now() - 12 * 60 * 60 * 1_000).toISOString();
+    const to = new Date().toISOString();
+    const firstPage = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?from=${from}&to=${to}&limit=500`,
+      ),
+    );
+    const firstPayload = (await firstPage.json()) as { nextCursor: string | null };
+    expect(firstPayload.nextCursor).not.toBeNull();
+
+    demoModel.setScene("operational");
+    const continuation = await handleDemoRequest(
+      new Request(
+        `http://demo.invalid/api/system/managed-tasks/timeline?cursor=${firstPayload.nextCursor}`,
+      ),
+    );
+    await expect(continuation.json()).resolves.toMatchObject({
+      segments: [],
+      nextCursor: null,
+      resetRequired: true,
+    });
+    demoModel.setScene("operational");
+  });
+
   it("keeps unversioned timeline demo subscriptions on the bounded v1 contract", async () => {
     await expect(
       resolveDemoTopicPayload({ topic: "system.managed-tasks.timeline" }, requestUrl),

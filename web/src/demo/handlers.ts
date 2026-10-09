@@ -3454,6 +3454,7 @@ function demoTaskOperationsTimeline() {
 }
 
 function demoTaskOperationsTimelinePage(url: URL) {
+  const scene = demoModel.snapshot.scene;
   const snapshot = demoTaskOperationsTimeline();
   const cursor = url.searchParams.get("cursor");
   let offset = 0;
@@ -3463,11 +3464,15 @@ function demoTaskOperationsTimelinePage(url: URL) {
   if (cursor) {
     try {
       const decoded = JSON.parse(decodeURIComponent(cursor)) as {
+        scene?: string;
         offset?: number;
         afterRevision?: number;
         from?: string;
         to?: string;
       };
+      if (decoded.scene !== scene) {
+        return { ...snapshot, segments: [], nextCursor: null, resetRequired: true };
+      }
       offset = Number(decoded.offset) || 0;
       afterRevision = decoded.afterRevision;
       from = decoded.from ?? from;
@@ -3499,7 +3504,7 @@ function demoTaskOperationsTimelinePage(url: URL) {
     segments,
     nextCursor:
       nextOffset < matching.length
-        ? encodeURIComponent(JSON.stringify({ offset: nextOffset, afterRevision, from, to }))
+        ? encodeURIComponent(JSON.stringify({ scene, offset: nextOffset, afterRevision, from, to }))
         : null,
     resetRequired: false,
   };

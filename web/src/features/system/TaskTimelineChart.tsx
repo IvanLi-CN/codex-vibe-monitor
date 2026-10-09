@@ -373,7 +373,8 @@ function subtractIntervals(
 }
 
 function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
-  const sorted = [...items].sort(
+  const indexedItems = items.filter((item) => item.endMs > item.startMs);
+  const sorted = [...indexedItems].sort(
     (left, right) => left.startMs - right.startMs || left.order - right.order,
   );
   const starts = sorted.map((item) => item.startMs);
@@ -394,7 +395,7 @@ function buildDeferralIndex(items: PositionedDeferral[]): DeferralIndex {
     ends,
     prefixMaxEnd,
     overlapCounts,
-    byId: new Map(sorted.map((item) => [item.segment.segmentId, item])),
+    byId: new Map(items.map((item) => [item.segment.segmentId, item])),
   };
 }
 
@@ -455,6 +456,7 @@ function buildLiveDeferralIndex(
 }
 
 function countOverlapsInIndex(item: PositionedDeferral, index: DeferralIndex): number {
+  if (item.endMs <= item.startMs) return 0;
   const startsBeforeEnd = lowerBound(index.starts, item.endMs);
   const endsAtOrBeforeStart = upperBound(index.ends, item.startMs);
   const self = index.byId.has(item.segment.segmentId) ? 1 : 0;
@@ -472,6 +474,7 @@ function overlappingDeferralsInIndex(
     .filter(
       (other) =>
         other.segment.segmentId !== item.segment.segmentId &&
+        other.endMs > other.startMs &&
         other.startMs < item.endMs &&
         other.endMs > item.startMs,
     );
@@ -488,6 +491,7 @@ function overlappingDeferrals(
       ...index.dynamic.filter(
         (other) =>
           other.segment.segmentId !== item.segment.segmentId &&
+          other.endMs > other.startMs &&
           other.startMs < item.endMs &&
           other.endMs > item.startMs,
       ),

@@ -305,6 +305,19 @@ describe("TaskTimelineChart", () => {
     expect(bars[0].querySelector("rect")?.getAttribute("fill-opacity")).toBe("1");
   });
 
+  it("does not treat zero-length deferrals as overlapping", () => {
+    const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
+    renderChart({
+      nowMs,
+      executions: [
+        deferral("zero-length", nowMs - 10_000, nowMs - 10_000, "resource_busy"),
+        deferral("positive-span", nowMs - 20_000, nowMs - 1_000, "pressure_cooldown"),
+      ],
+    });
+    const spanBar = host?.querySelector<SVGGElement>('[data-task-deferral-id="positive-span"]');
+    expect(spanBar?.getAttribute("aria-label")).toContain("无重叠任务让行");
+  });
+
   it("includes open deferrals when calculating static overlap opacity", () => {
     const nowMs = Date.parse("2026-10-02T00:00:00.000Z");
     const open = {
