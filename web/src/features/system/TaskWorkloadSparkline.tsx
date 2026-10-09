@@ -813,13 +813,15 @@ export function TaskWorkloadSparkline({
 
   if (backgroundMode) {
     return (
-      <div
-        ref={containerRef}
-        className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-visible"
-        aria-busy={activeVisible && trend == null}
-        data-testid={`task-workload-sparkline-${task.taskKey}`}
-      >
-        {chart}
+      <>
+        <div
+          ref={containerRef}
+          className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-visible"
+          aria-busy={activeVisible && trend == null}
+          data-testid={`task-workload-sparkline-${task.taskKey}`}
+        >
+          {chart}
+        </div>
         <button
           ref={detailsButtonRef}
           type="button"
@@ -832,7 +834,7 @@ export function TaskWorkloadSparkline({
           <AppIcon name="information-outline" className="size-4" aria-hidden />
         </button>
         {backgroundDetailsPanel}
-      </div>
+      </>
     );
   }
 
