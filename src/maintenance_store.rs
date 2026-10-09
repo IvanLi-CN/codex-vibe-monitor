@@ -25,11 +25,14 @@ const TASK_TIMELINE_RETENTION_HOURS: i64 = 48;
 const INITIAL_TASK_DEFAULTS_MARKER: &str = "managed_task_defaults_v1";
 const RETENTION_DEFAULT_SCHEDULE_MARKER: &str = "retention_default_schedule_v1";
 const DEFAULT_RETENTION_INTERVAL_SECS: i64 = 3_600;
+const OWNERSHIP_INITIALIZATION_MARKER: &str = "retention_maintenance_ownership_v1";
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
+    "invocation_identity_cleanup",
+    "raw_orphan_sweep",
     "upstream_account_maintenance",
     "forward_proxy_subscription_refresh",
     "pool_orphan_recovery",
@@ -46,6 +49,16 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
 ];
 static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
+    matches!(
+        key,
+        "retention_archive"
+            | "invocation_identity_cleanup"
+            | "raw_orphan_sweep"
+            | "prompt_cache_materialization"
+    )
+}
 
 pub(crate) struct TaskExecutionLease {
     task_key: String,
@@ -150,6 +163,21 @@ impl PromptCacheMaterializationControl {
                 enabled,
                 generation: 1,
             })
+    }
+
+    pub(crate) fn admitted_control(
+        snapshot: PromptCacheMaterializationControlSnapshot,
+    ) -> Arc<Self> {
+        let control = Arc::new(Self::default());
+        control
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .snapshot = Some(PromptCacheMaterializationControlSnapshot {
+            enabled: true,
+            generation: snapshot.generation,
+        });
+        control
     }
 
     pub(crate) fn snapshot(&self) -> Option<PromptCacheMaterializationControlSnapshot> {
@@ -1002,6 +1030,20 @@ pub(crate) struct TimelineCoverage {
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
+        "invocation_identity_cleanup",
+        "调用身份清理",
+        "释放无引用的对话身份与已结束小时前缀",
+        "interval",
+        false,
+    ),
+    (
+        "raw_orphan_sweep",
+        "Raw 孤儿文件清理",
+        "按所有权证明与隔离规则清理无引用的原始载荷文件",
+        "interval",
+        false,
+    ),
+    (
         "retention_archive",
         "数据保留与归档",
         "按保留策略归档并清理历史数据",
@@ -1210,6 +1252,8 @@ pub(crate) fn task_title_for_observation(task_key: &str) -> String {
 pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
     match task_key {
         "retention_archive"
+        | "invocation_identity_cleanup"
+        | "raw_orphan_sweep"
         | "upstream_account_maintenance"
         | "pool_orphan_recovery"
         | "invocation_timeline_snapshot"
@@ -1228,6 +1272,8 @@ pub(crate) fn task_enabled_by_default(task_key: &str, is_manual: bool) -> bool {
 
 const EDITABLE_SCHEDULE_TASKS: &[&str] = &[
     "retention_archive",
+    "invocation_identity_cleanup",
+    "raw_orphan_sweep",
     "upstream_account_maintenance",
     "pool_orphan_recovery",
     "system_status_snapshot",
@@ -1240,10 +1286,13 @@ fn task_trigger_kinds(task_key: &str, trigger_mode: &str, is_manual: bool) -> Ve
         return vec!["manual".to_string()];
     }
     let kinds: &[&str] = match task_key {
-        "retention_archive" | "upstream_account_maintenance" => &["startup", "interval"],
+        "retention_archive" => &["startup", "interval", "catchup", "manual"],
+        "upstream_account_maintenance" => &["startup", "interval"],
+        "invocation_identity_cleanup" | "raw_orphan_sweep" => &["interval", "catchup", "manual"],
         "forward_proxy_subscription_refresh" => &["startup", "interval"],
         "dashboard_runtime_projection_reconcile" => &["interval", "adaptive"],
-        "summary_snapshot" | "prompt_cache_materialization" => &["event", "interval"],
+        "prompt_cache_materialization" => &["event", "interval", "manual"],
+        "summary_snapshot" => &["event", "interval"],
         "summary_coverage_recovery" | "long_term_projection" => &["adaptive", "interval"],
         "timeseries_minute_projection" => &["startup", "interval", "adaptive"],
         "startup_backfill" => &["startup", "event", "adaptive"],
@@ -1302,6 +1351,10 @@ fn task_policy_text(
         "summary_snapshot" => ("系统默认", "事件唤醒；最小刷新间隔 10 秒".to_string()),
         "summary_coverage_recovery" => ("系统默认", "自适应恢复；按覆盖和压力准入唤醒".to_string()),
         "prompt_cache_materialization" => ("系统默认", "事件对账与 60 秒检查".to_string()),
+        "invocation_identity_cleanup" | "raw_orphan_sweep" => (
+            "系统默认",
+            "300 秒巡检；有待办时让行后接续，安全重试独立计时".to_string(),
+        ),
         "startup_backfill" => (
             "系统默认",
             "启动监督器；按事件、检查点和压力准入唤醒".to_string(),
@@ -1417,7 +1470,8 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
         "long_term_projection" => Some("terminal events"),
         "startup_backfill.pool_upstream_node_health_archives" => Some("archive batches"),
         "pool_orphan_recovery" => Some("pool attempts"),
-        "raw_compression" => Some("raw payload files"),
+        "raw_compression" | "raw_orphan_sweep" => Some("raw payload files"),
+        "invocation_identity_cleanup" => Some("conversation identities"),
         "archive_upstream_activity_manifest" => Some("archive batches"),
         "materialize_historical_rollups" => Some("archive batches"),
         "verify_archive_storage" => Some("archive manifest rows"),
@@ -1432,6 +1486,8 @@ pub(crate) fn task_measurement_capabilities(task_key: &str) -> TaskMeasurementCa
                 | "summary_coverage_recovery"
                 | "timeseries_minute_projection"
                 | "raw_payload_metrics_inventory"
+                | "raw_orphan_sweep"
+                | "invocation_identity_cleanup"
                 | "forward_proxy_subscription_refresh"
                 | "startup_hourly_rollup_bootstrap"
                 | "summary_snapshot"
@@ -1488,27 +1544,88 @@ async fn recent_runs_for_workload_compatibility(
     Ok(query.fetch_all(pool).await?)
 }
 
-pub(crate) async fn open(config: &AppConfig) -> Result<MaintenanceStore> {
+pub(crate) async fn open_owned(
+    config: &AppConfig,
+    runtime_lock: &mut crate::maintenance::MaintenanceRuntimeLock,
+) -> Result<MaintenanceStore> {
+    let options = runtime_lock.sqlite_connect_options(
+        &config.maintenance_database_path(),
+        maintenance_connect_options(config)?,
+    )?;
+    open_with_options(options).await
+}
+
+fn maintenance_connect_options(config: &AppConfig) -> Result<SqliteConnectOptions> {
     let database_path = config.maintenance_database_path();
     if let Some(parent) = database_path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+        std::fs::create_dir_all(parent)?;
     }
     let url = format!("sqlite://{}", database_path.to_string_lossy());
-    let options = SqliteConnectOptions::from_str(&url)?
+    Ok(SqliteConnectOptions::from_str(&url)?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_secs(2));
+        .busy_timeout(Duration::from_secs(2)))
+}
+
+async fn open_with_options(options: SqliteConnectOptions) -> Result<MaintenanceStore> {
     let pool = SqlitePoolOptions::new()
         .max_connections(3)
         .connect_with(options)
         .await?;
-    sqlx::query("PRAGMA foreign_keys = ON")
-        .execute(&pool)
+    let outcome = async {
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&pool)
+            .await?;
+        ensure_schema(&pool).await?;
+        record_prompt_cache_materialization_control_origin(&pool).await?;
+        seed_tasks(&pool).await?;
+        ensure_task_colors(&pool).await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    match outcome {
+        Ok(()) => Ok(MaintenanceStore::from_pool(pool)),
+        Err(error) => {
+            pool.close().await;
+            Err(error)
+        }
+    }
+}
+
+/// Online maintenance clients may only connect to an initialized observation store.
+/// In particular they must never run seed/default/recovery code in the daemon's store.
+pub(crate) async fn connect_existing(
+    config: &AppConfig,
+    runtime: &mut crate::maintenance::MaintenanceOnlineRuntime,
+) -> Result<MaintenanceStore> {
+    let options = runtime.sqlite_connect_options(
+        &config.maintenance_database_path(),
+        SqliteConnectOptions::new()
+            .create_if_missing(false)
+            .busy_timeout(Duration::from_secs(2)),
+    )?;
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
         .await?;
-    ensure_schema(&pool).await?;
-    record_prompt_cache_materialization_control_origin(&pool).await?;
-    seed_tasks(&pool).await?;
-    ensure_task_colors(&pool).await?;
+    let outcome = async {
+        let ready: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM maintenance_metadata WHERE key=? AND value='applied')",
+        )
+        .bind(OWNERSHIP_INITIALIZATION_MARKER)
+        .fetch_one(&pool)
+        .await?;
+        if !ready {
+            return Err(anyhow!("maintenance controls are not initialized"));
+        }
+        runtime.validate()?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = outcome {
+        pool.close().await;
+        return Err(error);
+    }
     Ok(MaintenanceStore::from_pool(pool))
 }
 
@@ -1929,6 +2046,9 @@ pub(crate) fn managed_startup_backfill_suffix(task_name: &str) -> Option<&'stati
 }
 
 async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query("CREATE TABLE IF NOT EXISTS maintenance_owner_retry_state(task_key TEXT PRIMARY KEY, failure_count INTEGER NOT NULL DEFAULT 0, next_eligible_at TEXT, reason TEXT)")
+        .execute(pool).await?;
+
     for statement in r#"
         CREATE TABLE IF NOT EXISTS managed_tasks (
           task_key TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL,
@@ -2240,7 +2360,7 @@ pub(crate) fn global() -> Option<&'static std::sync::Arc<MaintenanceStore>> {
 
 pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
     let Some(store) = global() else {
-        return false;
+        return is_retention_maintenance_task(task_key);
     };
     let Some((enabled, interval_secs, cron_expr, next_catchup_at)) =
         sqlx::query_as::<_, (bool, Option<i64>, Option<String>, Option<String>)>(
@@ -2252,7 +2372,7 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
         .ok()
         .flatten()
     else {
-        return false;
+        return is_retention_maintenance_task(task_key);
     };
     !enabled
         || next_catchup_at.is_some()
@@ -2606,8 +2726,28 @@ impl MaintenanceStore {
                         .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64)
                         .bind(status).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
-                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=? WHERE execution_uid=?")
-                        .bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
+                    sqlx::query("UPDATE managed_task_runs SET actual_finished_at=?,actual_duration_ms=CASE WHEN task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep') THEN MAX(0,CAST(ROUND((julianday(?)-julianday(actual_started_at))*86400000) AS INTEGER)) ELSE ? END WHERE execution_uid=? AND actual_started_at IS NOT NULL")
+                        .bind(finished_at).bind(finished_at).bind((*duration_ms).min(i64::MAX as u64) as i64).bind(id)
+                        .execute(&mut *transaction).await?;
+                }
+                crate::task_timeline::TimelineEvent::ExecutionResourcesPending { id } => {
+                    sqlx::query(
+                        "UPDATE managed_task_runs SET actual_started_at=NULL WHERE execution_uid=?",
+                    )
+                    .bind(id)
+                    .execute(&mut *transaction)
+                    .await?;
+                }
+                crate::task_timeline::TimelineEvent::ExecutionWorkStarted { id, started_at } => {
+                    sqlx::query(
+                        "UPDATE managed_task_runs SET actual_started_at=? WHERE execution_uid=?",
+                    )
+                    .bind(started_at)
+                    .bind(id)
+                    .execute(&mut *transaction)
+                    .await?;
+                    sqlx::query("UPDATE task_timeline_segments SET started_at=?,last_observed_at=?,revision=? WHERE segment_id=? AND kind='execution'")
+                        .bind(started_at).bind(started_at).bind(revision).bind(id)
                         .execute(&mut *transaction).await?;
                 }
                 crate::task_timeline::TimelineEvent::ExecutionUnknown {
@@ -2844,6 +2984,7 @@ impl MaintenanceStore {
              WHERE status='requested'
                AND task_key IN (
                    SELECT task_key FROM managed_tasks WHERE enabled=0 AND is_manual=0
+               ) AND NOT (trigger_kind='manual' AND task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')
                )",
         )
         .bind(&finished_at)
@@ -2855,9 +2996,9 @@ impl MaintenanceStore {
              WHERE id = (
                  SELECT id FROM managed_task_runs
                  WHERE status='requested'
-                   AND task_key IN (
+                   AND ((trigger_kind='manual' AND task_key IN ('retention_archive','invocation_identity_cleanup','raw_orphan_sweep','prompt_cache_materialization')) OR task_key IN (
                        SELECT task_key FROM managed_tasks WHERE enabled!=0 OR is_manual!=0
-                   )
+                   ))
                  ORDER BY id
                  LIMIT 1
              )
@@ -2907,6 +3048,10 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn request_run(&self, task_key: &str) -> Result<i64> {
+        self.request_run_with_mode(task_key, false).await
+    }
+
+    pub(crate) async fn request_run_with_mode(&self, task_key: &str, dry_run: bool) -> Result<i64> {
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
                 .bind(task_key)
@@ -2916,14 +3061,16 @@ impl MaintenanceStore {
             return Err(anyhow!("managed task not found"));
         }
         let result = sqlx::query_scalar(
-            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail)
-             SELECT task_key,'manual',?,'requested','手动运行请求',NULL
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary,error_detail,details)
+             SELECT task_key,'manual',?,'requested','手动运行请求',NULL,?
              FROM managed_tasks
-             WHERE task_key=? AND (enabled!=0 OR is_manual!=0)
+             WHERE task_key=? AND (enabled!=0 OR is_manual!=0 OR ?=1)
              RETURNING id",
         )
         .bind(format_utc_iso_millis(Utc::now()))
+        .bind(is_retention_maintenance_task(task_key).then(|| serde_json::json!({"ownershipVersion": 1, "ownerScope": task_key, "dryRun": dry_run}).to_string()))
         .bind(task_key)
+        .bind(is_retention_maintenance_task(task_key))
         .fetch_optional(&self.pool)
         .await;
         let result = match result {
@@ -3077,10 +3224,89 @@ impl MaintenanceStore {
         Ok(())
     }
 
+    pub(crate) async fn schedule_owned_work(
+        &self,
+        key: &str,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
+        sqlx::query("UPDATE managed_tasks SET next_catchup_at=?,catchup_reason=? WHERE task_key=? AND enabled!=0")
+            .bind(at).bind(reason).bind(key).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_owned_retry_delay(
+        &self,
+        key: &str,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
+        sqlx::query("INSERT INTO maintenance_owner_retry_state(task_key,next_eligible_at,reason) VALUES(?,?,?) ON CONFLICT(task_key) DO UPDATE SET next_eligible_at=excluded.next_eligible_at,reason=excluded.reason")
+            .bind(key).bind(at).bind(reason).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub(crate) async fn record_owned_retry(&self, key: &str, pressure: bool) -> Result<i64> {
+        let mut tx = self.pool.begin().await?;
+        let count: Option<i64> = sqlx::query_scalar(
+            "SELECT failure_count FROM maintenance_owner_retry_state WHERE task_key=?",
+        )
+        .bind(key)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let count = count.unwrap_or(0).min(4);
+        let seconds = if pressure {
+            300
+        } else {
+            [300, 600, 1200, 2400, 3600][count as usize]
+        };
+        let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds));
+        let reason = if pressure {
+            "sqlite_pressure"
+        } else {
+            "retry_backoff"
+        };
+        sqlx::query("INSERT INTO maintenance_owner_retry_state(task_key,failure_count,next_eligible_at,reason) VALUES(?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET failure_count=excluded.failure_count,next_eligible_at=excluded.next_eligible_at,reason=excluded.reason")
+            .bind(key).bind(if pressure { count } else { count+1 }).bind(&at).bind(reason).execute(&mut *tx).await?;
+        sqlx::query("UPDATE managed_tasks SET next_catchup_at=?,catchup_reason=? WHERE task_key=? AND enabled!=0")
+            .bind(&at).bind(reason).bind(key).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(seconds)
+    }
+
+    pub(crate) async fn clear_owned_retry(&self, key: &str) -> Result<()> {
+        sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub(crate) async fn apply_initial_task_defaults(&self) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
         let now = format_utc_iso_millis(Utc::now());
         let mut changed = false;
+        let ownership_applied: Option<String> =
+            sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
+                .bind(OWNERSHIP_INITIALIZATION_MARKER)
+                .fetch_optional(&mut *transaction)
+                .await?;
+        if ownership_applied.is_none() {
+            for key in ["invocation_identity_cleanup", "raw_orphan_sweep"] {
+                sqlx::query("UPDATE managed_tasks SET interval_secs=300,schedule_source='default',next_trigger_at=CASE WHEN enabled!=0 THEN COALESCE(next_trigger_at,?) ELSE NULL END,updated_at=? WHERE task_key=? AND interval_secs IS NULL AND (cron_expr IS NULL OR trim(cron_expr)='')")
+                    .bind(&now).bind(&now).bind(key).execute(&mut *transaction).await?;
+            }
+            sqlx::query(
+                "INSERT INTO maintenance_metadata(key,value,updated_at) VALUES(?, 'applied', ?)",
+            )
+            .bind(OWNERSHIP_INITIALIZATION_MARKER)
+            .bind(&now)
+            .execute(&mut *transaction)
+            .await?;
+            changed = true;
+        }
         let retention_schedule_applied: Option<String> =
             sqlx::query_scalar("SELECT value FROM maintenance_metadata WHERE key=?")
                 .bind(RETENTION_DEFAULT_SCHEDULE_MARKER)
@@ -3222,13 +3448,6 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
-        self.enqueue_due_runs_with_retention_enabled(true).await
-    }
-
-    pub(crate) async fn enqueue_due_runs_with_retention_enabled(
-        &self,
-        retention_enabled: bool,
-    ) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
         let mut transaction = self.pool.begin().await?;
@@ -3246,12 +3465,12 @@ impl MaintenanceStore {
                     ,next_trigger_at,next_catchup_at
              FROM managed_tasks
              WHERE enabled=1 AND is_manual=0
-               AND (? = 1 OR task_key != 'retention_archive')
+               AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>?)
                AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
                  OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
              ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
         )
-        .bind(retention_enabled)
+        .bind(&now_text)
         .bind(&now_text)
         .bind(&now_text)
         .fetch_all(&mut *transaction)
@@ -3475,7 +3694,7 @@ impl MaintenanceStore {
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await?;
-        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=? WHERE id=?")
+        let result = sqlx::query("UPDATE managed_task_runs SET status=?,finished_at=?,duration_ms=?,summary=COALESCE(?,summary),error_detail=?,completion=?,core_completion=?,details=COALESCE(?,details) WHERE id=?")
             .bind(status)
             .bind(finished_at)
             .bind(duration_ms)
@@ -3490,7 +3709,12 @@ impl MaintenanceStore {
         if result.rows_affected() == 0 {
             return Err(anyhow!("managed task run {id} was not found"));
         }
-        if task_key.as_deref() == Some("retention_archive") {
+        let automatic: bool =
+            sqlx::query_scalar("SELECT trigger_kind!='manual' FROM managed_task_runs WHERE id=?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?;
+        if automatic && task_key.as_deref() == Some("retention_archive") {
             self.update_retention_catchup_after_finish(
                 completion,
                 details.as_deref(),
@@ -3498,6 +3722,24 @@ impl MaintenanceStore {
             )
             .await?;
             self.sync_retention_progress_schedule().await?;
+        }
+        if automatic
+            && completion == Some("completed")
+            && matches!(
+                task_key.as_deref(),
+                Some("invocation_identity_cleanup" | "raw_orphan_sweep")
+            )
+        {
+            let key = task_key.as_deref().expect("matched owner");
+            let plan: (Option<i64>, Option<String>) = sqlx::query_as(
+                "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key=?",
+            )
+            .bind(key)
+            .fetch_one(&self.pool)
+            .await?;
+            sqlx::query("UPDATE managed_tasks SET next_trigger_at=?,next_catchup_at=NULL,catchup_reason=NULL WHERE task_key=? AND enabled!=0")
+                .bind(next_trigger_at(plan.0, plan.1.as_deref()))
+                .bind(key).execute(&self.pool).await?;
         }
         Ok(())
     }
@@ -3752,6 +3994,7 @@ impl MaintenanceStore {
                     .active_runs
                     .iter()
                     .find(|active| active.task_key == task.task_key)
+                && active.phase != "waiting_resources"
             {
                 summary.actual_started_at = Some(active.started_at.clone());
                 summary.duration_ms = Some(active.elapsed_ms.min(i64::MAX as u64) as i64);
@@ -4174,12 +4417,18 @@ impl MaintenanceStore {
             }
             Self::validate_schedule(next_interval, next_cron.as_deref()).await?;
         }
-        let restore_retention_default = task_key == "retention_archive"
-            && update_schedule
+        let restore_retention_default = matches!(
+            task_key,
+            "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+        ) && update_schedule
             && interval_secs == Some(None)
             && cron_expr == Some(None);
         let persisted_interval = if restore_retention_default {
-            Some(DEFAULT_RETENTION_INTERVAL_SECS)
+            Some(if task_key == "retention_archive" {
+                DEFAULT_RETENTION_INTERVAL_SECS
+            } else {
+                300
+            })
         } else {
             next_interval
         };
@@ -4244,6 +4493,18 @@ impl MaintenanceStore {
 
 pub(crate) fn path(config: &AppConfig) -> PathBuf {
     config.maintenance_database_path()
+}
+
+#[cfg(test)]
+pub(crate) async fn ownership_test_store() -> MaintenanceStore {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_schema(&pool).await.unwrap();
+    seed_tasks(&pool).await.unwrap();
+    MaintenanceStore::from_pool(pool)
 }
 
 #[cfg(test)]
@@ -4815,7 +5076,7 @@ mod tests {
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
-        assert_eq!(MANAGED_TASKS.len(), 21);
+        assert_eq!(MANAGED_TASKS.len(), 23);
         assert_eq!(
             MANAGED_TASKS
                 .iter()
@@ -5689,12 +5950,17 @@ mod tests {
         ));
         assert!(!task_enabled_by_default("raw_compression", true));
         assert!(task_enabled_by_default("retention_archive", false));
+        assert!(task_enabled_by_default(
+            "invocation_identity_cleanup",
+            false
+        ));
+        assert!(task_enabled_by_default("raw_orphan_sweep", false));
         assert_eq!(
             MANAGED_TASKS
                 .iter()
                 .filter(|(key, _, _, _, is_manual)| task_enabled_by_default(key, *is_manual))
                 .count(),
-            14
+            16
         );
     }
 
@@ -6906,7 +7172,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disabled_runtime_retention_config_does_not_enqueue_automatic_runs() {
+    async fn paused_retention_control_does_not_enqueue_automatic_runs() {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("connect retention config gate fixture");
@@ -6917,7 +7183,7 @@ mod tests {
         let store = MaintenanceStore::from_pool(pool);
         sqlx::query(
             "UPDATE managed_tasks
-             SET next_trigger_at='2000-01-01T00:00:00.000Z',
+             SET enabled=0,next_trigger_at='2000-01-01T00:00:00.000Z',
                  next_catchup_at='2000-01-01T00:00:00.000Z'
              WHERE task_key='retention_archive'",
         )
@@ -6927,7 +7193,7 @@ mod tests {
 
         assert_eq!(
             store
-                .enqueue_due_runs_with_retention_enabled(false)
+                .enqueue_due_runs()
                 .await
                 .expect("skip retention when runtime config is disabled"),
             0

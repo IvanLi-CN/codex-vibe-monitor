@@ -2911,6 +2911,17 @@ export interface RetentionArchiveBatchMetrics {
 }
 
 export interface ManagedTaskRunDetails {
+  ownershipVersion?: number | null;
+  ownerScope?: string | null;
+  dryRun?: boolean | null;
+  coverage?: string | null;
+  conversationIdentitiesChecked?: number | null;
+  conversationIdentitiesReleased?: number | null;
+  hourPrefixesChecked?: number | null;
+  hourPrefixesReleased?: number | null;
+  filesChecked?: number | null;
+  filesReleased?: number | null;
+  bytesReleased?: number | null;
   archiveBatches?: RetentionArchiveBatchMetrics[] | null;
   timeoutCount?: number | null;
   completion?: string | null;
