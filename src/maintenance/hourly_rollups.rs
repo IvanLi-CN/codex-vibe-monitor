@@ -1957,9 +1957,16 @@ enum InvocationArchiveReopenResult {
     BudgetExhausted,
 }
 
-fn invocation_archive_validation_temp_path(archive_path: &Path) -> PathBuf {
+fn invocation_archive_replay_temp_path(archive_path: &Path) -> PathBuf {
     let digest = Sha256::digest(archive_path.as_os_str().to_string_lossy().as_bytes());
     std::env::temp_dir().join(format!("codex-invocation-archive-check-{digest:x}.sqlite"))
+}
+
+fn forward_proxy_archive_replay_temp_path(archive_path: &Path) -> PathBuf {
+    let digest = Sha256::digest(archive_path.as_os_str().to_string_lossy().as_bytes());
+    std::env::temp_dir().join(format!(
+        "codex-forward-proxy-archive-check-{digest:x}.sqlite"
+    ))
 }
 
 async fn invocation_archive_file_is_readable_with_budget(
@@ -1970,16 +1977,25 @@ async fn invocation_archive_file_is_readable_with_budget(
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         return InvocationArchiveReadability::BudgetExhausted;
     }
-    let temp_path = invocation_archive_validation_temp_path(archive_path);
-    let archive_pool = match open_historical_rollup_archive_pool(archive_path, &temp_path).await {
-        Ok(pool) => pool,
+    let temp_path = invocation_archive_replay_temp_path(archive_path);
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let archive_pool = match open_historical_rollup_archive_pool_with_budget(
+        archive_path,
+        &temp_path,
+        started_at,
+        None,
+    )
+    .await
+    {
+        Ok(Some(pool)) => pool,
+        Ok(None) => return InvocationArchiveReadability::BudgetExhausted,
         Err(_) => {
-            remove_temp_sqlite_artifacts(&temp_path);
             return InvocationArchiveReadability::Rejected;
         }
     };
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         archive_pool.close().await;
+        std::mem::forget(temp_cleanup);
         return InvocationArchiveReadability::BudgetExhausted;
     }
     let readable = match load_sqlite_table_columns(&archive_pool, "codex_invocations").await {
@@ -1997,10 +2013,10 @@ async fn invocation_archive_file_is_readable_with_budget(
     };
     archive_pool.close().await;
     if !readable {
-        remove_temp_sqlite_artifacts(&temp_path);
         return InvocationArchiveReadability::Rejected;
     }
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        std::mem::forget(temp_cleanup);
         return InvocationArchiveReadability::BudgetExhausted;
     }
     InvocationArchiveReadability::Readable
@@ -2688,6 +2704,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         summary.scanned_batches += 1;
         let archive_path = PathBuf::from(&archive_file.file_path);
         if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2708,6 +2725,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
             })
         {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2721,6 +2739,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A completed archive with no immutable manifest identity is intentionally
             // unverified. Do not clear state or additively replay it until it becomes
             // verifiable or a caller can perform a proven full rebuild.
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2728,6 +2747,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A nullable or blank marker is not evidence that this archive's contributions are
             // represented by the current manifest. Keep it quarantined until an explicit,
             // proven rebuild can replace the unknown state.
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2841,6 +2861,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         };
 
         if !archive_path.exists() {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
@@ -2866,11 +2887,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             .await?;
             continue;
         }
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
+        let temp_path = invocation_archive_replay_temp_path(&archive_path);
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
@@ -3334,6 +3351,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         summary.scanned_batches += 1;
         let archive_path = PathBuf::from(&archive_file.file_path);
         if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -3354,6 +3372,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
             })
         {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -3364,6 +3383,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         )
         .await?
         {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -3405,6 +3425,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         .await?;
 
         if !archive_path.exists() {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
                 file_path = archive_file.file_path,
@@ -3418,11 +3439,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             .await?;
             continue;
         }
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
+        let temp_path = forward_proxy_archive_replay_temp_path(&archive_path);
         let temp_cleanup = TempSqliteCleanup(temp_path.clone());
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
@@ -3816,6 +3833,40 @@ mod hourly_rollup_budget_tests {
         path
     }
 
+    async fn write_minimal_invocation_archive(path: &Path) {
+        let source_path = PathBuf::from(format!("{}.source.sqlite", path.display()));
+        if let Some(parent) = source_path.parent() {
+            fs::create_dir_all(parent).expect("create minimal archive source directory");
+        }
+        fs::File::create(&source_path).expect("create minimal archive source");
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&source_path))
+            .await
+            .expect("open minimal archive source");
+        sqlx::query(
+            "CREATE TABLE codex_invocations (\
+                id INTEGER PRIMARY KEY,\
+                invoke_id TEXT NOT NULL,\
+                occurred_at TEXT NOT NULL,\
+                raw_response TEXT NOT NULL\
+            )",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("create minimal archive schema");
+        sqlx::query(
+            "INSERT INTO codex_invocations (id, invoke_id, occurred_at, raw_response) \
+             VALUES (1, 'stable-temp', '2026-08-01 00:00:00', '{}')",
+        )
+        .execute(&archive_pool)
+        .await
+        .expect("insert minimal archive row");
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&source_path, path).expect("compress minimal archive");
+        let _ = fs::remove_file(source_path);
+    }
+
     #[test]
     fn runtime_startup_bootstrap_leaves_active_coverage_to_the_dedicated_task() {
         assert_eq!(
@@ -3947,6 +3998,69 @@ mod hourly_rollup_budget_tests {
             written < payload.len(),
             "expired elapsed budget should stop before the whole sqlite copy completes"
         );
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn invocation_archive_validation_cleans_stable_temp_db_after_success() {
+        let temp_dir = budgeted_inflate_test_dir("invocation-archive-validation-cleanup");
+        let archive_path = temp_dir.join("archive.sqlite.gz");
+        write_minimal_invocation_archive(&archive_path).await;
+        let temp_path = invocation_archive_replay_temp_path(&archive_path);
+        remove_temp_sqlite_artifacts(&temp_path);
+
+        assert_eq!(
+            invocation_archive_file_is_readable_with_budget(&archive_path, Instant::now(), None)
+                .await,
+            InvocationArchiveReadability::Readable
+        );
+        assert!(!temp_path.exists());
+        assert!(!temp_sqlite_source_meta_path(&temp_path).exists());
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn historical_rollup_replay_paths_are_stable_and_source_bound() {
+        let temp_dir = budgeted_inflate_test_dir("historical-rollup-stable-temp");
+        let archive_path = temp_dir.join("archive.sqlite.gz");
+        write_minimal_invocation_archive(&archive_path).await;
+
+        let invocation_temp_path = invocation_archive_replay_temp_path(&archive_path);
+        let forward_proxy_temp_path = forward_proxy_archive_replay_temp_path(&archive_path);
+        assert_ne!(invocation_temp_path, forward_proxy_temp_path);
+        for temp_path in [&invocation_temp_path, &forward_proxy_temp_path] {
+            remove_temp_sqlite_artifacts(temp_path);
+            let archive_pool = open_historical_rollup_archive_pool_with_budget(
+                &archive_path,
+                temp_path,
+                Instant::now(),
+                None,
+            )
+            .await
+            .expect("open stable archive temp db")
+            .expect("unbounded stable archive open should start replay");
+            archive_pool.close().await;
+            let source_signature = load_historical_rollup_temp_source_signature(temp_path)
+                .expect("persist source signature for stable archive temp db");
+
+            let archive_pool = open_historical_rollup_archive_pool_with_budget(
+                &archive_path,
+                temp_path,
+                Instant::now(),
+                Some(Duration::from_secs(1)),
+            )
+            .await
+            .expect("reuse stable archive temp db")
+            .expect("budget should allow stable archive reuse");
+            archive_pool.close().await;
+            assert_eq!(
+                load_historical_rollup_temp_source_signature(temp_path),
+                Some(source_signature)
+            );
+            remove_temp_sqlite_artifacts(temp_path);
+        }
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

@@ -4391,33 +4391,61 @@ async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
 
 #[tokio::test]
 async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page() {
-    let (pool, _config, temp_dir) =
+    let (pool, config, temp_dir) =
         retention_memory_test_pool_and_config("breakdown-repair-large-overlap-closure").await;
-    let source_archive_path = temp_dir.join("large-overlap-source.sqlite.gz");
-    write_valid_invocation_archive(&source_archive_path, "large-overlap-source").await;
-    let archive_sha = sha256_hex_file(&source_archive_path).expect("hash overlap source archive");
-
-    for id in 1..=65_i64 {
-        let archive_path = temp_dir.join(format!("large-overlap-{id}.sqlite.gz"));
-        fs::copy(&source_archive_path, &archive_path).expect("copy overlap archive fixture");
+    let base = parse_shanghai_local_naive("2026-08-01 00:00:00").expect("valid overlap base");
+    let mut archive_paths = Vec::new();
+    for index in 0..=65_i64 {
+        let occurred_at = format_naive(base + ChronoDuration::hours(index));
+        let batch_name = format!("large-overlap-{index}");
+        let archive_path = seed_invocation_archive_batch_with_details(
+            &pool,
+            &config,
+            &batch_name,
+            &[SeedInvocationArchiveBatchRow {
+                id: 1,
+                invoke_id: &batch_name,
+                occurred_at: &occurred_at,
+                source: SOURCE_PROXY,
+                status: "success",
+                total_tokens: index + 1,
+                cost: 0.01,
+                ttfb_ms: Some(120.0),
+                payload: Some(r#"{"upstreamAccountId":17,"responseModel":"gpt-5"}"#),
+                detail_level: DETAIL_LEVEL_FULL,
+                error_message: None,
+                failure_kind: None,
+                failure_class: Some("none"),
+                is_actionable: Some(0),
+            }],
+        )
+        .await;
         let file_path = archive_path.to_string_lossy().into_owned();
+        let coverage_start_at = if index == 0 {
+            format_naive(base)
+        } else {
+            occurred_at.clone()
+        };
+        let coverage_end_at = if index == 0 {
+            format_naive(base + ChronoDuration::hours(66))
+        } else {
+            format_naive(base + ChronoDuration::hours(index + 1))
+        };
         sqlx::query(
             r#"
-            INSERT INTO archive_batches (
-                id, dataset, month_key, file_path, sha256, row_count, status,
-                summary_source_kind, coverage_start_at, coverage_end_at,
-                historical_rollups_materialized_at
-            )
-            VALUES (?1, 'codex_invocations', '2026-08', ?2, ?3, 1, 'completed',
-                    'unknown', '2026-08-01 08:00:00', '2026-08-01 08:30:00', datetime('now'))
+            UPDATE archive_batches
+            SET coverage_start_at = ?1,
+                coverage_end_at = ?2,
+                historical_rollups_materialized_at = datetime('now')
+            WHERE dataset = 'codex_invocations' AND file_path = ?3
             "#,
         )
-        .bind(id)
+        .bind(&coverage_start_at)
+        .bind(&coverage_end_at)
         .bind(&file_path)
-        .bind(&archive_sha)
         .execute(&pool)
         .await
-        .expect("seed large overlap archive batch");
+        .expect("set large overlap archive coverage");
         sqlx::query(
             r#"
             INSERT INTO hourly_rollup_archive_replay (
@@ -4431,23 +4459,40 @@ async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page()
         .execute(&pool)
         .await
         .expect("seed stale large overlap replay marker");
+        let bucket_start_epoch =
+            invocation_bucket_start_epoch(&occurred_at).expect("derive large overlap bucket start");
+        sqlx::query(
+            r#"
+            INSERT INTO upstream_account_usage_breakdown_hourly (
+                bucket_start_epoch, source, upstream_account_key, normalized_model,
+                request_count, success_count, failure_count
+            )
+            VALUES (?1, ?2, ?3, ?4, 1, 1, 0)
+            "#,
+        )
+        .bind(bucket_start_epoch)
+        .bind(SOURCE_PROXY)
+        .bind(format!("large-overlap-account-{index}"))
+        .bind("gpt-5")
+        .execute(&pool)
+        .await
+        .expect("seed large overlap usage breakdown row");
+        archive_paths.push(file_path);
     }
 
-    let mut attempts = 0;
-    loop {
-        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
-            .await
-            .expect("repair large overlap closure");
-        attempts += 1;
-        if !usage_breakdown_repair_is_pending(&pool)
-            .await
-            .expect("inspect large overlap closure repair state")
-        {
-            break;
-        }
-        assert!(attempts < 8, "large overlap closure did not converge");
-    }
+    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
+        .await
+        .expect("repair large overlap closure");
+    assert_eq!(touched, archive_paths.len());
 
+    let remaining_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly \
+         WHERE upstream_account_key LIKE 'large-overlap-account-%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count cleared large overlap usage rows");
+    assert_eq!(remaining_rows, 0);
     let remaining_materialized: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM archive_batches \
          WHERE dataset = 'codex_invocations' \
@@ -4465,6 +4510,16 @@ async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page()
     .await
     .expect("count deferred large overlap batches");
     assert_eq!(deferred_count, 0);
+    let replay_marker_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_replay \
+         WHERE dataset = 'codex_invocations' \
+           AND target = ?1",
+    )
+    .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
+    .fetch_one(&pool)
+    .await
+    .expect("count cleared large overlap replay markers");
+    assert_eq!(replay_marker_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -5228,6 +5283,12 @@ async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutof
         "a fresh file-backed cache entry must hide writes until its cutoff changes"
     );
 
+    config.invocation_max_days = initial_days.saturating_sub(2);
+    let refreshed = retention_test_refresh_recovery_counts(&pool, &config)
+        .await
+        .expect("refresh recovery backlog after cutoff change");
+    assert_eq!(refreshed.expired_backlog_count, Some(3));
+
     let (second_pool, second_config, second_temp_dir) =
         retention_test_pool_and_config("retention-recovery-backlog-cache-isolation").await;
     let isolated = retention_test_refresh_recovery_counts(&second_pool, &second_config)
@@ -5238,12 +5299,6 @@ async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutof
         Some(0),
         "a cache entry from another database must not be reused"
     );
-
-    config.invocation_max_days = initial_days.saturating_sub(2);
-    let refreshed = retention_test_refresh_recovery_counts(&pool, &config)
-        .await
-        .expect("refresh recovery backlog after cutoff change");
-    assert_eq!(refreshed.expired_backlog_count, Some(3));
 
     pool.close().await;
     second_pool.close().await;

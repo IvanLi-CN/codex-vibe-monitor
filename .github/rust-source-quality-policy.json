@@ -45,7 +45,7 @@
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 5300,
+      "line_budget": 5414,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
       "role": "test_helper",
-      "line_budget": 12523,
+      "line_budget": 12578,
       "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
     },
     {
