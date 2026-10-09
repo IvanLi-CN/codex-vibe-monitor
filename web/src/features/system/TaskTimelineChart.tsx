@@ -1066,30 +1066,24 @@ export function TaskTimelineChart({
       )
       .map(({ live: _live, ...item }) => item);
   }, [deferrals, modelWindowStart, runtimeFresh, staticRuntimeBoundary]);
-  const openDeferrals = useMemo(
-    () =>
-      deferrals.filter(
-        (segment) => segment.status === "waiting" && !segment.finishedAt && runtimeFresh,
-      ),
-    [deferrals, runtimeFresh],
-  );
-  const livePositionedDeferrals = useMemo<PositionedDeferral[]>(
-    () =>
-      openDeferrals
-        .map((segment) => {
-          const order = deferrals.indexOf(segment);
-          const startMs = timestamp(segment.startedAt, nowMs);
-          return {
+  const livePositionedDeferrals = useMemo<PositionedDeferral[]>(() => {
+    if (!runtimeFresh) return [];
+    return deferrals
+      .flatMap((segment, order) => {
+        if (segment.status !== "waiting" || segment.finishedAt) return [];
+        const startMs = timestamp(segment.startedAt, nowMs);
+        return [
+          {
             segment,
             startMs: Math.max(windowStart, startMs),
             endMs: nowMs,
             order,
-          };
-        })
-        .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs)
-        .sort((left, right) => left.startMs - right.startMs || left.order - right.order),
-    [deferrals, nowMs, openDeferrals, windowStart],
-  );
+          },
+        ];
+      })
+      .filter((item) => item.endMs >= windowStart && item.startMs <= nowMs)
+      .sort((left, right) => left.startMs - right.startMs || left.order - right.order);
+  }, [deferrals, nowMs, runtimeFresh, windowStart]);
   const staticDeferralIndex = useMemo(
     () => buildDeferralIndex(staticPositionedDeferrals),
     [staticPositionedDeferrals],

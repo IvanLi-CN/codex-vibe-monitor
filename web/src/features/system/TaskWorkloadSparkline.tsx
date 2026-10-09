@@ -364,6 +364,7 @@ export function TaskWorkloadSparkline({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const detailsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const detailsPanelRef = useRef<HTMLDivElement | null>(null);
   const [detailsPosition, setDetailsPosition] = useState<{
     top: number;
     left: number;
@@ -636,8 +637,16 @@ export function TaskWorkloadSparkline({
   const detailsPanel =
     detailsOpen && !backgroundMode ? (
       <div
+        ref={detailsPanelRef}
         role="dialog"
+        tabIndex={-1}
         aria-label={`${task.title}运行计量详情`}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          setDetailsOpen(false);
+          detailsButtonRef.current?.focus();
+        }}
         className="relative z-20 mt-1 grid gap-x-3 gap-y-1 border-t border-base-300/50 pt-2 text-[11px] text-base-content/75 sm:grid-cols-2"
       >
         {detailsFields}
@@ -673,6 +682,10 @@ export function TaskWorkloadSparkline({
     };
   }, [backgroundMode, detailsOpen]);
   useEffect(() => {
+    if (!detailsOpen) return;
+    detailsPanelRef.current?.focus({ preventScroll: true });
+  }, [backgroundMode, detailsOpen, detailsPosition]);
+  useEffect(() => {
     if (!backgroundMode || !detailsOpen || typeof MutationObserver === "undefined") return;
     const button = detailsButtonRef.current;
     const row = button?.closest("[data-task-catalog-row]");
@@ -695,8 +708,16 @@ export function TaskWorkloadSparkline({
     backgroundMode && detailsOpen && detailsPosition && typeof document !== "undefined"
       ? createPortal(
           <div
+            ref={detailsPanelRef}
             role="dialog"
+            tabIndex={-1}
             aria-label={`${task.title}运行计量详情`}
+            onKeyDown={(event) => {
+              if (event.key !== "Escape") return;
+              event.preventDefault();
+              setDetailsOpen(false);
+              detailsButtonRef.current?.focus();
+            }}
             className="pointer-events-auto fixed z-[70] grid max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-1.5rem)] gap-x-3 gap-y-1 overflow-auto rounded-sm bg-base-100/95 p-2 text-[11px] text-base-content/75 shadow-lg sm:grid-cols-2"
             style={detailsPosition}
           >

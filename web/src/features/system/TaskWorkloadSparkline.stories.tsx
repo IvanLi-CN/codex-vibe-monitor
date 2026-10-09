@@ -129,15 +129,16 @@ export const BackgroundRow: Story = {
     const title = canvas.getByRole("heading", { name: task.title });
     await expect(title).toBeVisible();
     await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
-    await expect(
-      within(canvasElement.ownerDocument.body).getByRole("dialog", { name: /运行计量详情/ }),
-    ).toHaveTextContent("触发时间：");
+    const body = within(canvasElement.ownerDocument.body);
+    const dialog = body.getByRole("dialog", { name: /运行计量详情/ });
+    await expect(dialog).toHaveTextContent("触发时间：");
+    await expect(dialog).toHaveFocus();
+    await userEvent.keyboard("{Escape}");
+    await expect(body.queryByRole("dialog", { name: /运行计量详情/ })).toBeNull();
+    await expect(canvas.getByRole("button", { name: /运行计量详情/ })).toHaveFocus();
+    await userEvent.click(canvas.getByRole("button", { name: /运行计量详情/ }));
     canvasElement.querySelector<HTMLElement>("[data-task-catalog-row]")?.setAttribute("hidden", "");
-    await waitFor(() =>
-      expect(
-        within(canvasElement.ownerDocument.body).queryByRole("dialog", { name: /运行计量详情/ }),
-      ).toBeNull(),
-    );
+    await waitFor(() => expect(body.queryByRole("dialog", { name: /运行计量详情/ })).toBeNull());
   },
 };
 
