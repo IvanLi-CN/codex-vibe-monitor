@@ -7488,6 +7488,99 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenConversation).not.toHaveBeenCalled();
   });
 
+  it("does not select ambiguous prompt cache keys and clears replaced identities", async () => {
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-ambiguous-selection",
+          [
+            createPreview({
+              id: 85,
+              invokeId: "invoke-ambiguous-selection-a",
+              occurredAt: "2026-04-04T10:05:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-ambiguous-a" },
+        ),
+        createConversation(
+          "pck-ambiguous-selection",
+          [
+            createPreview({
+              id: 86,
+              invokeId: "invoke-ambiguous-selection-b",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-ambiguous-b" },
+        ),
+      ]),
+    );
+
+    const user = userEvent.setup();
+    await user.click(
+      host?.querySelector(
+        '[data-testid="dashboard-working-conversations-selection-mode-button"]',
+      ) as HTMLElement,
+    );
+    await user.click(
+      host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+    );
+
+    expect(
+      document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]'),
+    ).toBeNull();
+
+    const uniqueResponse = createResponse([
+      createConversation(
+        "pck-replaced-selection",
+        [
+          createPreview({
+            id: 87,
+            invokeId: "invoke-replaced-selection",
+            occurredAt: "2026-04-04T10:05:00Z",
+            status: "running",
+          }),
+        ],
+        { conversationId: "conv-replaced-a" },
+      ),
+    ]);
+    rerenderSection(uniqueResponse);
+    await user.click(
+      host?.querySelector('[data-testid="dashboard-working-conversation-card"]') as HTMLElement,
+    );
+    await waitFor(() =>
+      expect(
+        document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]')
+          ?.textContent,
+      ).toContain("已选 1 个对话"),
+    );
+
+    rerenderSection(
+      createResponse([
+        createConversation(
+          "pck-replaced-selection",
+          [
+            createPreview({
+              id: 88,
+              invokeId: "invoke-replaced-selection-new",
+              occurredAt: "2026-04-04T10:06:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "conv-replaced-b" },
+        ),
+      ]),
+    );
+
+    await waitFor(() =>
+      expect(
+        document.body.querySelector('[data-testid="dashboard-working-conversations-bulk-panel"]'),
+      ).toBeNull(),
+    );
+  });
+
   it("restores the most recent valid route-bind target and prunes stale recent entries", async () => {
     const originalFetch = globalThis.fetch;
     const fetchMock = createBulkConversationFetchMock();

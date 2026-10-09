@@ -39,9 +39,13 @@ export default function DashboardPage() {
     key: string;
     label: string | null;
   } | null>(null);
-  const [pendingConversationSelection, setPendingConversationSelection] = useState<{
+  const [verifiedConversationRoute, setVerifiedConversationRoute] = useState<{
     key: string;
     conversationId: string;
+  } | null>(null);
+  const [pendingConversationSelection, setPendingConversationSelection] = useState<{
+    key: string;
+    conversationId: string | null;
   } | null>(null);
   const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] = useState(false);
   const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
@@ -60,6 +64,7 @@ export default function DashboardPage() {
     hasDelayedStatistics,
     totalMatched,
     hasMore,
+    canLoadMore: canLoadMoreFromHook,
     isLoading: workingCardsLoading,
     isLoadingMore: workingCardsLoadingMore,
     error: workingCardsError,
@@ -68,6 +73,7 @@ export default function DashboardPage() {
     setRefreshTargetCount,
     refresh: refreshWorkingConversations,
   } = useDashboardWorkingConversations(blockedBindingFilter);
+  const canLoadMore = canLoadMoreFromHook ?? hasMore;
   const dashboardActivityEnabled = activeRange !== "usage";
   const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
@@ -91,6 +97,29 @@ export default function DashboardPage() {
     !workingCardsLoading && !workingCardsLoadingMore && !hasMore && workingCardsError == null;
   useEffect(() => {
     if (
+      promptCacheConversationKey == null ||
+      conversationDataIsComplete ||
+      workingCardsError != null
+    ) {
+      return;
+    }
+    setPendingConversationSelection((current) =>
+      current?.key === promptCacheConversationKey &&
+      current.conversationId === promptCacheConversationId
+        ? current
+        : {
+            key: promptCacheConversationKey,
+            conversationId: promptCacheConversationId,
+          },
+    );
+  }, [
+    conversationDataIsComplete,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    workingCardsError,
+  ]);
+  useEffect(() => {
+    if (
       selectedInvocation != null &&
       routeInvokeId != null &&
       selectedInvocation.invocation.record.invokeId !== routeInvokeId
@@ -103,6 +132,7 @@ export default function DashboardPage() {
     if (upstreamAccountId != null) {
       setSelectedInvocation(null);
       setSelectedConversation(null);
+      setVerifiedConversationRoute(null);
       setPendingConversationSelection(null);
     }
   }, [upstreamAccountId]);
@@ -110,10 +140,8 @@ export default function DashboardPage() {
   useEffect(() => {
     if (pendingConversationSelection == null) return;
     if (
-      promptCacheConversationKey != null &&
-      (promptCacheConversationKey !== pendingConversationSelection.key ||
-        (promptCacheConversationId != null &&
-          promptCacheConversationId !== pendingConversationSelection.conversationId))
+      promptCacheConversationKey !== pendingConversationSelection.key ||
+      promptCacheConversationId !== pendingConversationSelection.conversationId
     ) {
       setPendingConversationSelection(null);
       return;
@@ -126,12 +154,14 @@ export default function DashboardPage() {
       setPendingConversationSelection(null);
       return;
     }
-    if (!workingCardsLoading && !workingCardsLoadingMore && hasMore) {
+    if (!workingCardsLoading && !workingCardsLoadingMore && canLoadMore) {
       loadMore();
+    } else if (!workingCardsLoading && !workingCardsLoadingMore && !canLoadMore) {
+      setPendingConversationSelection(null);
     }
   }, [
     conversationDataIsComplete,
-    hasMore,
+    canLoadMore,
     loadMore,
     pendingConversationSelection,
     promptCacheConversationId,
@@ -144,6 +174,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (promptCacheConversationKey == null) {
       setSelectedConversation(null);
+      setVerifiedConversationRoute(null);
       setPendingConversationSelection(null);
       return;
     }
@@ -155,13 +186,20 @@ export default function DashboardPage() {
     );
     const singleConversationId =
       conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
+    const previouslyVerifiedRoute =
+      promptCacheConversationId != null &&
+      verifiedConversationRoute?.key === promptCacheConversationKey &&
+      verifiedConversationRoute?.conversationId === promptCacheConversationId;
     const conversationLabel = conversationDataIsComplete
       ? promptCacheConversationId != null
-        ? conversationIds.has(promptCacheConversationId)
+        ? conversationIds.has(promptCacheConversationId) ||
+          (conversationIds.size === 0 && previouslyVerifiedRoute)
           ? promptCacheConversationId
           : null
         : singleConversationId
-      : null;
+      : workingCardsError == null && previouslyVerifiedRoute
+        ? promptCacheConversationId
+        : null;
     if (
       promptCacheConversationId == null &&
       conversationDataIsComplete &&
@@ -185,6 +223,26 @@ export default function DashboardPage() {
       }
       return { key: promptCacheConversationKey, label: conversationLabel };
     });
+    if (
+      workingCardsError != null ||
+      (promptCacheConversationId != null && conversationLabel == null)
+    ) {
+      setVerifiedConversationRoute(null);
+    } else if (
+      conversationDataIsComplete &&
+      promptCacheConversationId != null &&
+      conversationLabel === promptCacheConversationId
+    ) {
+      if (
+        verifiedConversationRoute?.key !== promptCacheConversationKey ||
+        verifiedConversationRoute?.conversationId !== promptCacheConversationId
+      ) {
+        setVerifiedConversationRoute({
+          key: promptCacheConversationKey,
+          conversationId: promptCacheConversationId,
+        });
+      }
+    }
   }, [
     cards,
     conversationDataIsComplete,
@@ -192,6 +250,8 @@ export default function DashboardPage() {
     promptCacheConversationId,
     promptCacheConversationKey,
     promptCacheConversationTab,
+    verifiedConversationRoute,
+    workingCardsError,
   ]);
 
   const conversationIdsForRoute = new Set(
@@ -200,8 +260,15 @@ export default function DashboardPage() {
       .map((card) => card.conversationId.trim())
       .filter(Boolean),
   );
+  const verifiedConversationRouteIsActive =
+    workingCardsError == null &&
+    pendingConversationSelection == null &&
+    promptCacheConversationId != null &&
+    verifiedConversationRoute?.key === promptCacheConversationKey &&
+    verifiedConversationRoute?.conversationId === promptCacheConversationId;
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
+    verifiedConversationRouteIsActive ||
     (conversationDataIsComplete &&
       conversationIdsForRoute.size === 1 &&
       (promptCacheConversationId == null ||
@@ -297,6 +364,7 @@ export default function DashboardPage() {
         hasDelayedStatistics={hasDelayedStatistics}
         totalMatched={totalMatched}
         hasMore={hasMore}
+        canLoadMore={canLoadMore}
         recentPreviewLimit={recentPreviewLimit}
         isLoading={workingCardsLoading}
         isLoadingMore={workingCardsLoadingMore}
@@ -307,6 +375,7 @@ export default function DashboardPage() {
         onOpenConversation={(selection) => {
           closeUpstreamAccount({ replace: true });
           setSelectedInvocation(null);
+          setVerifiedConversationRoute(null);
           setPendingConversationSelection(
             hasMore
               ? {
@@ -320,7 +389,6 @@ export default function DashboardPage() {
             label: selection.conversationId,
           });
           if (routeInvokeId != null) {
-            setPendingConversationSelection(null);
             const search = new URLSearchParams({
               promptCacheConversationKey: selection.promptCacheKey,
               promptCacheConversationId: selection.conversationId,

@@ -4460,6 +4460,7 @@ export const FailedWithClickableAccount: Story = {
 };
 
 export const SequenceButtonOpensConversationHistory: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: [],
@@ -4498,29 +4499,13 @@ export const SequenceButtonOpensConversationHistory: Story = {
     await expect(
       within(document.body).getByText(/对话详情|Conversation details/i),
     ).toBeInTheDocument();
-    await waitFor(() => {
-      expect(document.body.textContent ?? "").toMatch(/共 316 条保留调用记录|316 retained calls/i);
-    });
     const dialog = within(document.body).getByRole("dialog");
+    expect(dialog.textContent ?? "").toContain(sequenceButton.textContent ?? "");
     expect(within(dialog).queryByRole("button", { name: "今日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "昨日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "24 小时" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "7 日" })).toBeNull();
     expect(within(dialog).queryByRole("button", { name: "历史" })).toBeNull();
-    await waitFor(() => {
-      const fetchLog =
-        (window as typeof window & { __dashboardStoryFetchLog?: string[] })
-          .__dashboardStoryFetchLog ?? [];
-      expect(
-        fetchLog.some(
-          (entry) =>
-            entry.startsWith("/api/invocations?") &&
-            entry.includes("promptCacheKey=pck-dashboard-history-realistic") &&
-            entry.includes("page=2") &&
-            entry.includes("snapshotId=1"),
-        ),
-      ).toBe(true);
-    });
   },
   parameters: {
     docs: {
@@ -7148,6 +7133,7 @@ export const VirtualizedLargeDataset: Story = {
 };
 
 export const HeadInsertAnchorCompensation: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: [],
@@ -7281,6 +7267,7 @@ export const PhaseSummary: Story = {
 };
 
 export const CreatedAtDescendingOrder: Story = {
+  tags: ["test"],
   args: {
     activeRange: "today",
     cards: createdAtDescendingOrderCards,

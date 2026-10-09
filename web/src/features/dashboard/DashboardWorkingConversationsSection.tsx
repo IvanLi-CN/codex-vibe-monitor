@@ -154,11 +154,17 @@ export interface DashboardOpenUpstreamAccountOptions {
   tab?: "overview" | "routing" | "healthEvents";
 }
 
+interface DashboardConversationSelectionIdentity {
+  promptCacheKey: string;
+  conversationId: string;
+}
+
 interface DashboardWorkingConversationsSectionProps {
   activeRange: DashboardActivityRangeKey;
   cards: DashboardWorkingConversationCardModel[];
   totalMatched?: number;
   hasMore?: boolean;
+  canLoadMore?: boolean;
   hasDelayedStatistics?: boolean;
   recentPreviewLimit?: number;
   isLoading: boolean;
@@ -2914,6 +2920,7 @@ function chunkDashboardUpstreamAccountRows(
 const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAccountActivityCard({
   account,
   conversationIdByPromptCacheKey,
+  conversationIdentityDataIsComplete,
   routingStateVersion,
   locale,
   localeTag,
@@ -2928,6 +2935,7 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
 }: {
   account: UpstreamAccountActivityAccount;
   conversationIdByPromptCacheKey: ReadonlyMap<string, string | null>;
+  conversationIdentityDataIsComplete: boolean;
   routingStateVersion?: RoutingStateVersion | null;
   locale: "zh" | "en";
   localeTag: string;
@@ -3945,9 +3953,11 @@ const DashboardUpstreamAccountActivityCard = memo(function DashboardUpstreamAcco
                   key={`${invocation.record.invokeId}:${invocation.record.occurredAt}:${invocation.record.id}`}
                   invocation={invocation}
                   conversationId={
-                    conversationIdByPromptCacheKey.get(
-                      invocation.preview.promptCacheKey?.trim() ?? "",
-                    ) ?? null
+                    conversationIdentityDataIsComplete
+                      ? (conversationIdByPromptCacheKey.get(
+                          invocation.preview.promptCacheKey?.trim() ?? "",
+                        ) ?? null)
+                      : null
                   }
                   locale={locale}
                   detailsLayout={recentDetailsLayout}
@@ -4110,6 +4120,7 @@ export function DashboardWorkingConversationsSection({
   cards,
   totalMatched,
   hasMore = false,
+  canLoadMore = hasMore,
   hasDelayedStatistics = false,
   isLoading,
   isLoadingMore = false,
@@ -4165,7 +4176,9 @@ export function DashboardWorkingConversationsSection({
   const [isUpstreamAccountRefreshChipVisible, setIsUpstreamAccountRefreshChipVisible] =
     useState(false);
   const [selectionModeEnabled, setSelectionModeEnabled] = useState(false);
-  const [selectedPromptCacheKeys, setSelectedPromptCacheKeys] = useState<string[]>([]);
+  const [selectedConversationIdentities, setSelectedConversationIdentities] = useState<
+    DashboardConversationSelectionIdentity[]
+  >([]);
   const [routeBindDialogOpen, setRouteBindDialogOpen] = useState(false);
   const [routeBindSelectionRestorePending, setRouteBindSelectionRestorePending] = useState(false);
   const [clearBindingDialogOpen, setClearBindingDialogOpen] = useState(false);
@@ -4237,13 +4250,13 @@ export function DashboardWorkingConversationsSection({
       }),
     [localeTag],
   );
+  const selectedPromptCacheKeys = useMemo(
+    () => selectedConversationIdentities.map(({ promptCacheKey }) => promptCacheKey),
+    [selectedConversationIdentities],
+  );
   const selectedPromptCacheKeySet = useMemo(
     () => new Set(selectedPromptCacheKeys),
     [selectedPromptCacheKeys],
-  );
-  const currentPromptCacheKeySet = useMemo(
-    () => new Set(cards.map((card) => card.promptCacheKey)),
-    [cards],
   );
   const conversationIdByPromptCacheKey = useMemo(() => {
     const ids = new Map<string, string | null>();
@@ -4258,7 +4271,9 @@ export function DashboardWorkingConversationsSection({
     }
     return ids;
   }, [cards]);
-  const selectedConversationCount = selectedPromptCacheKeys.length;
+  const conversationIdentityDataIsComplete =
+    !hasMore && !isLoading && !isLoadingMore && error == null;
+  const selectedConversationCount = selectedConversationIdentities.length;
   const closeConversationBulkDialogs = useCallback(() => {
     setRouteBindDialogOpen(false);
     setClearBindingDialogOpen(false);
@@ -4267,7 +4282,7 @@ export function DashboardWorkingConversationsSection({
   }, []);
   const resetConversationSelectionState = useCallback(() => {
     setSelectionModeEnabled(false);
-    setSelectedPromptCacheKeys([]);
+    setSelectedConversationIdentities([]);
     setBulkFeedback(null);
     closeConversationBulkDialogs();
   }, [closeConversationBulkDialogs]);
@@ -4401,15 +4416,18 @@ export function DashboardWorkingConversationsSection({
   }, [activeView, resetConversationSelectionState]);
 
   useEffect(() => {
-    setSelectedPromptCacheKeys((current) =>
-      current.filter((promptCacheKey) => currentPromptCacheKeySet.has(promptCacheKey)),
+    setSelectedConversationIdentities((current) =>
+      current.filter(
+        ({ promptCacheKey, conversationId }) =>
+          conversationIdByPromptCacheKey.get(promptCacheKey) === conversationId,
+      ),
     );
-  }, [currentPromptCacheKeySet]);
+  }, [conversationIdByPromptCacheKey]);
 
   useEffect(() => {
-    if (selectedPromptCacheKeys.length > 0) return;
+    if (selectedConversationIdentities.length > 0) return;
     closeConversationBulkDialogs();
-  }, [closeConversationBulkDialogs, selectedPromptCacheKeys.length]);
+  }, [closeConversationBulkDialogs, selectedConversationIdentities.length]);
 
   const loadConversationBindingTargets = useCallback(async () => {
     setBindingTargets((current) => ({
@@ -4551,6 +4569,17 @@ export function DashboardWorkingConversationsSection({
             fastModeRewriteMode: PromptCacheConversationRewriteMode;
           },
     ) => {
+      const validSelectionIdentities = selectedConversationIdentities.filter(
+        ({ promptCacheKey, conversationId }) =>
+          conversationIdByPromptCacheKey.get(promptCacheKey) === conversationId,
+      );
+      if (validSelectionIdentities.length !== selectedConversationIdentities.length) {
+        setSelectedConversationIdentities(validSelectionIdentities);
+        return;
+      }
+      const selectedPromptCacheKeys = validSelectionIdentities.map(
+        ({ promptCacheKey }) => promptCacheKey,
+      );
       if (selectedPromptCacheKeys.length === 0) return;
       setBulkActionBusy(payload.action);
       setBulkFeedback(null);
@@ -4564,8 +4593,8 @@ export function DashboardWorkingConversationsSection({
         );
         const failedItems = response.items.filter((item) => !item.ok);
         if (succeededKeys.size > 0) {
-          setSelectedPromptCacheKeys((current) =>
-            current.filter((promptCacheKey) => !succeededKeys.has(promptCacheKey)),
+          setSelectedConversationIdentities((current) =>
+            current.filter(({ promptCacheKey }) => !succeededKeys.has(promptCacheKey)),
           );
           onConversationsChanged?.();
           if (payload.action === "bind" && payload.bindingKind !== "none") {
@@ -4622,7 +4651,13 @@ export function DashboardWorkingConversationsSection({
         setBulkActionBusy(null);
       }
     },
-    [closeConversationBulkDialogs, locale, onConversationsChanged, selectedPromptCacheKeys],
+    [
+      closeConversationBulkDialogs,
+      conversationIdByPromptCacheKey,
+      locale,
+      onConversationsChanged,
+      selectedConversationIdentities,
+    ],
   );
   const showWorkingConversationsOfflineState =
     activeView === "conversations" && isBrowserOffline && cards.length === 0;
@@ -4911,7 +4946,7 @@ export function DashboardWorkingConversationsSection({
   useEffect(() => {
     if (
       activeView !== "conversations" ||
-      !hasMore ||
+      !canLoadMore ||
       previousRowsLengthRef.current !== rows.length ||
       (previousLoadingMoreRef.current && !isLoadingMore)
     ) {
@@ -4919,11 +4954,11 @@ export function DashboardWorkingConversationsSection({
     }
     previousRowsLengthRef.current = rows.length;
     previousLoadingMoreRef.current = isLoadingMore;
-  }, [activeView, hasMore, isLoadingMore, rows.length]);
+  }, [activeView, canLoadMore, isLoadingMore, rows.length]);
 
   useEffect(() => {
     const container = gridElement;
-    if (activeView !== "conversations" || !container || !hasMore || !onLoadMore) return;
+    if (activeView !== "conversations" || !container || !canLoadMore || !onLoadMore) return;
     const maybeLoadMore = (trigger: "mount" | "scroll") => {
       if (isLoadingMore || loadMoreRequestPendingRef.current) return;
       if (typeof window === "undefined") return;
@@ -4955,7 +4990,7 @@ export function DashboardWorkingConversationsSection({
   }, [
     activeView,
     gridElement,
-    hasMore,
+    canLoadMore,
     hasVirtualizedRowsAbove,
     isLoadingMore,
     onLoadMore,
@@ -5500,7 +5535,7 @@ export function DashboardWorkingConversationsSection({
                   variant="ghost"
                   disabled={bulkActionBusy != null}
                   data-testid="dashboard-working-conversations-clear-selection-button"
-                  onClick={() => setSelectedPromptCacheKeys([])}
+                  onClick={() => setSelectedConversationIdentities([])}
                 >
                   {locale === "zh" ? "取消选择" : "Clear selection"}
                 </Button>
@@ -5514,42 +5549,51 @@ export function DashboardWorkingConversationsSection({
     bulkActionBusy != null ||
     bindingTargets.loading ||
     (routeBindTargetKind === "group" ? !routeBindGroupName : !routeBindAccountId);
-  const toggleConversationSelection = useCallback((promptCacheKey: string) => {
-    setSelectedPromptCacheKeys((current) =>
-      current.includes(promptCacheKey)
-        ? current.filter((candidate) => candidate !== promptCacheKey)
-        : [...current, promptCacheKey],
-    );
-  }, []);
+  const toggleConversationSelection = useCallback(
+    (promptCacheKey: string, conversationId: string) => {
+      if (conversationIdByPromptCacheKey.get(promptCacheKey) !== conversationId) return;
+      setSelectedConversationIdentities((current) => {
+        const selected = current.some(
+          (candidate) =>
+            candidate.promptCacheKey === promptCacheKey &&
+            candidate.conversationId === conversationId,
+        );
+        return selected
+          ? current.filter((candidate) => candidate.promptCacheKey !== promptCacheKey)
+          : [...current, { promptCacheKey, conversationId }];
+      });
+    },
+    [conversationIdByPromptCacheKey],
+  );
   const toggleModifierConversationSelection = useCallback(
-    (promptCacheKey: string) => {
+    (promptCacheKey: string, conversationId: string) => {
       setBulkFeedback(null);
-      toggleConversationSelection(promptCacheKey);
+      toggleConversationSelection(promptCacheKey, conversationId);
     },
     [toggleConversationSelection],
   );
   const handleConversationCardClickCapture = useCallback(
-    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string) => {
+    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string, conversationId: string) => {
       if (!hasMultiSelectModifier(event)) return;
       event.preventDefault();
       event.stopPropagation();
-      toggleModifierConversationSelection(promptCacheKey);
+      toggleModifierConversationSelection(promptCacheKey, conversationId);
     },
     [toggleModifierConversationSelection],
   );
   const handleSelectionCardClick = useCallback(
-    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string) => {
+    (event: ReactMouseEvent<HTMLElement>, promptCacheKey: string, conversationId: string) => {
       if (hasMultiSelectModifier(event)) return;
-      toggleConversationSelection(promptCacheKey);
+      toggleConversationSelection(promptCacheKey, conversationId);
     },
     [toggleConversationSelection],
   );
   const handleSelectionCardKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLElement>, promptCacheKey: string) => {
+    (event: ReactKeyboardEvent<HTMLElement>, promptCacheKey: string, conversationId: string) => {
       if (event.target !== event.currentTarget) return;
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
-      toggleConversationSelection(promptCacheKey);
+      toggleConversationSelection(promptCacheKey, conversationId);
     },
     [toggleConversationSelection],
   );
@@ -5561,13 +5605,28 @@ export function DashboardWorkingConversationsSection({
       if (cards.length === 0) return;
       setBulkFeedback(null);
       setSelectionModeEnabled(true);
-      setSelectedPromptCacheKeys(Array.from(new Set(cards.map((card) => card.promptCacheKey))));
+      const nextSelection: DashboardConversationSelectionIdentity[] = [];
+      const seenPromptCacheKeys = new Set<string>();
+      for (const card of cards) {
+        if (
+          seenPromptCacheKeys.has(card.promptCacheKey) ||
+          conversationIdByPromptCacheKey.get(card.promptCacheKey) !== card.conversationId
+        ) {
+          continue;
+        }
+        seenPromptCacheKeys.add(card.promptCacheKey);
+        nextSelection.push({
+          promptCacheKey: card.promptCacheKey,
+          conversationId: card.conversationId,
+        });
+      }
+      setSelectedConversationIdentities(nextSelection);
       if (options?.openClearDialog) {
         setClearBindingDialogAction(options.clearDialogAction ?? "bind");
         setClearBindingDialogOpen(true);
       }
     },
-    [cards],
+    [cards, conversationIdByPromptCacheKey],
   );
 
   if (error && cards.length === 0) {
@@ -5799,6 +5858,7 @@ export function DashboardWorkingConversationsSection({
                     key={account.accountKey ?? account.upstreamAccountId ?? "unassigned"}
                     account={account}
                     conversationIdByPromptCacheKey={conversationIdByPromptCacheKey}
+                    conversationIdentityDataIsComplete={conversationIdentityDataIsComplete}
                     routingStateVersion={upstreamAccountActivity?.routingStateVersion}
                     locale={locale}
                     localeTag={localeTag}
@@ -5905,12 +5965,16 @@ export function DashboardWorkingConversationsSection({
                           JSON.stringify([card.promptCacheKey, card.conversationId, 0]);
                         const cardAnchorKey =
                           cardKey?.anchorKey ?? JSON.stringify([card.promptCacheKey]);
+                        const canSelectConversation =
+                          conversationIdByPromptCacheKey.get(card.promptCacheKey) ===
+                          card.conversationId;
                         const canOpenConversation =
                           onOpenConversation != null &&
                           !selectionModeEnabled &&
-                          conversationIdByPromptCacheKey.get(card.promptCacheKey) ===
-                            card.conversationId;
-                        const isCardSelected = selectedPromptCacheKeySet.has(card.promptCacheKey);
+                          canSelectConversation;
+                        const isCardSelected =
+                          canSelectConversation &&
+                          selectedPromptCacheKeySet.has(card.promptCacheKey);
                         const displayConversationId = card.conversationId;
                         const currentStatusLabel = currentStatusMeta.labelKey
                           ? t(currentStatusMeta.labelKey)
@@ -5941,11 +6005,17 @@ export function DashboardWorkingConversationsSection({
                             data-conversation-id={displayConversationId}
                             data-selection-mode={selectionModeEnabled ? "true" : "false"}
                             data-selected={isCardSelected ? "true" : "false"}
-                            role={selectionModeEnabled ? "button" : undefined}
-                            tabIndex={selectionModeEnabled ? 0 : undefined}
-                            aria-pressed={selectionModeEnabled ? isCardSelected : undefined}
+                            role={
+                              selectionModeEnabled && canSelectConversation ? "button" : undefined
+                            }
+                            tabIndex={selectionModeEnabled && canSelectConversation ? 0 : undefined}
+                            aria-pressed={
+                              selectionModeEnabled && canSelectConversation
+                                ? isCardSelected
+                                : undefined
+                            }
                             aria-label={
-                              selectionModeEnabled
+                              selectionModeEnabled && canSelectConversation
                                 ? `${selectionSummaryLabel} · ${displayConversationId}`
                                 : undefined
                             }
@@ -5953,21 +6023,39 @@ export function DashboardWorkingConversationsSection({
                               CARD_CLASS_NAME,
                               currentStatusMeta.cardToneClassName,
                               selectionModeEnabled &&
+                                canSelectConversation &&
                                 "cursor-pointer ring-1 ring-white/8 hover:ring-info/30 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-info",
                               isCardSelected &&
                                 "ring-2 ring-info/55 bg-info/10 shadow-[inset_0_1px_0_rgba(255,255,255,0.07),0_22px_34px_rgba(2,6,23,0.24)]",
                             )}
-                            onClickCapture={(event) =>
-                              handleConversationCardClickCapture(event, card.promptCacheKey)
+                            onClickCapture={
+                              canSelectConversation
+                                ? (event) =>
+                                    handleConversationCardClickCapture(
+                                      event,
+                                      card.promptCacheKey,
+                                      card.conversationId,
+                                    )
+                                : undefined
                             }
                             onClick={
-                              selectionModeEnabled
-                                ? (event) => handleSelectionCardClick(event, card.promptCacheKey)
+                              selectionModeEnabled && canSelectConversation
+                                ? (event) =>
+                                    handleSelectionCardClick(
+                                      event,
+                                      card.promptCacheKey,
+                                      card.conversationId,
+                                    )
                                 : undefined
                             }
                             onKeyDown={
-                              selectionModeEnabled
-                                ? (event) => handleSelectionCardKeyDown(event, card.promptCacheKey)
+                              selectionModeEnabled && canSelectConversation
+                                ? (event) =>
+                                    handleSelectionCardKeyDown(
+                                      event,
+                                      card.promptCacheKey,
+                                      card.conversationId,
+                                    )
                                 : undefined
                             }
                           >
