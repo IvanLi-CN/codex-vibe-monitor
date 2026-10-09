@@ -129,7 +129,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(cards[0]?.hasEarlierPlaceholder).toBe(true);
   });
 
-  it("drops conversations without a persisted conversation id", () => {
+  it("keeps conversations without a persisted conversation id without inventing one", () => {
     const response = createResponse([
       createConversation(
         "pck-missing-id",
@@ -145,7 +145,7 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
       ),
     ]);
 
-    expect(mapPromptCacheConversationsToDashboardCards(response)).toEqual([]);
+    expect(mapPromptCacheConversationsToDashboardCards(response)[0]?.conversationId).toBeNull();
   });
 
   it("preserves manual binding summaries for dashboard badge rendering", () => {

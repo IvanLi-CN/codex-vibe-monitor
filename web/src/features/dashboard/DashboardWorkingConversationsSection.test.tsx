@@ -3105,6 +3105,32 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(card.getAttribute("data-conversation-id")).toBe(cards[0]?.conversationId);
   });
 
+  it("keeps a card without a persisted id visible without exposing conversation actions", () => {
+    renderSection(
+      createResponse([
+        createConversation(
+          "pck-missing-conversation-id",
+          [
+            createPreview({
+              id: 1,
+              invokeId: "invoke-missing-conversation-id",
+              occurredAt: "2026-04-04T10:04:00Z",
+              status: "running",
+            }),
+          ],
+          { conversationId: "   " },
+        ),
+      ]),
+    );
+
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+    expect(card).toBeInstanceOf(HTMLElement);
+    expect(card?.getAttribute("data-conversation-id")).toBeNull();
+    expect(
+      card?.querySelector('[data-testid="dashboard-working-conversation-conversation-button"]'),
+    ).toBeNull();
+  });
+
   it("keeps rendered cards visible while surfacing a non-blocking error banner", () => {
     renderSection(
       createResponse([

@@ -1785,6 +1785,20 @@ function parallelWork() {
   return { current, minute7d: current, hour30d: current, dayAll: current };
 }
 
+const DEMO_CONVERSATION_IDS: Record<string, string> = {
+  "demo-conversation-a": "D00001",
+  "demo-research-batch": "D00002",
+  "demo-image-workflow": "D00003",
+  "demo-indexing": "D00004",
+  "demo-conversation-b": "D00005",
+  "demo-conversation-c": "D00006",
+  "demo-conversation-d": "D00007",
+  "demo-edge-monitor": "D00008",
+  "demo-batch-west": "D00009",
+  "demo-mobile-e2e": "D00010",
+  "demo-recovery": "D00011",
+};
+
 function promptCacheConversations() {
   const nowMs = Date.parse(demoNow());
   if (demoModel.snapshot.scene === "empty") {
@@ -1831,7 +1845,7 @@ function promptCacheConversations() {
     });
     return {
       promptCacheKey,
-      conversationId: `demo-persisted-${promptCacheKey}`,
+      conversationId: DEMO_CONVERSATION_IDS[promptCacheKey] ?? "D00000",
       hasEncryptedSessionOwner: owner != null,
       encryptedOwnerAccountId,
       encryptedOwnerAccountName: owner?.displayName ?? null,

@@ -94,7 +94,10 @@ export default function DashboardPage() {
   );
   usePageObservation("dashboard", overviewSnapshotRuntime.bundle);
   const conversationDataIsComplete =
-    !workingCardsLoading && !workingCardsLoadingMore && !hasMore && workingCardsError == null;
+    !workingCardsLoading &&
+    !workingCardsLoadingMore &&
+    (!hasMore || !canLoadMore) &&
+    workingCardsError == null;
   useEffect(() => {
     if (
       promptCacheConversationKey == null ||
@@ -178,22 +181,31 @@ export default function DashboardPage() {
       setPendingConversationSelection(null);
       return;
     }
-    const conversationIds = new Set(
-      cards
-        .filter((card) => card.promptCacheKey === promptCacheConversationKey)
-        .map((card) => card.conversationId.trim())
-        .filter(Boolean),
+    const matchingConversationCards = cards.filter(
+      (card) => card.promptCacheKey === promptCacheConversationKey,
     );
+    const conversationIds = new Set(
+      matchingConversationCards
+        .map((card) => card.conversationId?.trim())
+        .filter((conversationId): conversationId is string => Boolean(conversationId)),
+    );
+    const candidateConversationId = conversationIds.values().next().value ?? null;
     const singleConversationId =
-      conversationIds.size === 1 ? (conversationIds.values().next().value ?? null) : null;
+      candidateConversationId != null &&
+      matchingConversationCards.length > 0 &&
+      matchingConversationCards.every(
+        (card) => card.conversationId?.trim() === candidateConversationId,
+      )
+        ? candidateConversationId
+        : null;
     const previouslyVerifiedRoute =
       promptCacheConversationId != null &&
       verifiedConversationRoute?.key === promptCacheConversationKey &&
       verifiedConversationRoute?.conversationId === promptCacheConversationId;
     const conversationLabel = conversationDataIsComplete
       ? promptCacheConversationId != null
-        ? conversationIds.has(promptCacheConversationId) ||
-          (conversationIds.size === 0 && previouslyVerifiedRoute)
+        ? singleConversationId === promptCacheConversationId ||
+          (matchingConversationCards.length === 0 && previouslyVerifiedRoute)
           ? promptCacheConversationId
           : null
         : singleConversationId
@@ -254,25 +266,37 @@ export default function DashboardPage() {
     workingCardsError,
   ]);
 
-  const conversationIdsForRoute = new Set(
-    cards
-      .filter((card) => card.promptCacheKey === promptCacheConversationKey)
-      .map((card) => card.conversationId.trim())
-      .filter(Boolean),
+  const conversationCardsForRoute = cards.filter(
+    (card) => card.promptCacheKey === promptCacheConversationKey,
   );
+  const conversationIdsForRoute = new Set(
+    conversationCardsForRoute
+      .map((card) => card.conversationId?.trim())
+      .filter((conversationId): conversationId is string => Boolean(conversationId)),
+  );
+  const routeConversationId = conversationIdsForRoute.values().next().value ?? null;
+  const visibleRouteIdentityIsUnique =
+    routeConversationId != null &&
+    conversationCardsForRoute.length > 0 &&
+    conversationCardsForRoute.every((card) => card.conversationId?.trim() === routeConversationId);
+  const verifiedRouteMatchesCurrentCards =
+    conversationCardsForRoute.length === 0 ||
+    (visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId);
+  // History and settings are queried by prompt-cache key, so an ID-only deep link is not enough
+  // to authorize a route after the working-set identity has disappeared.
   const verifiedConversationRouteIsActive =
     workingCardsError == null &&
     pendingConversationSelection == null &&
     promptCacheConversationId != null &&
     verifiedConversationRoute?.key === promptCacheConversationKey &&
-    verifiedConversationRoute?.conversationId === promptCacheConversationId;
+    verifiedConversationRoute?.conversationId === promptCacheConversationId &&
+    verifiedRouteMatchesCurrentCards;
   const conversationRouteIsSafe =
     promptCacheConversationKey == null ||
     verifiedConversationRouteIsActive ||
     (conversationDataIsComplete &&
-      conversationIdsForRoute.size === 1 &&
-      (promptCacheConversationId == null ||
-        conversationIdsForRoute.has(promptCacheConversationId)));
+      visibleRouteIdentityIsUnique &&
+      (promptCacheConversationId == null || routeConversationId === promptCacheConversationId));
 
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();

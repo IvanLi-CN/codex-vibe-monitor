@@ -40,7 +40,7 @@ export interface DashboardWorkingConversationInvocationModel {
 export interface DashboardWorkingConversationCardModel {
   promptCacheKey: string;
   normalizedPromptCacheKey: string;
-  conversationId: string;
+  conversationId: string | null;
   manualBinding?: PromptCacheConversationManualBinding | null;
   createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
@@ -137,8 +137,8 @@ function buildPendingCardModel(
   rangeStartEpoch: number,
 ): PendingSequenceCardModel | null {
   const normalizedPromptCacheKey = normalizePromptCacheKey(conversation.promptCacheKey);
-  const conversationId = conversation.conversationId?.trim();
-  if (!normalizedPromptCacheKey || !conversationId) return null;
+  const conversationId = conversation.conversationId?.trim() || null;
+  if (!normalizedPromptCacheKey) return null;
 
   const invocations = conversation.recentInvocations
     .map(buildDashboardWorkingConversationInvocationModel)

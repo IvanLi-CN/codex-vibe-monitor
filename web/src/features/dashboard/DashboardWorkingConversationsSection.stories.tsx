@@ -2962,7 +2962,7 @@ function DrawerPreviewStory({
     tab: "overview" | "calls" | "settings";
   } | null>(() => {
     const initialCard = cards.find((card) => card.promptCacheKey === initialConversationKey);
-    return initialCard
+    return initialCard?.conversationId != null
       ? {
           conversationId: initialCard.conversationId,
           promptCacheKey: initialCard.promptCacheKey,
@@ -3023,7 +3023,7 @@ function DrawerPreviewStory({
     setSelectedInvocation(resolveInitialSelection(cards, initialSelection));
     const initialCard = cards.find((card) => card.promptCacheKey === initialConversationKey);
     setSelectedConversation(
-      initialCard
+      initialCard?.conversationId != null
         ? {
             conversationId: initialCard.conversationId,
             promptCacheKey: initialCard.promptCacheKey,
