@@ -510,10 +510,11 @@ export function TaskWorkloadSparkline({
     },
     {} as Record<SparklineMetric, number>,
   );
-  // Keep fixed or delayed snapshots visible by anchoring the window to their
-  // own observation time; live snapshots still advance with the browser clock.
+  // Keep fixed snapshots visible, while current snapshots continue to slide
+  // with the browser clock as new runs arrive.
   const observedWindowEnd = trendWindowEnd(trend, samples);
-  const chartNow = observedWindowEnd == null ? now : Math.min(now, observedWindowEnd);
+  const chartNow =
+    observedWindowEnd != null && now - observedWindowEnd > WINDOW_MS ? observedWindowEnd : now;
   const paths = useMemo(
     () => ({
       pending: chartPaths(
@@ -814,7 +815,7 @@ export function TaskWorkloadSparkline({
     return (
       <div
         ref={containerRef}
-        className="pointer-events-none absolute inset-0 z-20 min-w-0 overflow-visible"
+        className="pointer-events-none absolute inset-0 z-0 min-w-0 overflow-visible"
         aria-busy={activeVisible && trend == null}
         data-testid={`task-workload-sparkline-${task.taskKey}`}
       >
