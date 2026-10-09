@@ -3474,13 +3474,6 @@ pub(crate) async fn materialize_usage_breakdown_historical_rollups_bounded_from_
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
     )
     .await?;
-    if pending_archive_files.iter().any(|candidate| {
-        Path::new(&candidate.file_path)
-            .parent()
-            .is_none_or(|parent| !parent.exists())
-    }) {
-        return Ok(HistoricalRollupMaterializationSummary::default());
-    }
     let pending_usage_breakdown_batches = pending_archive_files.len();
     let bounded_skip = if pending_usage_breakdown_batches == 0 {
         0

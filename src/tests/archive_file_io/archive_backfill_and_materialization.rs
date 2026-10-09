@@ -4030,6 +4030,83 @@ async fn replay_forward_proxy_archives_bounded_selection_reaches_after_blocked_p
 }
 
 #[tokio::test]
+async fn usage_breakdown_materialization_advances_past_missing_parent_prefix() {
+    let (pool, config, temp_dir) =
+        retention_memory_test_pool_and_config("usage-breakdown-missing-parent-prefix").await;
+    for id in 1..=64_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind
+            )
+            VALUES (?1, 'codex_invocations', '2025-01', ?2, ?3, 1, 'completed', 'unknown')
+            "#,
+        )
+        .bind(id)
+        .bind(
+            temp_dir
+                .join(format!("missing-parent-{id}"))
+                .join("archive.sqlite.gz")
+                .to_string_lossy()
+                .to_string(),
+        )
+        .bind(format!("missing-parent-sha-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed missing-parent usage breakdown candidate");
+    }
+    let occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
+    seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "usage-breakdown-after-missing-parent-prefix",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "usage-breakdown-after-missing-parent-prefix",
+            occurred_at: &occurred_at,
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 42,
+            cost: 0.42,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+
+    let first = materialize_usage_breakdown_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        Some(64),
+        Some(Duration::from_secs(6)),
+        0,
+    )
+    .await
+    .expect("process the missing-parent candidate page");
+    assert_eq!(first.scanned_archive_batches, 64);
+    assert_eq!(first.blocked_archive_batches, 64);
+
+    let second = materialize_usage_breakdown_historical_rollups_bounded_from_skip(
+        &pool,
+        &config,
+        Some(64),
+        Some(Duration::from_secs(6)),
+        first.scanned_archive_batches,
+    )
+    .await
+    .expect("advance to the valid archive after the missing-parent prefix");
+    assert_eq!(second.scanned_archive_batches, 65);
+    assert_eq!(second.skipped_archive_batches, 64);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutoff() {
     let (pool, mut config, temp_dir) =
         retention_memory_test_pool_and_config("retention-recovery-backlog-cache").await;

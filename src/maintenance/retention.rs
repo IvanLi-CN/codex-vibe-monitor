@@ -684,6 +684,11 @@ impl RetentionRecoveryBacklogCache {
     }
 }
 
+fn retention_recovery_backlog_cache_key(filename: &Path) -> Option<String> {
+    let key = filename.to_string_lossy();
+    (!key.is_empty() && key != ":memory:").then(|| key.into_owned())
+}
+
 pub(crate) fn retention_recovery_health_snapshot() -> RetentionRecoveryHealthSnapshot {
     RETENTION_RECOVERY_HEALTH
         .lock()
@@ -2145,16 +2150,14 @@ async fn load_retention_recovery_expired_backlog(
     pool: &Pool<Sqlite>,
     cutoff: &str,
 ) -> Result<(i64, Option<String>)> {
-    let database_key = pool
-        .connect_options()
-        .get_filename()
-        .to_string_lossy()
-        .into_owned();
-    let cached = RETENTION_RECOVERY_BACKLOG_CACHE
-        .lock()
-        .expect("retention recovery backlog cache")
-        .as_ref()
-        .and_then(|cached| cached.value_if_fresh(&database_key, cutoff, Instant::now()));
+    let database_key = retention_recovery_backlog_cache_key(pool.connect_options().get_filename());
+    let cached = database_key.as_deref().and_then(|database_key| {
+        RETENTION_RECOVERY_BACKLOG_CACHE
+            .lock()
+            .expect("retention recovery backlog cache")
+            .as_ref()
+            .and_then(|cached| cached.value_if_fresh(database_key, cutoff, Instant::now()))
+    });
     if let Some(cached) = cached {
         return Ok(cached);
     }
@@ -2170,16 +2173,18 @@ async fn load_retention_recovery_expired_backlog(
     .fetch_one(pool)
     .await?;
 
-    let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
-        .lock()
-        .expect("retention recovery backlog cache");
-    *cache = Some(RetentionRecoveryBacklogCache {
-        database_key,
-        cutoff: cutoff.to_string(),
-        observed_at: Instant::now(),
-        count: backlog.0,
-        oldest_backlog_at: backlog.1.clone(),
-    });
+    if let Some(database_key) = database_key {
+        let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
+            .lock()
+            .expect("retention recovery backlog cache");
+        *cache = Some(RetentionRecoveryBacklogCache {
+            database_key,
+            cutoff: cutoff.to_string(),
+            observed_at: Instant::now(),
+            count: backlog.0,
+            oldest_backlog_at: backlog.1.clone(),
+        });
+    }
     Ok(backlog)
 }
 
@@ -10970,13 +10975,14 @@ pub(crate) struct ArchiveExpiryBackfillCandidate {
 #[cfg(test)]
 mod retention_summary_tests {
     use chrono::{TimeZone, Utc};
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use super::{
         RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL, RetentionRawDirectoryEntry,
         RetentionRawDirectoryTraversal, RetentionRecoveryBacklogCache, RetentionRunSummary,
         reset_raw_orphan_sweep_traversal_after_interrupted_pass,
-        retention_backlog_max_overdue_seconds,
+        retention_backlog_max_overdue_seconds, retention_recovery_backlog_cache_key,
     };
 
     #[test]
@@ -11010,6 +11016,18 @@ mod retention_summary_tests {
             ),
             None,
             "the cache must expire at its freshness boundary"
+        );
+    }
+
+    #[test]
+    fn recovery_backlog_cache_skips_anonymous_memory_database_keys() {
+        assert_eq!(
+            retention_recovery_backlog_cache_key(Path::new(":memory:")),
+            None
+        );
+        assert_eq!(
+            retention_recovery_backlog_cache_key(Path::new("file:sqlx-in-memory-42")),
+            Some("file:sqlx-in-memory-42".to_string())
         );
     }
 
