@@ -677,6 +677,7 @@ function renderSection(
     isLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
+    canLoadMore?: boolean;
     hasDelayedStatistics?: boolean;
     totalMatched?: number;
     recentPreviewLimit?: number;
@@ -724,6 +725,7 @@ function renderSectionWithCards(
     isLoading?: boolean;
     isLoadingMore?: boolean;
     hasMore?: boolean;
+    canLoadMore?: boolean;
     hasDelayedStatistics?: boolean;
     totalMatched?: number;
     onLoadMore?: () => void;
@@ -771,6 +773,7 @@ function renderSectionWithCards(
             cards={cards}
             totalMatched={options?.totalMatched}
             hasMore={options?.hasMore}
+            canLoadMore={options?.canLoadMore}
             hasDelayedStatistics={options?.hasDelayedStatistics}
             isLoading={options?.isLoading ?? false}
             isLoadingMore={options?.isLoadingMore}
@@ -2489,7 +2492,7 @@ describe("DashboardWorkingConversationsSection", () => {
           { conversationId: "conv-upstream-running" },
         ),
       ]),
-      { onOpenConversation, onOpenInvocation },
+      { onOpenConversation, onOpenInvocation, hasMore: true, canLoadMore: false },
     );
 
     const accountTab = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find((node) =>
@@ -4558,7 +4561,7 @@ describe("DashboardWorkingConversationsSection", () => {
     vi.useRealTimers();
   });
 
-  it("does not load more hidden conversations from the upstream-account tab", () => {
+  it("loads more conversation identities from the upstream-account tab", () => {
     vi.useFakeTimers();
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(1700);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(900);
@@ -4638,7 +4641,7 @@ describe("DashboardWorkingConversationsSection", () => {
       window.dispatchEvent(new Event("scroll"));
     });
 
-    expect(onLoadMore).not.toHaveBeenCalled();
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
     vi.useRealTimers();
   });
 

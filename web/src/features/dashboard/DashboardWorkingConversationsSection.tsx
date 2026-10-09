@@ -4272,7 +4272,7 @@ export function DashboardWorkingConversationsSection({
     return ids;
   }, [cards]);
   const conversationIdentityDataIsComplete =
-    !hasMore && !isLoading && !isLoadingMore && error == null;
+    (!hasMore || !canLoadMore) && !isLoading && !isLoadingMore && error == null;
   const selectedConversationCount = selectedConversationIdentities.length;
   const closeConversationBulkDialogs = useCallback(() => {
     setRouteBindDialogOpen(false);
@@ -4996,6 +4996,20 @@ export function DashboardWorkingConversationsSection({
     onLoadMore,
     rows.length,
   ]);
+
+  useEffect(() => {
+    if (
+      activeView !== "upstreamAccounts" ||
+      !canLoadMore ||
+      !onLoadMore ||
+      isLoading ||
+      isLoadingMore ||
+      error != null
+    ) {
+      return;
+    }
+    onLoadMore();
+  }, [activeView, canLoadMore, error, isLoading, isLoadingMore, onLoadMore]);
 
   useEffect(() => {
     setRefreshTargetCount?.(refreshTargetCount);
