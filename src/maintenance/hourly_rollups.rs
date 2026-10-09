@@ -290,10 +290,10 @@ async fn load_materialized_invocation_archives_missing_upstream_account_markers_
 pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
-    let mut tx = pool.begin().await?;
     let mut after_id = 0_i64;
     let mut repaired = 0_usize;
     loop {
+        let mut tx = pool.begin().await?;
         let rows =
             load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
                 tx.as_mut(),
@@ -307,10 +307,10 @@ pub(crate) async fn repair_materialized_upstream_account_archive_markers(
             mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), &row.file_path)
                 .await?;
         }
+        tx.commit().await?;
         repaired = repaired.saturating_add(rows.len());
         after_id = last_id;
     }
-    tx.commit().await?;
     Ok(repaired)
 }
 
@@ -340,13 +340,24 @@ async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
                         OR TRIM(unverified.archive_sha256) = ''
                   )
           )
-          AND NOT EXISTS (
-                SELECT 1
-                FROM hourly_rollup_archive_replay AS replay
-                WHERE replay.target = ?2
-                  AND replay.dataset = batches.dataset
-                  AND replay.file_path = batches.file_path
-                  AND replay.archive_sha256 = batches.sha256
+          AND (
+                EXISTS (
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS stale
+                    WHERE stale.dataset = batches.dataset
+                      AND stale.file_path = batches.file_path
+                      AND stale.archive_sha256 IS NOT NULL
+                      AND TRIM(stale.archive_sha256) <> ''
+                      AND stale.archive_sha256 <> batches.sha256
+                )
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM hourly_rollup_archive_replay AS replay
+                    WHERE replay.target = ?2
+                      AND replay.dataset = batches.dataset
+                      AND replay.file_path = batches.file_path
+                      AND replay.archive_sha256 = batches.sha256
+                )
           )
         ORDER BY CASE WHEN EXISTS (
                      SELECT 1

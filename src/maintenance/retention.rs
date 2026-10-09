@@ -5718,6 +5718,7 @@ async fn persist_missing_raw_reconciliation_release_evidence(
 #[derive(Debug, Default)]
 pub(crate) struct RawOrphanSweepPassResult {
     pub(crate) inspected_entries: usize,
+    pub(crate) directory_scan_failures: usize,
     pub(crate) reconciliation_rows_checked: usize,
     pub(crate) reconciliation_has_more: bool,
     pub(crate) referenced_skipped: usize,
@@ -5829,6 +5830,7 @@ pub(crate) async fn sweep_orphan_proxy_raw_files_slice(
             Err(error) => return Err(error),
         };
         result.inspected_entries += scan.inspected_entries;
+        result.directory_scan_failures += scan.failures;
         result.failures += scan.failures;
         if scan.failures != 0 {
             result.complete = false;
@@ -7000,10 +7002,10 @@ fn reset_raw_orphan_sweep_traversal_after_interrupted_pass(
     traversal: &mut RetentionRawDirectoryTraversal,
     pass: &RawOrphanSweepPassResult,
 ) {
-    if pass.deferred || pass.failures > 0 {
-        // A slice may have advanced the process-local ReadDir before a candidate was durably
-        // settled. Reopen from the durable ledger on the next retry so an interrupted suffix is
-        // never skipped in-process.
+    if pass.deferred || pass.directory_scan_failures > 0 {
+        // A directory scan error or admission defer may leave the process-local ReadDir ahead of
+        // work that was not durably observed. Reopen from the ledger on the next retry. Ordinary
+        // item failures keep the iterator position so one bad file cannot starve the suffix.
         traversal.reset_after_interrupted_slice();
     }
 }
@@ -11063,8 +11065,26 @@ mod retention_summary_tests {
             &mut failure_traversal,
             &failed_pass,
         );
-        assert!(failure_traversal.directory.is_none());
-        assert!(failure_traversal.pending_candidates.is_empty());
+        assert!(failure_traversal.directory.is_some());
+        assert_eq!(failure_traversal.pending_candidates.len(), 1);
+
+        let mut scan_failure_traversal = RetentionRawDirectoryTraversal {
+            root: Some(std::env::temp_dir()),
+            directory: Some(std::fs::read_dir(std::env::temp_dir()).expect("read temp directory")),
+            pending_candidates: std::collections::VecDeque::from([RetentionRawDirectoryEntry {
+                path: std::env::temp_dir().join("scan-failed.raw"),
+            }]),
+        };
+        let scan_failed_pass = super::RawOrphanSweepPassResult {
+            directory_scan_failures: 1,
+            ..Default::default()
+        };
+        reset_raw_orphan_sweep_traversal_after_interrupted_pass(
+            &mut scan_failure_traversal,
+            &scan_failed_pass,
+        );
+        assert!(scan_failure_traversal.directory.is_none());
+        assert!(scan_failure_traversal.pending_candidates.is_empty());
     }
 
     #[test]

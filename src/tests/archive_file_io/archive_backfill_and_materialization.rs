@@ -4325,7 +4325,7 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
 #[tokio::test]
 async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutoff() {
     let (pool, mut config, temp_dir) =
-        retention_memory_test_pool_and_config("retention-recovery-backlog-cache").await;
+        retention_test_pool_and_config("retention-recovery-backlog-cache").await;
     let initial_days = config.invocation_max_days;
     let first_occurred_at = shanghai_local_days_ago((initial_days + 10) as i64, 9, 0, 0);
     let second_occurred_at =
@@ -4364,18 +4364,50 @@ async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutof
         .expect("load initial recovery backlog");
     assert_eq!(first.expired_backlog_count, Some(1));
 
+    insert_retention_invocation(
+        &pool,
+        "retention-recovery-backlog-cache-third",
+        &first_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        None,
+        "{}",
+        None,
+        None,
+        Some(3),
+        Some(0.03),
+    )
+    .await;
     let cached = retention_test_refresh_recovery_counts(&pool, &config)
         .await
         .expect("reuse recovery backlog cache");
-    assert_eq!(cached.expired_backlog_count, Some(1));
+    assert_eq!(
+        cached.expired_backlog_count,
+        Some(1),
+        "a fresh file-backed cache entry must hide writes until its cutoff changes"
+    );
+
+    let (second_pool, second_config, second_temp_dir) =
+        retention_test_pool_and_config("retention-recovery-backlog-cache-isolation").await;
+    let isolated = retention_test_refresh_recovery_counts(&second_pool, &second_config)
+        .await
+        .expect("load recovery backlog for a different database");
+    assert_eq!(
+        isolated.expired_backlog_count,
+        Some(0),
+        "a cache entry from another database must not be reused"
+    );
 
     config.invocation_max_days = initial_days.saturating_sub(2);
     let refreshed = retention_test_refresh_recovery_counts(&pool, &config)
         .await
         .expect("refresh recovery backlog after cutoff change");
-    assert_eq!(refreshed.expired_backlog_count, Some(2));
+    assert_eq!(refreshed.expired_backlog_count, Some(3));
 
+    pool.close().await;
+    second_pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
+    cleanup_temp_test_dir(&second_temp_dir);
 }
 
 #[tokio::test]
@@ -5392,16 +5424,18 @@ async fn stale_replay_sha_rebuilds_all_rollup_targets_without_double_counting() 
     .expect("clear only the stale usage breakdown rows");
     sqlx::query(
         r#"
-        DELETE FROM hourly_rollup_archive_replay
-        WHERE target = ?1 AND dataset = ?2 AND file_path = ?3
+        UPDATE hourly_rollup_archive_replay
+        SET archive_sha256 = ?1
+        WHERE target = ?2 AND dataset = ?3 AND file_path = ?4
         "#,
     )
+    .bind(&replacement_sha)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(&archive_file_path)
     .execute(&pool)
     .await
-    .expect("clear only the stale usage breakdown marker");
+    .expect("publish current usage breakdown marker while retaining a stale target marker");
 
     assert_eq!(
         repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)

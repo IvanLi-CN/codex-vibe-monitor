@@ -244,6 +244,25 @@ struct PromptCacheStatsPageOptions {
     run_deadline: Option<Instant>,
 }
 
+#[cfg(test)]
+pub(crate) struct PromptCacheStatsPageCommitHook {
+    pub(crate) ready: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK: Arc<PromptCacheStatsPageCommitHook>;
+}
+
+#[cfg(test)]
+async fn prompt_cache_test_wait_before_page_commit() {
+    if let Ok(hook) = PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.try_with(Arc::clone) {
+        hook.ready.notify_one();
+        hook.release.notified().await;
+    }
+}
+
 struct PromptCacheMaterializationBatchWork {
     identities_created: usize,
     refreshed: usize,
@@ -3347,6 +3366,8 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     for row in &page {
         merge_prompt_cache_conversation_invocation(&mut accumulator, row);
     }
+    #[cfg(test)]
+    prompt_cache_test_wait_before_page_commit().await;
     let mut tx = connection.connection.begin().await?;
     let current_generation = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1"

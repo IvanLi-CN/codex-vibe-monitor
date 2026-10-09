@@ -1203,6 +1203,78 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_unpublished_prefix()
+{
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[512]).await;
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = maintenance.prompt_cache_materialization_control.clone();
+    let expected_generation = control.snapshot().expect("trusted control").generation;
+    let hook = std::sync::Arc::new(PromptCacheStatsPageCommitHook {
+        ready: std::sync::Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Arc::new(tokio::sync::Notify::new()),
+    });
+    let worker_pool = pool.clone();
+    let worker_hook = hook.clone();
+    let worker = tokio::spawn(
+        PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.scope(worker_hook, async move {
+            run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &worker_pool,
+                1,
+                None,
+                &|| false,
+                &control,
+                expected_generation,
+            )
+            .await
+        }),
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), hook.ready.notified())
+        .await
+        .expect("statistics page should reach the pre-commit hook");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_stats_refresh_queue SET generation=generation+1 \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .execute(&pool)
+    .await
+    .expect("advance source generation before page publication");
+    hook.release.notify_one();
+
+    let run = worker
+        .await
+        .expect("join prompt-cache materialization worker")
+        .expect("complete prompt-cache materialization run");
+    assert_eq!(run.defer_reason, Some("stats_generation_changed"));
+    let (request_count, cursor_id, pending_generation, queue_generation): (
+        i64,
+        i64,
+        Option<i64>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT request_count, \
+             (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000'), \
+             (SELECT pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000'), \
+             (SELECT generation FROM prompt_cache_conversation_stats_refresh_queue \
+              WHERE prompt_cache_key='checkpoint-key-000') \
+             FROM prompt_cache_conversations \
+             WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load unpublished generation-change state");
+    assert_eq!(
+        request_count, 0,
+        "the stale page must not publish its aggregate"
+    );
+    assert_eq!(cursor_id, 0, "the stale page must not advance its cursor");
+    assert!(queue_generation > 0);
+    assert_eq!(pending_generation, Some(queue_generation));
+}
+
 #[tokio::test]
 async fn prompt_cache_materialization_status_does_not_report_complete_with_pending_refresh() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")

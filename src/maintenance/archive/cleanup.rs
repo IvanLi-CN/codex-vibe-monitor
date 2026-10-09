@@ -2624,6 +2624,15 @@ async fn load_historical_rollup_startup_candidates(
                           AND replay.file_path = batches.file_path
                           AND replay.archive_sha256 = batches.sha256
                     )
+                    OR EXISTS (
+                        SELECT 1
+                        FROM hourly_rollup_archive_replay AS stale
+                        WHERE stale.dataset = batches.dataset
+                          AND stale.file_path = batches.file_path
+                          AND stale.archive_sha256 IS NOT NULL
+                          AND TRIM(stale.archive_sha256) <> ''
+                          AND stale.archive_sha256 <> batches.sha256
+                    )
                 ))
                 OR (batches.dataset = 'forward_proxy_attempts'
                     AND batches.historical_rollups_materialized_at IS NULL)
