@@ -50,10 +50,838 @@
       "title": "浏览器体验",
       "type": "dash-db",
       "url": "/d/cvm-web"
+    },
+    {
+      "type": "link",
+      "title": "请求案例与瀑布图",
+      "url": "/d/cvm-proxy-cases",
+      "includeVars": true,
+      "keepTime": true,
+      "targetBlank": false
     }
   ],
   "liveNow": false,
   "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "完整请求、资源等待与异步落盘",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 101,
+      "title": "完整响应 p95",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "应用入口到框架下游 body EOF/error/cancel；与响应头同起点，不相加。",
+      "gridPos": {
+        "x": 0,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (increase(cvm_request_response_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "time_series",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 102,
+      "title": "终态 enqueue → commit p95",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "独立异步落盘旁路；可能与响应重叠，不加到完整响应上。",
+      "gridPos": {
+        "x": 6,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (increase(cvm_request_persistence_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",outcome=\"committed\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "time_series",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 103,
+      "title": "响应窗口内本地等待 p95",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "已观测具名等待区间去重并集；不代表全部系统/CPU 调度等待。",
+      "gridPos": {
+        "x": 12,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (increase(cvm_request_local_wait_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "time_series",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 104,
+      "title": "同窗完整响应样本",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "含拒绝、错误、取消。超出活跃诊断容量的请求由丢弃计数说明。",
+      "gridPos": {
+        "x": 18,
+        "y": 1,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(cvm_request_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "time_series",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "value",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 105,
+      "title": "阶段事件分布",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "整个 UTC 窗口 p50/p95/p99、平均值、样本数。阶段可嵌套，分位数不得相加。",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le,phase) (increase(cvm_request_stage_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,phase) (increase(cvm_request_stage_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le,phase) (increase(cvm_request_stage_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (phase)(increase(cvm_request_stage_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])) / sum by (phase)(increase(cvm_request_stage_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "E",
+          "expr": "sum by (phase)(increase(cvm_request_stage_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "minWidth": 55,
+            "width": 72
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Value #E|样本"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "phase"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 155
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "p50",
+              "Value #B": "p95",
+              "Value #C": "p99",
+              "Value #D": "平均",
+              "Value #E": "样本"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 106,
+      "title": "每请求累计资源等待",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "每个观测到的结束响应、每资源包含零值；取消中仍开放的等待为已观测下界。",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le,resource) (increase(cvm_request_resource_wait_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,resource) (increase(cvm_request_resource_wait_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le,resource) (increase(cvm_request_resource_wait_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (resource)(increase(cvm_request_resource_wait_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])) / sum by (resource)(increase(cvm_request_resource_wait_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        },
+        {
+          "refId": "E",
+          "expr": "sum by (resource)(increase(cvm_request_resource_wait_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "minWidth": 55,
+            "width": 72
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Value #E|样本"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "resource"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 155
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "p50",
+              "Value #B": "p95",
+              "Value #C": "p99",
+              "Value #D": "平均",
+              "Value #E": "样本"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 107,
+      "title": "所选阶段 heatmap",
+      "type": "heatmap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "实际事件耗时分布；此面板与每请求累计等待使用不同分母。",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (le)(rate(cvm_request_stage_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\",phase=\"$phase\"}[$__rate_interval]))",
+          "instant": false,
+          "range": true,
+          "format": "heatmap",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Oranges"
+        },
+        "legend": {
+          "show": true
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left"
+        },
+        "tooltip": {
+          "show": true
+        }
+      }
+    },
+    {
+      "id": 108,
+      "title": "所选资源等待事件 heatmap（全部代理端点）",
+      "type": "heatmap",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "实际事件耗时分布；此面板与每请求累计等待使用不同分母。",
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (le)(rate(cvm_resource_wait_event_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",resource=\"$resource\"}[$__rate_interval]))",
+          "instant": false,
+          "range": true,
+          "format": "heatmap",
+          "legendFormat": "{{phase}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "calculate": false,
+        "color": {
+          "mode": "scheme",
+          "scheme": "Oranges"
+        },
+        "legend": {
+          "show": true
+        },
+        "yAxis": {
+          "unit": "s",
+          "axisPlacement": "left"
+        },
+        "tooltip": {
+          "show": true
+        }
+      }
+    },
+    {
+      "id": 111,
+      "title": "资源等待事件分布（全部代理端点）",
+      "type": "table",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "实际等待事件的 p50/p95/p99、平均值与同窗次数；取消中的事件是已观测下界，事件次数不等于受影响请求数。",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.5, sum by (le,resource) (increase(cvm_resource_wait_event_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{resource}}"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,resource) (increase(cvm_resource_wait_event_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{resource}}"
+        },
+        {
+          "refId": "C",
+          "expr": "histogram_quantile(0.99, sum by (le,resource) (increase(cvm_resource_wait_event_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{resource}}"
+        },
+        {
+          "refId": "D",
+          "expr": "sum by (resource)(increase(cvm_resource_wait_event_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) / sum by (resource)(increase(cvm_resource_wait_event_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{resource}}"
+        },
+        {
+          "refId": "E",
+          "expr": "sum by (resource)(increase(cvm_resource_wait_event_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "instant": true,
+          "range": false,
+          "format": "table",
+          "legendFormat": "{{resource}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "minWidth": 55,
+            "width": 72
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Value #E|样本"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "resource"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "none"
+              },
+              {
+                "id": "custom.width",
+                "value": 155
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value #A": "p50",
+              "Value #B": "p95",
+              "Value #C": "p99",
+              "Value #D": "平均",
+              "Value #E": "样本"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 109,
+      "title": "资源等待受影响比例 / 累计等待超过 100ms 比例",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "分母为同窗口、同 endpoint 的观测响应样本；不是等待事件数。",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(resource)(increase(cvm_request_wait_affected_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])) / sum by(resource)(increase(cvm_request_resource_wait_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{resource}} 受影响"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(resource)(increase(cvm_request_wait_over_100ms_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range])) / sum by(resource)(increase(cvm_request_resource_wait_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",endpoint=~\"$endpoint\"}[$__range]))",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{resource}} >100ms"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 110,
+      "title": "诊断丢弃 / 导出失败",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "description": "非零表示历史不完整。错误不影响代理或终态落盘；没有案例不等于没有等待。",
+      "gridPos": {
+        "x": 16,
+        "y": 30,
+        "w": 8,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(reason)(rate(cvm_diagnostic_dropped_total[$__rate_interval]))",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{reason}} 诊断丢弃"
+        },
+        {
+          "refId": "B",
+          "expr": "sum(rate(cvm_trace_queue_dropped_spans_total[$__rate_interval]))",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "SDK 队列丢弃"
+        },
+        {
+          "refId": "C",
+          "expr": "sum(rate(cvm_trace_export_failed_spans_total[$__rate_interval]))",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "导出失败"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 99,
+      "type": "row",
+      "title": "首字节、模型输出与上游尝试",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
     {
       "id": 1,
       "type": "stat",
@@ -61,7 +889,7 @@
       "description": "所选时间范围内按终态去重的业务 invocation 数；不等于 upstream attempt 数。",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 40,
         "w": 6,
         "h": 4
       },
@@ -115,7 +943,7 @@
       "description": "分母为 success + error + cancelled；取消单独显示，不并入失败。",
       "gridPos": {
         "x": 6,
-        "y": 0,
+        "y": 40,
         "w": 6,
         "h": 4
       },
@@ -169,7 +997,7 @@
       "description": "upstream retry 事件，按 reason 分类；一次 invocation 可以有多个 attempt。",
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 40,
         "w": 6,
         "h": 4
       },
@@ -223,7 +1051,7 @@
       "description": "仅有首 token 的请求才产生 TTFT 样本；无样本显示未知。",
       "gridPos": {
         "x": 18,
-        "y": 0,
+        "y": 40,
         "w": 6,
         "h": 4
       },
@@ -277,7 +1105,7 @@
       "description": "窗口内 cancelled invocation；与 HTTP body 的 cancelled 生命周期信号分开。",
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 44,
         "w": 6,
         "h": 4
       },
@@ -331,7 +1159,7 @@
       "description": "TTFT Histogram 的 `_count` 增量；p95 必须和这个样本数一起看。",
       "gridPos": {
         "x": 6,
-        "y": 4,
+        "y": 44,
         "w": 6,
         "h": 4
       },
@@ -385,7 +1213,7 @@
       "description": "TTFB 是上游首字节，TTFT 是首 token；两者都来自代理终态样本。",
       "gridPos": {
         "x": 0,
-        "y": 8,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -455,7 +1283,7 @@
       "description": "阶段可能重叠，不能堆叠或相加为总耗时。",
       "gridPos": {
         "x": 12,
-        "y": 8,
+        "y": 48,
         "w": 12,
         "h": 8
       },
@@ -470,7 +1298,7 @@
           "legendFormat": "{{phase}}",
           "range": false,
           "instant": true,
-          "format": "table",
+          "format": "time_series",
           "hide": false
         }
       ],
@@ -484,7 +1312,8 @@
           "noValue": "Unknown",
           "custom": {
             "spanNulls": false
-          }
+          },
+          "displayName": "${__field.labels.phase}"
         },
         "overrides": []
       },
@@ -509,7 +1338,7 @@
       "description": "attempt 是上游交互次数，不是 invocation；按 outcome 展示窗口变化。",
       "gridPos": {
         "x": 0,
-        "y": 16,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -586,7 +1415,7 @@
       "description": "rate_limit、overload、route_failover 等 reason 单独展示，不把 retry 解释成失败数。",
       "gridPos": {
         "x": 12,
-        "y": 16,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -647,7 +1476,7 @@
       "description": "表格查询覆盖整个所选窗口；TTFB/TTFT 是独立 Histogram，样本数用于低样本判断。",
       "gridPos": {
         "x": 0,
-        "y": 24,
+        "y": 64,
         "w": 24,
         "h": 10
       },
@@ -741,7 +1570,7 @@
       "description": "这是上游 stream lifetime；SSE/body lifetime 见底部 HTTP route 表，不能与普通响应时间混用。",
       "gridPos": {
         "x": 0,
-        "y": 34,
+        "y": 74,
         "w": 12,
         "h": 8
       },
@@ -802,7 +1631,7 @@
       "description": "upload/download 为代理上游 socket 观测的方向字节；不是调用次数。",
       "gridPos": {
         "x": 12,
-        "y": 34,
+        "y": 74,
         "w": 12,
         "h": 8
       },
@@ -863,7 +1692,7 @@
       "description": "响应头耗时在 response head 返回前结束；body lifetime 到 complete/error/cancelled。两者严格分开，表格覆盖整个窗口。",
       "gridPos": {
         "x": 0,
-        "y": 42,
+        "y": 82,
         "w": 24,
         "h": 10
       },
@@ -957,7 +1786,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 52,
+        "y": 92,
         "w": 24,
         "h": 1
       },
@@ -968,7 +1797,7 @@
           "title": "高级：协议与覆盖说明说明",
           "gridPos": {
             "x": 0,
-            "y": 0,
+            "y": 40,
             "w": 24,
             "h": 5
           },
@@ -1052,7 +1881,7 @@
           "type": "prometheus",
           "uid": "cvm-prometheus"
         },
-        "query": "label_values(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, endpoint)",
+        "query": "label_values(cvm_request_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, endpoint)",
         "refresh": 1,
         "includeAll": true,
         "allValue": ".*",
@@ -1061,6 +1890,110 @@
           "text": "全部 endpoint",
           "value": "$__all"
         }
+      },
+      {
+        "name": "phase",
+        "label": "phase",
+        "type": "custom",
+        "query": "request_read,request_parse,auth_route,attempt,connect,upstream_head,forward,journal_append,finalize",
+        "current": {
+          "text": "request_read",
+          "value": "request_read"
+        },
+        "options": [
+          {
+            "text": "request_read",
+            "value": "request_read",
+            "selected": true
+          },
+          {
+            "text": "request_parse",
+            "value": "request_parse",
+            "selected": false
+          },
+          {
+            "text": "auth_route",
+            "value": "auth_route",
+            "selected": false
+          },
+          {
+            "text": "attempt",
+            "value": "attempt",
+            "selected": false
+          },
+          {
+            "text": "connect",
+            "value": "connect",
+            "selected": false
+          },
+          {
+            "text": "upstream_head",
+            "value": "upstream_head",
+            "selected": false
+          },
+          {
+            "text": "forward",
+            "value": "forward",
+            "selected": false
+          },
+          {
+            "text": "journal_append",
+            "value": "journal_append",
+            "selected": false
+          },
+          {
+            "text": "finalize",
+            "value": "finalize",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "resource",
+        "label": "resource",
+        "type": "custom",
+        "query": "sqlite_coordinator,db_pool,account_capacity,retry_backoff,downstream_channel,terminal_priority,journal_lock",
+        "current": {
+          "text": "sqlite_coordinator",
+          "value": "sqlite_coordinator"
+        },
+        "options": [
+          {
+            "text": "sqlite_coordinator",
+            "value": "sqlite_coordinator",
+            "selected": true
+          },
+          {
+            "text": "db_pool",
+            "value": "db_pool",
+            "selected": false
+          },
+          {
+            "text": "account_capacity",
+            "value": "account_capacity",
+            "selected": false
+          },
+          {
+            "text": "retry_backoff",
+            "value": "retry_backoff",
+            "selected": false
+          },
+          {
+            "text": "downstream_channel",
+            "value": "downstream_channel",
+            "selected": false
+          },
+          {
+            "text": "terminal_priority",
+            "value": "terminal_priority",
+            "selected": false
+          },
+          {
+            "text": "journal_lock",
+            "value": "journal_lock",
+            "selected": false
+          }
+        ]
       }
     ]
   },

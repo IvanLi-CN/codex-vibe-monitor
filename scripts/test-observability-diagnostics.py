@@ -215,7 +215,7 @@ with tempfile.TemporaryDirectory() as directory:
 class WorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-pr.yml")
+        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-observability-performance.yml")
 
     def test_separate_hosted_diagnosis_preserves_certification_contract(self):
         contract.require_observability_diagnostic_contract(self.workflow)
@@ -234,7 +234,7 @@ class WorkflowTests(unittest.TestCase):
             workflow["jobs"]["observability-diagnostics"][key] = value
             with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
         workflow = copy.deepcopy(self.workflow)
-        workflow["jobs"]["build"]["needs"] = ["build-pr-smoke-artifacts", "observability-diagnostics"]
+        workflow["jobs"]["observability-performance"]["needs"] = "observability-diagnostics"
         with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
 
 

@@ -999,7 +999,7 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     let shutdown = state.shutdown.clone();
     let broadcast_handle_slot = state.proxy_summary_quota_broadcast_handle.clone();
     let invoke_id = invoke_id.to_string();
-    let handle = tokio::spawn(async move {
+    let handle = crate::observability::diagnostics::spawn(async move {
         let mut synced_seq = 0_u64;
         loop {
             let target_seq = latest_broadcast_seq.load(Ordering::Acquire);
@@ -1120,7 +1120,7 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
             .has_active_topic_name_sync("quota.current")
     {
         let subscription_hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        crate::observability::diagnostics::spawn(async move {
             subscription_hub
                 .mark_topic_name_dirty("quota.current")
                 .await;
@@ -1134,7 +1134,7 @@ pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
     let subscription_hub = state.subscription_hub.clone();
     let shutdown = state.shutdown.clone();
     let invoke_id = invoke_id.to_string();
-    tokio::spawn(async move {
+    crate::observability::diagnostics::spawn(async move {
         tokio::time::sleep(Duration::from_millis(500)).await;
         let mode = if shutdown.is_cancelled() {
             ProxyCaptureFollowUpBroadcastMode::ShutdownFlush
@@ -1205,6 +1205,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .sqlite_batch_writer
             .enqueue_terminal(BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                diagnostic: crate::observability::diagnostics::current().map(|c| c.persistence()),
                 record,
                 capture_started: Some(capture_started),
                 raw_capture: true,
@@ -1292,7 +1293,11 @@ pub(crate) async fn persist_proxy_capture_record_core(
     record: ProxyCaptureRecord,
     write_derived_inline: bool,
 ) -> Result<Option<ApiInvocation>> {
-    let mut tx = pool.begin().await?;
+    let mut tx = crate::observability::diagnostics::wait(
+        crate::observability::diagnostics::Resource::DbPool,
+        pool.begin(),
+    )
+    .await?;
     let persisted =
         persist_proxy_capture_record_tx(tx.as_mut(), capture_started, record, write_derived_inline)
             .await?;
@@ -1757,7 +1762,11 @@ pub(crate) async fn backfill_proxy_usage_tokens_from_cursor(
             }
 
             if !updates.is_empty() {
-                let mut tx = pool.begin().await?;
+                let mut tx = crate::observability::diagnostics::wait(
+                    crate::observability::diagnostics::Resource::DbPool,
+                    pool.begin(),
+                )
+                .await?;
                 let mut updated_this_batch = 0_u64;
                 let mut updated_ids = Vec::new();
                 for update in updates {
@@ -2197,7 +2206,7 @@ pub(crate) async fn backfill_proxy_missing_costs_from_cursor(
         }
 
         if !updates.is_empty() {
-            let mut tx = pool.begin().await?;
+            let mut tx = crate::observability::diagnostics::wait(crate::observability::diagnostics::Resource::DbPool, pool.begin()).await?;
             let mut updated_this_batch = 0_u64;
             let mut updated_ids = Vec::new();
             for update in updates {

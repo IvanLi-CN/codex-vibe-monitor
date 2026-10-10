@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add optional request lifecycle diagnostics and shared Tempo integration",
+    "release_unit_description": "CVM request diagnostics",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Add optional tracing configuration and an additive local tracing capability object; preserve business APIs and durable formats.",
+      "assessed_at": "2026-10-07T00:00:00Z",
+      "evidence": [
+        "docs/specs/performance-telemetry/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": false,
+        "description": "none"
+      },
+      "reasoning": "The public API gains only tracing fields; diagnostic associations exist only in memory.",
+      "reassessed_at": "2026-10-07T09:29:00Z",
+      "evidence": [
+        "docs/specs/performance-telemetry/SPEC.md",
+        "src/observability/reports.rs",
+        "src/terminal_journal.rs",
+        "scripts/observability-acceptance/client.py"
+      ]
+    },
+    "verified": {
+      "impact": null,
+      "reasoning": "Current candidate runtime compatibility evidence is pending CI.",
+      "verified_at": null,
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing v4 consumers can ignore the additive tracing object.",
+      "evidence": [
+        "docs/specs/performance-telemetry/SPEC.md",
+        "src/observability/reports.rs"
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Business SQLite and terminal journal formats are unchanged; memory tickets are not serialized.",
+      "source_program_compatibility_range": "Existing v4 durable formats remain unchanged.",
+      "evidence": [
+        "src/terminal_journal.rs",
+        "src/sqlite_batch_writer.rs"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "request-diagnostics"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

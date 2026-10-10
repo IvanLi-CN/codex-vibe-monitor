@@ -1,0 +1,23 @@
+apiVersion: 1
+datasources:
+  - name: CVM Tempo
+    uid: cvm-tempo
+    type: tempo
+    access: proxy
+    url: ${CVM_TEMPO_QUERY_URL}
+    editable: false
+    jsonData:
+      httpHeaderName1: Authorization
+      tlsAuthWithCACert: true
+      tracesToMetrics:
+        datasourceUid: cvm-prometheus
+        tags:
+          - key: service.name
+            value: service
+          - key: deployment.environment.name
+            value: environment
+          - key: service.instance.id
+            value: instance
+    secureJsonData:
+      httpHeaderValue1: Bearer ${CVM_TEMPO_QUERY_TOKEN}
+      tlsCACert: ${CVM_TEMPO_CA_PEM}

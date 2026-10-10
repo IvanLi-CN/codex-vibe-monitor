@@ -24,16 +24,24 @@
 - REQ-010: 请求头与完整 body 生命周期分开；一次 invocation 在规范去重边界计一次，upstream attempt 和重试独立；coordinator、pool、queue、SQL execution、ACK 与 enqueue-to-commit 为真实来源窗口，不把均值当样本。 covers: [指标迁移](METRICS.md)
 - REQ-011: SQLx tracing 不受全局日志过滤，最终 router 仅安装一次 hotpath layer；函数默认 10% 抽样并显示样本数，SQL/锁及关键 SDK 指标完整观测。 covers: [hotpath 合同](../../design/performance-observability.md#hotpath-与应用-api)
 - REQ-012: 正式 Grafana dashboard、datasource UID、变量、规则和告警从版本控制 provision；无样本分位数为空，平台不支持和外部连通性未检查保持 unknown。 covers: [仪表盘合同](../../design/performance-observability.md#仪表盘告警和留存)
-- REQ-012A: 五个固定 dashboard 按“发现异常 → 分类 → 定位原因 → 查看证据”组织；总览默认业务 endpoint，读数/趋势/归因遵守 24 列和窄屏顺序，Stat/Time series/横向条形图/Table 使用固定颜色、单位、样本数与中文说明，高级说明可折叠并通过保留时间/实例的 dashboard links 下钻。窗口计数使用 `increase`、速率使用 `rate`，经典 Histogram 先合并 bucket 后算分位数，hotpath 只使用 native Histogram；表格查询整个所选窗口，缺测、零值、低样本和过期读数保持可区分。 covers: [仪表盘布局与查询合同](../../design/performance-observability.md#仪表盘布局与查询合同)
-- REQ-013: 人类通过公网 HTTPS 与交互认证访问 Grafana，Agent 用独立 Viewer Token 经 HTTPS 查询，无需 SSH 或直连 Prometheus；入口只为必要机器路径跳过交互挑战且仍验证 Token，拒绝缺失/错误 Token 与写请求。 covers: [访问合同](../../design/performance-observability.md#101-服务访问和权限)
+- REQ-012A: 六个固定 dashboard 按“发现异常 → 分类 → 定位原因 → 查看证据”组织；总览默认业务 endpoint，读数/趋势/归因遵守 24 列和窄屏顺序，Stat/Time series/横向条形图/Table 使用固定颜色、单位、样本数与中文说明，高级说明可折叠并通过保留时间/实例的 dashboard links 下钻。窗口计数使用 `increase`、速率使用 `rate`，经典 Histogram 先合并 bucket 后算分位数，hotpath 只使用 native Histogram；表格查询整个所选窗口，缺测、零值、低样本和过期读数保持可区分。 covers: [仪表盘布局与查询合同](../../design/performance-observability.md#仪表盘布局与查询合同)
+- REQ-013: 人类通过公网 HTTPS 与交互认证访问 Grafana，Agent 用独立 Viewer Token 经 HTTPS 查询，无需 SSH 或直连 Prometheus；入口只为必要机器路径跳过交互挑战且仍验证 Token，拒绝缺失/错误 Token 与写请求。机器 Token 必须来自 regular file，权限只允许 owner access 与可选 group read（例如 0600/0640），拒绝 group write/execute 及所有 other-user bits。 covers: [访问合同](../../design/performance-observability.md#101-服务访问和权限)
 - REQ-014: SSH 仅用于本项目 hotpath 与 CPU 诊断；CPU 对运行实例 attach，默认 100 Hz/30 秒、上限 60 秒、单实例单并发，符号必须匹配 build ID，产物保留 7 天/512 MiB，不新增 daemon 或任意 PID/root shell。 covers: [CPU 合同](../../design/performance-observability.md#cpu-采样与-ssh-运维合同)
 - REQ-015: 本次退役限定 v3→v4，核验固定 digest 的 v3 镜像与停止 writer 的身份，拒绝 v2 直接跨 major 及 v4 来源。须精确核验文件身份与前一 major 的完整 schema-v1 DDL，包含默认值、表约束与索引，仅忽略格式和注释；停旧 writer 后含 WAL 一致归档并校验，再移出应用挂载。未知归属、DDL 或备份失败保留源。阶段清单可重入，中断用前向恢复，恢复备份是独立灾难恢复操作。 covers: [退役合同](../../design/performance-observability.md#旧系统一次性退役与恢复)
-- REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job，测量 job 串行运行同一候选镜像的默认观测开/关、相同非饱和负载与重复稳定窗口。CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过，本地或共享测试机结果不能证明预算达标。性能实验属于专项验收或辅助检查，不得通过 Build Artifacts 的依赖成为每个 PR 的必要门禁。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
-- REQ-016A: PSI 的 `some avg10/avg60` 准入阈值为 CPU <2%、IO <5%、memory <0.1%；每轮 60 秒预热后按 20 秒间隔取得连续三次安静样本，每轮额外等待最多 300 秒、六轮累计最多 900 秒。正式窗口绑定开关、配对编号和 UTC/单调起止时间，以 10 秒间隔和初末边界样本判定环境；验收应用固定到 runner affinity 中的一个 CPU，辅助容器保留 runner 默认 affinity，不额外设置 `cpuset`，布局写入并由证据校验；超阈值、缺失/非法样本、采集错误或间隔超过 20 秒均记为 unavailable，不得签发性能验收通过卡，不自动重跑或筛选通过样本。预热与停启压力不作为正式窗口样本，等待仍受 70 分钟 job 上限约束。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016: 性能 A/B 必须由 GitHub Actions 的 GitHub-hosted runner 完成，生产镜像构建与测量使用不同 job，测量 job 串行运行同一候选镜像的全部关闭、metrics-only 和 metrics＋trace 三种模式、相同非饱和负载与重复稳定窗口。CPU 每完成请求及 p95 增幅均不得超过 5%；环境干扰不能记为通过，本地或共享测试机结果不能证明预算达标。性能实验属于专项验收或辅助检查，不得通过 Build Artifacts 的依赖成为每个 PR 的必要门禁；性能工作流只接受默认分支控制的 `pull_request_target` 显式标签事件，测量脚本来自 base checkout，候选代码只构建为隔离镜像；证据绑定 candidate SHA，任意新提交使旧卡失效，必须在新 head 上重新显式触发一次性测量。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+- REQ-016A: PSI 的 `some avg10/avg60` 准入阈值为 CPU <2%、IO <5%、memory <0.1%；每轮 60 秒预热后按 20 秒间隔取得连续三次安静样本，每轮额外等待最多 300 秒、九轮累计最多 900 秒。正式窗口绑定开关、配对编号和 UTC/单调起止时间，以 10 秒间隔和初末边界样本记录环境；验收应用固定到 runner affinity 中的一个 CPU，辅助容器保留 runner 默认 affinity，不额外设置 `cpuset`，并按模式只保留必要服务：off 无 Prometheus/Grafana/Tempo/entry，metrics-only 仅有 Prometheus，metrics+trace 有 Prometheus/Tempo/entry，Grafana 始终停止；布局写入并由证据校验。窗口内压力超阈值保留为 `pressureExceededSamples` 与原始 PSI 证据，作为负载期间资源争用的解释字段；缺失/非法样本、采集错误、首个正式样本不满足准入或间隔超过 20 秒仍记为 unavailable，不得签发性能验收通过卡，不自动重跑或筛选通过样本。三次窗口的 CV 超过 5% 时仍保留失败证据；只有 CPU/request 与 p95 的中位数观测增量都在 5% 内且没有 trace 丢失，才可将其分类为环境 unavailable。预热与停启压力不作为正式窗口样本，等待仍受 100 分钟 job 上限约束。 covers: [验收合同](../../design/performance-observability.md#验收与实施交接)
+
+- REQ-017: 所有 HTTP `/v1` 代理路径在鉴权和路由之前开始独立诊断，使用同一单调及 UTC 基准；响应 head、首字节、有效 model delta 和 body EOF/error/cancel 是累计里程碑，body 终结仅记录一次。不存在的阶段标为不适用，应用入口以前的传输及客户端收全数据不在计时范围。 covers: [生命周期合同](../../design/request-lifecycle-observability.md)
+- REQ-018: 具名本地资源等待导出事件次数/耗时、每请求累计/最大值和受影响请求数；响应窗口内实际区间去重并集用于等待占比，嵌套阶段和不同分位数不得相加，未归因 wall time 不得解释为 CPU 或调度等待。取消区间为已观测下界。 covers: [等待合同](../../design/request-lifecycle-observability.md)
+- REQ-019: 响应结束与关联终态持久化分别计时；上下文只在内存任务/队列传播，不改变 SQLite、业务 StageTimings 或 terminal journal 格式。批量共享工作须明确关联，重放或合并不得伪造或重复关联。 covers: [ADR 0033](../../adr/0033-external-request-diagnostic-traces.md)
+- REQ-020: 正常容量内全量轻量记录通过 OpenTelemetry 0.33.0 后台 batch processor 与 OTLP/HTTP protobuf 导出到 Tempo 3.1.0，严格白名单属性，不自动导出 tracing 日志、baggage 或环境资源。每请求细节上限为 64 spans/64 KiB、8 attempts、8 个最长等待区间，活跃上下文 1024；SDK 队列 2048、batch 128、间隔 1 秒，HTTP body 1 MiB、超时 2 秒、无重试、关闭 flush 最多 2 秒；超限丢弃诊断并记录固定原因，业务继续完成。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
+- REQ-021: tracing 默认关闭，新配置或初始化失败只使 tracing degraded，`OBSERVABILITY_ENABLED=false` 关闭全部观测。OTLP 仅完整无凭据 HTTPS `/v1/traces` 地址、私有 token 文件、禁重定向及环境代理；environment/instance 默认 unknown 并与 Prometheus 标签一致。能力 API 仅增加 tracing 的本地状态和固定入口，不依赖 Tempo 健康。 covers: [接入合同](../../design/request-lifecycle-observability.md)
+- REQ-022: 共享 Tempo 接入使用独立 CVM tenant，摄入与查询凭据分离，认证入口覆盖 tenant header，拒绝伪造权限并关闭跨租户查询；原始接口不暴露公网。隔离 fixture 保留 24 小时，WAL/blocks/工作目录同处 512 MiB tmpfs、1 CPU/2 GiB、512 KiB/s/1 MiB burst、128 KiB/trace、查询并发 2/超时 5 秒；这些不构成正式容量或存储建议。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
+- REQ-023: Grafana 原生统计及案例页提供正常随机候选、慢响应（≥30 秒）、高本地等待（≥250 ms）、重试、错误/取消五类，每类最多 3 条；随机候选为独立 TraceID 哈希 1/16 标记，不限制采集。手动刷新，时间及 service/environment/instance/endpoint 筛选跳转，原生瀑布图展示选定 trace；缺测、截断、未完整、导出丢失及超过 24 小时窗口明确说明。 covers: [案例合同](../../design/request-lifecycle-observability.md)
 
 ## API Contract
 
-- `GET /api/system/observability`: 本地能力、状态、Grafana public URL、固定 dashboard UID 与变量；无凭据与外部历史。
+- `GET /api/system/observability`: 保留本地能力、状态、Grafana public URL、固定 dashboard UID 与变量；增加 `tracing` 的本地 enabled/state、datasourceUid=`cvm-tempo` 与 caseDashboardUid=`cvm-proxy-cases`，不查询 Tempo 决定健康，不含凭据与外部历史。
 - `POST /api/system/observability/browser`: 固定有界浏览器样本；沿用用户与同源写入校验。
 - `GET /api/system/observability/hotpath/{server,sql,functions}`: 独立 read Token 与固定白名单报告，不可用返回 `503 profiler_unavailable`。
 - 旧 `/api/system/performance`、`/health` 与 `/browser` 仅静态 `410 Gone`，不读取旧库。
@@ -53,13 +61,19 @@
 - VER-005: HTTPS 机器查询、只读权限、凭据隔离、报告限额与降级可观察；报告适配使用依赖的实际序列化模型并覆盖应用实际的组合长启动 SQL，SQL 文本保持整份报告的 1 MiB 边界；hotpath SQL 标签包含 UTF-8 与截断唯一性后缀后符合 Prometheus 标签值上限，抓取不因长启动 SQL 失败；故障只记录报告类型与错误类别，图表和规则可重建。 covers: REQ-007, REQ-012, REQ-013
 - VER-006: 原运行实例 CPU 热点可用匹配符号解析；固定一次性镜像读取原映射路径，应用镜像保留 profiler 的第三方许可，采样目标、并发、时限与产物容量受限。 covers: REQ-014
 - VER-007: WAL、自定义路径、symlink、absent、损坏、未知归属、中断、重复及备份恢复有证据；v3 镜像与 schema-v1 来源可迁移，v2/v4 版本、额外 CHECK、不同 DEFAULT 与未知索引被拒绝，源文件摘要保持不变；新进程无旧库依赖，业务状态保留。 covers: REQ-001, REQ-005, REQ-015
-- VER-008: Actions 测量 job 验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三对交替 300 秒窗口及 60 秒预热。完成窗口无积压，两组重复窗口 CV 各不超过 5%，CPU 每完成请求与 p95 增幅各不超 5%；逐窗口准入和测量期间压力按 REQ-016A 判定，超限与缺证不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡，阻断现有 Build Artifacts 门禁。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
-- VER-009: 五个 dashboard JSON 可独立 provision，UID、`cvm-prometheus`、变量、导航/任务深链接、面板类型/布局、PromQL 聚合和缺测说明通过静态合同检查；桌面与 393×852 窄屏的视觉验收必须来自当前候选实际 provision 的 Grafana/Prometheus 实例，真实渲染不可用时保持未验证，不得用生产截图或合成图片替代。 covers: REQ-009, REQ-012, REQ-012A
+- VER-008: 当需要宣称观测开销预算达标时，Actions 测量 job 必须验证 Candidate SHA、镜像身份、runner 类型和独立临时目录，记录 runner/资源环境、三轮交错九个 300 秒窗口及 60 秒预热。完成窗口无积压，三组重复窗口 CV 各不超过 5%，关闭与完整开启的 CPU 每完成请求与 p95 增幅各不超 5%，另报 trace 增量且不得额外放宽预算；摄入失败或容量丢弃不能记为通过；逐窗口准入按 REQ-016A 判定，窗口内压力作为原始证据和解释字段保留，缺证或结构性采集故障不得签发通过卡。失败仍上传明确白名单内的逐窗口判定、原始资源样本及绑定 run/attempt 的七字段卡。该专项验收不在普通功能 PR 中默认启动；未显式请求时，PR 可以在完成适用的功能、集成、视觉、CI 和审查门禁后就绪，但不得把性能预算写成已验证结论。辅助 job 不加入通用 Build Artifacts 依赖。运行时集成卡与完整验收卡分开，本地、自托管或共享环境不能签发预算通过证据。 covers: REQ-016, REQ-016A
+- VER-009: 六个 dashboard JSON 可独立 provision，UID、`cvm-prometheus` 与 `cvm-tempo`、变量、导航/任务深链接、面板类型/布局、PromQL 聚合和缺测说明通过静态合同检查；桌面与 393×852 窄屏的视觉验收必须来自当前候选实际 provision 的 Grafana/Prometheus 实例，真实渲染不可用时保持未验证，不得用生产截图或合成图片替代。 covers: REQ-009, REQ-012, REQ-012A
+
+- VER-010: 定向生命周期回归覆盖前置拒绝、两次 attempt、EOF/error/cancel 仅结束一次及晚到 commit；等待统计验证嵌套区间并集、分母、固定标签及有界丢弃，导出白名单与初始化失败隔离通过回归。 covers: REQ-017, REQ-018, REQ-019, REQ-020, REQ-021
+- VER-011: 既有隔离验收实际摄入 Tempo、按类别搜索及 TraceID 获取晚到持久化，验证独立权限与伪造 tenant 被覆盖；当前 provision 的桌面及 393×852 Grafana 案例和瀑布图提供视觉证据。 covers: REQ-022, REQ-023
 
 ## Related ADRs
 
 - [ADR 0020: Retire downstream WebSocket proxy support](../../adr/0020-retire-downstream-websocket-proxy.md)
 - [ADR 0025: External Performance Observability](../../adr/0025-external-performance-observability.md)
+
+- [ADR 0033: External request diagnostic traces](../../adr/0033-external-request-diagnostic-traces.md)
+- [ADR 0034: Shared Tempo request tracing](../../adr/0034-shared-tempo-request-tracing.md)
 
 ## Visual Evidence
 
@@ -69,3 +83,12 @@ Mock-only `ui_demo` evidence uses the current implementation, including the reta
 ![Mobile Grafana entry](assets/observability-entry-mobile.png)
 ![Unconfigured Grafana](assets/observability-unconfigured.png)
 ![Task deep link](assets/observability-task.png)
+
+当前生命周期统计、分类案例和原生 Trace 瀑布图来自隔离 Grafana/Tempo synthetic preview；桌面视口为 1280×900，移动视口为 393×852，使用固定 UTC 时间窗和合成 fixture。六张截图均已向主人展示并确认准确；新路径相对于基线为 current-only，页面级 trim-only 预处理均无需裁剪。
+
+![Lifecycle statistics desktop](assets/lifecycle-stats-desktop.png)
+![Lifecycle statistics mobile](assets/lifecycle-stats-mobile.png)
+![Lifecycle cases desktop](assets/lifecycle-cases-desktop.png)
+![Lifecycle cases mobile](assets/lifecycle-cases-mobile.png)
+![Lifecycle waterfall desktop](assets/lifecycle-waterfall-desktop.png)
+![Lifecycle waterfall mobile](assets/lifecycle-waterfall-mobile.png)
