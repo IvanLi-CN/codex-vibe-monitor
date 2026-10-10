@@ -10,7 +10,7 @@
 
 隔离配置复用 `ops/observability/compose.yml` 和 acceptance fixture，固定 Tempo 3.1.0 digest、tenant cvm、24h 留存及单一 512MiB tmpfs；摄入/查询身份分别认证后覆盖 tenant header。Grafana provision `cvm-tempo` 与 `cvm-proxy-cases`，统计页新增阶段/等待分布与同窗统计，案例页五类各最多 3 条且手动刷新。已有 synthetic preview 提供合成统计和五类 trace 瀑布，无正式数据。正式环境存储、凭据、容量、主机资源及上线效果尚未验证。
 
-生命周期、等待并集、晚到 commit、shared batch/replay、白名单、有界丢弃与 exporter 失败有定向 Rust 回归；Python 回归覆盖固定查询/权限、九窗口实测证据和单一 5% 预算。全工程检查及当前 SHA 的运行、性能证据由既有 CI 提供；在实际渲染、当前候选 Actions 实测卡和正式审查完成前，不能将配置或单元测试结果当作完整验收通过。
+生命周期、等待并集、晚到 commit、shared batch/replay、白名单、有界丢弃与 exporter 失败有定向 Rust 回归；Python 回归覆盖固定查询/权限、九窗口实测证据和单一 5% 预算。全工程检查及当前 SHA 的运行、性能证据由既有 CI 提供；实际渲染和正式审查是本次功能交付门禁。只有在显式启动性能专项时，当前候选 Actions 实测卡才是性能预算结论的必要证据；未启动或不可用不等于预算通过，也不阻塞本次功能 PR 的就绪。
 
 ## PR 检查与性能验收边界
 
@@ -19,7 +19,8 @@
 job；其中性能镜像和长测量只有在 PR 添加一次性 `run:observability-performance`
 标签时启动，普通 PR 与 merge queue 事件不会默认消耗长时 runner。继续上传失败或
 缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact producer。质量门禁合同和自测
-覆盖此依赖边界，未改变 5% 性能验收阈值。
+覆盖此依赖边界，未改变 5% 性能验收阈值。本次请求生命周期 PR 的就绪判断不宣称该
+预算已验证；预算结论留给显式启动的专项运行。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
 当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。
 历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及
