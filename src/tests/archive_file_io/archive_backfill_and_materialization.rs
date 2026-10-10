@@ -6785,6 +6785,30 @@ async fn startup_summary_proof_recovery_reopens_materialized_archive_and_replays
         SUMMARY_PROJECTION_ARCHIVE_REPLAY_TARGETS.len() as i64
     );
 
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = 'authoritative' \
+         WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("promote a fully proved archive to authoritative");
+    let error = sqlx::query(
+        "UPDATE archive_batches SET sha256 = 'replacement-sha-without-proof' \
+         WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect_err("changing an authoritative archive identity must require new proofs");
+    assert!(
+        error
+            .to_string()
+            .contains("completed codex_invocations archive requires Summary publication proof")
+    );
+
     cleanup_temp_test_dir(&temp_dir);
 }
 

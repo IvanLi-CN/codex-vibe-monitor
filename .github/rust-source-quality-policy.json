@@ -93,7 +93,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6739,
+      "line_budget": 6740,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
@@ -111,7 +111,7 @@
     {
       "path": "src/tests/archive_file_io/archive_backfill_and_materialization.rs",
       "role": "test_helper",
-      "line_budget": 12827,
+      "line_budget": 12908,
       "next_module_workstream": "Split archive backfill/materialization fixtures by storage, reconciliation, and replay scenarios."
     },
     {
