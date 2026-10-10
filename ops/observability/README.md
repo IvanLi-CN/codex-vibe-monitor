@@ -178,7 +178,9 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
-完整性能验收由 CI PR 的 GitHub-hosted Actions job 执行，未通过不能宣布 Ready。
+完整性能验收由显式添加 `run:observability-performance` 标签后的一次性 GitHub-hosted
+Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把未运行写成预算已验证。
+性能 evidence 始终绑定 candidate SHA；任意新提交都会使旧卡失效，必须在新 head 上重新添加一次性标签，普通 `synchronize` 运行不会自动重跑长测。
 任何测试环境通过都不能代替 101 公网验收。
 
 使用已提交候选运行 `scripts/shared-testbox-performance-acceptance --candidate <full SHA> --samply /srv/codex/agents/<thread>/tools/samply-x86_64-unknown-linux-gnu/samply --seconds 300 --rate 5`。
@@ -198,8 +200,9 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 资源准入使用 PSI `some avg10/avg60`：CPU <2%、IO <5%、memory <0.1%。每轮
 预热后按 20 秒间隔取得连续三次安静样本；额外等待每轮最多 300 秒、总计 900 秒。
 正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；压力
-超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable 并阻断门禁。
-等待超限不自动重跑；70 分钟 job 上限、5% CV 和开销预算保持不变。
+超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable。仅环境不可用的
+结果由分类器保留证据并作为中性辅助结果；功能失败或真实预算超限仍使这次显式验收失败。
+等待超限不自动重跑；100 分钟性能 job 上限、5% CV 和开销预算保持不变。
 `measurement-windows.json` 保存逐窗口判定，`resource-observer.jsonl` 与
 `environment-admission.jsonl` 保存带窗口身份的原始证据，失败时也按白名单上传。
 
@@ -210,7 +213,8 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 每次 attempt 的 `observability-acceptance-<run_id>-<attempt>` artifact 保留 14 天，
 包含原始样本、比较摘要、runner/资源环境、场景结果与七字段 `empirical-card.json`。
 只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions
-run/attempt。失败或环境不可用阻断现有 `Build Artifacts` 必需检查，无需新增远端保护规则。
+run/attempt。失败或环境不可用不会成为普通 `Build Artifacts` 的依赖；显式启动的性能
+job 仍保留完整失败/不可用证据，不得把辅助结果当作预算通过卡，无需新增远端保护规则。
 旧共享测试机 A/B 与旧 SQLite 验收卡仅作历史诊断记录。
 
 ## 有界 Actions CPU 诊断

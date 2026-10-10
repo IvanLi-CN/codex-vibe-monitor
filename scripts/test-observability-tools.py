@@ -4,6 +4,7 @@ import importlib.machinery
 import importlib.util
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -87,6 +88,19 @@ class TempoNetworkTests(unittest.TestCase):
         self.assertIn("dedicated OBSERVABILITY_TEMPO_NETWORK", gateway)
 
 class TraceAccessTests(unittest.TestCase):
+    def test_machine_token_files_require_private_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "token"
+            path.write_text("private-observe-token\n")
+            os.chmod(path, 0o640)
+            with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(path)}):
+                self.assertEqual(observe.token_file("TEST_OBSERVE_TOKEN"), "private-observe-token")
+            for mode in (0o660, 0o644):
+                os.chmod(path, mode)
+                with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(path)}):
+                    with self.assertRaisesRegex(ValueError, "optional group read only"):
+                        observe.token_file("TEST_OBSERVE_TOKEN")
+
     def search(self, category="normal", **extra):
         import urllib.parse
         query = {"q": observe.case_query(category), "start": 99900, "end": 100000, "limit": 3, **extra}
