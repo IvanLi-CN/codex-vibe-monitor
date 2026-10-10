@@ -7,7 +7,7 @@
     "version_impact": "patch"
   },
   "durable_state": {
-    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, and invocation_rollup_hourly derived rows used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable archive, seen-ID, live-cursor, and incomplete state.",
+    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, and invocation_rollup_hourly derived rows used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state.",
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
@@ -38,7 +38,7 @@
     "historical_data_backfill_or_transformation": [
       {
         "id": "backfill-001",
-        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a marker is NULL, blank, unknown, stale, or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with at most 4,096 completed authoritative batches per transaction and durable archive ID and seen-invocation-ID state; the driver resumes while that state or an incomplete marker exists even if the current page repairs the marker predicate, and returns before additive replay until completion. When a materialized authority bucket is missing, safe buckets are cleared before later additive pages rebuild them. Restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
+        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a marker is NULL, blank, unknown, stale, or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with one completed authoritative archive per pass, at most 256 source rows and 256 live rows in any write transaction, and durable started, archive ID, per-archive row ID, seen-invocation-ID, and live-cursor state; the driver resumes while that state or an incomplete marker exists even if the current page repairs the marker predicate, and returns before additive replay until completion. Archive bytes are SHA-verified before and after extraction and the manifest identity is rechecked before rollup writes. When a materialized authority bucket is missing, safe buckets are cleared before later additive pages rebuild them. Restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
         "order": 3,
         "depends_on": [
           "ddl-001",
@@ -62,7 +62,8 @@
       "Stale nonblank markers or materialized archives with incomplete Summary marker proof remain eligible for repair until the full existing rebuild converges",
       "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
       "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail",
-      "A full-repair page that clears the marker predicate still resumes from its durable archive cursor before any additive replay can run"
+      "A full-repair page that clears the marker predicate still resumes from its durable archive and per-archive row cursors before any additive replay can run",
+      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication"
     ],
     "pause_points": [
       "After ensure_schema commits the index and before background repair starts",

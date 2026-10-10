@@ -7,12 +7,17 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET: &s
     "codex_invocations_summary_rollup_v2_live_cursor";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET: &str =
     "codex_invocations_summary_rollup_v2_archive_cursor";
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET: &str =
+    "codex_invocations_summary_rollup_v2_archive_row_cursor";
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET: &str =
+    "codex_invocations_summary_rollup_v2_started";
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET: &str =
     "codex_invocations_summary_rollup_v2_incomplete";
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET: &str =
     "codex_invocations_summary_rollup_v2_seen_ids";
 pub(crate) const MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX: &str =
     "completed invocation archive is missing during summary rollup repair";
+const INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE: i64 = 256;
 const SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT: usize = SUMMARY_ACCOUNT_ARCHIVE_MAX_BATCHES;
 
 #[derive(Debug, Clone)]
@@ -1148,6 +1153,7 @@ pub(crate) struct ArchiveBatchPathRow {
 struct SummaryArchiveRepairPageRow {
     id: i64,
     file_path: String,
+    sha256: String,
     month_key: Option<String>,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -1295,6 +1301,33 @@ async fn persist_invocation_summary_repair_seen_ids(
             .push_bind(row.id);
     });
     query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn retain_unseen_invocation_summary_repair_rows(
+    tx: &mut SqliteConnection,
+    rows: &mut Vec<InvocationHourlySourceRecord>,
+) -> Result<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT invocation_id FROM hourly_rollup_repair_seen_invocation_ids WHERE dataset = ",
+    );
+    query.push_bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET);
+    query.push(" AND invocation_id IN (");
+    let mut separated = query.separated(", ");
+    for row in rows.iter() {
+        separated.push_bind(row.id);
+    }
+    separated.push_unseparated(")");
+    let seen = query
+        .build_query_scalar::<i64>()
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect::<HashSet<_>>();
+    rows.retain(|row| !seen.contains(&row.id));
     Ok(())
 }
 
@@ -1788,12 +1821,13 @@ async fn load_completed_invocation_summary_repair_page(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     after_archive_id: i64,
     limit: usize,
-) -> Result<Vec<(i64, ArchiveBatchPathRow)>> {
+) -> Result<Vec<(i64, String, ArchiveBatchPathRow)>> {
     let rows = sqlx::query_as::<_, SummaryArchiveRepairPageRow>(
         r#"
         SELECT
             id,
             file_path,
+            sha256,
             month_key,
             coverage_start_at,
             coverage_end_at,
@@ -1817,9 +1851,71 @@ async fn load_completed_invocation_summary_repair_page(
         .into_iter()
         .map(|row| {
             let id = row.id;
-            (id, row.into_path_row())
+            let sha256 = row.sha256.clone();
+            (id, sha256, row.into_path_row())
         })
         .collect())
+}
+
+async fn load_invocation_summary_repair_archive_chunk(
+    archive_row: &ArchiveBatchPathRow,
+    expected_sha256: &str,
+    start_after_id: i64,
+    limit: i64,
+) -> Result<(Vec<InvocationHourlySourceRecord>, i64, bool)> {
+    let archive_path = PathBuf::from(archive_row.file_path());
+    if !archive_path.exists() {
+        bail!(
+            "{}: {}",
+            MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX,
+            archive_row.file_path()
+        );
+    }
+    let source_sha_before = sha256_hex_file(&archive_path)?;
+    if source_sha_before != expected_sha256 {
+        bail!(
+            "summary rollup repair archive SHA changed before read: {}",
+            archive_row.file_path()
+        );
+    }
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    if temp_path.exists() {
+        remove_temp_sqlite_artifacts(&temp_path);
+    }
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_for_path(&temp_path))
+        .await
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+    let mut rows = load_invocation_hourly_source_rows_after_id(
+        &archive_pool,
+        start_after_id,
+        InvocationSourceScope::All,
+        limit.saturating_add(1),
+    )
+    .await?;
+    archive_pool.close().await;
+    let source_sha_after = sha256_hex_file(&archive_path)?;
+    if source_sha_after != expected_sha256 {
+        drop(temp_cleanup);
+        bail!(
+            "summary rollup repair archive SHA changed after read: {}",
+            archive_row.file_path()
+        );
+    }
+    let has_more = rows.len() > limit as usize;
+    if has_more {
+        rows.truncate(limit as usize);
+    }
+    let next_cursor = rows.last().map(|row| row.id).unwrap_or(start_after_id);
+    drop(temp_cleanup);
+    Ok((rows, next_cursor, !has_more))
 }
 
 pub(crate) async fn load_completed_invocation_archives_in_range(
@@ -5387,6 +5483,55 @@ async fn invocation_summary_repair_archive_cursor_state_tx(
     Ok((exists, cursor))
 }
 
+async fn invocation_summary_repair_archive_row_cursor_state(
+    pool: &Pool<Sqlite>,
+) -> Result<(bool, i64)> {
+    let exists = hourly_rollup_progress_exists(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET,
+    )
+    .await?;
+    let cursor = if exists {
+        load_hourly_rollup_live_progress(
+            pool,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET,
+        )
+        .await?
+    } else {
+        0
+    };
+    Ok((exists, cursor))
+}
+
+async fn invocation_summary_repair_started(pool: &Pool<Sqlite>) -> Result<bool> {
+    hourly_rollup_progress_exists(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET).await
+}
+
+async fn summary_rollup_repair_manifest_matches(
+    tx: &mut SqliteConnection,
+    archive_id: i64,
+    archive_row: &ArchiveBatchPathRow,
+    expected_sha256: &str,
+) -> Result<bool> {
+    Ok(sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT EXISTS(
+            SELECT 1 FROM archive_batches
+            WHERE id = ?1
+              AND file_path = ?2
+              AND status = 'completed'
+              AND sha256 = ?3
+        )
+        "#,
+    )
+    .bind(archive_id)
+    .bind(archive_row.file_path())
+    .bind(expected_sha256)
+    .fetch_one(&mut *tx)
+    .await?
+        != 0)
+}
+
 async fn repair_invocation_summary_rollups_with_mode(
     pool: &Pool<Sqlite>,
     force_rebuild: bool,
@@ -5551,15 +5696,7 @@ async fn repair_invocation_summary_rollups_with_mode(
 }
 
 async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Result<bool> {
-    let mut tx = pool.begin().await?;
-    let (mut archive_cursor_exists, mut archive_cursor) =
-        invocation_summary_repair_archive_cursor_state_tx(tx.as_mut()).await?;
-    let incomplete_exists = hourly_rollup_progress_exists(
-        &mut *tx,
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
-    )
-    .await?;
-    let archive_rows = load_completed_invocation_archive_paths(tx.as_mut()).await?;
+    let archive_rows = load_completed_invocation_archive_paths(pool).await?;
     let mut missing_materialized_bucket_epochs = HashSet::new();
     let mut missing_materialized_archive_has_unknown_scope = false;
     let missing_materialized_archive_exists = archive_rows.iter().any(|archive_row| {
@@ -5579,37 +5716,53 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             missing_materialized_bucket_epochs.extend(bucket_epochs);
         }
     }
-    if archive_cursor_exists && incomplete_exists && !missing_materialized_archive_exists {
-        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
-            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
-            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
-            .execute(tx.as_mut())
+
+    let (archive_cursor_exists, mut archive_cursor) =
+        invocation_summary_repair_archive_cursor_state(pool).await?;
+    let (mut archive_row_cursor_exists, mut archive_row_cursor) =
+        invocation_summary_repair_archive_row_cursor_state(pool).await?;
+    let incomplete_exists =
+        hourly_rollup_progress_exists(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
             .await?;
-        archive_cursor_exists = false;
+    let repair_marker_mismatch = summary_rollup_backfill_requires_full_repair(pool).await?;
+    let started = invocation_summary_repair_started(pool).await?;
+    let restart = archive_cursor_exists
+        && !missing_materialized_archive_exists
+        && (incomplete_exists || repair_marker_mismatch);
+    if restart {
         archive_cursor = 0;
+        archive_row_cursor_exists = false;
+        archive_row_cursor = 0;
     }
-    let first_page = !archive_cursor_exists;
+    let first_page = !started || restart;
     if first_page {
+        let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
             .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
             .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
             .execute(tx.as_mut())
             .await?;
-    }
-    let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
-        || missing_materialized_archive_has_unknown_scope;
-    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
-    if first_page {
-        clear_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
+        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+            .execute(tx.as_mut())
+            .await?;
+        let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
+            || missing_materialized_archive_has_unknown_scope;
         if preserve_materialized_archives {
             if !missing_materialized_archive_has_unknown_scope {
-                cleared_rollup_buckets = clear_invocation_summary_rollups_outside_buckets(
+                clear_invocation_summary_rollups_outside_buckets(
                     tx.as_mut(),
                     &missing_materialized_bucket_epochs,
                 )
                 .await?;
             }
         } else {
+            sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+                .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET)
+                .execute(tx.as_mut())
+                .await?;
+            clear_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
             sqlx::query("DELETE FROM invocation_rollup_hourly")
                 .execute(tx.as_mut())
                 .await?;
@@ -5617,100 +5770,248 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
                 .execute(tx.as_mut())
                 .await?;
         }
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+        tx.commit().await?;
+        archive_cursor = 0;
+        archive_row_cursor_exists = false;
+        archive_row_cursor = 0;
     }
-    let mut page_rows = load_completed_invocation_summary_repair_page(
-        tx.as_mut(),
+
+    let page_rows = load_completed_invocation_summary_repair_page(
+        pool,
         archive_cursor,
         SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT,
     )
     .await?;
-    let has_more = page_rows.len() > SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT;
-    if has_more {
-        page_rows.truncate(SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT);
-    }
-    let (shared_live_cursor, repair_live_cursor) = {
-        let shared_live_cursor =
-            load_hourly_rollup_live_progress_tx(tx.as_mut(), HOURLY_ROLLUP_DATASET_INVOCATIONS)
-                .await?;
-        let repair_live_cursor = load_hourly_rollup_live_progress_tx(
-            tx.as_mut(),
-            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-        )
-        .await?;
-        (shared_live_cursor, repair_live_cursor)
-    };
-    let mut seen_ids = load_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
-    let mut repair_incomplete = incomplete_exists && !first_page;
-    for (_, archive_row) in &page_rows {
-        let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
-        let archive_path = PathBuf::from(archive_row.file_path());
-        if materialized_archive && !archive_path.exists() {
-            if !mark_materialized_invocation_summary_archive_replayed_tx(tx.as_mut(), archive_row)
+    let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
+        || missing_materialized_archive_has_unknown_scope;
+    let mut repair_incomplete = if first_page { false } else { incomplete_exists };
+
+    let skippable_prefix_len = page_rows
+        .iter()
+        .take(SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT)
+        .take_while(|(_, _, archive_row)| {
+            let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+            let archive_path = PathBuf::from(archive_row.file_path());
+            let archive_bucket_epochs =
+                archive_bucket_start_epochs_for_row(archive_row).unwrap_or_default();
+            (materialized_archive && !archive_path.exists())
+                || (preserve_materialized_archives
+                    && (missing_materialized_archive_has_unknown_scope
+                        || archive_bucket_epochs
+                            .iter()
+                            .any(|bucket| missing_materialized_bucket_epochs.contains(bucket))))
+        })
+        .count();
+    if skippable_prefix_len > 0 {
+        let mut tx = pool.begin().await?;
+        let mut skipped_archive_is_incomplete = false;
+        for (_, _, archive_row) in page_rows.iter().take(skippable_prefix_len) {
+            let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+            let archive_path = PathBuf::from(archive_row.file_path());
+            if materialized_archive
+                && !archive_path.exists()
+                && !mark_materialized_invocation_summary_archive_replayed_tx(
+                    tx.as_mut(),
+                    archive_row,
+                )
                 .await?
             {
-                repair_incomplete = true;
+                skipped_archive_is_incomplete = true;
             }
-            continue;
+            if preserve_materialized_archives {
+                skipped_archive_is_incomplete = true;
+            }
         }
-        let archive_bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
-        let overlaps_missing_materialized_archive = missing_materialized_archive_has_unknown_scope
-            || archive_bucket_epochs
-                .iter()
-                .any(|bucket| missing_materialized_bucket_epochs.contains(bucket));
-        if preserve_materialized_archives && overlaps_missing_materialized_archive {
-            // Replacing a shared bucket would erase the contribution of a missing materialized
-            // archive. Leave both archives for a later pass with a complete source set.
+        if skipped_archive_is_incomplete {
             repair_incomplete = true;
-            continue;
-        }
-        rebuild_invocation_summary_rollups_from_archive_batch(
-            tx.as_mut(),
-            archive_row,
-            InvocationSourceScope::All,
-            &mut seen_ids,
-            &mut cleared_rollup_buckets,
-            &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-            false,
-            true,
-        )
-        .await?;
-    }
-    let live_rebuild_start_id = if first_page {
-        if preserve_materialized_archives {
-            shared_live_cursor.max(repair_live_cursor)
-        } else {
-            0
-        }
-    } else {
-        repair_live_cursor.max(shared_live_cursor)
-    };
-    if first_page {
-        let mut restored_live_rows =
-            load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+            save_hourly_rollup_live_progress_tx(
                 tx.as_mut(),
-                &cleared_rollup_buckets.overall,
-                InvocationSourceScope::All,
-                live_rebuild_start_id,
+                INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
+                INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
             )
             .await?;
-        restored_live_rows.retain(|row| seen_ids.insert(row.id));
-        if !restored_live_rows.is_empty() {
-            persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
+        }
+        let last_archive_id = page_rows
+            .get(skippable_prefix_len - 1)
+            .map(|(archive_id, _, _)| *archive_id)
+            .expect("skippable archive prefix is non-empty");
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET,
+            last_archive_id,
+        )
+        .await?;
+        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        if page_rows.len() > SUMMARY_ROLLUP_FORCE_REBUILD_ARCHIVE_LIMIT {
+            return Ok(false);
+        }
+    }
+
+    if skippable_prefix_len == 0 {
+        if let Some((archive_id, expected_sha256, archive_row)) = page_rows.first() {
+            let materialized_archive = archive_row.historical_rollups_materialized_at.is_some();
+            let archive_path = PathBuf::from(archive_row.file_path());
+            let archive_bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+            let overlaps_missing_materialized_archive =
+                missing_materialized_archive_has_unknown_scope
+                    || archive_bucket_epochs
+                        .iter()
+                        .any(|bucket| missing_materialized_bucket_epochs.contains(bucket));
+            if materialized_archive && !archive_path.exists()
+                || preserve_materialized_archives && overlaps_missing_materialized_archive
+            {
+                let mut tx = pool.begin().await?;
+                let mut skipped_archive_is_incomplete = false;
+                if materialized_archive
+                    && !archive_path.exists()
+                    && !mark_materialized_invocation_summary_archive_replayed_tx(
+                        tx.as_mut(),
+                        archive_row,
+                    )
+                    .await?
+                {
+                    skipped_archive_is_incomplete = true;
+                }
+                if preserve_materialized_archives && overlaps_missing_materialized_archive {
+                    skipped_archive_is_incomplete = true;
+                }
+                if skipped_archive_is_incomplete {
+                    save_hourly_rollup_live_progress_tx(
+                        tx.as_mut(),
+                        INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
+                        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
+                    )
+                    .await?;
+                }
+                save_hourly_rollup_live_progress_tx(
+                    tx.as_mut(),
+                    INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET,
+                    *archive_id,
+                )
+                .await?;
+                sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+                    .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+                    .execute(tx.as_mut())
+                    .await?;
+                tx.commit().await?;
+                return Ok(false);
+            }
+
+            let (rows, next_row_cursor, archive_finished) =
+                load_invocation_summary_repair_archive_chunk(
+                    archive_row,
+                    expected_sha256,
+                    if archive_row_cursor_exists {
+                        archive_row_cursor
+                    } else {
+                        0
+                    },
+                    INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE,
+                )
+                .await?;
+            let mut tx = pool.begin().await?;
+            if !summary_rollup_repair_manifest_matches(
+                tx.as_mut(),
+                *archive_id,
+                archive_row,
+                expected_sha256,
+            )
+            .await?
+            {
+                tx.rollback().await?;
+                bail!(
+                    "summary rollup repair archive manifest changed before commit: {}",
+                    archive_row.file_path()
+                );
+            }
+            let mut rows = rows;
+            retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut rows).await?;
+            persist_invocation_summary_repair_seen_ids(tx.as_mut(), &rows).await?;
             upsert_invocation_hourly_rollups_tx(
                 tx.as_mut(),
-                &restored_live_rows,
+                &rows,
                 &INVOCATION_SUMMARY_ROLLUP_TARGETS,
             )
             .await?;
+            if archive_finished {
+                mark_hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    HOURLY_ROLLUP_TARGET_INVOCATIONS,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    archive_row.file_path(),
+                )
+                .await?;
+                mark_hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    archive_row.file_path(),
+                )
+                .await?;
+                save_hourly_rollup_live_progress_tx(
+                    tx.as_mut(),
+                    INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET,
+                    *archive_id,
+                )
+                .await?;
+                sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+                    .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+                    .execute(tx.as_mut())
+                    .await?;
+            } else {
+                save_hourly_rollup_live_progress_tx(
+                    tx.as_mut(),
+                    INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET,
+                    next_row_cursor,
+                )
+                .await?;
+            }
+            tx.commit().await?;
+            return Ok(false);
         }
     }
-    let live_cursor_id = rebuild_invocation_summary_rollups_from_live_rows(
-        tx.as_mut(),
+
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = load_hourly_rollup_live_progress(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let live_start_id = if preserve_materialized_archives {
+        shared_live_cursor.max(repair_live_cursor)
+    } else {
+        repair_live_cursor
+    };
+    let mut live_rows = load_live_invocation_hourly_source_rows_after_id(
+        pool,
+        live_start_id,
         InvocationSourceScope::All,
-        &mut seen_ids,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE.saturating_add(1),
+    )
+    .await?;
+    let live_has_more = live_rows.len() > INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE as usize;
+    if live_has_more {
+        live_rows.truncate(INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE as usize);
+    }
+    let live_cursor_id = live_rows.last().map(|row| row.id).unwrap_or(live_start_id);
+    let mut tx = pool.begin().await?;
+    retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut live_rows).await?;
+    persist_invocation_summary_repair_seen_ids(tx.as_mut(), &live_rows).await?;
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &live_rows,
         &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-        live_rebuild_start_id,
-        true,
     )
     .await?;
     save_hourly_rollup_live_progress_tx(
@@ -5719,55 +6020,31 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         live_cursor_id.max(shared_live_cursor),
     )
     .await?;
-    let last_processed_archive_id = page_rows.last().map(|(id, _)| *id);
-    if has_more {
-        if let Some(last_id) = last_processed_archive_id {
-            save_hourly_rollup_live_progress_tx(
-                tx.as_mut(),
-                INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET,
-                last_id,
-            )
-            .await?;
-        }
-        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
-            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
-            .execute(tx.as_mut())
-            .await?;
-        if repair_incomplete {
-            save_hourly_rollup_live_progress_tx(
-                tx.as_mut(),
-                INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
-                INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
-            )
-            .await?;
-        }
+    if live_has_more {
         tx.commit().await?;
         return Ok(false);
     }
     if repair_incomplete {
-        if let Some(last_id) = last_processed_archive_id {
-            save_hourly_rollup_live_progress_tx(
-                tx.as_mut(),
-                INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET,
-                last_id,
-            )
-            .await?;
-        }
-        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+        sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2, ?3, ?4)")
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+            .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET)
             .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET)
             .execute(tx.as_mut())
             .await?;
         save_hourly_rollup_live_progress_tx(
             tx.as_mut(),
-            INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
         )
         .await?;
         tx.commit().await?;
-        return Ok(false);
+        return Ok(true);
     }
-    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
+    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2, ?3, ?4)")
         .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
+        .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
+        .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET)
         .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
         .execute(tx.as_mut())
         .await?;
@@ -5810,12 +6087,13 @@ pub(crate) async fn backfill_missing_invocation_summary_archive_rollups(
     let incomplete_exists =
         hourly_rollup_progress_exists(pool, INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
             .await?;
-    if (archive_cursor_exists
+    let force_repair_required = archive_cursor_exists
         || incomplete_exists
-        || summary_rollup_backfill_requires_full_repair(pool).await?)
-        && !repair_invocation_summary_rollups_with_mode(pool, true).await?
-    {
-        return Ok(());
+        || summary_rollup_backfill_requires_full_repair(pool).await?;
+    if force_repair_required {
+        if !repair_invocation_summary_rollups_with_mode(pool, true).await? {
+            return Ok(());
+        }
     }
     let archive_rows = load_invocation_archives_missing_summary_rollup_markers(pool).await?;
     if archive_rows.is_empty() {
