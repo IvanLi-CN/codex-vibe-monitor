@@ -41,93 +41,8 @@ pub(crate) fn notify_pool_no_available_wait_hook(_state: &AppState) {}
 
 mod retry_metadata;
 pub(crate) use retry_metadata::*;
-
-async fn record_pool_request_prepare_failure_attempt(
-    state: &AppState,
-    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
-    account: &PoolResolvedAccount,
-    requested_model: Option<&str>,
-    model_mapping_pattern: Option<&str>,
-    attempt_index: i64,
-    distinct_account_index: i64,
-    same_account_retry_index: i64,
-    status: StatusCode,
-    message: &str,
-) {
-    let Some(trace) = trace_context else {
-        return;
-    };
-    let mut attempt_trace = trace.clone();
-    if attempt_trace.request_model.is_none() {
-        attempt_trace.request_model = requested_model.map(ToOwned::to_owned);
-    }
-    attempt_trace.upstream_base_url_host = account
-        .upstream_base_url
-        .host_str()
-        .and_then(normalize_upstream_base_url_host_value);
-    let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
-    let upstream_route_key = account.upstream_route_key();
-    let started_at = format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
-    let mut pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
-        &state.pool,
-        &attempt_trace,
-        group_name_snapshot.as_deref(),
-        None,
-        Some(account.routing_source),
-        account.routing_selection_audit.as_ref(),
-        account.account_id,
-        &upstream_route_key,
-        attempt_index,
-        distinct_account_index,
-        same_account_retry_index,
-        &started_at,
-    )
-    .await;
-    if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
-        &mut pending,
-        None,
-        model_mapping_pattern,
-    ) {
-        warn!(
-            invoke_id = %pending.invoke_id,
-            error = %err,
-            "failed to persist pre-send pool model mapping metadata"
-        );
-    }
-    let finished_at = shanghai_now_string();
-    if let Err(err) = finalize_pool_upstream_request_attempt(
-        &state.pool,
-        &pending,
-        &finished_at,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-        Some(status),
-        None,
-        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
-        Some(message),
-        None,
-        Some(0.0),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
-    {
-        warn!(
-            invoke_id = %pending.invoke_id,
-            error = %err,
-            "failed to persist pre-send pool attempt"
-        );
-    }
-    if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await {
-        warn!(
-            invoke_id = %pending.invoke_id,
-            error = %err,
-            "failed to broadcast pre-send pool attempt snapshot"
-        );
-    }
-}
+mod prepare_failure;
+use prepare_failure::record_pool_request_prepare_failure_attempt;
 
 pub(crate) async fn resolve_pool_account_for_request_with_wait(
     state: &AppState,
@@ -551,6 +466,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                 let wake_after = next_eligible_delay
                     .map(|delay| delay.min(remaining))
                     .unwrap_or(remaining);
+                let capacity_wait = crate::observability::diagnostics::waiting(
+                    crate::observability::diagnostics::Resource::AccountCapacity,
+                );
                 tokio::select! {
                     changed = availability.changed() => {
                         // A release, recovery, reset, or settings change made capacity
@@ -558,6 +476,9 @@ pub(crate) async fn resolve_pool_account_for_request_with_wait_and_binding_const
                         let _ = changed;
                     }
                     _ = tokio::time::sleep(wake_after) => {}
+                }
+                if let Some(guard) = capacity_wait {
+                    guard.complete();
                 }
             }
             _ => return Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
@@ -583,9 +504,10 @@ pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
     codex_imagegen_request: bool,
     reservation_key: String,
 ) -> (Result<PoolAccountResolutionWithWait>, Option<Instant>) {
-    let task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
-        let mut wait_deadline = wait_deadline;
-        let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
+    let task = tokio_util::task::AbortOnDropHandle::new(crate::observability::diagnostics::spawn(
+        async move {
+            let mut wait_deadline = wait_deadline;
+            let resolution = resolve_pool_account_for_request_with_wait_and_binding_constraint_with_image_intent_and_override_and_codex_imagegen_request_and_reservation(
             state.as_ref(),
             sticky_key.as_deref(),
             requested_model.as_deref(),
@@ -603,8 +525,9 @@ pub(crate) async fn resolve_pool_account_for_failover_on_fresh_task(
             Some(reservation_key.as_str()),
         )
         .await;
-        (resolution, wait_deadline)
-    }));
+            (resolution, wait_deadline)
+        },
+    ));
 
     await_pool_route_selection_task(task, wait_deadline).await
 }
@@ -971,7 +894,7 @@ fn spawn_pool_attempt_response_capture(
     response_content_encoding: Option<String>,
 ) {
     let capture_key = pool_attempt_response_capture_key(&pending);
-    tokio::spawn(async move {
+    crate::observability::diagnostics::spawn(async move {
         let raw_meta = spawn_raw_payload_file_write(
             state.as_ref(),
             &capture_key,
@@ -2684,7 +2607,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 disarm_pool_early_phase_cleanup_guard(
                                     &mut early_phase_cleanup_guard,
                                 );
-                                sleep(retry_delay).await;
+                                crate::observability::diagnostics::wait(
+                                    crate::observability::diagnostics::Resource::RetryBackoff,
+                                    sleep(retry_delay),
+                                )
+                                .await;
                                 continue;
                             }
                             if let Err(route_err) = reservation_guard
@@ -2949,7 +2876,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 disarm_pool_early_phase_cleanup_guard(
                                     &mut early_phase_cleanup_guard,
                                 );
-                                sleep(retry_delay).await;
+                                crate::observability::diagnostics::wait(
+                                    crate::observability::diagnostics::Resource::RetryBackoff,
+                                    sleep(retry_delay),
+                                )
+                                .await;
                                 continue;
                             }
                             if let Err(route_err) = reservation_guard
@@ -3919,7 +3850,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     );
                     group_upstream_429_retry_count += 1;
                     disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                    sleep(retry_delay).await;
+                    crate::observability::diagnostics::wait(
+                        crate::observability::diagnostics::Resource::RetryBackoff,
+                        sleep(retry_delay),
+                    )
+                    .await;
                     continue;
                 }
                 if has_upstream_413_retry_budget && !codex_imagegen_retest_claimed {
@@ -3937,7 +3872,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     );
                     retried_upstream_413_for_account = true;
                     disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                    sleep(retry_delay).await;
+                    crate::observability::diagnostics::wait(
+                        crate::observability::diagnostics::Resource::RetryBackoff,
+                        sleep(retry_delay),
+                    )
+                    .await;
                     continue;
                 }
                 if let Some(retry_delay) = retry_delay
@@ -3952,7 +3891,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "pool upstream responded with retryable status; retrying same account"
                     );
                     disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                    sleep(retry_delay).await;
+                    crate::observability::diagnostics::wait(
+                        crate::observability::diagnostics::Resource::RetryBackoff,
+                        sleep(retry_delay),
+                    )
+                    .await;
                     continue;
                 }
                 let route_failure_result = if codex_imagegen_upstream_incompatible {
@@ -4254,7 +4197,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "pool upstream first chunk failed; retrying same account"
                             );
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                            sleep(retry_delay).await;
+                            crate::observability::diagnostics::wait(
+                                crate::observability::diagnostics::Resource::RetryBackoff,
+                                sleep(retry_delay),
+                            )
+                            .await;
                             continue;
                         }
                         if let Err(route_err) = reservation_guard
@@ -4470,7 +4417,11 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "pool upstream reported retryable response.failed before forwarding; retrying same account"
                             );
                             disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
-                            sleep(retry_delay).await;
+                            crate::observability::diagnostics::wait(
+                                crate::observability::diagnostics::Resource::RetryBackoff,
+                                sleep(retry_delay),
+                            )
+                            .await;
                             continue;
                         }
 

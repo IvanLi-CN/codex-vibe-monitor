@@ -26,6 +26,71 @@ async fn prompt_cache_materialization_maintenance_store(enabled: bool) -> Mainte
     store
 }
 
+#[tokio::test]
+async fn prompt_cache_schema_adds_pending_generation_to_legacy_staging_table() {
+    let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    let database_url =
+        format!("sqlite:file:prompt-cache-legacy-staging-{db_id}?mode=memory&cache=shared");
+    let pool = SqlitePool::connect(&database_url)
+        .await
+        .expect("connect legacy prompt-cache staging database");
+    sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+        .execute(&pool)
+        .await
+        .expect("create invocation schema");
+    sqlx::query("CREATE TABLE schema_refresh_migrations (migration_name TEXT PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .expect("create schema refresh migration registry");
+    sqlx::query(
+        r#"
+        CREATE TABLE prompt_cache_conversation_stats_refresh_staging (
+            prompt_cache_key TEXT PRIMARY KEY,
+            generation INTEGER NOT NULL,
+            source_max_invocation_id INTEGER NOT NULL,
+            cursor_occurred_at TEXT,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            accumulator_json TEXT NOT NULL,
+            page_size INTEGER NOT NULL DEFAULT 256,
+            updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy prompt-cache staging table");
+    sqlx::query(
+        "INSERT INTO prompt_cache_conversation_stats_refresh_staging \
+         (prompt_cache_key,generation,source_max_invocation_id,accumulator_json) \
+         VALUES ('legacy-staging-key',7,42,'{}')",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed legacy prompt-cache staging row");
+
+    ensure_prompt_cache_conversations_schema(&pool)
+        .await
+        .expect("upgrade legacy prompt-cache staging schema");
+
+    let pending_generation_column_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pragma_table_info('prompt_cache_conversation_stats_refresh_staging') \
+         WHERE name = 'pending_generation'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("inspect upgraded staging columns");
+    assert_eq!(pending_generation_column_count, 1);
+    let preserved: (i64, i64, Option<i64>) = sqlx::query_as(
+        "SELECT generation,cursor_id,pending_generation \
+         FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key = 'legacy-staging-key'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load preserved legacy staging row");
+    assert_eq!(preserved, (7, 0, None));
+}
+
 async fn prompt_cache_statistics_checkpoint_fixture(counts: &[usize]) -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
@@ -467,9 +532,34 @@ async fn prompt_cache_statistics_queue_hot_generation_cannot_starve_cold_keys() 
         .await
         .unwrap();
     assert_eq!(changed.defer_reason, Some("stats_generation_changed"));
-    let (requests, cursor): (i64, i64) = sqlx::query_as("SELECT request_count,(SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000') FROM prompt_cache_conversations WHERE prompt_cache_key='checkpoint-key-000'")
+    let (requests, cursor, pending_generation): (i64, i64, Option<i64>) = sqlx::query_as("SELECT request_count,(SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000'),(SELECT pending_generation FROM prompt_cache_conversation_stats_refresh_staging WHERE prompt_cache_key='checkpoint-key-000') FROM prompt_cache_conversations WHERE prompt_cache_key='checkpoint-key-000'")
         .fetch_one(&pool).await.unwrap();
-    assert_eq!((requests, cursor), (0, 0));
+    assert_eq!(requests, 0);
+    assert!(
+        cursor > 0,
+        "generation changes preserve the committed prefix"
+    );
+    assert!(pending_generation.is_some());
+
+    sqlx::query(
+        "UPDATE codex_invocations SET total_tokens=total_tokens+1 WHERE invoke_id='checkpoint-0-0'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let changed_again = run_prompt_cache_conversations_materialization(&pool, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(changed_again.defer_reason, Some("stats_generation_changed"));
+    let (cursor_after, pending_generation_after): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT cursor_id,pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(cursor_after, cursor);
+    assert!(pending_generation_after.is_some());
 
     // A fresh control instance and schema re-entry must preserve scheduler and staging state.
     ensure_prompt_cache_conversations_schema(&pool)
@@ -496,7 +586,7 @@ async fn prompt_cache_statistics_queue_hot_generation_cannot_starve_cold_keys() 
     }
     let totals: Vec<(i64, i64)> = sqlx::query_as("SELECT request_count,total_tokens FROM prompt_cache_conversations ORDER BY prompt_cache_key")
         .fetch_all(&pool).await.unwrap();
-    assert_eq!(totals, vec![(512, 514), (37, 37), (58, 58)]);
+    assert_eq!(totals, vec![(512, 515), (37, 37), (58, 58)]);
     let (queue, staging, publications): (i64, i64, i64) = sqlx::query_as("SELECT (SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_queue),(SELECT COUNT(*) FROM prompt_cache_conversation_stats_refresh_staging),(SELECT COUNT(*) FROM checkpoint_publications)")
         .fetch_one(&pool).await.unwrap();
     assert_eq!((queue, staging, publications), (0, 0, 3));
@@ -1049,14 +1139,15 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
         generation_change.defer_reason,
         Some("stats_generation_changed")
     );
-    let reset_cursor: i64 = sqlx::query_scalar(
-        "SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+    let (preserved_cursor, pending_generation): (i64, Option<i64>) = sqlx::query_as(
+        "SELECT cursor_id,pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
          WHERE prompt_cache_key='paged-materialization-key'",
     )
     .fetch_one(&pool)
     .await
-    .expect("load reset statistics staging cursor");
-    assert_eq!(reset_cursor, 0);
+    .expect("load coalesced statistics staging cursor");
+    assert_eq!(preserved_cursor, 256);
+    assert!(pending_generation.is_some());
 
     let restarted = MaintenanceStore::from_pool(maintenance.pool.clone());
     restarted
@@ -1109,6 +1200,166 @@ async fn prompt_cache_materialization_pages_resume_across_generation_change_and_
         prompt_cache_conversation_materialization_is_complete(&pool)
             .await
             .expect("check complete materialization")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prompt_cache_statistics_generation_change_before_page_commit_preserves_unpublished_prefix()
+{
+    let pool = prompt_cache_statistics_checkpoint_fixture(&[300]).await;
+    let maintenance = prompt_cache_materialization_maintenance_store(true).await;
+    let control = maintenance.prompt_cache_materialization_control.clone();
+    let expected_generation = control.snapshot().expect("trusted control").generation;
+
+    let stop_after_prefix = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let first_page_hook = std::sync::Arc::new(PromptCacheStatsPageCommitHook {
+        ready: std::sync::Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Arc::new(tokio::sync::Notify::new()),
+    });
+    let first_page_pool = pool.clone();
+    let first_page_control = control.clone();
+    let first_page_stop = stop_after_prefix.clone();
+    let first_page_worker = tokio::spawn(PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.scope(
+        first_page_hook.clone(),
+        async move {
+            run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &first_page_pool,
+                1,
+                None,
+                &|| first_page_stop.load(std::sync::atomic::Ordering::Acquire),
+                &first_page_control,
+                expected_generation,
+            )
+            .await
+        },
+    ));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        first_page_hook.ready.notified(),
+    )
+    .await
+    .expect("first statistics page should reach the pre-commit hook");
+    stop_after_prefix.store(true, std::sync::atomic::Ordering::Release);
+    first_page_hook.release.notify_one();
+    let first_page = first_page_worker
+        .await
+        .expect("join prompt-cache prefix worker")
+        .expect("commit the prompt-cache prefix before the final page");
+    assert_eq!(first_page.defer_reason, Some("coordinator_priority"));
+    let (prefix_request_count, prefix_cursor_id): (i64, i64) = sqlx::query_as(
+        "SELECT request_count, \
+             (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000') \
+             FROM prompt_cache_conversations \
+             WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load committed prompt-cache prefix");
+    assert_eq!(prefix_request_count, 0);
+    assert_eq!(prefix_cursor_id, 256);
+
+    let hook = std::sync::Arc::new(PromptCacheStatsPageCommitHook {
+        ready: std::sync::Arc::new(tokio::sync::Notify::new()),
+        release: std::sync::Arc::new(tokio::sync::Notify::new()),
+    });
+    let worker_pool = pool.clone();
+    let worker_hook = hook.clone();
+    let worker_control = control.clone();
+    let worker = tokio::spawn(
+        PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.scope(worker_hook, async move {
+            run_prompt_cache_conversations_materialization_with_pressure_and_control(
+                &worker_pool,
+                1,
+                None,
+                &|| false,
+                &worker_control,
+                expected_generation,
+            )
+            .await
+        }),
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(3), hook.ready.notified())
+        .await
+        .expect("statistics page should reach the pre-commit hook");
+    sqlx::query(
+        "UPDATE prompt_cache_conversation_stats_refresh_queue SET generation=generation+1 \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .execute(&pool)
+    .await
+    .expect("advance source generation before page publication");
+    hook.release.notify_one();
+
+    let run = worker
+        .await
+        .expect("join prompt-cache materialization worker")
+        .expect("complete prompt-cache materialization run");
+    assert_eq!(run.defer_reason, Some("stats_generation_changed"));
+    let (request_count, cursor_id, pending_generation, queue_generation): (
+        i64,
+        i64,
+        Option<i64>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT request_count, \
+             (SELECT cursor_id FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000'), \
+             (SELECT pending_generation FROM prompt_cache_conversation_stats_refresh_staging \
+              WHERE prompt_cache_key='checkpoint-key-000'), \
+             (SELECT generation FROM prompt_cache_conversation_stats_refresh_queue \
+              WHERE prompt_cache_key='checkpoint-key-000') \
+             FROM prompt_cache_conversations \
+             WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load unpublished generation-change state");
+    assert_eq!(
+        request_count, 0,
+        "the stale page must not publish its aggregate"
+    );
+    assert_eq!(cursor_id, 256, "the stale page must not advance its cursor");
+    assert!(queue_generation > 0);
+    assert_eq!(pending_generation, Some(queue_generation));
+
+    let mut complete = false;
+    for _ in 0..4 {
+        let resumed = run_prompt_cache_conversations_materialization_with_pressure_and_control(
+            &pool,
+            1,
+            None,
+            &|| false,
+            &control,
+            expected_generation,
+        )
+        .await
+        .expect("finish the refreshed final prompt-cache page");
+        if resumed.complete {
+            complete = true;
+            break;
+        }
+    }
+    assert!(
+        complete,
+        "new generation should converge after the final page fence"
+    );
+    let final_request_count: i64 = sqlx::query_scalar(
+        "SELECT request_count FROM prompt_cache_conversations \
+         WHERE prompt_cache_key='checkpoint-key-000'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load final prompt-cache aggregate");
+    assert_eq!(final_request_count, 300);
+    let publication_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM checkpoint_publications")
+        .fetch_one(&pool)
+        .await
+        .expect("count prompt-cache publications");
+    assert_eq!(
+        publication_count, 1,
+        "only the fresh generation should publish"
     );
 }
 

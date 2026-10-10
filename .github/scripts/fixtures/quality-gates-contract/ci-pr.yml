@@ -8,6 +8,7 @@ on:
       - synchronize
       - ready_for_review
       - edited
+      - labeled
   merge_group:
     types:
       - checks_requested

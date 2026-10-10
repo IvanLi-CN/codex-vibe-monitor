@@ -1,5 +1,15 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## 2026-10-11 Candidate Refresh
+
+PR #1098 is bound to base `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7` and head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`. The archive marker repair now fills missing sibling targets while preserving stale markers; required CI for that head passed before this evidence refresh, and post-refresh CI plus Tier 4 review remain pending.
+
+## Current Candidate Contract
+
+PR #1098's incremental maintenance repair replaces the base task-local batching assumption that no main-database structure is added. The candidate adds manifest SHA identity on replay rows, ordered repair progress/deferred state, and prompt-cache `pending_generation` fencing; the additions are idempotent and require forward repair plus explicit rollback handling. Legacy replay state remains unverified until a current manifest SHA is committed.
+
+The candidate's archive-file-io and stateful regressions are being refreshed after Tier 4 findings. Current CI, Tier 4, upgrade, rollback, and compatibility evidence is intentionally unverified until it is bound to the pushed candidate head; earlier evidence remains historical and is not reused as proof.
+
 ## Lifecycle / Compatibility
 
 主题为 active。基础运行预算与精确 Prompt 维护已在 v2.82.0 发布。自动追赶和 7 天小时观测由 PR #1068 交付，当时主人授权先发布已证明的积极效果，完整常态容量与严格在线延迟尚未签收。

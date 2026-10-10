@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
+  "status": "superseded-scope-pending-current-ci-tier4",
   "change": {
     "description": "Task-local retention monthly batching and optional throughput observations",
     "release_unit_description": "One direct retention PR",
@@ -30,7 +31,7 @@
         "detected": true,
         "description": "Capacity diagnosis identified a synchronous historical-key scan in online P1 writes and unbounded retention admission; equivalent indexed working-set queries and deadline cancellation repair the accepted online-impact and timeout contract."
       },
-      "reasoning": "No main table, column, enum or migration identity additions. The three existing trigger definitions retain exact short working-set source semantics and deployed completion facts. Archive readers and optional task JSON remain compatible; current candidate full validation is a separate delivery gate.",
+      "reasoning": "This task-local record predates the explicit incremental-repair schema extension. It is retained as historical scope only; current candidate impact is governed by the companion persistent-state record and remains unverified pending current CI and Tier 4.",
       "reassessed_at": "2026-10-03T21:31:00Z",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
@@ -41,8 +42,8 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "Existing archive/V2/manifest readers are unchanged across the supported same-Minor range and current roundtrip. There are no new main tables, columns, state values or migration identities. Equivalent short working-set trigger definitions preserve source semantics and original completion facts; isolated source-reference and idempotent upgrade regressions passed. Full candidate delivery and capacity gates remain separate.",
-      "verified_at": "2026-10-03T21:46:00Z",
+      "status": "unverified",
+      "reasoning": "Historical task-local tests do not verify the current candidate after its durable-state scope expanded. Do not use this record as current compatibility or version evidence until CI, Tier 4, upgrade, and rollback checks are bound to the candidate head.",
       "evidence": [
         "docs/specs/bounded-retention-runs/assets/task-local-same-minor-reader-compatibility.json",
         "src/tests/archive_file_io/retention_task_local_batches.rs",

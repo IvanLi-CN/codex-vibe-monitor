@@ -26,7 +26,7 @@ class DiagnosticRun(acceptance.Run):
         if not re.fullmatch(r"sha256:[a-f0-9]{64}", args.image):
             raise ValueError("diagnosis requires the immutable producer image")
         super().__init__(args)
-        self.context = actions_context(self.source, self.root, args.candidate)
+        self.context = actions_context(self.candidate_source, self.root, args.candidate)
         self.windows = []
         self.diagnostic_error = None
         self.profile_build_id = None
@@ -180,6 +180,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["source", "run", "agent", "candidate", "samply", "image"]:
         parser.add_argument("--" + name, required=True)
+    parser.add_argument("--candidate-source")
     args = parser.parse_args()
     args.environment, args.suite, args.seconds, args.rate = "github-actions", "runtime", 300, 5
     run = DiagnosticRun(args)

@@ -3874,6 +3874,7 @@ async fn fetch_stats_exposes_maintenance_observability_fields() {
     .await
     .expect("insert hot raw invocation that should not count as backlog");
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(stats) = fetch_stats(State(state))
         .await
         .expect("fetch stats with maintenance payload");
@@ -3962,6 +3963,7 @@ async fn fetch_stats_reuses_cached_maintenance_snapshot_within_ttl() {
     .await
     .expect("insert cached maintenance invocation");
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(first_stats) = fetch_stats(State(state.clone()))
         .await
         .expect("fetch first stats maintenance snapshot");

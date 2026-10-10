@@ -11,13 +11,16 @@ Implementation status: Not started
 | 数据 / 能力                           | 唯一职责方                | 边界                                                          |
 | ------------------------------------- | ------------------------- | ------------------------------------------------------------- |
 | 聚合性能指标历史                      | Prometheus                | 应用不保存第二份指标历史，不查询它来完成业务请求              |
+| 请求诊断链路历史                      | 共享 Tempo                | 保存有界个体区间和关联关系，CVM 留存 24 小时                  |
 | 性能图表与告警                        | Grafana                   | 正式图表、变量、数据源和规则由仓库 provisioning 管理          |
 | 函数、规范化 SQL、路由、选定锁诊断    | 进程内 hotpath-rs         | 提供实时归因及私网 Prometheus 导出，不承担历史数据库          |
 | CPU 调用栈与火焰图                    | 按需 samply + 成熟查看器  | SSH 对运行实例限时 attach，文件短期保存，无常驻 profiler 服务 |
 | 调用、费用、token、终态与任务执行记录 | 现有业务持久化            | 主库、任务库、TerminalJournal、raw/archive 不属于退役的性能库 |
 | 浏览器体验                            | 新浏览器适配器 + 应用 SDK | 低频、固定分类、有界上报，不保存用户性能明细                  |
 
-首期不引入 Loki、Tempo、Pyroscope、OTel Collector、额外 Alertmanager 或自研火焰图界面。核心外部常驻服务只有 Prometheus、Grafana；采样工具和受限 SSH 命令不增加 daemon。Grafana 的内部配置库属于其产品实现，不是本项目保留的性能 SQLite。
+首期不引入 Loki、Pyroscope、独立 OTel Collector、额外 Alertmanager 或自研火焰图界面。核心外部常驻服务为 Prometheus、Grafana 和共享 Tempo；采样工具和受限 SSH 命令不增加 daemon。Grafana 的内部配置库属于其产品实现，不是本项目保留的性能 SQLite。
+
+针对完整下游请求的资源等待归因与个体案例分析，[ADR 0033](../adr/0033-external-request-diagnostic-traces.md) 扩展上述服务数量边界，[ADR 0034](../adr/0034-shared-tempo-request-tracing.md) 选择共享 Tempo、OpenTelemetry/OTLP 与首期 SDK 有界异步批量导出，由 Grafana 展示并与 Prometheus 统计关联。CVM 为首个接入项目，链路正常容量内全量轻量记录、保留 24 小时，界面展示少量分类案例；共享平台与应用边界、容量核验见 [请求生命周期观测设计](request-lifecycle-observability.md)。该扩展保留聚合指标、业务事实与 CPU 诊断各自的职责。
 
 ## 项目内业务与采集链路
 
@@ -260,9 +263,9 @@ profile 位于监控目录的项目隔离子目录，manifest 记录 UTC 起止�
 | 退役与迁移      | 无旧库创建/读取/写入、无旧 writer/rollup；absent/custom-path/WAL/corrupt/unknown/中断/重复执行/回滚均有证据                                                                      |
 | 性能与容量      | 同一候选版本观测开/关、相同非饱和负载 A/B，默认 CPU 每完成请求与 p95 延迟增加均不超过 5%；内存与系列有界，profile/Prometheus 容量验证                                            |
 
-性能比较必须由 GitHub Actions 的 GitHub-hosted runner 完成：生产镜像构建与测量拆为不同 job，测量 job 只使用当前 Candidate 的预构建镜像，串行运行三对交替窗口。应用固定到 runner affinity 中的一个 CPU，合成客户端、Prometheus、Grafana 等辅助容器保留 runner 默认 affinity，不额外设置 `cpuset`，并将布局写入运行配置供证据校验；固定 offered load、完成数、SSE 订阅与基线，每窗口 60 秒预热、300 秒测量；两组重复窗口 CV 各不超过 5% 后，才比较 CPU 每完成请求与 p95 的 5% 增幅预算。保留 runner 环境、原始样本、资源观察和绑定 run/attempt 的七字段证据卡，失败也上传白名单产物；性能实验属于专项验收或 Actions 辅助检查，不进入每个 PR 的必要门禁。
+性能比较必须由 GitHub Actions 的 GitHub-hosted runner 完成：生产镜像构建与测量拆为不同 job，测量 job 只使用当前 Candidate 的预构建镜像，串行运行三对交替窗口。性能工作流位于默认分支控制的 `pull_request_target` 文件中，测量脚本来自 base checkout，候选 checkout 只用于确认 SHA，候选代码作为隔离镜像运行；普通 PR 事件不能启动该工作流。只有为 PR 添加一次性 `run:observability-performance` 标签时才运行；普通 PR 与 merge queue 仍保留快速功能门禁。应用固定到 runner affinity 中的一个 CPU，辅助容器保留 runner 默认 affinity，不额外设置 `cpuset`，并将布局写入运行配置供证据校验；A/B 期间只运行当前模式必需的辅助服务：off 关闭 Prometheus、Grafana、Tempo 和 entry，metrics-only 只运行 Prometheus，metrics+trace 运行 Prometheus、Tempo 和 entry，Grafana 在正式窗口始终停止。这样不会把前置功能验收的 Tempo WAL 或未使用的 Grafana 工作计入应用开销，同时仍实际测量 trace 摄入路径。固定 offered load、完成数、SSE 订阅与基线，每窗口 60 秒预热、300 秒测量；两组重复窗口 CV 各不超过 5% 后，才比较 CPU 每完成请求与 p95 的 5% 增幅预算。保留 runner 环境、原始样本、资源观察和绑定 run/attempt 的七字段证据卡，失败也上传白名单产物；性能实验属于专项验收或 Actions 辅助检查，不进入每个 PR 的必要门禁。未显式启动该专项时，功能 PR 可以凭适用的功能、集成、视觉、CI 和正式审查证据就绪，但不得宣称 5% 性能预算已验证。
 
-初始资源准入与逐窗口环境判定沿用 PSI `some avg10/avg60` 的 CPU <2%、IO <5%、memory <0.1% 阈值。每轮预热后按 20 秒间隔取得连续三次安静样本，额外等待每轮最多 300 秒、全部六轮累计最多 900 秒；超限记为 unavailable，不自动重跑或筛选测量。正式窗口记录开关、配对编号、UTC/单调起止时间、初末边界及每 10 秒资源样本；任意压力超阈值、缺失/非法样本、采集错误或采样间隔超过 20 秒均使该次验收 unavailable，不能签发通过卡。Build Artifacts 仅依赖 smoke artifact producer，不依赖性能预算或 CPU 诊断结果。预热与停启压力不直接计入正式窗口，仍受 70 分钟 job 上限约束。逐窗口判定与原始数据均在明确 artifact 白名单中，失败卡不包含凭据或数据库。
+初始资源准入沿用 PSI `some avg10/avg60` 的 CPU <2%、IO <5%、memory <0.1% 阈值。每轮预热后按 20 秒间隔取得连续三次安静样本，额外等待每轮最多 300 秒、全部九轮累计最多 900 秒；准入超限记为 unavailable，不自动重跑或筛选测量。正式窗口记录开关、配对编号、UTC/单调起止时间、初末边界及每 10 秒资源样本；窗口内压力超阈值保留为 `pressureExceededSamples` 和原始 PSI 证据，用于解释负载期间的资源争用，不单独伪装成采集故障。缺失/非法样本、采集错误、首个窗口样本不满足准入或采样间隔超过 20 秒仍使该次验收 unavailable，不能签发通过卡。三次窗口的 CV 超过 5% 时仍保留失败证据；仅当两项指标的中位数观测增量都在 5% 内且无 trace 丢失，才可将该次结果标为环境 unavailable，不能把它当作经验性通过。Build Artifacts 仅依赖 smoke artifact producer，不依赖性能预算或 CPU 诊断结果。预热与停启压力不直接计入正式窗口，仍受 100 分钟 job 上限约束。逐窗口判定与原始数据均在明确 artifact 白名单中，失败卡不包含凭据或数据库。
 
 本地和共享测试机仅承担功能及集成验证，性能负载和 CPU 性能实验只在 GitHub Actions 执行，不能以其他环境证明性能预算达标。Actions 的环境干扰或主库饱和导致无法归因时结论仍是未验证，不能写成通过；也不能把其他争用归因于观测。测量超出初始预算时收窄默认计时/导出，而不是静默放宽接受条件。
 
