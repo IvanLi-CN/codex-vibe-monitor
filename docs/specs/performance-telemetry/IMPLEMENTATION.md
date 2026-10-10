@@ -38,7 +38,8 @@ job；其中性能镜像和长测量只有在 PR 添加一次性 `run:observabil
 候选 `36d8c612` 通过，仅作为历史比较。普通修复批次停在七批，根因尚未确定。
 
 独立 GitHub-hosted VM 的 `Observability CPU Diagnosis` 仅用于明确列名的 PR
-#1071 和 #1079。#1079 的同合同候选 CPU/请求开销为 8.50%，超过 5% 门槛；
+#1071 和 #1079，且同样需要一次性添加 `run:observability-performance` 标签。
+#1079 的同合同候选 CPU/请求开销为 8.50%，超过 5% 门槛；
 主线历史证据为 3.02%。现有采样发生在 A/B 之前，不能归因测量窗口内的差异，
 因此临时复用该作业补齐窗口计数和 CPU profile；根因未定，不开启普通修复批次。
 入口在 `scripts/observability-diagnostics/`，不修改预算验收脚本、场景摘要来源或

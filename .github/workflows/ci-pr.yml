@@ -1097,8 +1097,8 @@ jobs:
   observability-diagnostics:
     name: Observability CPU Diagnosis
     needs: observability-performance-image
-    # Temporary, owner-approved PR experiment; never a budget certificate.
-    if: github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079
+    # Explicit opt-in experiment; never a budget certificate and never a default PR job.
+    if: github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance' && (github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079)
     runs-on: ubuntu-24.04
     timeout-minutes: 70
     steps:

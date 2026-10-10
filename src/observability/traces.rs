@@ -10,6 +10,10 @@ use opentelemetry_sdk::trace::{
 use std::sync::atomic::AtomicUsize;
 
 pub(super) const QUEUE_LIMIT: usize = 2048;
+const EXPORT_BATCH_LIMIT: usize = 128;
+// Keep one export batch of headroom so the SDK's bounded channel cannot reject
+// a span after the local admission counter has reserved it.
+pub(super) const ADMISSION_LIMIT: usize = QUEUE_LIMIT - EXPORT_BATCH_LIMIT;
 pub(super) const ACTIVE_LIMIT: usize = 1024;
 
 #[derive(Clone)]
@@ -197,6 +201,14 @@ impl TraceRuntime {
     }
     #[cfg(test)]
     pub(super) fn for_test_batched(exporter: impl SpanExporter + 'static) -> Arc<Self> {
+        Self::for_test_batched_with_config(exporter, QUEUE_LIMIT, Duration::from_secs(1))
+    }
+    #[cfg(test)]
+    pub(super) fn for_test_batched_with_config(
+        exporter: impl SpanExporter + 'static,
+        max_queue_size: usize,
+        scheduled_delay: Duration,
+    ) -> Arc<Self> {
         let state = Arc::new(ExportState::default());
         let processor = BatchSpanProcessor::builder(CountedExporter {
             inner: exporter,
@@ -204,9 +216,9 @@ impl TraceRuntime {
         })
         .with_batch_config(
             BatchConfigBuilder::default()
-                .with_max_queue_size(QUEUE_LIMIT)
-                .with_max_export_batch_size(128)
-                .with_scheduled_delay(Duration::from_secs(1))
+                .with_max_queue_size(max_queue_size)
+                .with_max_export_batch_size(EXPORT_BATCH_LIMIT)
+                .with_scheduled_delay(scheduled_delay)
                 .build(),
         )
         .build();
@@ -224,6 +236,13 @@ impl TraceRuntime {
             provider: Some(provider),
             tracer: Some(tracer),
         })
+    }
+    #[cfg(test)]
+    pub(super) fn force_flush_for_test(&self) -> OTelSdkResult {
+        self.provider
+            .as_ref()
+            .expect("test trace runtime provider")
+            .force_flush()
     }
     #[cfg(test)]
     pub(super) fn for_test(exporter: impl SpanExporter + 'static) -> Arc<Self> {
@@ -268,7 +287,7 @@ fn build_provider(config: &TraceConfig, state: Arc<ExportState>) -> Result<SdkTr
         .with_batch_config(
             BatchConfigBuilder::default()
                 .with_max_queue_size(QUEUE_LIMIT)
-                .with_max_export_batch_size(128)
+                .with_max_export_batch_size(EXPORT_BATCH_LIMIT)
                 .with_scheduled_delay(Duration::from_secs(1))
                 .build(),
         )
@@ -368,7 +387,12 @@ struct CountedExporter<E> {
 impl<E: SpanExporter> SpanExporter for CountedExporter<E> {
     async fn export(&self, batch: Vec<SpanData>) -> OTelSdkResult {
         let count = batch.len() as u64;
-        self.state.queued.fetch_sub(batch.len(), Ordering::AcqRel);
+        self.state
+            .queued
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |queued| {
+                Some(queued.saturating_sub(batch.len()))
+            })
+            .expect("queued counter update cannot fail");
         let result = self.inner.export(batch).await;
         if result.is_ok() {
             self.state
@@ -399,7 +423,7 @@ impl SpanProcessor for CountedProcessor {
                 .state
                 .queued
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                    (n < QUEUE_LIMIT).then_some(n + 1)
+                    (n < ADMISSION_LIMIT).then_some(n + 1)
                 })
                 .is_err()
         {

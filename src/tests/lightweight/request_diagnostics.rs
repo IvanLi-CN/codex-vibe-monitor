@@ -339,6 +339,44 @@ fn request_diagnostics_sdk_queue_drops_without_waiting_for_failed_exporter() {
     assert_eq!(traces.state(), "degraded");
 }
 
+#[derive(Clone, Debug, Default)]
+struct RecordingBatchExporter(Arc<std::sync::Mutex<Vec<String>>>);
+impl SpanExporter for RecordingBatchExporter {
+    async fn export(&self, spans: Vec<SpanData>) -> OTelSdkResult {
+        self.0
+            .lock()
+            .unwrap()
+            .extend(spans.into_iter().map(|span| span.name.to_string()));
+        Ok(())
+    }
+}
+
+#[test]
+fn request_diagnostics_queue_admission_recovers_after_flush() {
+    let exporter = RecordingBatchExporter::default();
+    let traces = super::super::traces::TraceRuntime::for_test_batched_with_config(
+        exporter.clone(),
+        super::super::traces::QUEUE_LIMIT,
+        Duration::from_secs(60),
+    );
+    let tracer = traces.tracer.as_ref().unwrap();
+    for _ in 0..super::super::traces::ADMISSION_LIMIT {
+        tracer.start("cvm.synthetic.queue").end();
+    }
+    tracer.start("cvm.synthetic.queue_over_limit").end();
+    traces.force_flush_for_test().unwrap();
+
+    tracer.start("cvm.synthetic.queue_recovery").end();
+    traces.shutdown();
+
+    let spans = exporter.0.lock().unwrap();
+    assert!(
+        spans
+            .iter()
+            .any(|name| name == "cvm.synthetic.queue_recovery")
+    );
+}
+
 #[test]
 fn request_diagnostics_prometheus_series_budget_preserves_existing_series() {
     let metrics = ObservabilityRuntime::new(true);
