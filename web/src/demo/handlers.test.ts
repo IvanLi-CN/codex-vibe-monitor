@@ -767,7 +767,11 @@ describe("demo MSW handlers", () => {
       nodes: Array<{ last24h: unknown[]; weight24h: unknown[] }>;
     };
     const cache = (await cacheResponse.json()) as {
-      conversations: Array<{ upstreamAccounts: unknown[]; recentInvocations: unknown[] }>;
+      conversations: Array<{
+        conversationId: string;
+        upstreamAccounts: unknown[];
+        recentInvocations: unknown[];
+      }>;
     };
     const proxyHistory = (await proxyHistoryResponse.json()) as {
       nodes: Array<{ buckets: unknown[] }>;
@@ -778,6 +782,9 @@ describe("demo MSW handlers", () => {
       true,
     );
     expect(cache.conversations).toHaveLength(11);
+    expect(
+      cache.conversations.every((conversation) => conversation.conversationId.length > 0),
+    ).toBe(true);
     expect(cache.conversations[0]?.upstreamAccounts.length).toBeGreaterThan(0);
     expect(cache.conversations[0]?.recentInvocations.length).toBeGreaterThan(0);
     expect(proxyHistory.nodes.every((node) => node.buckets.length > 0)).toBe(true);

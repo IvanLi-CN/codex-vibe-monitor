@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { DashboardActivityOverview } from "../features/dashboard/DashboardActivityOverview";
 import { DashboardInvocationDetailDrawer } from "../features/dashboard/DashboardInvocationDetailDrawer";
@@ -21,10 +21,7 @@ import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetail
 import { useTranslation } from "../i18n";
 import { usePageObservation } from "../lib/browserObservability";
 import { resetDashboardPerformanceDiagnostics } from "../lib/dashboardPerformanceDiagnostics";
-import {
-  type DashboardWorkingConversationInvocationSelection,
-  formatDashboardWorkingConversationSequenceId,
-} from "../lib/dashboardWorkingConversations";
+import type { DashboardWorkingConversationInvocationSelection } from "../lib/dashboardWorkingConversations";
 import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts.page-local-shared";
 
 export default function DashboardPage() {
@@ -42,11 +39,20 @@ export default function DashboardPage() {
     key: string;
     label: string | null;
   } | null>(null);
+  const [verifiedConversationRoute, setVerifiedConversationRoute] = useState<{
+    key: string;
+    conversationId: string;
+  } | null>(null);
+  const [pendingConversationSelection, setPendingConversationSelection] = useState<{
+    key: string;
+    conversationId: string | null;
+  } | null>(null);
   const [includeUpstreamAccountActivity, setIncludeUpstreamAccountActivity] = useState(false);
   const { upstreamAccountId, upstreamAccountTab, openUpstreamAccount, closeUpstreamAccount } =
     useUpstreamAccountDetailRoute();
   const {
     promptCacheConversationKey,
+    promptCacheConversationId,
     promptCacheConversationTab,
     blockedBindingFilter,
     openPromptCacheConversation,
@@ -58,6 +64,7 @@ export default function DashboardPage() {
     hasDelayedStatistics,
     totalMatched,
     hasMore,
+    canLoadMore: canLoadMoreFromHook,
     isLoading: workingCardsLoading,
     isLoadingMore: workingCardsLoadingMore,
     error: workingCardsError,
@@ -66,6 +73,28 @@ export default function DashboardPage() {
     setRefreshTargetCount,
     refresh: refreshWorkingConversations,
   } = useDashboardWorkingConversations(blockedBindingFilter);
+  const canLoadMore = canLoadMoreFromHook ?? hasMore;
+  const routeInvocationSelection = useMemo(() => {
+    if (routeInvokeId == null) return null;
+    for (const card of cards) {
+      const candidates = [
+        ["current", card.currentInvocation],
+        ["previous", card.previousInvocation],
+        ["earlier", card.earlierInvocation],
+      ] as const;
+      const match = candidates.find(
+        ([, invocation]) => invocation?.record.invokeId === routeInvokeId,
+      );
+      if (match == null || match[1] == null) continue;
+      return {
+        slotKind: match[0],
+        conversationId: card.conversationId,
+        promptCacheKey: card.promptCacheKey,
+        invocation: match[1],
+      };
+    }
+    return null;
+  }, [cards, routeInvokeId]);
   const dashboardActivityEnabled = activeRange !== "usage";
   const overviewSnapshotRuntime = useDashboardOverviewSnapshotRuntime(activeRange);
   const {
@@ -85,6 +114,46 @@ export default function DashboardPage() {
     includeUpstreamAccountActivity,
   );
   usePageObservation("dashboard", overviewSnapshotRuntime.bundle);
+  const conversationDataIsComplete =
+    !workingCardsLoading && !workingCardsLoadingMore && !hasMore && workingCardsError == null;
+  useEffect(() => {
+    if (
+      promptCacheConversationKey == null ||
+      conversationDataIsComplete ||
+      workingCardsError != null
+    ) {
+      return;
+    }
+    setPendingConversationSelection((current) =>
+      current?.key === promptCacheConversationKey &&
+      current.conversationId === promptCacheConversationId
+        ? current
+        : {
+            key: promptCacheConversationKey,
+            conversationId: promptCacheConversationId,
+          },
+    );
+  }, [
+    conversationDataIsComplete,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    workingCardsError,
+  ]);
+  useEffect(() => {
+    if (routeInvokeId == null || routeInvocationSelection == null) return;
+    setSelectedInvocation((current) => {
+      if (
+        current?.invocation.record.invokeId === routeInvokeId &&
+        current.conversationId === routeInvocationSelection.conversationId &&
+        current.promptCacheKey === routeInvocationSelection.promptCacheKey &&
+        current.slotKind === routeInvocationSelection.slotKind
+      ) {
+        return current;
+      }
+      return routeInvocationSelection;
+    });
+  }, [routeInvocationSelection, routeInvokeId]);
+
   useEffect(() => {
     if (
       selectedInvocation != null &&
@@ -99,18 +168,187 @@ export default function DashboardPage() {
     if (upstreamAccountId != null) {
       setSelectedInvocation(null);
       setSelectedConversation(null);
+      setVerifiedConversationRoute(null);
+      setPendingConversationSelection(null);
     }
   }, [upstreamAccountId]);
 
   useEffect(() => {
-    if (promptCacheConversationKey == null) {
-      setSelectedConversation(null);
+    if (pendingConversationSelection == null) return;
+    if (
+      promptCacheConversationKey !== pendingConversationSelection.key ||
+      promptCacheConversationId !== pendingConversationSelection.conversationId
+    ) {
+      setPendingConversationSelection((current) =>
+        current?.key === pendingConversationSelection.key &&
+        current.conversationId === pendingConversationSelection.conversationId
+          ? null
+          : current,
+      );
       return;
     }
-    setSelectedConversation((current) =>
-      current?.key === promptCacheConversationKey ? current : null,
+    if (workingCardsError != null) {
+      setPendingConversationSelection(null);
+      return;
+    }
+    if (conversationDataIsComplete) {
+      setPendingConversationSelection(null);
+      return;
+    }
+    if (!workingCardsLoading && !workingCardsLoadingMore && canLoadMore) {
+      loadMore();
+    } else if (!workingCardsLoading && !workingCardsLoadingMore && !canLoadMore) {
+      setPendingConversationSelection(null);
+    }
+  }, [
+    conversationDataIsComplete,
+    canLoadMore,
+    loadMore,
+    pendingConversationSelection,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    workingCardsError,
+    workingCardsLoading,
+    workingCardsLoadingMore,
+  ]);
+
+  useEffect(() => {
+    if (promptCacheConversationKey == null) {
+      setSelectedConversation(null);
+      setVerifiedConversationRoute(null);
+      setPendingConversationSelection(null);
+      return;
+    }
+    const matchingConversationCards = cards.filter(
+      (card) => card.promptCacheKey === promptCacheConversationKey,
     );
-  }, [promptCacheConversationKey]);
+    const conversationIds = new Set(
+      matchingConversationCards
+        .map((card) => card.conversationId?.trim())
+        .filter((conversationId): conversationId is string => Boolean(conversationId)),
+    );
+    const candidateConversationId = conversationIds.values().next().value ?? null;
+    const singleConversationId =
+      candidateConversationId != null &&
+      matchingConversationCards.length > 0 &&
+      matchingConversationCards.every(
+        (card) => card.conversationId?.trim() === candidateConversationId,
+      )
+        ? candidateConversationId
+        : null;
+    const previouslyVerifiedRoute =
+      promptCacheConversationId != null &&
+      verifiedConversationRoute?.key === promptCacheConversationKey &&
+      verifiedConversationRoute?.conversationId === promptCacheConversationId;
+    const visibleConversationRouteMatches =
+      promptCacheConversationId != null && singleConversationId === promptCacheConversationId;
+    const conversationLabel = conversationDataIsComplete
+      ? promptCacheConversationId != null
+        ? singleConversationId === promptCacheConversationId
+          ? promptCacheConversationId
+          : null
+        : singleConversationId
+      : previouslyVerifiedRoute || (workingCardsError == null && visibleConversationRouteMatches)
+        ? promptCacheConversationId
+        : null;
+    if (
+      promptCacheConversationId == null &&
+      conversationDataIsComplete &&
+      singleConversationId != null
+    ) {
+      openPromptCacheConversation(promptCacheConversationKey, {
+        conversationId: singleConversationId,
+        replace: true,
+        tab: promptCacheConversationTab,
+      });
+    }
+    setSelectedConversation((current) => {
+      if (conversationLabel == null) {
+        if (current?.key !== promptCacheConversationKey) return null;
+        if (current.label === null) return current;
+      } else if (
+        current?.key === promptCacheConversationKey &&
+        current.label === conversationLabel
+      ) {
+        return current;
+      }
+      return { key: promptCacheConversationKey, label: conversationLabel };
+    });
+    if (workingCardsError != null) {
+      if (!previouslyVerifiedRoute) {
+        setVerifiedConversationRoute(null);
+      }
+    } else if (promptCacheConversationId != null && conversationLabel == null) {
+      setVerifiedConversationRoute(null);
+    } else if (
+      conversationDataIsComplete &&
+      promptCacheConversationId != null &&
+      conversationLabel === promptCacheConversationId
+    ) {
+      if (
+        verifiedConversationRoute?.key !== promptCacheConversationKey ||
+        verifiedConversationRoute?.conversationId !== promptCacheConversationId
+      ) {
+        setVerifiedConversationRoute({
+          key: promptCacheConversationKey,
+          conversationId: promptCacheConversationId,
+        });
+      }
+    }
+  }, [
+    cards,
+    conversationDataIsComplete,
+    openPromptCacheConversation,
+    promptCacheConversationId,
+    promptCacheConversationKey,
+    promptCacheConversationTab,
+    verifiedConversationRoute,
+    workingCardsError,
+  ]);
+
+  const conversationCardsForRoute = cards.filter(
+    (card) => card.promptCacheKey === promptCacheConversationKey,
+  );
+  const conversationIdsForRoute = new Set(
+    conversationCardsForRoute
+      .map((card) => card.conversationId?.trim())
+      .filter((conversationId): conversationId is string => Boolean(conversationId)),
+  );
+  const routeConversationId = conversationIdsForRoute.values().next().value ?? null;
+  const visibleRouteIdentityIsUnique =
+    routeConversationId != null &&
+    conversationCardsForRoute.length > 0 &&
+    conversationCardsForRoute.every((card) => card.conversationId?.trim() === routeConversationId);
+  const verifiedRouteMatchesCurrentCards = conversationDataIsComplete
+    ? visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId
+    : conversationCardsForRoute.length === 0 ||
+      (visibleRouteIdentityIsUnique && routeConversationId === promptCacheConversationId);
+  // History and settings are queried by prompt-cache key, so an ID-only deep link is not enough
+  // to authorize a route after the working-set identity has disappeared.
+  const verifiedConversationRouteIsActive =
+    pendingConversationSelection == null &&
+    promptCacheConversationId != null &&
+    verifiedConversationRoute?.key === promptCacheConversationKey &&
+    verifiedConversationRoute?.conversationId === promptCacheConversationId &&
+    verifiedRouteMatchesCurrentCards;
+  const conversationRouteIdentityIsWritable =
+    !workingCardsLoading &&
+    !workingCardsLoadingMore &&
+    !canLoadMore &&
+    workingCardsError == null &&
+    promptCacheConversationId != null &&
+    visibleRouteIdentityIsUnique &&
+    routeConversationId === promptCacheConversationId;
+  const conversationRouteReadOnly = !conversationRouteIdentityIsWritable;
+  const discardConversationRoutePendingMutations =
+    promptCacheConversationKey != null && conversationRouteReadOnly;
+  const conversationRouteIsSafe =
+    promptCacheConversationKey == null ||
+    verifiedConversationRouteIsActive ||
+    conversationRouteIdentityIsWritable ||
+    (conversationDataIsComplete &&
+      visibleRouteIdentityIsUnique &&
+      (promptCacheConversationId == null || routeConversationId === promptCacheConversationId));
 
   useLayoutEffect(() => {
     resetDashboardPerformanceDiagnostics();
@@ -143,29 +381,6 @@ export default function DashboardPage() {
     });
   };
 
-  if (isCompactViewport && promptCacheConversationKey != null) {
-    return (
-      <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-        <PromptCacheConversationHistoryDrawer
-          open
-          presentation="page"
-          conversationKey={promptCacheConversationKey}
-          conversationLabel={selectedConversation?.label ?? null}
-          initialTab={promptCacheConversationTab}
-          onTabChange={(tab) =>
-            openPromptCacheConversation(promptCacheConversationKey, {
-              replace: true,
-              tab,
-            })
-          }
-          onClose={() => closePromptCacheConversation()}
-          t={t}
-          onOpenUpstreamAccount={handleOpenUpstreamAccount}
-        />
-      </div>
-    );
-  }
-
   if (isCompactViewport && upstreamAccountId != null) {
     return (
       <div className="mx-auto flex w-full max-w-full flex-col gap-6">
@@ -180,110 +395,132 @@ export default function DashboardPage() {
     );
   }
 
+  const compactConversationRouteIsOpen =
+    isCompactViewport && promptCacheConversationKey != null && conversationRouteIsSafe;
+
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <DashboardActivityOverview
-        activeRange={activeRange}
-        onActiveRangeChange={setActiveRange}
-        dashboardActivity={dashboardActivity}
-        dashboardActivityLoading={dashboardActivityLoading}
-        dashboardActivityError={dashboardActivityError}
-        snapshotStatus={overviewSnapshotRuntime.status}
-        snapshotBundle={overviewSnapshotRuntime.bundle}
-      />
-      <DashboardPerformanceDiagnostics />
+      <div
+        data-testid="dashboard-main-content"
+        className={compactConversationRouteIsOpen ? "hidden" : "flex flex-col gap-6"}
+      >
+        <DashboardActivityOverview
+          activeRange={activeRange}
+          onActiveRangeChange={setActiveRange}
+          dashboardActivity={dashboardActivity}
+          dashboardActivityLoading={dashboardActivityLoading}
+          dashboardActivityError={dashboardActivityError}
+          snapshotStatus={overviewSnapshotRuntime.status}
+          snapshotBundle={overviewSnapshotRuntime.bundle}
+        />
+        <DashboardPerformanceDiagnostics />
 
-      <DashboardWorkingConversationsSection
-        activeRange={activeRange}
-        cards={cards}
-        hasDelayedStatistics={hasDelayedStatistics}
-        totalMatched={totalMatched}
-        hasMore={hasMore}
-        recentPreviewLimit={recentPreviewLimit}
-        isLoading={workingCardsLoading}
-        isLoadingMore={workingCardsLoadingMore}
-        error={workingCardsError}
-        onLoadMore={loadMore}
-        setRefreshTargetCount={setRefreshTargetCount}
-        onOpenUpstreamAccount={handleOpenUpstreamAccount}
-        onOpenConversation={(selection) => {
-          closeUpstreamAccount({ replace: true });
-          setSelectedInvocation(null);
-          const conversationLabel = formatDashboardWorkingConversationSequenceId(
-            selection.conversationSequenceId,
-          );
-          setSelectedConversation({
-            key: selection.promptCacheKey,
-            label: conversationLabel,
-          });
-          if (routeInvokeId != null) {
-            const search = new URLSearchParams({
-              promptCacheConversationKey: selection.promptCacheKey,
-            });
-            navigate(
-              { pathname: "/dashboard", search: `?${search.toString()}` },
-              { replace: true },
+        <DashboardWorkingConversationsSection
+          activeRange={activeRange}
+          cards={cards}
+          hasDelayedStatistics={hasDelayedStatistics}
+          totalMatched={totalMatched}
+          hasMore={hasMore}
+          canLoadMore={canLoadMore}
+          recentPreviewLimit={recentPreviewLimit}
+          isLoading={workingCardsLoading}
+          isLoadingMore={workingCardsLoadingMore}
+          error={workingCardsError}
+          onLoadMore={loadMore}
+          setRefreshTargetCount={setRefreshTargetCount}
+          onOpenUpstreamAccount={handleOpenUpstreamAccount}
+          onOpenConversation={(selection) => {
+            closeUpstreamAccount({ replace: true });
+            setSelectedInvocation(null);
+            setVerifiedConversationRoute(null);
+            setPendingConversationSelection(
+              hasMore
+                ? {
+                    key: selection.promptCacheKey,
+                    conversationId: selection.conversationId,
+                  }
+                : null,
             );
-            return;
+            setSelectedConversation({
+              key: selection.promptCacheKey,
+              label: selection.conversationId,
+            });
+            if (routeInvokeId != null) {
+              const search = new URLSearchParams({
+                promptCacheConversationKey: selection.promptCacheKey,
+                promptCacheConversationId: selection.conversationId,
+              });
+              navigate(
+                { pathname: "/dashboard", search: `?${search.toString()}` },
+                { replace: true },
+              );
+              return;
+            }
+            openPromptCacheConversation(selection.promptCacheKey, {
+              conversationId: selection.conversationId,
+              tab: selection.tab,
+              clearUpstreamAccount: true,
+            });
+          }}
+          onOpenInvocation={(selection) => {
+            closeUpstreamAccount({ replace: true });
+            closePromptCacheConversation({ replace: true });
+            setSelectedConversation(null);
+            setPendingConversationSelection(null);
+            setSelectedInvocation(selection);
+            navigate(
+              `/dashboard/invocations/${encodeURIComponent(selection.invocation.record.invokeId)}`,
+            );
+          }}
+          upstreamAccountActivity={
+            dashboardActivity?.accounts
+              ? {
+                  range: dashboardActivity.range,
+                  rangeStart: dashboardActivity.rangeStart,
+                  rangeEnd: dashboardActivity.rangeEnd,
+                  networkLiveBucket: dashboardActivity.networkLiveBucket,
+                  networkRealtimeRate: dashboardActivity.networkRealtimeRate,
+                  accounts: dashboardActivity.accounts,
+                }
+              : null
           }
-          openPromptCacheConversation(selection.promptCacheKey, {
-            tab: selection.tab,
-            clearUpstreamAccount: true,
-          });
-        }}
-        onOpenInvocation={(selection) => {
-          closeUpstreamAccount({ replace: true });
-          closePromptCacheConversation({ replace: true });
-          setSelectedConversation(null);
-          setSelectedInvocation(selection);
-          navigate(
-            `/dashboard/invocations/${encodeURIComponent(selection.invocation.record.invokeId)}`,
-          );
-        }}
-        upstreamAccountActivity={
-          dashboardActivity?.accounts
-            ? {
-                range: dashboardActivity.range,
-                rangeStart: dashboardActivity.rangeStart,
-                rangeEnd: dashboardActivity.rangeEnd,
-                networkLiveBucket: dashboardActivity.networkLiveBucket,
-                networkRealtimeRate: dashboardActivity.networkRealtimeRate,
-                accounts: dashboardActivity.accounts,
-              }
-            : null
-        }
-        upstreamAccountActivityLoading={dashboardActivityLoading}
-        upstreamAccountActivityRefreshing={dashboardActivityRefreshing}
-        upstreamAccountActivityError={dashboardActivityError}
-        upstreamAccountRecentLoading={dashboardActivityRecentLoading}
-        upstreamAccountRecentError={dashboardActivityRecentError}
-        onRetryUpstreamAccountRecent={retryDashboardActivityRecent}
-        upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
-        onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
-        onUpstreamAccountPolicyChanged={() => {
-          reloadDashboardActivity();
-        }}
-        onConversationsChanged={() => {
-          refreshWorkingConversations();
-        }}
-        activeBlockedBindingFilter={blockedBindingFilter}
-        onClearBlockedBindingFilter={() => {
-          clearBlockedBindingFilter();
-        }}
-      />
-      <DashboardInvocationDetailDrawer
-        open={routeInvokeId != null}
-        invocationId={routeInvokeId ?? null}
-        selection={selectedInvocation}
-        onClose={() => {
-          setSelectedInvocation(null);
-          navigate("/dashboard");
-        }}
-        onOpenUpstreamAccount={handleOpenUpstreamAccount}
-      />
+          upstreamAccountActivityLoading={dashboardActivityLoading}
+          upstreamAccountActivityRefreshing={dashboardActivityRefreshing}
+          upstreamAccountActivityError={dashboardActivityError}
+          upstreamAccountRecentLoading={dashboardActivityRecentLoading}
+          upstreamAccountRecentError={dashboardActivityRecentError}
+          onRetryUpstreamAccountRecent={retryDashboardActivityRecent}
+          upstreamAccountRecentPreviewLimit={upstreamAccountRecentPreviewLimit}
+          onUpstreamAccountActivityEnabledChange={setIncludeUpstreamAccountActivity}
+          onUpstreamAccountPolicyChanged={() => {
+            reloadDashboardActivity();
+          }}
+          onConversationsChanged={() => {
+            refreshWorkingConversations();
+          }}
+          activeBlockedBindingFilter={blockedBindingFilter}
+          onClearBlockedBindingFilter={() => {
+            clearBlockedBindingFilter();
+          }}
+        />
+        <DashboardInvocationDetailDrawer
+          open={routeInvokeId != null}
+          invocationId={routeInvokeId ?? null}
+          selection={selectedInvocation}
+          onClose={() => {
+            setSelectedInvocation(null);
+            navigate("/dashboard");
+          }}
+          onOpenUpstreamAccount={handleOpenUpstreamAccount}
+        />
+      </div>
       <PromptCacheConversationHistoryDrawer
-        open={promptCacheConversationKey != null && upstreamAccountId == null}
+        open={
+          promptCacheConversationKey != null && upstreamAccountId == null && conversationRouteIsSafe
+        }
+        presentation={isCompactViewport && promptCacheConversationKey != null ? "page" : "overlay"}
         conversationKey={promptCacheConversationKey}
+        conversationId={promptCacheConversationId}
         conversationLabel={selectedConversation?.label ?? null}
         initialTab={promptCacheConversationTab}
         onTabChange={(tab) => {
@@ -293,9 +530,14 @@ export default function DashboardPage() {
             tab,
           });
         }}
-        onClose={() => closePromptCacheConversation()}
+        onClose={() => {
+          setPendingConversationSelection(null);
+          closePromptCacheConversation();
+        }}
         t={t}
         onOpenUpstreamAccount={handleOpenUpstreamAccount}
+        readOnly={conversationRouteReadOnly}
+        discardPendingMutations={discardConversationRoutePendingMutations}
       />
       {upstreamAccountId != null ? (
         <SharedUpstreamAccountDetailDrawer

@@ -170,11 +170,63 @@ type ConversationInlinePatch =
   | { forwardProxyKeys: string[] | null }
   | { timeouts: NonNullable<UpdateGroupAccountRoutingRulePayload["timeouts"]> };
 
+type ConversationBindingPayload =
+  | { bindingKind: "group"; groupName: string }
+  | { bindingKind: "upstreamAccount"; upstreamAccountId: number }
+  | { bindingKind: "none" };
+
 type ConversationInlineMutationEntry = {
   conversationKey: string;
   fields: ConversationInlinePolicyField[];
   patch: ConversationInlinePatch;
+  bindingBase: ConversationBindingPayload;
 };
+
+type ConversationMutationScope = {
+  conversationKey: string | null;
+  conversationId: string | null | undefined;
+  blocked: boolean;
+};
+
+function conversationMutationScopeEquals(
+  current: ConversationMutationScope,
+  expected: ConversationMutationScope,
+) {
+  return (
+    current.conversationKey === expected.conversationKey &&
+    current.conversationId === expected.conversationId &&
+    current.blocked === expected.blocked
+  );
+}
+
+function conversationMutationScopeIsCurrent(
+  current: ConversationMutationScope,
+  expected: ConversationMutationScope,
+) {
+  return !current.blocked && conversationMutationScopeEquals(current, expected);
+}
+
+function conversationMutationGenerationIsCurrent(
+  current: ConversationMutationScope,
+  expected: ConversationMutationScope,
+  currentGeneration: number,
+  expectedGeneration: number,
+) {
+  return (
+    currentGeneration === expectedGeneration &&
+    conversationMutationScopeIsCurrent(current, expected)
+  );
+}
+
+function conversationMutationIdentityIsCurrent(
+  current: ConversationMutationScope,
+  expected: ConversationMutationScope,
+) {
+  return (
+    current.conversationKey === expected.conversationKey &&
+    current.conversationId === expected.conversationId
+  );
+}
 
 function isOlderBindingSnapshot(
   nextBinding: PromptCacheConversationBindingResponse,
@@ -397,10 +449,7 @@ function applyConversationInlinePatch(
 
 function conversationBindingPayloadBase(
   binding: PromptCacheConversationBindingResponse | null,
-):
-  | { bindingKind: "group"; groupName: string }
-  | { bindingKind: "upstreamAccount"; upstreamAccountId: number }
-  | { bindingKind: "none" } {
+): ConversationBindingPayload {
   if (binding?.bindingKind === "group" && binding.groupName) {
     return { bindingKind: "group", groupName: binding.groupName };
   }
@@ -1015,6 +1064,7 @@ function PromptCacheConversationInvocationTable({
   isLoading,
   error,
   emptyLabel,
+  conversationId,
   onOpenUpstreamAccount,
   scrollElement,
 }: {
@@ -1022,6 +1072,7 @@ function PromptCacheConversationInvocationTable({
   isLoading: boolean;
   error?: string | null;
   emptyLabel: string;
+  conversationId?: string | null;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   scrollElement?: HTMLElement | null;
 }) {
@@ -1040,6 +1091,7 @@ function PromptCacheConversationInvocationTable({
           isLoading={false}
           error={null}
           emptyLabel={emptyLabel}
+          conversationId={conversationId}
           onOpenUpstreamAccount={onOpenUpstreamAccount}
           scrollElement={scrollElement}
         />
@@ -1053,6 +1105,7 @@ function PromptCacheConversationInvocationTable({
       isLoading={isLoading}
       error={error}
       emptyLabel={emptyLabel}
+      conversationId={conversationId}
       onOpenUpstreamAccount={onOpenUpstreamAccount}
       scrollElement={scrollElement}
     />
@@ -2401,6 +2454,7 @@ function PromptCacheConversationActivityOverview({
 export function PromptCacheConversationHistoryDrawer({
   open,
   conversationKey,
+  conversationId,
   conversationLabel,
   initialTab = "overview",
   presentation = "overlay",
@@ -2409,9 +2463,12 @@ export function PromptCacheConversationHistoryDrawer({
   t,
   onOpenUpstreamAccount,
   historyQueryForConversationKey,
+  readOnly = false,
+  discardPendingMutations = false,
 }: {
   open: boolean;
   conversationKey: string | null;
+  conversationId?: string | null;
   conversationLabel?: string | null;
   initialTab?: PromptCacheConversationDrawerTab;
   presentation?: "overlay" | "page";
@@ -2420,6 +2477,8 @@ export function PromptCacheConversationHistoryDrawer({
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
   historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
+  readOnly?: boolean;
+  discardPendingMutations?: boolean;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -2443,8 +2502,13 @@ export function PromptCacheConversationHistoryDrawer({
   const bindingDraftDirtyRef = useRef(false);
   const bindingTopicLoadingRef = useRef(false);
   const bindingHydratedRef = useRef(false);
-  const bindingScopeRef = useRef<{ conversationKey: string | null; open: boolean }>({
+  const bindingScopeRef = useRef<{
+    conversationKey: string | null;
+    conversationId: string | null | undefined;
+    open: boolean;
+  }>({
     conversationKey,
+    conversationId,
     open,
   });
   const bindingTopicSseUnavailableCapturedRef = useRef(false);
@@ -2488,14 +2552,56 @@ export function PromptCacheConversationHistoryDrawer({
     patch: ConversationInlinePatch;
     fields: Set<ConversationInlinePolicyField>;
   } | null>(null);
+  const currentConversationMutationScope: ConversationMutationScope = {
+    conversationKey,
+    conversationId,
+    blocked: readOnly || discardPendingMutations,
+  };
+  const conversationMutationScopeRef = useRef<ConversationMutationScope>(
+    currentConversationMutationScope,
+  );
+  const bindingMutationGenerationRef = useRef(0);
+  const bindingMutationGenerationScopeRef = useRef<ConversationMutationScope>(
+    currentConversationMutationScope,
+  );
+  const bindingMutationSequenceRef = useRef(0);
+  const bindingMutationInFlightResourceKeysRef = useRef(new Set<string>());
+  const bindingMutationScopeStateRef = useRef({
+    conversationKey,
+    conversationId,
+    readOnly,
+    discardPendingMutations,
+  });
+  const previousMutationScope = bindingMutationGenerationScopeRef.current;
+  const mutationIdentityChanged =
+    previousMutationScope.conversationKey !== currentConversationMutationScope.conversationKey ||
+    previousMutationScope.conversationId !== currentConversationMutationScope.conversationId;
+  if (
+    !conversationMutationScopeEquals(
+      bindingMutationGenerationScopeRef.current,
+      currentConversationMutationScope,
+    )
+  ) {
+    bindingMutationGenerationRef.current += 1;
+    if (mutationIdentityChanged) {
+      bindingMutationSequenceRef.current += 1;
+    }
+    bindingMutationGenerationScopeRef.current = currentConversationMutationScope;
+  }
+  conversationMutationScopeRef.current = currentConversationMutationScope;
+  const inlinePolicyMutationResourceKey =
+    conversationId === undefined
+      ? conversationKey
+      : JSON.stringify([conversationKey, conversationId]);
   const inlinePolicyMutation = useLatestDebouncedMutation<
     ConversationInlineMutationEntry,
     PromptCacheConversationBindingResponse
   >({
-    resourceKey: conversationKey,
+    resourceKey: inlinePolicyMutationResourceKey,
+    cancelOnResourceChange: discardPendingMutations || (open && conversationId !== undefined),
     mutate: (entry) =>
       updatePromptCacheConversationBinding(entry.conversationKey, {
-        ...conversationBindingPayloadBase(binding),
+        ...entry.bindingBase,
         ...entry.patch,
       }),
     onSuccess: (nextBinding) => {
@@ -2564,6 +2670,34 @@ export function PromptCacheConversationHistoryDrawer({
       setInlinePolicyErrors({});
     },
   });
+  useEffect(() => {
+    const previousScope = bindingMutationScopeStateRef.current;
+    const nextScope = {
+      conversationKey,
+      conversationId,
+      readOnly,
+      discardPendingMutations,
+    };
+    bindingMutationScopeStateRef.current = nextScope;
+    if (
+      previousScope.conversationKey === nextScope.conversationKey &&
+      previousScope.conversationId === nextScope.conversationId &&
+      previousScope.readOnly === nextScope.readOnly &&
+      previousScope.discardPendingMutations === nextScope.discardPendingMutations
+    ) {
+      return;
+    }
+    setBindingSaving(
+      nextScope.conversationKey != null &&
+        bindingMutationInFlightResourceKeysRef.current.has(nextScope.conversationKey),
+    );
+  }, [conversationId, conversationKey, discardPendingMutations, readOnly]);
+  useEffect(() => {
+    return () => {
+      bindingMutationGenerationRef.current += 1;
+      bindingMutationSequenceRef.current += 1;
+    };
+  }, []);
   const inlinePolicySaving =
     inlinePolicyMutation.status === "pending" || inlinePolicyMutation.status === "saving";
   const inlinePolicyStatusByField = useMemo(() => {
@@ -2588,9 +2722,18 @@ export function PromptCacheConversationHistoryDrawer({
   }, [inlinePolicyMutation.revert]);
 
   useEffect(() => {
+    if (discardPendingMutations) {
+      inlinePolicyMutation.cancelPending();
+      return;
+    }
     if (open) return;
     void inlinePolicyMutation.flush();
-  }, [inlinePolicyMutation.flush, open]);
+  }, [
+    discardPendingMutations,
+    inlinePolicyMutation.cancelPending,
+    inlinePolicyMutation.flush,
+    open,
+  ]);
   const [bindingOwnerConfirmOpen, setBindingOwnerConfirmOpen] = useState(false);
   const [affinityResetConfirmOpen, setAffinityResetConfirmOpen] = useState(false);
   const [bindingRemoteConflict, setBindingRemoteConflict] =
@@ -2641,20 +2784,29 @@ export function PromptCacheConversationHistoryDrawer({
   }, [open]);
 
   useEffect(() => {
+    if (!readOnly) return;
+    setBindingOwnerConfirmOpen(false);
+    setAffinityResetConfirmOpen(false);
+  }, [readOnly]);
+
+  useEffect(() => {
     setBindingOwnerConfirmOpen(false);
   }, []);
 
   useEffect(() => {
     if (!open) return;
-    setActiveTab(initialTab);
-  }, [initialTab, open]);
+    setActiveTab(
+      readOnly && (initialTab === "routing" || initialTab === "settings") ? "overview" : initialTab,
+    );
+  }, [initialTab, open, readOnly]);
 
   const handleSelectTab = useCallback(
     (nextTab: PromptCacheConversationDrawerTab) => {
+      if (readOnly && (nextTab === "routing" || nextTab === "settings")) return;
       setActiveTab(nextTab);
       onTabChange?.(nextTab);
     },
-    [onTabChange],
+    [onTabChange, readOnly],
   );
 
   const clearPendingRefreshTimer = useCallback(() => {
@@ -3072,11 +3224,28 @@ export function PromptCacheConversationHistoryDrawer({
   useEffect(() => {
     if (
       bindingScopeRef.current.conversationKey !== conversationKey ||
+      bindingScopeRef.current.conversationId !== conversationId ||
       bindingScopeRef.current.open !== open
     ) {
-      bindingScopeRef.current = { conversationKey, open };
+      bindingScopeRef.current = { conversationKey, conversationId, open };
+      bindingHydrationSeqRef.current += 1;
       bindingHydratedRef.current = false;
       confirmedBindingRef.current = null;
+      setBinding(null);
+      setBindingKind("none");
+      setBindingGroupName("");
+      setBindingAccountId("");
+      setBindingError(null);
+      setBindingRemoteConflict(null);
+      setBindingOwnerConfirmAllowsRemoteOverwrite(false);
+      setAllowSwitchUpstreamDraft("inherit");
+      setFastModeDraft("keep_original");
+      setImageToolDraft("keep_original");
+      setCodexImagegenDraft("keep_original");
+      setAvailableModelsMode("inherit");
+      setAvailableModelsDraft("");
+      setForwardProxyKeysDraft([]);
+      setInlinePolicyErrors({});
     }
     if (inlinePolicyMutation.hasPending || inlinePolicyMutation.status === "error") return;
     inlinePolicyDraftRef.current = null;
@@ -3091,7 +3260,13 @@ export function PromptCacheConversationHistoryDrawer({
     setBindingRemoteConflict(null);
     setBindingOwnerConfirmAllowsRemoteOverwrite(false);
     setInlinePolicyErrors({});
-  }, [conversationKey, inlinePolicyMutation.hasPending, inlinePolicyMutation.status, open]);
+  }, [
+    conversationId,
+    conversationKey,
+    inlinePolicyMutation.hasPending,
+    inlinePolicyMutation.status,
+    open,
+  ]);
 
   useEffect(() => {
     if (!open || !conversationKey) {
@@ -3138,6 +3313,11 @@ export function PromptCacheConversationHistoryDrawer({
     }
 
     const controller = new AbortController();
+    const hydrationScope = { conversationKey, conversationId, open };
+    const isCurrentBindingScope = () =>
+      bindingScopeRef.current.conversationKey === hydrationScope.conversationKey &&
+      bindingScopeRef.current.conversationId === hydrationScope.conversationId &&
+      bindingScopeRef.current.open === hydrationScope.open;
     const hydrationSeq = bindingHydrationSeqRef.current + 1;
     bindingHydrationSeqRef.current = hydrationSeq;
     if (!bindingHydratedRef.current) {
@@ -3151,7 +3331,7 @@ export function PromptCacheConversationHistoryDrawer({
       fetchUpstreamAccounts({ includeAll: true, pageSize: 500 }),
     ])
       .then(([nextBinding, accountList]) => {
-        if (controller.signal.aborted) return;
+        if (controller.signal.aborted || !isCurrentBindingScope()) return;
         const accounts = accountList.items.filter(accountCanBePromptCacheBindingTarget);
         const groups = Array.from(
           new Set(
@@ -3199,14 +3379,20 @@ export function PromptCacheConversationHistoryDrawer({
         setInlinePolicyErrors({});
       })
       .catch((err) => {
-        if (controller.signal.aborted || hydrationSeq !== bindingHydrationSeqRef.current) return;
+        if (
+          controller.signal.aborted ||
+          hydrationSeq !== bindingHydrationSeqRef.current ||
+          !isCurrentBindingScope()
+        )
+          return;
         setBindingError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
         if (
           isSseUnavailable &&
           !controller.signal.aborted &&
-          hydrationSeq === bindingHydrationSeqRef.current
+          hydrationSeq === bindingHydrationSeqRef.current &&
+          isCurrentBindingScope()
         ) {
           setBindingLoading(false);
         }
@@ -3215,6 +3401,7 @@ export function PromptCacheConversationHistoryDrawer({
     return () => controller.abort();
   }, [
     activeTab,
+    conversationId,
     conversationKey,
     inlinePolicyMutation.hasPending,
     inlinePolicyMutation.reconcile,
@@ -3378,6 +3565,7 @@ export function PromptCacheConversationHistoryDrawer({
   const availableModelsOverrideEmpty =
     availableModelsMode === "override" && availableModelsOverrideList.length === 0;
   const bindingSubmitDisabled =
+    readOnly ||
     !conversationKey ||
     !binding ||
     bindingLoading ||
@@ -3428,10 +3616,11 @@ export function PromptCacheConversationHistoryDrawer({
   );
   const saveConversationInlinePolicy = useCallback(
     (field: ConversationInlinePolicyField, patch: ConversationInlinePatch) => {
-      if (!conversationKey || !binding || bindingSaving) return;
+      if (readOnly || !conversationKey || !binding || bindingSaving) return;
       const existingDraft = inlinePolicyDraftRef.current;
       const nextPatch = mergeConversationInlinePatch(existingDraft?.patch ?? null, patch);
       const nextFields = new Set(existingDraft?.fields ?? []);
+      const bindingBase = conversationBindingPayloadBase(binding);
       nextFields.add(field);
       inlinePolicyDraftRef.current = { conversationKey, patch: nextPatch, fields: nextFields };
       bindingDraftDirtyRef.current = true;
@@ -3452,9 +3641,10 @@ export function PromptCacheConversationHistoryDrawer({
         conversationKey,
         fields: Array.from(nextFields),
         patch: nextPatch,
+        bindingBase,
       });
     },
-    [binding, bindingSaving, conversationKey, inlinePolicyMutation.schedule],
+    [binding, bindingSaving, conversationKey, inlinePolicyMutation.schedule, readOnly],
   );
   const conversationEffectiveRoutingRule = useMemo(
     () => buildConversationEffectiveRoutingRule(binding),
@@ -4499,28 +4689,46 @@ export function PromptCacheConversationHistoryDrawer({
   );
   const saveBinding = useCallback(
     async (options?: { skipOwnerWarning?: boolean; allowRemoteOverwrite?: boolean }) => {
-      if (!conversationKey || bindingSubmitDisabled) return;
+      const mutationScope = conversationMutationScopeRef.current;
+      const mutationGeneration = bindingMutationGenerationRef.current;
+      const bindingMutationResourceKey = mutationScope.conversationKey;
+      if (mutationScope.blocked || !bindingMutationResourceKey || bindingSubmitDisabled) return;
       if (bindingRemoteConflict && !options?.allowRemoteOverwrite) return;
-      if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
-      if (
-        !options?.skipOwnerWarning &&
-        nextBindingWouldOverrideEncryptedOwner(
-          binding,
-          bindingKind,
-          bindingGroupName,
-          bindingAccountId,
-        )
-      ) {
-        setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
-        setBindingOwnerConfirmOpen(true);
-        return;
-      }
+      if (bindingMutationInFlightResourceKeysRef.current.has(bindingMutationResourceKey)) return;
+      const bindingMutationSequence = ++bindingMutationSequenceRef.current;
+      bindingMutationInFlightResourceKeysRef.current.add(bindingMutationResourceKey);
       setBindingSaving(true);
       setBindingError(null);
       setBindingRemoteConflict(null);
+      const isCurrentMutation = () =>
+        bindingMutationSequence === bindingMutationSequenceRef.current &&
+        conversationMutationGenerationIsCurrent(
+          conversationMutationScopeRef.current,
+          mutationScope,
+          bindingMutationGenerationRef.current,
+          mutationGeneration,
+        );
+      const isCurrentMutationIdentity = () =>
+        conversationMutationIdentityIsCurrent(conversationMutationScopeRef.current, mutationScope);
       try {
+        if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
+        if (!isCurrentMutation()) return;
+        if (
+          !options?.skipOwnerWarning &&
+          nextBindingWouldOverrideEncryptedOwner(
+            binding,
+            bindingKind,
+            bindingGroupName,
+            bindingAccountId,
+          )
+        ) {
+          setBindingOwnerConfirmAllowsRemoteOverwrite(Boolean(options?.allowRemoteOverwrite));
+          setBindingOwnerConfirmOpen(true);
+          return;
+        }
+        if (!isCurrentMutation()) return;
         const nextBinding = await updatePromptCacheConversationBinding(
-          conversationKey,
+          bindingMutationResourceKey,
           bindingKind === "group"
             ? {
                 bindingKind: "group",
@@ -4533,6 +4741,7 @@ export function PromptCacheConversationHistoryDrawer({
                 }
               : { bindingKind: "none" },
         );
+        if (!isCurrentMutationIdentity()) return;
         inlinePolicyMutation.reconcile(nextBinding);
         confirmedBindingRef.current = nextBinding;
         setBinding(nextBinding);
@@ -4557,10 +4766,17 @@ export function PromptCacheConversationHistoryDrawer({
         bindingDraftDirtyRef.current = false;
         setBindingRemoteConflict(null);
       } catch (err) {
+        if (!isCurrentMutationIdentity()) return;
         bindingDraftDirtyRef.current = true;
         setBindingError(err instanceof Error ? err.message : String(err));
       } finally {
-        setBindingSaving(false);
+        bindingMutationInFlightResourceKeysRef.current.delete(bindingMutationResourceKey);
+        if (
+          conversationMutationScopeRef.current.conversationKey === bindingMutationResourceKey &&
+          !bindingMutationInFlightResourceKeysRef.current.has(bindingMutationResourceKey)
+        ) {
+          setBindingSaving(false);
+        }
       }
     },
     [
@@ -4572,7 +4788,6 @@ export function PromptCacheConversationHistoryDrawer({
       bindingKind,
       bindingRemoteConflict,
       bindingSubmitDisabled,
-      conversationKey,
       inlinePolicyMutation.hasPending,
       inlinePolicyMutation.flush,
       inlinePolicyMutation.reconcile,
@@ -4589,12 +4804,30 @@ export function PromptCacheConversationHistoryDrawer({
   }, [drawerBodyElement, liveRecords]);
 
   const resetAffinity = useCallback(async () => {
-    if (!conversationKey || bindingSaving) return;
-    if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
+    const mutationScope = conversationMutationScopeRef.current;
+    const mutationGeneration = bindingMutationGenerationRef.current;
+    const bindingMutationResourceKey = mutationScope.conversationKey;
+    if (mutationScope.blocked || !bindingMutationResourceKey) return;
+    if (bindingMutationInFlightResourceKeysRef.current.has(bindingMutationResourceKey)) return;
+    const bindingMutationSequence = ++bindingMutationSequenceRef.current;
+    bindingMutationInFlightResourceKeysRef.current.add(bindingMutationResourceKey);
     setBindingSaving(true);
     setBindingError(null);
+    const isCurrentMutation = () =>
+      bindingMutationSequence === bindingMutationSequenceRef.current &&
+      conversationMutationGenerationIsCurrent(
+        conversationMutationScopeRef.current,
+        mutationScope,
+        bindingMutationGenerationRef.current,
+        mutationGeneration,
+      );
+    const isCurrentMutationIdentity = () =>
+      conversationMutationIdentityIsCurrent(conversationMutationScopeRef.current, mutationScope);
     try {
-      const nextBinding = await resetPromptCacheConversationAffinity(conversationKey);
+      if (inlinePolicyMutation.hasPending) await inlinePolicyMutation.flush();
+      if (!isCurrentMutation()) return;
+      const nextBinding = await resetPromptCacheConversationAffinity(bindingMutationResourceKey);
+      if (!isCurrentMutationIdentity()) return;
       inlinePolicyMutation.reconcile(nextBinding);
       confirmedBindingRef.current = nextBinding;
       setBinding(nextBinding);
@@ -4620,15 +4853,20 @@ export function PromptCacheConversationHistoryDrawer({
       setBindingRemoteConflict(null);
       setAffinityResetConfirmOpen(false);
     } catch (err) {
+      if (!isCurrentMutationIdentity()) return;
       setBindingError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBindingSaving(false);
+      bindingMutationInFlightResourceKeysRef.current.delete(bindingMutationResourceKey);
+      if (
+        conversationMutationScopeRef.current.conversationKey === bindingMutationResourceKey &&
+        !bindingMutationInFlightResourceKeysRef.current.has(bindingMutationResourceKey)
+      ) {
+        setBindingSaving(false);
+      }
     }
   }, [
     bindingAccounts,
     bindingGroups,
-    bindingSaving,
-    conversationKey,
     inlinePolicyMutation.hasPending,
     inlinePolicyMutation.flush,
     inlinePolicyMutation.reconcile,
@@ -4703,6 +4941,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "routing"}
+                disabled={readOnly}
                 className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "routing"}
@@ -4714,6 +4953,7 @@ export function PromptCacheConversationHistoryDrawer({
               </SegmentedControlItem>
               <SegmentedControlItem
                 active={activeTab === "settings"}
+                disabled={readOnly}
                 className="min-w-0 px-0 text-[11px] leading-none sm:px-3.5 sm:text-sm"
                 role="tab"
                 aria-selected={activeTab === "settings"}
@@ -4776,6 +5016,7 @@ export function PromptCacheConversationHistoryDrawer({
               isLoading={isLoading}
               error={error}
               emptyLabel={t("live.conversations.drawer.empty")}
+              conversationId={conversationId}
               onOpenUpstreamAccount={onOpenUpstreamAccount}
               scrollElement={drawerBodyElement}
             />
@@ -4937,9 +5178,10 @@ export function PromptCacheConversationTable({
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(
-    null,
-  );
+  const [historyDrawerSelection, setHistoryDrawerSelection] = useState<{
+    promptCacheKey: string;
+    conversationId?: string | null;
+  } | null>(null);
   const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] = useState<string[]>(
     [],
   );
@@ -5133,7 +5375,7 @@ export function PromptCacheConversationTable({
 
   const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
-    setHistoryDrawerPromptCacheKey(null);
+    setHistoryDrawerSelection(null);
     onOpenUpstreamAccount?.(
       Math.trunc(Number(account.upstreamAccountId)),
       resolveUpstreamAccountLabel(account, fallbackAccountLabel),
@@ -5141,16 +5383,19 @@ export function PromptCacheConversationTable({
   };
   const openAccountDrawerFromHistory = useCallback(
     (accountId: number, accountLabel: string) => {
-      setHistoryDrawerPromptCacheKey(null);
+      setHistoryDrawerSelection(null);
       onOpenUpstreamAccount?.(accountId, accountLabel);
     },
     [onOpenUpstreamAccount],
   );
-  const openHistoryDrawer = (promptCacheKey: string) => {
-    setHistoryDrawerPromptCacheKey(promptCacheKey);
+  const openHistoryDrawer = (conversation: PromptCacheConversation) => {
+    setHistoryDrawerSelection({
+      promptCacheKey: conversation.promptCacheKey,
+      conversationId: conversation.conversationId,
+    });
   };
   const closeHistoryDrawer = () => {
-    setHistoryDrawerPromptCacheKey(null);
+    setHistoryDrawerSelection(null);
   };
   const togglePromptCachePreview = (promptCacheKey: string) => {
     if (!isExpansionControlled) {
@@ -5248,7 +5493,7 @@ export function PromptCacheConversationTable({
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={previewLabels.historyAction}
-                        onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
+                        onClick={() => openHistoryDrawer(conversation)}
                       >
                         <AppIcon name="account-details-outline" className="h-4 w-4" aria-hidden />
                       </button>
@@ -5262,6 +5507,7 @@ export function PromptCacheConversationTable({
                         )}
                         isLoading={false}
                         emptyLabel={previewLabels.empty}
+                        conversationId={conversation.conversationId}
                         onOpenUpstreamAccount={onOpenUpstreamAccount}
                       />
                     </div>
@@ -5391,7 +5637,7 @@ export function PromptCacheConversationTable({
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={previewLabels.historyAction}
-                            onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
+                            onClick={() => openHistoryDrawer(conversation)}
                           >
                             <AppIcon
                               name="account-details-outline"
@@ -5470,6 +5716,7 @@ export function PromptCacheConversationTable({
                             )}
                             isLoading={false}
                             emptyLabel={previewLabels.empty}
+                            conversationId={conversation.conversationId}
                             onOpenUpstreamAccount={onOpenUpstreamAccount}
                           />
                         </div>
@@ -5484,8 +5731,9 @@ export function PromptCacheConversationTable({
       </div>
       {footerNote ? <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p> : null}
       <PromptCacheConversationHistoryDrawer
-        open={historyDrawerPromptCacheKey != null}
-        conversationKey={historyDrawerPromptCacheKey}
+        open={historyDrawerSelection != null}
+        conversationKey={historyDrawerSelection?.promptCacheKey ?? null}
+        conversationId={historyDrawerSelection?.conversationId}
         onClose={closeHistoryDrawer}
         t={t}
         onOpenUpstreamAccount={openAccountDrawerFromHistory}
