@@ -5,10 +5,7 @@ import { Spinner } from "../../components/ui/spinner";
 import { useTranslation } from "../../i18n";
 import type { ApiInvocation } from "../../lib/api";
 import { fetchInvocationRecords } from "../../lib/api";
-import {
-  type DashboardWorkingConversationInvocationSelection,
-  formatDashboardWorkingConversationSequenceId,
-} from "../../lib/dashboardWorkingConversations";
+import type { DashboardWorkingConversationInvocationSelection } from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import { AccountDetailDrawerShell } from "../account-pool/AccountDetailDrawerShell";
 import { InvocationWorkflowDetailPanel } from "../invocations/InvocationWorkflowDetailPanel";
@@ -202,7 +199,8 @@ export function DashboardInvocationDetailDrawer({
     return () => window.clearTimeout(retryTimer);
   }, [effectiveInvocationId, effectiveTransientRecord, isLoading, loadError, open]);
 
-  const recordForHeader = fullRecord ?? selectionRecord;
+  const effectiveFullRecord = fullRecord?.invokeId === effectiveInvocationId ? fullRecord : null;
+  const recordForHeader = effectiveFullRecord ?? selectionRecord;
   const statusMeta = resolveStatusMeta(
     recordForHeader != null
       ? resolveInvocationDisplayStatus(recordForHeader)
@@ -222,9 +220,9 @@ export function DashboardInvocationDetailDrawer({
     recordForHeader != null
       ? formatOccurredAtLabel(recordForHeader.occurredAt, dateTimeFormatter)
       : FALLBACK_CELL;
-  const displaySequenceId =
+  const displayConversationId =
     selection?.invocation.record.invokeId === effectiveInvocationId
-      ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
+      ? selection.conversationId?.trim() || null
       : null;
 
   return (
@@ -239,7 +237,7 @@ export function DashboardInvocationDetailDrawer({
           <div className="flex flex-wrap items-center gap-2">
             <Chip tone="secondary">{slotLabel}</Chip>
             <Chip tone={statusMeta.variant}>{statusLabel}</Chip>
-            {displaySequenceId ? <Chip tone="secondary">{displaySequenceId}</Chip> : null}
+            {displayConversationId ? <Chip tone="secondary">{displayConversationId}</Chip> : null}
           </div>
           <div className="section-heading">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
@@ -279,7 +277,7 @@ export function DashboardInvocationDetailDrawer({
             <p className="mt-1 text-sm">{loadError}</p>
           </div>
         </Alert>
-      ) : !fullRecord ? (
+      ) : !effectiveFullRecord ? (
         <div
           className="flex min-h-[18rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center"
           data-testid="dashboard-invocation-detail-empty"
@@ -297,8 +295,9 @@ export function DashboardInvocationDetailDrawer({
       ) : (
         <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-4">
           <InvocationWorkflowDetailPanel
-            record={fullRecord}
+            record={effectiveFullRecord}
             size="default"
+            conversationId={displayConversationId}
             onOpenUpstreamAccount={onOpenUpstreamAccount}
           />
         </div>

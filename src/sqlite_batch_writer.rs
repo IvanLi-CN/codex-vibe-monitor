@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
-    sync::{Mutex, RwLock, mpsc, oneshot},
+    sync::{Mutex, Notify, RwLock, mpsc, oneshot},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout_at},
 };
@@ -20,10 +20,17 @@ use tracing::{debug, warn};
 
 use super::*;
 
+mod attempt_progress;
 mod invocation_identity;
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
+};
+pub(crate) use attempt_progress::BatchedAttemptProgress;
+use attempt_progress::{
+    drain_reliable_attempt_progress_overflow,
+    estimated_memory_bytes as estimated_attempt_progress_memory_bytes,
+    merge as merge_attempt_progress,
 };
 pub(crate) use invocation_identity::TrackedTerminalJournal;
 
@@ -35,6 +42,7 @@ pub(crate) const SQLITE_BATCH_MAX_AGE: Duration = Duration::from_secs(5);
 pub(crate) const SQLITE_BATCH_STALE_WARN_AGE: Duration = Duration::from_secs(30);
 pub(crate) const SQLITE_BATCH_CHANNEL_CAPACITY: usize = 10_000;
 const SQLITE_SHUTDOWN_DRAIN_DEADLINE: Duration = Duration::from_secs(5);
+const SQLITE_RELIABLE_ATTEMPT_PROGRESS_OVERFLOW_MAX_ROWS: usize = SQLITE_BATCH_MAX_ROWS;
 const SQLITE_P1_RETRY_DELAYS: [Duration; 5] = [
     Duration::from_millis(250),
     Duration::from_millis(500),
@@ -158,6 +166,10 @@ fn is_p1_terminal_write(write: &SqliteBatchWrite) -> bool {
     matches!(write, SqliteBatchWrite::TerminalInvocation(_))
 }
 
+fn is_attempt_progress_write(write: &SqliteBatchWrite) -> bool {
+    matches!(write, SqliteBatchWrite::AttemptProgress(_))
+}
+
 fn decrement_queued_p1_count(queued_p1_count: &AtomicUsize) {
     let _ = queued_p1_count.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
         count.checked_sub(1)
@@ -269,6 +281,11 @@ pub(crate) struct PendingQueueAccountingSnapshot {
     pub(crate) write_rows: u64,
     pub(crate) write_bytes: u64,
     pub(crate) write_duration_ms: u64,
+    pub(crate) attempt_progress_enqueued: u64,
+    pub(crate) attempt_progress_coalesced: u64,
+    pub(crate) attempt_progress_dropped: u64,
+    pub(crate) attempt_progress_deferred: u64,
+    pub(crate) attempt_progress_oldest_age_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) p2_wake_reason: Option<String>,
     pub(crate) invariant_violation_count: u64,
@@ -299,6 +316,11 @@ pub(crate) struct PendingQueueAccounting {
     write_rows: AtomicU64,
     write_bytes: AtomicU64,
     write_duration_ms: AtomicU64,
+    attempt_progress_enqueued: AtomicU64,
+    attempt_progress_coalesced: AtomicU64,
+    attempt_progress_dropped: AtomicU64,
+    attempt_progress_deferred: AtomicU64,
+    attempt_progress_oldest_age_ms: AtomicU64,
     p2_wake_reason: std::sync::Mutex<Option<String>>,
     invariant_violation_count: AtomicU64,
     last_invariant_violation: std::sync::Mutex<Option<PendingQueueInvariantViolation>>,
@@ -329,17 +351,6 @@ impl FlushReason {
     fn bypass_pressure_gate(self) -> bool {
         false
     }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BatchedAttemptProgress {
-    pub(crate) attempt_id: i64,
-    pub(crate) pending_status: &'static str,
-    pub(crate) phase: String,
-    pub(crate) connect_latency_ms: Option<f64>,
-    pub(crate) first_byte_latency_ms: Option<f64>,
-    pub(crate) compact_support_status: Option<String>,
-    pub(crate) compact_support_reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -436,7 +447,7 @@ pub(crate) enum SqliteBatchWriterControl {
     },
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct PendingBatch {
     terminal_invocations: BTreeMap<String, BatchedTerminalInvocationWrite>,
     attempt_progress: HashMap<i64, BatchedAttemptProgress>,
@@ -446,6 +457,7 @@ pub(crate) struct PendingBatch {
     startup_backfill_wake_tasks: Vec<StartupBackfillTask>,
     enqueued_rows: usize,
     coalesced_rows: usize,
+    attempt_progress_coalesced_rows: usize,
     estimated_bytes: usize,
     terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
@@ -592,13 +604,17 @@ impl PendingBatch {
                 estimate_change.0
             }
             SqliteBatchWrite::AttemptProgress(progress) => {
-                let old = self.attempt_progress.insert(progress.attempt_id, progress);
-                if let Some(old) = old {
-                    let old_bytes = estimated_attempt_progress_memory_bytes(&old);
-                    self.replace_estimate(old_bytes, write_bytes, false);
+                let attempt_id = progress.attempt_id;
+                if let Some(existing) = self.attempt_progress.get_mut(&attempt_id) {
+                    let old_bytes = estimated_attempt_progress_memory_bytes(existing);
+                    merge_attempt_progress(existing, progress);
+                    let new_bytes = estimated_attempt_progress_memory_bytes(existing);
+                    self.replace_estimate(old_bytes, new_bytes, false);
                     self.coalesced_rows += 1;
+                    self.attempt_progress_coalesced_rows += 1;
                     old_bytes
                 } else {
+                    self.attempt_progress.insert(attempt_id, progress);
                     self.add_estimate(write_bytes, false);
                     0
                 }
@@ -782,9 +798,12 @@ impl PendingBatch {
         }
 
         let oldest_at = self.oldest_at;
+        let attempt_progress_coalesced_rows = self.attempt_progress_coalesced_rows;
+        self.attempt_progress_coalesced_rows = 0;
         let mut chunk = Self {
             oldest_at,
             retained_for_retry: self.retained_for_retry,
+            attempt_progress_coalesced_rows,
             ..Self::default()
         };
         let mut selected_rows = 0_usize;
@@ -877,7 +896,21 @@ impl PendingBatch {
     }
 
     fn merge_p2(&mut self, mut other: Self) {
-        self.attempt_progress.extend(other.attempt_progress.drain());
+        let attempt_progress = std::mem::take(&mut other.attempt_progress);
+        for progress in attempt_progress.into_values() {
+            let write_bytes = estimated_attempt_progress_memory_bytes(&progress);
+            if let Some(existing) = self.attempt_progress.get_mut(&progress.attempt_id) {
+                let old_bytes = estimated_attempt_progress_memory_bytes(existing);
+                merge_attempt_progress(existing, progress);
+                let new_bytes = estimated_attempt_progress_memory_bytes(existing);
+                self.replace_estimate(old_bytes, new_bytes, false);
+                self.coalesced_rows += 1;
+                self.attempt_progress_coalesced_rows += 1;
+            } else {
+                self.add_estimate(write_bytes, false);
+                self.attempt_progress.insert(progress.attempt_id, progress);
+            }
+        }
         self.invocation_derived.extend(other.invocation_derived);
         self.account_selected_touches
             .extend(other.account_selected_touches.drain());
@@ -886,6 +919,9 @@ impl PendingBatch {
         self.add_startup_backfill_wake_tasks(&other.startup_backfill_wake_tasks);
         self.enqueued_rows = self.enqueued_rows.saturating_add(other.enqueued_rows);
         self.coalesced_rows = self.coalesced_rows.saturating_add(other.coalesced_rows);
+        self.attempt_progress_coalesced_rows = self
+            .attempt_progress_coalesced_rows
+            .saturating_add(other.attempt_progress_coalesced_rows);
         self.recalculate_estimates();
         self.oldest_at = match (self.oldest_at, other.oldest_at) {
             (Some(current), Some(other)) => Some(current.min(other)),
@@ -1019,17 +1055,6 @@ impl SqliteBatchWrite {
     }
 }
 
-fn estimated_attempt_progress_memory_bytes(progress: &BatchedAttemptProgress) -> usize {
-    std::mem::size_of::<BatchedAttemptProgress>()
-        .saturating_add(progress.phase.capacity())
-        .saturating_add(estimated_option_string_bytes(
-            &progress.compact_support_status,
-        ))
-        .saturating_add(estimated_option_string_bytes(
-            &progress.compact_support_reason,
-        ))
-}
-
 fn estimated_invocation_derived_memory_bytes(derived: &BatchedInvocationDerivedWrites) -> usize {
     std::mem::size_of::<BatchedInvocationDerivedWrites>()
         .saturating_add(derived.occurred_at.capacity())
@@ -1064,6 +1089,10 @@ impl PendingBatch {
 #[derive(Debug)]
 pub(crate) struct SqliteBatchWriter {
     write_sender: mpsc::Sender<SqliteBatchWrite>,
+    attempt_progress_sequence: AtomicU64,
+    attempt_progress_send_gate: std::sync::Mutex<()>,
+    reliable_attempt_progress_overflow: Arc<std::sync::Mutex<PendingBatch>>,
+    reliable_attempt_progress_notify: Arc<Notify>,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
     control_sender: mpsc::Sender<SqliteBatchWriterControl>,
@@ -1102,6 +1131,9 @@ impl SqliteBatchWriter {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let queued_p1_count = Arc::new(AtomicUsize::new(0));
         let p1_priority_gate = Arc::new(std::sync::Mutex::new(()));
+        let reliable_attempt_progress_overflow =
+            Arc::new(std::sync::Mutex::new(PendingBatch::default()));
+        let reliable_attempt_progress_notify = Arc::new(Notify::new());
         let (control_sender, control_receiver) = mpsc::channel(128);
         let accounting = Arc::new(PendingQueueAccounting::default());
         let dropped_writes = Arc::new(AtomicU64::new(0));
@@ -1152,9 +1184,15 @@ impl SqliteBatchWriter {
             terminal_journal.clone(),
             queued_p1_count.clone(),
             p1_priority_gate.clone(),
+            reliable_attempt_progress_overflow.clone(),
+            reliable_attempt_progress_notify.clone(),
         ));
         let writer = Arc::new(Self {
             write_sender,
+            attempt_progress_sequence: AtomicU64::new(0),
+            attempt_progress_send_gate: std::sync::Mutex::new(()),
+            reliable_attempt_progress_overflow,
+            reliable_attempt_progress_notify,
             queued_p1_count,
             p1_priority_gate,
             control_sender,
@@ -1201,6 +1239,12 @@ impl SqliteBatchWriter {
         let (control_sender, _control_receiver) = mpsc::channel(1);
         Arc::new(Self {
             write_sender,
+            attempt_progress_sequence: AtomicU64::new(0),
+            attempt_progress_send_gate: std::sync::Mutex::new(()),
+            reliable_attempt_progress_overflow: Arc::new(std::sync::Mutex::new(
+                PendingBatch::default(),
+            )),
+            reliable_attempt_progress_notify: Arc::new(Notify::new()),
             queued_p1_count: Arc::new(AtomicUsize::new(0)),
             p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
             control_sender,
@@ -1268,8 +1312,18 @@ impl SqliteBatchWriter {
     }
 
     pub(crate) fn enqueue(&self, write: SqliteBatchWrite) -> bool {
-        let estimated_bytes = write.estimated_memory_bytes();
         let is_p1 = is_p1_terminal_write(&write);
+        let is_attempt_progress = is_attempt_progress_write(&write);
+        let _attempt_progress_send_guard = is_attempt_progress.then(|| {
+            self.attempt_progress_send_gate
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+        });
+        let write = self.stamp_attempt_progress(write);
+        let estimated_bytes = write.estimated_memory_bytes();
+        if is_attempt_progress {
+            self.accounting.attempt_progress_enqueued();
+        }
         let _p1_priority_guard = is_p1.then(|| {
             self.p1_priority_gate
                 .lock()
@@ -1285,6 +1339,9 @@ impl SqliteBatchWriter {
                     return true;
                 }
                 Err(err) => {
+                    if is_attempt_progress {
+                        self.accounting.attempt_progress_dropped();
+                    }
                     self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                     warn!(
                         error = %err,
@@ -1309,6 +1366,9 @@ impl SqliteBatchWriter {
                 }
                 self.accounting.rollback_enqueue(estimated_bytes);
                 self.accounting.observe_p1_replace(usize::from(is_p1), 0);
+                if is_attempt_progress {
+                    self.accounting.attempt_progress_dropped();
+                }
                 self.dropped_writes.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     error = %err,
@@ -1318,6 +1378,20 @@ impl SqliteBatchWriter {
                 );
                 false
             }
+        }
+    }
+
+    fn stamp_attempt_progress(&self, write: SqliteBatchWrite) -> SqliteBatchWrite {
+        match write {
+            SqliteBatchWrite::AttemptProgress(mut progress) => {
+                let sequence = self
+                    .attempt_progress_sequence
+                    .fetch_add(1, Ordering::Relaxed)
+                    .saturating_add(1);
+                progress.stamp_sequence(sequence);
+                SqliteBatchWrite::AttemptProgress(progress)
+            }
+            other => other,
         }
     }
 
@@ -1850,6 +1924,8 @@ pub(crate) async fn run_sqlite_batch_writer(
     terminal_journal: Arc<TrackedTerminalJournal>,
     queued_p1_count: Arc<AtomicUsize>,
     p1_priority_gate: Arc<std::sync::Mutex<()>>,
+    reliable_attempt_progress_overflow: Arc<std::sync::Mutex<PendingBatch>>,
+    reliable_attempt_progress_notify: Arc<Notify>,
 ) {
     let mut ticker = interval(SQLITE_BATCH_FLUSH_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1864,6 +1940,16 @@ pub(crate) async fn run_sqlite_batch_writer(
     let mut transaction_sequence = 0_u64;
 
     loop {
+        let overflow_rows = drain_reliable_attempt_progress_overflow(
+            &reliable_attempt_progress_overflow,
+            &mut pending,
+            &accounting,
+            SQLITE_BATCH_MAX_ROWS,
+        );
+        if overflow_rows > 0 && pending.has_p2() {
+            p2_schedule.arm_if_idle(Instant::now());
+            accounting.update_p2_schedule(&p2_schedule);
+        }
         drain_queued_writes_before_dispatch(
             &mut write_receiver,
             &mut pending,
@@ -1894,6 +1980,12 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let mut remaining_queued = queued_depth_snapshot;
                         let mut result = Ok(());
                         loop {
+                            drain_reliable_attempt_progress_overflow(
+                                &reliable_attempt_progress_overflow,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_MAX_ROWS,
+                            );
                             let drained = drain_queued_batch_writes(
                                 &mut write_receiver,
                                 &mut pending,
@@ -2025,7 +2117,19 @@ pub(crate) async fn run_sqlite_batch_writer(
                         let mut result = Ok(());
                         let shutdown_deadline = Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
                         loop {
+                            drain_reliable_attempt_progress_overflow(
+                                &reliable_attempt_progress_overflow,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_MAX_ROWS,
+                            );
                             if Instant::now() >= shutdown_deadline {
+                                drain_reliable_attempt_progress_overflow(
+                                    &reliable_attempt_progress_overflow,
+                                    &mut pending,
+                                    &accounting,
+                                    SQLITE_BATCH_CHANNEL_CAPACITY,
+                                );
                                 let drained = drain_queued_batch_writes(
                                     &mut write_receiver,
                                     &mut pending,
@@ -2368,7 +2472,19 @@ pub(crate) async fn run_sqlite_batch_writer(
                 let Some(write) = maybe_write else {
                     let shutdown_deadline = Instant::now() + SQLITE_SHUTDOWN_DRAIN_DEADLINE;
                     loop {
+                        drain_reliable_attempt_progress_overflow(
+                            &reliable_attempt_progress_overflow,
+                            &mut pending,
+                            &accounting,
+                            SQLITE_BATCH_MAX_ROWS,
+                        );
                         if Instant::now() >= shutdown_deadline {
+                            drain_reliable_attempt_progress_overflow(
+                                &reliable_attempt_progress_overflow,
+                                &mut pending,
+                                &accounting,
+                                SQLITE_BATCH_CHANNEL_CAPACITY,
+                            );
                             let abandoned = std::mem::take(&mut pending);
                             let _ = release_shutdown_pending_batch(
                                 &accounting,
@@ -2727,6 +2843,18 @@ pub(crate) async fn run_sqlite_batch_writer(
                     accounting.update_p2_schedule(&p2_schedule);
                 } else {
                     p1_retry.succeeded();
+                }
+            }
+            _ = reliable_attempt_progress_notify.notified() => {
+                drain_reliable_attempt_progress_overflow(
+                    &reliable_attempt_progress_overflow,
+                    &mut pending,
+                    &accounting,
+                    SQLITE_BATCH_MAX_ROWS,
+                );
+                if pending.has_p2() {
+                    p2_schedule.arm_if_idle(Instant::now());
+                    accounting.update_p2_schedule(&p2_schedule);
                 }
             }
         }
@@ -3163,6 +3291,10 @@ pub(crate) async fn flush_pending_batch(
     let system_task_count = batch.system_task_finishes.len();
     let system_task_scope = summarize_system_task_batch_scope(&batch);
     let oldest_age_ms = batch.age().as_millis() as u64;
+    if attempt_count > 0 {
+        accounting.attempt_progress_coalesced(batch.attempt_progress_coalesced_rows);
+        accounting.observe_attempt_progress_age(oldest_age_ms);
+    }
 
     let flush_reason = reason.as_str();
     let p2_pending_before_p1 = batch.has_p2();
@@ -3629,6 +3761,10 @@ pub(crate) async fn flush_pending_batch(
     if deferred_batch.is_empty() {
         None
     } else {
+        if !deferred_batch.attempt_progress.is_empty() {
+            accounting.attempt_progress_deferred(deferred_batch.attempt_progress.len());
+            accounting.observe_attempt_progress_age(deferred_batch.age().as_millis() as u64);
+        }
         Some(RetainedBatch::new(deferred_batch, false))
     }
 }
@@ -4022,44 +4158,7 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut tx = connection.begin().await?;
 
     for progress in batch.attempt_progress.values() {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_request_attempts
-            SET
-                phase = ?2,
-                connect_latency_ms = CASE
-                    WHEN ?4 IS NULL THEN connect_latency_ms
-                    WHEN connect_latency_ms IS NULL OR connect_latency_ms < ?4 THEN ?4
-                    ELSE connect_latency_ms
-                END,
-                first_byte_latency_ms = CASE
-                    WHEN ?5 IS NULL THEN first_byte_latency_ms
-                    WHEN first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5 THEN ?5
-                    ELSE first_byte_latency_ms
-                END,
-                compact_support_status = COALESCE(?6, compact_support_status),
-                compact_support_reason = COALESCE(?7, compact_support_reason)
-            WHERE id = ?1
-              AND status = ?3
-              AND finished_at IS NULL
-              AND (
-                    COALESCE(phase, '') <> ?2
-                    OR (?4 IS NOT NULL AND (connect_latency_ms IS NULL OR connect_latency_ms < ?4))
-                    OR (?5 IS NOT NULL AND (first_byte_latency_ms IS NULL OR first_byte_latency_ms < ?5))
-                    OR (?6 IS NOT NULL AND COALESCE(compact_support_status, '') <> ?6)
-                    OR (?7 IS NOT NULL AND COALESCE(compact_support_reason, '') <> ?7)
-                  )
-            "#,
-        )
-        .bind(progress.attempt_id)
-        .bind(&progress.phase)
-        .bind(progress.pending_status)
-        .bind(progress.connect_latency_ms)
-        .bind(progress.first_byte_latency_ms)
-        .bind(progress.compact_support_status.as_deref())
-        .bind(progress.compact_support_reason.as_deref())
-        .execute(tx.as_mut())
-        .await?;
+        attempt_progress::persist(&mut tx, progress).await?;
     }
 
     if !batch.invocation_derived.is_empty() {
@@ -4546,7 +4645,6 @@ mod tests {
         assert_eq!(snapshot.state, "healthy");
         assert_eq!(snapshot.invariant_violation_count, 0);
     }
-    use axum::http::StatusCode;
     use sqlx::SqlitePool;
 
     fn attempt_trace(invoke_id: &str) -> PoolUpstreamAttemptTraceContext {
@@ -4567,6 +4665,121 @@ mod tests {
             .expect("connect sqlite memory pool");
         ensure_schema(&pool).await.expect("ensure schema");
         pool
+    }
+
+    fn test_writer_with_channel_capacity(
+        capacity: usize,
+    ) -> (Arc<SqliteBatchWriter>, mpsc::Receiver<SqliteBatchWrite>) {
+        let (write_sender, write_receiver) = mpsc::channel(capacity);
+        let (control_sender, _control_receiver) = mpsc::channel(1);
+        (
+            Arc::new(SqliteBatchWriter {
+                write_sender,
+                attempt_progress_sequence: AtomicU64::new(0),
+                attempt_progress_send_gate: std::sync::Mutex::new(()),
+                reliable_attempt_progress_overflow: Arc::new(std::sync::Mutex::new(
+                    PendingBatch::default(),
+                )),
+                reliable_attempt_progress_notify: Arc::new(Notify::new()),
+                queued_p1_count: Arc::new(AtomicUsize::new(0)),
+                p1_priority_gate: Arc::new(std::sync::Mutex::new(())),
+                control_sender,
+                accounting: Arc::new(PendingQueueAccounting::default()),
+                dropped_writes: Arc::new(AtomicU64::new(0)),
+                terminal_runtime_store: Arc::new(std::sync::Mutex::new(None)),
+                dashboard_activity_snapshot_cache: Arc::new(std::sync::Mutex::new(None)),
+                summary_delta_hub: Arc::new(std::sync::Mutex::new(None)),
+                terminal_projection_hub: Arc::new(std::sync::Mutex::new(None)),
+                terminal_journal: Arc::new(TrackedTerminalJournal::new(None)),
+                database_path: std::path::PathBuf::from("test-sqlite-batch-writer.db"),
+                dashboard_reconcile_gate: Arc::new(Mutex::new(())),
+                prompt_cache_conversation_cache: Some(Arc::new(Mutex::new(
+                    PromptCacheConversationsCacheState::default(),
+                ))),
+                handle: Mutex::new(None),
+                journal_sync_shutdown: CancellationToken::new(),
+                journal_sync_handle: Mutex::new(None),
+                buffered_writes: None,
+                auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            }),
+            write_receiver,
+        )
+    }
+
+    #[tokio::test]
+    async fn reliable_attempt_progress_admission_does_not_wait_for_full_channel() {
+        let (writer, _write_receiver) = test_writer_with_channel_capacity(1);
+        writer
+            .write_sender
+            .try_send(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id: 1,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                ..Default::default()
+            }))
+            .expect("fill reliable admission channel");
+
+        let admitted = tokio::time::timeout(Duration::from_secs(1), async {
+            let writer = writer.clone();
+            writer.enqueue_attempt_progress_reliably(BatchedAttemptProgress {
+                attempt_id: 2,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                ..Default::default()
+            })
+        })
+        .await
+        .expect("reliable admission should not wait for the full channel");
+        assert!(admitted);
+
+        let accounting = writer.accounting_snapshot();
+        assert_eq!(accounting.pending_depth, 1);
+        assert!(accounting.pending_bytes > 0);
+        assert_eq!(accounting.attempt_progress_enqueued, 1);
+        assert_eq!(accounting.attempt_progress_deferred, 1);
+        assert_eq!(accounting.attempt_progress_dropped, 0);
+    }
+
+    #[test]
+    fn reliable_attempt_progress_overflow_coalesces_by_attempt() {
+        let (writer, _write_receiver) = test_writer_with_channel_capacity(1);
+        writer
+            .write_sender
+            .try_send(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
+                attempt_id: 1,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                ..Default::default()
+            }))
+            .expect("fill reliable admission channel");
+
+        assert!(
+            writer.enqueue_attempt_progress_reliably(BatchedAttemptProgress {
+                attempt_id: 2,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING.to_string()),
+                ..Default::default()
+            })
+        );
+        assert!(
+            writer.enqueue_attempt_progress_reliably(BatchedAttemptProgress {
+                attempt_id: 2,
+                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED.to_string()),
+                ..Default::default()
+            })
+        );
+
+        let overflow = writer
+            .reliable_attempt_progress_overflow
+            .lock()
+            .expect("lock reliable overflow");
+        assert_eq!(overflow.logical_rows(), 1);
+        assert_eq!(
+            overflow
+                .attempt_progress
+                .get(&2)
+                .and_then(|progress| progress.phase.as_deref()),
+            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
+        );
+        assert_eq!(writer.accounting_snapshot().pending_depth, 1);
     }
 
     #[tokio::test]
@@ -5278,153 +5491,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn attempt_progress_batch_coalesces_by_attempt_id() {
-        let pool = test_pool().await;
-        let pending = pending_attempt(&pool, "batch-progress-coalesce").await;
-        let attempt_id = pending.attempt_id.expect("attempt id");
-
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![
-                SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
-                    attempt_id,
-                    pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                    phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST.to_string(),
-                    connect_latency_ms: Some(12.0),
-                    first_byte_latency_ms: None,
-                    compact_support_status: None,
-                    compact_support_reason: None,
-                }),
-                SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
-                    attempt_id,
-                    pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                    phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
-                    connect_latency_ms: Some(18.0),
-                    first_byte_latency_ms: Some(33.0),
-                    compact_support_status: Some("supported".to_string()),
-                    compact_support_reason: Some("cached_probe".to_string()),
-                }),
-            ],
-        )
-        .await;
-
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<f64>,
-                Option<f64>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
-            r#"
-            SELECT phase, connect_latency_ms, first_byte_latency_ms, compact_support_status, compact_support_reason
-            FROM pool_upstream_request_attempts
-            WHERE id = ?1
-            "#,
-        )
-        .bind(attempt_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load coalesced attempt");
-
-        assert_eq!(
-            row.0,
-            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE
-        );
-        assert_eq!(row.1, Some(18.0));
-        assert_eq!(row.2, Some(33.0));
-        assert_eq!(row.3.as_deref(), Some("supported"));
-        assert_eq!(row.4.as_deref(), Some("cached_probe"));
-    }
-
-    #[tokio::test]
-    async fn attempt_progress_batch_does_not_overwrite_terminal_finalize() {
-        let pool = test_pool().await;
-        let pending = pending_attempt(&pool, "batch-progress-terminal-cover").await;
-        let attempt_id = pending.attempt_id.expect("attempt id");
-
-        finalize_pool_upstream_request_attempt(
-            &pool,
-            &pending,
-            "2026-07-01 10:00:05",
-            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-            Some(StatusCode::OK),
-            None,
-            None,
-            None,
-            None,
-            Some(42.0),
-            Some(16.0),
-            Some(188.0),
-            Some("req_terminal"),
-            None,
-            None,
-        )
-        .await
-        .expect("finalize attempt synchronously");
-
-        SqliteBatchWriter::flush_for_test(
-            &pool,
-            vec![SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
-                attempt_id,
-                pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE.to_string(),
-                connect_latency_ms: Some(99.0),
-                first_byte_latency_ms: Some(99.0),
-                compact_support_status: Some("stale".to_string()),
-                compact_support_reason: Some("should_not_apply".to_string()),
-            })],
-        )
-        .await;
-
-        let row = sqlx::query_as::<
-            _,
-            (
-                String,
-                Option<String>,
-                Option<i64>,
-                Option<f64>,
-                Option<f64>,
-                Option<f64>,
-                Option<String>,
-                Option<String>,
-            ),
-        >(
-            r#"
-            SELECT
-                status,
-                phase,
-                http_status,
-                connect_latency_ms,
-                first_byte_latency_ms,
-                stream_latency_ms,
-                upstream_request_id,
-                compact_support_status
-            FROM pool_upstream_request_attempts
-            WHERE id = ?1
-            "#,
-        )
-        .bind(attempt_id)
-        .fetch_one(&pool)
-        .await
-        .expect("load finalized attempt");
-
-        assert_eq!(row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
-        assert_eq!(
-            row.1.as_deref(),
-            Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
-        );
-        assert_eq!(row.2, Some(200));
-        assert_eq!(row.3, Some(42.0));
-        assert_eq!(row.4, Some(16.0));
-        assert_eq!(row.5, Some(188.0));
-        assert_eq!(row.6.as_deref(), Some("req_terminal"));
-        assert_eq!(row.7, None);
-    }
-
-    #[tokio::test]
     async fn shutdown_drains_pending_batch_writes() {
         let pool = test_pool().await;
         let pending = pending_attempt(&pool, "batch-progress-shutdown-drain").await;
@@ -5442,11 +5508,12 @@ mod tests {
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
                 connect_latency_ms: Some(21.0),
                 first_byte_latency_ms: Some(34.0),
                 compact_support_status: None,
                 compact_support_reason: None,
+                ..Default::default()
             }))
         );
 
@@ -5496,11 +5563,12 @@ mod tests {
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
                 attempt_id,
                 pending_status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
-                phase: POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string(),
+                phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE.to_string()),
                 connect_latency_ms: Some(23.0),
                 first_byte_latency_ms: Some(37.0),
                 compact_support_status: None,
                 compact_support_reason: None,
+                ..Default::default()
             }))
         );
 

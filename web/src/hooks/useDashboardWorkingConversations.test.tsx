@@ -9,7 +9,10 @@ import type {
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import { DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE } from "../lib/dashboardWorkingConversations";
-import { useDashboardWorkingConversations } from "./useDashboardWorkingConversations";
+import {
+  DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE,
+  useDashboardWorkingConversations,
+} from "./useDashboardWorkingConversations";
 
 const topicMocks = vi.hoisted(() => ({
   state: {
@@ -119,6 +122,7 @@ function createConversation(
 ): PromptCacheConversation {
   return {
     promptCacheKey,
+    conversationId: `conversation-id-${promptCacheKey}`,
     requestCount: recentInvocations.length,
     totalTokens: 120,
     totalCost: 0.2,
@@ -162,8 +166,15 @@ function createResponse(): PromptCacheConversationsResponse {
 }
 
 function Probe({ filter }: { filter?: Parameters<typeof useDashboardWorkingConversations>[0] }) {
-  const { cards, totalMatched, hasMore, recentPreviewLimit, loadMore, setRefreshTargetCount } =
-    useDashboardWorkingConversations(filter);
+  const {
+    cards,
+    totalMatched,
+    hasMore,
+    canLoadMore,
+    recentPreviewLimit,
+    loadMore,
+    setRefreshTargetCount,
+  } = useDashboardWorkingConversations(filter);
 
   return (
     <div>
@@ -171,6 +182,7 @@ function Probe({ filter }: { filter?: Parameters<typeof useDashboardWorkingConve
       <div data-testid="first-key">{cards[0]?.promptCacheKey ?? ""}</div>
       <div data-testid="total">{String(totalMatched)}</div>
       <div data-testid="has-more">{hasMore ? "true" : "false"}</div>
+      <div data-testid="can-load-more">{canLoadMore ? "true" : "false"}</div>
       <div data-testid="recent-limit">{String(recentPreviewLimit)}</div>
       <button type="button" data-testid="load-more" onClick={() => loadMore()} />
       <button type="button" data-testid="target-more" onClick={() => setRefreshTargetCount(25)} />
@@ -256,6 +268,37 @@ describe("useDashboardWorkingConversations", () => {
         pageSize: "40",
         recentInvocationLimit: "16",
       },
+    });
+  });
+
+  it("caps incremental page growth at the backend page-size limit", () => {
+    topicMocks.state.data = createResponse();
+
+    render(<Probe />);
+
+    for (let index = 0; index < 4; index += 1) {
+      act(() => {
+        host?.querySelector<HTMLButtonElement>('[data-testid="load-more"]')?.click();
+      });
+      rerender(<Probe />);
+    }
+
+    expect(topicMocks.lastDescriptor).toEqual({
+      topic: "dashboard.working-conversations.current",
+      params: {
+        pageSize: String(DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE),
+        recentInvocationLimit: "16",
+      },
+    });
+    expect(text("can-load-more")).toBe("false");
+
+    act(() => {
+      host?.querySelector<HTMLButtonElement>('[data-testid="load-more"]')?.click();
+    });
+    rerender(<Probe />);
+
+    expect(topicMocks.lastDescriptor?.params).toMatchObject({
+      pageSize: String(DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE),
     });
   });
 });

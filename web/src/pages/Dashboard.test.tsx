@@ -1,7 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   DASHBOARD_PERFORMANCE_DIAGNOSTICS_STORAGE_KEY,
@@ -153,13 +153,13 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
       options?: { tab?: "overview" | "routing" },
     ) => void;
     onOpenConversation?: (selection: {
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       tab?: "overview" | "calls" | "settings" | "operations";
     }) => void;
     onOpenInvocation?: (selection: {
       slotKind: "current" | "previous" | "earlier";
-      conversationSequenceId: string;
+      conversationId: string;
       promptCacheKey: string;
       invocation: { record: { invokeId: string } };
     }) => void;
@@ -171,7 +171,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
     } | null;
   }) => (
     <div data-testid="dashboard-working-conversations-section">
-      {cards.map((card) => card.conversationSequenceId).join(",")}
+      {cards.map((card) => card.conversationId).join(",")}
       <span data-testid="dashboard-working-conversations-endpoints">
         {cards.map((card) => card.currentInvocation.preview.endpoint ?? "").join(",")}
       </span>
@@ -194,7 +194,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             data-testid="dashboard-open-conversation"
             onClick={() =>
               onOpenConversation?.({
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
               })
             }
@@ -206,7 +206,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             data-testid="dashboard-open-conversation-settings"
             onClick={() =>
               onOpenConversation?.({
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
                 tab: "settings",
               })
@@ -220,7 +220,7 @@ vi.mock("../features/dashboard/DashboardWorkingConversationsSection", () => ({
             onClick={() =>
               onOpenInvocation?.({
                 slotKind: "current",
-                conversationSequenceId: cards[0].conversationSequenceId,
+                conversationId: cards[0].conversationId,
                 promptCacheKey: cards[0].promptCacheKey,
                 invocation: cards[0].currentInvocation,
               })
@@ -256,15 +256,23 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
   PromptCacheConversationHistoryDrawer: ({
     open,
     conversationKey,
+    conversationId,
     conversationLabel,
     initialTab,
+    presentation,
+    readOnly,
+    discardPendingMutations,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
     conversationKey: string | null;
+    conversationId?: string | null;
     conversationLabel?: string | null;
     initialTab?: "overview" | "calls" | "settings" | "operations";
+    presentation?: "overlay" | "page";
+    readOnly?: boolean;
+    discardPendingMutations?: boolean;
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -272,11 +280,20 @@ vi.mock("../features/prompt-cache/PromptCacheConversationTable", () => ({
       options?: { tab?: "overview" | "routing" },
     ) => void;
   }) =>
-    open ? (
+    open || (presentation === "page" && discardPendingMutations) ? (
       <div data-testid="dashboard-conversation-history-drawer-mock">
         <span data-testid="dashboard-conversation-drawer-key">{conversationKey}</span>
+        <span data-testid="dashboard-conversation-drawer-conversation-id">
+          {conversationId ?? "none"}
+        </span>
         <span data-testid="dashboard-conversation-drawer-label">{conversationLabel}</span>
         <span data-testid="dashboard-conversation-drawer-tab">{initialTab ?? "overview"}</span>
+        <span data-testid="dashboard-conversation-drawer-read-only">
+          {String(readOnly ?? false)}
+        </span>
+        <span data-testid="dashboard-conversation-drawer-discarding">
+          {String(discardPendingMutations ?? false)}
+        </span>
         <button type="button" data-testid="dashboard-conversation-drawer-close" onClick={onClose}>
           close conversation drawer
         </button>
@@ -296,12 +313,17 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
     open,
     invocationId,
     selection,
+    conversationId,
     onClose,
     onOpenUpstreamAccount,
   }: {
     open: boolean;
     invocationId?: string | null;
-    selection: { invocation: { record: { invokeId: string } } } | null;
+    selection: {
+      conversationId: string | null;
+      invocation: { record: { invokeId: string } };
+    } | null;
+    conversationId?: string | null;
     onClose: () => void;
     onOpenUpstreamAccount?: (
       accountId: number,
@@ -313,6 +335,9 @@ vi.mock("../features/dashboard/DashboardInvocationDetailDrawer", () => ({
       <div data-testid="dashboard-invocation-detail-drawer-mock">
         <span data-testid="dashboard-invocation-drawer-selection">
           {selection?.invocation.record.invokeId ?? "none"}
+        </span>
+        <span data-testid="dashboard-invocation-drawer-conversation-id">
+          {selection?.conversationId ?? conversationId ?? "none"}
         </span>
         <span data-testid="dashboard-invocation-drawer-route-id">{invocationId ?? "none"}</span>
         <button type="button" data-testid="dashboard-invocation-drawer-close" onClick={onClose}>
@@ -429,6 +454,15 @@ function LocationProbe() {
   );
 }
 
+function RouteNavigationButton({ to }: { to: string }) {
+  const navigate = useNavigate();
+  return (
+    <button type="button" data-testid="dashboard-switch-route" onClick={() => navigate(to)}>
+      switch route
+    </button>
+  );
+}
+
 beforeAll(() => {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
@@ -458,6 +492,17 @@ function render(ui: React.ReactNode, initialEntry = "/dashboard") {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
+  act(() => {
+    root?.render(
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <LocationProbe />
+        {ui}
+      </MemoryRouter>,
+    );
+  });
+}
+
+function rerender(ui: React.ReactNode, initialEntry = "/dashboard") {
   act(() => {
     root?.render(
       <MemoryRouter initialEntries={[initialEntry]}>
@@ -638,12 +683,14 @@ function installSummaryMocks() {
 
 function createWorkingConversationCard(options?: {
   endpoint?: string;
+  promptCacheKey?: string;
+  conversationId?: string;
   upstreamAccountName?: string;
 }): DashboardWorkingConversationCardModel {
   return {
-    promptCacheKey: "pck-drawer-switch",
-    normalizedPromptCacheKey: "pck-drawer-switch",
-    conversationSequenceId: "WC-ABCD12",
+    promptCacheKey: options?.promptCacheKey ?? "pck-drawer-switch",
+    normalizedPromptCacheKey: options?.promptCacheKey ?? "pck-drawer-switch",
+    conversationId: options?.conversationId ?? "ABCD12",
     currentInvocation: {
       preview: {
         id: 101,
@@ -727,6 +774,30 @@ describe("DashboardPage", () => {
     );
   });
 
+  it("hydrates the persisted conversation id for a direct invocation route", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard/invocations/invoke-dashboard-current");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-selection"]')?.textContent,
+    ).toBe("invoke-dashboard-current");
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-conversation-id"]')
+        ?.textContent,
+    ).toBe("ABCD12");
+  });
+
   it("passes the blocked-binding route filter into the working conversations subscription hook", () => {
     installSummaryMocks();
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
@@ -793,7 +864,7 @@ describe("DashboardPage", () => {
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull();
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent,
-    ).toContain("WC-ABCD12");
+    ).toContain("ABCD12");
     expect(
       host?.querySelector('[data-testid="dashboard-working-conversations-endpoints"]')?.textContent,
     ).toContain("/v1/responses");
@@ -1153,6 +1224,583 @@ describe("DashboardPage", () => {
     ).toBe("99");
   });
 
+  it("loads remaining working-conversation pages before opening a clicked conversation", () => {
+    installSummaryMocks();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 21,
+      hasMore: true,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    const openConversationButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation"]',
+    );
+    if (!(openConversationButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation trigger");
+    }
+
+    act(() => {
+      openConversationButton.click();
+    });
+
+    expect(loadMore).toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+  });
+
+  it("keeps paging when a conversation is opened from the invocation route", () => {
+    installSummaryMocks();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      totalMatched: 21,
+      hasMore: true,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />);
+
+    act(() => {
+      host?.querySelector<HTMLButtonElement>('[data-testid="dashboard-open-invocation"]')?.click();
+    });
+    act(() => {
+      host
+        ?.querySelector<HTMLButtonElement>('[data-testid="dashboard-open-conversation"]')
+        ?.click();
+    });
+
+    expect(loadMore).toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+  });
+
+  it("continues paging after switching between pending conversation routes", () => {
+    installSummaryMocks();
+    const firstCard = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [firstCard],
+      totalMatched: 21,
+      hasMore: true,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    const secondRoute =
+      "/dashboard?promptCacheConversationKey=pck-second&promptCacheConversationId=EFGH34";
+    render(
+      <>
+        <RouteNavigationButton to={secondRoute} />
+        <DashboardPage />
+      </>,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+    expect(loadMore).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      host?.querySelector<HTMLButtonElement>('[data-testid="dashboard-switch-route"]')?.click();
+    });
+
+    expect(loadMore).toHaveBeenCalledTimes(2);
+  });
+
+  it("closes the conversation drawer when its explicit persisted id becomes stale", () => {
+    installSummaryMocks();
+    const initialCard = createWorkingConversationCard();
+    const updatedCard = { ...initialCard, conversationId: "EFGH34" };
+    let currentCards = [initialCard];
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />);
+
+    const openConversationButton = host?.querySelector(
+      '[data-testid="dashboard-open-conversation"]',
+    );
+    if (!(openConversationButton instanceof HTMLButtonElement)) {
+      throw new Error("missing conversation trigger");
+    }
+    act(() => {
+      openConversationButton.click();
+    });
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+
+    currentCards = [updatedCard];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBeUndefined();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+  });
+
+  it("closes a verified history route when its working card expires", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    let currentCards: DashboardWorkingConversationCardModel[] = [card];
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />);
+    act(() => {
+      host
+        ?.querySelector<HTMLButtonElement>('[data-testid="dashboard-open-conversation"]')
+        ?.click();
+    });
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+
+    currentCards = [];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("keeps a verified history route through a transient working-conversation error", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    let currentCards: DashboardWorkingConversationCardModel[] = [card];
+    let currentError: string | null = null;
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: currentError,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />);
+    act(() => {
+      host
+        ?.querySelector<HTMLButtonElement>('[data-testid="dashboard-open-conversation"]')
+        ?.click();
+    });
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+
+    currentCards = [];
+    currentError = "working-conversations unavailable";
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-read-only"]')?.textContent,
+    ).toBe("true");
+
+    currentError = null;
+    currentCards = [card];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-conversation-id"]')
+        ?.textContent,
+    ).toBe("ABCD12");
+  });
+
+  it("keeps an unverified expired conversation route closed", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [],
+      totalMatched: 0,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("opens a visible persisted conversation route at the backend page cap", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [card],
+      totalMatched: 101,
+      hasMore: true,
+      canLoadMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+
+    expect(loadMore).not.toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-read-only"]')?.textContent,
+    ).toBe("false");
+  });
+
+  it("keeps the compact page-cap drawer mounted while discarding an unsafe route", () => {
+    const previousMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: true,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      })),
+    });
+
+    try {
+      installSummaryMocks();
+      const card = createWorkingConversationCard();
+      let currentError: string | null = null;
+      hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+        cards: [card],
+        totalMatched: 101,
+        hasMore: true,
+        canLoadMore: false,
+        isLoading: false,
+        isLoadingMore: false,
+        error: currentError,
+        loadMore: vi.fn(),
+        setRefreshTargetCount: vi.fn(),
+      }));
+
+      const route =
+        "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12";
+      render(<DashboardPage />, route);
+      expect(
+        host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+      ).not.toBeNull();
+      expect(host?.querySelector('[data-testid="dashboard-main-content"]')?.className).toContain(
+        "hidden",
+      );
+
+      currentError = "working-conversations unavailable";
+      rerender(<DashboardPage />, route);
+
+      expect(
+        host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+      ).not.toBeNull();
+      expect(
+        host?.querySelector('[data-testid="dashboard-conversation-drawer-discarding"]')
+          ?.textContent,
+      ).toBe("true");
+      expect(
+        host?.querySelector('[data-testid="dashboard-main-content"]')?.className,
+      ).not.toContain("hidden");
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: previousMatchMedia,
+      });
+    }
+  });
+
+  it("hydrates the persisted conversation label for a direct conversation route", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [card],
+      totalMatched: 1,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+  });
+
+  it("pages before opening a direct persisted conversation route", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    let complete = false;
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: [card],
+      totalMatched: 21,
+      hasMore: !complete,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    const route =
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12";
+    render(<DashboardPage />, route);
+
+    expect(loadMore).toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+
+    complete = true;
+    rerender(<DashboardPage />, route);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+  });
+
+  it("pages before resolving a key-only conversation route", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    let complete = false;
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: [card],
+      totalMatched: 21,
+      hasMore: !complete,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    const route = "/dashboard?promptCacheConversationKey=pck-drawer-switch";
+    render(<DashboardPage />, route);
+
+    expect(loadMore).toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+
+    complete = true;
+    rerender(<DashboardPage />, route);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).not.toBeNull();
+    expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12",
+    );
+  });
+
+  it("keeps a persisted conversation route closed after the backend page cap", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    const loadMore = vi.fn();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [card],
+      totalMatched: 101,
+      hasMore: true,
+      canLoadMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore,
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-hidden&promptCacheConversationId=ABCD12",
+    );
+
+    expect(loadMore).not.toHaveBeenCalled();
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("hydrates the persisted conversation label when direct-route cards arrive later", () => {
+    installSummaryMocks();
+    const card = createWorkingConversationCard();
+    let currentCards: DashboardWorkingConversationCardModel[] = [];
+    hookMocks.useDashboardWorkingConversations.mockImplementation(() => ({
+      cards: currentCards,
+      totalMatched: currentCards.length,
+      hasMore: false,
+      isLoading: currentCards.length === 0,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    }));
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+
+    currentCards = [card];
+    rerender(<DashboardPage />);
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-drawer-label"]')?.textContent,
+    ).toBe("ABCD12");
+  });
+
+  it("does not open a key-only history drawer for ambiguous persisted conversation ids", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({ conversationId: "CONV-A" }),
+        createWorkingConversationCard({ conversationId: "CONV-B" }),
+      ],
+      totalMatched: 2,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("does not open an explicit history route for ambiguous persisted conversation ids", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({ conversationId: "CONV-A" }),
+        createWorkingConversationCard({ conversationId: "CONV-B" }),
+      ],
+      totalMatched: 2,
+      hasMore: false,
+      isLoading: false,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(
+      <DashboardPage />,
+      "/dashboard?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=CONV-A",
+    );
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
+  it("keeps an ambiguous conversation route closed while the working set is loading", () => {
+    installSummaryMocks();
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [
+        createWorkingConversationCard({ conversationId: "CONV-A" }),
+        createWorkingConversationCard({ conversationId: "CONV-B" }),
+      ],
+      totalMatched: 2,
+      hasMore: false,
+      isLoading: true,
+      isLoadingMore: false,
+      error: null,
+      loadMore: vi.fn(),
+      setRefreshTargetCount: vi.fn(),
+    });
+
+    render(<DashboardPage />, "/dashboard?promptCacheConversationKey=pck-drawer-switch");
+
+    expect(
+      host?.querySelector('[data-testid="dashboard-conversation-history-drawer-mock"]'),
+    ).toBeNull();
+  });
+
   it("opens the shared drawer on the routing tab and keeps the tab in the URL", () => {
     installSummaryMocks();
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
@@ -1239,7 +1887,7 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
     ).toBe("settings");
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12&promptCacheConversationTab=settings",
     );
   });
 
@@ -1293,7 +1941,7 @@ describe("DashboardPage", () => {
         host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
       ).toBe("settings");
       expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-        "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=settings",
+        "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationId=ABCD12&promptCacheConversationTab=settings",
       );
     } finally {
       Object.defineProperty(window, "matchMedia", {
@@ -1329,7 +1977,7 @@ describe("DashboardPage", () => {
       host?.querySelector('[data-testid="dashboard-conversation-drawer-tab"]')?.textContent,
     ).toBe("operations");
     expect(host?.querySelector('[data-testid="dashboard-location-search"]')?.textContent).toBe(
-      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations",
+      "?promptCacheConversationKey=pck-drawer-switch&promptCacheConversationTab=operations&promptCacheConversationId=ABCD12",
     );
   });
 
