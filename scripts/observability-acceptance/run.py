@@ -94,9 +94,9 @@ class Run:
         (self.root/"image-identity.json").write_text(json.dumps(identity,indent=2)+"\n")
     def configure(self):
         create_entry_certificate(self.private)
-        env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_SECRET_GID":str(os.getgid()),"CVM_TEMPO_QUERY_URL":"https://entry:8443/tempo","CVM_TEMPO_QUERY_TOKEN":(self.private/"tempo-query-token").read_text().strip(),"CVM_TEMPO_CA_PEM":(self.private/"tls.crt").read_text()}
+        env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_TEMPO_NETWORK":self.project+"-tempo-backend","OBSERVABILITY_SECRET_GID":str(os.getgid()),"CVM_TEMPO_QUERY_URL":"https://entry:8443/tempo","CVM_TEMPO_QUERY_TOKEN":(self.private/"tempo-query-token").read_text().strip(),"CVM_TEMPO_CA_PEM":(self.private/"tls.crt").read_text()}
         compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"--profile","traces-isolation","config","--format","json"],env=env))
-        compose.pop("name",None);compose["networks"]={"monitoring":{}}
+        compose.pop("name",None);compose["networks"]={"monitoring":{},"tempo_backend":{}}
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
             service["cap_drop"]=["ALL"];service.pop("ports",None);service.pop("profiles",None)
@@ -106,7 +106,7 @@ class Run:
         compose["services"].update({
             "app":{"image":self.image,"user":f"0:{os.getgid()}","cap_drop":["ALL"],"cpus":2,"mem_limit":"1g","networks":{"monitoring":{"aliases":["codex-vibe-monitor"]}},"volumes":[str(self.data)+":/srv/app/data",str(self.private/"metrics-token")+":/run/secrets/metrics-token:ro",str(self.private/"read-token")+":/run/secrets/read-token:ro",str(self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro",str(self.private/"tls.crt")+":/run/secrets/tempo-ca.crt:ro"],"environment":{"DATABASE_PATH":"/srv/app/data/codex_vibe_monitor.db","HTTP_BIND":"0.0.0.0:8080","METRICS_BIND":"0.0.0.0:9091","METRICS_TOKEN_FILE":"/run/secrets/metrics-token","OBSERVABILITY_READ_TOKEN_FILE":"/run/secrets/read-token","GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_ENABLED":"true","OBSERVABILITY_TRACES_ENABLED":"true","OBSERVABILITY_OTLP_TRACES_ENDPOINT":"https://entry:8443/v1/traces","OBSERVABILITY_OTLP_TOKEN_FILE":"/run/secrets/tempo-ingest-token","SSL_CERT_FILE":"/run/secrets/tempo-ca.crt","OBSERVABILITY_ENVIRONMENT":"production","OBSERVABILITY_INSTANCE":"primary","UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET":"synthetic-testbox-encryption-secret","RUST_LOG":"warn"}},
             "mock-upstream":{**common,"command":["python","/work/fixture.py","upstream"]},
-            "entry":{**common,"command":["python","/work/fixture.py","https"]},
+            "entry":{**common,"command":["python","/work/fixture.py","https"],"networks":["monitoring","tempo_backend"]},
             "client":{**common,"command":["sleep","infinity"]},
         })
         if self.cpu_layout:

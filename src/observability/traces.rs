@@ -48,7 +48,7 @@ impl Default for TraceConfig {
 impl TraceConfig {
     pub(crate) fn from_env(master_enabled: bool) -> Self {
         let requested = parse_bool_env_var("OBSERVABILITY_TRACES_ENABLED", false);
-        let enabled = master_enabled && requested.as_ref().copied().unwrap_or(true);
+        let enabled = trace_enabled(master_enabled, &requested);
         let mut result = Self {
             enabled,
             ..Self::default()
@@ -67,8 +67,10 @@ impl TraceConfig {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if metadata.permissions().mode() & 0o007 != 0 {
-                    bail!("trace token file must not be accessible to other users");
+                if !token_file_mode_allowed(metadata.permissions().mode()) {
+                    bail!(
+                        "trace token file permissions must allow owner access and optional group read only"
+                    );
                 }
             }
             if !metadata.is_file() || metadata.len() > 4096 {
@@ -90,6 +92,21 @@ impl TraceConfig {
         result
     }
 }
+fn trace_enabled(master_enabled: bool, requested: &Result<bool>) -> bool {
+    // Missing configuration is Ok(false); an invalid value stays enabled so
+    // startup reports tracing as degraded instead of silently disabling it.
+    master_enabled
+        && match requested {
+            Ok(value) => *value,
+            Err(_) => true,
+        }
+}
+#[cfg(unix)]
+fn token_file_mode_allowed(mode: u32) -> bool {
+    // Deployment uses 0640 for non-root containers: group read is allowed, but
+    // group write/execute and every other-user bit are rejected.
+    mode & 0o137 == 0
+}
 fn resource_label(name: &str) -> Result<String> {
     let value = env::var(name).unwrap_or_else(|_| "unknown".into());
     if value.is_empty()
@@ -101,6 +118,29 @@ fn resource_label(name: &str) -> Result<String> {
         bail!("invalid trace resource label");
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_configuration_defaults_to_disabled() {
+        assert!(!trace_enabled(true, &Ok(false)));
+        assert!(trace_enabled(true, &Ok(true)));
+        assert!(!trace_enabled(false, &Ok(true)));
+        assert!(trace_enabled(true, &Err(anyhow!("invalid trace flag"))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trace_token_permissions_allow_private_group_read_only() {
+        assert!(token_file_mode_allowed(0o600));
+        assert!(token_file_mode_allowed(0o640));
+        assert!(!token_file_mode_allowed(0o660));
+        assert!(!token_file_mode_allowed(0o644));
+        assert!(!token_file_mode_allowed(0o700));
+    }
 }
 fn valid_endpoint(url: &Url) -> bool {
     url.scheme() == "https"

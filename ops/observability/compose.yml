@@ -10,7 +10,7 @@ services:
     volumes: ["./tempo.yml:/etc/tempo.yml:ro"]
     tmpfs: ["/var/tempo:rw,size=536870912,mode=1777"]
     environment: {TMPDIR: /var/tempo}
-    networks: [monitoring]
+    networks: [tempo_backend]
   prometheus:
     image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
     command:
@@ -61,6 +61,9 @@ networks:
   monitoring:
     external: true
     name: ${OBSERVABILITY_NETWORK:-cvm-monitoring}
+  tempo_backend:
+    external: true
+    name: ${OBSERVABILITY_TEMPO_NETWORK:-cvm-tempo-backend}
 volumes:
   prometheus-data:
   grafana-data:

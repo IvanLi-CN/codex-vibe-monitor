@@ -85,6 +85,8 @@ flowchart LR
         Prom["Prometheus\n抓取、规则、历史"]
         Grafana["Grafana\n图表与规则"]
         Entry["HTTPS 身份入口 / 固定 tenant"]
+    end
+    subgraph TempoNet["专用 Tempo backend 私网"]
         Tempo["Tempo\n24h 轻量链路"]
     end
 
@@ -115,7 +117,7 @@ flowchart LR
 
 聚合分位数回答总体慢在哪里，个体 trace 回答一条请求发生了什么。新增请求阶段/等待契约见 [指标语义](../../specs/performance-telemetry/METRICS.md)，当前响应 root 到 body EOF/error/cancel 即关闭，关联 enqueue-to-commit 可晚到；shared batch 工作通过 links 关联，不能把 batch 执行复制为每条请求的独占成本。入口前传输、客户端收全数据和未归因 CPU/调度等待不由这些 spans 证明。
 
-复用 [Tempo 接入说明](../../../ops/observability/README.md#tempo-共享接入与隔离配置) 与现有 HTTPS 入口。Tempo 本身不提供认证：摄入与查询使用不同私密文件身份，入口校验后覆盖 cvm tenant，不接受调用者选择租户。Grafana platform query 身份与公网机器 Viewer 也有不同职责；organization 及固定机器路径白名单仍需保留。多个项目可以共享同一 Tempo 基础设施，各自定义 tenant、凭据、留存及容量，不因此自动获得跨租户 trace 拼接。
+复用 [Tempo 接入说明](../../../ops/observability/README.md#tempo-共享接入与隔离配置) 与现有 HTTPS 入口。Tempo 本身不提供认证：摄入与查询使用不同私密文件身份，入口校验后覆盖 cvm tenant，不接受调用者选择租户。Tempo 只加入专用 backend 私网，Grafana/Prometheus 的 monitoring 私网不能直达；gateway 的网络成员资格由平台 ACL 管理。Grafana platform query 身份与公网机器 Viewer 也有不同职责；organization 及固定机器路径白名单仍需保留。多个项目可以共享同一 Tempo 基础设施，各自定义 tenant、凭据、留存及容量，不因此自动获得跨租户 trace 拼接。
 
 原生 Grafana 案例页同一窗口会发起五种分类查询。Tempo frontend 的 `max_outstanding_per_tenant` 是待处理任务容量，不是执行并发；将它误设为执行上限会产生 429。隔离配置保留有界 16 个待处理任务，querier 执行并发 2、frontend 每搜索并发 jobs 2、5 秒超时、24h 窗口及 3 条结果上限；不增大实际执行并发来修复排队。最新响应允许立即搜索并明确显示未完整状态，不能把默认 recent-window cutoff 引起的延迟当作导出丢失。
 
@@ -125,20 +127,20 @@ flowchart LR
 
 下面的文件是当前仓库的配置真相。部署文档应引用它们，不要在 solution 或私有部署目录复制整套内容。
 
-| 文件                                                                  | 职责                                                                                | 关键合同                                                                               |
-| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| `ops/observability/compose.yml`                                       | Prometheus/Grafana 服务、镜像、资源、只读挂载、named volume、外部 monitoring 网络   | Prometheus 无 host port；Grafana 只绑定 host loopback；admin password 使用单文件挂载   |
-| `ops/observability/prometheus.yml`                                    | global scrape/evaluation、两个 job、授权、协议、样本和 label 上限、metric allowlist | 15 秒抓取；应用 classic；hotpath native；目标使用 `codex-vibe-monitor` alias           |
-| `ops/observability/recording-rules.yml`                               | 常用请求 rate、p95、CPU、SQLite wait 和 hotpath p95 的 recording rules              | 规则按 service/environment/instance 聚合，保留真实标签语义                             |
-| `ops/observability/grafana/provisioning/datasources/prometheus.yml`   | Grafana datasource provisioning                                                     | 固定 datasource UID `cvm-prometheus`，地址为 Compose 私网中的 `http://prometheus:9090` |
-| `ops/observability/grafana/provisioning/dashboards/cvm.yml`           | file provider                                                                       | 读取 `/etc/grafana/dashboards`；`disableDeletion: true`；`allowUiUpdates: false`       |
-| `ops/observability/grafana/dashboards/cvm-*.json`                     | dashboard 面板、查询、变量和 UID                                                    | UID 为 `cvm-overview`、`cvm-proxy`、`cvm-sqlite`、`cvm-runtime`、`cvm-web`             |
-| `ops/observability/grafana/provisioning/alerting/cvm.json`            | Grafana unified alert rule provisioning                                             | 规则和标签入库；contact point 与通知策略由平台配置                                     |
-| `src/observability/{config,http,browser,sampler,reports,registry}.rs` | 应用配置、计时边界、浏览器接入、资源采样、报告适配和指标映射                        | token 不序列化；查询和报告保持固定白名单                                               |
-| `.agents/skills/performance-investigation/SKILL.md`                   | 排障顺序和证据语义                                                                  | Grafana 用 HTTPS；SSH 仅用于 hotpath/CPU 诊断                                          |
-| `scripts/cvm-observe`                                                 | 通过 Grafana fixed proxy path 查询指标或读取固定报告                                | 读取私有 token 文件，禁止把 token 放命令行                                             |
-| `scripts/cvm-hotpath-cpu`                                             | 受限 CPU attach                                                                     | 只接受 `capture [1..60]`，绑定指定容器、符号和容量边界                                 |
-| `scripts/export-observability-symbols.py`                             | 从精确二进制导出 build ID、hash 和符号 manifest                                     | profile 必须使用与运行二进制相同的 build ID 和 SHA256                                  |
+| 文件                                                                  | 职责                                                                                            | 关键合同                                                                                                      |
+| --------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ops/observability/compose.yml`                                       | Prometheus/Grafana/Tempo 服务、镜像、资源、只读挂载、named volume、monitoring 与专用 Tempo 网络 | Prometheus 无 host port；Grafana 只绑定 host loopback；Tempo 不加入 monitoring；admin password 使用单文件挂载 |
+| `ops/observability/prometheus.yml`                                    | global scrape/evaluation、两个 job、授权、协议、样本和 label 上限、metric allowlist             | 15 秒抓取；应用 classic；hotpath native；目标使用 `codex-vibe-monitor` alias                                  |
+| `ops/observability/recording-rules.yml`                               | 常用请求 rate、p95、CPU、SQLite wait 和 hotpath p95 的 recording rules                          | 规则按 service/environment/instance 聚合，保留真实标签语义                                                    |
+| `ops/observability/grafana/provisioning/datasources/prometheus.yml`   | Grafana datasource provisioning                                                                 | 固定 datasource UID `cvm-prometheus`，地址为 Compose 私网中的 `http://prometheus:9090`                        |
+| `ops/observability/grafana/provisioning/dashboards/cvm.yml`           | file provider                                                                                   | 读取 `/etc/grafana/dashboards`；`disableDeletion: true`；`allowUiUpdates: false`                              |
+| `ops/observability/grafana/dashboards/cvm-*.json`                     | dashboard 面板、查询、变量和 UID                                                                | UID 为 `cvm-overview`、`cvm-proxy`、`cvm-sqlite`、`cvm-runtime`、`cvm-web`                                    |
+| `ops/observability/grafana/provisioning/alerting/cvm.json`            | Grafana unified alert rule provisioning                                                         | 规则和标签入库；contact point 与通知策略由平台配置                                                            |
+| `src/observability/{config,http,browser,sampler,reports,registry}.rs` | 应用配置、计时边界、浏览器接入、资源采样、报告适配和指标映射                                    | token 不序列化；查询和报告保持固定白名单                                                                      |
+| `.agents/skills/performance-investigation/SKILL.md`                   | 排障顺序和证据语义                                                                              | Grafana 用 HTTPS；SSH 仅用于 hotpath/CPU 诊断                                                                 |
+| `scripts/cvm-observe`                                                 | 通过 Grafana fixed proxy path 查询指标或读取固定报告                                            | 读取私有 token 文件，禁止把 token 放命令行                                                                    |
+| `scripts/cvm-hotpath-cpu`                                             | 受限 CPU attach                                                                                 | 只接受 `capture [1..60]`，绑定指定容器、符号和容量边界                                                        |
+| `scripts/export-observability-symbols.py`                             | 从精确二进制导出 build ID、hash 和符号 manifest                                                 | profile 必须使用与运行二进制相同的 build ID 和 SHA256                                                         |
 
 ### 3. 应用接入合同
 
@@ -150,6 +152,7 @@ flowchart LR
 | `METRICS_BIND`                  | 应用 exporter bind，默认 `127.0.0.1:9091`；容器加入 monitoring 私网时使用 `0.0.0.0:9091`                                          |
 | `METRICS_TOKEN_FILE`            | 应用与 hotpath exporter 使用的 scrape token 文件；非 loopback bind 时必须配置，token 至少 16 个字符、最多 4096 bytes 且不得含空白 |
 | `OBSERVABILITY_READ_TOKEN_FILE` | 三个 hotpath 报告 API 的独立只读 token 文件；必须不同于 scrape token                                                              |
+| `OBSERVABILITY_TEMPO_NETWORK`   | Tempo 专用 external backend 网络名；只允许 Tempo 与已认证 gateway 加入，不与 monitoring 网络复用                                  |
 | `GRAFANA_PUBLIC_URL`            | 应用生成 Grafana 深链接的无凭据 HTTPS 基址；不得带 username、password、query 或 fragment                                          |
 | `HTTP_BIND`                     | 应用业务 HTTP/SSE 监听地址；按现有应用部署合同配置，与 exporter bind 分开                                                         |
 
@@ -212,6 +215,7 @@ chmod 0640 .local/private/*
 
 cat > .local/.env <<'EOF'
 OBSERVABILITY_NETWORK=cvm-monitoring-local
+OBSERVABILITY_TEMPO_NETWORK=cvm-tempo-backend-local
 GRAFANA_PUBLIC_URL=https://grafana.example.test
 GRAFANA_PORT=3000
 PROMETHEUS_RETENTION_SIZE=1GB
@@ -229,6 +233,8 @@ export OBSERVABILITY_SECRET_GID="$(id -g)"
 ```bash
 docker network inspect "$OBSERVABILITY_NETWORK" >/dev/null 2>&1 \
   || docker network create "$OBSERVABILITY_NETWORK"
+docker network inspect "$OBSERVABILITY_TEMPO_NETWORK" >/dev/null 2>&1 \
+  || docker network create "$OBSERVABILITY_TEMPO_NETWORK"
 
 docker compose --env-file .local/.env -f compose.yml config -q
 docker compose --env-file .local/.env -f compose.yml config --environment
@@ -247,7 +253,7 @@ docker compose --env-file .local/.env -f compose.yml run --rm --no-deps \
 #### 4.3 启动、查看状态和健康检查
 
 ```bash
-docker compose --env-file .local/.env -f compose.yml up -d prometheus grafana
+docker compose --profile traces-isolation --env-file .local/.env -f compose.yml up -d prometheus grafana tempo
 docker compose --env-file .local/.env -f compose.yml ps
 
 docker compose --env-file .local/.env -f compose.yml logs --no-color prometheus grafana
@@ -349,7 +355,7 @@ https://grafana.example.test/d/cvm-runtime?from=now-30m&to=now&timezone=utc&var-
   ```
 
 - `latest` 仅可作为临时开发实验，不是加固部署默认值。镜像升级应先用 `docker compose config --images`、配置检查、provisioning 检查和隔离验收验证，再更新固定身份；不要在文档中记录任何实际生产 digest。
-- monitoring network 使用外部私网名并由应用 alias 连接。业务网络和出站网络不应被 monitoring network 替换，避免抓取接入改变上游可达性。
+- monitoring network 使用外部私网名并由应用 alias 连接；Tempo 使用独立的 `OBSERVABILITY_TEMPO_NETWORK`，只有 Tempo 与已认证 gateway 加入。业务网络和出站网络不应被 monitoring network 或 Tempo backend 替换，避免抓取接入改变上游可达性。
 - Prometheus retention 同时受时间和 size 约束，先满足者清理；size 不是物理 volume 容量上限，WAL、head block、compaction 和文件系统余量必须另外预算。仓库合同默认在线历史为 30 天，不把旧性能库的历史回填到 Prometheus。
 
 ### 7. 验证与排障

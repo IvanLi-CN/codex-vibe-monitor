@@ -20,20 +20,23 @@ GRAFANA_PUBLIC_URL=https://grafana.example.com
 OBSERVABILITY_TRACES_ENABLED=false
 OBSERVABILITY_OTLP_TRACES_ENDPOINT=https://observability.example.com/v1/traces
 OBSERVABILITY_OTLP_TOKEN_FILE=/run/secrets/tempo-ingest-token
+OBSERVABILITY_TEMPO_NETWORK=cvm-tempo-backend
 OBSERVABILITY_ENVIRONMENT=production
 OBSERVABILITY_INSTANCE=primary
 ```
 
-两个 Token 必须不同，secret 文件只挂载给所需服务。应用与监控 Compose
-连接共享 `cvm-monitoring` 网络，保留应用原业务/出站网络。应用服务的网络 alias
+两个 Token 必须不同，secret 文件只挂载给所需服务。应用、Prometheus 和 Grafana
+连接共享 `cvm-monitoring` 网络，Tempo 只连接专用的 `cvm-tempo-backend` 网络；现有
+认证 gateway 只加入后者（以及它自身的入口网络），不得把 Tempo 接入共享 monitoring
+网络。应用服务的网络 alias
 为 `codex-vibe-monitor`，9091/6772/6770 不发布 host port。6770 固定 loopback。
 Grafana 不参与业务请求成功条件，exporter 故障只令观测 degraded。
 
 ## 平台部署
 
-先准备外部监控网络、Token 文件与 Grafana admin 密码文件；设置
-`METRICS_TOKEN_FILE`、`GRAFANA_ADMIN_PASSWORD_FILE`、`GRAFANA_PUBLIC_URL`、
-`OBSERVABILITY_SECRET_GID`，
+先准备外部监控网络、专用 Tempo backend 网络、Token 文件与 Grafana admin 密码文件；设置
+`OBSERVABILITY_NETWORK`、`OBSERVABILITY_TEMPO_NETWORK`、`METRICS_TOKEN_FILE`、
+`GRAFANA_ADMIN_PASSWORD_FILE`、`GRAFANA_PUBLIC_URL`、`OBSERVABILITY_SECRET_GID`，
 再执行 `docker compose -f compose.yml -p cvm-monitoring up -d`。
 Token 与密码文件放在运维身份拥有的私密目录（0700），文件为 0640，group 是
 `OBSERVABILITY_SECRET_GID` 指定的专用读取组。Compose 只为两个监控容器追加此组，
@@ -83,7 +86,7 @@ Agent 排查顺序见[项目 Skill](../../.agents/skills/performance-investigati
 
 本轮 `compose.yml --profile traces-isolation` 固定 Tempo 3.1.0 与 image digest，只用于隔离运行。`tempo.yml` 关闭 metrics-generator、service graphs、MCP 和跨租户查询，CVM tenant 为 cvm、留存 24h，Tempo 所有 WAL、blocks、调度工作目录及临时文件共用 512MiB tmpfs；CPU 1、内存 2GiB、摄入 512KiB/s、burst 1MiB、单 trace 摄入 128KiB、查询并发 2／超时 5s。数据可在重建后消失，留存清理有延迟；这些不是正式环境容量或磁盘配额承诺。
 
-共享入口由现有受信任 HTTPS 认证入口承载。`tempo-gateway.conf.example` 提供摄入与查询两套私密凭据 map，认证后固定覆盖 `X-Scope-OrgID: cvm`，不信任调用者 tenant，不暴露 Tempo 3200/4318 公网端口。摄入凭据不能查链路，查询凭据不能摄入；Grafana 的 `cvm-tempo` datasource 使用平台查询身份（环境变量 CVM_TEMPO_QUERY_URL/CVM_TEMPO_QUERY_TOKEN/CVM_TEMPO_CA_PEM），普通机器 Viewer 仍由 Grafana organization 与公共固定路径白名单隔离。私网 Grafana 查询允许原生 TraceQL，但 Tempo 全局仍限制窗口和结果数；NGINX 示例不是完整正式入口部署。本轮 CI 使用同一合同的隔离 HTTPS fixture 验证，正式入口、凭据分组、存储、容量与接入其他项目均留给后续部署任务。
+共享入口由现有受信任 HTTPS 认证入口承载。`tempo-gateway.conf.example` 提供摄入与查询两套私密凭据 map，认证后固定覆盖 `X-Scope-OrgID: cvm`，不信任调用者 tenant，不暴露 Tempo 3200/4318 公网端口。Tempo 只在专用 backend 网络上可达，Grafana/Prometheus 的 monitoring 网络不能直接访问它；gateway 的网络成员资格由平台 ACL 管理。摄入凭据不能查链路，查询凭据不能摄入；Grafana 的 `cvm-tempo` datasource 使用平台查询身份（环境变量 CVM_TEMPO_QUERY_URL/CVM_TEMPO_QUERY_TOKEN/CVM_TEMPO_CA_PEM），普通机器 Viewer 仍由 Grafana organization 与公共固定路径白名单隔离。私网 Grafana 查询允许原生 TraceQL，但 Tempo 全局仍限制窗口和结果数；NGINX 示例不是完整正式入口部署。本轮 CI 使用同一合同的隔离 HTTPS fixture 验证，正式入口、凭据分组、网络 ACL、存储、容量与接入其他项目均留给后续部署任务。
 
 `scripts/cvm-observe cases --category normal|slow|wait|retry|error --minutes 30 [--environment production --instance primary --endpoint responses]` 返回每类最多 3 个候选；`scripts/cvm-observe trace --trace-id <32位小写十六进制>` 获取原生 trace JSON。CLI 需要从完整仓库运行，复用 `tempo_access.py` 的固定查询定义。采集覆盖正常容量内全量，正常案例仅从 TraceID 哈希 1/16 标记集合检索，Tempo first-match 结果不能当作总体统计或稳定随机样本。
 

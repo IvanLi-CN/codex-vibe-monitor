@@ -9,6 +9,8 @@ map $http_authorization $tempo_query_allowed {
     include /run/secrets/tempo-query-map;
 }
 # Insert the following locations into the HTTPS server; never publish Tempo ports.
+# The gateway must join the dedicated OBSERVABILITY_TEMPO_NETWORK with Tempo;
+# Grafana/Prometheus and arbitrary monitoring-network peers must not join it.
 # Tenant comes from the credential's assigned route, never a caller's header.
 location = /v1/traces {
     if ($request_method != POST) { return 405; }

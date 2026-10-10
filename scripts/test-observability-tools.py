@@ -5,6 +5,7 @@ import importlib.util
 from contextlib import closing
 import json
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -72,6 +73,18 @@ class GrafanaPreviewTests(unittest.TestCase):
 
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
+
+class TempoNetworkTests(unittest.TestCase):
+    def test_tempo_uses_the_dedicated_backend_network(self):
+        compose = (SOURCE / "ops/observability/compose.yml").read_text()
+        tempo = re.search(r"(?ms)^  tempo:\n.*?^  prometheus:", compose)
+        self.assertIsNotNone(tempo)
+        tempo_block = tempo.group(0) if tempo else ""
+        self.assertIn("networks: [tempo_backend]", tempo_block)
+        self.assertNotIn("networks: [monitoring]", tempo_block)
+        self.assertIn("OBSERVABILITY_TEMPO_NETWORK", compose)
+        gateway = (SOURCE / "ops/observability/tempo-gateway.conf.example").read_text()
+        self.assertIn("dedicated OBSERVABILITY_TEMPO_NETWORK", gateway)
 
 class TraceAccessTests(unittest.TestCase):
     def search(self, category="normal", **extra):
