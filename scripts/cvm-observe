@@ -6,6 +6,10 @@ import json
 import os
 from pathlib import Path
 import sys
+import re
+import stat
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "ops/observability"))
+from tempo_access import case_query, CASE_PREDICATES
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,7 +42,13 @@ def token_file(name):
     path = os.environ.get(name)
     if not path:
         raise ValueError(f"set {name} to a private token file")
-    token = Path(path).read_text().strip()
+    token_path = Path(path)
+    if token_path.is_symlink() or not token_path.is_file():
+        raise ValueError("token file must be a regular file")
+    mode = stat.S_IMODE(token_path.stat().st_mode)
+    if mode & 0o137:
+        raise ValueError("token file permissions must allow owner access and optional group read only")
+    token = token_path.read_text().strip()
     if not 16 <= len(token) <= 4096 or any(c.isspace() for c in token):
         raise ValueError("invalid token file")
     return token
@@ -62,12 +72,30 @@ def read_json(url, token, org=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("signal", choices=[*QUERIES, "server", "sql", "functions"])
+    parser.add_argument("signal", choices=[*QUERIES, "server", "sql", "functions", "cases", "trace"])
     parser.add_argument("--minutes", type=int, default=30)
+    parser.add_argument("--category", choices=list(CASE_PREDICATES), default="normal")
+    parser.add_argument("--trace-id")
+    parser.add_argument("--environment")
+    parser.add_argument("--instance")
+    parser.add_argument("--endpoint")
     args = parser.parse_args()
     if not 1 <= args.minutes <= 30 * 24 * 60:
         parser.error("window must be between 1 minute and 30 days")
-    if args.signal in {"server", "sql", "functions"}:
+    if args.signal in {"cases", "trace"}:
+        if args.signal == "trace":
+            if not re.fullmatch(r"[a-f0-9]{32}", args.trace_id or ""):
+                parser.error("trace requires a lowercase 32-hex --trace-id")
+            target = "/api/v2/traces/" + args.trace_id
+        else:
+            if args.minutes > 1440:
+                parser.error("trace cases are retained for 24 hours; narrow --minutes")
+            now = int(dt.datetime.now(dt.timezone.utc).timestamp())
+            query = urllib.parse.urlencode({"q":case_query(args.category, args.environment, args.instance, args.endpoint), "start":now-args.minutes*60, "end":now, "limit":3})
+            target = "/api/search?" + query
+        url = base_url(os.environ.get("GRAFANA_URL", "")) + "/api/datasources/proxy/uid/cvm-tempo" + target
+        result = read_json(url, token_file("GRAFANA_TOKEN_FILE"), os.environ.get("GRAFANA_ORG_ID"))
+    elif args.signal in {"server", "sql", "functions"}:
         url = base_url(os.environ.get("CVM_URL", "")) + "/api/system/observability/hotpath/" + args.signal
         result = read_json(url, token_file("CVM_READ_TOKEN_FILE"))
     else:

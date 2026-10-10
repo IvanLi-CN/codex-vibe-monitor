@@ -1,4 +1,16 @@
 services:
+  tempo:
+    image: grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
+    profiles: [traces-isolation]
+    command: ["-config.file=/etc/tempo.yml"]
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 2g
+    cpus: 1.0
+    volumes: ["./tempo.yml:/etc/tempo.yml:ro"]
+    tmpfs: ["/var/tempo:rw,size=536870912,mode=1777"]
+    environment: {TMPDIR: /var/tempo}
+    networks: [tempo_backend]
   prometheus:
     image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
     command:
@@ -36,6 +48,9 @@ services:
       GF_PLUGINS_PREINSTALL_AUTO_UPDATE: "false"
       GF_ALERTING_ENABLED: "false"
       GF_UNIFIED_ALERTING_ENABLED: "true"
+      CVM_TEMPO_QUERY_URL: ${CVM_TEMPO_QUERY_URL:-https://tempo-entry.invalid/tempo}
+      CVM_TEMPO_QUERY_TOKEN: ${CVM_TEMPO_QUERY_TOKEN:-unconfigured}
+      CVM_TEMPO_CA_PEM: ${CVM_TEMPO_CA_PEM:-}
     volumes:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
@@ -46,6 +61,9 @@ networks:
   monitoring:
     external: true
     name: ${OBSERVABILITY_NETWORK:-cvm-monitoring}
+  tempo_backend:
+    external: true
+    name: ${OBSERVABILITY_TEMPO_NETWORK:-cvm-tempo-backend}
 volumes:
   prometheus-data:
   grafana-data:

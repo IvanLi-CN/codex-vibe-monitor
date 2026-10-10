@@ -28,6 +28,51 @@ def psi(cpu=0, io=0, memory=0):
             for name, value in [("cpu", cpu), ("io", io), ("memory", memory)]}
 
 
+class ContainerMountTests(unittest.TestCase):
+    def test_candidate_does_not_receive_shared_tempo_ingest_credential(self):
+        source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
+        self.assertIn("tempo-runtime-token", source)
+        self.assertIn("/internal/v1/traces", source)
+        self.assertIn("FIXTURE_METRICS_TOKEN", source)
+        self.assertIn("FIXTURE_READ_TOKEN", source)
+        self.assertNotIn('self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro"', source)
+
+    def test_https_entry_certificate_is_a_server_leaf_and_covers_its_hostname(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            acceptance.create_entry_certificate(private)
+            certificate = acceptance.execute(["openssl", "x509", "-in", str(private / "tls.crt"), "-noout", "-text"])
+            self.assertIn("CA:FALSE", certificate)
+            self.assertIn("TLS Web Server Authentication", certificate)
+            self.assertIn("DNS:entry", certificate)
+            result = acceptance.execute(["openssl", "verify", "-CAfile", str(private / "tls.crt"), "-purpose", "sslserver", "-verify_hostname", "entry", str(private / "tls.crt")])
+            self.assertTrue(result.endswith(": OK"))
+
+    def execute_mounted(self, name):
+        script = SOURCE / "scripts/observability-acceptance" / name
+        namespace = {"__name__": "mounted_fixture", "__file__": "/work/" + name}
+        with patch.object(sys, "path", [str(SOURCE / "ops/observability"), *sys.path]):
+            exec(compile(script.read_text(), str(script), "exec"), namespace)
+        return namespace
+
+    def test_client_bootstrap_works_at_container_mount_depth(self):
+        namespace = self.execute_mounted("client.py")
+        self.assertTrue(callable(namespace["seed"]))
+
+    def test_tempo_trace_ids_restore_omitted_leading_zero(self):
+        namespace = self.execute_mounted("client.py")
+        self.assertEqual(namespace["normalized_trace_id"]("1" * 30), "00" + "1" * 30)
+        self.assertEqual(namespace["normalized_trace_id"]("1" * 31), "0" + "1" * 31)
+        self.assertEqual(namespace["normalized_trace_id"]("2" * 32), "2" * 32)
+        with self.assertRaises(AssertionError):
+            namespace["normalized_trace_id"]("1" * 33)
+
+    def test_peer_bootstrap_reaches_dispatch_at_container_mount_depth(self):
+        with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
+            with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):
+                self.execute_mounted("fixture.py")
+
+
 class ResourceAdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -35,6 +80,11 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.clock = 100.0
         self.window = {"windowId": "0-false", "pairIndex": 0, "enabled": "false"}
+
+    def test_measurement_service_profiles_keep_only_required_observers_running(self):
+        self.assertEqual(acceptance.measurement_services("off"), {"prometheus": False, "grafana": False, "tempo": False, "entry": False})
+        self.assertEqual(acceptance.measurement_services("metrics"), {"prometheus": True, "grafana": False, "tempo": False, "entry": False})
+        self.assertEqual(acceptance.measurement_services("full"), {"prometheus": True, "grafana": False, "tempo": True, "entry": True})
 
     def sleep(self, seconds):
         self.assertLessEqual(seconds, 20)
@@ -92,15 +142,15 @@ class ResourceAdmissionTests(unittest.TestCase):
 
     def test_mid_window_pressure_cannot_be_hidden_by_quiet_final_sample(self):
         with self.fake_clock(), patch.object(environment, "pressure", return_value=psi()):
-            with self.assertRaisesRegex(OSError, "pressure_exceeded"):
-                with environment.observe_resources(self.root, self.window) as observer:
-                    self.clock += 10
-                    with patch.object(environment, "pressure", return_value=psi(cpu=3)):
-                        observer.sample()
-                    self.clock += 10
+            with environment.observe_resources(self.root, self.window) as observer:
+                self.clock += 10
+                with patch.object(environment, "pressure", return_value=psi(cpu=3)):
+                    observer.sample()
+                self.clock += 10
         windows = json.loads((self.root / "measurement-windows.json").read_text())
-        self.assertEqual(windows[0]["status"], "unavailable")
+        self.assertEqual(windows[0]["status"], "passed")
         self.assertEqual(windows[0]["sampleCount"], 3)
+        self.assertEqual(windows[0]["pressureExceededSamples"], 1)
         rows = [json.loads(row) for row in (self.root / "resource-observer.jsonl").read_text().splitlines()]
         self.assertEqual([row["eligible"] for row in rows], [True, False, True])
         self.assertTrue(all(row["windowId"] == "0-false" for row in rows))
@@ -127,12 +177,34 @@ class ResourceAdmissionTests(unittest.TestCase):
         self.assertTrue(all(row["status"] == "passed" and row["sampleCount"] == 2 for row in windows))
         self.assertTrue(all(row["endedMonotonicSeconds"] - row["startedMonotonicSeconds"] == 10 for row in windows))
 
+    def test_nine_windows_require_real_trace_ingestion_without_drops(self):
+        samples = {mode: [] for mode in ("off", "metrics", "full")}
+        budget = environment.AdmissionBudget()
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", return_value=psi()):
+            for index in range(3):
+                for mode in samples:
+                    window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
+                    window["admissionWaitSeconds"] = environment.quiet_admission(self.root, timeout=300, window=window, budget=budget)
+                    with environment.observe_resources(self.root, window): self.clock += 10
+                    samples[mode].append({"windowId": window["windowId"], "durationSeconds": 10,
+                        "traceEvidence": {"enabled": True, "searchableTrace": True, "exportedSpans": 10, "failedSpans": 0, "droppedSpans": 0}})
+        (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
+        (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
+        path = self.root / "ab-samples.json"
+        path.write_text(json.dumps(samples))
+        environment.verify_measurement_evidence(self.root)
+        for key, value in [("enabled", False), ("searchableTrace", False), ("exportedSpans", 0), ("failedSpans", 1), ("droppedSpans", 1)]:
+            changed = copy.deepcopy(samples); changed["full"][1]["traceEvidence"][key] = value
+            path.write_text(json.dumps(changed))
+            with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+
     def test_raw_measurement_evidence_must_exist_even_with_successful_scenarios(self):
         run = object.__new__(Run)
         run.root = self.root; run.source = SOURCE; run.args = SimpleNamespace(candidate="a" * 40)
         run.context = {"evidenceLocator": "https://github.com/owner/repo/actions/runs/123/attempts/2"}
         run.suite = "full"
-        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
+        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
         self.assertFalse(run.finish())
         self.assertEqual(json.loads((self.root / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
 
@@ -150,20 +222,35 @@ class ResourceAdmissionTests(unittest.TestCase):
         (self.root / "run-config.json").write_text(json.dumps({"appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}))
         (self.root / "runner-context.json").write_text(json.dumps({"cpuAffinity": [0, 1, 2, 3]}))
         (self.root / "ab-samples.json").write_text(json.dumps(samples))
-        environment.verify_measurement_evidence(self.root)
+        environment.verify_measurement_evidence(self.root, modes=("false", "true"))
         path = self.root / "resource-observer.jsonl"
         original = path.read_text()
         rows = [json.loads(row) for row in original.splitlines()]
         rows[1]["hostPressure"] = psi(cpu=3)
+        rows[1]["eligible"] = False
         path.write_text("\n".join(json.dumps(row) for row in rows) + "\n")
-        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        windows = json.loads((self.root / "measurement-windows.json").read_text())
+        windows[0]["pressureExceededSamples"] = 1
+        (self.root / "measurement-windows.json").write_text(json.dumps(windows))
+        environment.verify_measurement_evidence(self.root, modes=("false", "true"))
         path.write_text("\n".join(original.splitlines()[:-1]) + "\n")
-        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root, modes=("false", "true"))
+
+    def test_ineligible_first_measurement_sample_blocks_window(self):
+        with self.fake_clock(), patch.object(environment, "pressure", return_value=psi(cpu=3)):
+            with self.assertRaisesRegex(OSError, "pressure_exceeded"):
+                with environment.observe_resources(self.root, self.window):
+                    pass
 
 
 class CpuIsolationTests(unittest.TestCase):
     def test_layout_pins_app_and_leaves_helpers_on_runner_default_affinity(self):
         self.assertEqual(environment.measurement_cpu_layout({3, 1, 2, 0}), {"app": "0", "auxiliary": "runner-default"})
+        self.assertEqual(environment.measurement_cpu_layout({3, 1, 2, 0}, selected="2"), {"app": "2", "auxiliary": "runner-default"})
+
+    def test_selected_cpu_must_be_within_runner_affinity(self):
+        with self.assertRaisesRegex(ValueError, "outside runner affinity"):
+            environment.measurement_cpu_layout({0, 1}, selected="2")
 
     def test_layout_requires_a_helper_cpu(self):
         with self.assertRaisesRegex(ValueError, "at least two runner CPUs"):
@@ -224,6 +311,17 @@ class ComparisonTests(unittest.TestCase):
     def samples(self, enabled_cpu=1.04, enabled_p95=1.04):
         return {"false": [{"cpuSecondsPerRequest": 1.0, "p95Seconds": 1.0} for _ in range(3)], "true": [{"cpuSecondsPerRequest": enabled_cpu, "p95Seconds": enabled_p95} for _ in range(3)]}
 
+    def test_three_modes_share_one_budget_and_report_trace_increment(self):
+        samples = {mode: [{"cpuSecondsPerRequest": value, "p95Seconds": value} for _ in range(3)]
+                   for mode, value in [("off", 1.0), ("metrics", 1.04), ("full", 1.06)]}
+        report = environment.comparison_report(samples)
+        for metric in report["metrics"].values():
+            self.assertTrue(metric["comparisonValid"])
+            self.assertFalse(metric["withinBudget"])
+            self.assertAlmostEqual(metric["traceIncrement"], 1.06 / 1.04 - 1)
+        samples["metrics"][2]["p95Seconds"] = 2.0
+        self.assertFalse(environment.comparison_report(samples)["metrics"]["p95Seconds"]["comparisonValid"])
+
     def test_both_stable_metrics_must_fit_budget(self):
         report = environment.comparison_report(self.samples())
         self.assertTrue(all(metric["withinBudget"] for metric in report["metrics"].values()))
@@ -264,7 +362,7 @@ class CertificateTests(unittest.TestCase):
             run.args = SimpleNamespace(candidate="a" * 40)
             run.context = None
             run.suite = "runtime"
-            run.results = {name: {"status": "passed"} for name in ["https-auth-query", "monitoring-fault-isolation", "original-process-cpu"]}
+            run.results = {name: {"status": "passed"} for name in ["https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu"]}
             self.assertTrue(run.finish())
             self.assertTrue((run.root / "runtime-card.json").exists())
             self.assertFalse((run.root / "empirical-card.json").exists())
@@ -279,7 +377,7 @@ class CertificateTests(unittest.TestCase):
 class WorkflowGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-pr.yml")
+        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-observability-performance.yml")
 
     def verify(self, workflow):
         contract.require_observability_performance_contract(workflow)
@@ -298,10 +396,7 @@ class WorkflowGateTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_build_artifacts_does_not_depend_on_performance_result(self):
-        needs = self.workflow["jobs"]["build"].get("needs")
-        self.assertEqual(needs, "build-pr-smoke-artifacts")
-        self.assertFalse(any(step["name"] == "Verify observability performance budget"
-                             for step in self.workflow["jobs"]["build"]["steps"]))
+        self.assertNotIn("build", self.workflow["jobs"])
 
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
@@ -357,6 +452,7 @@ class PerformanceDispositionTests(unittest.TestCase):
     def passed_scenarios():
         return {
             "https-auth-query": {"status": "passed"},
+            "tempo-cases-tenant": {"status": "passed"},
             "monitoring-fault-isolation": {"status": "passed"},
             "original-process-cpu": {"status": "passed"},
             "default-observability-ab": {
@@ -388,6 +484,38 @@ class PerformanceDispositionTests(unittest.TestCase):
         scenarios = {name: {"status": "passed"} for name in self.passed_scenarios()}
         self.write_case("passed", scenarios)
         self.assertEqual(classify_result(self.root, "success"), "passed")
+        with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
+
+    def test_unstable_windows_are_neutral_only_when_raw_budget_is_within_limit(self):
+        scenarios = self.passed_scenarios()
+        report = {
+            "metrics": {
+                "cpuSecondsPerRequest": {"observedWithinBudget": True},
+                "p95Seconds": {"observedWithinBudget": True},
+            }
+        }
+        (self.root / "ab-summary.json").write_text(json.dumps(report) + "\n")
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "unstable measurement windows",
+        }
+        self.write_case("unavailable", scenarios)
+        self.assertEqual(classify_result(self.root, "failure"), "neutral-unavailable")
+
+    def test_unstable_windows_with_raw_budget_overrun_remain_blocking(self):
+        scenarios = self.passed_scenarios()
+        report = {
+            "metrics": {
+                "cpuSecondsPerRequest": {"observedWithinBudget": False},
+                "p95Seconds": {"observedWithinBudget": True},
+            }
+        }
+        (self.root / "ab-summary.json").write_text(json.dumps(report) + "\n")
+        scenarios["default-observability-ab"] = {
+            "status": "unavailable",
+            "error": "unstable measurement windows",
+        }
+        self.write_case("unavailable", scenarios)
         with self.assertRaises(ClassificationError): classify_result(self.root, "failure")
 
 

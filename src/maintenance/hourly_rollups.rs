@@ -5311,16 +5311,16 @@ pub(crate) async fn spawn_http_server(
     }
     router = router.merge(browser_ingest_router(state.clone()));
     router = router
-        .layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            observability_http_middleware,
-        ))
         .layer(TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
             tracing::info_span!("request", method = %request.method(), uri_path = %observability::http_request_trace_path(request), version = ?request.version())
         }))
         .layer(cors_layer)
         .layer(axum::middleware::from_fn(
             observability::retired_performance_preflight,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            observability_http_middleware,
         ));
 
     let listener = TcpListener::bind(&state.config.http_bind).await?;

@@ -6,8 +6,11 @@ use metrics_exporter_prometheus::{
 
 mod browser;
 mod config;
+pub(crate) mod diagnostics;
 mod http;
+mod limits;
 mod locks;
+pub(crate) mod traces;
 pub(crate) use locks::DiagnosticMutex;
 pub(super) static PROFILER_ENABLED: AtomicBool = AtomicBool::new(false);
 mod registry;
@@ -49,6 +52,13 @@ pub(crate) struct ObservabilityRuntime {
     cpu_valid: AtomicBool,
     browser_limiter: std::sync::Mutex<browser::BrowserLimiter>,
     report_limiter: std::sync::Mutex<reports::ReportLimiter>,
+    traces: std::sync::OnceLock<Arc<traces::TraceRuntime>>,
+    http_inflight: std::sync::OnceLock<metrics::Gauge>,
+    http_metrics: [std::sync::OnceLock<Arc<http::HttpMetricHandles>>;
+        http::HTTP_ROUTE_COUNT * http::HTTP_METHOD_COUNT],
+    request_metrics:
+        [std::sync::OnceLock<Arc<diagnostics::RequestMetricHandles>>; diagnostics::ENDPOINT_COUNT],
+    series: limits::SeriesBudget,
 }
 impl std::fmt::Debug for ObservabilityRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -80,6 +90,13 @@ impl ObservabilityRuntime {
             "cvm_proxy_phase_duration_seconds",
             "cvm_proxy_ttfb_seconds",
             "cvm_proxy_ttft_seconds",
+            "cvm_request_local_wait_seconds",
+            "cvm_request_resource_wait_seconds",
+            "cvm_request_unattributed_seconds",
+            "cvm_request_response_duration_seconds",
+            "cvm_request_stage_seconds",
+            "cvm_request_milestone_seconds",
+            "cvm_request_persistence_seconds",
         ] {
             builder = builder
                 .set_buckets_for_metric(Matcher::Full(name.into()), REQUEST_BUCKETS)
@@ -98,6 +115,11 @@ impl ObservabilityRuntime {
             cpu_valid: AtomicBool::new(false),
             browser_limiter: std::sync::Mutex::new(browser::BrowserLimiter::default()),
             report_limiter: std::sync::Mutex::new(reports::ReportLimiter::default()),
+            traces: std::sync::OnceLock::new(),
+            http_inflight: std::sync::OnceLock::new(),
+            http_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            request_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
+            series: limits::SeriesBudget::default(),
         })
     }
     #[cfg(test)]
@@ -113,6 +135,30 @@ impl ObservabilityRuntime {
                 .collect::<Vec<_>>(),
         )
     }
+    fn register_counter(&self, key: Key) -> metrics::Counter {
+        if self.series.admit(&key, 0) {
+            self.recorder.register_counter(&key, &METADATA)
+        } else {
+            self.degraded.store(true, Ordering::Relaxed);
+            metrics::Counter::noop()
+        }
+    }
+    fn register_gauge(&self, key: Key) -> metrics::Gauge {
+        if self.series.admit(&key, 1) {
+            self.recorder.register_gauge(&key, &METADATA)
+        } else {
+            self.degraded.store(true, Ordering::Relaxed);
+            metrics::Gauge::noop()
+        }
+    }
+    fn register_histogram(&self, key: Key) -> metrics::Histogram {
+        if self.series.admit(&key, 2) {
+            self.recorder.register_histogram(&key, &METADATA)
+        } else {
+            self.degraded.store(true, Ordering::Relaxed);
+            metrics::Histogram::noop()
+        }
+    }
     pub(crate) fn counter(
         &self,
         name: &'static str,
@@ -120,13 +166,21 @@ impl ObservabilityRuntime {
         value: u64,
     ) {
         if self.enabled {
-            self.recorder
-                .register_counter(&Self::key(name, labels), &METADATA)
+            self.register_counter(Self::key(name, labels))
                 .increment(value);
         }
     }
     pub(crate) fn render(&self) -> String {
+        if let Some(traces) = self.traces.get() {
+            traces.report(self);
+        }
         let mut output = self.handle.render();
+        let dropped = self.series.dropped();
+        if dropped > 0 {
+            output.push_str(&format!(
+                "# TYPE cvm_metric_series_dropped_total counter\ncvm_metric_series_dropped_total {dropped}\n"
+            ));
+        }
         if self.cpu_valid.load(Ordering::Acquire) {
             output.push_str("# TYPE cvm_process_cpu_seconds_total counter\n");
             for (mode, value) in [
@@ -141,12 +195,58 @@ impl ObservabilityRuntime {
         }
         output
     }
+    pub(crate) fn trace_runtime(&self) -> Arc<traces::TraceRuntime> {
+        self.traces
+            .get_or_init(traces::TraceRuntime::disabled)
+            .clone()
+    }
+    fn http_inflight(&self) -> &metrics::Gauge {
+        self.http_inflight.get_or_init(|| {
+            if self.enabled {
+                self.register_gauge(Key::from_name("cvm_http_inflight"))
+            } else {
+                metrics::Gauge::noop()
+            }
+        })
+    }
+    fn http_metrics(
+        &self,
+        route: &'static str,
+        method: &'static str,
+    ) -> Arc<http::HttpMetricHandles> {
+        let index = http::route_index(route) * http::HTTP_METHOD_COUNT + http::method_index(method);
+        self.http_metrics[index]
+            .get_or_init(|| Arc::new(http::HttpMetricHandles::new(route, method)))
+            .clone()
+    }
+    fn request_metrics(&self, endpoint: &'static str) -> Arc<diagnostics::RequestMetricHandles> {
+        let index = diagnostics::endpoint_index(endpoint);
+        self.request_metrics[index]
+            .get_or_init(|| Arc::new(diagnostics::RequestMetricHandles::new(self, endpoint)))
+            .clone()
+    }
+    pub(crate) async fn initialize_traces(&self, config: traces::TraceConfig) {
+        let requested = config.enabled;
+        let runtime = tokio::task::spawn_blocking(move || traces::TraceRuntime::new(&config))
+            .await
+            .unwrap_or_else(|_| {
+                let mut failed = traces::TraceConfig::default();
+                failed.enabled = requested;
+                failed.valid = false;
+                traces::TraceRuntime::new(&failed)
+            });
+        let _ = self.traces.set(runtime);
+    }
+    pub(crate) fn source_absolute(&self, name: &'static str, value: u64) {
+        if self.enabled {
+            self.register_counter(Key::from_name(name)).absolute(value);
+        }
+    }
     pub(crate) fn source_counter(&self, id: &'static str, dimension: &'static str, value: u64) {
         if self.enabled
             && let Some((name, labels, _)) = registry::mapped_metric(id, dimension)
         {
-            self.recorder
-                .register_counter(&Key::from_parts(name, labels), &METADATA)
+            self.register_counter(Key::from_parts(name, labels))
                 .absolute(value);
         }
     }
@@ -157,9 +257,7 @@ impl ObservabilityRuntime {
         value: f64,
     ) {
         if self.enabled && value.is_finite() {
-            self.recorder
-                .register_gauge(&Self::key(name, labels), &METADATA)
-                .set(value);
+            self.register_gauge(Self::key(name, labels)).set(value);
         }
     }
     pub(crate) fn duration(
@@ -169,8 +267,7 @@ impl ObservabilityRuntime {
         value: Duration,
     ) {
         if self.enabled {
-            self.recorder
-                .register_histogram(&Self::key(name, labels), &METADATA)
+            self.register_histogram(Self::key(name, labels))
                 .record(value.as_secs_f64());
         }
     }
@@ -179,8 +276,7 @@ impl ObservabilityRuntime {
             return;
         }
         if let Some((name, labels, _)) = registry::mapped_metric(id, dimension) {
-            self.recorder
-                .register_counter(&Key::from_parts(name, labels), &METADATA)
+            self.register_counter(Key::from_parts(name, labels))
                 .increment(value);
         }
     }
@@ -189,8 +285,7 @@ impl ObservabilityRuntime {
             return;
         }
         if let Some((name, labels, scale)) = registry::mapped_metric(id, dimension) {
-            self.recorder
-                .register_histogram(&Key::from_parts(name, labels), &METADATA)
+            self.register_histogram(Key::from_parts(name, labels))
                 .record(value * scale);
         }
     }
@@ -199,8 +294,7 @@ impl ObservabilityRuntime {
             return;
         }
         if let Some((name, labels, scale)) = registry::mapped_metric(id, dimension) {
-            self.recorder
-                .register_gauge(&Key::from_parts(name, labels), &METADATA)
+            self.register_gauge(Key::from_parts(name, labels))
                 .set(value * scale);
         }
     }
