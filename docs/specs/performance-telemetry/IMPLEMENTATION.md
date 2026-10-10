@@ -16,8 +16,10 @@
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
 合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
-job，继续上传失败或缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact
-producer。质量门禁合同和自测覆盖此依赖边界，未改变 5% 性能验收阈值。
+job；其中性能镜像和长测量只有在 PR 添加一次性 `run:observability-performance`
+标签时启动，普通 PR 与 merge queue 事件不会默认消耗长时 runner。继续上传失败或
+缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact producer。质量门禁合同和自测
+覆盖此依赖边界，未改变 5% 性能验收阈值。
 普通源码、功能、迁移、安全、视觉、必需 CI 和正式审查仍是交付条件。
 当 GitHub-hosted runner 因明确的资源压力无法提供有效测量时，验收步骤保留非零结果并由分类器将该辅助 job 收口为中性；`empirical-card.json` 仍为 `unavailable`，原始压力证据仍上传，功能/设置/证据错误和预算超标继续失败。
 历史开销超标或 unavailable 不因此改写为通过；#1079 的性能回归根因及

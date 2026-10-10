@@ -37,7 +37,7 @@ class ContractModel:
     label_check_name: str
 
 
-CI_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited"}
+CI_PULL_REQUEST_TYPES = {"opened", "reopened", "synchronize", "ready_for_review", "edited", "labeled"}
 LABEL_GATE_PULL_REQUEST_TYPES = {
     "opened",
     "reopened",
@@ -113,8 +113,11 @@ def require_backend_partition_command(run: str, partition: str, workflow_name: s
 def require_observability_performance_contract(workflow: dict[str, Any]) -> None:
     performance_job = job_config(workflow, "observability-performance", "ci-pr.yml")
     image_job = job_config(workflow, "observability-performance-image", "ci-pr.yml")
+    opt_in_if = "github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'"
     require(performance_job.get("name") == "Observability Performance Budget" and image_job.get("name") == "Observability Performance Image", "observability performance jobs must match their declared names")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
+    require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
+            "observability performance jobs must require the explicit opt-in label")
     require_job_and_steps_fail_closed(
         performance_job,
         "ci-pr.yml.jobs.observability-performance",

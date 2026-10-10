@@ -8,6 +8,7 @@ on:
       - synchronize
       - ready_for_review
       - edited
+      - labeled
   merge_group:
     types:
       - checks_requested
@@ -936,6 +937,8 @@ jobs:
 
   observability-performance-image:
     name: Observability Performance Image
+    # This build is intentionally opt-in because its paired measurement can exceed one hour.
+    if: github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     outputs:
@@ -998,6 +1001,8 @@ jobs:
   observability-performance:
     name: Observability Performance Budget
     needs: observability-performance-image
+    # Add the run:observability-performance label to launch the one-shot hosted measurement.
+    if: github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
     # A fresh VM measures the prebuilt image; no compiler or parallel suite shares it.
     runs-on: ubuntu-24.04
     timeout-minutes: 100
