@@ -1,11 +1,21 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { type ComponentType, useInsertionEffect } from "react";
+import { type ComponentType, type ReactNode, useInsertionEffect } from "react";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import { I18nProvider } from "../../i18n";
 import type { ModelRoutingState } from "../../lib/api";
 import { ModelRoutingHealthPanel } from "./ModelRoutingHealthPanel";
 
 const now = new Date("2026-07-24T08:00:00.000Z").toISOString();
+
+function StorySurface({ children }: { children: ReactNode }) {
+  return (
+    <div data-visual-evidence-surface className="bg-neutral p-8 text-neutral-content sm:p-12">
+      <div data-visual-evidence-target className="mx-auto max-w-[1440px]">
+        {children}
+      </div>
+    </div>
+  );
+}
 
 const states: ModelRoutingState[] = [
   {
@@ -108,6 +118,47 @@ const withModelRoutingHistoryFetchMock = (Story: ComponentType) => (
   </>
 );
 
+function assertCoolingRowLayout(canvasElement: HTMLElement, mobile: boolean) {
+  const coolingSummary = canvasElement.querySelectorAll("button[aria-expanded]")[2];
+  const coolingStatus = within(canvasElement).getByText("冷却中", { exact: true });
+  const coolingReset = within(canvasElement).getByRole("button", {
+    name: "恢复可用: o4-mini",
+  });
+  const coolingExpand = within(canvasElement).getAllByLabelText("展开模型路由历史")[2];
+  expect(coolingSummary).toBeDefined();
+  expect(coolingExpand).toBeDefined();
+
+  const summaryRect = coolingSummary!.getBoundingClientRect();
+  const statusRect = coolingStatus.getBoundingClientRect();
+  const row = coolingSummary!.parentElement!;
+  const rowRect = row.getBoundingClientRect();
+  const contentRight = rowRect.right - Number.parseFloat(getComputedStyle(row).paddingRight);
+  const resetRect = coolingReset.getBoundingClientRect();
+  const expandRect = coolingExpand!.getBoundingClientRect();
+  expect(
+    Math.abs(resetRect.top + resetRect.height / 2 - (expandRect.top + expandRect.height / 2)),
+  ).toBeLessThanOrEqual(1);
+
+  if (mobile) {
+    expect(Math.abs(summaryRect.top - statusRect.top)).toBeLessThanOrEqual(1);
+    expect(Math.abs(statusRect.right - contentRight)).toBeLessThanOrEqual(1);
+    expect(summaryRect.bottom).toBeLessThanOrEqual(resetRect.top);
+  } else {
+    expect(
+      Math.abs(summaryRect.top + summaryRect.height / 2 - (resetRect.top + resetRect.height / 2)),
+    ).toBeLessThanOrEqual(1);
+  }
+}
+
+async function assertMixedStates(canvasElement: HTMLElement, mobile: boolean) {
+  const canvas = within(canvasElement);
+  await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
+  await expect(canvas.queryByText("模型不可用", { exact: true })).not.toBeInTheDocument();
+  await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
+  await expect(canvas.getByTestId("model-routing-cache-usage-missing-o4-mini")).toBeVisible();
+  assertCoolingRowLayout(canvasElement, mobile);
+}
+
 const meta = {
   title: "Account Pool/ModelRoutingHealthPanel",
   component: ModelRoutingHealthPanel,
@@ -122,11 +173,9 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="bg-neutral p-8 text-neutral-content sm:p-12">
-          <div className="mx-auto max-w-[1440px]">
-            <Story />
-          </div>
-        </div>
+        <StorySurface>
+          <Story />
+        </StorySurface>
       </I18nProvider>
     ),
   ],
@@ -141,11 +190,7 @@ export const MixedStates: Story = {
     viewport: { value: "desktop1440", isRotated: false },
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
-    await expect(canvas.queryByText("模型不可用", { exact: true })).not.toBeInTheDocument();
-    await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
-    await expect(canvas.getByTestId("model-routing-cache-usage-missing-o4-mini")).toBeVisible();
+    await assertMixedStates(canvasElement, false);
   },
 };
 
@@ -153,6 +198,9 @@ export const MixedStatesMobile: Story = {
   ...MixedStates,
   globals: {
     viewport: { value: "mobile393", isRotated: false },
+  },
+  play: async ({ canvasElement }) => {
+    await assertMixedStates(canvasElement, true);
   },
 };
 
