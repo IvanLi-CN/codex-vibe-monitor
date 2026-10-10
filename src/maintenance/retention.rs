@@ -65,7 +65,6 @@ const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(
 const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS: i32 = 1_000;
-const RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL: Duration = Duration::from_secs(30);
 const SYSTEM_TASK_RUN_RETENTION_KEEP_RECENT: i64 = 200;
 const SYSTEM_TASK_RUN_RETENTION_TERMINAL_BATCH_ROWS: usize = 500;
 const SYSTEM_TASK_RUN_RETENTION_MAX_ROWS_PER_PASS: usize = 5_000;
@@ -654,36 +653,6 @@ static RETENTION_RECOVERY_HEALTH: Lazy<std::sync::Mutex<RetentionRecoveryHealthS
     Lazy::new(|| std::sync::Mutex::new(RetentionRecoveryHealthSnapshot::default()));
 static RAW_ORPHAN_SWEEP_HEALTH: Lazy<std::sync::Mutex<RawOrphanSweepHealthSnapshot>> =
     Lazy::new(|| std::sync::Mutex::new(RawOrphanSweepHealthSnapshot::default()));
-static RETENTION_RECOVERY_BACKLOG_CACHE: Lazy<
-    std::sync::Mutex<Option<RetentionRecoveryBacklogCache>>,
-> = Lazy::new(|| std::sync::Mutex::new(None));
-
-struct RetentionRecoveryBacklogCache {
-    database_key: String,
-    cutoff: String,
-    observed_at: Instant,
-    count: i64,
-    oldest_backlog_at: Option<String>,
-}
-
-impl RetentionRecoveryBacklogCache {
-    fn value_if_fresh(
-        &self,
-        database_key: &str,
-        cutoff: &str,
-        now: Instant,
-    ) -> Option<(i64, Option<String>)> {
-        (self.database_key == database_key
-            && self.cutoff == cutoff
-            && now.duration_since(self.observed_at) < RETENTION_RECOVERY_BACKLOG_CACHE_INTERVAL)
-            .then(|| (self.count, self.oldest_backlog_at.clone()))
-    }
-}
-
-fn retention_recovery_backlog_cache_key(filename: &Path) -> Option<String> {
-    let key = filename.to_string_lossy();
-    (!key.is_empty() && key != ":memory:").then(|| key.into_owned())
-}
 
 pub(crate) fn retention_recovery_health_snapshot() -> RetentionRecoveryHealthSnapshot {
     RETENTION_RECOVERY_HEALTH
@@ -2146,18 +2115,6 @@ async fn load_retention_recovery_expired_backlog(
     pool: &Pool<Sqlite>,
     cutoff: &str,
 ) -> Result<(i64, Option<String>)> {
-    let database_key = retention_recovery_backlog_cache_key(pool.connect_options().get_filename());
-    let cached = database_key.as_deref().and_then(|database_key| {
-        RETENTION_RECOVERY_BACKLOG_CACHE
-            .lock()
-            .expect("retention recovery backlog cache")
-            .as_ref()
-            .and_then(|cached| cached.value_if_fresh(database_key, cutoff, Instant::now()))
-    });
-    if let Some(cached) = cached {
-        return Ok(cached);
-    }
-
     let query_budget = retention_run_remaining_budget()
         .unwrap_or(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET)
         .min(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET);
@@ -2230,19 +2187,6 @@ async fn load_retention_recovery_expired_backlog(
         }
     };
     drop(connection);
-
-    if let Some(database_key) = database_key {
-        let mut cache = RETENTION_RECOVERY_BACKLOG_CACHE
-            .lock()
-            .expect("retention recovery backlog cache");
-        *cache = Some(RetentionRecoveryBacklogCache {
-            database_key,
-            cutoff: cutoff.to_string(),
-            observed_at: Instant::now(),
-            count: backlog.0,
-            oldest_backlog_at: backlog.1.clone(),
-        });
-    }
     Ok(backlog)
 }
 

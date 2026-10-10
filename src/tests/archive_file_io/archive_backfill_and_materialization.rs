@@ -5317,7 +5317,7 @@ async fn upstream_account_archive_marker_repair_converges_across_multiple_pages(
 }
 
 #[tokio::test]
-async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutoff() {
+async fn retention_recovery_backlog_observation_refreshes_after_new_rows_and_cutoff_changes() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-recovery-backlog-cache").await;
     let initial_days = config.invocation_max_days;
@@ -5372,13 +5372,13 @@ async fn retention_recovery_backlog_cache_reuses_and_refreshes_by_database_cutof
         Some(0.03),
     )
     .await;
-    let cached = retention_test_refresh_recovery_counts(&pool, &config)
+    let refreshed_after_insert = retention_test_refresh_recovery_counts(&pool, &config)
         .await
-        .expect("reuse recovery backlog cache");
+        .expect("refresh recovery backlog after new row");
     assert_eq!(
-        cached.expired_backlog_count,
-        Some(1),
-        "a fresh file-backed cache entry must hide writes until its cutoff changes"
+        refreshed_after_insert.expired_backlog_count,
+        Some(2),
+        "a successful observation must include rows committed after the prior observation"
     );
 
     config.invocation_max_days = initial_days.saturating_sub(2);
@@ -5983,6 +5983,114 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
     .await
     .expect("count stale usage breakdown replay markers");
     assert_eq!(replay_marker_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn bootstrap_repairs_null_legacy_account_replay_markers_to_manifest_sha() {
+    let (pool, _config, temp_dir) =
+        retention_memory_test_pool_and_config("bootstrap-repairs-null-account-markers").await;
+    let archive_path = temp_dir
+        .join("archives")
+        .join("codex_invocations")
+        .join("bootstrap-repairs-null-account-markers.sqlite.gz")
+        .to_string_lossy()
+        .to_string();
+    let archive_file = PathBuf::from(&archive_path);
+    fs::create_dir_all(
+        archive_file
+            .parent()
+            .expect("archive fixture has a parent directory"),
+    )
+    .expect("create archive fixture directory");
+    write_valid_invocation_archive(&archive_file, "legacy-null-marker").await;
+    let manifest_sha = sha256_hex_file(&archive_file).expect("hash archive fixture");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            historical_rollups_materialized_at,
+            created_at
+        )
+        VALUES (
+            ?1,
+            '2026-01',
+            ?2,
+            ?3,
+            1,
+            ?4,
+            '2026-01-15 08:00:00',
+            '2026-01-15 08:30:00',
+            datetime('now'),
+            datetime('now')
+        )
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .bind(&manifest_sha)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("seed completed archive manifest");
+
+    for target in [
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY,
+        HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (
+                target, dataset, file_path, archive_sha256, replayed_at
+            )
+            VALUES (?1, ?2, ?3, NULL, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&archive_path)
+        .execute(&pool)
+        .await
+        .expect("seed legacy null-SHA replay marker");
+    }
+
+    let mut tx = pool.begin().await.expect("begin marker repair transaction");
+    assert!(
+        crate::maintenance::mark_materialized_upstream_account_archive_replayed_tx(
+            tx.as_mut(),
+            &archive_path,
+        )
+        .await
+        .expect("repair legacy null-SHA replay markers")
+    );
+    tx.commit().await.expect("commit marker repair transaction");
+
+    let repaired_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND archive_sha256 = ?3
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_path)
+    .bind(&manifest_sha)
+    .fetch_one(&pool)
+    .await
+    .expect("count repaired replay markers");
+    assert_eq!(repaired_markers, 3);
 
     cleanup_temp_test_dir(&temp_dir);
 }

@@ -208,10 +208,27 @@ pub(crate) async fn wake_account_activity_v2_coverage_repair(
 pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let manifest_sha = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sha256 FROM archive_batches \
+         WHERE dataset = ?1 AND file_path = ?2 \
+           AND status IN ('completed', 'materializing') \
+         LIMIT 1",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten()
+    .filter(|sha| !sha.trim().is_empty());
+    let Some(manifest_sha) = manifest_sha else {
+        bail!("archive manifest is missing a SHA before replay marker repair");
+    };
+
+    let mut missing_targets = Vec::new();
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
-        let marker_exists = sqlx::query_scalar::<_, i64>(
-            "SELECT 1 FROM hourly_rollup_archive_replay \
+        let marker_sha = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
              WHERE target = ?1 AND dataset = ?2 AND file_path = ?3 LIMIT 1",
         )
         .bind(target)
@@ -219,18 +236,24 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
         .bind(file_path)
         .fetch_optional(&mut *tx)
         .await?
-        .is_some();
-        if !marker_exists {
-            mark_hourly_rollup_archive_replayed_tx(
-                tx,
-                target,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                file_path,
-            )
-            .await?;
+        .flatten()
+        .filter(|sha| !sha.trim().is_empty());
+        match marker_sha.as_deref() {
+            Some(sha) if sha == manifest_sha => {}
+            Some(_) => return Ok(false),
+            None => missing_targets.push(target),
         }
     }
-    Ok(())
+    for target in missing_targets {
+        mark_hourly_rollup_archive_replayed_tx(
+            tx,
+            target,
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            file_path,
+        )
+        .await?;
+    }
+    Ok(true)
 }
 
 fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[&str]) -> bool {
@@ -3396,16 +3419,19 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         if !account_activity_v2_pending
             && can_shortcut_legacy_materialized_upstream_account_targets(&pending_targets)
         {
-            mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
+            let legacy_markers_repaired =
+                mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
+                    .await?;
+            if legacy_markers_repaired {
+                mark_archive_batch_historical_rollups_materialized_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_file.file_path,
+                )
                 .await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.file_path,
-            )
-            .await?;
-            summary.changed_batches += 1;
-            continue;
+                summary.changed_batches += 1;
+                continue;
+            }
         }
         if pending_targets.is_empty() && !account_activity_v2_pending {
             mark_archive_batch_historical_rollups_materialized_tx(

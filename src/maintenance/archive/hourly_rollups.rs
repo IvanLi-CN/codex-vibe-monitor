@@ -21,6 +21,7 @@ mod archive_hourly_rollup_support;
 pub(crate) use archive_hourly_rollup_support::*;
 
 pub(crate) const PARALLEL_WORK_MINUTE_ROLLUP_RETAINED_COMPLETE_SHANGHAI_DAYS: i64 = 30;
+const INVOCATION_ROLLUP_SOURCE_SNAPSHOT_RETRIES: u8 = 2;
 
 pub(crate) fn parallel_work_minute_rollup_keep_start_epoch(now: DateTime<Utc>) -> Result<i64> {
     let local_date = now.with_timezone(&Shanghai).date_naive()
@@ -4521,6 +4522,24 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
+    let mut before_live_source_scan = Some(before_live_source_scan);
+    reconcile_invocation_rollup_hourly_from_sources_with_retry(
+        pool,
+        &mut before_live_source_scan,
+        INVOCATION_ROLLUP_SOURCE_SNAPSHOT_RETRIES,
+    )
+    .await
+}
+
+async fn reconcile_invocation_rollup_hourly_from_sources_with_retry<F, Fut>(
+    pool: &Pool<Sqlite>,
+    before_live_source_scan: &mut Option<F>,
+    retries_remaining: u8,
+) -> Result<InvocationHourlyRollupReconciliation>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
     // Keep the database transaction out of archive hashing/decompression. A short read
     // transaction is enough to capture the initial manifest and integrity boundary; the live
     // source scan below establishes its own snapshot and rechecks this manifest before writes.
@@ -4699,7 +4718,9 @@ where
         sqlx::query_scalar("SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1")
             .fetch_optional(&mut *tx)
             .await?;
-    before_live_source_scan().await;
+    if let Some(before_live_source_scan) = before_live_source_scan.take() {
+        before_live_source_scan().await;
+    }
 
     let mut cursor_id = 0_i64;
     loop {
@@ -4784,10 +4805,22 @@ where
         Err(error) => return Err(error.into()),
     };
     if archive_files_after != archive_files {
-        source_incomplete = true;
         warn!(
             dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            "archive manifest changed while reconciling invocation hourly rollups"
+            retries_remaining,
+            "archive manifest changed during invocation hourly rollup snapshot; retrying"
+        );
+        drop(tx);
+        if retries_remaining > 0 {
+            return Box::pin(reconcile_invocation_rollup_hourly_from_sources_with_retry(
+                pool,
+                before_live_source_scan,
+                retries_remaining - 1,
+            ))
+            .await;
+        }
+        bail!(
+            "archive manifest changed during invocation hourly rollup snapshot after retries; retryable snapshot-write conflict"
         );
     }
 
