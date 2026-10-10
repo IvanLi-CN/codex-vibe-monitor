@@ -5756,6 +5756,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
                     &missing_materialized_bucket_epochs,
                 )
                 .await?;
+                clear_invocation_summary_repair_seen_ids(tx.as_mut()).await?;
             }
         } else {
             sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
