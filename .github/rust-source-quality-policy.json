@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 37,
+    "inventory_entries": 36,
     "suppression_entries": 118
   },
   "loc_targets": {
