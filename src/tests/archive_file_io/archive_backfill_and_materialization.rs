@@ -6789,6 +6789,79 @@ async fn startup_summary_proof_recovery_reopens_materialized_archive_and_replays
 }
 
 #[tokio::test]
+async fn authoritative_invocation_archive_sha_update_requires_current_summary_proof() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("authoritative-archive-sha-guard").await;
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "authoritative-archive-sha-guard",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "authoritative-archive-sha-guard",
+            occurred_at: "2025-01-15 08:10:00",
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(
+                r#"{"upstreamAccountId":17,"responseModel":"gpt-5","promptCacheKey":"authoritative-archive-sha-guard"}"#,
+            ),
+            detail_level: DETAIL_LEVEL_FULL,
+            error_message: None,
+            failure_kind: None,
+            failure_class: Some("none"),
+            is_actionable: Some(0),
+        }],
+    )
+    .await;
+    let archive_file_path = archive_path.to_string_lossy().to_string();
+
+    let materialized = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize archive before SHA guard check");
+    assert_eq!(materialized.materialized_invocation_batches, 1);
+
+    sqlx::query(
+        "UPDATE archive_batches SET summary_source_kind = 'authoritative' \
+         WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect("promote a fully proved archive to authoritative");
+
+    let error = sqlx::query(
+        "UPDATE archive_batches SET sha256 = 'replacement-sha-without-proof' \
+         WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .execute(&pool)
+    .await
+    .expect_err("changing an authoritative archive identity must require new proofs");
+    assert!(
+        error
+            .to_string()
+            .contains("completed codex_invocations archive requires Summary publication proof")
+    );
+
+    let persisted_sha: String = sqlx::query_scalar(
+        "SELECT sha256 FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&archive_file_path)
+    .fetch_one(&pool)
+    .await
+    .expect("load unchanged authoritative archive identity");
+    assert_ne!(persisted_sha, "replacement-sha-without-proof");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_recovery_classifies_sparse_legacy_detail_mirror_by_archive_identity() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("sparse-legacy-detail-mirror").await;

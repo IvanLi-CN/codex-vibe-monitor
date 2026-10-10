@@ -4315,7 +4315,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
         CREATE TRIGGER trg_update_authoritative_invocation_archive_requires_summary_proof
-        BEFORE UPDATE OF status, summary_source_kind ON archive_batches
+        BEFORE UPDATE OF status, summary_source_kind, sha256 ON archive_batches
         WHEN NEW.dataset = 'codex_invocations'
           AND NEW.status = 'completed'
           AND NEW.summary_source_kind = 'authoritative'
@@ -4323,6 +4323,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
               OLD.status <> 'completed'
               OR OLD.summary_source_kind IS NULL
               OR OLD.summary_source_kind <> 'authoritative'
+              OR OLD.sha256 IS NOT NEW.sha256
           )
           AND (
               NEW.coverage_start_at IS NULL
