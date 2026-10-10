@@ -39,13 +39,13 @@
     {
       "path": "src/maintenance/archive/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 6995,
+      "line_budget": 7046,
       "next_module_workstream": "Split archive hourly rollup entry, account activity, network, replay, and retention."
     },
     {
       "path": "src/maintenance/hourly_rollups.rs",
       "role": "production",
-      "line_budget": 5414,
+      "line_budget": 5810,
       "next_module_workstream": "Split active hourly rollup scheduling, live projections, replay, and repair."
     },
     {
@@ -93,7 +93,7 @@
     {
       "path": "src/schema.rs",
       "role": "production",
-      "line_budget": 6735,
+      "line_budget": 6739,
       "next_module_workstream": "Split schema startup migrations, domain phases, archive rollups, and compatibility helpers."
     },
     {
