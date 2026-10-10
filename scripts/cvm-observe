@@ -43,7 +43,7 @@ def token_file(name):
     if not path:
         raise ValueError(f"set {name} to a private token file")
     token_path = Path(path)
-    if not token_path.is_file():
+    if token_path.is_symlink() or not token_path.is_file():
         raise ValueError("token file must be a regular file")
     mode = stat.S_IMODE(token_path.stat().st_mode)
     if mode & 0o137:

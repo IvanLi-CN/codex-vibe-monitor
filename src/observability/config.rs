@@ -1,5 +1,8 @@
 use crate::*;
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 #[derive(Clone, Serialize)]
 pub(crate) struct ObservabilityConfig {
     pub(crate) enabled: bool,
@@ -38,6 +41,19 @@ fn read_token(name: &str) -> Result<Option<Arc<str>>> {
     let Some(path) = env::var_os(name) else {
         return Ok(None);
     };
+    read_token_path(name, std::path::Path::new(&path)).map(Some)
+}
+
+fn read_token_path(name: &str, path: &std::path::Path) -> Result<Arc<str>> {
+    let metadata =
+        std::fs::symlink_metadata(path).with_context(|| format!("cannot stat {name}"))?;
+    if !metadata.file_type().is_file() {
+        bail!("{name} must be a regular file");
+    }
+    #[cfg(unix)]
+    if metadata.permissions().mode() & 0o137 != 0 {
+        bail!("{name} permissions must allow owner access and optional group read only");
+    }
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {name}"))?;
     if bytes.len() > 4096 {
         bail!("{name} exceeds token limit");
@@ -48,7 +64,7 @@ fn read_token(name: &str) -> Result<Option<Arc<str>>> {
     if value.len() < 16 || value.chars().any(char::is_whitespace) {
         bail!("{name} must contain a nonempty token of at least 16 characters");
     }
-    Ok(Some(Arc::from(value)))
+    Ok(Arc::from(value))
 }
 impl ObservabilityConfig {
     pub(crate) fn from_env() -> Result<Self> {
@@ -221,5 +237,41 @@ mod tests {
         );
         assert!(authorized(&headers, config.read_token.as_deref()));
         assert!(!authorized(&headers, None));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_files_require_private_regular_files() {
+        let directory = std::env::temp_dir().join(format!(
+            "cvm-observe-token-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let token = directory.join("token");
+        std::fs::write(&token, "private-observe-token\n").unwrap();
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(
+            read_token_path("TEST_TOKEN", &token).unwrap().as_ref(),
+            "private-observe-token"
+        );
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = read_token_path("TEST_TOKEN", &token)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("permissions"));
+
+        let link = directory.join("token-link");
+        std::os::unix::fs::symlink(&token, &link).unwrap();
+        let error = read_token_path("TEST_TOKEN", &link)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("regular file"));
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }

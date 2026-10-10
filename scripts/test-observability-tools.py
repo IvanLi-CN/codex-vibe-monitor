@@ -100,6 +100,11 @@ class TraceAccessTests(unittest.TestCase):
                 with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(path)}):
                     with self.assertRaisesRegex(ValueError, "optional group read only"):
                         observe.token_file("TEST_OBSERVE_TOKEN")
+            alias = Path(directory) / "token-link"
+            alias.symlink_to(path)
+            with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(alias)}):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    observe.token_file("TEST_OBSERVE_TOKEN")
 
     def search(self, category="normal", **extra):
         import urllib.parse

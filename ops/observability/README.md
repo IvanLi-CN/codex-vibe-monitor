@@ -189,9 +189,12 @@ Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-CI PR 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
+`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
 ID、revision 与 archive checksum；`Observability Performance Budget` 在另一个
 `ubuntu-24.04` runner 上加载同一镜像，先完成运行时场景，再串行测量 A/B。
+该工作流只接受默认分支版本的 `pull_request_target` 标签事件；测量和诊断脚本从
+base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为隔离容器镜像运行。
+因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次交替配对、每窗口 300 秒与 60 秒预热；保留两组 CV ≤5% 的稳定性
 门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。

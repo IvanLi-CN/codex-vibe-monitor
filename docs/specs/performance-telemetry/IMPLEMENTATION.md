@@ -16,8 +16,8 @@
 
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
 合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
-job；其中性能镜像和长测量只有在 PR 添加一次性 `run:observability-performance`
-标签时启动，普通 PR 与 merge queue 事件不会默认消耗长时 runner。继续上传失败或
+job；它们位于默认分支控制的 `pull_request_target` 工作流中，只有显式添加一次性
+`run:observability-performance` 标签时启动，普通 PR 与 merge queue 事件不会默认消耗长时 runner。继续上传失败或
 缺测证据；`Build Artifacts` 仅依赖 PR smoke artifact producer。质量门禁合同和自测
 覆盖此依赖边界，未改变 5% 性能验收阈值。本次请求生命周期 PR 的就绪判断不宣称该
 预算已验证；预算结论留给显式启动的专项运行。

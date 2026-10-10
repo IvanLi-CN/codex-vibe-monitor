@@ -39,10 +39,10 @@ def create_entry_certificate(private):
 
 class Run:
     def __init__(self,args):
-        self.args=args; self.source=Path(args.source).resolve();self.root=Path(args.run).resolve()
+        self.args=args; self.source=Path(args.source).resolve(); self.candidate_source=Path(getattr(args,"candidate_source",args.source)).resolve(); self.root=Path(args.run).resolve()
         self.environment=getattr(args,"environment","shared-testbox")
         self.suite=getattr(args,"suite","runtime")
-        self.context=actions_context(self.source,self.root,args.candidate) if self.environment=="github-actions" else None
+        self.context=actions_context(self.candidate_source,self.root,args.candidate) if self.environment=="github-actions" else None
         if self.suite=="full" and self.context is None:
             raise ValueError("full performance acceptance must run in GitHub Actions")
         if self.suite=="full" and not re.fullmatch(r"sha256:[a-f0-9]{64}",args.image or ""):
@@ -96,7 +96,10 @@ class Run:
         create_entry_certificate(self.private)
         env={**os.environ,"METRICS_TOKEN_FILE":str(self.private/"metrics-token"),"GRAFANA_ADMIN_PASSWORD_FILE":str(self.private/"grafana-admin-password"),"GRAFANA_PUBLIC_URL":"https://entry:8443","OBSERVABILITY_NETWORK":self.project+"-monitoring","OBSERVABILITY_TEMPO_NETWORK":self.project+"-tempo-backend","OBSERVABILITY_SECRET_GID":str(os.getgid()),"CVM_TEMPO_QUERY_URL":"https://entry:8443/tempo","CVM_TEMPO_QUERY_TOKEN":(self.private/"tempo-query-token").read_text().strip(),"CVM_TEMPO_CA_PEM":(self.private/"tls.crt").read_text()}
         compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"--profile","traces-isolation","config","--format","json"],env=env))
-        compose.pop("name",None);compose["networks"]={"monitoring":{},"tempo_backend":{}}
+        compose.pop("name",None)
+        # The target image receives ephemeral fixture tokens; keep both networks
+        # internal so a candidate cannot exfiltrate them from the hosted runner.
+        compose["networks"]={"monitoring":{"internal":True},"tempo_backend":{"internal":True}}
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
             service["cap_drop"]=["ALL"];service.pop("ports",None);service.pop("profiles",None)
@@ -193,7 +196,7 @@ class Run:
         # An SSH shell or self-hosted Actions job cannot certify the performance budget.
         if self.environment!="github-actions":
             raise ValueError("performance acceptance must run in GitHub Actions")
-        actions_context(self.source,self.root,self.args.candidate)
+        actions_context(self.candidate_source,self.root,self.args.candidate)
         quiet_admission(self.root)
         return self.overhead_windows()
     def overhead_windows(self):
@@ -265,6 +268,7 @@ class Run:
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ["source","run","agent","candidate","samply"]: parser.add_argument("--"+name,required=True)
+    parser.add_argument("--candidate-source")
     parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=300);parser.add_argument("--rate",type=int,default=5)
     parser.add_argument("--environment",choices=["shared-testbox","github-actions"],default="shared-testbox")
     parser.add_argument("--suite",choices=["runtime","full"],default="runtime")

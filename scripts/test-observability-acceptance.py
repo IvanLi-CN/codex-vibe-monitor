@@ -369,7 +369,7 @@ class CertificateTests(unittest.TestCase):
 class WorkflowGateTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-pr.yml")
+        cls.workflow = contract.load_yaml(SOURCE / ".github/workflows/ci-observability-performance.yml")
 
     def verify(self, workflow):
         contract.require_observability_performance_contract(workflow)
@@ -388,10 +388,7 @@ class WorkflowGateTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
     def test_build_artifacts_does_not_depend_on_performance_result(self):
-        needs = self.workflow["jobs"]["build"].get("needs")
-        self.assertEqual(needs, "build-pr-smoke-artifacts")
-        self.assertFalse(any(step["name"] == "Verify observability performance budget"
-                             for step in self.workflow["jobs"]["build"]["steps"]))
+        self.assertNotIn("build", self.workflow["jobs"])
 
     def test_failures_must_still_upload_evidence(self):
         workflow = copy.deepcopy(self.workflow)
