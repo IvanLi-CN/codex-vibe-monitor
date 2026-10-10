@@ -276,10 +276,10 @@ export function ModelRoutingHealthPanel({
                   : null;
               return (
                 <div key={route.model} className="bg-base-100">
-                  <div className="grid grid-cols-[minmax(0,1fr)_auto_auto_auto] items-center gap-2 px-3 py-2">
+                  <div className="flex flex-wrap items-start gap-2 px-3 py-2 md:grid md:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] md:items-center">
                     <button
                       type="button"
-                      className="min-w-0 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                      className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
                       onClick={() => setExpandedModel(expanded ? null : route.model)}
                       aria-expanded={expanded}
                     >
@@ -310,44 +310,46 @@ export function ModelRoutingHealthPanel({
                       ) : null}
                     </button>
                     <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
-                    {route.cooldownUntil ? (
-                      <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
-                        {formatBeijing(route.cooldownUntil)}
-                      </span>
-                    ) : null}
-                    {route.state !== "available" || cacheUsageMissing ? (
+                    <div className="flex min-w-0 basis-full flex-wrap items-center justify-end gap-2 md:contents">
+                      {route.cooldownUntil ? (
+                        <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
+                          {formatBeijing(route.cooldownUntil)}
+                        </span>
+                      ) : null}
+                      {route.state !== "available" || cacheUsageMissing ? (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="ghost"
+                          disabled={!writesEnabled || resettingModel === route.model}
+                          onClick={() => onReset(route.model)}
+                          data-testid={`model-routing-reset-${route.model}`}
+                          aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
+                        >
+                          {resettingModel === route.model
+                            ? t("accountPool.upstreamAccounts.modelRouting.resetting")
+                            : t("accountPool.upstreamAccounts.modelRouting.reset")}
+                        </Button>
+                      ) : null}
                       <Button
                         type="button"
-                        size="sm"
+                        size="icon"
                         variant="ghost"
-                        disabled={!writesEnabled || resettingModel === route.model}
-                        onClick={() => onReset(route.model)}
-                        data-testid={`model-routing-reset-${route.model}`}
-                        aria-label={`${t("accountPool.upstreamAccounts.modelRouting.reset")}: ${route.model}`}
+                        className="h-7 w-7"
+                        aria-label={
+                          expanded
+                            ? t("accountPool.upstreamAccounts.modelRouting.collapse")
+                            : t("accountPool.upstreamAccounts.modelRouting.expand")
+                        }
+                        onClick={() => setExpandedModel(expanded ? null : route.model)}
                       >
-                        {resettingModel === route.model
-                          ? t("accountPool.upstreamAccounts.modelRouting.resetting")
-                          : t("accountPool.upstreamAccounts.modelRouting.reset")}
+                        <AppIcon
+                          name={expanded ? "chevron-up" : "chevron-down"}
+                          className="h-4 w-4"
+                          aria-hidden
+                        />
                       </Button>
-                    ) : null}
-                    <Button
-                      type="button"
-                      size="icon"
-                      variant="ghost"
-                      className="h-7 w-7"
-                      aria-label={
-                        expanded
-                          ? t("accountPool.upstreamAccounts.modelRouting.collapse")
-                          : t("accountPool.upstreamAccounts.modelRouting.expand")
-                      }
-                      onClick={() => setExpandedModel(expanded ? null : route.model)}
-                    >
-                      <AppIcon
-                        name={expanded ? "chevron-up" : "chevron-down"}
-                        className="h-4 w-4"
-                        aria-hidden
-                      />
-                    </Button>
+                    </div>
                   </div>
                   {expanded ? (
                     <ModelRoutingHistory accountId={accountId} model={route.model} />
