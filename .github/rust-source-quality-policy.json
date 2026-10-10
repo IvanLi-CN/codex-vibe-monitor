@@ -105,7 +105,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 6697,
+      "line_budget": 6759,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {

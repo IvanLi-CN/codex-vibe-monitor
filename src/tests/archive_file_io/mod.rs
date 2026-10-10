@@ -310,7 +310,15 @@ async fn summary_rollup_force_repair_pages_past_archive_batch_budget() {
     .fetch_one(&pool)
     .await
     .expect("check completed force-repair marker");
-    assert_eq!(repair_marker_exists, 1);
+    assert_eq!(repair_marker_exists, 0);
+    let repair_incomplete_exists = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM hourly_rollup_live_progress WHERE dataset = ?1)",
+    )
+    .bind(crate::stats::INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET)
+    .fetch_one(&pool)
+    .await
+    .expect("check incomplete force-repair marker");
+    assert_eq!(repair_incomplete_exists, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -504,6 +512,32 @@ async fn summary_rollup_force_repair_clears_safe_buckets_before_later_pages() {
     .await
     .expect("seed stale safe-bucket rollup");
     sqlx::query(
+        "INSERT INTO codex_invocations \
+         (id, invoke_id, occurred_at, source, status, total_tokens, cost, raw_response) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(10_i64)
+    .bind("summary-rollup-force-repair-safe-live-row")
+    .bind(safe_at)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(30_i64)
+    .bind(0.30_f64)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("seed retained live safe-bucket row");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+         VALUES (?1, ?2, datetime('now')) \
+         ON CONFLICT(dataset) DO UPDATE SET cursor_id = excluded.cursor_id, updated_at = excluded.updated_at",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(10_i64)
+    .execute(&pool)
+    .await
+    .expect("seed shared live cursor for retained row");
+    sqlx::query(
         "INSERT INTO invocation_rollup_hourly (bucket_start_epoch, source, total_count, success_count, failure_count, total_tokens, total_cost, first_byte_sample_count, first_byte_sum_ms, first_byte_max_ms, first_byte_histogram) \
          VALUES (?1, ?2, 1, 1, 0, 10, 0.10, 0, 0, 0, ?3)",
     )
@@ -537,7 +571,7 @@ async fn summary_rollup_force_repair_clears_safe_buckets_before_later_pages() {
     .fetch_one(&pool)
     .await
     .expect("load rebuilt safe-bucket rollup");
-    assert_eq!(safe_total, 1);
+    assert_eq!(safe_total, 2);
     let protected_total: i64 = sqlx::query_scalar(
         "SELECT total_count FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
     )

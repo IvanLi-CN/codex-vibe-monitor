@@ -11,7 +11,7 @@ pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET: &s
     "codex_invocations_summary_rollup_v2_archive_row_cursor";
 pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_STARTED_DATASET: &str =
     "codex_invocations_summary_rollup_v2_started";
-const INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET: &str =
+pub(crate) const INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET: &str =
     "codex_invocations_summary_rollup_v2_incomplete";
 const INVOCATION_SUMMARY_ROLLUP_REPAIR_SEEN_IDS_DATASET: &str =
     "codex_invocations_summary_rollup_v2_seen_ids";
@@ -5536,6 +5536,24 @@ async fn repair_invocation_summary_rollups_with_mode(
     pool: &Pool<Sqlite>,
     force_rebuild: bool,
 ) -> Result<bool> {
+    if !force_rebuild {
+        // The regular startup path uses the same resumable page state as forced repair. This
+        // keeps archive inflation outside SQLite write transactions while still presenting the
+        // historical rollup as complete to callers that explicitly await readiness.
+        loop {
+            if repair_invocation_summary_rollups_force_page(pool).await? {
+                return Ok(true);
+            }
+            if hourly_rollup_progress_exists(
+                pool,
+                INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
+            )
+            .await?
+            {
+                return Ok(false);
+            }
+        }
+    }
     if force_rebuild {
         return repair_invocation_summary_rollups_force_page(pool).await;
     }
@@ -5735,6 +5753,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         archive_row_cursor = 0;
     }
     let first_page = !started || restart;
+    let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     if first_page {
         let mut tx = pool.begin().await?;
         sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2)")
@@ -5751,7 +5770,7 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             || missing_materialized_archive_has_unknown_scope;
         if preserve_materialized_archives {
             if !missing_materialized_archive_has_unknown_scope {
-                clear_invocation_summary_rollups_outside_buckets(
+                cleared_rollup_buckets = clear_invocation_summary_rollups_outside_buckets(
                     tx.as_mut(),
                     &missing_materialized_bucket_epochs,
                 )
@@ -5785,6 +5804,40 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
 
     let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
         || missing_materialized_archive_has_unknown_scope;
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = load_hourly_rollup_live_progress(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let live_start_id = if preserve_materialized_archives {
+        shared_live_cursor.max(repair_live_cursor)
+    } else {
+        repair_live_cursor
+    };
+    if first_page && !cleared_rollup_buckets.overall.is_empty() {
+        // Restore live rows that predate the shared cursor before a later archive page can
+        // return. Durable seen IDs make the restoration idempotent across page boundaries.
+        let mut tx = pool.begin().await?;
+        let mut restored_live_rows =
+            load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+                tx.as_mut(),
+                &cleared_rollup_buckets.overall,
+                InvocationSourceScope::All,
+                live_start_id,
+            )
+            .await?;
+        retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut restored_live_rows).await?;
+        persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &restored_live_rows,
+            &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+        )
+        .await?;
+        tx.commit().await?;
+    }
     let mut repair_incomplete = if first_page { false } else { incomplete_exists };
     loop {
         let page_rows = load_completed_invocation_summary_repair_page(
@@ -5990,6 +6043,12 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
                 archive_cursor = *archive_id;
                 archive_row_cursor_exists = false;
                 archive_row_cursor = 0;
+                // Keep each pass to one completed authoritative archive when there is more work
+                // behind the current row. A final archive may proceed to the bounded live tail
+                // so one-archive repairs still complete in one call.
+                if page_rows.len() > 1 {
+                    return Ok(false);
+                }
                 continue;
             }
             return Ok(false);
@@ -5997,18 +6056,6 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         break;
     }
 
-    let shared_live_cursor =
-        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    let repair_live_cursor = load_hourly_rollup_live_progress(
-        pool,
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-    )
-    .await?;
-    let live_start_id = if preserve_materialized_archives {
-        shared_live_cursor.max(repair_live_cursor)
-    } else {
-        repair_live_cursor
-    };
     let mut live_rows = load_live_invocation_hourly_source_rows_after_id(
         pool,
         live_start_id,
@@ -6022,6 +6069,21 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
     }
     let live_cursor_id = live_rows.last().map(|row| row.id).unwrap_or(live_start_id);
     let mut tx = pool.begin().await?;
+    let mut restored_live_rows = load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+        tx.as_mut(),
+        &cleared_rollup_buckets.overall,
+        InvocationSourceScope::All,
+        live_start_id,
+    )
+    .await?;
+    retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut restored_live_rows).await?;
+    persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
+    upsert_invocation_hourly_rollups_tx(
+        tx.as_mut(),
+        &restored_live_rows,
+        &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+    )
+    .await?;
     retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut live_rows).await?;
     persist_invocation_summary_repair_seen_ids(tx.as_mut(), &live_rows).await?;
     upsert_invocation_hourly_rollups_tx(
@@ -6050,12 +6112,12 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             .await?;
         save_hourly_rollup_live_progress_tx(
             tx.as_mut(),
-            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DATASET,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
         )
         .await?;
         tx.commit().await?;
-        return Ok(true);
+        return Ok(false);
     }
     sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset IN (?1, ?2, ?3, ?4)")
         .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_CURSOR_DATASET)
