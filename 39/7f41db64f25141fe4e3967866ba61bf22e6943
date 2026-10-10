@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.3.4",
+  "base_stable_version": "4.3.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-10T09:29:28Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.3.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c448d54e26b15c259515ea33cd6edddbc1c0a26a",
+  "pr_number": 1101,
+  "pr_title": "fix(web): align mobile model routing status",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.3.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.3.4",
+  "target_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
+  "type_label": "type:patch"
+}
