@@ -51,7 +51,8 @@ fn read_token_path(name: &str, path: &std::path::Path) -> Result<Arc<str>> {
         bail!("{name} must be a regular file");
     }
     #[cfg(unix)]
-    if metadata.permissions().mode() & 0o137 != 0 {
+    let mode = metadata.permissions().mode();
+    if mode & 0o400 == 0 || mode & 0o137 != 0 {
         bail!("{name} permissions must allow owner access and optional group read only");
     }
     let bytes = std::fs::read(path).with_context(|| format!("cannot read {name}"))?;
@@ -261,6 +262,18 @@ mod tests {
         );
 
         std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let error = read_token_path("TEST_TOKEN", &token)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("permissions"));
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let error = read_token_path("TEST_TOKEN", &token)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("permissions"));
+
+        std::fs::set_permissions(&token, std::fs::Permissions::from_mode(0o200)).unwrap();
         let error = read_token_path("TEST_TOKEN", &token)
             .unwrap_err()
             .to_string();

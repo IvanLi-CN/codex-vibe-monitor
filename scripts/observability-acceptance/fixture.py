@@ -13,6 +13,8 @@ shared = Path(__file__).resolve().parent.parent.parent / "ops/observability"
 sys.path.insert(0, str(shared) if shared.is_dir() else "/observability")
 from tempo_access import authorized, query_route, TENANT
 
+INTERNAL_INGEST_TOKEN = "cvm-fixture-internal-ingest"
+
 class MockUpstream(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     def log_message(self, *_): pass
@@ -69,8 +71,9 @@ class HttpsEntry(BaseHTTPRequestHandler):
         self.send_response(response.status); self.send_header("Content-Type",response.getheader("Content-Type","application/json"))
         self.send_header("Content-Length",str(len(content))); self.end_headers(); self.wfile.write(content); connection.close()
     def do_POST(self):
-        if self.path != "/v1/traces": self.deny(405); return
-        if not authorized(self.headers.get("Authorization"), Path("/private/tempo-ingest-token").read_text().strip()):
+        if self.path not in {"/v1/traces", "/internal/v1/traces"}: self.deny(405); return
+        expected = INTERNAL_INGEST_TOKEN if self.path == "/internal/v1/traces" else Path("/private/tempo-ingest-token").read_text().strip()
+        if not authorized(self.headers.get("Authorization"), expected):
             self.deny(401); return
         try: length = int(self.headers.get("Content-Length", "-1"))
         except ValueError: self.deny(400); return

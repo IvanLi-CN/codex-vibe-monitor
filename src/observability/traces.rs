@@ -105,7 +105,7 @@ fn trace_enabled(master_enabled: bool, requested: &Result<bool>) -> bool {
 fn token_file_mode_allowed(mode: u32) -> bool {
     // Deployment uses 0640 for non-root containers: group read is allowed, but
     // group write/execute and every other-user bit are rejected.
-    mode & 0o137 == 0
+    mode & 0o400 != 0 && mode & 0o137 == 0
 }
 fn resource_label(name: &str) -> Result<String> {
     let value = env::var(name).unwrap_or_else(|_| "unknown".into());
@@ -137,6 +137,9 @@ mod tests {
     fn trace_token_permissions_allow_private_group_read_only() {
         assert!(token_file_mode_allowed(0o600));
         assert!(token_file_mode_allowed(0o640));
+        assert!(token_file_mode_allowed(0o400));
+        assert!(!token_file_mode_allowed(0o000));
+        assert!(!token_file_mode_allowed(0o200));
         assert!(!token_file_mode_allowed(0o660));
         assert!(!token_file_mode_allowed(0o644));
         assert!(!token_file_mode_allowed(0o700));

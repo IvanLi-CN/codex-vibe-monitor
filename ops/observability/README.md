@@ -195,6 +195,7 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 该工作流只接受默认分支版本的 `pull_request_target` 标签事件；测量和诊断脚本从
 base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为隔离容器镜像运行。
 因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
+首次引入该 workflow 的 PR 也不能从自己的新增文件触发它；合并到默认分支后，后续候选 PR 才能通过一次性标签启动。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次交替配对、每窗口 300 秒与 60 秒预热；保留两组 CV ≤5% 的稳定性
 门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。

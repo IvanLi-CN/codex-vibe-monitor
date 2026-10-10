@@ -29,6 +29,12 @@ def psi(cpu=0, io=0, memory=0):
 
 
 class ContainerMountTests(unittest.TestCase):
+    def test_candidate_does_not_receive_shared_tempo_ingest_credential(self):
+        source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
+        self.assertIn("tempo-runtime-token", source)
+        self.assertIn("/internal/v1/traces", source)
+        self.assertNotIn('self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro"', source)
+
     def test_https_entry_certificate_is_a_server_leaf_and_covers_its_hostname(self):
         with tempfile.TemporaryDirectory() as directory:
             private = Path(directory)
