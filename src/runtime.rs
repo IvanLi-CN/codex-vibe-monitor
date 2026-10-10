@@ -1858,6 +1858,27 @@ async fn run_managed_task_once_with_scoped_observation(
             ManagedTaskExecution::simple(format!("{task_key} 处理完成"))
         });
     }
+    if task_key == "startup_hourly_rollup_bootstrap" {
+        crate::maintenance::bootstrap_hourly_rollups_for_runtime_startup_with_work(
+            &state.pool,
+            Some(state.config.invocation_max_days),
+        )
+        .await?;
+        if crate::maintenance::usage_breakdown_repair_is_pending(&state.pool).await? {
+            return Ok(ManagedTaskExecution {
+                summary: "启动时小时汇总补齐已延后".to_string(),
+                detail: Some("保留归档 usage breakdown 修复游标，等待下一次运行继续".to_string()),
+                completion: Some("deferred".to_string()),
+                core_completion: None,
+                details: Some(json!({
+                    "waitReason": "archive_usage_breakdown_repair",
+                })),
+            });
+        }
+        return Ok(ManagedTaskExecution::simple(
+            "启动时小时汇总补齐完成".to_string(),
+        ));
+    }
     match task_key {
         "pool_orphan_recovery" => {
             let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await?;
@@ -2576,6 +2597,152 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
                 );
                 return;
             }
+            drop(write_permit);
+            drop(pressure_permit);
+            drop(rollup_guard);
+            let usage_breakdown_repair_pending = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => None,
+                _ = coordinator.wait_for_p2_preemption() => None,
+                result = crate::maintenance::usage_breakdown_repair_is_pending(&state.pool) => Some(result),
+            };
+            let Some(usage_breakdown_repair_pending) = usage_breakdown_repair_pending else {
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap cancelled while inspecting pending archive usage breakdown repair",
+                    None,
+                )
+                .await;
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let retry_after = p2_preemption_retry;
+                p2_preemption_retry =
+                    next_startup_hourly_rollup_p2_preemption_retry(p2_preemption_retry);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(retry_after) => continue,
+                }
+            };
+            let usage_breakdown_repair_pending = match usage_breakdown_repair_pending {
+                Ok(pending) => pending,
+                Err(err) => {
+                    pressure_gate.record_error("startup_hourly_rollup_bootstrap", &err);
+                    finish_runtime_startup_hourly_rollup_bootstrap_task(
+                        state.as_ref(),
+                        &cancel,
+                        Some(&task_run),
+                        SystemTaskStatus::Failed,
+                        "background hourly rollup bootstrap could not inspect pending repair state",
+                        Some(err.to_string()),
+                    )
+                    .await;
+                    warn!(
+                        error = %err,
+                        elapsed_ms = started_at.elapsed().as_millis() as u64,
+                        "background startup hourly rollup bootstrap could not inspect pending repair state"
+                    );
+                    return;
+                }
+            };
+            if usage_breakdown_repair_pending {
+                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                    state.as_ref(),
+                    &cancel,
+                    Some(&task_run),
+                    SystemTaskStatus::Skipped,
+                    "background hourly rollup bootstrap deferred with pending archive usage breakdown repair",
+                    None,
+                )
+                .await;
+                if cancel.is_cancelled() {
+                    return;
+                }
+                let retry_after = p2_preemption_retry;
+                p2_preemption_retry =
+                    next_startup_hourly_rollup_p2_preemption_retry(p2_preemption_retry);
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(retry_after) => continue,
+                }
+            }
+            let rollup_guard = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    finish_runtime_startup_hourly_rollup_bootstrap_task(
+                        state.as_ref(),
+                        &cancel,
+                        Some(&task_run),
+                        SystemTaskStatus::Skipped,
+                        "background hourly rollup bootstrap cancelled before reacquiring its synchronization lock",
+                        None,
+                    ).await;
+                    return;
+                }
+                guard = state.hourly_rollup_sync_lock.lock() => guard,
+            };
+            let (pressure_permit, write_permit) = loop {
+                let pressure_permit = match pressure_gate
+                    .try_begin_background("startup_hourly_rollup_bootstrap")
+                {
+                    Ok(permit) => permit,
+                    Err(reason) => {
+                        let retry_after = match reason {
+                            crate::db_pressure::DbPressureDenyReason::PressureCooldown {
+                                remaining_ms,
+                            } => Duration::from_millis(remaining_ms.max(1)),
+                            crate::db_pressure::DbPressureDenyReason::BackgroundBusy => {
+                                Duration::from_secs(BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS)
+                            }
+                        };
+                        tokio::select! {
+                            biased;
+                            _ = cancel.cancelled() => {
+                                drop(rollup_guard);
+                                finish_runtime_startup_hourly_rollup_bootstrap_task(
+                                    state.as_ref(),
+                                    &cancel,
+                                    Some(&task_run),
+                                    SystemTaskStatus::Skipped,
+                                    "background hourly rollup bootstrap cancelled before reacquiring SQLite write admission",
+                                    None,
+                                ).await;
+                                return;
+                            }
+                            _ = tokio::time::sleep(retry_after) => continue,
+                        }
+                    }
+                };
+                let Some(write_permit) = coordinator.try_acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
+                ) else {
+                    drop(pressure_permit);
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => {
+                            drop(rollup_guard);
+                            finish_runtime_startup_hourly_rollup_bootstrap_task(
+                                state.as_ref(),
+                                &cancel,
+                                Some(&task_run),
+                                SystemTaskStatus::Skipped,
+                                "background hourly rollup bootstrap cancelled before reacquiring SQLite write admission",
+                                None,
+                            ).await;
+                            return;
+                        }
+                        _ = tokio::time::sleep(Duration::from_secs(
+                            BACKGROUND_DB_PRESSURE_RETRY_INTERVAL_SECS,
+                        )) => continue,
+                    }
+                };
+                break (pressure_permit, write_permit);
+            };
             if let Ok(work_count) = hourly_rollups.as_ref()
                 && let Some(observation) = task_run.observation.as_ref()
             {

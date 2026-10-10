@@ -746,8 +746,8 @@ async fn archive_rows_into_month_batch_with_snapshots(
         super::archive_task_work::create_task_work_file(&final_path, &work_path)?;
     // Drop also runs when the caller's timeout cancels this future. Never hand unfinished
     // work files to a later retention run.
-    let _work_cleanup = TempSqliteCleanup(work_path.clone());
-    let _gzip_cleanup = TempSqliteCleanup(temp_gzip_path.clone());
+    let _work_cleanup = TempSqliteCleanup::new(work_path.clone());
+    let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
     let existing_final_sha256 = if final_path.exists() {
         Some(sha256_hex_file(&final_path)?)
     } else {
@@ -1391,8 +1391,8 @@ pub(crate) async fn archive_rows_into_segment_batch_at_path(
         suffix
     ));
     let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
-    let _temp_cleanup = TempSqliteCleanup(work_path.clone());
-    let _gzip_cleanup = TempSqliteCleanup(temp_gzip_path.clone());
+    let _temp_cleanup = TempSqliteCleanup::new(work_path.clone());
+    let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
     ensure_attachable_archive_sqlite_path(&work_path)?;
     let row_count = async {
         let mut conn = pool.acquire().await?;

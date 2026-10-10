@@ -1,6 +1,19 @@
 use super::*;
+use sha2::{Digest, Sha256};
 const LIVE_ROLLUP_LOCK_RETRY_MAX_ATTEMPTS: u32 = 3;
 const LIVE_ROLLUP_LOCK_RETRY_DELAY: Duration = Duration::from_millis(50);
+const HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE: i64 = 64;
+const USAGE_BREAKDOWN_REPAIR_SCOPE: &str = "invocation_archive_usage_breakdown";
+const USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE: usize = 64;
+const USAGE_BREAKDOWN_REPAIR_MAX_BOOTSTRAP_PAGES: usize = 4;
+// Keep each overlap-closure query bounded; the exclusion set lets large closures converge over
+// multiple queries instead of turning this page limit into a correctness cutoff.
+const USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES: usize = 64;
+const USAGE_BREAKDOWN_REPAIR_MAX_ELAPSED: Duration = Duration::from_secs(6);
+const USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK: i64 = -1;
+// Invocation archives are monthly at most; keep one repair transaction bounded while covering
+// every hour in the longest calendar month.
+const USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS: usize = 31 * 24;
 const LEGACY_PRUNED_PAYLOAD_MODE_STRUCTURED_ROLLUP_UNKNOWN_REASONING: &str =
     "structured_rollup_unknown_reasoning";
 const LEGACY_PRUNED_PAYLOAD_MODE_BLOCKED_PAYLOAD_REQUIRED: &str = "blocked_payload_required";
@@ -195,8 +208,43 @@ pub(crate) async fn wake_account_activity_v2_coverage_repair(
 pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
-) -> Result<()> {
+) -> Result<bool> {
+    let manifest_sha = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT sha256 FROM archive_batches \
+         WHERE dataset = ?1 AND file_path = ?2 \
+           AND status IN ('completed', 'materializing') \
+         LIMIT 1",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(file_path)
+    .fetch_optional(&mut *tx)
+    .await?
+    .flatten()
+    .filter(|sha| !sha.trim().is_empty());
+    let Some(manifest_sha) = manifest_sha else {
+        bail!("archive manifest is missing a SHA before replay marker repair");
+    };
+    let mut missing_targets = Vec::new();
+    let mut has_stale_marker = false;
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
+        let marker_sha = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
+             WHERE target = ?1 AND dataset = ?2 AND file_path = ?3 LIMIT 1",
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(file_path)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten()
+        .filter(|sha| !sha.trim().is_empty());
+        match marker_sha.as_deref() {
+            Some(sha) if sha == manifest_sha => {}
+            Some(_) => has_stale_marker = true,
+            None => missing_targets.push(target),
+        }
+    }
+    for target in missing_targets {
         mark_hourly_rollup_archive_replayed_tx(
             tx,
             target,
@@ -205,7 +253,7 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
         )
         .await?;
     }
-    Ok(())
+    Ok(!has_stale_marker)
 }
 
 fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[&str]) -> bool {
@@ -218,9 +266,28 @@ fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[
 pub(crate) async fn load_materialized_invocation_archives_missing_upstream_account_markers_tx(
     tx: &mut SqliteConnection,
 ) -> Result<Vec<String>> {
-    sqlx::query_scalar(
+    Ok(
+        load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(tx, 0)
+            .await?
+            .into_iter()
+            .map(|row| row.file_path)
+            .collect(),
+    )
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct MaterializedInvocationArchiveMarkerRow {
+    id: i64,
+    file_path: String,
+}
+
+async fn load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
+    tx: &mut SqliteConnection,
+    after_id: i64,
+) -> Result<Vec<MaterializedInvocationArchiveMarkerRow>> {
+    sqlx::query_as(
         r#"
-        SELECT batches.file_path
+        SELECT batches.id, batches.file_path
         FROM archive_batches AS batches
         WHERE batches.dataset = 'codex_invocations'
           AND batches.status = ?1
@@ -251,13 +318,17 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
                       AND replay.file_path = batches.file_path
                 )
           )
-        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+          AND batches.id > ?5
+        ORDER BY batches.id ASC
+        LIMIT ?6
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_HOURLY)
     .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_STATS_MINUTE)
+    .bind(after_id)
+    .bind(HISTORICAL_ROLLUP_ARCHIVE_SELECTION_BATCH_SIZE)
     .fetch_all(&mut *tx)
     .await
     .map_err(Into::into)
@@ -266,38 +337,388 @@ pub(crate) async fn load_materialized_invocation_archives_missing_upstream_accou
 pub(crate) async fn repair_materialized_upstream_account_archive_markers(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
-    let mut tx = pool.begin().await?;
-    let file_paths =
-        load_materialized_invocation_archives_missing_upstream_account_markers_tx(tx.as_mut())
+    let mut after_id = 0_i64;
+    let mut repaired = 0_usize;
+    loop {
+        let mut tx = pool.begin().await?;
+        let rows =
+            load_materialized_invocation_archives_missing_upstream_account_markers_after_id_tx(
+                tx.as_mut(),
+                after_id,
+            )
             .await?;
-    for file_path in &file_paths {
-        mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), file_path).await?;
+        let Some(last_id) = rows.last().map(|row| row.id) else {
+            break;
+        };
+        for row in &rows {
+            mark_materialized_upstream_account_archive_replayed_tx(tx.as_mut(), &row.file_path)
+                .await?;
+        }
+        tx.commit().await?;
+        repaired = repaired.saturating_add(rows.len());
+        after_id = last_id;
     }
-    tx.commit().await?;
-    Ok(file_paths.len())
+    Ok(repaired)
 }
 
-async fn load_materialized_invocation_archives_for_usage_breakdown_repair_tx(
+#[derive(Debug, sqlx::FromRow)]
+struct MaterializedInvocationArchiveUsageBreakdownRepairRow {
+    id: i64,
+    file_path: String,
+    sha256: String,
+    month_key: String,
+    created_at: String,
+    stale_rank: i64,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UsageBreakdownRepairCursor {
+    stale_rank: i64,
+    month_key: String,
+    created_at: String,
+    id: i64,
+}
+
+impl Default for UsageBreakdownRepairCursor {
+    fn default() -> Self {
+        Self {
+            stale_rank: USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK,
+            month_key: String::new(),
+            created_at: String::new(),
+            id: 0,
+        }
+    }
+}
+
+async fn load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
     tx: &mut SqliteConnection,
-) -> Result<Vec<(String, Option<String>, Option<String>)>> {
-    sqlx::query_as(
+    cursor: &UsageBreakdownRepairCursor,
+) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
+    async fn load_ranked_candidate_tx(
+        tx: &mut SqliteConnection,
+        cursor: &UsageBreakdownRepairCursor,
+        stale_rank: i64,
+        after_cursor: bool,
+    ) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT batches.id, batches.file_path, batches.sha256, batches.month_key, batches.created_at, ",
+        );
+        query.push(stale_rank.to_string());
+        query.push(
+            " AS stale_rank, batches.coverage_start_at, batches.coverage_end_at \
+             FROM archive_batches AS batches INDEXED BY idx_archive_batches_usage_breakdown_repair_candidates \
+             WHERE batches.dataset = 'codex_invocations' \
+               AND batches.status = 'completed' \
+               AND batches.historical_rollups_materialized_at IS NOT NULL \
+               AND TRIM(batches.sha256) <> '' ",
+        );
+        query.push(
+            " \
+               AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS unverified \
+                    WHERE unverified.dataset = batches.dataset \
+                      AND unverified.file_path = batches.file_path \
+                      AND ( \
+                            unverified.archive_sha256 IS NULL \
+                            OR TRIM(unverified.archive_sha256) = '' \
+                      ) \
+               )",
+        );
+        query.push(
+            " \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_repair_deferred AS deferred \
+                    WHERE deferred.scope = ",
+        );
+        query.push_bind(USAGE_BREAKDOWN_REPAIR_SCOPE);
+        query.push(" AND deferred.archive_id = batches.id )");
+        if stale_rank == 1 {
+            query.push(
+                " \
+               AND EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS stale \
+                    WHERE stale.dataset = batches.dataset \
+                      AND stale.file_path = batches.file_path \
+                      AND stale.archive_sha256 IS NOT NULL \
+                      AND TRIM(stale.archive_sha256) <> '' \
+                      AND stale.archive_sha256 <> batches.sha256 \
+               )",
+            );
+        } else {
+            query.push(
+                " \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS stale \
+                    WHERE stale.dataset = batches.dataset \
+                      AND stale.file_path = batches.file_path \
+                      AND stale.archive_sha256 IS NOT NULL \
+                      AND TRIM(stale.archive_sha256) <> '' \
+                      AND stale.archive_sha256 <> batches.sha256 \
+               ) \
+               AND NOT EXISTS ( \
+                    SELECT 1 \
+                    FROM hourly_rollup_archive_replay AS replay \
+                    WHERE replay.target = ",
+            );
+            query.push_bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN);
+            query.push(
+                " \
+                      AND replay.dataset = batches.dataset \
+                      AND replay.file_path = batches.file_path \
+                      AND replay.archive_sha256 = batches.sha256 \
+               )",
+            );
+        }
+        if after_cursor {
+            query.push(
+                " \
+               AND (batches.month_key, batches.created_at, batches.id) > (",
+            );
+            query.push_bind(&cursor.month_key);
+            query.push(", ");
+            query.push_bind(&cursor.created_at);
+            query.push(", ");
+            query.push_bind(cursor.id);
+            query.push(")");
+        }
+        query.push(
+            " ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC LIMIT 1",
+        );
+        query
+            .build_query_as::<MaterializedInvocationArchiveUsageBreakdownRepairRow>()
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(Into::into)
+    }
+
+    match cursor.stale_rank {
+        rank if rank <= USAGE_BREAKDOWN_REPAIR_CURSOR_START_RANK => {
+            if let Some(row) = load_ranked_candidate_tx(tx, cursor, 0, false).await? {
+                return Ok(Some(row));
+            }
+            load_ranked_candidate_tx(tx, cursor, 1, false).await
+        }
+        0 => {
+            if let Some(row) = load_ranked_candidate_tx(tx, cursor, 0, true).await? {
+                return Ok(Some(row));
+            }
+            load_ranked_candidate_tx(tx, cursor, 1, false).await
+        }
+        _ => load_ranked_candidate_tx(tx, cursor, 1, true).await,
+    }
+}
+
+async fn load_usage_breakdown_repair_cursor(
+    pool: &Pool<Sqlite>,
+) -> Result<UsageBreakdownRepairCursor> {
+    Ok(sqlx::query_as::<_, (i64, String, String, i64)>(
+        "SELECT cursor_stale_rank, cursor_month_key, cursor_created_at, cursor_id \
+         FROM hourly_rollup_archive_repair_progress WHERE scope = ?1",
+    )
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .fetch_optional(pool)
+    .await?
+    .map(|(stale_rank, month_key, created_at, id)| {
+        if month_key.is_empty() && created_at.is_empty() && id == 0 {
+            UsageBreakdownRepairCursor::default()
+        } else {
+            UsageBreakdownRepairCursor {
+                stale_rank,
+                month_key,
+                created_at,
+                id,
+            }
+        }
+    })
+    .unwrap_or_default())
+}
+
+async fn load_deferred_usage_breakdown_repair_candidate_tx(
+    tx: &mut SqliteConnection,
+    excluded_archive_ids: &HashSet<i64>,
+) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT
-            batches.file_path,
-            batches.coverage_start_at,
-            batches.coverage_end_at
-        FROM archive_batches AS batches
-        WHERE batches.dataset = 'codex_invocations'
-          AND batches.status = ?1
-          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
-          AND batches.historical_rollups_materialized_at IS NOT NULL
-        ORDER BY batches.month_key ASC, batches.created_at ASC, batches.id ASC
+        SELECT batches.id, batches.file_path, batches.sha256, batches.month_key, batches.created_at,
+               deferred.stale_rank, batches.coverage_start_at, batches.coverage_end_at
+        FROM hourly_rollup_archive_repair_deferred AS deferred
+        INNER JOIN archive_batches AS batches ON batches.id = deferred.archive_id
+        WHERE deferred.scope =
+        "#,
+    );
+    query
+        .push_bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+        .push(
+            " AND batches.dataset = 'codex_invocations' \
+             AND batches.status = ",
+        )
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(
+            " AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+             AND batches.historical_rollups_materialized_at IS NOT NULL",
+        );
+    if !excluded_archive_ids.is_empty() {
+        query.push(" AND deferred.archive_id NOT IN (");
+        let mut ids = query.separated(", ");
+        for archive_id in excluded_archive_ids {
+            ids.push_bind(archive_id);
+        }
+        ids.push_unseparated(")");
+    }
+    query
+        .push(" ORDER BY deferred.deferred_at ASC, deferred.archive_id ASC LIMIT 1")
+        .build_query_as()
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
+async fn delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(
+    tx: &mut SqliteConnection,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_repair_deferred AS deferred \
+         WHERE deferred.scope = ?1 \
+           AND NOT EXISTS ( \
+                SELECT 1 FROM archive_batches AS batches \
+                WHERE batches.id = deferred.archive_id \
+                  AND batches.dataset = 'codex_invocations' \
+                  AND batches.status = ?2 \
+                  AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+                  AND batches.historical_rollups_materialized_at IS NOT NULL \
+           )",
+    )
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn delete_deferred_usage_breakdown_repair_candidate_tx(
+    tx: &mut SqliteConnection,
+    archive_id: i64,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = ?1 AND archive_id = ?2",
+    )
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .bind(archive_id)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn persist_deferred_usage_breakdown_repair_candidate(
+    pool: &Pool<Sqlite>,
+    row: &MaterializedInvocationArchiveUsageBreakdownRepairRow,
+    cursor: Option<&UsageBreakdownRepairCursor>,
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_deferred (
+            scope, archive_id, stale_rank, month_key, created_at, file_path, deferred_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, strftime('%Y-%m-%d %H:%M:%f', 'now'))
+        ON CONFLICT(scope, archive_id) DO UPDATE SET
+            stale_rank = excluded.stale_rank,
+            month_key = excluded.month_key,
+            created_at = excluded.created_at,
+            file_path = excluded.file_path,
+            deferred_at = excluded.deferred_at
         "#,
     )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(Into::into)
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .bind(row.id)
+    .bind(row.stale_rank)
+    .bind(&row.month_key)
+    .bind(&row.created_at)
+    .bind(&row.file_path)
+    .execute(&mut *tx)
+    .await?;
+    if let Some(cursor) = cursor {
+        advance_usage_breakdown_repair_cursor_tx(tx.as_mut(), cursor).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn usage_breakdown_repair_is_pending(pool: &Pool<Sqlite>) -> Result<bool> {
+    if load_usage_breakdown_repair_cursor(pool).await? != UsageBreakdownRepairCursor::default() {
+        return Ok(true);
+    }
+    Ok(sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM hourly_rollup_archive_repair_deferred WHERE scope = ?1)",
+    )
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .fetch_one(pool)
+    .await?)
+}
+
+async fn advance_usage_breakdown_repair_cursor_tx(
+    tx: &mut SqliteConnection,
+    cursor: &UsageBreakdownRepairCursor,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_progress (
+            scope, cursor_id, cursor_stale_rank, cursor_month_key, cursor_created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+        ON CONFLICT(scope) DO UPDATE SET
+            cursor_id = excluded.cursor_id,
+            cursor_stale_rank = excluded.cursor_stale_rank,
+            cursor_month_key = excluded.cursor_month_key,
+            cursor_created_at = excluded.cursor_created_at,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+    .bind(cursor.id)
+    .bind(cursor.stale_rank)
+    .bind(&cursor.month_key)
+    .bind(&cursor.created_at)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+fn usage_breakdown_repair_bucket_epochs_from_bounds(
+    coverage_start_at: &str,
+    coverage_end_at: &str,
+) -> Result<Option<HashSet<i64>>> {
+    let coverage_start_epoch = crate::stats::summary_rollup_bucket_start_epoch(coverage_start_at)?;
+    let coverage_end_epoch = crate::stats::summary_rollup_bucket_start_epoch(coverage_end_at)?;
+    if coverage_end_epoch < coverage_start_epoch {
+        return Ok(Some(HashSet::new()));
+    }
+    let bucket_count = coverage_end_epoch
+        .checked_sub(coverage_start_epoch)
+        .and_then(|span| span.checked_div(3_600))
+        .and_then(|span| span.checked_add(1))
+        .ok_or_else(|| anyhow!("usage breakdown archive coverage span overflowed"))?;
+    if bucket_count > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS as i64 {
+        return Ok(None);
+    }
+
+    let mut bucket_start_epochs = HashSet::with_capacity(bucket_count as usize);
+    let mut current_epoch = coverage_start_epoch;
+    while current_epoch <= coverage_end_epoch {
+        bucket_start_epochs.insert(current_epoch);
+        current_epoch = current_epoch
+            .checked_add(3_600)
+            .ok_or_else(|| anyhow!("usage breakdown archive bucket epoch overflowed"))?;
+    }
+    Ok(Some(bucket_start_epochs))
 }
 
 async fn clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
@@ -369,7 +790,7 @@ async fn clear_invocation_rollup_rows_for_bucket_epochs_tx(
     Ok(())
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct InvocationArchiveCoverageRow {
     file_path: String,
     sha256: Option<String>,
@@ -388,6 +809,7 @@ struct ForwardProxyArchiveCoverageRow {
 async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
     tx: &mut SqliteConnection,
     bucket_start_epochs: &HashSet<i64>,
+    excluded_file_paths: &HashSet<String>,
 ) -> Result<Vec<InvocationArchiveCoverageRow>> {
     if bucket_start_epochs.is_empty() {
         return Ok(Vec::new());
@@ -416,29 +838,59 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
     let overlap_end =
         crate::stats::format_naive(overlap_end.with_timezone(&Shanghai).naive_local());
 
-    sqlx::query_as(
-        r#"
-        SELECT file_path, sha256, coverage_start_at, coverage_end_at
-        FROM archive_batches
-        WHERE dataset = ?1
-          AND status = ?2
-          AND sha256 IS NOT NULL
-          AND TRIM(sha256) <> ''
-          AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
-          AND coverage_start_at IS NOT NULL
-          AND coverage_end_at IS NOT NULL
-          AND coverage_end_at >= ?3
-          AND coverage_start_at < ?4
-        ORDER BY month_key ASC, created_at ASC, id ASC
-        "#,
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT file_path, sha256, coverage_start_at, coverage_end_at \
+         FROM archive_batches WHERE dataset = ",
+    );
+    query
+        .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .push(" AND status = ")
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(
+            " AND sha256 IS NOT NULL \
+               AND TRIM(sha256) <> '' \
+               AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+               AND coverage_start_at IS NOT NULL \
+               AND coverage_end_at IS NOT NULL \
+               AND coverage_end_at >= ",
+        )
+        .push_bind(&overlap_start)
+        .push(" AND coverage_start_at < ")
+        .push_bind(&overlap_end);
+    if !excluded_file_paths.is_empty() {
+        query.push(" AND file_path NOT IN (");
+        {
+            let mut separated = query.separated(", ");
+            for file_path in excluded_file_paths {
+                separated.push_bind(file_path);
+            }
+        }
+        query.push(")");
+    }
+    query
+        .push(" ORDER BY month_key ASC, created_at ASC, id ASC LIMIT ")
+        .push_bind(USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES as i64);
+    query
+        .build_query_as::<InvocationArchiveCoverageRow>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets(
+    pool: &Pool<Sqlite>,
+    bucket_start_epochs: &HashSet<i64>,
+    excluded_file_paths: &HashSet<String>,
+) -> Result<Vec<InvocationArchiveCoverageRow>> {
+    let mut tx = pool.begin().await?;
+    let rows = load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+        tx.as_mut(),
+        bucket_start_epochs,
+        excluded_file_paths,
     )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(&overlap_start)
-    .bind(&overlap_end)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(Into::into)
+    .await?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 fn forward_proxy_archive_bucket_start_epochs_from_bounds(
@@ -471,6 +923,7 @@ fn forward_proxy_archive_bucket_start_epochs_from_bounds(
 async fn load_completed_forward_proxy_archives_overlapping_buckets_tx(
     tx: &mut SqliteConnection,
     bucket_start_epochs: &HashSet<i64>,
+    excluded_file_paths: &HashSet<String>,
 ) -> Result<Vec<ForwardProxyArchiveCoverageRow>> {
     if bucket_start_epochs.is_empty() {
         return Ok(Vec::new());
@@ -501,28 +954,42 @@ async fn load_completed_forward_proxy_archives_overlapping_buckets_tx(
         .format("%Y-%m-%d %H:%M:%S")
         .to_string();
 
-    sqlx::query_as(
-        r#"
-        SELECT file_path, sha256, coverage_start_at, coverage_end_at
-        FROM archive_batches
-        WHERE dataset = ?1
-          AND status = ?2
-          AND sha256 IS NOT NULL
-          AND TRIM(sha256) <> ''
-          AND coverage_start_at IS NOT NULL
-          AND coverage_end_at IS NOT NULL
-          AND coverage_end_at >= ?3
-          AND coverage_start_at < ?4
-        ORDER BY month_key ASC, created_at ASC, id ASC
-        "#,
-    )
-    .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(&overlap_start)
-    .bind(&overlap_end)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(Into::into)
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT file_path, sha256, coverage_start_at, coverage_end_at \
+         FROM archive_batches WHERE dataset = ",
+    );
+    query
+        .push_bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
+        .push(" AND status = ")
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(
+            " AND sha256 IS NOT NULL \
+               AND TRIM(sha256) <> '' \
+               AND coverage_start_at IS NOT NULL \
+               AND coverage_end_at IS NOT NULL \
+               AND coverage_end_at >= ",
+        )
+        .push_bind(&overlap_start)
+        .push(" AND coverage_start_at < ")
+        .push_bind(&overlap_end);
+    if !excluded_file_paths.is_empty() {
+        query.push(" AND file_path NOT IN (");
+        {
+            let mut separated = query.separated(", ");
+            for file_path in excluded_file_paths {
+                separated.push_bind(file_path);
+            }
+        }
+        query.push(")");
+    }
+    query
+        .push(" ORDER BY month_key ASC, created_at ASC, id ASC LIMIT ")
+        .push_bind(USAGE_BREAKDOWN_REPAIR_MAX_ARCHIVES as i64);
+    query
+        .build_query_as::<ForwardProxyArchiveCoverageRow>()
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(Into::into)
 }
 
 async fn archive_batch_has_completed_manifest_sha_tx(
@@ -930,9 +1397,12 @@ async fn reopen_replaced_materialized_forward_proxy_archive_tx(
     // Rebuild the transitive overlap closure so rows from a retained peer cannot survive the
     // replacement clear and then be added again by a later replay.
     loop {
-        let overlapping_archives =
-            load_completed_forward_proxy_archives_overlapping_buckets_tx(tx, &bucket_start_epochs)
-                .await?;
+        let overlapping_archives = load_completed_forward_proxy_archives_overlapping_buckets_tx(
+            tx,
+            &bucket_start_epochs,
+            &reopened_file_path_set,
+        )
+        .await?;
         let mut expanded = false;
         for overlapping_archive in overlapping_archives {
             if overlapping_archive
@@ -962,21 +1432,89 @@ async fn reopen_replaced_materialized_forward_proxy_archive_tx(
     Ok(Some(reopened_file_paths))
 }
 
+struct InvocationArchiveRepairFence {
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+    directories: HashSet<String>,
+    locks: Vec<RetentionArchiveFileLock>,
+}
+
+impl InvocationArchiveRepairFence {
+    fn new(started_at: Instant, max_elapsed: Option<Duration>) -> Self {
+        Self {
+            started_at,
+            max_elapsed,
+            directories: HashSet::new(),
+            locks: Vec::new(),
+        }
+    }
+
+    fn directory_key(path: &Path) -> String {
+        retention_archive_parent_identity(path)
+            .unwrap_or_else(|| path.parent().unwrap_or(path).to_string_lossy().into_owned())
+    }
+
+    fn register_held_directory(&mut self, path: &Path) {
+        self.directories.insert(Self::directory_key(path));
+    }
+
+    fn try_fence(&mut self, path: &Path) -> Result<bool> {
+        let key = Self::directory_key(path);
+        if self.directories.contains(&key) {
+            return Ok(true);
+        }
+        // Publishers use a directory flock, so different files in that directory share one
+        // fence. Never wait for a publisher while holding the repair's SQLite transaction.
+        match retention_archive_file_try_lock(path) {
+            Ok(lock) => {
+                self.directories.insert(key);
+                self.locks.push(lock);
+                Ok(true)
+            }
+            Err(error) if is_retention_write_deferred(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 async fn reopen_replaced_materialized_invocation_archive_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
+    expected_sha256: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
-) -> Result<Option<Vec<String>>> {
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    if !fence.try_fence(Path::new(file_path))? {
+        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+    }
+    let started_at = fence.started_at;
+    let max_elapsed = fence.max_elapsed;
+    match invocation_archive_file_is_readable_with_budget(
+        Path::new(file_path),
+        expected_sha256,
+        started_at,
+        max_elapsed,
+    )
+    .await
+    {
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenResult::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+        }
+    }
     let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
     else {
-        return Ok(None);
+        return Ok(InvocationArchiveReopenResult::Rejected);
     };
-    let mut bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
-        None,
-        Some(coverage_start_at),
-        Some(coverage_end_at),
-    )?;
+    let Some(mut bucket_start_epochs) =
+        usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
+    else {
+        return Ok(InvocationArchiveReopenResult::Rejected);
+    };
     let mut reopened_file_paths = Vec::new();
     let mut reopened_file_path_set = HashSet::new();
 
@@ -987,37 +1525,61 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
                 tx,
                 &bucket_start_epochs,
+                &reopened_file_path_set,
             )
             .await?;
         let mut expanded = false;
         for overlapping_archive in overlapping_archives {
-            let Some(expected_sha256) = overlapping_archive
+            let Some(_) = overlapping_archive
                 .sha256
                 .as_deref()
                 .filter(|sha256| !sha256.trim().is_empty())
             else {
                 // An unverifiable overlap cannot be replayed after its rows are cleared.
                 // Leave the complete closure quarantined rather than partially rebuilding it.
-                return Ok(None);
+                return Ok(InvocationArchiveReopenResult::Rejected);
             };
             if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                 continue;
             }
-            let actual_sha256 = match crate::maintenance::sha256_hex_file(Path::new(
-                &overlapping_archive.file_path,
-            )) {
-                Ok(value) => value,
-                Err(_) => return Ok(None),
-            };
-            if actual_sha256 != expected_sha256 {
-                return Ok(None);
+            if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                return Ok(InvocationArchiveReopenResult::BudgetExhausted);
             }
+            if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+            }
+            match invocation_archive_file_is_readable_with_budget(
+                Path::new(&overlapping_archive.file_path),
+                overlapping_archive
+                    .sha256
+                    .as_deref()
+                    .expect("overlap archive SHA is checked before replay"),
+                started_at,
+                max_elapsed,
+            )
+            .await
+            {
+                InvocationArchiveReadability::Readable => {}
+                InvocationArchiveReadability::Rejected => {
+                    return Ok(InvocationArchiveReopenResult::Rejected);
+                }
+                InvocationArchiveReadability::BudgetExhausted => {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                }
+            }
+            let Some(overlap_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    &overlapping_archive.coverage_start_at,
+                    &overlapping_archive.coverage_end_at,
+                )?
+            else {
+                return Ok(InvocationArchiveReopenResult::Rejected);
+            };
             reopened_file_paths.push(overlapping_archive.file_path);
-            bucket_start_epochs.extend(crate::stats::archive_bucket_start_epochs_from_bounds(
-                None,
-                Some(&overlapping_archive.coverage_start_at),
-                Some(&overlapping_archive.coverage_end_at),
-            )?);
+            bucket_start_epochs.extend(overlap_bucket_start_epochs);
+            if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                return Ok(InvocationArchiveReopenResult::Rejected);
+            }
             expanded = true;
         }
         if !expanded {
@@ -1025,11 +1587,11 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
         }
     }
     if !reopened_file_path_set.contains(file_path) {
-        return Ok(None);
+        return Ok(InvocationArchiveReopenResult::Rejected);
     }
     clear_invocation_rollup_rows_for_bucket_epochs_tx(tx, &bucket_start_epochs).await?;
     reset_invocation_archive_replay_state_tx(tx, &reopened_file_paths).await?;
-    Ok(Some(reopened_file_paths))
+    Ok(InvocationArchiveReopenResult::Reopened(reopened_file_paths))
 }
 
 async fn invocation_archive_is_missing_summary_projection_proof_tx(
@@ -1054,16 +1616,39 @@ async fn invocation_archive_is_missing_summary_projection_proof_tx(
 async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
+    expected_sha256: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
-) -> Result<Option<Vec<String>>> {
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    if !fence.try_fence(Path::new(file_path))? {
+        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+    }
+    let started_at = fence.started_at;
+    let max_elapsed = fence.max_elapsed;
+    match invocation_archive_file_is_readable_with_budget(
+        Path::new(file_path),
+        expected_sha256,
+        started_at,
+        max_elapsed,
+    )
+    .await
+    {
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenResult::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+        }
+    }
     let mut reopened_file_paths = vec![file_path.to_string()];
     if let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at) {
-        let mut bucket_start_epochs = crate::stats::archive_bucket_start_epochs_from_bounds(
-            None,
-            Some(coverage_start_at),
-            Some(coverage_end_at),
-        )?;
+        let Some(mut bucket_start_epochs) =
+            usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
+        else {
+            return Ok(InvocationArchiveReopenResult::Rejected);
+        };
         let mut reopened_file_path_set = HashSet::from([file_path.to_string()]);
 
         loop {
@@ -1071,6 +1656,7 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                 load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
                     tx,
                     &bucket_start_epochs,
+                    &reopened_file_path_set,
                 )
                 .await?;
             let mut expanded = false;
@@ -1080,17 +1666,49 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                     .as_deref()
                     .is_none_or(|sha256| sha256.trim().is_empty())
                 {
-                    return Ok(None);
+                    return Ok(InvocationArchiveReopenResult::Rejected);
                 }
                 if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                     continue;
                 }
+                if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                }
+                if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                }
+                match invocation_archive_file_is_readable_with_budget(
+                    Path::new(&overlapping_archive.file_path),
+                    overlapping_archive
+                        .sha256
+                        .as_deref()
+                        .expect("overlap archive SHA is checked before replay"),
+                    started_at,
+                    max_elapsed,
+                )
+                .await
+                {
+                    InvocationArchiveReadability::Readable => {}
+                    InvocationArchiveReadability::Rejected => {
+                        return Ok(InvocationArchiveReopenResult::Rejected);
+                    }
+                    InvocationArchiveReadability::BudgetExhausted => {
+                        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+                    }
+                }
+                let Some(overlap_bucket_start_epochs) =
+                    usage_breakdown_repair_bucket_epochs_from_bounds(
+                        &overlapping_archive.coverage_start_at,
+                        &overlapping_archive.coverage_end_at,
+                    )?
+                else {
+                    return Ok(InvocationArchiveReopenResult::Rejected);
+                };
                 reopened_file_paths.push(overlapping_archive.file_path);
-                bucket_start_epochs.extend(crate::stats::archive_bucket_start_epochs_from_bounds(
-                    None,
-                    Some(&overlapping_archive.coverage_start_at),
-                    Some(&overlapping_archive.coverage_end_at),
-                )?);
+                bucket_start_epochs.extend(overlap_bucket_start_epochs);
+                if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                    return Ok(InvocationArchiveReopenResult::Rejected);
+                }
                 expanded = true;
             }
             if !expanded {
@@ -1112,74 +1730,218 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     for reopened_file_path in &reopened_file_paths {
         reset_invocation_archive_usage_breakdown_backfill_state_tx(tx, reopened_file_path).await?;
     }
-    Ok(Some(reopened_file_paths))
+    Ok(InvocationArchiveReopenResult::Reopened(reopened_file_paths))
 }
 
 pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state(
     pool: &Pool<Sqlite>,
 ) -> Result<usize> {
-    let mut tx = pool.begin().await?;
-    let archive_rows =
-        load_materialized_invocation_archives_for_usage_breakdown_repair_tx(tx.as_mut()).await?;
-    let mut touched_batches = 0usize;
-    let mut reopened_file_paths = HashSet::new();
+    repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
+        pool,
+        Some(USAGE_BREAKDOWN_REPAIR_MAX_ELAPSED),
+        false,
+    )
+    .await
+}
 
-    for (file_path, coverage_start_at, coverage_end_at) in archive_rows {
-        if reopened_file_paths.contains(&file_path) {
-            continue;
-        }
-        if !archive_batch_has_completed_manifest_sha_tx(
-            tx.as_mut(),
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &file_path,
-        )
-        .await?
+#[cfg(test)]
+pub(crate) async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_elapsed_budget_for_test(
+    pool: &Pool<Sqlite>,
+    max_elapsed: Duration,
+) -> Result<usize> {
+    repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
+        pool,
+        Some(max_elapsed),
+        true,
+    )
+    .await
+}
+
+async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_with_budget(
+    pool: &Pool<Sqlite>,
+    max_elapsed: Option<Duration>,
+    allow_one_candidate_after_budget: bool,
+) -> Result<usize> {
+    let mut cursor = load_usage_breakdown_repair_cursor(pool).await?;
+    let mut touched_batches = 0usize;
+    let started_at = Instant::now();
+    let mut budget_overrun_candidate_started = false;
+    let mut skipped_deferred_archive_ids = HashSet::new();
+
+    // One candidate per transaction keeps closure expansion, rollup rebuilding, and marker
+    // resets below the recovery write budget. The durable cursor lets skipped/quarantined rows
+    // yield to later recoverable rows; a separately durable deferred queue keeps budget-exhausted
+    // candidates retryable without blocking the rest of the ordered set.
+    for _ in 0..USAGE_BREAKDOWN_REPAIR_WORK_BATCH_SIZE {
+        if historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
+            && (!allow_one_candidate_after_budget || budget_overrun_candidate_started)
         {
-            continue;
+            break;
         }
-        if invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &file_path).await? {
-            continue;
-        }
-        let has_stale_replay_marker =
-            invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &file_path).await?;
-        let breakdown_replayed = hourly_rollup_archive_replayed_tx(
-            tx.as_mut(),
-            HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &file_path,
-        )
-        .await?;
-        if !has_stale_replay_marker && breakdown_replayed {
-            continue;
-        }
-        let reopened = if has_stale_replay_marker {
-            reopen_replaced_materialized_invocation_archive_tx(
+        let (
+            row,
+            deferred_candidate,
+            archive_proof_valid,
+            has_stale_replay_marker,
+            breakdown_replayed,
+        ) = {
+            let mut tx = pool.begin().await?;
+            let (row, deferred_candidate) = if let Some(row) =
+                load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
+                    tx.as_mut(),
+                    &cursor,
+                )
+                .await?
+            {
+                (row, false)
+            } else {
+                delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(tx.as_mut()).await?;
+                if let Some(row) = load_deferred_usage_breakdown_repair_candidate_tx(
+                    tx.as_mut(),
+                    &skipped_deferred_archive_ids,
+                )
+                .await?
+                {
+                    (row, true)
+                } else {
+                    if cursor != UsageBreakdownRepairCursor::default() {
+                        advance_usage_breakdown_repair_cursor_tx(
+                            tx.as_mut(),
+                            &UsageBreakdownRepairCursor::default(),
+                        )
+                        .await?;
+                    }
+                    // Commit even when the cursor is already at its origin: the cleanup above
+                    // may have removed deferred rows that became ineligible for repair.
+                    tx.commit().await?;
+                    break;
+                }
+            };
+            let archive_proof_valid = archive_batch_has_completed_manifest_sha_tx(
                 tx.as_mut(),
-                &file_path,
-                coverage_start_at.as_deref(),
-                coverage_end_at.as_deref(),
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &row.file_path,
             )
             .await?
-        } else {
-            reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
-                tx.as_mut(),
-                &file_path,
-                coverage_start_at.as_deref(),
-                coverage_end_at.as_deref(),
+                && !invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &row.file_path)
+                    .await?;
+            let has_stale_replay_marker = if archive_proof_valid {
+                invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &row.file_path).await?
+            } else {
+                false
+            };
+            let breakdown_replayed = if archive_proof_valid {
+                hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &row.file_path,
+                )
+                .await?
+            } else {
+                false
+            };
+            tx.commit().await?;
+            (
+                row,
+                deferred_candidate,
+                archive_proof_valid,
+                has_stale_replay_marker,
+                breakdown_replayed,
             )
-            .await?
         };
-        let Some(reopened) = reopened else {
+        let next_cursor = UsageBreakdownRepairCursor {
+            stale_rank: row.stale_rank,
+            month_key: row.month_key.clone(),
+            created_at: row.created_at.clone(),
+            id: row.id,
+        };
+        if !archive_proof_valid && deferred_candidate {
+            // An already deferred row remains retryable until its manifest and replay proof are
+            // available again. Skip it for this pass so a recoverable deferred tail can proceed,
+            // but never delete the only durable retry record while proof is still absent.
+            skipped_deferred_archive_ids.insert(row.id);
+            budget_overrun_candidate_started = true;
             continue;
-        };
-        for reopened_file_path in reopened {
-            if reopened_file_paths.insert(reopened_file_path) {
-                touched_batches += 1;
+        }
+
+        let reopen_outcome =
+            if archive_proof_valid && (has_stale_replay_marker || !breakdown_replayed) {
+                // The archive fence and all archive reads live outside the database transaction. The
+                // helper revalidates the manifest and overlap closure in a short write transaction
+                // before clearing or resetting any durable state.
+                let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
+                Some(if has_stale_replay_marker {
+                    reopen_replaced_materialized_invocation_archive_without_long_tx(
+                        pool,
+                        &row.file_path,
+                        &row.sha256,
+                        row.coverage_start_at.as_deref(),
+                        row.coverage_end_at.as_deref(),
+                        &mut archive_fence,
+                    )
+                    .await?
+                } else {
+                    reopen_materialized_invocation_archive_usage_breakdown_without_long_tx(
+                        pool,
+                        &row.file_path,
+                        &row.sha256,
+                        row.coverage_start_at.as_deref(),
+                        row.coverage_end_at.as_deref(),
+                        &mut archive_fence,
+                    )
+                    .await?
+                })
+            } else {
+                None
+            };
+
+        if matches!(
+            reopen_outcome.as_ref(),
+            Some(InvocationArchiveReopenResult::Rejected)
+        ) {
+            persist_deferred_usage_breakdown_repair_candidate(
+                pool,
+                &row,
+                (!deferred_candidate).then_some(&next_cursor),
+            )
+            .await?;
+            if !deferred_candidate {
+                cursor = next_cursor;
+            } else {
+                skipped_deferred_archive_ids.insert(row.id);
             }
+            budget_overrun_candidate_started = true;
+            continue;
         }
+
+        if matches!(
+            reopen_outcome.as_ref(),
+            Some(InvocationArchiveReopenResult::BudgetExhausted)
+        ) {
+            persist_deferred_usage_breakdown_repair_candidate(
+                pool,
+                &row,
+                (!deferred_candidate).then_some(&next_cursor),
+            )
+            .await?;
+            break;
+        }
+
+        if let Some(InvocationArchiveReopenResult::Reopened(reopened)) = reopen_outcome {
+            touched_batches = touched_batches.saturating_add(reopened.len());
+        }
+        let mut tx = pool.begin().await?;
+        if deferred_candidate {
+            delete_deferred_usage_breakdown_repair_candidate_tx(tx.as_mut(), row.id).await?;
+        } else {
+            advance_usage_breakdown_repair_cursor_tx(tx.as_mut(), &next_cursor).await?;
+            cursor = next_cursor;
+        }
+        budget_overrun_candidate_started = true;
+        tx.commit().await?;
     }
 
-    tx.commit().await?;
     Ok(touched_batches)
 }
 
@@ -1194,18 +1956,18 @@ pub(crate) enum HistoricalRollupArchiveReplayOutcome {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HistoricalRollupArchiveReplayResult {
-    outcome: HistoricalRollupArchiveReplayOutcome,
-    cursor_id: i64,
+    pub(crate) outcome: HistoricalRollupArchiveReplayOutcome,
+    pub(crate) cursor_id: i64,
 }
 
-fn historical_rollup_replay_made_progress(
+pub(crate) fn historical_rollup_replay_made_progress(
     replay: HistoricalRollupArchiveReplayResult,
     initial_cursor_id: i64,
 ) -> bool {
     replay.cursor_id > initial_cursor_id
 }
 
-fn historical_rollup_candidate_changed(
+pub(crate) fn historical_rollup_candidate_changed(
     changed_in_prior_stage: bool,
     replay_progressed: bool,
     coverage_updated: bool,
@@ -1267,7 +2029,7 @@ pub(crate) fn historical_rollup_materialization_budget_reached(
         || historical_rollup_elapsed_budget_reached(started_at, max_elapsed)
 }
 
-pub(crate) fn inflate_gzip_sqlite_file_with_budget(
+pub(crate) async fn inflate_gzip_sqlite_file_with_budget(
     source: &Path,
     destination: &Path,
     started_at: Instant,
@@ -1303,6 +2065,7 @@ pub(crate) fn inflate_gzip_sqlite_file_with_budget(
             writer.flush()?;
             return Ok(false);
         }
+        tokio::task::yield_now().await;
     }
 
     writer.flush()?;
@@ -1312,8 +2075,16 @@ pub(crate) fn inflate_gzip_sqlite_file_with_budget(
 pub(crate) async fn open_historical_rollup_archive_pool(
     archive_path: &Path,
     temp_path: &Path,
+    expected_sha256: &str,
 ) -> Result<Pool<Sqlite>> {
-    let current_signature = historical_rollup_archive_source_signature(archive_path)?;
+    let current_signature =
+        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+            Ok(signature) => signature,
+            Err(error) => {
+                remove_temp_sqlite_artifacts(temp_path);
+                return Err(error);
+            }
+        };
     let stale_temp = !temp_path.exists()
         || load_historical_rollup_temp_source_signature(temp_path).as_deref()
             != Some(current_signature.as_str());
@@ -1346,26 +2117,513 @@ pub(crate) async fn open_historical_rollup_archive_pool(
     }
 }
 
-async fn open_historical_rollup_archive_pool_with_budget(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InvocationArchiveReadability {
+    Readable,
+    Rejected,
+    BudgetExhausted,
+}
+
+#[derive(Debug)]
+enum InvocationArchiveReopenResult {
+    Reopened(Vec<String>),
+    Rejected,
+    BudgetExhausted,
+}
+
+#[derive(Debug, Clone)]
+struct InvocationArchiveReopenPlan {
+    primary_file_path: String,
+    primary_sha256: String,
+    file_paths: Vec<String>,
+    archive_rows: Vec<InvocationArchiveCoverageRow>,
+    bucket_start_epochs: HashSet<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvocationArchiveReopenMode {
+    ReplaceAllRollups,
+    UsageBreakdown,
+}
+
+#[derive(Debug)]
+enum InvocationArchiveReopenPreparation {
+    Ready(InvocationArchiveReopenPlan),
+    Rejected,
+    BudgetExhausted,
+}
+
+async fn prepare_invocation_archive_reopen_plan(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    include_initial_file: bool,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenPreparation> {
+    let archive_path = Path::new(file_path);
+    if !fence.try_fence(archive_path)? {
+        return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+    }
+    if historical_rollup_elapsed_budget_reached(fence.started_at, fence.max_elapsed) {
+        return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+    }
+    match invocation_archive_file_is_readable_with_budget(
+        archive_path,
+        expected_sha256,
+        fence.started_at,
+        fence.max_elapsed,
+    )
+    .await
+    {
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+        }
+    }
+
+    let mut bucket_start_epochs = HashSet::new();
+    let mut reopened_file_path_set = HashSet::new();
+    let mut archive_rows = Vec::new();
+    if include_initial_file {
+        reopened_file_path_set.insert(file_path.to_string());
+        if let (Some(coverage_start_at), Some(coverage_end_at)) =
+            (coverage_start_at, coverage_end_at)
+        {
+            let Some(initial_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    coverage_start_at,
+                    coverage_end_at,
+                )?
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            bucket_start_epochs.extend(initial_bucket_start_epochs);
+            archive_rows.push(InvocationArchiveCoverageRow {
+                file_path: file_path.to_string(),
+                sha256: Some(expected_sha256.to_string()),
+                coverage_start_at: coverage_start_at.to_string(),
+                coverage_end_at: coverage_end_at.to_string(),
+            });
+        }
+    } else {
+        let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
+        else {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        };
+        let Some(initial_bucket_start_epochs) =
+            usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
+        else {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        };
+        bucket_start_epochs.extend(initial_bucket_start_epochs);
+    }
+    if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+        return Ok(InvocationArchiveReopenPreparation::Rejected);
+    }
+
+    loop {
+        let overlapping_archives =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets(
+                pool,
+                &bucket_start_epochs,
+                &reopened_file_path_set,
+            )
+            .await?;
+        let mut expanded = false;
+        for overlapping_archive in overlapping_archives {
+            let Some(expected_overlap_sha256) = overlapping_archive
+                .sha256
+                .as_deref()
+                .filter(|sha256| !sha256.trim().is_empty())
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
+                continue;
+            }
+            if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+            }
+            if historical_rollup_elapsed_budget_reached(fence.started_at, fence.max_elapsed) {
+                return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+            }
+            match invocation_archive_file_is_readable_with_budget(
+                Path::new(&overlapping_archive.file_path),
+                expected_overlap_sha256,
+                fence.started_at,
+                fence.max_elapsed,
+            )
+            .await
+            {
+                InvocationArchiveReadability::Readable => {}
+                InvocationArchiveReadability::Rejected => {
+                    return Ok(InvocationArchiveReopenPreparation::Rejected);
+                }
+                InvocationArchiveReadability::BudgetExhausted => {
+                    return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+                }
+            }
+            let Some(overlap_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    &overlapping_archive.coverage_start_at,
+                    &overlapping_archive.coverage_end_at,
+                )?
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            bucket_start_epochs.extend(overlap_bucket_start_epochs);
+            if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            }
+            archive_rows.push(overlapping_archive);
+            expanded = true;
+        }
+        if !expanded {
+            break;
+        }
+    }
+
+    if !reopened_file_path_set.contains(file_path) {
+        return Ok(InvocationArchiveReopenPreparation::Rejected);
+    }
+    let mut file_paths = reopened_file_path_set.into_iter().collect::<Vec<_>>();
+    file_paths.sort_unstable();
+    archive_rows.sort_by(|left, right| left.file_path.cmp(&right.file_path));
+    Ok(InvocationArchiveReopenPreparation::Ready(
+        InvocationArchiveReopenPlan {
+            primary_file_path: file_path.to_string(),
+            primary_sha256: expected_sha256.to_string(),
+            file_paths,
+            archive_rows,
+            bucket_start_epochs,
+        },
+    ))
+}
+
+async fn invocation_archive_reopen_plan_is_current(
+    tx: &mut SqliteConnection,
+    plan: &InvocationArchiveReopenPlan,
+) -> Result<bool> {
+    let current_primary_sha256 = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sha256
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND status = ?3
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+        LIMIT 1
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&plan.primary_file_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if current_primary_sha256.as_deref() != Some(plan.primary_sha256.as_str()) {
+        return Ok(false);
+    }
+    for archive_row in &plan.archive_rows {
+        let current_row = sqlx::query_as::<_, InvocationArchiveCoverageRow>(
+            r#"
+            SELECT file_path, sha256, coverage_start_at, coverage_end_at
+            FROM archive_batches
+            WHERE dataset = ?1
+              AND file_path = ?2
+              AND status = ?3
+            LIMIT 1
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&archive_row.file_path)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current_row.as_ref() != Some(archive_row) {
+            return Ok(false);
+        }
+    }
+    if plan.bucket_start_epochs.is_empty() {
+        return Ok(true);
+    }
+    let mut current_rows = Vec::new();
+    let mut current_bucket_start_epochs = plan.bucket_start_epochs.clone();
+    let mut excluded_file_paths = HashSet::new();
+    loop {
+        let current_page =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+                tx,
+                &current_bucket_start_epochs,
+                &excluded_file_paths,
+            )
+            .await?;
+        if current_page.is_empty() {
+            break;
+        }
+        for current_row in current_page {
+            if !excluded_file_paths.insert(current_row.file_path.clone()) {
+                continue;
+            }
+            let Some(overlap_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    &current_row.coverage_start_at,
+                    &current_row.coverage_end_at,
+                )?
+            else {
+                return Ok(false);
+            };
+            current_bucket_start_epochs.extend(overlap_bucket_start_epochs);
+            if current_bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                return Ok(false);
+            }
+            current_rows.push(current_row);
+        }
+    }
+    current_rows.sort_by(|left, right| left.file_path.cmp(&right.file_path));
+    Ok(
+        current_bucket_start_epochs == plan.bucket_start_epochs
+            && current_rows == plan.archive_rows,
+    )
+}
+
+async fn apply_invocation_archive_reopen_plan(
+    pool: &Pool<Sqlite>,
+    plan: InvocationArchiveReopenPlan,
+    mode: InvocationArchiveReopenMode,
+) -> Result<InvocationArchiveReopenResult> {
+    let mut tx = pool.begin().await?;
+    if !invocation_archive_reopen_plan_is_current(tx.as_mut(), &plan).await? {
+        tx.rollback().await?;
+        return Ok(InvocationArchiveReopenResult::Rejected);
+    }
+    match mode {
+        InvocationArchiveReopenMode::ReplaceAllRollups => {
+            clear_invocation_rollup_rows_for_bucket_epochs_tx(
+                tx.as_mut(),
+                &plan.bucket_start_epochs,
+            )
+            .await?;
+            reset_invocation_archive_replay_state_tx(tx.as_mut(), &plan.file_paths).await?;
+        }
+        InvocationArchiveReopenMode::UsageBreakdown => {
+            if !plan.bucket_start_epochs.is_empty() {
+                clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
+                    tx.as_mut(),
+                    &plan.bucket_start_epochs,
+                )
+                .await?;
+                let mut bucket_start_epochs =
+                    plan.bucket_start_epochs.iter().copied().collect::<Vec<_>>();
+                bucket_start_epochs.sort_unstable();
+                let retained_live_rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+                    tx.as_mut(),
+                    &bucket_start_epochs,
+                )
+                .await?;
+                upsert_invocation_hourly_rollups_tx(
+                    tx.as_mut(),
+                    &retained_live_rows,
+                    &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+                )
+                .await?;
+            }
+            for file_path in &plan.file_paths {
+                reset_invocation_archive_usage_breakdown_backfill_state_tx(tx.as_mut(), file_path)
+                    .await?;
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(InvocationArchiveReopenResult::Reopened(plan.file_paths))
+}
+
+async fn reopen_replaced_materialized_invocation_archive_without_long_tx(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    match prepare_invocation_archive_reopen_plan(
+        pool,
+        file_path,
+        expected_sha256,
+        coverage_start_at,
+        coverage_end_at,
+        false,
+        fence,
+    )
+    .await?
+    {
+        InvocationArchiveReopenPreparation::Ready(plan) => {
+            apply_invocation_archive_reopen_plan(
+                pool,
+                plan,
+                InvocationArchiveReopenMode::ReplaceAllRollups,
+            )
+            .await
+        }
+        InvocationArchiveReopenPreparation::Rejected => Ok(InvocationArchiveReopenResult::Rejected),
+        InvocationArchiveReopenPreparation::BudgetExhausted => {
+            Ok(InvocationArchiveReopenResult::BudgetExhausted)
+        }
+    }
+}
+
+async fn reopen_materialized_invocation_archive_usage_breakdown_without_long_tx(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    match prepare_invocation_archive_reopen_plan(
+        pool,
+        file_path,
+        expected_sha256,
+        coverage_start_at,
+        coverage_end_at,
+        true,
+        fence,
+    )
+    .await?
+    {
+        InvocationArchiveReopenPreparation::Ready(plan) => {
+            apply_invocation_archive_reopen_plan(
+                pool,
+                plan,
+                InvocationArchiveReopenMode::UsageBreakdown,
+            )
+            .await
+        }
+        InvocationArchiveReopenPreparation::Rejected => Ok(InvocationArchiveReopenResult::Rejected),
+        InvocationArchiveReopenPreparation::BudgetExhausted => {
+            Ok(InvocationArchiveReopenResult::BudgetExhausted)
+        }
+    }
+}
+
+pub(crate) fn invocation_archive_replay_temp_path(archive_path: &Path) -> PathBuf {
+    let digest = Sha256::digest(archive_path.as_os_str().to_string_lossy().as_bytes());
+    std::env::temp_dir().join(format!("codex-invocation-archive-check-{digest:x}.sqlite"))
+}
+
+pub(crate) fn forward_proxy_archive_replay_temp_path(archive_path: &Path) -> PathBuf {
+    let digest = Sha256::digest(archive_path.as_os_str().to_string_lossy().as_bytes());
+    std::env::temp_dir().join(format!(
+        "codex-forward-proxy-archive-check-{digest:x}.sqlite"
+    ))
+}
+
+pub(crate) async fn invocation_archive_file_is_readable_with_budget(
+    archive_path: &Path,
+    expected_sha256: &str,
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+) -> InvocationArchiveReadability {
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        return InvocationArchiveReadability::BudgetExhausted;
+    }
+    let temp_path = invocation_archive_replay_temp_path(archive_path);
+    if historical_rollup_archive_source_signature(archive_path, expected_sha256).is_err() {
+        remove_temp_sqlite_artifacts(&temp_path);
+        return InvocationArchiveReadability::Rejected;
+    }
+    let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+        temp_path.clone(),
+        temp_path.is_file()
+            && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                == Some(expected_sha256),
+    );
+    let archive_pool = match open_historical_rollup_archive_pool_with_budget(
+        archive_path,
+        &temp_path,
+        expected_sha256,
+        started_at,
+        None,
+    )
+    .await
+    {
+        Ok(Some(pool)) => pool,
+        Ok(None) => {
+            temp_cleanup.keep_reusable_copy();
+            return InvocationArchiveReadability::BudgetExhausted;
+        }
+        Err(_) => {
+            return InvocationArchiveReadability::Rejected;
+        }
+    };
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        archive_pool.close().await;
+        temp_cleanup.keep_complete_copy();
+        return InvocationArchiveReadability::BudgetExhausted;
+    }
+    let readable = match load_sqlite_table_columns(&archive_pool, "codex_invocations").await {
+        Ok(columns)
+            if ["id", "invoke_id", "occurred_at", "raw_response"]
+                .iter()
+                .all(|column| columns.contains(*column)) =>
+        {
+            sqlx::query_scalar::<_, i64>("SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1")
+                .fetch_optional(&archive_pool)
+                .await
+                .is_ok()
+        }
+        _ => false,
+    };
+    archive_pool.close().await;
+    if !readable {
+        return InvocationArchiveReadability::Rejected;
+    }
+    if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
+        temp_cleanup.keep_complete_copy();
+        return InvocationArchiveReadability::BudgetExhausted;
+    }
+    InvocationArchiveReadability::Readable
+}
+
+pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
     archive_path: &Path,
     temp_path: &Path,
+    expected_sha256: &str,
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> Result<Option<Pool<Sqlite>>> {
+    #[cfg(test)]
+    if HISTORICAL_ROLLUP_TEST_SKIP_ARCHIVE_OPEN
+        .try_with(|_| ())
+        .is_ok()
+    {
+        return Ok(None);
+    }
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         return Ok(None);
     }
-    let current_signature = historical_rollup_archive_source_signature(archive_path)?;
+    let current_signature =
+        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+            Ok(signature) => signature,
+            Err(error) => {
+                remove_temp_sqlite_artifacts(temp_path);
+                return Err(error);
+            }
+        };
     let stale_temp = !temp_path.exists()
         || load_historical_rollup_temp_source_signature(temp_path).as_deref()
             != Some(current_signature.as_str());
     if stale_temp {
         remove_temp_sqlite_artifacts(temp_path);
-        if !inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, max_elapsed)?
-        {
-            remove_temp_sqlite_artifacts(temp_path);
-            return Ok(None);
-        }
+        // Once an archive has been selected, finish building its durable temp copy. The caller
+        // still enforces the elapsed budget before the next archive, while the persisted source
+        // signature prevents a later pass from repeating a partial gzip inflate.
+        inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
         persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
     }
 
@@ -1380,15 +2638,7 @@ async fn open_historical_rollup_archive_pool_with_budget(
         Ok(pool) => Ok(Some(pool)),
         Err(first_err) => {
             remove_temp_sqlite_artifacts(temp_path);
-            if !inflate_gzip_sqlite_file_with_budget(
-                archive_path,
-                temp_path,
-                started_at,
-                max_elapsed,
-            )? {
-                remove_temp_sqlite_artifacts(temp_path);
-                return Ok(None);
-            }
+            inflate_gzip_sqlite_file_with_budget(archive_path, temp_path, started_at, None).await?;
             persist_historical_rollup_temp_source_signature(temp_path, &current_signature)?;
             connect().await.map(Some).with_context(|| {
                 format!(
@@ -1400,6 +2650,12 @@ async fn open_historical_rollup_archive_pool_with_budget(
     }
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    // Model the elapsed deadline between candidate selection and opening the archive pool.
+    pub(crate) static HISTORICAL_ROLLUP_TEST_SKIP_ARCHIVE_OPEN: ();
+}
+
 pub(crate) fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -> PathBuf {
     PathBuf::from(format!(
         "{}.pool-upstream-node-health.sqlite",
@@ -1407,16 +2663,17 @@ pub(crate) fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -
     ))
 }
 
-pub(crate) fn historical_rollup_archive_source_signature(path: &Path) -> Result<String> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("failed to inspect archive batch {}", path.display()))?;
-    let modified_ns = metadata
-        .modified()
-        .ok()
-        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|value| value.as_nanos())
-        .unwrap_or_default();
-    Ok(format!("{}:{modified_ns}", metadata.len()))
+pub(crate) fn historical_rollup_archive_source_signature(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<String> {
+    let actual_sha256 = crate::maintenance::sha256_hex_file(path)?;
+    anyhow::ensure!(
+        actual_sha256 == expected_sha256,
+        "archive batch {} does not match manifest SHA-256",
+        path.display()
+    );
+    Ok(expected_sha256.to_string())
 }
 
 pub(crate) fn load_historical_rollup_temp_source_signature(temp_path: &Path) -> Option<String> {
@@ -1551,7 +2808,16 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     target: &str,
 ) -> Result<Vec<ArchiveBatchFileRow>> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    load_invocation_archive_files_missing_rollup_target_with_limit(executor, target, None).await
+}
+
+async fn load_invocation_archive_files_missing_rollup_target_with_limit(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    target: &str,
+    limit: Option<i64>,
+) -> Result<Vec<ArchiveBatchFileRow>> {
+    let limit_clause = limit.map(|_| " LIMIT ?3").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches AS batches
@@ -1566,18 +2832,23 @@ pub(crate) async fn load_invocation_archive_files_missing_rollup_target(
                   AND replay.file_path = batches.file_path
                   AND replay.archive_sha256 = batches.sha256
           )
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(target)
-    .fetch_all(executor)
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(target);
+    let archive_files = (if let Some(limit) = limit {
+        query.bind(limit).fetch_all(executor)
+    } else {
+        query.fetch_all(executor)
+    })
     .await
     .context("failed to list invocation archive batches missing historical rollup target")?;
-    Ok(archive_files
-        .into_iter()
-        .filter(|archive_file| Path::new(&archive_file.file_path).exists())
-        .collect())
+    // Keep missing sources in bounded candidate pages. The replay stage records them as blocked,
+    // allowing its durable/keyset caller to advance past the page; filtering after LIMIT would
+    // hide the scanned prefix and starve later recoverable archives.
+    Ok(archive_files)
 }
 
 pub(crate) fn legacy_compatible_archive_select_expr(
@@ -2023,6 +3294,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         summary.scanned_batches += 1;
         let archive_path = PathBuf::from(&archive_file.file_path);
         if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2043,6 +3315,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
             })
         {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2056,6 +3329,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A completed archive with no immutable manifest identity is intentionally
             // unverified. Do not clear state or additively replay it until it becomes
             // verifiable or a caller can perform a proven full rebuild.
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2063,6 +3337,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A nullable or blank marker is not evidence that this archive's contributions are
             // represented by the current manifest. Keep it quarantined until an explicit,
             // proven rebuild can replace the unknown state.
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2079,16 +3354,36 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A stale marker or missing Summary proof on a materialized archive means a prior
             // contribution may remain. Reset the verified overlap closure before inspecting
             // pending targets so an incremental replay cannot double count old rows.
-            let Some(_) = reopen_replaced_materialized_invocation_archive_tx(
+            let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
+            archive_fence.register_held_directory(&archive_path);
+            let reopened = reopen_replaced_materialized_invocation_archive_tx(
                 tx,
                 &archive_file.file_path,
+                archive_file
+                    .sha256
+                    .as_deref()
+                    .expect("verified invocation archive manifest SHA"),
                 archive_file.coverage_start_at.as_deref(),
                 archive_file.coverage_end_at.as_deref(),
+                &mut archive_fence,
             )
-            .await?
-            else {
-                summary.blocked_batches += 1;
-                continue;
+            .await?;
+            match reopened {
+                InvocationArchiveReopenResult::Reopened(_) => {}
+                InvocationArchiveReopenResult::Rejected => {
+                    delete_hourly_rollup_archive_progress_tx(
+                        tx,
+                        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                        &archive_file.file_path,
+                    )
+                    .await?;
+                    summary.blocked_batches += 1;
+                    continue;
+                }
+                InvocationArchiveReopenResult::BudgetExhausted => {
+                    summary.hit_budget = true;
+                    break;
+                }
             };
         }
         let mut pending_targets = Vec::new();
@@ -2124,16 +3419,19 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         if !account_activity_v2_pending
             && can_shortcut_legacy_materialized_upstream_account_targets(&pending_targets)
         {
-            mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
+            let legacy_markers_repaired =
+                mark_materialized_upstream_account_archive_replayed_tx(tx, &archive_file.file_path)
+                    .await?;
+            if legacy_markers_repaired {
+                mark_archive_batch_historical_rollups_materialized_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &archive_file.file_path,
+                )
                 .await?;
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.file_path,
-            )
-            .await?;
-            summary.changed_batches += 1;
-            continue;
+                summary.changed_batches += 1;
+                continue;
+            }
         }
         if pending_targets.is_empty() && !account_activity_v2_pending {
             mark_archive_batch_historical_rollups_materialized_tx(
@@ -2165,6 +3463,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
         };
 
         if !archive_path.exists() {
+            remove_temp_sqlite_artifacts(&invocation_archive_replay_temp_path(&archive_path));
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
                 file_path = archive_file.file_path,
@@ -2190,20 +3489,27 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             .await?;
             continue;
         }
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_path = invocation_archive_replay_temp_path(&archive_path);
+        let expected_sha256 = archive_file
+            .sha256
+            .as_deref()
+            .expect("verified invocation archive manifest SHA");
+        let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+            temp_path.clone(),
+            temp_path.is_file()
+                && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                    == Some(expected_sha256),
+        );
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
             &temp_path,
+            expected_sha256,
             started_at,
             max_elapsed,
         )
         .await?
         else {
+            temp_cleanup.keep_reusable_copy();
             summary.hit_budget = true;
             summary.advance_cursor_after_unstarted_replay = true;
             break;
@@ -2274,7 +3580,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 if replay_progressed {
                     summary.changed_batches += 1;
                 }
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 break;
             }
             delete_hourly_rollup_archive_progress_tx(
@@ -2390,7 +3696,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 ) {
                     summary.changed_batches += 1;
                 }
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 break;
             }
         }
@@ -2435,7 +3741,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             ) {
                 summary.changed_batches += 1;
             }
-            std::mem::forget(temp_cleanup);
+            temp_cleanup.keep_complete_copy();
             break;
         }
         drop(temp_cleanup);
@@ -2499,7 +3805,13 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let limit_clause = limit.map(|_| " LIMIT ?2").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT id, file_path, sha256, coverage_start_at, coverage_end_at
         FROM archive_batches
@@ -2507,12 +3819,15 @@ pub(crate) async fn replay_invocation_archives_into_hourly_rollups_tx_with_limit
           AND status = ?1
           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror'
           AND historical_rollups_materialized_at IS NULL
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
-    .await?;
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql).bind(ARCHIVE_STATUS_COMPLETED);
+    let archive_files = if let Some(limit) = limit {
+        query.bind(limit).fetch_all(&mut *tx).await?
+    } else {
+        query.fetch_all(&mut *tx).await?
+    };
     replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
         tx,
         started_at,
@@ -2531,9 +3846,15 @@ pub(crate) async fn replay_invocation_usage_breakdown_archives_into_hourly_rollu
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = load_invocation_archive_files_missing_rollup_target(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let archive_files = load_invocation_archive_files_missing_rollup_target_with_limit(
         &mut *tx,
         HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+        limit,
     )
     .await?;
     replay_invocation_archive_files_into_hourly_rollups_tx_with_limits(
@@ -2561,7 +3882,13 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
     max_elapsed: Option<Duration>,
     skip_archive_batches: usize,
 ) -> Result<HistoricalRollupArchiveReplaySummary> {
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+    let limit = max_archive_batches.map(|limit| {
+        limit
+            .saturating_add(skip_archive_batches as u64)
+            .min(i64::MAX as u64) as i64
+    });
+    let limit_clause = limit.map(|_| " LIMIT ?3").unwrap_or_default();
+    let query_sql = format!(
         r#"
         SELECT batches.id, batches.file_path, batches.sha256, batches.coverage_start_at, batches.coverage_end_at
         FROM archive_batches AS batches
@@ -2584,13 +3911,17 @@ pub(crate) async fn replay_forward_proxy_archives_into_hourly_rollups_tx_with_li
                       )
                 )
           )
-        ORDER BY month_key ASC, created_at ASC, id ASC
+        ORDER BY month_key ASC, created_at ASC, id ASC{limit_clause}
         "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
-    .fetch_all(&mut *tx)
-    .await?;
+    );
+    let query = sqlx::query_as::<_, ArchiveBatchFileRow>(&query_sql)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS);
+    let archive_files = if let Some(limit) = limit {
+        query.bind(limit).fetch_all(&mut *tx).await?
+    } else {
+        query.fetch_all(&mut *tx).await?
+    };
 
     replay_forward_proxy_archive_files_into_hourly_rollups_tx_with_limits(
         tx,
@@ -2633,6 +3964,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         summary.scanned_batches += 1;
         let archive_path = PathBuf::from(&archive_file.file_path);
         if archive_path.parent().is_none_or(|parent| !parent.exists()) {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2653,6 +3985,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
                 sha256_hex_file(&archive_path).ok().as_deref() != Some(expected)
             })
         {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2663,6 +3996,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         )
         .await?
         {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             summary.blocked_batches += 1;
             continue;
         }
@@ -2675,6 +4009,12 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             )
             .await?
             else {
+                delete_hourly_rollup_archive_progress_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                    &archive_file.file_path,
+                )
+                .await?;
                 summary.blocked_batches += 1;
                 continue;
             };
@@ -2704,6 +4044,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
         .await?;
 
         if !archive_path.exists() {
+            remove_temp_sqlite_artifacts(&forward_proxy_archive_replay_temp_path(&archive_path));
             warn!(
                 dataset = HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
                 file_path = archive_file.file_path,
@@ -2717,20 +4058,27 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             .await?;
             continue;
         }
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_path = forward_proxy_archive_replay_temp_path(&archive_path);
+        let expected_sha256 = archive_file
+            .sha256
+            .as_deref()
+            .expect("verified forward proxy archive manifest SHA");
+        let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+            temp_path.clone(),
+            temp_path.is_file()
+                && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                    == Some(expected_sha256),
+        );
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
             &temp_path,
+            expected_sha256,
             started_at,
             max_elapsed,
         )
         .await?
         else {
+            temp_cleanup.keep_reusable_copy();
             summary.hit_budget = true;
             summary.advance_cursor_after_unstarted_replay = true;
             break;
@@ -2776,7 +4124,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             if replay_progressed || coverage_updated {
                 summary.changed_batches += 1;
             }
-            std::mem::forget(temp_cleanup);
+            temp_cleanup.keep_complete_copy();
             break;
         }
         drop(temp_cleanup);
@@ -2823,20 +4171,26 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
         let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
         for archive_file in archive_files {
             let archive_path = PathBuf::from(&archive_file.file_path);
+            let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
             if archive_path.parent().is_none_or(|parent| !parent.exists())
                 || !archive_path.is_file()
             {
+                // A source that disappeared after a budgeted pass cannot provide a reusable
+                // SHA-bound copy. Remove the old copy before leaving it pending.
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             }
             let _archive_lock = retention_archive_file_lock(&archive_path)?;
             let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             };
             if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
@@ -2849,8 +4203,9 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             )
             .await?
             {
-                // Keep a source without immutable manifest proof pending and untouched. Marking it
-                // replayed would only create repeated work while still failing strict readers.
+                // Keep a source without immutable manifest proof pending. Any reusable copy from a
+                // prior manifest must be removed because the copy cannot be bound to this row.
+                remove_temp_sqlite_artifacts(&temp_path);
                 tx.commit().await?;
                 continue;
             }
@@ -2899,10 +4254,10 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             .await?;
 
             replay_started_any_pending_batch = true;
-            let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
-            let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+            let mut temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
             let archive_pool =
-                open_historical_rollup_archive_pool(&archive_path, &temp_path).await?;
+                open_historical_rollup_archive_pool(&archive_path, &temp_path, expected_sha256)
+                    .await?;
             {
                 let mut archive_conn = archive_pool.acquire().await?;
                 ensure_pool_upstream_request_attempts_archive_schema_in_place(&mut archive_conn)
@@ -2931,7 +4286,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                     .await?;
                 }
                 tx.commit().await?;
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 committed_scanned_batches = summary.scanned_batches;
                 summary.hit_budget = true;
                 break;
@@ -3097,23 +4452,6 @@ pub(crate) async fn backfill_pool_upstream_node_health_hourly_archives(
 #[cfg(test)]
 mod hourly_rollup_budget_tests {
     use super::*;
-    use std::{
-        env,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    fn budgeted_inflate_test_dir(prefix: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        let path = env::temp_dir().join(format!(
-            "codex-vibe-monitor-{prefix}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create budgeted inflate temp dir");
-        path
-    }
 
     #[test]
     fn runtime_startup_bootstrap_leaves_active_coverage_to_the_dedicated_task() {
@@ -3147,105 +4485,6 @@ mod hourly_rollup_budget_tests {
         tokio::task::yield_now().await;
         cancel.cancel();
         assert!(refresh.await.expect("refresh task should finish"));
-    }
-
-    #[test]
-    fn historical_rollup_elapsed_budget_reached_respects_unbounded_mode() {
-        assert!(!historical_rollup_elapsed_budget_reached(
-            Instant::now(),
-            None
-        ));
-    }
-
-    #[test]
-    fn invocation_archive_replay_treats_missing_first_token_column_as_null() {
-        let legacy_query = build_invocation_archive_rows_chunk_query(&HashSet::new());
-        assert!(legacy_query.contains("NULL AS first_token_ms"));
-
-        let modern_query = build_invocation_archive_rows_chunk_query(&HashSet::from([
-            "first_token_ms".to_string(),
-        ]));
-        assert!(modern_query.contains("first_token_ms,"));
-        assert!(!modern_query.contains("NULL AS first_token_ms"));
-    }
-
-    #[tokio::test]
-    async fn replay_budget_exhaustion_before_the_first_row_has_no_progress() {
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect("sqlite::memory:")
-            .await
-            .expect("open archive pool");
-        sqlx::query("CREATE TABLE forward_proxy_attempts (id INTEGER PRIMARY KEY)")
-            .execute(&archive_pool)
-            .await
-            .expect("create forward proxy archive schema");
-        let mut tx = SqliteConnection::connect("sqlite::memory:")
-            .await
-            .expect("open rollup transaction connection");
-
-        let replay = replay_forward_proxy_archive_rows_into_hourly_rollups_tx_with_budget(
-            &mut tx,
-            &archive_pool,
-            0,
-            Instant::now() - Duration::from_millis(1),
-            Some(Duration::ZERO),
-        )
-        .await
-        .expect("stop before replaying archive rows");
-
-        assert_eq!(
-            replay.outcome,
-            HistoricalRollupArchiveReplayOutcome::HitBudget
-        );
-        assert_eq!(replay.cursor_id, 0);
-        assert!(!historical_rollup_replay_made_progress(replay, 0));
-    }
-
-    #[test]
-    fn candidate_with_prior_replay_progress_remains_actionable_after_later_budget_exhaustion() {
-        assert!(historical_rollup_candidate_changed(true, false, false));
-        assert!(!historical_rollup_candidate_changed(false, false, false));
-    }
-
-    #[test]
-    fn inflate_gzip_sqlite_file_with_budget_stops_mid_inflate_when_elapsed_budget_is_exhausted() {
-        let temp_dir = budgeted_inflate_test_dir("historical-rollup-budgeted-inflate");
-        let source_path = temp_dir.join("archive.sqlite.gz");
-        let destination_path = temp_dir.join("archive.sqlite");
-        let payload = vec![b'a'; HISTORICAL_ROLLUP_ARCHIVE_INFLATE_BUFFER_BYTES * 4];
-
-        {
-            let output = fs::File::create(&source_path).expect("create gzip source");
-            let mut encoder = GzEncoder::new(io::BufWriter::new(output), Compression::default());
-            encoder.write_all(&payload).expect("write gzip payload");
-            let mut writer = encoder.finish().expect("finish gzip payload");
-            writer.flush().expect("flush gzip payload");
-        }
-
-        let started_at = Instant::now() - Duration::from_millis(25);
-        let completed = inflate_gzip_sqlite_file_with_budget(
-            &source_path,
-            &destination_path,
-            started_at,
-            Some(Duration::from_millis(1)),
-        )
-        .expect("inflate with budget");
-
-        assert!(!completed, "expired elapsed budget should stop inflate");
-        let written = fs::metadata(&destination_path)
-            .expect("inflated temp file should exist")
-            .len() as usize;
-        assert!(
-            written > 0,
-            "budgeted inflate should still write at least one chunk"
-        );
-        assert!(
-            written < payload.len(),
-            "expired elapsed budget should stop before the whole sqlite copy completes"
-        );
-
-        let _ = fs::remove_dir_all(&temp_dir);
     }
 }
 
@@ -3339,7 +4578,12 @@ async fn bootstrap_hourly_rollups_with_scope_and_work(
     );
 
     let archive_usage_breakdown_started_at = Instant::now();
-    repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
+    for _ in 0..USAGE_BREAKDOWN_REPAIR_MAX_BOOTSTRAP_PAGES {
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(pool).await?;
+        if !usage_breakdown_repair_is_pending(pool).await? {
+            break;
+        }
+    }
     info!(
         rollup_bootstrap_step = "archive_usage_breakdown_repair",
         elapsed_ms = archive_usage_breakdown_started_at.elapsed().as_millis() as u64,

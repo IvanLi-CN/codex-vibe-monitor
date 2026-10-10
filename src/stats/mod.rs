@@ -1811,7 +1811,7 @@ async fn open_archive_batch_pool(
     if temp_path.exists() {
         let _ = fs::remove_file(&temp_path);
     }
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     if let Err(err) = inflate_gzip_sqlite_file(&archive_path, &temp_path) {
         drop(temp_cleanup);
         if is_unreadable_invocation_summary_archive_error(&err) {
@@ -4837,7 +4837,7 @@ pub(crate) async fn rebuild_invocation_summary_rollups_from_archive_batch(
     if temp_path.exists() {
         let _ = fs::remove_file(&temp_path);
     }
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
     let archive_pool = SqlitePoolOptions::new()
         .max_connections(1)
