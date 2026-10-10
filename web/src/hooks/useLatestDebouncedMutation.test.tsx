@@ -186,6 +186,110 @@ describe("useLatestDebouncedMutation", () => {
     expect(mutate).toHaveBeenNthCalledWith(2, "first-follow-up");
   });
 
+  it("drops a queued payload when a resource switch is configured to cancel", async () => {
+    const mutate = vi.fn<(payload: string) => Promise<string>>().mockResolvedValue("saved");
+    const controls: ReturnType<typeof useLatestDebouncedMutation<string, string>>[] = [];
+    let switchResource!: () => void;
+    function ResourceProbe() {
+      const [resource, setResource] = useState("first");
+      switchResource = () => setResource("second");
+      const mutation = useLatestDebouncedMutation({
+        cancelOnResourceChange: true,
+        mutate,
+        resourceKey: resource,
+      });
+      controls.push(mutation);
+      return null;
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root?.render(<ResourceProbe />));
+
+    act(() => controls.at(-1)?.schedule("first-draft"));
+    act(switchResource);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+
+    expect(mutate).not.toHaveBeenCalled();
+  });
+
+  it("ignores a canceled in-flight failure and clears its queued follow-up", async () => {
+    let rejectFirst!: (error: Error) => void;
+    const first = new Promise<string>((_, reject) => {
+      rejectFirst = reject;
+    });
+    const onError = vi.fn();
+    const mutate = vi
+      .fn<(payload: string) => Promise<string>>()
+      .mockImplementationOnce(() => first)
+      .mockResolvedValue("saved");
+    const controls: ReturnType<typeof useLatestDebouncedMutation<string, string>>[] = [];
+    let switchResource!: () => void;
+    function ResourceProbe() {
+      const [resource, setResource] = useState("first");
+      switchResource = () => setResource("second");
+      const mutation = useLatestDebouncedMutation({
+        cancelOnResourceChange: true,
+        mutate,
+        onError,
+        resourceKey: resource,
+      });
+      controls.push(mutation);
+      return null;
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root?.render(<ResourceProbe />));
+
+    act(() => controls.at(-1)?.schedule("first-draft"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    act(() => controls.at(-1)?.schedule("first-follow-up"));
+    act(switchResource);
+    await act(async () => {
+      rejectFirst(new Error("first failed"));
+      await Promise.resolve();
+    });
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("does not restore a confirmed result from a previous resource", async () => {
+    const mutate = vi.fn<(payload: string) => Promise<string>>().mockResolvedValue("saved");
+    const onRevert = vi.fn<(result: string | undefined) => void>();
+    const controls: ReturnType<typeof useLatestDebouncedMutation<string, string>>[] = [];
+    let switchResource!: () => void;
+    function ResourceProbe() {
+      const [resource, setResource] = useState("first");
+      switchResource = () => setResource("second");
+      const mutation = useLatestDebouncedMutation({
+        cancelOnResourceChange: true,
+        mutate,
+        onRevert,
+        resourceKey: resource,
+      });
+      controls.push(mutation);
+      return null;
+    }
+    host = document.createElement("div");
+    document.body.appendChild(host);
+    root = createRoot(host);
+    act(() => root?.render(<ResourceProbe />));
+
+    act(() => controls.at(-1)?.schedule("first-draft"));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    act(switchResource);
+
+    expect(onRevert).not.toHaveBeenCalled();
+  });
+
   it("retains a failed payload for retry and reverts to the confirmed result", async () => {
     const mutate = vi
       .fn<(payload: string) => Promise<string>>()
