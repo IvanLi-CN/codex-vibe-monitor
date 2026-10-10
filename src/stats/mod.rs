@@ -56,6 +56,7 @@ pub(crate) fn is_unreadable_invocation_summary_archive_error(err: &anyhow::Error
         let message = cause.to_string();
         message.contains("failed to decompress archive batch ")
             || message.contains("failed to open archive batch ")
+            || message.contains("summary rollup repair archive SHA changed ")
             || message.contains("database disk image is malformed")
     })
 }
@@ -5732,6 +5733,25 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         .await?;
         tx.commit().await?;
         return Ok(false);
+    }
+    let unmaterialized_archive_sources = sqlx::query_as::<_, (String, String)>(
+        "SELECT file_path, sha256 FROM archive_batches \
+         WHERE dataset = ?1 AND status = ?2 \
+           AND sha256 IS NOT NULL AND TRIM(sha256) <> '' \
+           AND historical_rollups_materialized_at IS NULL \
+           AND COALESCE(summary_source_kind, 'unknown') <> 'live_mirror' \
+         ORDER BY id ASC",
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    for (file_path, expected_sha256) in unmaterialized_archive_sources {
+        // Validate every source before clearing last-good rollups. The read is intentionally
+        // outside a main-database write transaction; the resumable page pass performs the same
+        // SHA-before/after checks before publishing each bounded chunk.
+        let archive_row = ArchiveBatchPathRow::from_file_path(file_path);
+        load_invocation_summary_repair_archive_chunk(&archive_row, &expected_sha256, 0, 1).await?;
     }
 
     let (archive_cursor_exists, mut archive_cursor) =
