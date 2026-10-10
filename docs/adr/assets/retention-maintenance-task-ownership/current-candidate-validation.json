@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
   "baseSha": "397f41db64f25141fe4e3967866ba61bf22e6943",
-  "codeCandidateSha": "86a4aff37fddd5644e798c30fa1953472f3486a4",
+  "codeCandidateSha": "49527ac8766d108afbbdbaf33592801a0ceb7f03",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
