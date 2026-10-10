@@ -1762,6 +1762,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
         // Once selected, the candidate finishes before the outer elapsed budget gates another.
         let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
         let mut budget_exhausted = false;
+        let mut rejected = false;
 
         if archive_batch_has_completed_manifest_sha_tx(
             tx.as_mut(),
@@ -1810,9 +1811,26 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                     InvocationArchiveReopenResult::BudgetExhausted => {
                         budget_exhausted = true;
                     }
-                    InvocationArchiveReopenResult::Rejected => {}
+                    InvocationArchiveReopenResult::Rejected => {
+                        rejected = true;
+                    }
                 }
             }
+        }
+
+        if rejected {
+            tx.rollback().await?;
+            persist_deferred_usage_breakdown_repair_candidate(
+                pool,
+                &row,
+                (!deferred_candidate).then_some(&next_cursor),
+            )
+            .await?;
+            if !deferred_candidate {
+                cursor = next_cursor;
+            }
+            budget_overrun_candidate_started = true;
+            continue;
         }
 
         if budget_exhausted {
@@ -2885,6 +2903,12 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             match reopened {
                 InvocationArchiveReopenResult::Reopened(_) => {}
                 InvocationArchiveReopenResult::Rejected => {
+                    delete_hourly_rollup_archive_progress_tx(
+                        tx,
+                        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                        &archive_file.file_path,
+                    )
+                    .await?;
                     summary.blocked_batches += 1;
                     continue;
                 }
@@ -3514,6 +3538,12 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             )
             .await?
             else {
+                delete_hourly_rollup_archive_progress_tx(
+                    tx,
+                    HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                    &archive_file.file_path,
+                )
+                .await?;
                 summary.blocked_batches += 1;
                 continue;
             };
@@ -3702,8 +3732,9 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             )
             .await?
             {
-                // Keep a source without immutable manifest proof pending and untouched. Marking it
-                // replayed would only create repeated work while still failing strict readers.
+                // Keep a source without immutable manifest proof pending. Any reusable copy from a
+                // prior manifest must be removed because the copy cannot be bound to this row.
+                remove_temp_sqlite_artifacts(&temp_path);
                 tx.commit().await?;
                 continue;
             }
