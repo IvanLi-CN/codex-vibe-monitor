@@ -3670,20 +3670,26 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
         let mut summary = PoolUpstreamNodeHealthArchiveBackfillSummary::default();
         for archive_file in archive_files {
             let archive_path = PathBuf::from(&archive_file.file_path);
+            let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
             if archive_path.parent().is_none_or(|parent| !parent.exists())
                 || !archive_path.is_file()
             {
+                // A source that disappeared after a budgeted pass cannot provide a reusable
+                // SHA-bound copy. Remove the old copy before leaving it pending.
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             }
             let _archive_lock = retention_archive_file_lock(&archive_path)?;
             let Some(expected_sha256) = archive_file.sha256.as_deref() else {
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
             };
             if sha256_hex_file(&archive_path).ok().as_deref() != Some(expected_sha256) {
+                remove_temp_sqlite_artifacts(&temp_path);
                 summary.scanned_batches += 1;
                 committed_scanned_batches = summary.scanned_batches;
                 continue;
@@ -3746,7 +3752,6 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
             .await?;
 
             replay_started_any_pending_batch = true;
-            let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
             let mut temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
             let archive_pool =
                 open_historical_rollup_archive_pool(&archive_path, &temp_path, expected_sha256)

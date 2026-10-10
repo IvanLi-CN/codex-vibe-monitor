@@ -10482,6 +10482,20 @@ async fn pool_upstream_node_health_archive_backfill_keeps_missing_archives_pendi
     let missing_archive_path =
         archive_batch_file_path(&config, "pool_upstream_request_attempts", &month_key)
             .expect("resolve missing pool node health archive path");
+    let missing_temp_path = pool_upstream_node_health_archive_temp_path(&missing_archive_path);
+    fs::create_dir_all(
+        missing_temp_path
+            .parent()
+            .expect("missing archive temp path should have a parent"),
+    )
+    .expect("create missing archive temp directory");
+    fs::write(&missing_temp_path, b"stale temp sqlite")
+        .expect("seed stale missing-archive temp sqlite");
+    fs::write(
+        temp_sqlite_source_meta_path(&missing_temp_path),
+        "stale-manifest-sha",
+    )
+    .expect("seed stale missing-archive temp sidecar");
 
     sqlx::query(
         r#"
@@ -10537,6 +10551,8 @@ async fn pool_upstream_node_health_archive_backfill_keeps_missing_archives_pendi
     .await
     .expect("count replay markers for missing pool node health archive");
     assert_eq!(replay_marked, 0);
+    assert!(!missing_temp_path.exists());
+    assert!(!temp_sqlite_source_meta_path(&missing_temp_path).exists());
 
     cleanup_temp_test_dir(&temp_dir);
 }
