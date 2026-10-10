@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.5.0",
+  "base_stable_version": "4.4.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-10T20:50:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.5.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "56b436b038b95e64e4da8ccee5d8bbfc5a0d45e1",
+  "pr_number": 1098,
+  "pr_title": "fix(maintenance): close bounded repair recovery gaps",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.5.0",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.5.0",
+  "target_sha": "e9e712b1e2a13e39fa223b4f553bcec0c3177cda",
+  "type_label": "type:minor"
+}
