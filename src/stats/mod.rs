@@ -1919,6 +1919,67 @@ async fn load_invocation_summary_repair_archive_chunk(
     Ok((rows, next_cursor, !has_more))
 }
 
+async fn validate_invocation_summary_repair_archive(
+    archive_row: &ArchiveBatchPathRow,
+    expected_sha256: &str,
+) -> Result<()> {
+    let archive_path = PathBuf::from(archive_row.file_path());
+    if !archive_path.exists() {
+        bail!(
+            "{}: {}",
+            MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX,
+            archive_row.file_path()
+        );
+    }
+    let source_sha_before = sha256_hex_file(&archive_path)?;
+    if source_sha_before != expected_sha256 {
+        bail!(
+            "summary rollup repair archive SHA changed before validation: {}",
+            archive_row.file_path()
+        );
+    }
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    if temp_path.exists() {
+        remove_temp_sqlite_artifacts(&temp_path);
+    }
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect(&sqlite_url_for_path(&temp_path))
+        .await
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+    let mut cursor_id = 0_i64;
+    loop {
+        let rows = load_invocation_hourly_source_rows_after_id(
+            &archive_pool,
+            cursor_id,
+            InvocationSourceScope::All,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE,
+        )
+        .await?;
+        let Some(last_id) = rows.last().map(|row| row.id) else {
+            break;
+        };
+        cursor_id = last_id;
+    }
+    archive_pool.close().await;
+    let source_sha_after = sha256_hex_file(&archive_path)?;
+    if source_sha_after != expected_sha256 {
+        bail!(
+            "summary rollup repair archive SHA changed after validation: {}",
+            archive_row.file_path()
+        );
+    }
+    drop(temp_cleanup);
+    Ok(())
+}
+
 pub(crate) async fn load_completed_invocation_archives_in_range(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     range: Option<(DateTime<Utc>, DateTime<Utc>)>,
@@ -5624,6 +5685,23 @@ async fn repair_invocation_summary_rollups_with_mode(
             repair_live_cursor,
         )
     };
+    let (_, _, missing_unmaterialized_archive_exists, _) =
+        preflight_invocation_summary_repair_archives(pool).await?;
+    if missing_unmaterialized_archive_exists {
+        let missing_archive = archive_rows
+            .iter()
+            .find(|archive_row| {
+                archive_row.historical_rollups_materialized_at.is_none()
+                    && !PathBuf::from(archive_row.file_path()).exists()
+            })
+            .map(|archive_row| archive_row.file_path().to_owned())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        bail!(
+            "{}: {}",
+            MISSING_INVOCATION_ARCHIVE_REPAIR_PREFIX,
+            missing_archive
+        );
+    }
     let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
         || missing_materialized_archive_has_unknown_scope;
     let live_rebuild_start_id = if preserve_materialized_archives {
@@ -5774,28 +5852,23 @@ async fn preflight_invocation_summary_repair_archives(
         }
         for (_, expected_sha256, archive_row) in &page_rows {
             let archive_path = PathBuf::from(archive_row.file_path());
-            if archive_row.historical_rollups_materialized_at.is_none() {
-                if !archive_path.exists() {
+            if !archive_path.exists() {
+                if archive_row.historical_rollups_materialized_at.is_none() {
                     missing_unmaterialized_archive_exists = true;
                     continue;
                 }
-                // Validate one bounded source page before any destructive force rebuild. The
-                // page iterator keeps only the current metadata page and never retains the full
-                // archive manifest in memory.
-                load_invocation_summary_repair_archive_chunk(archive_row, expected_sha256, 0, 1)
-                    .await?;
+                missing_materialized_archive_exists = true;
+                let bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
+                if bucket_epochs.is_empty() {
+                    missing_materialized_archive_has_unknown_scope = true;
+                } else {
+                    missing_materialized_bucket_epochs.extend(bucket_epochs);
+                }
                 continue;
             }
-            if archive_path.exists() {
-                continue;
-            }
-            missing_materialized_archive_exists = true;
-            let bucket_epochs = archive_bucket_start_epochs_for_row(archive_row)?;
-            if bucket_epochs.is_empty() {
-                missing_materialized_archive_has_unknown_scope = true;
-            } else {
-                missing_materialized_bucket_epochs.extend(bucket_epochs);
-            }
+            // Validate every bounded source page before any destructive rebuild. The archive
+            // reader keeps only the current page in memory and never retains the full source.
+            validate_invocation_summary_repair_archive(archive_row, expected_sha256).await?;
         }
         after_archive_id = page_rows
             .last()

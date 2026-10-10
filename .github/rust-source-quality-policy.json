@@ -105,7 +105,7 @@
     {
       "path": "src/stats/mod.rs",
       "role": "production",
-      "line_budget": 6769,
+      "line_budget": 6918,
       "next_module_workstream": "Split statistics archive loaders, invocation totals, rollup queries, and range models."
     },
     {
@@ -551,7 +551,7 @@
     {
       "path": "src/stats/mod.rs",
       "kind": "expect",
-      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Archive rollup rebuild keeps transaction, archive, scope, deduplication, clearing, target, replacement, and persistence state explicit.\" )]",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Archive rollup rebuild keeps pool, archive, scope, deduplication, clearing, target, replacement, and persistence state explicit.\" )]",
       "reason": "Retain this targeted expect for the archive rollup rebuild boundary; remove it when the repair inputs are grouped without obscuring the explicit persistence contract."
     },
     {
