@@ -5699,6 +5699,10 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
     let archive_rows = load_completed_invocation_archive_paths(pool).await?;
     let mut missing_materialized_bucket_epochs = HashSet::new();
     let mut missing_materialized_archive_has_unknown_scope = false;
+    let missing_unmaterialized_archive_exists = archive_rows.iter().any(|archive_row| {
+        archive_row.historical_rollups_materialized_at.is_none()
+            && !PathBuf::from(archive_row.file_path()).exists()
+    });
     let missing_materialized_archive_exists = archive_rows.iter().any(|archive_row| {
         archive_row.historical_rollups_materialized_at.is_some()
             && !PathBuf::from(archive_row.file_path()).exists()
@@ -5715,6 +5719,19 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         } else {
             missing_materialized_bucket_epochs.extend(bucket_epochs);
         }
+    }
+    if missing_unmaterialized_archive_exists {
+        // Preserve the last-good rollups until every unmaterialized source is readable. A force
+        // pass must never clear them and then discover a missing source during archive I/O.
+        let mut tx = pool.begin().await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
+            INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
+        )
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
     }
 
     let (archive_cursor_exists, mut archive_cursor) =
@@ -5735,6 +5752,20 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
         archive_row_cursor = 0;
     }
     let first_page = !started || restart;
+    let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
+        || missing_materialized_archive_has_unknown_scope;
+    let shared_live_cursor =
+        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
+    let repair_live_cursor = load_hourly_rollup_live_progress(
+        pool,
+        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
+    )
+    .await?;
+    let live_start_id = if preserve_materialized_archives {
+        shared_live_cursor.max(repair_live_cursor)
+    } else {
+        repair_live_cursor
+    };
     let mut cleared_rollup_buckets = ClearedSummaryRollupBuckets::default();
     if first_page {
         let mut tx = pool.begin().await?;
@@ -5748,8 +5779,6 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             .bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_ARCHIVE_ROW_CURSOR_DATASET)
             .execute(tx.as_mut())
             .await?;
-        let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
-            || missing_materialized_archive_has_unknown_scope;
         if preserve_materialized_archives {
             if !missing_materialized_archive_has_unknown_scope {
                 cleared_rollup_buckets = clear_invocation_summary_rollups_outside_buckets(
@@ -5778,48 +5807,33 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_DONE,
         )
         .await?;
+        if !cleared_rollup_buckets.overall.is_empty() {
+            // Keep clearing and restoring in one transaction. A restart between those writes
+            // would otherwise skip the restore and permanently lose live rows below the cursor.
+            let mut restored_live_rows =
+                load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
+                    tx.as_mut(),
+                    &cleared_rollup_buckets.overall,
+                    InvocationSourceScope::All,
+                    live_start_id,
+                )
+                .await?;
+            retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut restored_live_rows)
+                .await?;
+            persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
+            upsert_invocation_hourly_rollups_tx(
+                tx.as_mut(),
+                &restored_live_rows,
+                &INVOCATION_SUMMARY_ROLLUP_TARGETS,
+            )
+            .await?;
+        }
         tx.commit().await?;
         archive_cursor = 0;
         archive_row_cursor_exists = false;
         archive_row_cursor = 0;
     }
 
-    let preserve_materialized_archives = !missing_materialized_bucket_epochs.is_empty()
-        || missing_materialized_archive_has_unknown_scope;
-    let shared_live_cursor =
-        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
-    let repair_live_cursor = load_hourly_rollup_live_progress(
-        pool,
-        INVOCATION_SUMMARY_ROLLUP_REPAIR_MARKER_LIVE_CURSOR_DATASET,
-    )
-    .await?;
-    let live_start_id = if preserve_materialized_archives {
-        shared_live_cursor.max(repair_live_cursor)
-    } else {
-        repair_live_cursor
-    };
-    if first_page && !cleared_rollup_buckets.overall.is_empty() {
-        // Restore live rows that predate the shared cursor before a later archive page can
-        // return. Durable seen IDs make the restoration idempotent across page boundaries.
-        let mut tx = pool.begin().await?;
-        let mut restored_live_rows =
-            load_live_invocation_summary_rows_for_cleared_buckets_up_to_id(
-                tx.as_mut(),
-                &cleared_rollup_buckets.overall,
-                InvocationSourceScope::All,
-                live_start_id,
-            )
-            .await?;
-        retain_unseen_invocation_summary_repair_rows(tx.as_mut(), &mut restored_live_rows).await?;
-        persist_invocation_summary_repair_seen_ids(tx.as_mut(), &restored_live_rows).await?;
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &restored_live_rows,
-            &INVOCATION_SUMMARY_ROLLUP_TARGETS,
-        )
-        .await?;
-        tx.commit().await?;
-    }
     let mut repair_incomplete = if first_page { false } else { incomplete_exists };
     loop {
         let page_rows = load_completed_invocation_summary_repair_page(
