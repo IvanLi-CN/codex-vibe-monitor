@@ -2039,7 +2039,7 @@ async fn load_invocation_summary_repair_archive_chunk(
     if temp_path.exists() {
         remove_temp_sqlite_artifacts(&temp_path);
     }
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
     let archive_pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -2094,7 +2094,7 @@ async fn validate_invocation_summary_repair_archive(
     if temp_path.exists() {
         remove_temp_sqlite_artifacts(&temp_path);
     }
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
     let archive_pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -5471,7 +5471,7 @@ async fn load_live_invocation_summary_rows_for_cleared_buckets_page(
     }
     query
         .push(" ORDER BY id ASC LIMIT ")
-        .push_bind((INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE + 1) as i64);
+        .push_bind(INVOCATION_SUMMARY_ROLLUP_REPAIR_BATCH_SIZE + 1);
 
     let mut source_rows = query
         .build_query_as::<InvocationHourlySourceRecord>()
@@ -6113,12 +6113,11 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
             if invocation_summary_repair_backup_exists(pool)
                 .await
                 .unwrap_or_default()
+                && let Err(restore_err) = restore_invocation_summary_repair_backup(pool).await
             {
-                if let Err(restore_err) = restore_invocation_summary_repair_backup(pool).await {
-                    return Err(err.context(format!(
-                        "summary rollup repair failed and restoring the last-good rollups also failed: {restore_err}"
-                    )));
-                }
+                return Err(err.context(format!(
+                    "summary rollup repair failed and restoring the last-good rollups also failed: {restore_err}"
+                )));
             }
             Err(err)
         }
