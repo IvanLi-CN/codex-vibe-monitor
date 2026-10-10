@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "kind": "current-candidate-validation",
+  "status": "current-head-required-ci-and-tier4-pending",
+  "candidate_head_sha": "d84dd334e77977423752202d8e5e2537ab7d6240",
+  "implementation_commit": "d84dd334e77977423752202d8e5e2537ab7d6240",
+  "active_base_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
+  "base_ref": "main",
+  "pr_number": 1097,
+  "candidate_branch": "th/pr-stats",
+  "base_sync": {
+    "previous_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "merge_commit_sha": "4d97c3cfd376fbea3aedfca15c2802c0afe9a315",
+    "merge_strategy": "normal-git-merge-no-ff",
+    "shared_fix_deduplicated": [
+      "src/maintenance_store.rs"
+    ],
+    "mainline_scope": "Task-timeline performance and support changes from merged PR #1099; no Stats or schema additions enter the candidate from this base merge.",
+    "stats_or_schema_additions_from_base": false,
+    "supersedes_previous_review_base": true
+  },
+  "affected_validation": {
+    "refresh_reason": "The candidate was aligned by normal merge onto main@8c76ec4b, then Summary replay identity, cross-page force-repair deduplication, safe-bucket replacement, and archive-ID seek indexing were fixed; all required CI and five Tier4 lanes must bind to the final pushed head.",
+    "contract_regressions": [
+      "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
+      "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
+      "hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+      "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
+      "all_time_overlay_overflow_does_not_block_rolling_summary",
+      "stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+      "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
+    ],
+    "migration_and_compatibility_regressions": [
+      "ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+      "summary_rollup_repair_reopens_stale_archive_sha_markers",
+      "all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
+      "all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
+      "bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+      "summary_rollup_force_repair_pages_past_archive_batch_budget",
+      "summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown",
+      "summary_rollup_force_repair_deduplicates_source_ids_across_pages",
+      "summary_rollup_force_repair_clears_safe_buckets_before_later_pages",
+      "summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+      "summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+    ]
+  },
+  "required_lanes": [
+    "Backend Tests (Archive / File I/O)",
+    "Backend Tests (Lightweight)",
+    "Backend Tests (Representative Scale)",
+    "Backend Tests (Stateful SQLite)",
+    "Build Artifacts",
+    "Docs & Web Demo Build",
+    "Front-end Tests",
+    "Lint & Format Check",
+    "Records Overlay E2E",
+    "Repository Tooling Checks",
+    "Review Policy Gate",
+    "Storybook Accessibility Tests",
+    "Validate PR labels"
+  ],
+  "release_compatibility": {
+    "semver_record": "assets/version-impact-record.json",
+    "persistent_state_record": "assets/persistent-state-migration-record.json",
+    "public_api_impact": "patch",
+    "persistent_state_impact": "patch",
+    "same_minor_candidate_state_readable": true,
+    "migration_idempotent_and_reentry_safe": true,
+    "old_version_allocator_writeback": false,
+    "deployment_scope": "none"
+  },
+  "deployment_surfaces": {
+    "github_release_and_ghcr": "Release and dual-platform GHCR publication remain release-workflow-owned and require successful CI Main plus release policy; this PR does not authorize publication.",
+    "docs_pages": "The Docs & Web Demo Build and docs-pages path remain a separate pipeline-owned surface; a passing build is not production deployment authorization.",
+    "production": "No production deployment, restart, observation, or mutable external write is authorized by this record."
+  },
+  "base_release_evidence": {
+    "source_main_ci_run_id": 37924263178,
+    "source_main_ci_head_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "source_main_ci_conclusion": "success",
+    "source_release": "v4.3.1",
+    "source_release_url": "https://github.com/IvanLi-CN/codex-vibe-monitor/releases/tag/v4.3.1",
+    "source_ghcr_architectures": [
+      "linux/amd64",
+      "linux/arm64"
+    ],
+    "production_deployment": false,
+    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR #1097 or authorize production deployment."
+  },
+  "local_validation_boundary": {
+    "required_local_checks": [
+      "cargo fmt --all -- --check",
+      "git diff --check",
+      "jq empty docs/specs/runtime-read-model-pressure-recovery/assets/current-candidate-validation.json docs/specs/runtime-read-model-pressure-recovery/assets/version-impact-record.json docs/specs/runtime-read-model-pressure-recovery/assets/persistent-state-migration-record.json",
+      "python3 .github/scripts/check_rust_source_quality.py --repo-root . --policy .github/rust-source-quality-policy.json"
+    ],
+    "applicable_lightweight_contract_checks": [
+      "bash .github/scripts/test-backend-test-contract.sh",
+      "bash .github/scripts/test-representative-scale-contract.sh",
+      "bash .github/scripts/test-quality-gates-contract.sh"
+    ],
+    "heavy_full_suite": "Full-target all-features check/clippy, complete backend profiles, and representative-scale execution are delegated to current-head Linux CI or a session VM; they are not repeated as local checks for this candidate.",
+    "visual_evidence": "Not applicable; this is a backend/API and repository-contract change."
+  }
+}
