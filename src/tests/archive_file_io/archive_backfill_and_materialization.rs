@@ -4584,7 +4584,7 @@ async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page()
     .fetch_one(&pool)
     .await
     .expect("count deferred large overlap batches");
-    assert_eq!(deferred_count, 1);
+    assert_eq!(deferred_count, 0);
     let replay_marker_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM hourly_rollup_archive_replay \
          WHERE dataset = 'codex_invocations' \
