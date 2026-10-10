@@ -137,6 +137,75 @@ async fn bounded_summary_archive_repair_preserves_same_bucket_totals_across_pass
 }
 
 #[tokio::test]
+async fn summary_rollup_additive_repair_reuses_durable_seen_ids_after_page_commit() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("summary-rollup-additive-durable-seen-ids").await;
+    let occurred_at = "2026-01-15 08:10:00";
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "summary-rollup-additive-durable-seen-ids",
+        &[(
+            1_i64,
+            "summary-rollup-additive-durable-seen-row",
+            occurred_at,
+            SOURCE_PROXY,
+            "success",
+            10_i64,
+            0.10_f64,
+            Some(100.0),
+        )],
+    )
+    .await;
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("seed the initial additive Summary replay");
+
+    let file_path = archive_path.to_string_lossy().to_string();
+    sqlx::query(
+        "DELETE FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations' AND file_path = ?1",
+    )
+    .bind(&file_path)
+    .execute(&pool)
+    .await
+    .expect("remove replay markers to reopen additive repair");
+    sqlx::query(
+        "INSERT INTO hourly_rollup_repair_seen_invocation_ids (dataset, invocation_id) VALUES (?1, ?2)",
+    )
+    .bind("codex_invocations_summary_rollup_v2_seen_ids")
+    .bind(1_i64)
+    .execute(&pool)
+    .await
+    .expect("seed durable seen ID as if the prior page committed before a crash");
+
+    crate::stats::backfill_missing_invocation_summary_archive_rollups(&pool)
+        .await
+        .expect("reopen additive Summary repair from durable seen IDs");
+
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(occurred_at).expect("derive durable seen ID bucket");
+    let total: i64 = sqlx::query_scalar(
+        "SELECT total_count FROM invocation_rollup_hourly WHERE bucket_start_epoch = ?1 AND source = ?2",
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load additive Summary total after durable seen ID replay");
+    assert_eq!(total, 1);
+    let seen_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_repair_seen_invocation_ids WHERE dataset = ?1",
+    )
+    .bind("codex_invocations_summary_rollup_v2_seen_ids")
+    .fetch_one(&pool)
+    .await
+    .expect("load durable seen IDs after marker commit");
+    assert_eq!(seen_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn summary_rollup_repair_treats_null_and_blank_replay_sha_as_unknown() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("summary-rollup-unknown-replay-sha").await;

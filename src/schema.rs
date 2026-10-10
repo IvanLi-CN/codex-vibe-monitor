@@ -4387,6 +4387,20 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_repair_cleared_buckets (
+            dataset TEXT NOT NULL,
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            PRIMARY KEY (dataset, bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly_rollup_repair_cleared_buckets table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS summary_all_time_coverage_checkpoint (
             scope TEXT PRIMARY KEY,
             manifest_high_watermark_id INTEGER NOT NULL,
