@@ -4319,7 +4319,11 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         WHEN NEW.dataset = 'codex_invocations'
           AND NEW.status = 'completed'
           AND NEW.summary_source_kind = 'authoritative'
-          AND (OLD.status <> 'completed' OR OLD.summary_source_kind <> 'authoritative')
+          AND (
+              OLD.status <> 'completed'
+              OR OLD.summary_source_kind IS NULL
+              OR OLD.summary_source_kind <> 'authoritative'
+          )
           AND (
               NEW.coverage_start_at IS NULL
               OR NEW.coverage_end_at IS NULL

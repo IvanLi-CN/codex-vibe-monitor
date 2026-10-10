@@ -767,7 +767,7 @@ async fn clear_invocation_rollup_rows_for_bucket_epochs_tx(
     Ok(())
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 struct InvocationArchiveCoverageRow {
     file_path: String,
     sha256: Option<String>,
@@ -852,6 +852,22 @@ async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets_
         .fetch_all(&mut *tx)
         .await
         .map_err(Into::into)
+}
+
+async fn load_completed_invocation_archives_overlapping_usage_breakdown_buckets(
+    pool: &Pool<Sqlite>,
+    bucket_start_epochs: &HashSet<i64>,
+    excluded_file_paths: &HashSet<String>,
+) -> Result<Vec<InvocationArchiveCoverageRow>> {
+    let mut tx = pool.begin().await?;
+    let rows = load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+        tx.as_mut(),
+        bucket_start_epochs,
+        excluded_file_paths,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 fn forward_proxy_archive_bucket_start_epochs_from_bounds(
@@ -1739,37 +1755,77 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
         {
             break;
         }
-        let mut tx = pool.begin().await?;
-        let (row, deferred_candidate) = if let Some(row) =
-            load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
-                tx.as_mut(),
-                &cursor,
-            )
-            .await?
-        {
-            (row, false)
-        } else {
-            delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(tx.as_mut()).await?;
-            if let Some(row) = load_deferred_usage_breakdown_repair_candidate_tx(
-                tx.as_mut(),
-                &skipped_deferred_archive_ids,
-            )
-            .await?
+        let (
+            row,
+            deferred_candidate,
+            archive_proof_valid,
+            has_stale_replay_marker,
+            breakdown_replayed,
+        ) = {
+            let mut tx = pool.begin().await?;
+            let (row, deferred_candidate) = if let Some(row) =
+                load_materialized_invocation_archive_for_usage_breakdown_repair_after_id_tx(
+                    tx.as_mut(),
+                    &cursor,
+                )
+                .await?
             {
-                (row, true)
+                (row, false)
             } else {
-                if cursor != UsageBreakdownRepairCursor::default() {
-                    advance_usage_breakdown_repair_cursor_tx(
-                        tx.as_mut(),
-                        &UsageBreakdownRepairCursor::default(),
-                    )
-                    .await?;
+                delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(tx.as_mut()).await?;
+                if let Some(row) = load_deferred_usage_breakdown_repair_candidate_tx(
+                    tx.as_mut(),
+                    &skipped_deferred_archive_ids,
+                )
+                .await?
+                {
+                    (row, true)
+                } else {
+                    if cursor != UsageBreakdownRepairCursor::default() {
+                        advance_usage_breakdown_repair_cursor_tx(
+                            tx.as_mut(),
+                            &UsageBreakdownRepairCursor::default(),
+                        )
+                        .await?;
+                    }
+                    // Commit even when the cursor is already at its origin: the cleanup above
+                    // may have removed deferred rows that became ineligible for repair.
+                    tx.commit().await?;
+                    break;
                 }
-                // Commit even when the cursor is already at its origin: the cleanup above may
-                // have removed deferred rows that became ineligible for repair.
-                tx.commit().await?;
-                break;
-            }
+            };
+            let archive_proof_valid = archive_batch_has_completed_manifest_sha_tx(
+                tx.as_mut(),
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &row.file_path,
+            )
+            .await?
+                && !invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &row.file_path)
+                    .await?;
+            let has_stale_replay_marker = if archive_proof_valid {
+                invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &row.file_path).await?
+            } else {
+                false
+            };
+            let breakdown_replayed = if archive_proof_valid {
+                hourly_rollup_archive_replayed_tx(
+                    tx.as_mut(),
+                    HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
+                    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    &row.file_path,
+                )
+                .await?
+            } else {
+                false
+            };
+            tx.commit().await?;
+            (
+                row,
+                deferred_candidate,
+                archive_proof_valid,
+                has_stale_replay_marker,
+                breakdown_replayed,
+            )
         };
         let next_cursor = UsageBreakdownRepairCursor {
             stale_rank: row.stale_rank,
@@ -1777,34 +1833,24 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             created_at: row.created_at.clone(),
             id: row.id,
         };
-        // Keep every verified directory fenced until the cursor/rollup transaction commits.
-        // Once selected, the candidate finishes before the outer elapsed budget gates another.
-        let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
-        let mut budget_exhausted = false;
-        let mut rejected = false;
+        if !archive_proof_valid && deferred_candidate {
+            // An already deferred row remains retryable until its manifest and replay proof are
+            // available again. Skip it for this pass so a recoverable deferred tail can proceed,
+            // but never delete the only durable retry record while proof is still absent.
+            skipped_deferred_archive_ids.insert(row.id);
+            budget_overrun_candidate_started = true;
+            continue;
+        }
 
-        let archive_proof_valid = archive_batch_has_completed_manifest_sha_tx(
-            tx.as_mut(),
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &row.file_path,
-        )
-        .await?
-            && !invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &row.file_path)
-                .await?;
-        if archive_proof_valid {
-            let has_stale_replay_marker =
-                invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &row.file_path).await?;
-            let breakdown_replayed = hourly_rollup_archive_replayed_tx(
-                tx.as_mut(),
-                HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &row.file_path,
-            )
-            .await?;
-            if has_stale_replay_marker || !breakdown_replayed {
-                let reopened = if has_stale_replay_marker {
-                    reopen_replaced_materialized_invocation_archive_tx(
-                        tx.as_mut(),
+        let reopen_outcome =
+            if archive_proof_valid && (has_stale_replay_marker || !breakdown_replayed) {
+                // The archive fence and all archive reads live outside the database transaction. The
+                // helper revalidates the manifest and overlap closure in a short write transaction
+                // before clearing or resetting any durable state.
+                let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
+                Some(if has_stale_replay_marker {
+                    reopen_replaced_materialized_invocation_archive_without_long_tx(
+                        pool,
                         &row.file_path,
                         &row.sha256,
                         row.coverage_start_at.as_deref(),
@@ -1813,8 +1859,8 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                     )
                     .await?
                 } else {
-                    reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
-                        tx.as_mut(),
+                    reopen_materialized_invocation_archive_usage_breakdown_without_long_tx(
+                        pool,
                         &row.file_path,
                         &row.sha256,
                         row.coverage_start_at.as_deref(),
@@ -1822,31 +1868,15 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         &mut archive_fence,
                     )
                     .await?
-                };
-                match reopened {
-                    InvocationArchiveReopenResult::Reopened(reopened) => {
-                        touched_batches = touched_batches.saturating_add(reopened.len());
-                    }
-                    InvocationArchiveReopenResult::BudgetExhausted => {
-                        budget_exhausted = true;
-                    }
-                    InvocationArchiveReopenResult::Rejected => {
-                        rejected = true;
-                    }
-                }
-            }
-        } else if deferred_candidate {
-            // An already deferred row remains retryable until its manifest and replay proof are
-            // available again. Skip it for this pass so a recoverable deferred tail can proceed,
-            // but never delete the only durable retry record while proof is still absent.
-            tx.rollback().await?;
-            skipped_deferred_archive_ids.insert(row.id);
-            budget_overrun_candidate_started = true;
-            continue;
-        }
+                })
+            } else {
+                None
+            };
 
-        if rejected {
-            tx.rollback().await?;
+        if matches!(
+            reopen_outcome.as_ref(),
+            Some(InvocationArchiveReopenResult::Rejected)
+        ) {
             persist_deferred_usage_breakdown_repair_candidate(
                 pool,
                 &row,
@@ -1862,8 +1892,10 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             continue;
         }
 
-        if budget_exhausted {
-            tx.rollback().await?;
+        if matches!(
+            reopen_outcome.as_ref(),
+            Some(InvocationArchiveReopenResult::BudgetExhausted)
+        ) {
             persist_deferred_usage_breakdown_repair_candidate(
                 pool,
                 &row,
@@ -1873,6 +1905,10 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             break;
         }
 
+        if let Some(InvocationArchiveReopenResult::Reopened(reopened)) = reopen_outcome {
+            touched_batches = touched_batches.saturating_add(reopened.len());
+        }
+        let mut tx = pool.begin().await?;
         if deferred_candidate {
             delete_deferred_usage_breakdown_repair_candidate_tx(tx.as_mut(), row.id).await?;
         } else {
@@ -2070,6 +2106,386 @@ enum InvocationArchiveReopenResult {
     Reopened(Vec<String>),
     Rejected,
     BudgetExhausted,
+}
+
+#[derive(Debug, Clone)]
+struct InvocationArchiveReopenPlan {
+    primary_file_path: String,
+    primary_sha256: String,
+    file_paths: Vec<String>,
+    archive_rows: Vec<InvocationArchiveCoverageRow>,
+    bucket_start_epochs: HashSet<i64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum InvocationArchiveReopenMode {
+    ReplaceAllRollups,
+    UsageBreakdown,
+}
+
+#[derive(Debug)]
+enum InvocationArchiveReopenPreparation {
+    Ready(InvocationArchiveReopenPlan),
+    Rejected,
+    BudgetExhausted,
+}
+
+async fn prepare_invocation_archive_reopen_plan(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    include_initial_file: bool,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenPreparation> {
+    let archive_path = Path::new(file_path);
+    if !fence.try_fence(archive_path)? {
+        return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+    }
+    if historical_rollup_elapsed_budget_reached(fence.started_at, fence.max_elapsed) {
+        return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+    }
+    match invocation_archive_file_is_readable_with_budget(
+        archive_path,
+        expected_sha256,
+        fence.started_at,
+        fence.max_elapsed,
+    )
+    .await
+    {
+        InvocationArchiveReadability::Readable => {}
+        InvocationArchiveReadability::Rejected => {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        }
+        InvocationArchiveReadability::BudgetExhausted => {
+            return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+        }
+    }
+
+    let mut bucket_start_epochs = HashSet::new();
+    let mut reopened_file_path_set = HashSet::new();
+    let mut archive_rows = Vec::new();
+    if include_initial_file {
+        reopened_file_path_set.insert(file_path.to_string());
+        if let (Some(coverage_start_at), Some(coverage_end_at)) =
+            (coverage_start_at, coverage_end_at)
+        {
+            let Some(initial_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    coverage_start_at,
+                    coverage_end_at,
+                )?
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            bucket_start_epochs.extend(initial_bucket_start_epochs);
+            archive_rows.push(InvocationArchiveCoverageRow {
+                file_path: file_path.to_string(),
+                sha256: Some(expected_sha256.to_string()),
+                coverage_start_at: coverage_start_at.to_string(),
+                coverage_end_at: coverage_end_at.to_string(),
+            });
+        }
+    } else {
+        let (Some(coverage_start_at), Some(coverage_end_at)) = (coverage_start_at, coverage_end_at)
+        else {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        };
+        let Some(initial_bucket_start_epochs) =
+            usage_breakdown_repair_bucket_epochs_from_bounds(coverage_start_at, coverage_end_at)?
+        else {
+            return Ok(InvocationArchiveReopenPreparation::Rejected);
+        };
+        bucket_start_epochs.extend(initial_bucket_start_epochs);
+    }
+    if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+        return Ok(InvocationArchiveReopenPreparation::Rejected);
+    }
+
+    loop {
+        let overlapping_archives =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets(
+                pool,
+                &bucket_start_epochs,
+                &reopened_file_path_set,
+            )
+            .await?;
+        let mut expanded = false;
+        for overlapping_archive in overlapping_archives {
+            let Some(expected_overlap_sha256) = overlapping_archive
+                .sha256
+                .as_deref()
+                .filter(|sha256| !sha256.trim().is_empty())
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
+                continue;
+            }
+            if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+            }
+            if historical_rollup_elapsed_budget_reached(fence.started_at, fence.max_elapsed) {
+                return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+            }
+            match invocation_archive_file_is_readable_with_budget(
+                Path::new(&overlapping_archive.file_path),
+                expected_overlap_sha256,
+                fence.started_at,
+                fence.max_elapsed,
+            )
+            .await
+            {
+                InvocationArchiveReadability::Readable => {}
+                InvocationArchiveReadability::Rejected => {
+                    return Ok(InvocationArchiveReopenPreparation::Rejected);
+                }
+                InvocationArchiveReadability::BudgetExhausted => {
+                    return Ok(InvocationArchiveReopenPreparation::BudgetExhausted);
+                }
+            }
+            let Some(overlap_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    &overlapping_archive.coverage_start_at,
+                    &overlapping_archive.coverage_end_at,
+                )?
+            else {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            };
+            bucket_start_epochs.extend(overlap_bucket_start_epochs);
+            if bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                return Ok(InvocationArchiveReopenPreparation::Rejected);
+            }
+            archive_rows.push(overlapping_archive);
+            expanded = true;
+        }
+        if !expanded {
+            break;
+        }
+    }
+
+    if !reopened_file_path_set.contains(file_path) {
+        return Ok(InvocationArchiveReopenPreparation::Rejected);
+    }
+    let mut file_paths = reopened_file_path_set.into_iter().collect::<Vec<_>>();
+    file_paths.sort_unstable();
+    archive_rows.sort_by(|left, right| left.file_path.cmp(&right.file_path));
+    Ok(InvocationArchiveReopenPreparation::Ready(
+        InvocationArchiveReopenPlan {
+            primary_file_path: file_path.to_string(),
+            primary_sha256: expected_sha256.to_string(),
+            file_paths,
+            archive_rows,
+            bucket_start_epochs,
+        },
+    ))
+}
+
+async fn invocation_archive_reopen_plan_is_current(
+    tx: &mut SqliteConnection,
+    plan: &InvocationArchiveReopenPlan,
+) -> Result<bool> {
+    let current_primary_sha256 = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT sha256
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND file_path = ?2
+          AND status = ?3
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+        LIMIT 1
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+    .bind(&plan.primary_file_path)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if current_primary_sha256.as_deref() != Some(plan.primary_sha256.as_str()) {
+        return Ok(false);
+    }
+    for archive_row in &plan.archive_rows {
+        let current_row = sqlx::query_as::<_, InvocationArchiveCoverageRow>(
+            r#"
+            SELECT file_path, sha256, coverage_start_at, coverage_end_at
+            FROM archive_batches
+            WHERE dataset = ?1
+              AND file_path = ?2
+              AND status = ?3
+            LIMIT 1
+            "#,
+        )
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&archive_row.file_path)
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .fetch_optional(&mut *tx)
+        .await?;
+        if current_row.as_ref() != Some(archive_row) {
+            return Ok(false);
+        }
+    }
+    if plan.bucket_start_epochs.is_empty() {
+        return Ok(true);
+    }
+    let mut current_rows = Vec::new();
+    let mut current_bucket_start_epochs = plan.bucket_start_epochs.clone();
+    let mut excluded_file_paths = HashSet::new();
+    loop {
+        let current_page =
+            load_completed_invocation_archives_overlapping_usage_breakdown_buckets_tx(
+                tx,
+                &current_bucket_start_epochs,
+                &excluded_file_paths,
+            )
+            .await?;
+        if current_page.is_empty() {
+            break;
+        }
+        for current_row in current_page {
+            if !excluded_file_paths.insert(current_row.file_path.clone()) {
+                continue;
+            }
+            let Some(overlap_bucket_start_epochs) =
+                usage_breakdown_repair_bucket_epochs_from_bounds(
+                    &current_row.coverage_start_at,
+                    &current_row.coverage_end_at,
+                )?
+            else {
+                return Ok(false);
+            };
+            current_bucket_start_epochs.extend(overlap_bucket_start_epochs);
+            if current_bucket_start_epochs.len() > USAGE_BREAKDOWN_REPAIR_MAX_BUCKETS {
+                return Ok(false);
+            }
+            current_rows.push(current_row);
+        }
+    }
+    current_rows.sort_by(|left, right| left.file_path.cmp(&right.file_path));
+    Ok(
+        current_bucket_start_epochs == plan.bucket_start_epochs
+            && current_rows == plan.archive_rows,
+    )
+}
+
+async fn apply_invocation_archive_reopen_plan(
+    pool: &Pool<Sqlite>,
+    plan: InvocationArchiveReopenPlan,
+    mode: InvocationArchiveReopenMode,
+) -> Result<InvocationArchiveReopenResult> {
+    let mut tx = pool.begin().await?;
+    if !invocation_archive_reopen_plan_is_current(tx.as_mut(), &plan).await? {
+        tx.rollback().await?;
+        return Ok(InvocationArchiveReopenResult::Rejected);
+    }
+    match mode {
+        InvocationArchiveReopenMode::ReplaceAllRollups => {
+            clear_invocation_rollup_rows_for_bucket_epochs_tx(
+                tx.as_mut(),
+                &plan.bucket_start_epochs,
+            )
+            .await?;
+            reset_invocation_archive_replay_state_tx(tx.as_mut(), &plan.file_paths).await?;
+        }
+        InvocationArchiveReopenMode::UsageBreakdown => {
+            if !plan.bucket_start_epochs.is_empty() {
+                clear_usage_breakdown_rollup_rows_for_bucket_epochs_tx(
+                    tx.as_mut(),
+                    &plan.bucket_start_epochs,
+                )
+                .await?;
+                let mut bucket_start_epochs =
+                    plan.bucket_start_epochs.iter().copied().collect::<Vec<_>>();
+                bucket_start_epochs.sort_unstable();
+                let retained_live_rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+                    tx.as_mut(),
+                    &bucket_start_epochs,
+                )
+                .await?;
+                upsert_invocation_hourly_rollups_tx(
+                    tx.as_mut(),
+                    &retained_live_rows,
+                    &[HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN],
+                )
+                .await?;
+            }
+            for file_path in &plan.file_paths {
+                reset_invocation_archive_usage_breakdown_backfill_state_tx(tx.as_mut(), file_path)
+                    .await?;
+            }
+        }
+    }
+    tx.commit().await?;
+    Ok(InvocationArchiveReopenResult::Reopened(plan.file_paths))
+}
+
+async fn reopen_replaced_materialized_invocation_archive_without_long_tx(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    match prepare_invocation_archive_reopen_plan(
+        pool,
+        file_path,
+        expected_sha256,
+        coverage_start_at,
+        coverage_end_at,
+        false,
+        fence,
+    )
+    .await?
+    {
+        InvocationArchiveReopenPreparation::Ready(plan) => {
+            apply_invocation_archive_reopen_plan(
+                pool,
+                plan,
+                InvocationArchiveReopenMode::ReplaceAllRollups,
+            )
+            .await
+        }
+        InvocationArchiveReopenPreparation::Rejected => Ok(InvocationArchiveReopenResult::Rejected),
+        InvocationArchiveReopenPreparation::BudgetExhausted => {
+            Ok(InvocationArchiveReopenResult::BudgetExhausted)
+        }
+    }
+}
+
+async fn reopen_materialized_invocation_archive_usage_breakdown_without_long_tx(
+    pool: &Pool<Sqlite>,
+    file_path: &str,
+    expected_sha256: &str,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+    fence: &mut InvocationArchiveRepairFence,
+) -> Result<InvocationArchiveReopenResult> {
+    match prepare_invocation_archive_reopen_plan(
+        pool,
+        file_path,
+        expected_sha256,
+        coverage_start_at,
+        coverage_end_at,
+        true,
+        fence,
+    )
+    .await?
+    {
+        InvocationArchiveReopenPreparation::Ready(plan) => {
+            apply_invocation_archive_reopen_plan(
+                pool,
+                plan,
+                InvocationArchiveReopenMode::UsageBreakdown,
+            )
+            .await
+        }
+        InvocationArchiveReopenPreparation::Rejected => Ok(InvocationArchiveReopenResult::Rejected),
+        InvocationArchiveReopenPreparation::BudgetExhausted => {
+            Ok(InvocationArchiveReopenResult::BudgetExhausted)
+        }
+    }
 }
 
 pub(crate) fn invocation_archive_replay_temp_path(archive_path: &Path) -> PathBuf {

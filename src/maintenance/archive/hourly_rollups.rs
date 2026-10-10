@@ -4436,7 +4436,7 @@ pub(crate) struct InvocationHourlyRollupReconciliation {
     pub(crate) source_complete: bool,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 struct InvocationArchiveIntegrityFileRow {
     file_path: String,
     sha256: Option<String>,
@@ -4521,34 +4521,39 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
-    // Keep the manifest and live rows in one SQLite snapshot. Retention may move a row from the
-    // live table into an archive between these scans; mixing snapshots would certify a gap as a
-    // complete source and delete its canonical rollup.
-    let mut tx = pool.begin().await?;
-    let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
-        r#"
-        SELECT file_path, sha256
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
-        ORDER BY month_key ASC, created_at ASC, id ASC
-        "#,
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(error) if error.to_string().contains("no such table") => Vec::new(),
-        Err(error) => return Err(error.into()),
+    // Keep the database transaction out of archive hashing/decompression. A short read
+    // transaction is enough to capture the initial manifest and integrity boundary; the live
+    // source scan below establishes its own snapshot and rechecks this manifest before writes.
+    let (archive_files, integrity_source_start_date) = {
+        let mut tx = pool.begin().await?;
+        let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
+            r#"
+            SELECT file_path, sha256
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+              AND status = ?1
+            ORDER BY month_key ASC, created_at ASC, id ASC
+            "#,
+        )
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .fetch_all(&mut *tx)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) if error.to_string().contains("no such table") => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let integrity_source_start_date =
+            load_long_term_integrity_source_start_date(&mut tx).await?;
+        tx.commit().await?;
+        (archive_files, integrity_source_start_date)
     };
-    let integrity_source_start_date = load_long_term_integrity_source_start_date(&mut tx).await?;
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut seen_ids = HashSet::new();
     let mut source_incomplete = false;
     let mut unavailable_archive_file_paths = Vec::new();
 
-    for archive_file in archive_files {
+    for archive_file in &archive_files {
         let Some(expected_sha256) = archive_file
             .sha256
             .as_deref()
@@ -4573,6 +4578,20 @@ where
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
+        let _archive_lock = match retention_archive_file_lock(&archive_path) {
+            Ok(lock) => lock,
+            Err(error) => {
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    error = %error,
+                    "could not acquire archive lock during invocation hourly rollup proof reconciliation"
+                );
+                source_incomplete = true;
+                unavailable_archive_file_paths.push(archive_file.file_path.clone());
+                continue;
+            }
+        };
         let actual_sha256 = match sha256_hex_file(&archive_path) {
             Ok(value) => value,
             Err(error) => {
@@ -4673,6 +4692,13 @@ where
         }
     }
 
+    // Establish a live-table snapshot before the test/retention hook runs. The transaction now
+    // covers only bounded SQLite reads and the final rollup writes, never archive file I/O.
+    let mut tx = pool.begin().await?;
+    let _: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1")
+            .fetch_optional(&mut *tx)
+            .await?;
     before_live_source_scan().await;
 
     let mut cursor_id = 0_i64;
@@ -4738,6 +4764,31 @@ where
             break;
         }
         accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+    }
+
+    let archive_files_after = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
+        r#"
+        SELECT file_path, sha256
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) if error.to_string().contains("no such table") => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if archive_files_after != archive_files {
+        source_incomplete = true;
+        warn!(
+            dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            "archive manifest changed while reconciling invocation hourly rollups"
+        );
     }
 
     if source_incomplete {
