@@ -5536,24 +5536,6 @@ async fn repair_invocation_summary_rollups_with_mode(
     pool: &Pool<Sqlite>,
     force_rebuild: bool,
 ) -> Result<bool> {
-    if !force_rebuild {
-        // The regular startup path uses the same resumable page state as forced repair. This
-        // keeps archive inflation outside SQLite write transactions while still presenting the
-        // historical rollup as complete to callers that explicitly await readiness.
-        loop {
-            if repair_invocation_summary_rollups_force_page(pool).await? {
-                return Ok(true);
-            }
-            if hourly_rollup_progress_exists(
-                pool,
-                INVOCATION_SUMMARY_ROLLUP_REPAIR_INCOMPLETE_DATASET,
-            )
-            .await?
-            {
-                return Ok(false);
-            }
-        }
-    }
     if force_rebuild {
         return repair_invocation_summary_rollups_force_page(pool).await;
     }
@@ -6043,12 +6025,6 @@ async fn repair_invocation_summary_rollups_force_page(pool: &Pool<Sqlite>) -> Re
                 archive_cursor = *archive_id;
                 archive_row_cursor_exists = false;
                 archive_row_cursor = 0;
-                // Keep each pass to one completed authoritative archive when there is more work
-                // behind the current row. A final archive may proceed to the bounded live tail
-                // so one-archive repairs still complete in one call.
-                if page_rows.len() > 1 {
-                    return Ok(false);
-                }
                 continue;
             }
             return Ok(false);
