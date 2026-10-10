@@ -4318,7 +4318,7 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         BEFORE UPDATE OF status, summary_source_kind, sha256 ON archive_batches
         WHEN NEW.dataset = 'codex_invocations'
           AND NEW.status = 'completed'
-          AND NEW.summary_source_kind = 'authoritative'
+          AND NEW.summary_source_kind = 'authoritative' AND TRIM(COALESCE(NEW.sha256, '')) <> '' AND OLD.replacement_staged_path IS NULL
           AND (
               OLD.status <> 'completed'
               OR OLD.summary_source_kind IS NULL
