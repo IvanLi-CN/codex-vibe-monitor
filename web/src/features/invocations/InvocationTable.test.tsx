@@ -1261,7 +1261,7 @@ describe("InvocationTable", () => {
       createWorkflowDetailFixture(record),
     );
 
-    await renderInteractiveTable([record]);
+    await renderInteractiveTable([record], { conversationId: "conversation-from-history" });
 
     const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? [];
     expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1);
@@ -1279,6 +1279,7 @@ describe("InvocationTable", () => {
 
     await waitForCondition(() => document.body.textContent?.includes("工作流时间线") === true);
     expect(apiMocks.fetchInvocationWorkflowDetail).toHaveBeenCalledWith(33);
+    expect(document.body.textContent).toContain("conversation-from-history");
 
     const requestButton = Array.from(document.querySelectorAll("button")).find(
       (button) =>

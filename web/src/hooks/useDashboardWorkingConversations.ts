@@ -16,6 +16,7 @@ export const DASHBOARD_WORKING_CONVERSATIONS_VISIBLE_PATCH_BATCH_MS = 1_000;
 export const DASHBOARD_WORKING_CONVERSATIONS_REFRESH_THROTTLE_MS = 5_000;
 export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MIN = 4;
 export const DASHBOARD_WORKING_CONVERSATIONS_RECENT_PREVIEW_MAX = 16;
+export const DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE = 100;
 
 const WORKING_SET_WINDOW_MS = 5 * 60 * 1_000;
 
@@ -56,11 +57,12 @@ function normalizeRequestedPageSize(value: number) {
   if (!Number.isFinite(value)) {
     return DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE;
   }
-  return Math.max(
+  const roundedPageSize = Math.max(
     DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
     Math.ceil(Math.trunc(value) / DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE) *
       DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE,
   );
+  return Math.min(DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE, roundedPageSize);
 }
 
 function buildWorkingConversationsTopic(
@@ -116,6 +118,7 @@ export function useDashboardWorkingConversations(
   const cards = useMemo(() => mapPromptCacheConversationsToDashboardCards(data), [data]);
   const hasDelayedStatistics = hasPromptCacheConversationDelayedStatistics(data);
   const hasMore = data?.hasMore === true || Boolean(data?.nextCursor);
+  const canLoadMore = hasMore && requestedPageSize < DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE;
   const recentPreviewLimit = useMemo(
     () =>
       resolveDashboardWorkingConversationsRecentPreviewLimit(
@@ -129,15 +132,20 @@ export function useDashboardWorkingConversations(
   );
 
   const loadMore = useCallback(() => {
-    if (!hasMore) return;
+    if (!canLoadMore) return;
     setRequestedPageSize((current) =>
       normalizeRequestedPageSize(current + DASHBOARD_WORKING_CONVERSATIONS_PAGE_SIZE),
     );
-  }, [hasMore]);
+  }, [canLoadMore]);
 
   const setRefreshTargetCount = useCallback((count: number) => {
     if (!Number.isFinite(count)) return;
-    setRequestedPageSize((current) => Math.max(current, normalizeRequestedPageSize(count)));
+    setRequestedPageSize((current) =>
+      Math.min(
+        DASHBOARD_WORKING_CONVERSATIONS_MAX_PAGE_SIZE,
+        Math.max(current, normalizeRequestedPageSize(count)),
+      ),
+    );
   }, []);
 
   return {
@@ -146,6 +154,7 @@ export function useDashboardWorkingConversations(
     hasDelayedStatistics,
     totalMatched: data?.totalMatched ?? cards.length,
     hasMore,
+    canLoadMore,
     isLoading,
     isLoadingMore,
     error,

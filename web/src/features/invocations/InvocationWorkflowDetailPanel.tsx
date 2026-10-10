@@ -19,10 +19,6 @@ import {
   fetchInvocationResponseBody,
   fetchInvocationWorkflowDetail,
 } from "../../lib/api";
-import {
-  formatDashboardWorkingConversationSequenceId,
-  hashDashboardWorkingConversationKey,
-} from "../../lib/dashboardWorkingConversations";
 import { resolveInvocationEndpointDisplay } from "../../lib/invocation";
 import { resolveInvocationDisplayStatus } from "../../lib/invocationStatus";
 import {
@@ -78,6 +74,7 @@ interface TimelineFact {
 
 interface InvocationWorkflowDetailPanelProps {
   record: ApiInvocation;
+  conversationId?: string | null;
   focusedAttemptId?: string | null;
   size?: DetailPanelSize;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
@@ -225,14 +222,6 @@ function formatCurrency(value: number | null | undefined, locale: string) {
     minimumFractionDigits: 4,
     maximumFractionDigits: 4,
   }).format(value);
-}
-
-function buildConversationShortId(promptCacheKey: string | null | undefined) {
-  const normalized = promptCacheKey?.trim();
-  if (!normalized) return FALLBACK_CELL;
-  return formatDashboardWorkingConversationSequenceId(
-    `WC-${hashDashboardWorkingConversationKey(normalized).slice(0, 6)}`,
-  );
 }
 
 function buildPayloadViewerLabels(isZh: boolean) {
@@ -3204,6 +3193,7 @@ export function InvocationWorkflowAttemptRecord({
 
 export function InvocationWorkflowDetailPanel({
   record,
+  conversationId,
   focusedAttemptId = null,
   size = "default",
   onOpenUpstreamAccount,
@@ -3336,7 +3326,7 @@ export function InvocationWorkflowDetailPanel({
 
   const hero = detail.hero;
   const timeline = detail.timeline;
-  const conversationShortId = buildConversationShortId(hero.promptCacheKey);
+  const displayConversationId = conversationId?.trim() || null;
   const finalStatusRaw =
     hero.finalStatus ?? resolveInvocationDisplayStatus(record) ?? record.status ?? FALLBACK_CELL;
   const finalStatusMeta = resolveStatusMeta(finalStatusRaw, isZh);
@@ -3536,10 +3526,12 @@ export function InvocationWorkflowDetailPanel({
               </div>
 
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-                <IdentityField
-                  label={isZh ? "对话 ID" : "Conversation ID"}
-                  value={conversationShortId}
-                />
+                {displayConversationId ? (
+                  <IdentityField
+                    label={isZh ? "对话 ID" : "Conversation ID"}
+                    value={displayConversationId}
+                  />
+                ) : null}
                 <IdentityField
                   label={isZh ? "原始 Prompt Cache Key" : "Raw Prompt Cache Key"}
                   value={hero.promptCacheKey ?? FALLBACK_CELL}
