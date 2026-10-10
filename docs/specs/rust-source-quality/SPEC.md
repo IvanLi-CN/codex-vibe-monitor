@@ -60,12 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 38 explicit file entries: 20
-production candidates above 2,500 lines and 18 test/helper candidates above
-3,000 lines. The immutable preparation baseline retains its original candidate
-counts for checker compatibility. Each current entry MUST record its exact
-current budget, role, and either a specific next module workstream or a
-reasoned cohesive-module exception.
+The policy MUST keep the current inventory as 36 explicit file entries: 19 production candidates above 2,500 lines and 17 test/helper candidates above 3,000 lines. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
 
 covers: VER-RUST-SOURCE-QUALITY-004
 
@@ -94,10 +89,9 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 38 entries have
-specific next module workstreams. The schema and fixture harness retain the
-exception form for a future entry only when its reason is explicit and
-cohesive, never as an escape hatch for an unselected or growing file.
+The current inventory retains no cohesive-module exceptions: all 36 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
+
+The prompt-cache conversation query governance extraction removes the original parent from the selected inventory and assigns all 60 existing tests exactly once: 47 stateful SQLite cases across metadata/history, persisted statistics, activity/chart windows, pagination, the reused snapshots suite, and runtime/cache coordination; four in-memory response codec cases to lightweight; and nine file-backed metadata backfills to archive/file I/O. After rustfmt, the parent is 10 lines, the stateful children are 923, 1,536, 681, 903, 1,402, 617, and 16 lines, and the resource children are 85 and 591 lines; all affected files are below the 3,000-line test/helper target. The extraction preserves test identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup, while consolidating only the three identical count-mode row inserters and moving the two private wrappers to `test_support.rs`; the final candidate also removes an unused archive-test import without changing behavior; immutable preparation counts remain 32/23 and suppression inventory remains 117.
 
 The group note CRUD extraction moves the complete `update_upstream_account_group`
 and `delete_upstream_account_group` handler region from physical lines 2,043
@@ -250,8 +244,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 20 production and 18 test/helper entries, with
-exact budgets and explicit workstreams or reasoned exceptions.
+Pass condition: the policy has 19 production and 17 test/helper entries (36 total), with exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
 
