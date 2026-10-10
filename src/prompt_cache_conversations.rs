@@ -244,6 +244,25 @@ struct PromptCacheStatsPageOptions {
     run_deadline: Option<Instant>,
 }
 
+#[cfg(test)]
+pub(crate) struct PromptCacheStatsPageCommitHook {
+    pub(crate) ready: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK: Arc<PromptCacheStatsPageCommitHook>;
+}
+
+#[cfg(test)]
+async fn prompt_cache_test_wait_before_page_commit() {
+    if let Ok(hook) = PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.try_with(Arc::clone) {
+        hook.ready.notify_one();
+        hook.release.notified().await;
+    }
+}
+
 struct PromptCacheMaterializationBatchWork {
     identities_created: usize,
     refreshed: usize,
@@ -510,6 +529,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
             cursor_id INTEGER NOT NULL DEFAULT 0,\
             accumulator_json TEXT NOT NULL,\
             page_size INTEGER NOT NULL DEFAULT {PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE},\
+            pending_generation INTEGER,\
             updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))\
         )"
     ))
@@ -520,6 +540,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
         ("cursor_occurred_at", "TEXT"),
         ("cursor_id", "INTEGER NOT NULL DEFAULT 0"),
         ("page_size", "INTEGER NOT NULL DEFAULT 256"),
+        ("pending_generation", "INTEGER"),
     ] {
         ensure_prompt_cache_refresh_staging_column(pool, column, definition).await?;
     }
@@ -2956,6 +2977,7 @@ struct PromptCacheConversationStatsStagingRow {
     cursor_id: i64,
     accumulator_json: String,
     page_size: i64,
+    pending_generation: Option<i64>,
 }
 
 fn empty_prompt_cache_conversation_stats(
@@ -3196,16 +3218,36 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     let expected_generation = queue_generation.or(clock_generation).unwrap_or(0);
     let staging = budgeted_query!(
         sqlx::query_as::<_, PromptCacheConversationStatsStagingRow>(&format!(
-            "SELECT prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key = ?1"
+            "SELECT prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,pending_generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key = ?1"
         ))
         .bind(prompt_cache_key)
         .fetch_optional(&mut *connection.connection)
     );
-    let source_generation_changed = staging
-        .as_ref()
-        .is_some_and(|staging| staging.generation != expected_generation);
     let staging = match staging {
         Some(staging) if staging.generation == expected_generation => staging,
+        Some(staging) if staging.pending_generation != Some(expected_generation) => {
+            budgeted_query!(
+                sqlx::query(&format!(
+                    "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET pending_generation=?1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?2"
+                ))
+                .bind(expected_generation)
+                .bind(prompt_cache_key)
+                .execute(&mut *connection.connection)
+            );
+            info!(
+                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                source_generation = expected_generation,
+                staged_cursor_id = staging.cursor_id,
+                "prompt-cache statistics generation change coalesced before restart"
+            );
+            connection.close_on_drop();
+            return Ok(PromptCacheStatsPageWork {
+                outcome: PromptCacheStatsPageOutcome::GenerationChanged,
+                rows_read: 0,
+                committed: true,
+                visited: true,
+            });
+        }
         _ => {
             let source_max_invocation_id = budgeted_query!(
                 sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
@@ -3217,7 +3259,7 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             let accumulator_json = serde_json::to_string(&accumulator)?;
             budgeted_query!(
                 sqlx::query(&format!(
-                    "INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,updated_at) VALUES (?1,?2,?3,NULL,0,?4,?5,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation,source_max_invocation_id=excluded.source_max_invocation_id,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=excluded.accumulator_json,page_size=excluded.page_size,updated_at=excluded.updated_at"
+                    "INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,pending_generation,updated_at) VALUES (?1,?2,?3,NULL,0,?4,?5,NULL,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation,source_max_invocation_id=excluded.source_max_invocation_id,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=excluded.accumulator_json,page_size=excluded.page_size,pending_generation=NULL,updated_at=excluded.updated_at"
                 ))
                 .bind(prompt_cache_key)
                 .bind(expected_generation)
@@ -3237,24 +3279,10 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
                     &conversation_id,
                 ))?,
                 page_size: PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE,
+                pending_generation: None,
             }
         }
     };
-    if source_generation_changed {
-        info!(
-            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-            source_generation = expected_generation,
-            restart_cursor_id = 0,
-            "prompt-cache statistics staging restarted after generation change"
-        );
-        connection.close_on_drop();
-        return Ok(PromptCacheStatsPageWork {
-            outcome: PromptCacheStatsPageOutcome::GenerationChanged,
-            rows_read: 0,
-            committed: true,
-            visited: true,
-        });
-    }
     let mut accumulator: PromptCacheConversationStatsRow =
         serde_json::from_str(&staging.accumulator_json).with_context(|| {
             format!(
@@ -3338,6 +3366,8 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     for row in &page {
         merge_prompt_cache_conversation_invocation(&mut accumulator, row);
     }
+    #[cfg(test)]
+    prompt_cache_test_wait_before_page_commit().await;
     let mut tx = connection.connection.begin().await?;
     let current_generation = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1"
@@ -3347,22 +3377,10 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     .await?;
     if current_generation != queue_generation {
         let next_generation = current_generation.unwrap_or(0);
-        let source_max_invocation_id =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
-                .fetch_one(&mut *tx)
-                .await?
-                .unwrap_or_default();
-        let reset = serde_json::to_string(&empty_prompt_cache_conversation_stats(
-            prompt_cache_key,
-            &conversation_id,
-        ))?;
         sqlx::query(&format!(
-            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET generation=?1,source_max_invocation_id=?2,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=?3,page_size=?4,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?5"
+            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET pending_generation=?1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?2"
         ))
         .bind(next_generation)
-        .bind(source_max_invocation_id)
-        .bind(reset)
-        .bind(PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE)
         .bind(prompt_cache_key)
         .execute(&mut *tx)
         .await?;
@@ -3372,8 +3390,7 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             previous_generation = expected_generation,
             source_generation = next_generation,
             discarded_rows = page.len(),
-            restart_cursor_id = 0,
-            "prompt-cache statistics source changed before page publication"
+            "prompt-cache statistics source change deferred before page publication"
         );
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,

@@ -825,7 +825,7 @@ pub(crate) async fn load_pending_pool_upstream_binding_attempt_rows_from_archive
     }
 
     let temp_path = owner_facing_pool_upstream_pending_archive_temp_path(&archive_path);
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     let query_result = async {
         inflate_pending_pool_upstream_node_health_archive_to_temp(&archive_path, &temp_path)
             .await?;

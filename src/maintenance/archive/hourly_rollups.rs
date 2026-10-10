@@ -21,6 +21,7 @@ mod archive_hourly_rollup_support;
 pub(crate) use archive_hourly_rollup_support::*;
 
 pub(crate) const PARALLEL_WORK_MINUTE_ROLLUP_RETAINED_COMPLETE_SHANGHAI_DAYS: i64 = 30;
+const INVOCATION_ROLLUP_SOURCE_SNAPSHOT_RETRIES: u8 = 2;
 
 pub(crate) fn parallel_work_minute_rollup_keep_start_epoch(now: DateTime<Utc>) -> Result<i64> {
     let local_date = now.with_timezone(&Shanghai).date_naive()
@@ -4436,7 +4437,7 @@ pub(crate) struct InvocationHourlyRollupReconciliation {
     pub(crate) source_complete: bool,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, PartialEq, Eq, FromRow)]
 struct InvocationArchiveIntegrityFileRow {
     file_path: String,
     sha256: Option<String>,
@@ -4521,34 +4522,57 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = ()>,
 {
-    // Keep the manifest and live rows in one SQLite snapshot. Retention may move a row from the
-    // live table into an archive between these scans; mixing snapshots would certify a gap as a
-    // complete source and delete its canonical rollup.
-    let mut tx = pool.begin().await?;
-    let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
-        r#"
-        SELECT file_path, sha256
-        FROM archive_batches
-        WHERE dataset = 'codex_invocations'
-          AND status = ?1
-        ORDER BY month_key ASC, created_at ASC, id ASC
-        "#,
+    let mut before_live_source_scan = Some(before_live_source_scan);
+    reconcile_invocation_rollup_hourly_from_sources_with_retry(
+        pool,
+        &mut before_live_source_scan,
+        INVOCATION_ROLLUP_SOURCE_SNAPSHOT_RETRIES,
     )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_all(&mut *tx)
     .await
-    {
-        Ok(rows) => rows,
-        Err(error) if error.to_string().contains("no such table") => Vec::new(),
-        Err(error) => return Err(error.into()),
+}
+
+async fn reconcile_invocation_rollup_hourly_from_sources_with_retry<F, Fut>(
+    pool: &Pool<Sqlite>,
+    before_live_source_scan: &mut Option<F>,
+    retries_remaining: u8,
+) -> Result<InvocationHourlyRollupReconciliation>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    // Keep the database transaction out of archive hashing/decompression. A short read
+    // transaction is enough to capture the initial manifest and integrity boundary; the live
+    // source scan below establishes its own snapshot and rechecks this manifest before writes.
+    let (archive_files, integrity_source_start_date) = {
+        let mut tx = pool.begin().await?;
+        let archive_files = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
+            r#"
+            SELECT file_path, sha256
+            FROM archive_batches
+            WHERE dataset = 'codex_invocations'
+              AND status = ?1
+            ORDER BY month_key ASC, created_at ASC, id ASC
+            "#,
+        )
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .fetch_all(&mut *tx)
+        .await
+        {
+            Ok(rows) => rows,
+            Err(error) if error.to_string().contains("no such table") => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let integrity_source_start_date =
+            load_long_term_integrity_source_start_date(&mut tx).await?;
+        tx.commit().await?;
+        (archive_files, integrity_source_start_date)
     };
-    let integrity_source_start_date = load_long_term_integrity_source_start_date(&mut tx).await?;
     let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
     let mut seen_ids = HashSet::new();
     let mut source_incomplete = false;
     let mut unavailable_archive_file_paths = Vec::new();
 
-    for archive_file in archive_files {
+    for archive_file in &archive_files {
         let Some(expected_sha256) = archive_file
             .sha256
             .as_deref()
@@ -4573,6 +4597,20 @@ where
             unavailable_archive_file_paths.push(archive_file.file_path.clone());
             continue;
         }
+        let _archive_lock = match retention_archive_file_lock(&archive_path) {
+            Ok(lock) => lock,
+            Err(error) => {
+                warn!(
+                    dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                    file_path = %archive_path.display(),
+                    error = %error,
+                    "could not acquire archive lock during invocation hourly rollup proof reconciliation"
+                );
+                source_incomplete = true;
+                unavailable_archive_file_paths.push(archive_file.file_path.clone());
+                continue;
+            }
+        };
         let actual_sha256 = match sha256_hex_file(&archive_path) {
             Ok(value) => value,
             Err(error) => {
@@ -4607,7 +4645,7 @@ where
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         let archive_result = async {
             inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
             let archive_pool = SqlitePoolOptions::new()
@@ -4673,7 +4711,16 @@ where
         }
     }
 
-    before_live_source_scan().await;
+    // Establish a live-table snapshot before the test/retention hook runs. The transaction now
+    // covers only bounded SQLite reads and the final rollup writes, never archive file I/O.
+    let mut tx = pool.begin().await?;
+    let _: Option<i64> =
+        sqlx::query_scalar("SELECT id FROM codex_invocations ORDER BY id ASC LIMIT 1")
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(before_live_source_scan) = before_live_source_scan.take() {
+        before_live_source_scan().await;
+    }
 
     let mut cursor_id = 0_i64;
     loop {
@@ -4738,6 +4785,43 @@ where
             break;
         }
         accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+    }
+
+    let archive_files_after = match sqlx::query_as::<_, InvocationArchiveIntegrityFileRow>(
+        r#"
+        SELECT file_path, sha256
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(&mut *tx)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(error) if error.to_string().contains("no such table") => Vec::new(),
+        Err(error) => return Err(error.into()),
+    };
+    if archive_files_after != archive_files {
+        warn!(
+            dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            retries_remaining,
+            "archive manifest changed during invocation hourly rollup snapshot; retrying"
+        );
+        drop(tx);
+        if retries_remaining > 0 {
+            return Box::pin(reconcile_invocation_rollup_hourly_from_sources_with_retry(
+                pool,
+                before_live_source_scan,
+                retries_remaining - 1,
+            ))
+            .await;
+        }
+        bail!(
+            "archive manifest changed during invocation hourly rollup snapshot after retries; retryable snapshot-write conflict"
+        );
     }
 
     if source_incomplete {
@@ -4979,7 +5063,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -6967,168 +7051,6 @@ mod retention_breakdown_materialization_tests {
         assert_eq!(stored.2, 1);
         assert_eq!(stored.3, 41);
         assert_eq!(stored.4, 0.50_f64);
-    }
-
-    #[tokio::test]
-    async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
-        let pool = test_pool().await;
-        let bucket_start_epoch = invocation_bucket_start_epoch("2026-07-01 15:05:00")
-            .expect("derive bucket start epoch");
-        let first_file_path = "/tmp/usage-breakdown-overlap-first.sqlite.gz";
-        let second_file_path = "/tmp/usage-breakdown-overlap-second.sqlite.gz";
-
-        for (file_path, coverage_start_at, coverage_end_at, replayed, cursor_id, sha256) in [
-            (
-                first_file_path,
-                "2026-07-01 15:05:00",
-                "2026-07-01 15:15:00",
-                false,
-                101_i64,
-                "usage-breakdown-overlap-first-sha",
-            ),
-            (
-                second_file_path,
-                "2026-07-01 15:25:00",
-                "2026-07-01 15:35:00",
-                true,
-                202_i64,
-                "usage-breakdown-overlap-second-sha",
-            ),
-        ] {
-            sqlx::query(
-                r#"
-                INSERT INTO archive_batches (
-                    dataset,
-                    month_key,
-                    file_path,
-                    status,
-                    sha256,
-                    coverage_start_at,
-                    coverage_end_at,
-                    historical_rollups_materialized_at
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'))
-                "#,
-            )
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind("2026-07")
-            .bind(file_path)
-            .bind(ARCHIVE_STATUS_COMPLETED)
-            .bind(sha256)
-            .bind(coverage_start_at)
-            .bind(coverage_end_at)
-            .execute(&pool)
-            .await
-            .expect("insert archive batch");
-
-            sqlx::query(
-                r#"
-                INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
-                VALUES (?1, ?2, ?3, datetime('now'))
-                "#,
-            )
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind(file_path)
-            .bind(cursor_id)
-            .execute(&pool)
-            .await
-            .expect("insert archive progress");
-
-            if replayed {
-                sqlx::query(
-                    r#"
-                    INSERT INTO hourly_rollup_archive_replay (
-                        target, dataset, file_path, archive_sha256, replayed_at
-                    )
-                    VALUES (?1, ?2, ?3, ?4, datetime('now'))
-                    "#,
-                )
-                .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-                .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-                .bind(file_path)
-                .bind(sha256)
-                .execute(&pool)
-                .await
-                .expect("insert replay marker");
-            }
-        }
-
-        for (upstream_account_key, upstream_account_id, normalized_model) in [
-            ("upstream:17", Some(17_i64), "gpt-5"),
-            ("upstream:18", Some(18_i64), "gpt-5-mini"),
-        ] {
-            sqlx::query(
-                r#"
-                INSERT INTO upstream_account_usage_breakdown_hourly (
-                    bucket_start_epoch,
-                    source,
-                    upstream_account_key,
-                    upstream_account_id,
-                    normalized_model,
-                    normalized_reasoning_effort,
-                    request_count,
-                    success_count,
-                    failure_count
-                )
-                VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0)
-                "#,
-            )
-            .bind(bucket_start_epoch)
-            .bind(SOURCE_PROXY)
-            .bind(upstream_account_key)
-            .bind(upstream_account_id)
-            .bind(normalized_model)
-            .execute(&pool)
-            .await
-            .expect("seed breakdown rollup row");
-        }
-
-        let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
-            .await
-            .expect("repair materialized usage breakdown state");
-        assert_eq!(touched, 2);
-
-        let remaining_rows: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch = ?1",
-        )
-        .bind(bucket_start_epoch)
-        .fetch_one(&pool)
-        .await
-        .expect("count remaining breakdown rows");
-        assert_eq!(remaining_rows, 0);
-
-        for file_path in [first_file_path, second_file_path] {
-            let replay_marker_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
-            )
-            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind(file_path)
-            .fetch_one(&pool)
-            .await
-            .expect("count replay markers after repair");
-            assert_eq!(replay_marker_count, 0);
-
-            let materialized_at: Option<String> = sqlx::query_scalar(
-                "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
-            )
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind(file_path)
-            .fetch_one(&pool)
-            .await
-            .expect("load archive materialized state after repair");
-            assert!(materialized_at.is_none());
-
-            let progress_count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
-            )
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind(file_path)
-            .fetch_one(&pool)
-            .await
-            .expect("count archive progress rows after repair");
-            assert_eq!(progress_count, 0);
-        }
     }
 
     #[test]

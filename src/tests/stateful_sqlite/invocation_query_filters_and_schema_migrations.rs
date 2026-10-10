@@ -3043,6 +3043,81 @@ async fn ensure_schema_migrates_legacy_hourly_rollup_replay_identity_without_upg
         first_start_sha.is_none(),
         "a legacy replay marker remains unverified even when a completed manifest exists"
     );
+    let repair_progress_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('hourly_rollup_archive_repair_progress')",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect archive repair progress columns");
+    for column in [
+        "cursor_id",
+        "cursor_stale_rank",
+        "cursor_month_key",
+        "cursor_created_at",
+    ] {
+        assert!(
+            repair_progress_columns.iter().any(|name| name == column),
+            "missing repair cursor column {column}"
+        );
+    }
+    let deferred_columns: Vec<String> = sqlx::query_scalar(
+        "SELECT name FROM pragma_table_info('hourly_rollup_archive_repair_deferred')",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("inspect deferred archive repair columns");
+    for column in [
+        "scope",
+        "archive_id",
+        "stale_rank",
+        "month_key",
+        "created_at",
+        "file_path",
+        "deferred_at",
+    ] {
+        assert!(
+            deferred_columns.iter().any(|name| name == column),
+            "missing deferred archive repair column {column}"
+        );
+    }
+    let repair_plan = sqlx::query(
+        r#"
+        EXPLAIN QUERY PLAN
+        SELECT id, file_path
+        FROM archive_batches INDEXED BY idx_archive_batches_usage_breakdown_repair_candidates
+        WHERE dataset = 'codex_invocations'
+          AND status = 'completed'
+          AND historical_rollups_materialized_at IS NOT NULL
+          AND sha256 IS NOT NULL
+          AND TRIM(sha256) <> ''
+          AND (month_key, created_at, id) > ('2026-01', '2026-01-01 00:00:00', 0)
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("explain usage breakdown repair candidate query")
+    .into_iter()
+    .map(|row| row.get::<String, _>("detail"))
+    .collect::<Vec<_>>();
+    assert!(
+        repair_plan
+            .iter()
+            .any(|detail| detail.contains("idx_archive_batches_usage_breakdown_repair_candidates")),
+        "usage breakdown repair should use the candidate partial index: {repair_plan:?}"
+    );
+    assert!(
+        repair_plan.iter().any(|detail| detail.contains("SEARCH")
+            && detail.contains("idx_archive_batches_usage_breakdown_repair_candidates")),
+        "deep repair cursors should use an index range seek: {repair_plan:?}"
+    );
+    assert!(
+        repair_plan
+            .iter()
+            .all(|detail| !detail.contains("USE TEMP B-TREE")),
+        "usage breakdown repair should not require a temporary sort tree: {repair_plan:?}"
+    );
 
     ensure_schema(&pool)
         .await

@@ -4,6 +4,8 @@
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
+当前候选绑定为 PR #1098，基线 `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7`，代码 head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`；该 head 的 required CI 已通过，文档刷新后的 CI 与 Tier 4 复核仍待完成。旧候选日志和 retained profile 仅作历史证据，不替代当前 head 证明。
+
 代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 
 ## 任务内批次与月度目标
@@ -63,7 +65,9 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 ## Compatibility and Migration
 
-本轮不增加主库表、列、状态枚举或迁移标识。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。旧 prepared 状态隔离和当前任务源行转换属于运行 DML。历史吞吐缺失保持未知。
+Usage-breakdown repair fences every verified source directory through transaction completion. Directory identity deduplicates sibling archive files; a busy publisher defers the candidate without clearing last-good rows or waiting while SQLite is held. Invocation and forward-proxy replay use one stable, SHA-bound readonly temp copy per source; budget exits retain only complete reusable copies, while rejection, read failure, and completion remove the SQLite file and its sidecar.
+
+基础任务内批次方案不增加主库表、列、状态枚举或迁移标识；当前增量恢复扩展明确增加 `archive_sha256`、usage-breakdown repair progress/deferred 状态及 `pending_generation`，并要求幂等安装、旧状态未验证、前向修复和兼容回滚。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。当前 CI/Tier4 未绑定前，证据和版本记录保持未验证。
 
 新增任务 JSON 字段和 Web 归一化向后兼容。API 与持久化影响分开评估；本轮记录见 [version impact](assets/task-local-version-impact-record.json) 和 [state compatibility](assets/task-local-persistent-state-record.json)。最终分类由当前候选兼容验证决定；旧 PR 的 minor 记录仅作为历史。
 
