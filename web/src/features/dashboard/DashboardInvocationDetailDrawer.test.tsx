@@ -125,6 +125,16 @@ async function waitFor(check: () => boolean, timeoutMs = 1000) {
   throw new Error("timed out waiting for async UI state");
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
     id: number;
@@ -257,7 +267,7 @@ function createSelection(
 
   return {
     slotKind: "current",
-    conversationSequenceId: "WC-AB364A",
+    conversationId: "AB364A",
     promptCacheKey: "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
     invocation: {
       preview,
@@ -519,7 +529,7 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, "pool-alpha@example.com");
   });
 
-  it("shows the bare conversation hash in the drawer header while keeping prompt cache key visible", async () => {
+  it("shows the persisted conversation id in the drawer header while keeping prompt cache key visible", async () => {
     apiMocks.fetchInvocationRecords.mockResolvedValue(createRecordsResponse([createRecord()]));
 
     render(
@@ -543,7 +553,6 @@ describe("DashboardInvocationDetailDrawer", () => {
     }
 
     expect(drawer.textContent ?? "").toContain("AB364A");
-    expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
     expect(drawer.textContent ?? "").toContain("019d5ea7-519d-7312-a2e8-ef07abb7c09f");
 
     const drawerBody = drawer.closest('[role="dialog"], section')?.querySelector(".drawer-body");
@@ -551,6 +560,70 @@ describe("DashboardInvocationDetailDrawer", () => {
     expect(drawerBody?.classList.contains("overflow-y-auto")).toBe(true);
     expect(drawerBody?.textContent ?? "").toContain("调用详情");
     expect(drawerBody?.textContent ?? "").toContain("工作流时间线");
+  });
+
+  it("does not pair a stale full record with a new route conversation id", async () => {
+    const firstRecord = createRecord({ invokeId: "invoke-drawer-first" });
+    const secondRecord = createRecord({
+      id: 502,
+      invokeId: "invoke-drawer-second",
+      occurredAt: "2026-04-06T10:25:37Z",
+    });
+    const firstSelection = {
+      ...createSelection(firstRecord),
+      conversationId: "conversation-first",
+    };
+    const secondSelection = {
+      ...createSelection(secondRecord),
+      conversationId: "conversation-second",
+    };
+    const firstLookup = createDeferred<InvocationRecordsResponse>();
+    const secondLookup = createDeferred<InvocationRecordsResponse>();
+    apiMocks.fetchInvocationRecords
+      .mockReturnValueOnce(firstLookup.promise)
+      .mockReturnValueOnce(secondLookup.promise);
+
+    render(
+      <DashboardInvocationDetailDrawer
+        open
+        invocationId={firstRecord.invokeId}
+        selection={firstSelection}
+        onClose={() => undefined}
+      />,
+    );
+
+    await waitFor(() => apiMocks.fetchInvocationRecords.mock.calls.length === 1);
+
+    act(() => {
+      root?.render(
+        <DashboardInvocationDetailDrawer
+          open
+          invocationId={secondRecord.invokeId}
+          selection={secondSelection}
+          onClose={() => undefined}
+        />,
+      );
+    });
+
+    await waitFor(() => apiMocks.fetchInvocationRecords.mock.calls.length === 2);
+
+    await act(async () => {
+      secondLookup.resolve(createRecordsResponse([secondRecord]));
+      await secondLookup.promise;
+    });
+    await waitFor(() => (document.body.textContent ?? "").includes("conversation-second"));
+
+    await act(async () => {
+      firstLookup.resolve(createRecordsResponse([firstRecord]));
+      await firstLookup.promise;
+    });
+    await flushAsyncWork();
+
+    const drawerText = document.body.textContent ?? "";
+    expect(drawerText).toContain("conversation-second");
+    expect(drawerText).toContain("invoke-drawer-second");
+    expect(drawerText).not.toContain("conversation-first");
+    expect(drawerText).not.toContain("invoke-drawer-first");
   });
 
   it("renders interrupted status with the dedicated recovery badge", async () => {

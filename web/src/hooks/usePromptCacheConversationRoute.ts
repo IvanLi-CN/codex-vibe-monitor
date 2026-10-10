@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import type { BlockedBindingConstraintSource } from "../lib/api";
 
 const PROMPT_CACHE_CONVERSATION_KEY_PARAM = "promptCacheConversationKey";
+const PROMPT_CACHE_CONVERSATION_ID_PARAM = "promptCacheConversationId";
 const PROMPT_CACHE_CONVERSATION_TAB_PARAM = "promptCacheConversationTab";
 const UPSTREAM_ACCOUNT_ID_PARAM = "upstreamAccountId";
 const UPSTREAM_ACCOUNT_TAB_PARAM = "upstreamAccountTab";
@@ -49,6 +50,10 @@ export function usePromptCacheConversationRoute() {
     () => parsePromptCacheConversationKey(searchParams.get(PROMPT_CACHE_CONVERSATION_KEY_PARAM)),
     [searchParams],
   );
+  const promptCacheConversationId = useMemo(
+    () => parsePromptCacheConversationKey(searchParams.get(PROMPT_CACHE_CONVERSATION_ID_PARAM)),
+    [searchParams],
+  );
   const promptCacheConversationTab = useMemo(
     () => parsePromptCacheConversationTab(searchParams.get(PROMPT_CACHE_CONVERSATION_TAB_PARAM)),
     [searchParams],
@@ -82,6 +87,7 @@ export function usePromptCacheConversationRoute() {
       conversationKey: string,
       options?: {
         replace?: boolean;
+        conversationId?: string | null;
         tab?: PromptCacheConversationRouteTab;
         clearUpstreamAccount?: boolean;
       },
@@ -97,6 +103,14 @@ export function usePromptCacheConversationRoute() {
             next.delete(UPSTREAM_ACCOUNT_TAB_PARAM);
           }
           next.set(PROMPT_CACHE_CONVERSATION_KEY_PARAM, normalizedKey);
+          if (options && "conversationId" in options) {
+            const normalizedConversationId = options.conversationId?.trim() ?? "";
+            if (normalizedConversationId) {
+              next.set(PROMPT_CACHE_CONVERSATION_ID_PARAM, normalizedConversationId);
+            } else {
+              next.delete(PROMPT_CACHE_CONVERSATION_ID_PARAM);
+            }
+          }
           const tab = options?.tab ?? "overview";
           if (tab !== "overview") {
             next.set(PROMPT_CACHE_CONVERSATION_TAB_PARAM, tab);
@@ -115,6 +129,7 @@ export function usePromptCacheConversationRoute() {
     (options?: { replace?: boolean }) => {
       if (
         !searchParams.has(PROMPT_CACHE_CONVERSATION_KEY_PARAM) &&
+        !searchParams.has(PROMPT_CACHE_CONVERSATION_ID_PARAM) &&
         !searchParams.has(PROMPT_CACHE_CONVERSATION_TAB_PARAM)
       ) {
         return;
@@ -124,6 +139,7 @@ export function usePromptCacheConversationRoute() {
         (currentSearchParams) => {
           const next = new URLSearchParams(currentSearchParams);
           next.delete(PROMPT_CACHE_CONVERSATION_KEY_PARAM);
+          next.delete(PROMPT_CACHE_CONVERSATION_ID_PARAM);
           next.delete(PROMPT_CACHE_CONVERSATION_TAB_PARAM);
           return next;
         },
@@ -202,6 +218,7 @@ export function usePromptCacheConversationRoute() {
 
   return {
     promptCacheConversationKey,
+    promptCacheConversationId,
     promptCacheConversationTab,
     blockedBindingFilter,
     openPromptCacheConversation,

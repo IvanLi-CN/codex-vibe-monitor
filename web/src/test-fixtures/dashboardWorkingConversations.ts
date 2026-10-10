@@ -82,6 +82,18 @@ export function createPreview(
   };
 }
 
+const FIXTURE_CONVERSATION_IDS: Record<string, string> = {
+  "wc-current-1": "S00001",
+  "wc-current-2": "S00002",
+  "wc-current-3": "S00003",
+  "wc-current-4": "S00004",
+  "wc-current-5": "S00005",
+  "wc-current-6": "S00006",
+  "wc-current-7": "S00007",
+  "wc-current-8": "S00008",
+  "wc-empty": "S00000",
+};
+
 export function createConversation(
   promptCacheKey: string,
   recentInvocations: PromptCacheConversationInvocationPreview[],
@@ -94,6 +106,7 @@ export function createConversation(
   );
   return {
     promptCacheKey,
+    conversationId: FIXTURE_CONVERSATION_IDS[promptCacheKey] ?? "S00000",
     requestCount: recentInvocations.length,
     totalTokens: recentInvocations.reduce(
       (sum, invocation) => sum + (invocation.totalTokens ?? 0),
