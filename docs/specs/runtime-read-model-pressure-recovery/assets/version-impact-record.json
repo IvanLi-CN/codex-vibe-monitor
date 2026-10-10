@@ -106,9 +106,9 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "f7e5ec064c9f6bb35cefb3432a43965ec7ea5f44",
+    "candidate_head_sha": "138d2b30b4f7a0dea506b1039612484f222b4d26",
     "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "8c76ec4bf22cf7fcefc85b5a6000ed69d57b56f6",
+    "active_base_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
     "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
     "candidate_validation_record": "assets/current-candidate-validation.json",
     "base_sync_scope": "Merged main normally after merged PR #1099; the incoming task-timeline performance and support changes are outside the Stats implementation surface.",
