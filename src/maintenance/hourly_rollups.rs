@@ -224,7 +224,6 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     let Some(manifest_sha) = manifest_sha else {
         bail!("archive manifest is missing a SHA before replay marker repair");
     };
-
     let mut missing_targets = Vec::new();
     let mut has_stale_marker = false;
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
