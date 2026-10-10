@@ -6,6 +6,32 @@ async fn ranges_fixture() -> SqlitePool {
     pool
 }
 
+const FIXTURE_ALLOCATION_TIMEOUT: &str = "invocation range allocation timed out after 100ms";
+const FIXTURE_ALLOCATION_MAX_ATTEMPTS: usize = 5;
+
+async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
+    mut allocate: F,
+) -> anyhow::Result<String>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<String>>,
+{
+    for attempt in 0..FIXTURE_ALLOCATION_MAX_ATTEMPTS {
+        match allocate().await {
+            Ok(id) => return Ok(id),
+            Err(error) if error.to_string() == FIXTURE_ALLOCATION_TIMEOUT => {
+                if attempt + 1 == FIXTURE_ALLOCATION_MAX_ATTEMPTS {
+                    return Err(anyhow::anyhow!(
+                        "fixture allocation exhausted after {FIXTURE_ALLOCATION_MAX_ATTEMPTS} attempts: {error}"
+                    ));
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("fixture allocation retry budget must be non-zero");
+}
+
 #[tokio::test]
 async fn invocation_ranges_url_validation_errors_do_not_pin_hourly_owner() {
     use prompt_cache_conversations::invocation_ranges::Owner;
@@ -271,7 +297,9 @@ async fn invocation_ranges_mixed_batch_respects_strict_thresholds() {
         (None, 17),
     ] {
         for _ in 0..count {
-            manager.allocate(&pool, key).await.unwrap();
+            allocate_fixture_with_bounded_timeout_retry(|| manager.allocate(&pool, key))
+                .await
+                .unwrap();
         }
     }
     let ceilings: Vec<i64> = sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations UNION ALL SELECT last_invoke_sequence FROM hourly_invoke_prefixes")
@@ -519,7 +547,10 @@ async fn invocation_ranges_late_lease_callback_keeps_namespace_until_drained() {
     let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
     let manager = cache.lock().await.identity_cache.range_manager.clone();
     let hour = Utc::now().timestamp().div_euclid(3600) - 1;
-    let id = manager.test_allocate_hour(&pool, hour).await.unwrap();
+    let id =
+        allocate_fixture_with_bounded_timeout_retry(|| manager.test_allocate_hour(&pool, hour))
+            .await
+            .unwrap();
     let guard = PromptCacheInvocationLeaseGuard::new(cache.clone(), &id);
     manager.reconcile_persistence(&id);
     manager.cleanup_hours(&pool, false).await.unwrap();
@@ -566,8 +597,8 @@ async fn invocation_ranges_cold_admission_does_not_wait_for_unrelated_tail_retur
     let manager =
         Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
     for number in 0..128 {
-        manager
-            .allocate(&pool, Some(&format!("idle-{number}")))
+        let key = format!("idle-{number}");
+        allocate_fixture_with_bounded_timeout_retry(|| manager.allocate(&pool, Some(&key)))
             .await
             .unwrap();
     }
