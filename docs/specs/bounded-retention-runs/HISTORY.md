@@ -1,5 +1,9 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## 2026-10-11 Candidate Refresh
+
+PR #1098 is bound to base `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7` and head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`. The archive marker repair now fills missing sibling targets while preserving stale markers; required CI for that head passed before this evidence refresh, and post-refresh CI plus Tier 4 review remain pending.
+
 ## Current Candidate Contract
 
 PR #1098's incremental maintenance repair replaces the base task-local batching assumption that no main-database structure is added. The candidate adds manifest SHA identity on replay rows, ordered repair progress/deferred state, and prompt-cache `pending_generation` fencing; the additions are idempotent and require forward repair plus explicit rollback handling. Legacy replay state remains unverified until a current manifest SHA is committed.

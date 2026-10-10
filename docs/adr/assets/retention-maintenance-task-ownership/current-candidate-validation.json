@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "status": "current-head-validation-pending",
-  "baseSha": "397f41db64f25141fe4e3967866ba61bf22e6943",
-  "codeCandidateSha": "7698a060faaaceb6790973f8fe296b16310b1431",
+  "baseSha": "7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7",
+  "codeCandidateSha": "5c203d70132e81e7878851b0d46d3c3c5fa3a093",
   "sourceRustTree": "1a77edc28cbd6626e0d4cc8c76ef5f2eb024f38e",
   "sourceWebTree": "343c2bcbfd8cc034a8576ce446acf62df098f189",
   "sourceInputFingerprint": "496fe5837760ce0ac494ac1a317c6a4c3e6c562a7125f443d2c156faccfb28f6",
@@ -13,7 +13,7 @@
     "stop": "merge-ready",
     "repairBatchesUsed": 7,
     "prCreated": true,
-    "currentFormalReviewLaunched": true
+    "currentFormalReviewLaunched": false
   },
   "passed": {
     "rustSourceQuality": true,
@@ -111,7 +111,7 @@
   },
   "pending": [
     "formalTier4Review",
-    "livePrCurrentHeadCi"
+    "postEvidenceRefreshCi"
   ],
   "runtime": {
     "sessionId": "01a1118f-5d68-7d63-9d68-8704e13f525d",
@@ -124,14 +124,26 @@
     "guestContinuityVerifiedAfterLiveReduction": true
   },
   "currentRepair": {
-    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1092",
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1098",
     "ownerAuthorizedRepairBatch": 7,
     "ownerMessage": "\u89e3\u51b3\u95ee\u9898",
-    "previousCandidateSha": "ed7688f3e2f8d03be55337cb246ae417fd618291",
-    "fixedFinding": "CI fixture expected both rows in today during the first two minutes of a Shanghai calendar day; calculate independent count/token expectations from actual seeded dates.",
-    "newFocusedRegression": "Two existing delta-publication tests, six advancing-realtime positions including midnight crossing; no test retries or skips added.",
+    "previousCandidateSha": "33bdf21bb39e95b24e2a6a70d63eb9ec01bbabf7",
+    "fixedFinding": "Archive marker repair preserved stale markers but stopped before filling missing sibling targets; continue the scan, fill only missing targets, and retain the stale-marker result.",
+    "newFocusedRegression": "upstream_account_archive_marker_repair_converges_across_multiple_pages passes on the current head; source-quality budget remains satisfied.",
     "productionAssertionsAndLimitsUnchanged": true,
-    "candidateBinarySha256": "4f52d04dd685f4843344cd00ba14884e3b5fb6ca1220bf91e91685399c71ba51"
+    "candidateBinarySha256": null
+  },
+  "currentCandidateBinding": {
+    "prNumber": 1098,
+    "prUrl": "https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1098",
+    "baseSha": "7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7",
+    "headSha": "5c203d70132e81e7878851b0d46d3c3c5fa3a093",
+    "requiredCi": {
+      "runId": 38079670191,
+      "conclusion": "success"
+    },
+    "formalTier4Review": "pending",
+    "note": "Older retained evidence below is historical and cannot substitute for current-head review or the CI run after this documentation refresh."
   },
   "empiricalAcceptance": {
     "disposition": "not_required",

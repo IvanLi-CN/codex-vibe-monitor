@@ -4,6 +4,8 @@
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
+当前候选绑定为 PR #1098，基线 `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7`，代码 head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`；该 head 的 required CI 已通过，文档刷新后的 CI 与 Tier 4 复核仍待完成。旧候选日志和 retained profile 仅作历史证据，不替代当前 head 证明。
+
 代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 
 ## 任务内批次与月度目标
