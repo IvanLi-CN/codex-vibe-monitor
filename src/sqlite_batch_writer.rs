@@ -21,6 +21,7 @@ use tracing::{debug, warn};
 use super::*;
 
 mod attempt_progress;
+mod diagnostics;
 mod invocation_identity;
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
@@ -32,6 +33,7 @@ use attempt_progress::{
     estimated_memory_bytes as estimated_attempt_progress_memory_bytes,
     merge as merge_attempt_progress,
 };
+use diagnostics::{append_terminal_journal, finish_committed_batch, reference_batch};
 pub(crate) use invocation_identity::TrackedTerminalJournal;
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
@@ -1425,52 +1427,9 @@ impl SqliteBatchWriter {
             };
         }
 
-        let diagnostic_priority = terminal.diagnostic.as_ref().map(|d| {
-            d.context
-                .waiting(crate::observability::diagnostics::Resource::TerminalPriority)
-        });
-        let _p1_priority_guard = self
-            .p1_priority_gate
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        if let Some(guard) = diagnostic_priority {
-            guard.complete();
-        }
+        let _p1_priority_guard = diagnostics::lock_priority_gate(&self.p1_priority_gate, &terminal);
         let recovery_terminal = terminal.clone();
-        let diagnostic_journal = terminal.diagnostic.as_ref().map(|d| {
-            d.context
-                .waiting(crate::observability::diagnostics::Resource::JournalLock)
-        });
-        let journal = self
-            .terminal_journal
-            .lock()
-            .ok()
-            .and_then(|mut journal| {
-                if let Some(guard) = diagnostic_journal {
-                    guard.complete();
-                }
-                journal.as_mut().map(|journal| {
-                    let append = terminal.diagnostic.as_ref().map(|d| {
-                        d.context
-                            .phase(crate::observability::diagnostics::Phase::JournalAppend)
-                    });
-                    let outcome = journal.append(
-                        &terminal.record,
-                        terminal.raw_capture,
-                        terminal.capture_started,
-                    );
-                    if let Some(guard) = append {
-                        guard.complete();
-                    }
-                    outcome
-                })
-            })
-            .unwrap_or(TerminalJournalAppendOutcome {
-                durability_mode: TerminalJournalDurabilityMode::MemoryOverflow,
-                sequence: None,
-                pending_records: 0,
-                pending_bytes: 0,
-            });
+        let journal = append_terminal_journal(&self.terminal_journal, &terminal);
         let enqueued = self.enqueue_terminal_write(
             SqliteBatchWrite::TerminalInvocation(terminal),
             journal.durability_mode,
@@ -3331,22 +3290,12 @@ pub(crate) async fn flush_pending_batch(
     let p1_batch = batch.take_p1_terminals();
     if !p1_batch.is_empty() {
         let transaction_id = format!("p1-{}", started.elapsed().as_nanos());
-        let diagnostic_admission = crate::observability::diagnostics::SharedBatch::begin(
-            p1_batch
-                .terminal_invocations
-                .values()
-                .filter_map(|t| t.diagnostic.as_ref()),
-            p1_batch.terminal_invocations.len(),
-        );
+        let diagnostic_admission = diagnostics::begin_batch(&p1_batch);
         let permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
             .await;
         let admission_context = diagnostic_admission.coordinator_admitted();
-        for terminal in p1_batch.terminal_invocations.values() {
-            if let Some(ticket) = &terminal.diagnostic {
-                ticket.context.reference_batch(admission_context.clone());
-            }
-        }
+        reference_batch(&p1_batch, admission_context);
         let lock_wait_ms = permit.lock_wait().as_millis() as u64;
         let execute_started = Instant::now();
         let initial_result = flush_pending_batch_inner(
@@ -3863,8 +3812,7 @@ pub(crate) async fn flush_pending_batch_inner(
     let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
-        let mut diagnostic_batch = crate::observability::diagnostics::SharedBatch::begin(
-            batch.terminal_invocations.values().filter_map(|t| t.diagnostic.as_ref()), batch.terminal_invocations.len());
+        let mut diagnostic_batch = diagnostics::begin_batch(batch);
         let pool_started = Instant::now();
         let connection_result = pool.acquire().await;
         if let Some(m) = observability {
@@ -4009,10 +3957,7 @@ pub(crate) async fn flush_pending_batch_inner(
             );
         }
         execute_result?;
-        let diagnostic_batch_context = diagnostic_batch.committed();
-        for terminal in batch.terminal_invocations.values() {
-            if let Some(diagnostic) = &terminal.diagnostic { diagnostic.finish_with_batch("committed", batch.terminal_invocations.len() > 1, diagnostic_batch_context.clone()); }
-        }
+        finish_committed_batch(batch, diagnostic_batch);
         drop(connection);
         if let Some(m) = observability {
             m.counter(
