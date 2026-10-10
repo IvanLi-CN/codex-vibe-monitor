@@ -1,0 +1,36 @@
+# Include private token maps in the existing authenticated HTTPS entry.
+# Each map file contains one quoted "Bearer <token>" value mapped to 1, mode 0640.
+map $http_authorization $tempo_ingest_allowed {
+    default 0;
+    include /run/secrets/tempo-ingest-map;
+}
+map $http_authorization $tempo_query_allowed {
+    default 0;
+    include /run/secrets/tempo-query-map;
+}
+# Insert the following locations into the HTTPS server; never publish Tempo ports.
+# The gateway must join the dedicated OBSERVABILITY_TEMPO_NETWORK with Tempo;
+# Grafana/Prometheus and arbitrary monitoring-network peers must not join it.
+# Tenant comes from the credential's assigned route, never a caller's header.
+location = /v1/traces {
+    if ($request_method != POST) { return 405; }
+    if ($tempo_ingest_allowed != 1) { return 401; }
+    client_max_body_size 1m;
+    client_body_timeout 2s;
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 2s;
+    proxy_set_header Authorization "";
+    proxy_set_header X-Scope-OrgID cvm;
+    proxy_pass http://tempo:4318/v1/traces;
+}
+location ~ ^/tempo/api/(search|v2/traces/[a-f0-9]{32})$ {
+    if ($request_method != GET) { return 405; }
+    if ($tempo_query_allowed != 1) { return 401; }
+    proxy_connect_timeout 2s;
+    proxy_read_timeout 5s;
+    proxy_set_header Authorization "";
+    proxy_set_header X-Scope-OrgID cvm;
+    rewrite ^/tempo/(.*)$ /$1 break;
+    proxy_pass http://tempo:3200;
+}
+location /tempo/ { return 404; }

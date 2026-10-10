@@ -4,7 +4,9 @@ import importlib.machinery
 import importlib.util
 from contextlib import closing
 import json
+import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -72,6 +74,74 @@ class GrafanaPreviewTests(unittest.TestCase):
 
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
+
+class TempoNetworkTests(unittest.TestCase):
+    def test_tempo_uses_the_dedicated_backend_network(self):
+        compose = (SOURCE / "ops/observability/compose.yml").read_text()
+        tempo = re.search(r"(?ms)^  tempo:\n.*?^  prometheus:", compose)
+        self.assertIsNotNone(tempo)
+        tempo_block = tempo.group(0) if tempo else ""
+        self.assertIn("networks: [tempo_backend]", tempo_block)
+        self.assertNotIn("networks: [monitoring]", tempo_block)
+        self.assertIn("OBSERVABILITY_TEMPO_NETWORK", compose)
+        gateway = (SOURCE / "ops/observability/tempo-gateway.conf.example").read_text()
+        self.assertIn("dedicated OBSERVABILITY_TEMPO_NETWORK", gateway)
+
+class TraceAccessTests(unittest.TestCase):
+    def test_machine_token_files_require_private_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "token"
+            path.write_text("private-observe-token\n")
+            os.chmod(path, 0o640)
+            with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(path)}):
+                self.assertEqual(observe.token_file("TEST_OBSERVE_TOKEN"), "private-observe-token")
+            for mode in (0o660, 0o644):
+                os.chmod(path, mode)
+                with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(path)}):
+                    with self.assertRaisesRegex(ValueError, "optional group read only"):
+                        observe.token_file("TEST_OBSERVE_TOKEN")
+            alias = Path(directory) / "token-link"
+            alias.symlink_to(path)
+            with patch.dict(os.environ, {"TEST_OBSERVE_TOKEN": str(alias)}):
+                with self.assertRaisesRegex(ValueError, "regular file"):
+                    observe.token_file("TEST_OBSERVE_TOKEN")
+
+    def search(self, category="normal", **extra):
+        import urllib.parse
+        query = {"q": observe.case_query(category), "start": 99900, "end": 100000, "limit": 3, **extra}
+        return "/api/search?" + urllib.parse.urlencode(query)
+
+    def test_fixed_cases_and_ids_are_the_only_machine_reads(self):
+        from tempo_access import query_route
+        for category in observe.CASE_PREDICATES:
+            target = self.search(category)
+            self.assertEqual(query_route(target, now=100000), target)
+        trace = "/api/v2/traces/" + "a" * 32
+        self.assertEqual(query_route(trace), trace)
+        for path in ["/api/overrides", "/api/search/tags", trace + "?tenant=other", "/api/v2/traces/../status", "https://other" + trace]:
+            with self.assertRaises(ValueError): query_route(path, now=100000)
+
+    def test_query_injection_retention_and_case_limits_are_rejected(self):
+        from tempo_access import query_route
+        for changes in [{"q": "{}"}, {"q": observe.case_query("normal") + " || {}"}, {"limit": 4}, {"start": 1}, {"end": 100100}, {"limit": 0}]:
+            with self.assertRaises(ValueError): query_route(self.search(**changes), now=100000)
+        with self.assertRaises(ValueError): observe.case_query("normal", endpoint='responses" || true')
+        self.assertIn('span.cvm.endpoint = "responses"', observe.case_query("slow", endpoint="responses"))
+
+    def test_native_grafana_trace_lookup_has_a_bounded_private_window(self):
+        from tempo_access import query_route
+        trace = "/api/v2/traces/" + "a" * 32
+        bounded = trace + "?start=99900&end=100000"
+        self.assertEqual(query_route(bounded, now=100000, fixed_cases=False), bounded)
+        with self.assertRaises(ValueError): query_route(bounded, now=100000)
+        for query in ["start=1&end=100000", "start=99900&end=100100", "start=100000&end=99900", "start=99900", "start=99900&end=100000&tenant=other", "start=99900&start=99901&end=100000"]:
+            with self.assertRaises(ValueError): query_route(trace + "?" + query, now=100000, fixed_cases=False)
+
+    def test_roles_do_not_accept_missing_or_other_credentials(self):
+        from tempo_access import authorized
+        for header in [None, "Bearer ingest-credential", "Bearer query-credential", "Bearer 非法"]:
+            self.assertEqual(authorized(header, "query-credential"), header == "Bearer query-credential")
+        self.assertFalse(authorized("Bearer ", ""))
 
 class RetirementTests(unittest.TestCase):
     def test_program_range_and_old_writer_image_are_verified_before_cutover(self):

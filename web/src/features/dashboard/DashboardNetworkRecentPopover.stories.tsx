@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { act, useEffect, useState } from "react";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import {
   Dialog,
   DialogCloseIcon,
@@ -427,7 +427,15 @@ export const DesktopPopoverTransfer: Story = {
   play: async ({ canvasElement }) => {
     const trigger = within(canvasElement).getByTestId("dashboard-network-recent-trigger");
     await userEvent.hover(trigger);
-    const panel = await within(document.body).findByTestId("dashboard-network-recent-popover");
+    await waitFor(
+      () => {
+        expect(
+          within(document.body).getByTestId("dashboard-network-recent-popover"),
+        ).toBeInTheDocument();
+      },
+      { timeout: 5_000 },
+    );
+    const panel = within(document.body).getByTestId("dashboard-network-recent-popover");
     const triggerRect = trigger.getBoundingClientRect();
     const panelRect = panel.getBoundingClientRect();
     const start = { x: triggerRect.right - 1, y: triggerRect.top + triggerRect.height / 2 };

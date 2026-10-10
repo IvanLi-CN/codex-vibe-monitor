@@ -169,11 +169,23 @@ _Avoid_: TTFT 为零, 首响应, TTFB 回退
 The duration from the first upstream response byte to the end of that upstream stream.
 _Avoid_: 总耗时, TTFT, 代理处理耗时
 
+**服务端下游响应生命周期（Server-observed Downstream Response Lifetime）**:
+The interval from the service observing an incoming downstream request to its downstream response body ending, failing, or being cancelled. This boundary does not prove that the client received every byte, and later terminal persistence is a separate lifecycle.
+_Avoid_: 上游流持续时间, 客户端接收完成, 终态落盘完成
+
+**终态持久化生命周期（Terminal Persistence Lifetime）**:
+The interval in which an invocation's terminal fact is admitted for persistence and reaches a confirmed durable outcome. It remains associated with that invocation while its asynchronous continuation is distinct from the downstream response lifetime.
+_Avoid_: 下游响应耗时, 单批 SQL 用时, 入队即提交
+
 ## Performance Observation
 
 **性能观测（Performance Observation）**:
 Runtime signals about the application's request stages, resource pressure, background work, live publication, and browser experience. These signals describe operating behavior rather than authoritative invocation or task records.
 _Avoid_: 业务记录, 调用明细, 完整请求链路
+
+**请求诊断链路（Request Diagnostic Trace）**:
+A diagnostic timeline of one server-observed downstream request, including its attempts, attributed waits, response boundary, and associated terminal persistence. Its observed coverage is distinct from authoritative invocation history.
+_Avoid_: 指标时间序列, 业务调用记录, CPU Profile
 
 **指标历史（Metric History）**:
 The time-series history of the project's Performance Observations. Its measurements, sampling quality, and retained interval determine which operating trends it can prove.

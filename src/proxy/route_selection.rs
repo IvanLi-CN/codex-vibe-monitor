@@ -2138,9 +2138,11 @@ pub(crate) fn proxy_openai_v1_via_pool(
                                             );
                                         }
                                         notify_pool_no_available_wait_hook(state_for_wait.as_ref());
-                                        tokio::time::sleep(poll_interval.min(
+                                        crate::observability::diagnostics::wait(
+                                            crate::observability::diagnostics::Resource::AccountCapacity,
+                                            tokio::time::sleep(poll_interval.min(
                                             effective_deadline.saturating_duration_since(now),
-                                        ))
+                                        )))
                                         .await;
                                     }
                                     Ok(resolution) => {
@@ -3178,7 +3180,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
         let codex_imagegen_rewrite_for_record = codex_imagegen_rewrite.clone();
         let proxy_request_permit_for_task = proxy_request_permit;
         let runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard.take();
-        tokio::spawn(async move {
+        crate::observability::diagnostics::spawn(async move {
             let _runtime_snapshot_cleanup_guard_for_task = runtime_snapshot_cleanup_guard_for_task;
             let mut deferred_pool_early_phase_cleanup_guard_for_task =
                 deferred_pool_early_phase_cleanup_guard;
@@ -3710,7 +3712,11 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
                     ))
                     .await,
                 );
-            sleep(retry_delay).await;
+            crate::observability::diagnostics::wait(
+                crate::observability::diagnostics::Resource::RetryBackoff,
+                sleep(retry_delay),
+            )
+            .await;
             continue;
         }
 

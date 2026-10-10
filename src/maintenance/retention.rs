@@ -2111,6 +2111,94 @@ fn retention_live_mirror_archive_path(
     }
 }
 
+async fn load_retention_recovery_expired_backlog(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+) -> Result<(i64, Option<String>)> {
+    let query_budget = retention_run_remaining_budget()
+        .unwrap_or(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET)
+        .min(RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET);
+    if query_budget.is_zero() {
+        return Err(anyhow!(
+            "retention recovery backlog query budget expired before connection acquisition"
+        ));
+    }
+    let deadline = Instant::now() + query_budget;
+    let mut connection = tokio::time::timeout(query_budget, pool.acquire())
+        .await
+        .map_err(|_| {
+            anyhow!(
+                "retention recovery backlog connection acquisition exceeded {}ms",
+                query_budget.as_millis()
+            )
+        })??;
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let interrupted = interrupted.clone();
+        let mut handle = tokio::time::timeout(
+            deadline.saturating_duration_since(Instant::now()),
+            connection.lock_handle(),
+        )
+        .await
+        .map_err(|_| anyhow!("retention recovery backlog SQLite handle acquisition timed out"))??;
+        handle.set_progress_handler(RETENTION_BACKLOG_OBSERVER_PROGRESS_OPS, move || {
+            let within_budget = Instant::now() < deadline;
+            if !within_budget {
+                interrupted.store(true, Ordering::Release);
+            }
+            within_budget
+        });
+    }
+    let query = sqlx::query_as::<_, (i64, Option<String>)>(
+        r#"
+            SELECT COUNT(*), MIN(occurred_at)
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+            "#,
+    )
+    .bind(cutoff)
+    .fetch_one(&mut *connection);
+    let result =
+        tokio::time::timeout(deadline.saturating_duration_since(Instant::now()), query).await;
+    if let Err(error) =
+        clear_retention_backlog_observer_progress_handler(&mut connection, deadline).await
+    {
+        connection.close_on_drop();
+        return Err(error);
+    }
+    let backlog = match result {
+        Ok(Ok(backlog)) => backlog,
+        Ok(Err(error)) if interrupted.load(Ordering::Acquire) => {
+            connection.close_on_drop();
+            return Err(anyhow!(
+                "retention recovery backlog SQLite query was cancelled: {error}"
+            ));
+        }
+        Ok(Err(error)) => {
+            connection.close_on_drop();
+            return Err(error.into());
+        }
+        Err(_) => {
+            connection.close_on_drop();
+            return Err(anyhow!(
+                "retention recovery backlog query exceeded {}ms",
+                query_budget.as_millis()
+            ));
+        }
+    };
+    drop(connection);
+    Ok(backlog)
+}
+
+#[cfg(test)]
+pub(crate) async fn retention_test_refresh_recovery_counts(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<RetentionRecoveryHealthSnapshot> {
+    retention_recovery_refresh_counts(pool, config).await?;
+    Ok(retention_recovery_health_snapshot())
+}
+
 async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConfig) -> Result<()> {
     let (prepared_count, quarantined_count, next_retry_at) =
         sqlx::query_as::<_, (i64, i64, Option<String>)>(
@@ -2166,16 +2254,8 @@ async fn retention_recovery_refresh_counts(pool: &Pool<Sqlite>, config: &AppConf
     .fetch_optional(pool)
     .await?;
     let cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
-    let (expired_backlog_count, oldest_backlog_at) = sqlx::query_as::<_, (i64, Option<String>)>(
-        r#"
-            SELECT COUNT(*), MIN(occurred_at)
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-            "#,
-    )
-    .bind(cutoff)
-    .fetch_one(pool)
-    .await?;
+    let (expired_backlog_count, oldest_backlog_at) =
+        load_retention_recovery_expired_backlog(pool, &cutoff).await?;
     let now = Utc::now();
     let oldest_backlog_age_secs = oldest_backlog_at
         .as_deref()
@@ -2642,7 +2722,7 @@ async fn verify_prepared_retention_archive_artifact(
         archive_path.display(),
         retention_temp_suffix()
     ));
-    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
     ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
@@ -7390,7 +7470,7 @@ async fn verify_legacy_retention_archive_segment(
         archive_path.display(),
         retention_temp_suffix()
     ));
-    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
     ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
@@ -7873,7 +7953,35 @@ pub(crate) struct ForwardProxyAttemptHourlySourceRecord {
 }
 
 #[derive(Debug)]
-pub(crate) struct TempSqliteCleanup(pub PathBuf);
+pub(crate) struct TempSqliteCleanup {
+    path: PathBuf,
+    reusable_before_run: bool,
+    keep: bool,
+}
+
+impl TempSqliteCleanup {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self::with_reusable_copy(path, false)
+    }
+
+    pub(crate) fn with_reusable_copy(path: PathBuf, reusable_before_run: bool) -> Self {
+        Self {
+            path,
+            reusable_before_run,
+            keep: false,
+        }
+    }
+
+    pub(crate) fn keep_complete_copy(&mut self) {
+        self.keep = true;
+    }
+
+    pub(crate) fn keep_reusable_copy(&mut self) {
+        if self.reusable_before_run {
+            self.keep = true;
+        }
+    }
+}
 
 pub(crate) fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.source-meta", path.display()))
@@ -7889,7 +7997,9 @@ pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
 
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
-        remove_temp_sqlite_artifacts(&self.0);
+        if !self.keep {
+            remove_temp_sqlite_artifacts(&self.path);
+        }
     }
 }
 

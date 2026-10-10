@@ -1,12 +1,12 @@
 # 外部性能观测
 
-应用只在内存累计指标，Prometheus 抓取并保留历史，Grafana 提供图表和告警。
+应用在内存累计指标及有界轻量请求诊断，Prometheus 保留聚合历史，Tempo 保存诊断链路，Grafana 提供统计、案例、瀑布图和告警。
 本目录是部署合同；101 的域名、镜像 digest、卷容量、认证与 perf 权限由上线任务验证。
 集成、Compose 部署、鉴权边界和排障顺序见[canonical solution](../../docs/solutions/performance/prometheus-grafana-compose-integration.md)。
 
 ## 本地 Grafana 预览
 
-需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
+需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
 ## 应用配置
 
@@ -16,18 +16,27 @@ METRICS_BIND=0.0.0.0:9091
 METRICS_TOKEN_FILE=/run/secrets/metrics-token
 OBSERVABILITY_READ_TOKEN_FILE=/run/secrets/observability-read-token
 GRAFANA_PUBLIC_URL=https://grafana.example.com
+# Optional traces; master OBSERVABILITY_ENABLED=false disables these too.
+OBSERVABILITY_TRACES_ENABLED=false
+OBSERVABILITY_OTLP_TRACES_ENDPOINT=https://observability.example.com/v1/traces
+OBSERVABILITY_OTLP_TOKEN_FILE=/run/secrets/tempo-ingest-token
+OBSERVABILITY_TEMPO_NETWORK=cvm-tempo-backend
+OBSERVABILITY_ENVIRONMENT=production
+OBSERVABILITY_INSTANCE=primary
 ```
 
-两个 Token 必须不同，secret 文件只挂载给所需服务。应用与监控 Compose
-连接共享 `cvm-monitoring` 网络，保留应用原业务/出站网络。应用服务的网络 alias
+两个 Token 必须不同，secret 文件只挂载给所需服务。应用、Prometheus 和 Grafana
+连接共享 `cvm-monitoring` 网络，Tempo 只连接专用的 `cvm-tempo-backend` 网络；现有
+认证 gateway 只加入后者（以及它自身的入口网络），不得把 Tempo 接入共享 monitoring
+网络。应用服务的网络 alias
 为 `codex-vibe-monitor`，9091/6772/6770 不发布 host port。6770 固定 loopback。
 Grafana 不参与业务请求成功条件，exporter 故障只令观测 degraded。
 
 ## 平台部署
 
-先准备外部监控网络、Token 文件与 Grafana admin 密码文件；设置
-`METRICS_TOKEN_FILE`、`GRAFANA_ADMIN_PASSWORD_FILE`、`GRAFANA_PUBLIC_URL`、
-`OBSERVABILITY_SECRET_GID`，
+先准备外部监控网络、专用 Tempo backend 网络、Token 文件与 Grafana admin 密码文件；设置
+`OBSERVABILITY_NETWORK`、`OBSERVABILITY_TEMPO_NETWORK`、`METRICS_TOKEN_FILE`、
+`GRAFANA_ADMIN_PASSWORD_FILE`、`GRAFANA_PUBLIC_URL`、`OBSERVABILITY_SECRET_GID`，
 再执行 `docker compose -f compose.yml -p cvm-monitoring up -d`。
 Token 与密码文件放在运维身份拥有的私密目录（0700），文件为 0640，group 是
 `OBSERVABILITY_SECRET_GID` 指定的专用读取组。Compose 只为两个监控容器追加此组，
@@ -54,7 +63,9 @@ service account，隔离其他数据源；OSS Viewer 不等于企业版逐数据
 
 - `GET /api/datasources/uid/cvm-prometheus`
 - `GET /api/datasources/proxy/uid/cvm-prometheus/api/v1/query` 与 `query_range`
-- `GET /api/dashboards/uid/cvm-{overview,proxy,sqlite,runtime,web}`
+- `GET /api/dashboards/uid/cvm-{overview,proxy,sqlite,runtime,web,proxy-cases}`
+- `GET /api/datasources/proxy/uid/cvm-tempo/api/search`：只允许 `tempo_access.py` 定义的五种固定查询及合法 service/environment/instance/endpoint 筛选，limit ≤3、窗口 ≤24h。
+- `GET /api/datasources/proxy/uid/cvm-tempo/api/v2/traces/<32位小写十六进制TraceID>`：无其他查询参数。
 
 使用 gcx 时按锁定版本实际请求追加必要只读资源/查询路径，POST 仅开放真正查询入口。
 不要整站 bypass。验收有效 Token 返回 JSON、无效/缺失 Token 拒绝、写入拒绝，
@@ -66,6 +77,20 @@ curl+jq 可通过固定 proxy 路径查询；将 Bearer header 放在权限 0600
 使用 `curl --config <private-config> --fail --get --data-urlencode 'query=up{job="cvm-app"}' <Grafana-HTTPS>/api/datasources/proxy/uid/cvm-prometheus/api/v1/query | jq`。
 应用报告使用另一个 Token，CLI 的 `server/sql/functions` 分支只访问固定白名单。
 Agent 排查顺序见[项目 Skill](../../.agents/skills/performance-investigation/SKILL.md)。
+
+## Tempo 共享接入与隔离配置
+
+`OBSERVABILITY_TRACES_ENABLED` 默认 false。开启时 endpoint 必须是无凭据、无 query/fragment 的完整 HTTPS `/v1/traces` URL；凭据仅从挂载的私密文件读取，不能写入 URL、日志或仓库。SDK 使用 0.33.0、OTLP/HTTP protobuf、有界后台 batch，不安装全局 tracing 日志层、不接受入站 baggage，也不导出任意资源属性。禁用重定向及环境代理，HTTP 超时 2 秒且不重试；SDK queue 2048、batch 128、间隔 1 秒、关闭 flush 最多 2 秒、HTTP body ≤1MiB。初始化或导出失败仅令 tracing degraded；能力接口只报告本地状态，不查询 Tempo 或改变 `/health`。
+
+环境和实例值为 1..64 位 ASCII 字母数字或 `._:-`，默认 unknown，部署时须与 Prometheus target 的 environment/instance 标签一致。应用 span 只含固定 service、environment、instance、endpoint、phase、resource、数值耗时和有限状态；请求/账号/用户身份、IP、原始 URL、正文、凭据、SQL 参数及日志字段不导出。随机 TraceID 与业务 invocation ID 独立，每请求最多 64 spans、64KiB 保守预算、8 个详细 attempts 和 8 个选定等待区间，最多 1024 活跃上下文；丢弃和截断由质量指标及 root 属性说明。
+
+本轮 `compose.yml --profile traces-isolation` 固定 Tempo 3.1.0 与 image digest，只用于隔离运行。`tempo.yml` 关闭 metrics-generator、service graphs、MCP 和跨租户查询，CVM tenant 为 cvm、留存 24h，Tempo 所有 WAL、blocks、调度工作目录及临时文件共用 512MiB tmpfs；CPU 1、内存 2GiB、摄入 512KiB/s、burst 1MiB、单 trace 摄入 128KiB、查询并发 2／超时 5s。数据可在重建后消失，留存清理有延迟；这些不是正式环境容量或磁盘配额承诺。
+
+共享入口由现有受信任 HTTPS 认证入口承载。`tempo-gateway.conf.example` 提供摄入与查询两套私密凭据 map，认证后固定覆盖 `X-Scope-OrgID: cvm`，不信任调用者 tenant，不暴露 Tempo 3200/4318 公网端口。Tempo 只在专用 backend 网络上可达，Grafana/Prometheus 的 monitoring 网络不能直接访问它；gateway 的网络成员资格由平台 ACL 管理。摄入凭据不能查链路，查询凭据不能摄入；Grafana 的 `cvm-tempo` datasource 使用平台查询身份（环境变量 CVM_TEMPO_QUERY_URL/CVM_TEMPO_QUERY_TOKEN/CVM_TEMPO_CA_PEM），普通机器 Viewer 仍由 Grafana organization 与公共固定路径白名单隔离。私网 Grafana 查询允许原生 TraceQL，但 Tempo 全局仍限制窗口和结果数；NGINX 示例不是完整正式入口部署。本轮 CI 使用同一合同的隔离 HTTPS fixture 验证，正式入口、凭据分组、网络 ACL、存储、容量与接入其他项目均留给后续部署任务。
+
+`scripts/cvm-observe cases --category normal|slow|wait|retry|error --minutes 30 [--environment production --instance primary --endpoint responses]` 返回每类最多 3 个候选；`scripts/cvm-observe trace --trace-id <32位小写十六进制>` 获取原生 trace JSON。CLI 需要从完整仓库运行，复用 `tempo_access.py` 的固定查询定义。采集覆盖正常容量内全量，正常案例仅从 TraceID 哈希 1/16 标记集合检索，Tempo first-match 结果不能当作总体统计或稳定随机样本。
+
+统计页 `cvm-proxy` 跳转 `cvm-proxy-cases` 时保留 UTC 窗口和筛选，案例页手动刷新，每类最多 3 条，选定 TraceID 展开原生瀑布图。响应时长以 response root 为准，trace 总 duration 可以包含后续落盘；root 的 persistence=pending 和 export_completeness=unknown 不证明丢失，晚到 span 可在下一次查询出现。无案例、未完整、截断、导出丢失或超过 24h 窗口须结合提示、质量计数和样本数解释，不能当作业务零。
 
 ## CPU 采样与符号
 
@@ -153,7 +178,9 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 
 工具回归：`PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-observability-tools.py`。
 候选版本验收还必须运行 Linux 容器 attach、HTTPS 鉴权、监控停机隔离与观测开/关 A/B；
-完整性能验收由 CI PR 的 GitHub-hosted Actions job 执行，未通过不能宣布 Ready。
+完整性能验收由显式添加 `run:observability-performance` 标签后的一次性 GitHub-hosted
+Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把未运行写成预算已验证。
+性能 evidence 始终绑定 candidate SHA；任意新提交都会使旧卡失效，必须在新 head 上重新添加一次性标签，普通 `synchronize` 运行不会自动重跑长测。
 任何测试环境通过都不能代替 101 公网验收。
 
 使用已提交候选运行 `scripts/shared-testbox-performance-acceptance --candidate <full SHA> --samply /srv/codex/agents/<thread>/tools/samply-x86_64-unknown-linux-gnu/samply --seconds 300 --rate 5`。
@@ -162,9 +189,13 @@ task detail 的 `performance` 字段已移除。新应用不创建、读取或�
 共享测试机入口只验证 JSON/SSE 代理、固定 dashboard SSE、monitoring 停机隔离与
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
-CI PR 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
+`.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
 ID、revision 与 archive checksum；`Observability Performance Budget` 在另一个
 `ubuntu-24.04` runner 上加载同一镜像，先完成运行时场景，再串行测量 A/B。
+该工作流只接受默认分支版本的 `pull_request_target` 标签事件；测量和诊断脚本从
+base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为隔离容器镜像运行。
+因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
+首次引入该 workflow 的 PR 也不能从自己的新增文件触发它；合并到默认分支后，后续候选 PR 才能通过一次性标签启动。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
 默认 5 req/s、3 次交替配对、每窗口 300 秒与 60 秒预热；保留两组 CV ≤5% 的稳定性
 门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。
@@ -173,8 +204,9 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 资源准入使用 PSI `some avg10/avg60`：CPU <2%、IO <5%、memory <0.1%。每轮
 预热后按 20 秒间隔取得连续三次安静样本；额外等待每轮最多 300 秒、总计 900 秒。
 正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；压力
-超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable 并阻断门禁。
-等待超限不自动重跑；70 分钟 job 上限、5% CV 和开销预算保持不变。
+超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable。仅环境不可用的
+结果由分类器保留证据并作为中性辅助结果；功能失败或真实预算超限仍使这次显式验收失败。
+等待超限不自动重跑；100 分钟性能 job 上限、5% CV 和开销预算保持不变。
 `measurement-windows.json` 保存逐窗口判定，`resource-observer.jsonl` 与
 `environment-admission.jsonl` 保存带窗口身份的原始证据，失败时也按白名单上传。
 
@@ -185,7 +217,8 @@ ID、revision 与 archive checksum；`Observability Performance Budget` 在另�
 每次 attempt 的 `observability-acceptance-<run_id>-<attempt>` artifact 保留 14 天，
 包含原始样本、比较摘要、runner/资源环境、场景结果与七字段 `empirical-card.json`。
 只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions
-run/attempt。失败或环境不可用阻断现有 `Build Artifacts` 必需检查，无需新增远端保护规则。
+run/attempt。失败或环境不可用不会成为普通 `Build Artifacts` 的依赖；显式启动的性能
+job 仍保留完整失败/不可用证据，不得把辅助结果当作预算通过卡，无需新增远端保护规则。
 旧共享测试机 A/B 与旧 SQLite 验收卡仅作历史诊断记录。
 
 ## 有界 Actions CPU 诊断

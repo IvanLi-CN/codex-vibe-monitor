@@ -51,8 +51,9 @@ class Metrics:
         self.header(name, "histogram")
         labels = labels or {}
         total = initial + rate * self.elapsed
-        fractions = ((0.01, 0.12), (0.025, 0.34), (0.05, 0.68), (0.1, 0.9), (0.25, 0.985), (0.5, 0.998))
-        for upper, fraction in fractions:
+        buckets = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
+        for upper in buckets:
+            fraction = -math.expm1(-upper / scale)
             self.sample(name + "_bucket", total * fraction, {**labels, "le": upper})
         self.sample(name + "_bucket", total, {**labels, "le": "+Inf"})
         self.sample(name + "_sum", total * scale, labels)
@@ -106,6 +107,27 @@ class Metrics:
             self.histogram("cvm_proxy_ttft_seconds", 4.3, 0.19 + endpoint_index * 0.04, {"endpoint": endpoint}, initial=120)
             self.histogram("cvm_proxy_ttfb_seconds", 4.3, 0.26 + endpoint_index * 0.05, {"endpoint": endpoint}, initial=120)
             self.histogram("cvm_proxy_stream_duration_seconds", 3.6, 0.95 + endpoint_index * 0.16, {"endpoint": endpoint}, initial=100)
+
+        wait_scales = {"sqlite_coordinator": .015, "db_pool": .005, "account_capacity": .12,
+                       "retry_backoff": .18, "downstream_channel": .006, "terminal_priority": .009, "journal_lock": .003}
+        for endpoint in endpoints:
+            labels = {"endpoint": endpoint}
+            for name, scale in (("response_duration", .9), ("local_wait", .045), ("unattributed", .018)):
+                self.histogram("cvm_request_" + name + "_seconds", 3.4, scale, labels, initial=100)
+            self.histogram("cvm_request_persistence_seconds", 3.4, .075, {**labels, "outcome": "committed"}, initial=100)
+            for phase, scale in (("auth_route", .01), ("request_read", .015), ("request_parse", .005), ("attempt", .7),
+                                 ("connect", .035), ("upstream_head", .285), ("forward", .47), ("finalize", .08), ("journal_append", .002)):
+                self.histogram("cvm_request_stage_seconds", 3.4, scale, {**labels, "phase": phase}, initial=100)
+            for resource, scale in wait_scales.items():
+                self.histogram("cvm_request_resource_wait_seconds", 3.4, scale, {**labels, "resource": resource}, initial=100)
+                self.counter("cvm_request_wait_affected_total", 1.0, {**labels, "resource": resource}, initial=30)
+                self.counter("cvm_request_wait_over_100ms_total", .12, {**labels, "resource": resource}, initial=3)
+        for resource, scale in wait_scales.items():
+            self.histogram("cvm_resource_wait_event_seconds", 2.4, scale, {"resource": resource, "outcome": "complete"}, initial=80)
+            self.counter("cvm_resource_wait_events_total", 2.4, {"resource": resource, "outcome": "complete"}, initial=80)
+        self.counter("cvm_trace_exported_spans_total", 40.0, initial=500)
+        for name in ("cvm_trace_export_failed_spans_total", "cvm_trace_queue_dropped_spans_total", "cvm_diagnostic_dropped_total", "cvm_metric_series_dropped_total"):
+            self.counter(name, 0)
 
         for route, method, status_class, rate in (
             ("/v1/responses", "POST", "2xx", 4.8),
@@ -205,5 +227,8 @@ def serve(port):
 if __name__ == "__main__":
     import threading
 
+    import traces
+    threading.Thread(target=traces.seed, daemon=True).start()
+    threading.Thread(target=traces.serve, daemon=True).start()
     threading.Thread(target=serve, args=(6772,), daemon=True).start()
     serve(9091)

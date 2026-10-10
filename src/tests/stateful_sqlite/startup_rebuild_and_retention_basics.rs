@@ -1686,6 +1686,95 @@ async fn background_startup_hourly_rollup_bootstrap_keeps_health_ready_while_wai
 }
 
 #[tokio::test]
+async fn background_startup_hourly_rollup_bootstrap_defers_when_repair_cursor_remains_pending() {
+    let state = test_state_from_config(test_config(), false).await;
+    state.startup_ready.store(true, Ordering::Release);
+    sqlx::query(
+        "INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at) \
+         VALUES (?1, 1, datetime('now'))",
+    )
+    .bind(INVOCATION_ACCOUNT_ACTIVITY_V2_REPAIR_GENERATION_DATASET)
+    .execute(&state.pool)
+    .await
+    .expect("seed current account activity v2 repair generation");
+    let mut seed_tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin pending repair cursor seed");
+    for id in 1..=513_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                id, dataset, month_key, file_path, sha256, row_count, status,
+                summary_source_kind, historical_rollups_materialized_at, created_at
+            )
+            VALUES (?1, 'codex_invocations', '2026-03', ?2, ?3, 1, 'completed',
+                    'unknown', datetime('now'), datetime('now'))
+            "#,
+        )
+        .bind(id)
+        .bind(format!("/missing/runtime-pending-repair-{id}.sqlite.gz"))
+        .bind(format!("runtime-pending-repair-sha-{id}"))
+        .execute(&mut *seed_tx)
+        .await
+        .expect("seed pending repair cursor candidate");
+    }
+    seed_tx
+        .commit()
+        .await
+        .expect("commit pending repair cursor seed");
+    let seeded_page =
+        repair_materialized_invocation_archive_usage_breakdown_backfill_state(&state.pool)
+            .await
+            .expect("seed a durable pending repair cursor page");
+    assert_eq!(seeded_page, 0);
+    let seeded_cursor: (i64, i64) = sqlx::query_as(
+        "SELECT cursor_id, cursor_stale_rank \
+         FROM hourly_rollup_archive_repair_progress \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load seeded pending repair cursor");
+    assert_eq!(seeded_cursor, (64, 0));
+    let seeded_candidate_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches \
+         WHERE dataset = 'codex_invocations' AND status = 'completed' \
+           AND historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("count seeded pending repair candidates");
+    assert_eq!(seeded_candidate_count, 513);
+
+    let bootstrap_handle =
+        spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
+    let (status, summary, detail) =
+        wait_for_hourly_rollup_bootstrap_task(state.as_ref(), "skipped").await;
+    assert_eq!(status, "skipped");
+    assert!(summary.as_deref().is_some_and(|summary| {
+        summary.contains("deferred with pending archive usage breakdown repair")
+    }));
+    assert!(detail.is_none());
+    let cursor: (i64, i64) = sqlx::query_as(
+        "SELECT cursor_id, cursor_stale_rank \
+         FROM hourly_rollup_archive_repair_progress \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load deferred pending repair cursor");
+    assert_eq!(cursor, (320, 0));
+
+    state.shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(1), bootstrap_handle)
+        .await
+        .expect("background bootstrap should stop after deferred repair cancellation")
+        .expect("background bootstrap task should join after deferred repair cancellation");
+}
+
+#[tokio::test]
 async fn background_startup_hourly_rollup_bootstrap_records_failure_without_revoking_readiness() {
     let state = test_state_from_config(test_config(), false).await;
     state.startup_ready.store(true, Ordering::Release);
