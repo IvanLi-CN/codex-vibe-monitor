@@ -4657,6 +4657,29 @@ async fn usage_breakdown_repair_deferred_candidate_does_not_starve_recoverable_t
     .execute(&pool)
     .await
     .expect("seed deferred-tail queue entry");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_deferred (
+            scope, archive_id, stale_rank, month_key, created_at, file_path
+        )
+        VALUES ('invocation_archive_usage_breakdown', 2, 0, '2026-09', datetime('now'), ?1)
+        "#,
+    )
+    .bind(recoverable_file_path)
+    .execute(&pool)
+    .await
+    .expect("seed recoverable deferred-tail queue entry");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_repair_progress (
+            scope, cursor_id, cursor_stale_rank, cursor_month_key, cursor_created_at
+        )
+        VALUES ('invocation_archive_usage_breakdown', 2, 0, '2026-09', datetime('now'))
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("seed deferred-tail cursor after fresh candidates");
 
     let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
         .await

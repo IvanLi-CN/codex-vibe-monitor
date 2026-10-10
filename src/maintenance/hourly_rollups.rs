@@ -519,27 +519,42 @@ async fn load_usage_breakdown_repair_cursor(
 
 async fn load_deferred_usage_breakdown_repair_candidate_tx(
     tx: &mut SqliteConnection,
+    excluded_archive_ids: &HashSet<i64>,
 ) -> Result<Option<MaterializedInvocationArchiveUsageBreakdownRepairRow>> {
-    sqlx::query_as(
+    let mut query = QueryBuilder::<Sqlite>::new(
         r#"
         SELECT batches.id, batches.file_path, batches.sha256, batches.month_key, batches.created_at,
                deferred.stale_rank, batches.coverage_start_at, batches.coverage_end_at
         FROM hourly_rollup_archive_repair_deferred AS deferred
         INNER JOIN archive_batches AS batches ON batches.id = deferred.archive_id
-        WHERE deferred.scope = ?1
-          AND batches.dataset = 'codex_invocations'
-          AND batches.status = ?2
-          AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
-          AND batches.historical_rollups_materialized_at IS NOT NULL
-        ORDER BY deferred.deferred_at ASC, deferred.archive_id ASC
-        LIMIT 1
+        WHERE deferred.scope =
         "#,
-    )
-    .bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .fetch_optional(&mut *tx)
-    .await
-    .map_err(Into::into)
+    );
+    query
+        .push_bind(USAGE_BREAKDOWN_REPAIR_SCOPE)
+        .push(
+            " AND batches.dataset = 'codex_invocations' \
+             AND batches.status = ",
+        )
+        .push_bind(ARCHIVE_STATUS_COMPLETED)
+        .push(
+            " AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror' \
+             AND batches.historical_rollups_materialized_at IS NOT NULL",
+        );
+    if !excluded_archive_ids.is_empty() {
+        query.push(" AND deferred.archive_id NOT IN (");
+        let mut ids = query.separated(", ");
+        for archive_id in excluded_archive_ids {
+            ids.push_bind(archive_id);
+        }
+        ids.push_unseparated(")");
+    }
+    query
+        .push(" ORDER BY deferred.deferred_at ASC, deferred.archive_id ASC LIMIT 1")
+        .build_query_as()
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(Into::into)
 }
 
 async fn delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(
@@ -1712,6 +1727,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
     let mut touched_batches = 0usize;
     let started_at = Instant::now();
     let mut budget_overrun_candidate_started = false;
+    let mut skipped_deferred_archive_ids = HashSet::new();
 
     // One candidate per transaction keeps closure expansion, rollup rebuilding, and marker
     // resets below the recovery write budget. The durable cursor lets skipped/quarantined rows
@@ -1734,8 +1750,11 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             (row, false)
         } else {
             delete_obsolete_deferred_usage_breakdown_repair_candidates_tx(tx.as_mut()).await?;
-            if let Some(row) =
-                load_deferred_usage_breakdown_repair_candidate_tx(tx.as_mut()).await?
+            if let Some(row) = load_deferred_usage_breakdown_repair_candidate_tx(
+                tx.as_mut(),
+                &skipped_deferred_archive_ids,
+            )
+            .await?
             {
                 (row, true)
             } else {
@@ -1764,15 +1783,15 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
         let mut budget_exhausted = false;
         let mut rejected = false;
 
-        if archive_batch_has_completed_manifest_sha_tx(
+        let archive_proof_valid = archive_batch_has_completed_manifest_sha_tx(
             tx.as_mut(),
             HOURLY_ROLLUP_DATASET_INVOCATIONS,
             &row.file_path,
         )
         .await?
             && !invocation_archive_has_unverified_replay_marker_tx(tx.as_mut(), &row.file_path)
-                .await?
-        {
+                .await?;
+        if archive_proof_valid {
             let has_stale_replay_marker =
                 invocation_archive_has_stale_replay_marker_tx(tx.as_mut(), &row.file_path).await?;
             let breakdown_replayed = hourly_rollup_archive_replayed_tx(
@@ -1816,6 +1835,14 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                     }
                 }
             }
+        } else if deferred_candidate {
+            // An already deferred row remains retryable until its manifest and replay proof are
+            // available again. Skip it for this pass so a recoverable deferred tail can proceed,
+            // but never delete the only durable retry record while proof is still absent.
+            tx.rollback().await?;
+            skipped_deferred_archive_ids.insert(row.id);
+            budget_overrun_candidate_started = true;
+            continue;
         }
 
         if rejected {
@@ -1828,6 +1855,8 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             .await?;
             if !deferred_candidate {
                 cursor = next_cursor;
+            } else {
+                skipped_deferred_archive_ids.insert(row.id);
             }
             budget_overrun_candidate_started = true;
             continue;
