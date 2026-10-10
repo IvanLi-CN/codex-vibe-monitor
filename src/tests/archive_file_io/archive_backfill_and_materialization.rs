@@ -4358,7 +4358,18 @@ async fn usage_breakdown_repair_cursor_survives_file_backed_restart() {
     .fetch_one(&reopened_pool)
     .await
     .expect("load reset file-backed repair cursor");
-    assert_eq!(final_cursor, (0, -1, String::new(), String::new()));
+    assert_eq!(final_cursor.0, 65);
+    assert_eq!(final_cursor.1, 0);
+    assert_eq!(final_cursor.2, "2026-02");
+    assert!(!final_cursor.3.is_empty());
+    let deferred_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM hourly_rollup_archive_repair_deferred \
+         WHERE scope = 'invocation_archive_usage_breakdown'",
+    )
+    .fetch_one(&reopened_pool)
+    .await
+    .expect("count rejected file-backed repair candidates");
+    assert_eq!(deferred_count, 65);
     reopened_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);
@@ -4573,7 +4584,7 @@ async fn usage_breakdown_repair_reopens_overlap_closure_larger_than_query_page()
     .fetch_one(&pool)
     .await
     .expect("count deferred large overlap batches");
-    assert_eq!(deferred_count, 0);
+    assert_eq!(deferred_count, 1);
     let replay_marker_count: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM hourly_rollup_archive_replay \
          WHERE dataset = 'codex_invocations' \
@@ -4665,7 +4676,7 @@ async fn usage_breakdown_repair_deferred_candidate_does_not_starve_recoverable_t
     .fetch_one(&pool)
     .await
     .expect("count deferred-tail queue entries");
-    assert_eq!(deferred_count, 0);
+    assert_eq!(deferred_count, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -5866,7 +5877,7 @@ async fn usage_breakdown_repair_reopens_a_replaced_archive_with_a_stale_replay_s
     .fetch_one(&pool)
     .await
     .expect("count rejected archive deferred entries");
-    assert_eq!(deferred_count, 0);
+    assert_eq!(deferred_count, 1);
     let materialized_at: Option<String> = sqlx::query_scalar(
         "SELECT historical_rollups_materialized_at FROM archive_batches WHERE file_path = ?1",
     )
