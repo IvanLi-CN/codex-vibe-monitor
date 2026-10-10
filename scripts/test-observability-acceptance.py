@@ -33,6 +33,8 @@ class ContainerMountTests(unittest.TestCase):
         source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
         self.assertIn("tempo-runtime-token", source)
         self.assertIn("/internal/v1/traces", source)
+        self.assertIn("FIXTURE_METRICS_TOKEN", source)
+        self.assertIn("FIXTURE_READ_TOKEN", source)
         self.assertNotIn('self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro"', source)
 
     def test_https_entry_certificate_is_a_server_leaf_and_covers_its_hostname(self):

@@ -16,6 +16,8 @@ import time
 from environment import AdmissionBudget, actions_context, comparison_report, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
 
 FIXTURE_INTERNAL_INGEST_TOKEN = "cvm-fixture-internal-ingest"
+FIXTURE_METRICS_TOKEN = "cvm-fixture-metrics-token"
+FIXTURE_READ_TOKEN = "cvm-fixture-read-token"
 
 def execute(arguments, **kwargs):
     return subprocess.check_output(arguments, text=True, timeout=kwargs.pop("timeout",60), **kwargs).strip()
@@ -66,8 +68,10 @@ class Run:
         (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g"},indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
-        for name in ["metrics-token","read-token","grafana-admin-password","tempo-ingest-token","tempo-query-token"]:
+        for name in ["grafana-admin-password","tempo-ingest-token","tempo-query-token"]:
             path=self.private/name;path.write_text(secrets.token_hex(32));path.chmod(0o640)
+        for name, value in [("metrics-token", FIXTURE_METRICS_TOKEN), ("read-token", FIXTURE_READ_TOKEN)]:
+            path=self.private/name;path.write_text(value + "\n");path.chmod(0o640)
         runtime_token=self.private/"tempo-runtime-token"
         runtime_token.write_text(FIXTURE_INTERNAL_INGEST_TOKEN + "\n")
         runtime_token.chmod(0o640)
@@ -103,8 +107,8 @@ class Run:
         compose=json.loads(execute(["docker","compose","-p",self.project,"-f",str(self.source/"ops/observability/compose.yml"),"--profile","traces-isolation","config","--format","json"],env=env))
         compose.pop("name",None)
         # Keep both networks internal. The candidate receives only a fixed,
-        # non-secret token for the isolated fixture ingest route; the real
-        # Tempo ingest credential remains mounted only in trusted helpers.
+        # non-secret fixture tokens for the app's own auth and isolated ingest
+        # route; runner-generated credentials remain mounted only in helpers.
         compose["networks"]={"monitoring":{"internal":True},"tempo_backend":{"internal":True}}
         for volume in compose.get("volumes",{}).values(): volume.pop("name",None)
         for service in compose["services"].values():
