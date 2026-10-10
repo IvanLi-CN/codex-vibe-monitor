@@ -54,7 +54,7 @@ const SUBSCRIPTION_INITIAL_TOPIC_BUILD_ATTEMPTS: usize = 3;
 const SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS: usize = 10_000;
 const SUMMARY_TERMINAL_OVERLAY_MAX_BYTES: usize = 64 * 1024 * 1024;
 const SUMMARY_TERMINAL_OVERLAY_MAX_ACCOUNT_OVERFLOW_MARKERS: usize = 1_024;
-const SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS: usize = 4_096;
+pub(crate) const SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS: usize = 4_096;
 #[cfg(test)]
 const DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON: &str = "dashboard-runtime-topology-contract";
 #[cfg(not(test))]
@@ -850,8 +850,14 @@ pub(crate) struct SummaryDeltaEntry {
 pub(crate) struct DeltaGapProof {
     pub(crate) cursor: SummaryDeltaCursor,
     // A journal cursor and a terminal sequence are different domains. `None` means this proof
-    // was created by source-journal compaction and must not be retired by a terminal watermark.
+    // is source-scoped rather than tied to a terminal watermark.
     pub(crate) terminal_sequence: Option<u64>,
+    // A broad proof intentionally clears its concrete terminal sequence. Preserve whether that
+    // broad proof came from source-journal loss so terminal-only overflow can remain degraded.
+    pub(crate) source_gap: bool,
+    // Only the proof emitted by source-journal compaction may be retired by compaction cleanup.
+    // Scoped source proofs must survive a concurrent cleanup attempt.
+    pub(crate) compaction_gap: bool,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) occurred_at: String,
     pub(crate) row_id: Option<i64>,
@@ -1063,6 +1069,8 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: Some(cursor),
+            source_gap: false,
+            compaction_gap: false,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1076,6 +1084,8 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
+            source_gap: true,
+            compaction_gap: true,
             upstream_account_id: None,
             occurred_at: String::new(),
             row_id: None,
@@ -1088,8 +1098,7 @@ impl SummaryDeltaJournal {
         if !self.source_compaction_gap || self.gap_proof_budget_exhausted {
             return;
         }
-        self.gap_proofs
-            .retain(|proof| proof.terminal_sequence.is_some());
+        self.gap_proofs.retain(|proof| !proof.compaction_gap);
         self.source_compaction_gap = false;
         self.gap_proof_budget_exhausted = false;
     }
@@ -1099,6 +1108,8 @@ impl SummaryDeltaJournal {
         self.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
             terminal_sequence: Some(delta.terminal_sequence),
+            source_gap: false,
+            compaction_gap: false,
             upstream_account_id: delta.upstream_account_id,
             occurred_at: delta.occurred_at.clone(),
             row_id: delta.persisted_row_id,
@@ -1108,15 +1119,24 @@ impl SummaryDeltaJournal {
 
     fn retain_gap_proof(&mut self, proof: DeltaGapProof) {
         if self.gap_proof_budget_exhausted {
+            if proof.source_gap {
+                for existing in &mut self.gap_proofs {
+                    existing.source_gap = true;
+                }
+            }
             return;
         }
         if self.gap_proofs.len() >= SUMMARY_DELTA_JOURNAL_MAX_GAP_PROOFS {
             // Dropping the oldest scoped proof could make an old account/range look exact.
             // Keep one irreversible broad proof until a durable projection consumes the gap.
+            let source_gap =
+                proof.source_gap || self.gap_proofs.iter().any(|existing| existing.source_gap);
             self.gap_proofs.clear();
             self.gap_proofs.push_back(DeltaGapProof {
                 cursor: proof.cursor,
                 terminal_sequence: None,
+                source_gap,
+                compaction_gap: false,
                 upstream_account_id: None,
                 occurred_at: String::new(),
                 row_id: None,
@@ -4546,6 +4566,8 @@ impl SubscriptionHub {
         state.summary_delta_journal.retain_gap_proof(DeltaGapProof {
             cursor: SummaryDeltaCursor(cursor),
             terminal_sequence: None,
+            source_gap: true,
+            compaction_gap: false,
             upstream_account_id,
             occurred_at,
             row_id,
@@ -5078,7 +5100,7 @@ impl SubscriptionHub {
         } else {
             false
         };
-        if overflowed && !overflow_is_covered && all_time {
+        if all_time && overflowed && !overflow_is_covered {
             return Err(ApiError::unavailable(anyhow!(
                 "summary terminal overlay exceeded its bounded memory budget"
             )));
@@ -15726,6 +15748,35 @@ mod tests {
             .expect("source compaction retains a broad proof");
         assert_eq!(proof.cursor, SummaryDeltaCursor(99));
         assert_eq!(proof.terminal_sequence, None);
+        assert!(proof.source_gap);
+    }
+    #[test]
+    fn clearing_source_compaction_gap_preserves_scoped_source_proof() {
+        let mut journal = SummaryDeltaJournal::default();
+        journal.note_unknown_source_cursor_gap(10);
+        journal.retain_gap_proof(DeltaGapProof {
+            cursor: SummaryDeltaCursor(11),
+            terminal_sequence: None,
+            source_gap: true,
+            compaction_gap: false,
+            upstream_account_id: Some(42),
+            occurred_at: "2026-01-01T00:00:00Z".to_string(),
+            row_id: Some(7),
+            invoke_id: Some("scoped-source-gap".to_string()),
+        });
+
+        journal.clear_source_compaction_gap();
+
+        assert!(!journal.source_compaction_gap);
+        assert!(!journal.gap_proof_budget_exhausted);
+        assert_eq!(journal.gap_proofs.len(), 1);
+        let proof = journal
+            .gap_proofs
+            .front()
+            .expect("scoped source proof survives compaction cleanup");
+        assert!(!proof.compaction_gap);
+        assert_eq!(proof.row_id, Some(7));
+        assert_eq!(proof.upstream_account_id, Some(42));
     }
     #[tokio::test]
     async fn summary_projection_ack_after_absorbing_swap_is_idempotent() {
@@ -15963,6 +16014,19 @@ mod tests {
             .expect("budget exhaustion retains a broad proof");
         assert!(proof.occurred_at.is_empty());
         assert_eq!(proof.upstream_account_id, None);
+        assert!(
+            !proof.source_gap,
+            "terminal-only overflow must remain terminal"
+        );
+
+        journal.note_unknown_source_cursor_gap(9_999);
+        assert!(
+            journal
+                .gap_proofs
+                .front()
+                .is_some_and(|proof| proof.source_gap),
+            "a later source gap must tighten an already broad terminal proof"
+        );
     }
     #[tokio::test]
     async fn dashboard_runtime_topology_materializes_shared_frames_without_business_payloads() {
@@ -18667,6 +18731,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        hydrate_summary_snapshots(state.as_ref())
+            .await
+            .expect("hydrate summary projection before recording the gap");
+        state
+            .subscription_hub
+            .record_summary_terminal_sequence_gap(913_102)
+            .await;
+        state.pool.close().await;
+
+        let summary = SubscriptionTopic::SummaryCurrent {
+            window: "today".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: None,
+            upstream_account_id: None,
+        };
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("terminal-only Summary gap should retain the last-good payload")
+            .serialize(None, None, None)
+            .expect("serialize degraded Summary payload");
+        let payload: Value = serde_json::from_slice(&payload).expect("Summary payload JSON");
+        assert!(
+            !payload["dataQuality"].is_null(),
+            "terminal-only Summary gap must be visible in the payload quality"
+        );
+
+        let current = SubscriptionTopic::SummaryCurrent {
+            window: "current".to_string(),
+            time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
+            limit: Some(1),
+            upstream_account_id: None,
+        };
+        assert!(
+            matches!(
+                current.build_cached_payload(state.clone()).await,
+                Err(ApiError::Unavailable(_))
+            ),
+            "a terminal gap affecting current rank must remain unavailable"
+        );
+
+        state
+            .subscription_hub
+            .record_summary_source_change_gap(913_103)
+            .await;
+        assert!(matches!(
+            summary.build_cached_payload(state).await,
+            Err(ApiError::Unavailable(_))
+        ));
+    }
+
+    #[tokio::test]
     async fn hydrated_summary_topic_does_not_replay_unacknowledged_terminal_without_sqlite() {
         let state = crate::tests::test_state_with_openai_base(
             Url::parse("http://127.0.0.1:9").expect("valid test URL"),
@@ -19245,10 +19366,28 @@ mod tests {
             limit: None,
             upstream_account_id: None,
         };
-        assert!(matches!(
-            summary.build_cached_payload(state.clone()).await,
-            Err(ApiError::Unavailable(_))
-        ));
+        let payload = summary
+            .build_cached_payload(state.clone())
+            .await
+            .expect("rolling terminal overflow must retain a degraded Summary payload")
+            .serialize(
+                None,
+                None,
+                Some(&DashboardTerminalProjectionSlice {
+                    revision: capture.revision,
+                    deltas: capture.deltas.clone(),
+                }),
+            )
+            .expect("serialize the degraded Summary payload");
+        let payload: Value = serde_json::from_slice(&payload).expect("summary payload JSON");
+        assert_eq!(payload["totalCount"], json!(1));
+        assert_eq!(payload["totalTokens"], json!(42));
+        assert_eq!(payload["totalCost"], json!(0.25));
+        assert_eq!(
+            payload["dataQuality"],
+            serde_json::to_value(StatsDataQualityResponse::summary_delta_journal_pending())
+                .expect("serialize Summary data quality")
+        );
 
         hydrate_summary_snapshots(state.as_ref())
             .await
@@ -19311,6 +19450,28 @@ mod tests {
                 .await,
             Err(ApiError::Unavailable(_))
         ));
+        state.pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn rolling_overlay_overflow_stays_selection_local() {
+        let state = crate::tests::test_state_with_openai_base(
+            Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        )
+        .await;
+        {
+            let mut guard = state.subscription_hub.state.lock().await;
+            guard.summary_delta_journal.overflowed_through_sequence = Some(42);
+        }
+        let projection = SummaryProjection::default();
+        assert!(
+            state
+                .subscription_hub
+                .summary_projection_terminal_overlay(&projection, false, None)
+                .await
+                .is_ok(),
+            "rolling overflow must be reconciled by the selection-local gap proof"
+        );
         state.pool.close().await;
     }
 

@@ -14,8 +14,9 @@
 - [ADR 0010: Summary coverage fence and Snapshot authority](../../adr/0010-summary-coverage-fence-and-snapshot-authority.md)
 - [ADR 0012: Historical Summary Coverage Recovery Supervisor](../../adr/0012-historical-summary-coverage-supervisor.md)
 - [ADR 0014: Durable Summary coverage recovery](../../adr/0014-durable-summary-coverage-recovery.md)
+- [ADR 0034: Summary Delta degraded read path](../../adr/0034-summary-delta-degraded-read-path.md)
 
-## 背景 / 问题陈述
+## Context and Scope
 
 Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summary hydration 不能因大量 archive manifest 而放弃一个本可精确恢复的快照；压力门拒绝低优先级工作也不能演变为毫秒级重试、日志风暴或无动作审计；遗留长期 interval migration 不应反复执行全窗反关联扫描并阻塞 P1。
 
@@ -64,12 +65,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   Exact-Ready selection remains memory-only. A missing cursor without durable
   metadata remains broad unavailable until reconciliation instead of being
   assigned the range of a later entry.
-- `RollingDelta` may rebuild bounded descriptor keys off-request after restart,
-  but must not re-admit complete live source or raw archive data. It never
-  authorizes `all`, request-time SQLite/archive/file I/O, partial data, or stale
-  last-good success. A descriptor gap starts bounded reconciliation rather than
-  a four-second full Rolling rebuild; all-time convergence remains independently
-  owned by ADR 0005's checkpoint.
+- `RollingDelta` may rebuild bounded descriptor keys off-request after restart, but must not re-admit complete live source or raw archive data. It never authorizes request-time SQLite/archive/file I/O, partial data, or stale last-good success presented as exact. When the only affected proof is a pending in-memory Summary Delta Journal gap, the existing last-good Projection plus acknowledged terminal overlay may be served as an explicitly degraded response with `dataQuality.proofPending`; a descriptor gap still starts bounded reconciliation and all-time convergence remains independently owned by the historical checkpoint.
 
 ### Non-goals
 
@@ -95,7 +91,27 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - HTTP wire shape、owner-facing UI 和运行时部署机制的重设计。
 - 通过人工维护任务或请求期回源绕开缺失的 read-model coverage。
 
-## 需求（Requirements）
+## Requirements
+
+### REQ-RMPR-001 — Exact-memory Summary reads
+
+- The Summary HTTP and SSE read paths MUST serve published in-memory projections without request-time SQLite, archive, or file I/O. A pending in-memory Summary Delta Journal proof MAY serve the last-good projection plus acknowledged overlay only when the response is explicitly marked degraded; missing proof without a published projection remains unavailable.
+
+### REQ-RMPR-002 — Durable coverage recovery
+
+- Historical Summary and archive coverage MUST advance through generation-fenced, bounded checkpoints and preserve exact scope, manifest, replay, and snapshot proof. Independent archive, source, or classification gaps MUST remain unavailable for the affected selection rather than being represented as partial or fabricated data.
+
+### REQ-RMPR-003 — Canonical facts and pressure boundaries
+
+- Terminal classification MUST be a durable versioned fact shared by Summary, rollups, and aggregate consumers. Low-priority recovery MUST distinguish pre-access pressure defer from actual SQLite lock failures and MUST preserve bounded, event-driven retry behavior without request-path fallback I/O.
+
+### REQ-RMPR-004 — Bounded legacy migration
+
+- Legacy migration and recovery MUST use resumable cursor or seek progress, bounded transactions, cancellation, and pressure checks so P1 terminal durability and routing writes retain priority.
+
+### REQ-RMPR-005 — Promotion and observation boundary
+
+- Checkpoint promotion MUST produce GitHub artifacts only. Any post-deployment observation requires explicit owner confirmation and MUST remain read-only, with no automated deployment, restart, rollback, or server mutation.
 
 ### MUST
 
@@ -119,6 +135,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - archive 的不可读或未回放证明必须为 `current` 保留精确 manifest 时间端点；小时 bucket 扩展只用于 rolling/calendar 的 aggregate gap，不得把同小时但早于 selected cutoff 的 archive 放大为 `current` 不可用。materialized archive 的 partial raw boundary gap 只替换受影响的精确边界，不能否定已完整覆盖的 durable rollup interior；replay coverage 必须匹配当前 manifest identity，除非受控兼容标记明确定义为 materialized coverage。
 - raw all-time fallback 的 global 与 account replay proof 必须同时匹配当前 archive SHA；同一路径的 stale SHA marker 不是 coverage proof，不能抑制该 archive 的精确 raw replay。half-open manifest range 的 `end == current` selected cutoff 表示 archive 在选中前缀之前结束，不能阻断 global `current`。
 - all-time account aggregate 的 normal 与 paged archive admission 都必须以 `upstream_activity_manifest_refreshed_at` 证明 account ID manifest 已完整；仅观察到部分 account ID、matching rollup 或 replay marker 不得让未列 archive account 以新鲜零值或 partial response 通过。完成的 replay marker 必须持久化当前 completed manifest SHA，缺少该 identity proof 时 usage breakdown 仍视为未回放并走 exact-or-unavailable 路径。
+- Summary replay identity 必须是 fail-closed 的：NULL、blank 或未知 marker 不能通过 `COALESCE` 被解释为当前 archive SHA；force repair 必须跨 4,096-row archive pages 持久化 source invocation IDs，且在保留缺失 authority bucket 时先清理安全 bucket，避免后续 `replace=false` 页面累加旧 rollup。分页必须使用与 `id > cursor ORDER BY id` 匹配的索引，并由 EXPLAIN 回归证明。
 - 所有具有有限 manifest coverage 的 raw replay 与 compact-rollup proof 都必须把 inclusive final-row timestamp 归一为同一 exclusive range；`coverage_start_at == coverage_end_at` 的单行 manifest 仍是有界 source，不能退化为无 coverage 的 legacy manifest。raw current-candidate source-admission failure 必须保留其 current-rank proof，且只能使受影响 selection 或 range `unavailable`，不得中止可由完整 durable rollup 服务的其他 Projection snapshot。
 - 共享常驻字节预算无法同时容纳某个 rolling/archive 精确边界与独立 newest-N 视图时，必须回退该精确边界为范围局部 `unavailable`；已经完整证明的 `current` 和不相交的合法窗口继续从内存精确响应。
 - runtime overlay 追加或替换导致再次裁剪 `current` 时，遗漏时间边界只能保持或向更新的遗漏记录收紧；旧 overlay 不得把已有持久化遗漏边界放宽，从而误放行覆盖该行的 rolling/calendar 请求。
@@ -126,7 +143,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - archive manifest 或历史 source capacity 超过 bounded source admission 或 shared resident preview capacity 时，系统必须使用受控的 rollup/boundary 恢复或明确可恢复状态；不得把合法的大历史永久降级为初始 hydration 失败。
 - `codex_invocations` archive 的 `completed` 是 Summary-eligible 状态，不是“文件已写出”的泛化标记。转入该状态前必须在同一事务中证明有限 coverage、当前 manifest SHA、historical rollup materialization 与全部必需 Summary replay target；数据库最终化约束必须拒绝绕过该规则的写入。新的 archive 在 raw source cleanup 前还必须持久化当前 manifest identity 对应的压缩 Summary Archive Snapshot V2、coverage proof 与 SHA；V1 仅可作为 legacy backfill 输入，绝不构成 cleanup authority。任何 Snapshot 压力或失败都保留 authoritative archive 并留下可恢复 checkpoint。
 - All-time coverage uses independent global and account scope versions across manifest, archive replay and verified Snapshot V2 proof. Archive rollup materialization advances those versions through its replay proof; ordinary hot/live rollup writes advance only the independent live-tail cursor and bounded overlay. They do not invalidate a completed historical checkpoint or trigger full live admission. Only a changed historical coverage input restarts its affected scope, and an unknown impact remains fail-closed.
-- Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 fail-closed proof，直至 generation-fenced durable reconciliation 吸收该缺口。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
+- Summary Delta Journal 的 gap proof 预算耗尽时不得淘汰较早的 account/time/rank proof；必须保留一个广义 proof，直至 generation-fenced durable reconciliation 吸收该缺口。若已存在 last-good immutable Projection，intersecting selection 可以继续组合已确认 terminal overlay，但必须返回 `StatsResponse.dataQuality = { state: "degraded", proofPending: true, reason: "summary_delta_journal_pending" }`；没有已发布 Projection 或命中独立 archive/source coverage gap 时仍保持 `unavailable`。terminal journal 或 shutdown recovery 在 SQLite commit 后必须作为有界 exact replay overlay 接入 rolling Projection，不能让正常 Rolling 退化为完整 live admission。
 - Summary live-tail reconciliation MUST key absorption and proof retirement by
   the durable `(row_id, invoke_id, occurred_at)` identity. An ACK or restart
   replay already represented by the immutable Projection is idempotently
@@ -146,9 +163,10 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - V2 SHA proof MUST be standard SHA-256 resumable progress bound to the manifest SHA, algorithm/state version, byte offset, and immutable source fingerprint. A fingerprint change discards only unverified hash/page progress; EOF must equal the manifest SHA before a V2 page, semantic proof, cursor, outcome, and coverage descriptor can commit atomically.
 - `archive_batches.summary_source_kind` 区分 Summary source role：`authoritative` 表示 live canonical record 已删除，必须满足 Archive Publication Proof；`live_mirror` 表示仅精简详情、canonical record 仍在 live SQLite，永不参与 Summary admission、rollup repair 或 archive backlog；`unknown` legacy manifest 继续按潜在 authoritative source fail closed。正常启动可将 `segment_v1` 的连续 live ID 闭区间作为快速兼容证明；对其余 `unknown` manifest，后台必须验证当前 archive SHA、row count 与每个 archived `(id, invoke_id)` 的 live identity，才可分类为 `live_mirror`。任何缺失、变更、不可读或替换的 identity 保持 `unknown`，并走 authoritative proof recovery。Summary Startup Recovery Gate 禁止首次 Projection 前读取、解压或校验 raw legacy archive；Bootstrap 将未证明 manifest 保留为有限 unavailable proof，并先发布独立 Exact-Ready selection。通用低优先级 backfill 在 cold Projection 未发布前不得竞争同一 proof work，并在首个 exact Projection 发布后从 durable cursor 执行 identity recovery。
 - 正常版本启动必须自动发现任一缺少 Archive Publication Proof 的 legacy completed invocation archive，并以文件 SHA 与完整 source/bucket closure 验证或重建其 compact rollup；不得由 `historical_rollups_materialized_at` 或缺失 marker 直接推断 proof，不得要求人工 CLI、SQL 或额外运维步骤。该协调仍在后台、pressure-aware 路径，HTTP/SSE 不参与 I/O。
+- Summary rollup repair MUST keep its two bounded modes explicit: additive replay admits at most 128 pending authoritative batches per transaction, while stale-marker or incomplete materialized-proof recovery admits at most 4,096 completed authoritative batches per replacement transaction and persists an archive ID cursor between pages. The backfill driver MUST resume force pages while that archive cursor or incomplete marker exists, even when the current page has repaired the marker predicate, and MUST return before additive replay until force repair publishes completion. Full repair MUST deduplicate restored live rows by durable ID, persist its repair live cursor even when materialized proof is incomplete, and publish the completion marker only after the required archive proof converges.
 - source-record admission 的 range-local unavailable 只适用于外部 source capacity 或不可恢复 source 条件；新的 archive lifecycle 不得创建这种 gap。没有任何权威 legacy source 的既有范围保持该局部状态，直到精确 source 恢复。
 - rolling 与 calendar 请求的 admission 只覆盖其合法 public horizon 和精确边界；仅 `all` 可达的更早 rollup 容量不得阻止合法 rolling snapshot 发布，且 `all` 继续保持 exact-or-unavailable。
-- 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh，也不能由 fabricated empty response 替代。首次尚无精确快照时保持现有 unavailable 语义。
+- 后台 refresh 失败时保留可诊断的 last-good；它不能伪装为 fresh 或 exact，也不能由 fabricated empty response 替代。仅在 Summary Delta Journal proof pending 且明确标记 degraded 时允许使用该 last-good；首次尚无精确快照时保持现有 unavailable 语义。
 - hydration、archive 读取和 reconcile 必须有 deadline、取消点、coalescing 与受控重试，不得在请求路径执行。
 - 超出 raw live tail 的 persisted terminal 必须分别取得 global 与 account rollup coverage proof；global 已覆盖而 account 尚未覆盖时，全局 Summary 和通用 SSE baseline 可以继续精确去重，account rolling 请求必须 `unavailable`，不得因复用全局 proof 双计或漏计 terminal overlay。
 - terminal record 的 `failure_class`、actionable state 与 classification revision 是 canonical durable facts。terminal persistence 必须在同一 durable write 中 materialize 当前 revision；读取器不得把 raw payload 或 response bytes 当作另一条分类事实源。
@@ -191,7 +209,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ### Core flows
 
-1. Summary HTTP 请求和 `SummaryCurrent` SSE topic 先校验 query，再从内存 Projection 选择精确 snapshot；它们从不启动 hydrate、打开 archive 或回源 SQLite。首次没有精确 snapshot 时返回 `unavailable`。
+1. Summary HTTP 请求和 `SummaryCurrent` SSE topic 先校验 query，再从内存 Projection 选择精确 snapshot；若仅有待证明的 Summary Delta Journal gap，则选择已发布 last-good 并附加 degraded data-quality 状态。它们从不启动 hydrate、打开 archive 或回源 SQLite。首次没有已发布 snapshot 时返回 `unavailable`。
 2. Terminal writer 在持久化 terminal outcome 的同一事务中保存 canonical classification。legacy/immutable archive materializer 在后台补齐 revisioned classification coverage，并重新建立受影响的 rollup coverage。
 3. Projection worker 在后台将 rollup 的完整 interiors 与精确 boundary/tail 组合成新的 immutable snapshot；它只消费 canonical classifications，失败保持 last-good 与明确 freshness 状态。
 4. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。Account Activity V2 coverage repair 在同一 permit 内完成这个 due 检查与 repair，避免嵌套获取 global gate。
@@ -201,7 +219,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 ### Edge cases / errors
 
 - 无精确 Summary snapshot 时保留既有 unavailable 错误，不伪造 200/zero response。
-- 过期或失败的 refresh 不得把不完整数据提升为 fresh；可诊断 last-good 与 freshness 必须一致。
+- 过期或失败的 refresh 不得把不完整数据提升为 fresh/exact；Delta Journal proof pending 的 last-good 只能作为显式 degraded response 返回，且可诊断 freshness 必须一致。
 - account rollup 落后 global rollup、archive/live overlap、source partition 与未对齐窗口边界都必须保持 exactness。
 - 任何 legacy/archived row 的 classification revision 不足都不得由不同读取器各自推导；它阻止相应 exact coverage，直到 background materializer 完成。
 - pressure defer 与实际 lock 在 counters、日志、重试与审计中是不同状态。
@@ -209,7 +227,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ## 接口契约（Interfaces & Contracts）
 
-None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持不变；本主题只允许 additive、内存态 health 诊断。
+Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `dataQuality`，仅当请求选择 intersecting 的 Summary Delta Journal proof gap 时在 `/api/stats` 与 `/api/stats/summary` 增加 `dataQuality`：`state = "degraded"`、`proofPending = true`、`reason = "summary_delta_journal_pending"`。该状态只来自内存，不改变请求期 zero-I/O 合同；无已发布 Projection 或命中独立 durable source/archive gap 仍返回既有 `unavailable`。
 
 ## 关联合同
 
@@ -219,7 +237,39 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - `docs/specs/high-frequency-runtime-data-plane/SPEC.md`：健康 read path 的内存态边界。
 - `docs/solutions/performance/sqlite-write-pressure-backpressure.md`：pressure defer 与 lock retry 的既有设计约束。
 
-## 验收标准（Acceptance Criteria）
+## Verification
+
+### VER-RMPR-001 — Exact-memory Summary behavior
+
+- Method: lightweight and stateful SQLite tests for published projections, closed-database reads, current/rolling selection boundaries, and pending Summary Delta Journal gaps.
+- covers: `REQ-RMPR-001`
+- Pass condition: exact published selections remain zero-I/O; a pending in-memory proof gap returns last-good plus acknowledged overlay with the documented degraded `dataQuality`; no published projection or independent durable gap remains unavailable.
+
+### VER-RMPR-002 — Durable coverage and archive recovery
+
+- Method: stateful SQLite and archive-file I/O tests for manifest identity, replay proof, bounded archive repair, coverage checkpoints, and source/archive failure boundaries.
+- covers: `REQ-RMPR-002`
+- Pass condition: bounded recovery preserves committed cursors and exact scope fences; independent source, archive, or classification gaps fail closed only for affected selections; repair work uses the fixed archive batch bound and indexed manifest lookup.
+
+### VER-RMPR-003 — Canonical classification and pressure handling
+
+- Method: targeted Rust regression tests for terminal classification, rollup consumers, pressure defer, actual lock handling, scheduler eligibility, and task-run audit behavior.
+- covers: `REQ-RMPR-003`
+- Pass condition: consumers agree on the durable classification revision; defer performs no pre-read or no-op audit; actual locks use bounded retry and one pressure transition without request-path fallback.
+
+### VER-RMPR-004 — Resumable bounded maintenance
+
+- Method: stateful SQLite and archive-file I/O maintenance tests covering cursor continuation, bounded write batches, cancellation, and pressure admission.
+- covers: `REQ-RMPR-004`
+- Pass condition: interrupted work resumes from committed progress, each maintenance transaction remains bounded, and P1 writes are not displaced by legacy recovery.
+
+### VER-RMPR-005 — Delivery and observation boundary
+
+- Method: repository workflow and documentation checks plus release/observation procedure review.
+- covers: `REQ-RMPR-005`
+- Pass condition: validation produces a reviewable GitHub artifact and no automated deployment or mutable production observation is performed.
+
+## Detailed Acceptance Criteria
 
 - Given 多于旧 manifest admission 上限的已验证 archive 历史，When Summary Projection hydrate，Then 合法 current/1d 与滚动窗口保持精确，且 HTTP 读取不执行 SQL 或文件访问。
 - Given 一个 legacy completed invocation archive 具有有限 coverage、materialized timestamp 与两个 Summary replay proof、但缺少 SHA-bound global invocation proof，When 正常版本更新后的有界 startup reconciliation 完成，Then 它先验证并重置完整 source/bucket closure，再原子重建 proof 并发布 exact Projection；不需要人工 maintenance 命令，关闭 SQLite 后合法 current/1d/rolling HTTP read 仍为零 SQL/文件 I/O。
@@ -248,14 +298,12 @@ None。现有 Summary、System Status、long-term HTTP 与 SSE wire shape 保持
 - Given 任务的 durable `next_run_after` 仍在未来，When 该任务先因 `BackgroundBusy` defer 后收到 pressure eligibility event，Then 它不执行、不写 progress 或 task-run audit，并继续等待原 deadline。
 - Given legacy long-term backlog，When migration 运行、遇到 pressure 或取消，Then 每个写事务最多 512 行、cursor 可恢复且 P1 不被低优先级写入饥饿。
 - Given 一个 checkpoint 已发布且主人确认 exact version 已部署，When 执行 900 秒 `$srv-101-ops` 只读观察，Then 结果绑定同一 release identity，不执行服务器写入。
+- Given 已发布 last-good Summary Projection、已确认 terminal overlay 与 intersecting 的 Summary Delta Journal proof gap，When 请求 `/api/stats` 或 `/api/stats/summary`，Then handler 返回 last-good 加已确认 overlay、附带 `dataQuality.proofPending = true`，且关闭 SQLite 后仍不执行 SQL、archive 或文件访问。
+- Given Summary Delta Journal proof gap 仍待后台 reconciliation，When 请求路径执行，Then 不执行 archive proof、全历史扫描或 broad JSON parse；后台以固定有界批次继续恢复，首次没有已发布 Projection 的请求仍返回 `unavailable`。
 
-## 验收清单
+## Contract Coverage
 
-- [ ] Summary 的 exact-memory contract 覆盖 archive、rollup、boundary、last-good 与 HTTP zero-I/O。
-- [ ] Canonical invocation classification 覆盖 terminal writer、legacy live、immutable archive overlay、rollup coverage 与所有 aggregate consumers。
-- [ ] pressure defer、actual lock、next eligibility 与无动作审计边界明确且可测试。
-- [ ] long-term migration 的 cursor、seek、512-row transaction、pressure/cancel 合同明确且可测试。
-- [ ] 手动部署和 900 秒只读观察边界明确。
+The detailed requirements and verification entries above define the durable contract for Summary exactness, canonical classification, bounded recovery, pressure handling, migration, promotion, and observation.
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 

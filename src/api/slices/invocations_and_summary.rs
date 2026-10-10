@@ -3744,25 +3744,16 @@ pub(crate) async fn fetch_invocation_suggestions(
 pub(crate) async fn fetch_stats(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StatsResponse>, ApiError> {
-    let source_scope = resolve_default_source_scope(&state.pool).await?;
-    let totals = query_combined_totals(&state.pool, StatsFilter::All, source_scope).await?;
-    let mut response = totals.into_response();
-    response.non_success_cost = Some(totals.non_success_cost);
-    let augmentation = load_summary_live_augmentation(
-        state.as_ref(),
-        source_scope,
-        None,
-        None,
-        SummaryLiveAugmentationPolicy {
-            include_in_progress: true,
-            include_non_success_tokens: false,
-        },
-        None,
+    fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: None,
+            upstream_account_id: None,
+        }),
     )
-    .await?;
-    apply_summary_live_augmentation(&mut response, augmentation);
-    response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
-    Ok(Json(response))
+    .await
 }
 
 pub(crate) async fn load_in_progress_conversation_count(
@@ -5529,8 +5520,9 @@ impl SummaryProjection {
                     None
                 },
             );
-            if all_time_refreshed_at
-                .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
+            if !rolling_delta_is_exact
+                && all_time_refreshed_at
+                    .is_none_or(|refreshed_at| refreshed_at.elapsed() > SUMMARY_SNAPSHOT_MAX_STALE)
             {
                 return Err(ApiError::unavailable(anyhow!(
                     "summary all-time last-good snapshot exceeded the freshness budget"
@@ -5547,6 +5539,9 @@ impl SummaryProjection {
                     "summary all-time account snapshot is not hydrated"
                 )));
             }
+            return Err(ApiError::unavailable(anyhow!(
+                "summary all-time snapshot is not hydrated"
+            )));
         }
         let (candidate_indexes, candidate_records) = match range {
             None if matches!(window, SummaryWindow::Current(_)) => (
@@ -17709,6 +17704,7 @@ pub(crate) async fn build_empty_summary_response(
         non_success_cost: Some(0.0),
         non_success_tokens: None,
         maintenance: Some(load_stats_maintenance_response(state).await?),
+        data_quality: None,
     };
     let augmentation = load_summary_live_augmentation(
         state,
@@ -23477,6 +23473,7 @@ impl DashboardActivitySnapshot {
                     non_success_cost: None,
                     non_success_tokens: None,
                     maintenance: None,
+                    data_quality: None,
                 },
                 tokens_per_minute: None,
                 spend_rate: None,
@@ -26691,6 +26688,7 @@ pub(crate) fn build_dashboard_activity_summary(
                 .sum(),
         ),
         maintenance: None,
+        data_quality: None,
     };
 
     DashboardActivitySummaryResponse {
@@ -30228,45 +30226,6 @@ pub(crate) async fn load_summary_response_from_query(
     Ok(response)
 }
 
-pub(crate) fn summary_delta_gap_affects_selection(
-    projection: &SummaryProjection,
-    gaps: &[DeltaGapProof],
-    deltas: &[DashboardActivityTerminalDelta],
-    window: &SummaryWindow,
-    reporting_tz: Tz,
-    upstream_account_id: Option<i64>,
-) -> bool {
-    if let SummaryWindow::Current(limit) = window {
-        return gaps.iter().any(|gap| {
-            (upstream_account_id.is_none()
-                || gap.upstream_account_id.is_none()
-                || gap.upstream_account_id == upstream_account_id)
-                && projection.delta_gap_affects_current_selection(
-                    gap,
-                    (*limit).max(0) as usize,
-                    upstream_account_id,
-                    deltas,
-                )
-        });
-    }
-    let range = summary_window_range(window, reporting_tz, Utc::now())
-        .ok()
-        .flatten();
-    gaps.iter().any(|gap| {
-        if upstream_account_id.is_some()
-            && gap.upstream_account_id.is_some()
-            && gap.upstream_account_id != upstream_account_id
-        {
-            return false;
-        }
-        let Some((start, end)) = range else {
-            return true;
-        };
-        parse_to_utc_datetime(&gap.occurred_at)
-            .is_none_or(|occurred_at| occurred_at >= start && occurred_at < end)
-    })
-}
-
 pub(crate) fn summary_delta_affects_selection(
     projection: &SummaryProjection,
     deltas: &[DashboardActivityTerminalDelta],
@@ -30344,22 +30303,33 @@ pub(crate) async fn fetch_summary(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        if summary_delta_gap_affects_selection(
+        let source_gap_pending = summary_delta_gap_affects_selection(
             projection.as_ref(),
             &gaps,
             &deltas,
             &window,
             reporting_tz,
             params.upstream_account_id,
-        ) {
+            SummaryDeltaGapKind::Source,
+        );
+        if source_gap_pending {
             return Err(ApiError::unavailable(anyhow!(
-                "summary delta journal has an unproven change for the requested all-time selection"
+                "summary source journal has an unproven change for the requested selection"
             )));
         }
+        let delta_gap_pending = summary_delta_gap_affects_selection(
+            projection.as_ref(),
+            &gaps,
+            &deltas,
+            &window,
+            reporting_tz,
+            params.upstream_account_id,
+            SummaryDeltaGapKind::Terminal,
+        );
         let mut response = projection.response_for_query_with_rolling_delta(
             &params,
             state.config.list_limit_max as i64,
-            true,
+            delta_gap_pending,
         )?;
         let mut terminal_sequence = 0;
         apply_dashboard_terminal_slice_to_summary_response(
@@ -30374,6 +30344,9 @@ pub(crate) async fn fetch_summary(
                 deltas,
             },
         );
+        if delta_gap_pending {
+            response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+        }
         return Ok(Json(response));
     }
 
@@ -30392,28 +30365,43 @@ pub(crate) async fn fetch_summary(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    if summary_delta_gap_affects_selection(
+    let source_gap_pending = summary_delta_gap_affects_selection(
         projection.as_ref(),
         &gaps,
         &deltas,
         &window,
         reporting_tz,
         account_id,
-    ) {
+        SummaryDeltaGapKind::Source,
+    );
+    if source_gap_pending {
         return Err(ApiError::unavailable(anyhow!(
-            "summary delta journal has an unproven change for the requested selection"
+            "summary source journal has an unproven change for the requested selection"
         )));
     }
+    let delta_gap_pending = summary_delta_gap_affects_selection(
+        projection.as_ref(),
+        &gaps,
+        &deltas,
+        &window,
+        reporting_tz,
+        account_id,
+        SummaryDeltaGapKind::Terminal,
+    );
+    if matches!(window, SummaryWindow::Current(_)) && delta_gap_pending {
+        return Err(ApiError::unavailable(anyhow!("current rank unproven")));
+    }
+    let delta_overlay_affects_selection = summary_delta_affects_selection(
+        projection.as_ref(),
+        &deltas,
+        &window,
+        reporting_tz,
+        account_id,
+    );
     let mut response = projection.response_for_query_with_rolling_delta(
         &params,
         state.config.list_limit_max as i64,
-        summary_delta_affects_selection(
-            projection.as_ref(),
-            &deltas,
-            &window,
-            reporting_tz,
-            account_id,
-        ),
+        delta_gap_pending || delta_overlay_affects_selection,
     )?;
     if let SummaryWindow::Current(limit) = window {
         projection.apply_rolling_delta_to_current_response(
@@ -30422,6 +30410,9 @@ pub(crate) async fn fetch_summary(
             account_id,
             &deltas,
         )?;
+        if delta_gap_pending {
+            response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+        }
         return Ok(Json(response));
     }
     let mut terminal_sequence = 0;
@@ -30437,6 +30428,9 @@ pub(crate) async fn fetch_summary(
             deltas,
         },
     );
+    if delta_gap_pending {
+        response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
+    }
     Ok(Json(response))
 }
 
@@ -33583,6 +33577,10 @@ mod request_compression_query_tests {
             assert_eq!(response.total_count, 1, "{window} response");
             assert_eq!(response.total_tokens, 17, "{window} response");
         }
+        state
+            .subscription_hub
+            .record_summary_terminal_sequence_gap(913_104)
+            .await;
         let all_time = fetch_summary(
             State(state),
             Query(SummaryQuery {
@@ -33884,6 +33882,8 @@ mod request_compression_query_tests {
         let gap = DeltaGapProof {
             cursor: SummaryDeltaCursor(4),
             terminal_sequence: Some(4),
+            source_gap: false,
+            compaction_gap: false,
             upstream_account_id: Some(42),
             occurred_at: db_occurred_at_lower_bound(Utc::now() - ChronoDuration::minutes(3)),
             row_id: Some(i64::MAX),
@@ -33910,6 +33910,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(2),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "a gap beyond the requested current prefix must remain selection-local"
         );
@@ -33921,6 +33922,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(4),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "the acknowledged delta tail must extend the exact current cutoff"
         );
@@ -33932,6 +33934,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(5),
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "a current limit reaching the first unproven rank must fail closed"
         );
@@ -33943,8 +33946,36 @@ mod request_compression_query_tests {
                 &SummaryWindow::All,
                 Shanghai,
                 None,
+                SummaryDeltaGapKind::Any,
             ),
             "an all-time gap must fail closed for both HTTP and Summary SSE"
+        );
+        let mut scoped_source_gap = gap.clone();
+        scoped_source_gap.source_gap = true;
+        scoped_source_gap.terminal_sequence = None;
+        assert!(
+            summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&scoped_source_gap),
+                &[],
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+                SummaryDeltaGapKind::Source,
+            ),
+            "a durable-identity source proof must remain unavailable for its selection"
+        );
+        assert!(
+            !summary_delta_gap_affects_selection(
+                projection.as_ref(),
+                std::slice::from_ref(&scoped_source_gap),
+                &[],
+                &SummaryWindow::All,
+                Shanghai,
+                None,
+                SummaryDeltaGapKind::Terminal,
+            ),
+            "a source proof must not be downgraded to a terminal-only gap"
         );
         assert!(
             !summary_delta_gap_affects_selection(
@@ -33954,6 +33985,7 @@ mod request_compression_query_tests {
                 &SummaryWindow::Current(50),
                 Shanghai,
                 Some(7),
+                SummaryDeltaGapKind::Any,
             ),
             "a gap for another account must not hide an independent account selection"
         );
@@ -37055,7 +37087,7 @@ mod request_compression_query_tests {
     }
 
     #[tokio::test]
-    async fn summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof() {
+    async fn summary_projection_refresh_rejects_legacy_source_gap() {
         let state = crate::tests::test_state_with_openai_base(
             url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
         )
@@ -37109,7 +37141,7 @@ mod request_compression_query_tests {
         .await;
         assert!(
             matches!(affected, Err(ApiError::Unavailable(_))),
-            "the localized gap remains fail-closed until background coverage completes",
+            "a scoped legacy source gap must remain unavailable for its affected historical range"
         );
         state.pool.close().await;
     }

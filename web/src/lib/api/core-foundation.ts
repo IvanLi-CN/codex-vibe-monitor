@@ -869,6 +869,12 @@ export interface ApiInvocationWorkflowDetailResponse {
   partialReason?: string | null;
 }
 
+export interface StatsDataQuality {
+  state: "degraded";
+  proofPending: true;
+  reason: "summary_delta_journal_pending";
+}
+
 export interface StatsResponse {
   totalCount: number;
   successCount: number;
@@ -883,6 +889,7 @@ export interface StatsResponse {
   nonSuccessCost?: number | null;
   nonSuccessTokens?: number | null;
   maintenance?: StatsMaintenanceResponse;
+  dataQuality?: StatsDataQuality | null;
 }
 
 export type LongTermStatsRange = "7d" | "30d" | "180d" | "365d";
@@ -5009,6 +5016,23 @@ function normalizeStatsResponse(raw: unknown): StatsResponse {
     nonSuccessCost: normalizeFiniteNumber(payload.nonSuccessCost),
     nonSuccessTokens: normalizeFiniteNumber(payload.nonSuccessTokens),
     maintenance: payload.maintenance as StatsMaintenanceResponse | undefined,
+    dataQuality: normalizeStatsDataQuality(payload.dataQuality),
+  };
+}
+
+function normalizeStatsDataQuality(raw: unknown): StatsDataQuality | null {
+  const payload = asRecord(raw);
+  if (
+    payload?.state !== "degraded" ||
+    payload.proofPending !== true ||
+    payload.reason !== "summary_delta_journal_pending"
+  ) {
+    return null;
+  }
+  return {
+    state: "degraded",
+    proofPending: true,
+    reason: "summary_delta_journal_pending",
   };
 }
 

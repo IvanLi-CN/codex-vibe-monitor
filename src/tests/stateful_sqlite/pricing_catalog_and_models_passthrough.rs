@@ -1734,6 +1734,7 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
     assert_eq!(row.price_version.as_deref(), Some("compact-unit-test"));
     assert_f64_close(row.cost.expect("compact cost should be present"), 0.0020235);
 
+    hydrate_stats_snapshot_for_test(&state).await;
     let Json(stats) = fetch_stats(State(state.clone()))
         .await
         .expect("compact fetch_stats should succeed");

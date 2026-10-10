@@ -1,0 +1,126 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
+    "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "The archive_batches optimizer indexes, durable force-repair seen invocation IDs, existing hourly_rollup_archive_replay markers, and invocation_rollup_hourly derived rows used by Summary recovery; NULL or blank replay markers are unknown and fail closed, stale nonblank archive SHA markers reopen repair, and bounded full repair resumes from durable started, archive, per-archive row, seen-ID, live-cursor, and incomplete state.",
+    "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
+      "to_program_version": "PR #1097 candidate.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-001",
+        "description": "During ensure_schema, create the partial idx_archive_batches_pending_summary_rollup_order and idx_archive_batches_summary_rollup_repair_seek indexes on existing archive_batches columns. CREATE INDEX IF NOT EXISTS makes installation idempotent; the indexes are optimizer-only and do not alter business rows.",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [
+      {
+        "id": "dml-001",
+        "description": "Reconcile existing Summary replay markers against each archive batch SHA. NULL, blank, and unknown markers are not coverage proof and are reopened; nonblank stale markers are also reopened. No new marker encoding, allocator cursor, or deployment state is written.",
+        "order": 2,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "historical_data_backfill_or_transformation": [
+      {
+        "id": "backfill-001",
+        "description": "For unmaterialized pending archives, select at most 128 batches per additive pass, open each authoritative archive in the background, add its existing rows to the existing hourly Summary rollup targets, and commit replay markers and rollup writes in one SQLite transaction. If a marker is NULL, blank, unknown, stale, or a materialized archive lacks either Summary marker, enter the bounded paged full Summary rebuild path with one completed authoritative archive per pass, at most 256 source rows and 256 live rows in any write transaction, and durable started, archive ID, per-archive row ID, seen-invocation-ID, and live-cursor state; the driver resumes while that state or an incomplete marker exists even if the current page repairs the marker predicate, and returns before additive replay until completion. Archive bytes are SHA-verified before and after extraction and the manifest identity is rechecked before rollup writes. When a materialized authority bucket is missing, safe buckets are cleared before later additive pages rebuild them. Restored live rows are deduplicated by ID, the separate live repair cursor is committed even when materialized proof remains incomplete, and the completion marker is withheld until proof converges. Every mode is idempotent and does not write an allocator cursor or deploy anything.",
+        "order": 3,
+        "depends_on": [
+          "ddl-001",
+          "dml-001"
+        ],
+        "observable": true,
+        "pauseable": true
+      }
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-001",
+      "dml-001",
+      "backfill-001"
+    ],
+    "progress_signals": [
+      "sqlite_master and EXPLAIN QUERY PLAN show the partial index",
+      "Replay-marker count and invocation_rollup_hourly totals advance together after each committed bounded pass",
+      "Stale nonblank markers or materialized archives with incomplete Summary marker proof remain eligible for repair until the full existing rebuild converges",
+      "A later pass sees only unmarked archive batches and preserves totals contributed by an earlier pass",
+      "An incomplete full repair retains its committed live cursor without completion, so a retry does not re-add the same live tail",
+      "A full-repair page that clears the marker predicate still resumes from its durable archive and per-archive row cursors before any additive replay can run",
+      "A full-repair source page never keeps the main SQLite write transaction open while inflating or scanning the archive file, and an archive SHA or manifest identity change prevents publication"
+    ],
+    "pause_points": [
+      "After ensure_schema commits the index and before background repair starts",
+      "After the marker-reconciliation query and before archive I/O",
+      "After each bounded archive-repair transaction or full rebuild transaction; each commit is a safe re-entry point"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; an older reader may ignore the optional index and continues using the existing table representations",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version; a failed bounded or full-rebuild transaction rolls back its marker and rollup writes, while the next run reopens the still-unmarked, stale-SHA, or incomplete-materialized proof and re-enters the idempotent repair path",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "The public API remains nonbreaking and candidate-written state uses existing representations readable by supported earlier same-Minor readers.",
+        "Repeated ensure_schema recognizes the partial index without duplication and the real pending-rollup query uses it.",
+      "The bounded additive archive repair re-enters after the 128-batch boundary without clearing earlier same-bucket contributions; replay markers and rollup totals converge together.",
+      "NULL and blank replay markers fail closed; force repair deduplicates source invocation IDs across archive pages and clears safe buckets before later replacement pages when a materialized authority bucket is missing.",
+      "The id > cursor ORDER BY id force-repair query uses idx_archive_batches_summary_rollup_repair_seek and its EXPLAIN plan is covered by the schema regression.",
+        "Legacy blank or NULL replay-marker SHA values remain readable, while a stale nonblank SHA and a materialized archive missing Summary marker proof are reopened for idempotent repair.",
+        "A stale-marker full repair converges across 129 archive batches, pages past the 4,096-archive transaction boundary even after the first page clears the marker predicate, deduplicates restored live rows, and persists the live cursor across an incomplete retry.",
+        "A source Summary gap remains unavailable while a terminal in-memory gap is explicitly degraded, for both HTTP and Summary SSE.",
+        "An unproven current rank and an all-time response without a hydrated baseline remain unavailable instead of falling through to an approximate resident response.",
+        "No old-version allocator writeback or deployment action is part of the migration contract."
+      ]
+    },
+    "minor": {
+      "required_test_evidence": []
+    },
+    "major": {
+      "required_test_evidence": []
+    },
+    "completed_evidence": [
+      "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
+      "src/tests/archive_file_io/mod.rs::bounded_summary_archive_repair_preserves_same_bucket_totals_across_passes",
+      "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+      "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
+      "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
+      "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_missing_summary_markers_do_not_replay_materialized_archives",
+      "src/tests/stateful_sqlite/parallel_work_stats_and_timeseries.rs::all_time_summary_backfill_preserves_overall_rollups_when_only_failure_marker_is_missing",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_force_repair_pages_past_archive_batch_budget",
+      "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
+      "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_repair_deduplicates_restored_live_rows_after_full_rebuild",
+      "src/tests/archive_file_io/mod.rs::summary_rollup_repair_persists_live_cursor_across_incomplete_retries"
+    ]
+  },
+  "delivery_context": {
+    "candidate_head_sha": "d84dd334e77977423752202d8e5e2537ab7d6240",
+    "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
+    "active_base_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
+    "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "candidate_validation_record": "assets/current-candidate-validation.json",
+    "base_sync_scope": "Merged main normally after merged PR #1099; the incoming task-timeline performance and support changes are outside the Stats implementation surface.",
+    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the current post-sync candidate head; prior 1f388107 and older-head CI/review are superseded.",
+    "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
+  }
+}

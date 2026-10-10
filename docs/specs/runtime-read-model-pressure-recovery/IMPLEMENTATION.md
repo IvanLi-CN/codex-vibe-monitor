@@ -54,8 +54,24 @@
   hydration; pressure, restart, and SQLite lock defer preserve the last
   committed cursor while recent Projection selections stay available.
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
-  A current selection that would require rank replacement, or a time/account
-  range intersecting a `DeltaGapProof`, is unavailable rather than approximate.
+  A current selection that would require rank replacement, or a range intersecting
+  an independent archive/source coverage gap, is unavailable rather than
+  approximate. A range intersecting only a `DeltaGapProof` serves the published
+  last-good base plus acknowledged overlay with explicit `dataQuality` degraded
+  status; `/api/stats` uses the same all-time memory path.
+- Summary archive replay-marker repair is ordered by dedicated partial SQLite
+  indexes, and replay admission requires a nonblank marker matching the current
+  archive SHA; NULL or blank markers fail closed. Additive repair reads at most 128
+  pending candidates per background turn. Stale-marker or incomplete-materialized recovery uses the established 4,096 completed
+  authoritative-batch ceiling per bounded replacement transaction and persists an
+  archive ID cursor between pages. Force repair persists source invocation IDs
+  across pages, clears safe rollup buckets before rebuilding when a materialized
+  authority bucket is missing, and restores live rows without duplicate totals.
+  Incomplete recovery persists its live cursor without publishing completion. The
+  backfill entrypoint resumes force pages whenever the durable archive cursor or
+  incomplete marker exists, even if the current page repaired the marker predicate;
+  it returns before additive replay until the full repair publishes completion.
+  The request path never runs this proof or a broad historical scan.
 - Lifecycle: active canonical-classification recovery initiative.
 - Projection readiness is now exercised as two independently timed facts: current and rolling/calendar selections must be exact-ready within 30 seconds, while all-time exactness may converge through the generation-fenced checkpoint within 1800 seconds.
 - Cold maintenance retries now retain the 30-second Bootstrap mode until the hub has atomically published its first immutable Projection; only published Projections use the four-second Rolling refresh path. Bootstrap telemetry records the current archive admission, runtime overlay, Projection materialization and generation-fence snapshot stages without source content.
@@ -82,9 +98,16 @@
 - Bootstrap does not publish speculative zero-valued all-time account entries, and a bounded current-rank cutoff does not invalidate separately exact rolling ranges. When a refresh observes a finite archive gap, it publishes the independently exact selections with that gap marked unavailable while retaining an exact all-time last-good response where available. Account-manifest or account-replay gaps remain account-scoped so a globally proven compact rollup stays available; a gap without finite coverage proof remains broadly unavailable. The final all-time assembly has its own bounded background deadline so materialized current boundaries can converge without extending the startup gate.
 - Projection freshness renewal compares the complete durable generation fence before it extends a published rolling response. A matching fence renews only the in-memory freshness lease; a changed live watermark, global/account rollup cursor, archive manifest high-watermark, or settled terminal sequence takes the normal bounded recovery path. An all-time task that observes a changed fence cancels before publication, releases its refresh lock, and hands off to the live-tail reconciler or Historical Coverage Supervisor; staged finalization checks the fence before and after its atomic swap.
 - Live-tail reconciliation now uses a durable `(row_id, invoke_id, occurred_at)` identity. ACKs and restart replays already represented by the immutable Projection are absorbed idempotently; descriptors without a durable row identity retain a broad fail-closed proof. A versioned checkpoint fixes the base revision and target watermark, performs bounded descriptor reconstruction under the pressure permit, and records no source payload. Its readiness state is exposed only through no-payload health fields and structured stage telemetry.
-- Summary Delta Journal retains a broad fail-closed proof instead of evicting an older scoped proof when its proof budget saturates. Terminal-journal and shutdown replay records become exact committed rolling overlays with their own bounded residency, because their prior process-local dashboard sequence is not valid after restart; replay does not trigger full live admission.
+- Summary Delta Journal retains a broad fail-closed proof instead of evicting an older scoped proof when its proof budget saturates, while preserving whether the broad proof came from source loss or terminal-only overflow. Terminal-journal and shutdown replay records become exact committed rolling overlays with their own bounded residency, because their prior process-local dashboard sequence is not valid after restart; replay does not trigger full live admission.
 - Overflowed boundary manifests localize legacy missing coverage with the immutable Shanghai `month_key` partition. An unknown partition that overlaps the supported horizon remains range-local unavailable; an old disjoint partition does not poison current or rolling availability. Historical persisted-live coverage is grouped by source hour and account, retaining bounded terminal identity proof only where an SSE overlay needs it, so aggregate historical cardinality cannot abort Bootstrap.
 - Promotion policy: checkpointed; every included Ticket requires observed evidence after owner-confirmed manual deployment.
+
+## Compatibility and Migration Records
+
+- Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
+- SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
+- The active delivery base is `main@1f3881075b1fe749e964dda3ec66ab10b710c797`; it supersedes the pre-merge `6447cec2e9f6790b04f4e828e9d43f440f3105f0` review base. The normal merge of PR #1096 deduplicated the content-identical `src/maintenance_store.rs` fix, and introduced no Stats or schema surface; current required-lane evidence is tracked in `assets/current-candidate-validation.json`.
+- Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary
 
