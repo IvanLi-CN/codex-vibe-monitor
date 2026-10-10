@@ -63,7 +63,9 @@ main 的外部观测系统拥有指标历史与 Grafana 入口；任务页保留
 
 ## Compatibility and Migration
 
-本轮不增加主库表、列、状态枚举或迁移标识。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。旧 prepared 状态隔离和当前任务源行转换属于运行 DML。历史吞吐缺失保持未知。
+Usage-breakdown repair fences every verified source directory through transaction completion. Directory identity deduplicates sibling archive files; a busy publisher defers the candidate without clearing last-good rows or waiting while SQLite is held. Invocation and forward-proxy replay use one stable, SHA-bound readonly temp copy per source; budget exits retain only complete reusable copies, while rejection, read failure, and completion remove the SQLite file and its sidecar.
+
+基础任务内批次方案不增加主库表、列、状态枚举或迁移标识；当前增量恢复扩展明确增加 `archive_sha256`、usage-breakdown repair progress/deferred 状态及 `pending_generation`，并要求幂等安装、旧状态未验证、前向修复和兼容回滚。三个现有工作集触发器通过事务替换定义；启动只检查 sqlite_master 中的定义是否符合优化形式，该定义更新不扫描历史或重建投影行，也不改写已部署的迁移完成事实。已有月度 gzip SQLite、manifest、V2 Summary Snapshot、raw 链接和完成状态可读；归档文件内部增加查询索引不改变格式。当前 CI/Tier4 未绑定前，证据和版本记录保持未验证。
 
 新增任务 JSON 字段和 Web 归一化向后兼容。API 与持久化影响分开评估；本轮记录见 [version impact](assets/task-local-version-impact-record.json) 和 [state compatibility](assets/task-local-persistent-state-record.json)。最终分类由当前候选兼容验证决定；旧 PR 的 minor 记录仅作为历史。
 

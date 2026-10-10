@@ -2679,7 +2679,7 @@ async fn legacy_invocation_archive_is_live_detail_mirror(
         archive_path.display(),
         retention_temp_suffix()
     ));
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     if !inflate_gzip_sqlite_file_with_budget(
         archive_path,
         &temp_path,

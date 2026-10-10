@@ -2778,7 +2778,7 @@ async fn verify_prepared_retention_archive_artifact(
         archive_path.display(),
         retention_temp_suffix()
     ));
-    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
     ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
@@ -7526,7 +7526,7 @@ async fn verify_legacy_retention_archive_segment(
         archive_path.display(),
         retention_temp_suffix()
     ));
-    let _temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let _temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
     let mut archive_db = open_archive_sqlite_connection(&temp_path).await?;
     ensure_codex_invocations_archive_schema_direct(&mut archive_db).await?;
@@ -8009,7 +8009,35 @@ pub(crate) struct ForwardProxyAttemptHourlySourceRecord {
 }
 
 #[derive(Debug)]
-pub(crate) struct TempSqliteCleanup(pub PathBuf);
+pub(crate) struct TempSqliteCleanup {
+    path: PathBuf,
+    reusable_before_run: bool,
+    keep: bool,
+}
+
+impl TempSqliteCleanup {
+    pub(crate) fn new(path: PathBuf) -> Self {
+        Self::with_reusable_copy(path, false)
+    }
+
+    pub(crate) fn with_reusable_copy(path: PathBuf, reusable_before_run: bool) -> Self {
+        Self {
+            path,
+            reusable_before_run,
+            keep: false,
+        }
+    }
+
+    pub(crate) fn keep_complete_copy(&mut self) {
+        self.keep = true;
+    }
+
+    pub(crate) fn keep_reusable_copy(&mut self) {
+        if self.reusable_before_run {
+            self.keep = true;
+        }
+    }
+}
 
 pub(crate) fn temp_sqlite_source_meta_path(path: &Path) -> PathBuf {
     PathBuf::from(format!("{}.source-meta", path.display()))
@@ -8025,7 +8053,9 @@ pub(crate) fn remove_temp_sqlite_artifacts(path: &Path) {
 
 impl Drop for TempSqliteCleanup {
     fn drop(&mut self) {
-        remove_temp_sqlite_artifacts(&self.0);
+        if !self.keep {
+            remove_temp_sqlite_artifacts(&self.path);
+        }
     }
 }
 

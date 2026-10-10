@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "persistent-state-migration-record",
-  "status": "candidate-evidence-pending-ci",
+  "status": "candidate-evidence-pending-current-ci-tier4",
   "migration": {
     "description": "Add archive identity proofs, a resumable bounded usage-breakdown repair cursor with deferred candidates, and generation-safe prompt-cache statistics publication.",
     "release_unit_description": "Incremental maintenance repair and prompt-cache publication fencing.",

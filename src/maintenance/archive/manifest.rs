@@ -257,7 +257,7 @@ pub(crate) async fn load_archive_upstream_activity_from_file(
     if temp_path.exists() {
         let _ = fs::remove_file(&temp_path);
     }
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
     inflate_gzip_sqlite_file(archive_path, &temp_path)?;
 
     let database_url = format!("sqlite://{}", temp_path.to_string_lossy());

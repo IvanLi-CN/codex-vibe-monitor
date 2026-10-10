@@ -1378,15 +1378,64 @@ async fn reopen_replaced_materialized_forward_proxy_archive_tx(
     Ok(Some(reopened_file_paths))
 }
 
+struct InvocationArchiveRepairFence {
+    started_at: Instant,
+    max_elapsed: Option<Duration>,
+    directories: HashSet<String>,
+    locks: Vec<RetentionArchiveFileLock>,
+}
+
+impl InvocationArchiveRepairFence {
+    fn new(started_at: Instant, max_elapsed: Option<Duration>) -> Self {
+        Self {
+            started_at,
+            max_elapsed,
+            directories: HashSet::new(),
+            locks: Vec::new(),
+        }
+    }
+
+    fn directory_key(path: &Path) -> String {
+        retention_archive_parent_identity(path)
+            .unwrap_or_else(|| path.parent().unwrap_or(path).to_string_lossy().into_owned())
+    }
+
+    fn register_held_directory(&mut self, path: &Path) {
+        self.directories.insert(Self::directory_key(path));
+    }
+
+    fn try_fence(&mut self, path: &Path) -> Result<bool> {
+        let key = Self::directory_key(path);
+        if self.directories.contains(&key) {
+            return Ok(true);
+        }
+        // Publishers use a directory flock, so different files in that directory share one
+        // fence. Never wait for a publisher while holding the repair's SQLite transaction.
+        match retention_archive_file_try_lock(path) {
+            Ok(lock) => {
+                self.directories.insert(key);
+                self.locks.push(lock);
+                Ok(true)
+            }
+            Err(error) if is_retention_write_deferred(&error) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
+
 async fn reopen_replaced_materialized_invocation_archive_tx(
     tx: &mut SqliteConnection,
     file_path: &str,
     expected_sha256: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
-    started_at: Instant,
-    max_elapsed: Option<Duration>,
+    fence: &mut InvocationArchiveRepairFence,
 ) -> Result<InvocationArchiveReopenResult> {
+    if !fence.try_fence(Path::new(file_path))? {
+        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+    }
+    let started_at = fence.started_at;
+    let max_elapsed = fence.max_elapsed;
     match invocation_archive_file_is_readable_with_budget(
         Path::new(file_path),
         expected_sha256,
@@ -1438,6 +1487,9 @@ async fn reopen_replaced_materialized_invocation_archive_tx(
             };
             if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                 continue;
+            }
+            if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                return Ok(InvocationArchiveReopenResult::BudgetExhausted);
             }
             if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
                 return Ok(InvocationArchiveReopenResult::BudgetExhausted);
@@ -1513,9 +1565,13 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
     expected_sha256: &str,
     coverage_start_at: Option<&str>,
     coverage_end_at: Option<&str>,
-    started_at: Instant,
-    max_elapsed: Option<Duration>,
+    fence: &mut InvocationArchiveRepairFence,
 ) -> Result<InvocationArchiveReopenResult> {
+    if !fence.try_fence(Path::new(file_path))? {
+        return Ok(InvocationArchiveReopenResult::BudgetExhausted);
+    }
+    let started_at = fence.started_at;
+    let max_elapsed = fence.max_elapsed;
     match invocation_archive_file_is_readable_with_budget(
         Path::new(file_path),
         expected_sha256,
@@ -1560,6 +1616,9 @@ async fn reopen_materialized_invocation_archive_usage_breakdown_backfill_tx(
                 }
                 if !reopened_file_path_set.insert(overlapping_archive.file_path.clone()) {
                     continue;
+                }
+                if !fence.try_fence(Path::new(&overlapping_archive.file_path))? {
+                    return Ok(InvocationArchiveReopenResult::BudgetExhausted);
                 }
                 if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
                     return Ok(InvocationArchiveReopenResult::BudgetExhausted);
@@ -1699,6 +1758,9 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
             created_at: row.created_at.clone(),
             id: row.id,
         };
+        // Keep every verified directory fenced until the cursor/rollup transaction commits.
+        // Once selected, the candidate finishes before the outer elapsed budget gates another.
+        let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
         let mut budget_exhausted = false;
 
         if archive_batch_has_completed_manifest_sha_tx(
@@ -1727,11 +1789,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         &row.sha256,
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
-                        started_at,
-                        // The elapsed budget is a boundary between candidates. Once a candidate
-                        // is selected, finish its validation and overlap closure so its cursor
-                        // commit cannot be lost when gzip/file IO crosses the run budget.
-                        None,
+                        &mut archive_fence,
                     )
                     .await?
                 } else {
@@ -1741,8 +1799,7 @@ async fn repair_materialized_invocation_archive_usage_breakdown_backfill_state_w
                         &row.sha256,
                         row.coverage_start_at.as_deref(),
                         row.coverage_end_at.as_deref(),
-                        started_at,
-                        None,
+                        &mut archive_fence,
                     )
                     .await?
                 };
@@ -1915,7 +1972,13 @@ pub(crate) async fn open_historical_rollup_archive_pool(
     expected_sha256: &str,
 ) -> Result<Pool<Sqlite>> {
     let current_signature =
-        historical_rollup_archive_source_signature(archive_path, expected_sha256)?;
+        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+            Ok(signature) => signature,
+            Err(error) => {
+                remove_temp_sqlite_artifacts(temp_path);
+                return Err(error);
+            }
+        };
     let stale_temp = !temp_path.exists()
         || load_historical_rollup_temp_source_signature(temp_path).as_deref()
             != Some(current_signature.as_str());
@@ -1983,11 +2046,17 @@ pub(crate) async fn invocation_archive_file_is_readable_with_budget(
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         return InvocationArchiveReadability::BudgetExhausted;
     }
+    let temp_path = invocation_archive_replay_temp_path(archive_path);
     if historical_rollup_archive_source_signature(archive_path, expected_sha256).is_err() {
+        remove_temp_sqlite_artifacts(&temp_path);
         return InvocationArchiveReadability::Rejected;
     }
-    let temp_path = invocation_archive_replay_temp_path(archive_path);
-    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+        temp_path.clone(),
+        temp_path.is_file()
+            && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                == Some(expected_sha256),
+    );
     let archive_pool = match open_historical_rollup_archive_pool_with_budget(
         archive_path,
         &temp_path,
@@ -1998,14 +2067,17 @@ pub(crate) async fn invocation_archive_file_is_readable_with_budget(
     .await
     {
         Ok(Some(pool)) => pool,
-        Ok(None) => return InvocationArchiveReadability::BudgetExhausted,
+        Ok(None) => {
+            temp_cleanup.keep_reusable_copy();
+            return InvocationArchiveReadability::BudgetExhausted;
+        }
         Err(_) => {
             return InvocationArchiveReadability::Rejected;
         }
     };
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         archive_pool.close().await;
-        std::mem::forget(temp_cleanup);
+        temp_cleanup.keep_complete_copy();
         return InvocationArchiveReadability::BudgetExhausted;
     }
     let readable = match load_sqlite_table_columns(&archive_pool, "codex_invocations").await {
@@ -2026,7 +2098,7 @@ pub(crate) async fn invocation_archive_file_is_readable_with_budget(
         return InvocationArchiveReadability::Rejected;
     }
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
-        std::mem::forget(temp_cleanup);
+        temp_cleanup.keep_complete_copy();
         return InvocationArchiveReadability::BudgetExhausted;
     }
     InvocationArchiveReadability::Readable
@@ -2039,11 +2111,24 @@ pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
     started_at: Instant,
     max_elapsed: Option<Duration>,
 ) -> Result<Option<Pool<Sqlite>>> {
+    #[cfg(test)]
+    if HISTORICAL_ROLLUP_TEST_SKIP_ARCHIVE_OPEN
+        .try_with(|_| ())
+        .is_ok()
+    {
+        return Ok(None);
+    }
     if historical_rollup_elapsed_budget_reached(started_at, max_elapsed) {
         return Ok(None);
     }
     let current_signature =
-        historical_rollup_archive_source_signature(archive_path, expected_sha256)?;
+        match historical_rollup_archive_source_signature(archive_path, expected_sha256) {
+            Ok(signature) => signature,
+            Err(error) => {
+                remove_temp_sqlite_artifacts(temp_path);
+                return Err(error);
+            }
+        };
     let stale_temp = !temp_path.exists()
         || load_historical_rollup_temp_source_signature(temp_path).as_deref()
             != Some(current_signature.as_str());
@@ -2077,6 +2162,12 @@ pub(crate) async fn open_historical_rollup_archive_pool_with_budget(
             })
         }
     }
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    // Model the elapsed deadline between candidate selection and opening the archive pool.
+    pub(crate) static HISTORICAL_ROLLUP_TEST_SKIP_ARCHIVE_OPEN: ();
 }
 
 pub(crate) fn pool_upstream_node_health_archive_temp_path(archive_path: &Path) -> PathBuf {
@@ -2777,6 +2868,8 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             // A stale marker or missing Summary proof on a materialized archive means a prior
             // contribution may remain. Reset the verified overlap closure before inspecting
             // pending targets so an incremental replay cannot double count old rows.
+            let mut archive_fence = InvocationArchiveRepairFence::new(started_at, None);
+            archive_fence.register_held_directory(&archive_path);
             let reopened = reopen_replaced_materialized_invocation_archive_tx(
                 tx,
                 &archive_file.file_path,
@@ -2786,10 +2879,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                     .expect("verified invocation archive manifest SHA"),
                 archive_file.coverage_start_at.as_deref(),
                 archive_file.coverage_end_at.as_deref(),
-                started_at,
-                // The selected archive is the durable replay unit. Finish its verified overlap
-                // closure before the outer batch budget gates the next archive.
-                None,
+                &mut archive_fence,
             )
             .await?;
             match reopened {
@@ -2905,19 +2995,26 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             continue;
         }
         let temp_path = invocation_archive_replay_temp_path(&archive_path);
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let expected_sha256 = archive_file
+            .sha256
+            .as_deref()
+            .expect("verified invocation archive manifest SHA");
+        let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+            temp_path.clone(),
+            temp_path.is_file()
+                && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                    == Some(expected_sha256),
+        );
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
             &temp_path,
-            archive_file
-                .sha256
-                .as_deref()
-                .expect("verified invocation archive manifest SHA"),
+            expected_sha256,
             started_at,
             max_elapsed,
         )
         .await?
         else {
+            temp_cleanup.keep_reusable_copy();
             summary.hit_budget = true;
             summary.advance_cursor_after_unstarted_replay = true;
             break;
@@ -2988,7 +3085,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 if replay_progressed {
                     summary.changed_batches += 1;
                 }
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 break;
             }
             delete_hourly_rollup_archive_progress_tx(
@@ -3104,7 +3201,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
                 ) {
                     summary.changed_batches += 1;
                 }
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 break;
             }
         }
@@ -3149,7 +3246,7 @@ pub(crate) async fn replay_invocation_archive_files_into_hourly_rollups_tx_with_
             ) {
                 summary.changed_batches += 1;
             }
-            std::mem::forget(temp_cleanup);
+            temp_cleanup.keep_complete_copy();
             break;
         }
         drop(temp_cleanup);
@@ -3461,19 +3558,26 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             continue;
         }
         let temp_path = forward_proxy_archive_replay_temp_path(&archive_path);
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let expected_sha256 = archive_file
+            .sha256
+            .as_deref()
+            .expect("verified forward proxy archive manifest SHA");
+        let mut temp_cleanup = TempSqliteCleanup::with_reusable_copy(
+            temp_path.clone(),
+            temp_path.is_file()
+                && load_historical_rollup_temp_source_signature(&temp_path).as_deref()
+                    == Some(expected_sha256),
+        );
         let Some(archive_pool) = open_historical_rollup_archive_pool_with_budget(
             &archive_path,
             &temp_path,
-            archive_file
-                .sha256
-                .as_deref()
-                .expect("verified forward proxy archive manifest SHA"),
+            expected_sha256,
             started_at,
             max_elapsed,
         )
         .await?
         else {
+            temp_cleanup.keep_reusable_copy();
             summary.hit_budget = true;
             summary.advance_cursor_after_unstarted_replay = true;
             break;
@@ -3519,7 +3623,7 @@ pub(crate) async fn replay_forward_proxy_archive_files_into_hourly_rollups_tx_wi
             if replay_progressed || coverage_updated {
                 summary.changed_batches += 1;
             }
-            std::mem::forget(temp_cleanup);
+            temp_cleanup.keep_complete_copy();
             break;
         }
         drop(temp_cleanup);
@@ -3643,7 +3747,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
 
             replay_started_any_pending_batch = true;
             let temp_path = pool_upstream_node_health_archive_temp_path(&archive_path);
-            let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+            let mut temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
             let archive_pool =
                 open_historical_rollup_archive_pool(&archive_path, &temp_path, expected_sha256)
                     .await?;
@@ -3675,7 +3779,7 @@ pub(crate) async fn backfill_pool_upstream_node_health_archives_for_files(
                     .await?;
                 }
                 tx.commit().await?;
-                std::mem::forget(temp_cleanup);
+                temp_cleanup.keep_complete_copy();
                 committed_scanned_batches = summary.scanned_batches;
                 summary.hit_budget = true;
                 break;

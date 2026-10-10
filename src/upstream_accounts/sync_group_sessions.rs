@@ -388,7 +388,7 @@ pub(crate) async fn load_window_actual_usage_rows_from_archives(
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)

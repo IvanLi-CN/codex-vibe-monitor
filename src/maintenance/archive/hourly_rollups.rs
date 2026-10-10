@@ -4607,7 +4607,7 @@ where
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         let archive_result = async {
             inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
             let archive_pool = SqlitePoolOptions::new()
@@ -4979,7 +4979,7 @@ pub(crate) async fn rebuild_upstream_account_stats_rollups_from_sources(
         if temp_path.exists() {
             let _ = fs::remove_file(&temp_path);
         }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        let temp_cleanup = TempSqliteCleanup::new(temp_path.clone());
         inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
         let archive_pool = SqlitePoolOptions::new()
             .max_connections(1)

@@ -4,6 +4,7 @@ use super::*;
 pub(crate) use super::*;
 
 mod archive_backfill_and_materialization;
+mod archive_replay_safety;
 mod gpt6_cache_write_migration;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;

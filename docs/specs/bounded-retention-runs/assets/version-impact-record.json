@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "kind": "version-impact-record",
+  "status": "candidate-evidence-pending-current-ci-tier4",
   "change": {
     "description": "Incremental archive repair identity/cursor fencing with deferred candidates and prompt-cache generation-safe publication.",
     "release_unit_description": "One direct maintenance PR.",
@@ -38,7 +39,8 @@
     },
     "verified": {
       "impact": "minor",
-      "reasoning": "Public API impact is patch-level, while persistent-state impact is minor-level because the schema adds archive identity/index state, ordered repair continuation with deferred candidates, and a generation fence. Final candidate CI and Tier 4 review remain delivery gates.",
+      "status": "unverified",
+      "reasoning": "The planned/current impact remains minor, but this record is not verification evidence. Current candidate CI, Tier 4 review, upgrade, rollback, and compatibility checks must bind to the pushed candidate head before this impact is verified.",
       "evidence": [
         "src/tests/stateful_sqlite/invocation_query_filters_and_schema_migrations.rs",
         "src/tests/archive_file_io/archive_backfill_and_materialization.rs",

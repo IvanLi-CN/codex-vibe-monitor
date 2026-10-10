@@ -63,7 +63,7 @@ async fn insert_summary_archive_snapshot_proof(
         .expect("commit Summary Snapshot final proof");
 }
 
-async fn write_valid_invocation_archive(path: &Path, invoke_id: &str) {
+pub(super) async fn write_valid_invocation_archive(path: &Path, invoke_id: &str) {
     let source_path = PathBuf::from(format!("{}.source.sqlite", path.display()));
     let _ = fs::remove_file(&source_path);
     if let Some(parent) = source_path.parent() {
@@ -91,7 +91,7 @@ async fn write_valid_invocation_archive(path: &Path, invoke_id: &str) {
     let _ = fs::remove_file(source_path);
 }
 
-fn budgeted_archive_io_test_dir(prefix: &str) -> PathBuf {
+pub(super) fn budgeted_archive_io_test_dir(prefix: &str) -> PathBuf {
     let unique = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .expect("system time before unix epoch")
@@ -4450,180 +4450,6 @@ async fn usage_breakdown_repair_rebuilds_more_than_512_live_rows() {
     .expect("load large live bucket materialization state");
     assert!(materialized_at.is_none());
 
-    cleanup_temp_test_dir(&temp_dir);
-}
-
-#[tokio::test]
-async fn repair_materialized_breakdown_reopens_overlapping_replayed_batches() {
-    let (pool, _config, temp_dir) =
-        retention_memory_test_pool_and_config("breakdown-repair-overlap").await;
-    let bucket_start_epoch =
-        invocation_bucket_start_epoch("2026-07-01 15:05:00").expect("derive bucket start epoch");
-    let first_archive_path = temp_dir.join("usage-breakdown-overlap-first.sqlite.gz");
-    let second_archive_path = temp_dir.join("usage-breakdown-overlap-second.sqlite.gz");
-    write_valid_invocation_archive(&first_archive_path, "usage-breakdown-overlap-first").await;
-    write_valid_invocation_archive(&second_archive_path, "usage-breakdown-overlap-second").await;
-    let first_file_path = first_archive_path.to_string_lossy().into_owned();
-    let second_file_path = second_archive_path.to_string_lossy().into_owned();
-    let first_sha256 = sha256_hex_file(Path::new(&first_file_path)).expect("hash first archive");
-    let second_sha256 = sha256_hex_file(Path::new(&second_file_path)).expect("hash second archive");
-
-    for (file_path, coverage_start_at, coverage_end_at, replayed, cursor_id, sha256) in [
-        (
-            first_file_path.as_str(),
-            "2026-07-01 15:05:00",
-            "2026-07-01 15:15:00",
-            false,
-            101_i64,
-            first_sha256.as_str(),
-        ),
-        (
-            second_file_path.as_str(),
-            "2026-07-01 15:25:00",
-            "2026-07-01 15:35:00",
-            true,
-            202_i64,
-            second_sha256.as_str(),
-        ),
-    ] {
-        sqlx::query(
-            r#"
-            INSERT INTO archive_batches (
-                dataset,
-                month_key,
-                file_path,
-                status,
-                sha256,
-                row_count,
-                coverage_start_at,
-                coverage_end_at,
-                historical_rollups_materialized_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
-            "#,
-        )
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .bind("2026-07")
-        .bind(file_path)
-        .bind(ARCHIVE_STATUS_COMPLETED)
-        .bind(sha256)
-        .bind(1_i64)
-        .bind(coverage_start_at)
-        .bind(coverage_end_at)
-        .execute(&pool)
-        .await
-        .expect("insert archive batch");
-
-        sqlx::query(
-            r#"
-            INSERT INTO hourly_rollup_archive_progress (dataset, file_path, cursor_id, updated_at)
-            VALUES (?1, ?2, ?3, datetime('now'))
-            "#,
-        )
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .bind(file_path)
-        .bind(cursor_id)
-        .execute(&pool)
-        .await
-        .expect("insert archive progress");
-
-        if replayed {
-            sqlx::query(
-                r#"
-                INSERT INTO hourly_rollup_archive_replay (
-                    target, dataset, file_path, archive_sha256, replayed_at
-                )
-                VALUES (?1, ?2, ?3, ?4, datetime('now'))
-                "#,
-            )
-            .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-            .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .bind(file_path)
-            .bind(sha256)
-            .execute(&pool)
-            .await
-            .expect("insert replay marker");
-        }
-    }
-
-    for (upstream_account_key, upstream_account_id, normalized_model) in [
-        ("upstream:17", Some(17_i64), "gpt-5"),
-        ("upstream:18", Some(18_i64), "gpt-5-mini"),
-    ] {
-        sqlx::query(
-            r#"
-            INSERT INTO upstream_account_usage_breakdown_hourly (
-                bucket_start_epoch,
-                source,
-                upstream_account_key,
-                upstream_account_id,
-                normalized_model,
-                normalized_reasoning_effort,
-                request_count,
-                success_count,
-                failure_count
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, '', 1, 1, 0)
-            "#,
-        )
-        .bind(bucket_start_epoch)
-        .bind(SOURCE_PROXY)
-        .bind(upstream_account_key)
-        .bind(upstream_account_id)
-        .bind(normalized_model)
-        .execute(&pool)
-        .await
-        .expect("seed breakdown rollup row");
-    }
-
-    let touched = repair_materialized_invocation_archive_usage_breakdown_backfill_state(&pool)
-        .await
-        .expect("repair materialized usage breakdown state");
-    assert_eq!(touched, 2);
-
-    let remaining_rows: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM upstream_account_usage_breakdown_hourly WHERE bucket_start_epoch = ?1",
-    )
-    .bind(bucket_start_epoch)
-    .fetch_one(&pool)
-    .await
-    .expect("count remaining breakdown rows");
-    assert_eq!(remaining_rows, 0);
-
-    for file_path in [first_file_path.as_str(), second_file_path.as_str()] {
-        let replay_marker_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE target = ?1 AND dataset = ?2 AND file_path = ?3",
-        )
-        .bind(HOURLY_ROLLUP_TARGET_UPSTREAM_ACCOUNT_USAGE_BREAKDOWN)
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .bind(file_path)
-        .fetch_one(&pool)
-        .await
-        .expect("count replay markers after repair");
-        assert_eq!(replay_marker_count, 0);
-
-        let materialized_at: Option<String> = sqlx::query_scalar(
-            "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .bind(file_path)
-        .fetch_one(&pool)
-        .await
-        .expect("load archive materialized state after repair");
-        assert!(materialized_at.is_none());
-
-        let progress_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM hourly_rollup_archive_progress WHERE dataset = ?1 AND file_path = ?2",
-        )
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .bind(file_path)
-        .fetch_one(&pool)
-        .await
-        .expect("count archive progress rows after repair");
-        assert_eq!(progress_count, 0);
-    }
-
-    pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
 }
 
