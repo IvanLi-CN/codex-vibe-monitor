@@ -226,6 +226,7 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
     };
 
     let mut missing_targets = Vec::new();
+    let mut has_stale_marker = false;
     for target in LEGACY_MATERIALIZED_UPSTREAM_ACCOUNT_ARCHIVE_REPLAY_TARGETS {
         let marker_sha = sqlx::query_scalar::<_, Option<String>>(
             "SELECT archive_sha256 FROM hourly_rollup_archive_replay \
@@ -240,7 +241,7 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
         .filter(|sha| !sha.trim().is_empty());
         match marker_sha.as_deref() {
             Some(sha) if sha == manifest_sha => {}
-            Some(_) => return Ok(false),
+            Some(_) => has_stale_marker = true,
             None => missing_targets.push(target),
         }
     }
@@ -253,7 +254,7 @@ pub(crate) async fn mark_materialized_upstream_account_archive_replayed_tx(
         )
         .await?;
     }
-    Ok(true)
+    Ok(!has_stale_marker)
 }
 
 fn can_shortcut_legacy_materialized_upstream_account_targets(pending_targets: &[&str]) -> bool {
