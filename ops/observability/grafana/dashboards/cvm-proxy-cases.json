@@ -127,7 +127,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "正常容量内全量轻量采集，界面每类最多 **3 条**，默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。点击 TraceID 显示原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
+        "content": "正常容量内全量轻量采集，界面每类最多 **3 条**，默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。单击 TraceID 后选择“展开此请求瀑布图”查看原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
       }
     },
     {
