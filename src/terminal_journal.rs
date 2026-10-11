@@ -1385,6 +1385,7 @@ fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFin
 fn parse_system_task_kind(value: &str) -> Option<SystemTaskKind> {
     match value {
         "retention_archive" => Some(SystemTaskKind::RetentionArchive),
+        "prompt_cache_materialization" => Some(SystemTaskKind::PromptCacheMaterialization),
         "startup_backfill" => Some(SystemTaskKind::StartupBackfill),
         "hourly_rollup_bootstrap" | "startup_hourly_rollup_bootstrap" => {
             Some(SystemTaskKind::HourlyRollupBootstrap)

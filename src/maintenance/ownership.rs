@@ -227,7 +227,7 @@ pub(crate) async fn execute_owned_maintenance(
             } else {
                 &mut *traversal
             };
-            let (pass, retry) = run_managed_raw_orphan_sweep(
+            let raw_result = run_managed_raw_orphan_sweep(
                 context.pool,
                 context.config,
                 context.shutdown,
@@ -235,48 +235,79 @@ pub(crate) async fn execute_owned_maintenance(
                 options,
                 selected,
             )
-            .await?;
-            let measured = !pass.deferred
-                || pass.file_candidates_checked > 0
-                || pass.inspected_entries > 0
-                || pass.reconciliation_rows_checked > 0;
-            if measured && let Some(observation) = observation {
-                observation.set_discovered_work(
-                    pass.file_candidates_checked as i64,
-                    format_utc_iso_millis(Utc::now()),
-                    "run-window".to_string(),
-                );
-                observation.set_processed_work(pass.removed as i64);
-            }
-            let more = !pass.complete || !pass.reached_end || pass.reconciliation_has_more;
-            OwnedMaintenanceExecution {
-                summary: if measured {
-                    format!(
-                        "检查文件 {} 个，{} {} 个 / {} 字节",
-                        pass.file_candidates_checked,
-                        if options.dry_run {
-                            "可释放"
-                        } else {
-                            "已释放"
-                        },
-                        pass.removed,
-                        pass.removed_bytes
-                    )
-                } else {
-                    "Raw 孤儿文件清理等待资源准入，检查范围未知".to_string()
-                },
-                completion: if pass.deferred {
-                    "deferred"
-                } else if more || pass.failures > 0 {
-                    "partial"
-                } else {
-                    "completed"
-                },
-                next_work_secs: (more || pass.deferred || pass.failures > 0).then_some(retry),
-                details: json!({"filesChecked": measured.then_some(pass.file_candidates_checked), "directoryEntriesChecked": measured.then_some(pass.inspected_entries), "reconciliationRowsChecked": measured.then_some(pass.reconciliation_rows_checked),
+            .await;
+            if let Some((stage, cause)) = raw_result.as_ref().err().and_then(|error| {
+                is_retention_write_deferred(error).then(|| {
+                    raw_orphan_sweep_admission_details(error)
+                        .unwrap_or(("resource_wait", "retention_write_pressure"))
+                })
+            }) {
+                OwnedMaintenanceExecution {
+                    summary: "Raw 孤儿文件清理等待资源准入，检查范围未知".to_string(),
+                    completion: "deferred",
+                    next_work_secs: Some(RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS),
+                    details: json!({
+                        "filesChecked": null,
+                        "directoryEntriesChecked": null,
+                        "reconciliationRowsChecked": null,
+                        "filesReleased": null,
+                        "bytesReleased": null,
+                        "referencedSkipped": null,
+                        "quarantined": null,
+                        "failures": null,
+                        "hasMore": null,
+                        "coverage": "unknown",
+                        "overallRemaining": null,
+                        "waitReason": cause,
+                        "admissionStage": stage,
+                        "retryAfterSecs": RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS,
+                        "budgetMs": 2000,
+                    }),
+                }
+            } else {
+                let (pass, retry) = raw_result?;
+                let measured = !pass.deferred
+                    || pass.file_candidates_checked > 0
+                    || pass.inspected_entries > 0
+                    || pass.reconciliation_rows_checked > 0;
+                if measured && let Some(observation) = observation {
+                    observation.set_discovered_work(
+                        pass.file_candidates_checked as i64,
+                        format_utc_iso_millis(Utc::now()),
+                        "run-window".to_string(),
+                    );
+                    observation.set_processed_work(pass.removed as i64);
+                }
+                let more = !pass.complete || !pass.reached_end || pass.reconciliation_has_more;
+                OwnedMaintenanceExecution {
+                    summary: if measured {
+                        format!(
+                            "检查文件 {} 个，{} {} 个 / {} 字节",
+                            pass.file_candidates_checked,
+                            if options.dry_run {
+                                "可释放"
+                            } else {
+                                "已释放"
+                            },
+                            pass.removed,
+                            pass.removed_bytes
+                        )
+                    } else {
+                        "Raw 孤儿文件清理等待资源准入，检查范围未知".to_string()
+                    },
+                    completion: if pass.deferred {
+                        "deferred"
+                    } else if more || pass.failures > 0 {
+                        "partial"
+                    } else {
+                        "completed"
+                    },
+                    next_work_secs: (more || pass.deferred || pass.failures > 0).then_some(retry),
+                    details: json!({"filesChecked": measured.then_some(pass.file_candidates_checked), "directoryEntriesChecked": measured.then_some(pass.inspected_entries), "reconciliationRowsChecked": measured.then_some(pass.reconciliation_rows_checked),
                     "filesReleased": measured.then_some(pass.removed), "bytesReleased": measured.then_some(pass.removed_bytes), "referencedSkipped": measured.then_some(pass.referenced_skipped),
                     "quarantined": measured.then_some(pass.quarantined), "failures": measured.then_some(pass.failures), "hasMore": more, "coverage": if measured { "bounded_scan" } else { "unknown" }, "overallRemaining": null,
                     "waitReason": pass.admission_cause, "admissionStage": pass.admission_stage, "retryAfterSecs": retry, "budgetMs": 2000}),
+                }
             }
         }
         _ => bail!("unsupported owned maintenance task: {task_key}"),

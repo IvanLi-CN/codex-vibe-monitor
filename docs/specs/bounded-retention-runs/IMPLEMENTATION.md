@@ -4,13 +4,13 @@
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
 
-当前候选绑定为 PR #1098，基线 `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7`，代码 head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`；该 head 的 required CI 已通过，文档刷新后的 CI 与 Tier 4 复核仍待完成。旧候选日志和 retained profile 仅作历史证据，不替代当前 head 证明。
+当前候选绑定为 PR #1108；基线和当前 head 以 PR 当前提交及其 required CI 为准。旧候选日志、retained profile 和历史兼容卡仅作历史证据，不替代当前 head 证明。
 
 代码实现任务内月度文件批次、短事务源记录转换及可选吞吐展示。50 倍新增速率、固定存量 24 小时归零及在线延迟不劣仍需当前候选发布构建实证，尚未签收。主人明确以其他验证通过、推送后 GitHub Actions 必过检查通过及 PR 可合并作为本次交付条件，暂不在本地运行 stateful profile。性能试验只允许在 GitHub Actions 单独执行，不得在本机或 Agent VM 运行，也不得将不必要的性能试验加入通用 PR 必过测试集；历史容量卡不能冒充本次通过证据。
 
 ## 任务内批次与月度目标
 
-每轮按数据集选取最多 1000 条符合保留策略的 live 候选，按月份分组，结合实际 payload 字节、现有 gzip 文件大小、可用磁盘和 60 秒设计预算决定是否开始文件批次。正常目标为数百到数千条；尾部、管理员配置或 payload 上限造成不足 512 条时记录原因。规划拒绝不通过缩成单条伪装成果。
+每轮按数据集选取最多 1000 条符合保留策略的 live 候选，按月份分组，结合实际 payload 字节、现有 gzip 文件大小、可用磁盘和 120 秒设计预算决定是否开始文件批次。正常目标为数百到数千条；尾部、管理员配置或 payload 上限造成不足 512 条时记录原因。规划拒绝不通过缩成单条伪装成果。
 
 既有月度文件的空间预检读取 gzip 内前 100 字节 SQLite 文件头，用有效页数和页大小计算完整大小，覆盖超过 4 GiB 的文件；页数为零、版本计数不一致或 gzip 长度低 32 位不匹配时拒绝文件准备，不退回可能回绕的 ISIZE。空间同时预留工作副本和 SQLite 临时空间，不增加完整解压扫描。SQLite 头的有效性规则沿用[官方文件格式](https://sqlite.org/fileformat.html#in_header_database_size)。
 
@@ -51,7 +51,7 @@
 
 ## 观测与 API
 
-维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason。
+维护库原有 run details JSON 可选增加 `archiveBatches` 和 `timeoutCount`，不新增维护库结构。每条批次记录 dataset/month、batchRows/committedRows、filePrepareMs、sourceIdentityMs、archiveWriterMs、summaryProofMs、lockWaitMs、elapsedMs、committedRowsPerSecond、arrivalRowsPerSecond、serviceRateMultiple、timeoutCount 和 smallBatchReason；不适用的阶段保持未知。
 
 批次 timeoutCount 只计该选定数据集/月批次尚未全部提交且整轮执行期限已到的停止；每批最多一次，按 dataset 汇总即可得到其次数。已完成批次的迟后收尾、未过期的准入延期及非超时错误不计入。invocation 身份读取也在批次观测范围内。兼容的整轮 timeoutCount 继续表示该轮是否触发兜底期限，budgetExhausted 仍独立报告；旧批次缺少新字段时归一化为未知，不补零。轻量回归用零期限和无期限的确定性上下文验证归属及序列化，不测 CPU 性能。
 
@@ -116,15 +116,11 @@ Usage-breakdown repair fences every verified source directory through transactio
 
 ## Visual Evidence
 
-本次 Task Evidence Set 是纯前端 Web Demo 的吞吐卡片：桌面 1440×1050 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备和锁等待，并显示 Prompt 暂不可用。图片已裁掉外围空白后通过 owner-facing 快照展示。
+本次吞吐卡片证据以 `retention-maintenance-task-ownership/SPEC.md` 中的 Storybook canvas 为准：桌面 1280×900 和移动 393×852 viewport。截图保留 invocation/attempt 单位、整轮服务速率、到达速率、倍率、超时、准备、身份读取、归档写入、证明准备和锁等待；timestamped upstream 批次不适用的 Summary proof 明确显示未知。图片通过 owner-facing 快照展示。
 
 同路径基线不存在，比较为 current-only；主人明确确认「截图准确，接受此布局」。此确认只证明布局和模拟状态，不能替代容量实测。旧 retention-task / retention-catchup-trend 图片保留为历史，排除于本轮 Task Evidence Set。
 
-截图使用同一模拟运行的 898 invocation、1000 attempt 和 48 秒耗时，分别展示 18.71/20.83 rows/s 与 53.9/50.0 倍到达速率。工作量图表与吞吐卡片使用一致样本；这些数值只用于可重复的界面验证。
-
-![Desktop task batch throughput](assets/retention-monthly-throughput-desktop.png)
-
-![Mobile task batch throughput](assets/retention-monthly-throughput-mobile.png)
+该组件证据使用固定的 invocation 与 upstream 批次样本；这些数值只用于可重复的界面验证，不代表容量实测。规范图片见 [retention-maintenance-task-ownership/SPEC.md](../retention-maintenance-task-ownership/SPEC.md#visual-evidence)。
 
 ## References
 

@@ -563,6 +563,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     prompt_cache_keys,
                 ));
             };
+            let source_identity_started = Instant::now();
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
@@ -571,7 +572,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, source_identity_query).await {
                     Ok(result) => result?,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation
+                            .source_identity_finished(source_identity_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 source_identity_query
@@ -590,6 +595,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .context("read task-local invocation source chunk identity")?,
                 );
             }
+            batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
             if retention_run_budget_expired() {
                 break;
@@ -604,14 +610,19 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 &ids,
                 &mut snapshot_pages,
             );
+            let archive_writer_started = Instant::now();
             let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, archive_future).await {
                     Ok(result) => result,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 archive_future.await
             };
+            batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) = (match archive_result {
                 Ok(outcome) => Some(outcome),
                 Err(error) if is_retention_write_deferred(&error) => {
@@ -668,11 +679,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 bail!("retention task-local archive artifact changed before publication");
             }
             drop(archive_lock);
-            let Some(proof) =
+            let summary_proof_started = Instant::now();
+            let proof_result =
                 batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
                     .await
-                    .context("prepare task-local monthly Summary proof")?
-            else {
+                    .context("prepare task-local monthly Summary proof");
+            batch_observation.summary_proof_finished(summary_proof_started.elapsed());
+            let Some(proof) = proof_result? else {
                 return Ok((
                     rows_archived,
                     archive_batches,
@@ -1037,32 +1050,64 @@ pub(crate) async fn archive_timestamped_dataset(
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
-            let source_identity =
-                archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids)
-                    .await?;
+            let source_identity_started = Instant::now();
+            let source_identity_query =
+                archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids);
+            let source_identity = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, source_identity_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        batch_observation
+                            .source_identity_finished(source_identity_started.elapsed());
+                        break;
+                    }
+                }
+            } else {
+                source_identity_query.await?
+            };
             let mut chunk_identities = Vec::new();
+            let mut source_identity_timed_out = false;
             for chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
-                chunk_identities.push(
-                    archive_table_source_identity_sha256(
-                        &mut source_connection,
-                        spec,
-                        "main",
-                        chunk,
-                    )
-                    .await?,
+                let chunk_identity_query = archive_table_source_identity_sha256(
+                    &mut source_connection,
+                    spec,
+                    "main",
+                    chunk,
                 );
+                let chunk_identity = if let Some(remaining) = retention_run_remaining_budget() {
+                    match tokio::time::timeout(remaining, chunk_identity_query).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            source_identity_timed_out = true;
+                            break;
+                        }
+                    }
+                } else {
+                    chunk_identity_query.await?
+                };
+                chunk_identities.push(chunk_identity);
             }
+            if source_identity_timed_out {
+                batch_observation.source_identity_finished(source_identity_started.elapsed());
+                break;
+            }
+            batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
+            let archive_writer_started = Instant::now();
             let archive_future =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
             let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, archive_future).await {
                     Ok(result) => result,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 archive_future.await
             };
+            batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));

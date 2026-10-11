@@ -132,6 +132,36 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
 - covers: `REQ-RMO-002`, `REQ-RMO-003`, `REQ-RMO-009`, `REQ-RMO-012`, `REQ-RMO-013`
 - Pass condition: 所有声明的来源夹具可恢复，操作员控制、恢复事实和历史保留；未验证来源不得宣称支持；无隐式逆向迁移或已部署迁移重写。
 
+## Visual Evidence
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: desktop1280
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  story_id_or_title: `System/RetentionRunThroughput/Committed`
+  state: committed throughput
+  evidence_note: Desktop component surface shows retained throughput metrics; invocation archives expose all three phase durations while timestamped upstream archives expose source identity and archive writer durations and correctly show summary proof as unknown.
+  image: ![Retention throughput desktop](./assets/retention-throughput-committed.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  requested_viewport: 393x852
+  viewport_strategy: storybook-viewport
+  margin_policy: require_margin
+  evidence_surface: component
+  surface_selector: `[data-visual-evidence-surface]`
+  target_selector: `[data-visual-evidence-target]`
+  story_id_or_title: `System/RetentionRunThroughput/Mobile`
+  state: committed throughput on mobile
+  evidence_note: Mobile component surface keeps the phase timing fields readable without horizontal overflow at the 393x852 CSS viewport, including the explicit unknown summary-proof value for timestamped upstream archives.
+  image: ![Retention throughput mobile](./assets/retention-throughput-mobile.png)
+
 ## Related ADRs
 
 - [Runtime SQLite write admission](../../adr/0015-coordinated-runtime-sqlite-write-admission.md)

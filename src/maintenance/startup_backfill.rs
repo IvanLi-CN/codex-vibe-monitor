@@ -1,12 +1,20 @@
 use super::*;
-
+mod backoff;
 mod coverage_repair;
 mod progress;
 use coverage_repair::run_startup_backfill_coverage_repair_if_due;
 #[cfg(test)]
 pub(crate) use coverage_repair::run_startup_backfill_coverage_repair_if_due_with_repair;
 mod prompt_cache_control;
-
+mod task_identity;
+#[cfg(test)]
+pub(crate) use backoff::historical_rollup_startup_backfill_run_state;
+pub(crate) use backoff::{
+    BackfillBatchOutcome, BackfillPartialFailure, StartupBackfillRunState,
+    historical_rollup_should_retry_soon, startup_backfill_budget_reached,
+    startup_backfill_next_delay, startup_backfill_next_run_after, startup_backfill_query_limit,
+    startup_backfill_run_budget, startup_backfill_samples_text, startup_backfill_scan_limit,
+};
 pub(crate) use progress::load_startup_backfill_progress_from_pool;
 #[cfg(test)]
 pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_control_for_test;
@@ -14,18 +22,20 @@ pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_contr
 pub(crate) use prompt_cache_control::wake_prompt_cache_materialization_for_test;
 #[cfg(test)]
 use prompt_cache_control::{
-    apply_prompt_cache_control_schedule, wake_prompt_cache_materialization_with_scheduler,
+    apply_prompt_cache_control_schedule, prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    requeue_legacy_startup_backfill_tasks, wake_prompt_cache_materialization_with_scheduler,
 };
 use prompt_cache_control::{
-    coordinator_for_prompt_cache_run, persist_prompt_cache_materialization_defer,
-    prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
-    prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    coordinator_for_prompt_cache_run, legacy_startup_backfill_tasks,
+    persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
+    prompt_cache_stale_result_outcome, run_background_startup_backfill_pass_with_root_state,
     save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
     set_prompt_cache_materialization_enabled_with_store,
     wake_prompt_cache_materialization_with_store,
 };
+use task_identity::{audit_task_kind, observation_parent_task_key, should_record_audit};
 
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
@@ -42,13 +52,11 @@ fn startup_backfill_progress_pool(pool: &Pool<Sqlite>) -> Option<&Pool<Sqlite>> 
     }
     None
 }
-
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum StartupBackfillTask {
     ProxyUsage,
@@ -190,6 +198,12 @@ impl StartupBackfillScheduler {
             tasks.remove(&task);
         }
         self.record_next_due(task, retry_at);
+    }
+
+    fn requeue_after_dispatch_gap(&self, tasks: &[StartupBackfillTask], retry_at: DateTime<Utc>) {
+        for task in tasks {
+            self.defer_for_background_busy(*task, retry_at);
+        }
     }
 
     fn take_pressure_deferred_tasks(&self, now: DateTime<Utc>) -> Vec<StartupBackfillTask> {
@@ -367,6 +381,25 @@ impl StartupBackfillScheduler {
     }
 }
 
+pub(super) fn requeue_startup_backfill_tasks(
+    tasks: &[StartupBackfillTask],
+    retry_at: DateTime<Utc>,
+) {
+    STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(tasks, retry_at);
+}
+
+fn startup_backfill_tasks_for_retry(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    startup_backfill_root_skipped: bool,
+) -> Vec<StartupBackfillTask> {
+    selected_tasks.map(ToOwned::to_owned).unwrap_or_else(|| {
+        if startup_backfill_root_skipped {
+            Vec::new()
+        } else {
+            StartupBackfillTask::ordered_tasks().to_vec()
+        }
+    })
+}
 static STARTUP_BACKFILL_SCHEDULER: Lazy<StartupBackfillScheduler> =
     Lazy::new(StartupBackfillScheduler::default);
 
@@ -393,7 +426,6 @@ fn startup_backfill_wait_duration(next_due: Option<DateTime<Utc>>) -> Duration {
         None => Duration::from_secs(24 * 60 * 60),
     }
 }
-
 fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime<Utc> {
     progress
         .next_run_after
@@ -417,7 +449,6 @@ impl StartupBackfillTaskRunOutcome {
         !self.actionable && !self.failed && self.deferred && self.completed
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupBackfillFailureKind {
     ArchiveLockBusy,
@@ -434,7 +465,6 @@ impl StartupBackfillFailureKind {
         }
     }
 }
-
 fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureKind {
     let has_archive_lock_busy_message = err.chain().any(|cause| {
         cause
@@ -457,7 +487,6 @@ fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureK
         StartupBackfillFailureKind::Operation
     }
 }
-
 fn record_startup_backfill_pressure_error(
     gate: &crate::db_pressure::DbPressureGate,
     err: &anyhow::Error,
@@ -493,7 +522,6 @@ fn startup_backfill_pressure_retry_at(
         }
     }
 }
-
 fn startup_backfill_pressure_defer_outcome(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
@@ -529,7 +557,6 @@ fn startup_backfill_pressure_defer_outcome_at(
         next_due: retry_at,
     }
 }
-
 fn startup_backfill_coordinator_defer_outcome(
     scheduler: &StartupBackfillScheduler,
     task: StartupBackfillTask,
@@ -941,183 +968,6 @@ impl From<StartupBackfillProgressRow> for StartupBackfillProgress {
             wake_generation: value.wake_generation.max(0) as u64,
             enabled: value.enabled != 0,
         }
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct StartupBackfillRunState {
-    next_cursor_id: i64,
-    scanned: u64,
-    updated: u64,
-    hit_scan_limit: bool,
-    retry_soon: bool,
-    force_idle: bool,
-    source_unavailable: bool,
-    deferred: bool,
-    defer_reason: Option<&'static str>,
-    samples: Vec<String>,
-}
-
-pub(crate) fn startup_backfill_next_delay(
-    run: &StartupBackfillRunState,
-    zero_update_streak: u32,
-) -> Duration {
-    if run.source_unavailable {
-        Duration::from_secs(24 * 60 * 60)
-    } else if run.force_idle {
-        Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
-    } else if run.retry_soon {
-        Duration::from_secs(15)
-    } else if run.updated > 0 {
-        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
-    } else if run.hit_scan_limit && run.scanned > 0 {
-        Duration::from_secs(match zero_update_streak {
-            0 | 1 => 15,
-            2 => 60,
-            3 => 5 * 60,
-            _ => 15 * 60,
-        })
-    } else if run.hit_scan_limit {
-        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
-    } else if run.scanned == 0 || zero_update_streak > 0 {
-        Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
-    } else {
-        Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
-    }
-}
-
-fn historical_rollup_should_retry_soon(hit_budget: bool, candidate_count: usize) -> bool {
-    hit_budget && candidate_count > 0
-}
-
-pub(crate) fn startup_backfill_next_run_after(
-    run: &StartupBackfillRunState,
-    zero_update_streak: u32,
-) -> String {
-    format_utc_iso(
-        Utc::now()
-            + ChronoDuration::from_std(startup_backfill_next_delay(run, zero_update_streak))
-                .unwrap_or_else(|_| {
-                    ChronoDuration::seconds(STARTUP_BACKFILL_IDLE_INTERVAL_SECS as i64)
-                }),
-    )
-}
-
-pub(crate) fn historical_rollup_startup_backfill_run_state(
-    cursor_id: i64,
-    zero_update_streak: u32,
-    before: &HistoricalRollupBackfillSnapshot,
-    after: &HistoricalRollupBackfillSnapshot,
-    summary: &HistoricalRollupMaterializationSummary,
-    pending_before: u64,
-    pending_after: u64,
-) -> StartupBackfillRunState {
-    let archive_progress = before
-        .legacy_archive_pending
-        .saturating_sub(after.legacy_archive_pending);
-    let usage_breakdown_progress = before
-        .pending_usage_breakdown_batches
-        .saturating_sub(after.pending_usage_breakdown_batches);
-    let bucket_progress = before.pending_buckets.saturating_sub(after.pending_buckets);
-    let selected_backlog_progress = pending_before.saturating_sub(pending_after);
-    let attempted_archive_batches = summary
-        .scanned_archive_batches
-        .saturating_sub(summary.skipped_archive_batches);
-    let scanned_all_pending_archives = attempted_archive_batches as u64 >= pending_before;
-    let exhausted_blocked_cycle = summary.blocked_archive_batches == attempted_archive_batches
-        && selected_backlog_progress == 0
-        && bucket_progress == 0
-        && zero_update_streak.saturating_add(attempted_archive_batches as u32) as u64
-            >= pending_before;
-    let permanently_blocked = summary.blocked_archive_batches > 0
-        && selected_backlog_progress == 0
-        && bucket_progress == 0
-        && (scanned_all_pending_archives || exhausted_blocked_cycle);
-
-    StartupBackfillRunState {
-        next_cursor_id: cursor_id.saturating_add(attempted_archive_batches as i64),
-        scanned: summary.scanned_archive_batches as u64,
-        updated: archive_progress
-            .max(usage_breakdown_progress)
-            .max(selected_backlog_progress)
-            .max(bucket_progress),
-        hit_scan_limit: pending_after > 0 && !permanently_blocked,
-        retry_soon: false,
-        force_idle: pending_after == 0 || permanently_blocked,
-        source_unavailable: permanently_blocked,
-        deferred: false,
-        defer_reason: None,
-        samples: Vec::new(),
-    }
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct BackfillBatchOutcome<T> {
-    pub(crate) summary: T,
-    pub(crate) next_cursor_id: i64,
-    pub(crate) hit_budget: bool,
-    pub(crate) samples: Vec<String>,
-}
-
-#[derive(Debug)]
-pub(crate) struct BackfillPartialFailure {
-    pub(crate) source: anyhow::Error,
-    pub(crate) next_cursor_id: i64,
-    pub(crate) scanned: u64,
-    pub(crate) updated: u64,
-}
-
-impl std::fmt::Display for BackfillPartialFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.source.fmt(formatter)
-    }
-}
-
-impl std::error::Error for BackfillPartialFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.source.root_cause())
-    }
-}
-
-pub(crate) fn startup_backfill_query_limit(scanned: u64, scan_limit: Option<u64>) -> i64 {
-    let remaining = scan_limit
-        .map(|limit| limit.saturating_sub(scanned))
-        .unwrap_or(BACKFILL_BATCH_SIZE as u64);
-    remaining.min(BACKFILL_BATCH_SIZE as u64).max(1) as i64
-}
-
-pub(crate) fn startup_backfill_budget_reached(
-    started_at: Instant,
-    scanned: u64,
-    scan_limit: Option<u64>,
-    max_elapsed: Option<Duration>,
-) -> bool {
-    let hit_scan_limit = scan_limit.is_some_and(|limit| scanned >= limit);
-    let hit_elapsed_limit = max_elapsed.is_some_and(|limit| started_at.elapsed() >= limit);
-    hit_scan_limit || hit_elapsed_limit
-}
-
-pub(crate) fn startup_backfill_samples_text(samples: &[String]) -> String {
-    if samples.is_empty() {
-        "-".to_string()
-    } else {
-        samples.join(" | ")
-    }
-}
-
-fn startup_backfill_scan_limit(source_unavailable_probe: bool) -> u64 {
-    if source_unavailable_probe {
-        100
-    } else {
-        STARTUP_BACKFILL_SCAN_LIMIT
-    }
-}
-
-fn startup_backfill_run_budget(source_unavailable_probe: bool) -> Duration {
-    if source_unavailable_probe {
-        Duration::from_secs(2)
-    } else {
-        Duration::from_secs(STARTUP_BACKFILL_RUN_BUDGET_SECS)
     }
 }
 
@@ -1807,14 +1657,40 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
     let Some(_execution_lease) =
         crate::maintenance_store::try_acquire_task_execution("startup_backfill")
     else {
+        if let Some(tasks) = selected_tasks {
+            STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+                tasks,
+                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+            );
+        }
         return StartupBackfillMaintenancePass::default();
     };
+    let pass =
+        run_startup_backfill_maintenance_pass_with_gate_held(state, cancel, selected_tasks, gate)
+            .await;
+    if cancel.is_cancelled()
+        && let Some(tasks) = selected_tasks
+    {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+    }
+    pass
+}
+
+async fn run_startup_backfill_maintenance_pass_with_gate_held(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> StartupBackfillMaintenancePass {
     run_startup_backfill_maintenance_pass_with_gate_inner(
         state,
         cancel,
         selected_tasks,
         gate,
-        None,
+        observation_parent_task_key(selected_tasks),
         None,
     )
     .await
@@ -1827,10 +1703,15 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
     observation_parent_task_key: Option<&'static str>,
     managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
+    // The managed root owns legacy backfills. Prompt-cache materialization has
+    // its own managed task and must only enter through an explicit selection.
+    let owned_tasks = selected_tasks
+        .map(|tasks| tasks.to_vec())
+        .unwrap_or_else(|| legacy_startup_backfill_tasks(None));
     run_startup_backfill_maintenance_pass_with_gate_inner(
         state,
         cancel,
-        selected_tasks,
+        Some(&owned_tasks),
         crate::db_pressure::global_db_pressure_gate(),
         observation_parent_task_key,
         managed_run_id,
@@ -1847,6 +1728,7 @@ fn startup_backfill_observation_task_key(
 async fn begin_startup_backfill_audit(
     state: &Arc<AppState>,
     cancel: &CancellationToken,
+    task_kind: SystemTaskKind,
 ) -> Result<Option<SystemTaskRunHandle>> {
     tokio::select! {
         biased;
@@ -1854,7 +1736,7 @@ async fn begin_startup_backfill_audit(
         result = begin_system_task_run_admitted(
             state.as_ref(),
             crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            SystemTaskKind::StartupBackfill,
+            task_kind,
             "event_or_due",
             Some("startup backfill maintenance changed data or failed".to_string()),
         ) => result.map(Some),
@@ -2012,7 +1894,13 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         }
     }
 
-    if (ran_actionable_task || had_failure || detail.is_some()) && !cancel.is_cancelled() {
+    if should_record_audit(
+        managed_run_id,
+        ran_actionable_task,
+        had_failure,
+        detail.is_some(),
+        cancel.is_cancelled(),
+    ) {
         // The audit row is non-critical bookkeeping. Do not hold a pressure slot while the
         // P2 admission waits: if cancellation wins, leave the row for the next pass. The durable
         // task/progress rows above remain the source of truth.
@@ -2022,7 +1910,9 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 // Do not hold the background slot while waiting for the process-wide write
                 // coordinator. P1/interactive writes can still preempt this P2 audit waiter.
                 drop(pressure_permit);
-                let task_run = begin_startup_backfill_audit(&state, cancel).await;
+                let task_run =
+                    begin_startup_backfill_audit(&state, cancel, audit_task_kind(selected_tasks))
+                        .await;
                 match task_run {
                     Ok(Some(run)) => {
                         let audit_status = if had_failure {
@@ -3514,27 +3404,64 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     if cancel.is_cancelled() {
         return;
     }
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
+    else {
+        return;
+    };
     let startup_backfill_root_skipped =
         crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
     let prompt_cache_task = [StartupBackfillTask::PromptCacheConversationsMaterialization];
-    let allowed_tasks = startup_backfill_root_skipped.then_some(prompt_cache_task.as_slice());
-    let tasks =
-        STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks_matching(Utc::now(), allowed_tasks);
-    if tasks.is_empty() {
+    let legacy_allowed_tasks = legacy_startup_backfill_tasks(None);
+    let legacy_tasks = if startup_backfill_root_skipped {
+        Vec::new()
+    } else {
+        STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks_matching(
+            Utc::now(),
+            Some(legacy_allowed_tasks.as_slice()),
+        )
+    };
+    // The prompt task has an independent owner even when the legacy root is enabled.
+    let prompt_tasks = STARTUP_BACKFILL_SCHEDULER
+        .take_pressure_deferred_tasks_matching(Utc::now(), Some(prompt_cache_task.as_slice()));
+    let all_tasks = legacy_tasks
+        .iter()
+        .chain(prompt_tasks.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    if all_tasks.is_empty() {
         return;
     }
     debug!(
-        task_count = tasks.len(),
+        task_count = legacy_tasks.len() + prompt_tasks.len(),
         "pressure eligibility changed; dispatching deferred startup backfill tasks"
     );
-    run_background_startup_backfill_pass_with_root_state(
-        state,
-        cancel,
-        Some(&tasks),
-        gate,
-        startup_backfill_root_skipped,
-    )
-    .await;
+    if !legacy_tasks.is_empty() {
+        run_background_startup_backfill_pass_with_root_state_held(
+            state.clone(),
+            cancel,
+            Some(&legacy_tasks),
+            gate,
+            startup_backfill_root_skipped,
+        )
+        .await;
+    }
+    if !prompt_tasks.is_empty() {
+        run_background_startup_backfill_pass_with_root_state_held(
+            state,
+            cancel,
+            Some(&prompt_tasks),
+            gate,
+            true,
+        )
+        .await;
+    }
+    if cancel.is_cancelled() {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            &all_tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+    }
 }
 
 async fn run_background_startup_backfill_pass_with_gate(
@@ -3545,6 +3472,41 @@ async fn run_background_startup_backfill_pass_with_gate(
 ) -> StartupBackfillMaintenancePass {
     let startup_backfill_root_skipped =
         crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
+    let retry_tasks =
+        startup_backfill_tasks_for_retry(selected_tasks, startup_backfill_root_skipped);
+    let Some(_execution_lease) =
+        crate::maintenance_store::try_acquire_task_execution("startup_backfill")
+    else {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            &retry_tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+        return StartupBackfillMaintenancePass::default();
+    };
+    let pass = run_background_startup_backfill_pass_with_root_state_held(
+        state,
+        cancel,
+        selected_tasks,
+        gate,
+        startup_backfill_root_skipped,
+    )
+    .await;
+    if cancel.is_cancelled() {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            &retry_tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+    }
+    pass
+}
+
+async fn run_background_startup_backfill_pass_with_root_state_held(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+    startup_backfill_root_skipped: bool,
+) -> StartupBackfillMaintenancePass {
     run_background_startup_backfill_pass_with_root_state(
         state,
         cancel,
@@ -3553,26 +3515,6 @@ async fn run_background_startup_backfill_pass_with_gate(
         startup_backfill_root_skipped,
     )
     .await
-}
-
-async fn run_background_startup_backfill_pass_with_root_state(
-    state: Arc<AppState>,
-    cancel: &CancellationToken,
-    selected_tasks: Option<&[StartupBackfillTask]>,
-    gate: &crate::db_pressure::DbPressureGate,
-    startup_backfill_root_skipped: bool,
-) -> StartupBackfillMaintenancePass {
-    if startup_backfill_root_skipped {
-        // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
-        let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
-        if tasks.is_empty() {
-            return StartupBackfillMaintenancePass::default();
-        }
-        return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
-            .await;
-    }
-
-    run_startup_backfill_maintenance_pass_with_gate(state, cancel, selected_tasks, gate).await
 }
 
 pub(crate) fn spawn_startup_backfill_maintenance(

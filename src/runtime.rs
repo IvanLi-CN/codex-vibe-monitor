@@ -1517,6 +1517,8 @@ async fn drain_managed_task_finishes_on_shutdown(
 fn managed_task_metric_dimension(task_key: &str) -> &'static str {
     match task_key {
         "retention_archive" => "retention_archive",
+        "invocation_identity_cleanup" => "invocation_identity_cleanup",
+        "raw_orphan_sweep" => "raw_orphan_sweep",
         "upstream_account_maintenance" => "upstream_account_maintenance",
         "forward_proxy_subscription_refresh" => "forward_proxy_subscription_refresh",
         "pool_orphan_recovery" => "pool_orphan_recovery",

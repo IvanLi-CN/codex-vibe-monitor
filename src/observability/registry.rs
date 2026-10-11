@@ -260,6 +260,8 @@ pub(super) fn metric_dimensions(metric_id: &str) -> &'static [&'static str] {
 
 const TASK_RUN_METRIC_DIMENSIONS: &[&str] = &[
     "retention_archive",
+    "invocation_identity_cleanup",
+    "raw_orphan_sweep",
     "upstream_account_maintenance",
     "forward_proxy_subscription_refresh",
     "pool_orphan_recovery",

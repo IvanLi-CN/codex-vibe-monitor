@@ -2001,16 +2001,17 @@ pub(crate) async fn list_system_task_runs(
     } else {
         "(SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM system_task_runs)"
     };
-    let mut builder = QueryBuilder::<Sqlite>::new(
-        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM ",
-    );
-    builder.push(run_source).push(" WHERE 1 = 1");
-    if let Some(task_kind) = query
+    let task_kind = query
         .task_kind
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .map(crate::maintenance_store::canonical_managed_task_key);
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM ",
+    );
+    builder.push(run_source).push(" WHERE 1 = 1");
+    if let Some(task_kind) = task_kind {
         builder.push(" AND task_kind = ").push_bind(task_kind);
     }
     if let Some(status) = query
@@ -2054,12 +2055,7 @@ pub(crate) async fn list_system_task_runs(
 
     let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as total FROM ");
     count_builder.push(run_source).push(" WHERE 1 = 1");
-    if let Some(task_kind) = query
-        .task_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(task_kind) = task_kind {
         count_builder.push(" AND task_kind = ").push_bind(task_kind);
     }
     if let Some(status) = query
@@ -2264,8 +2260,9 @@ pub(crate) async fn get_managed_task_workload(
             "workload limit must be between 1 and 200".to_string(),
         ));
     }
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key);
     let trend = store
-        .workload_window(&task_key, limit)
+        .workload_window(task_key, limit)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "managed task not found".to_string()))?;
@@ -2289,8 +2286,9 @@ pub(crate) async fn get_managed_task_with_store(
     task_key: String,
     store: &crate::maintenance_store::MaintenanceStore,
 ) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key);
     let detail = store
-        .detail(&task_key)
+        .detail(task_key)
         .await
         .map_err(ApiError::from)?
         .map(Json)
@@ -2333,14 +2331,16 @@ pub(crate) async fn update_managed_task_with_store(
         crate::OptionalField::Value(value) => Some(Some(value)),
     };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
-    if task_key == "startup_backfill.prompt_cache_conversations_materialization"
-        && let Some(enabled) = enabled
-    {
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key).to_string();
+    if task_key == "prompt_cache_materialization" {
         if interval_secs.is_some() || cron_expr.is_some() {
             return Err(ApiError::bad_request(anyhow!(
                 "task does not support a new interval or cron override"
             )));
         }
+        let Some(enabled) = enabled else {
+            return get_managed_task_with_store(state, task_key, store).await;
+        };
         crate::set_prompt_cache_materialization_enabled_with_store(
             &state.pool,
             store,
@@ -2351,7 +2351,8 @@ pub(crate) async fn update_managed_task_with_store(
         .map_err(ApiError::unavailable)?;
         return get_managed_task_with_store(state, task_key, store).await;
     }
-    let previous_startup_control = if enabled.is_some() && task_key.starts_with("startup_backfill.")
+    let previous_startup_control = if enabled.is_some()
+        && (task_key == "startup_backfill" || task_key.starts_with("startup_backfill."))
     {
         store
             .detail(&task_key)
@@ -2367,6 +2368,25 @@ pub(crate) async fn update_managed_task_with_store(
         .map_err(ApiError::bad_request)?
     {
         return Err(ApiError::bad_request(anyhow!("managed task not found")));
+    }
+    let startup_backfill_wake_result = if task_key == "startup_backfill" && enabled == Some(true) {
+        let pricing_catalog = state.pricing_catalog.read().await.clone();
+        Some(
+            crate::wake_startup_backfill_tasks_with_pricing_catalog(
+                &state.pool,
+                crate::StartupBackfillTask::ordered_tasks(),
+                Some(&pricing_catalog),
+                "managed_task_enabled",
+            )
+            .await,
+        )
+    } else {
+        None
+    };
+    if let Some(Err(wake_error)) = startup_backfill_wake_result {
+        return Err(ApiError::from(anyhow!(
+            "startup backfill wake failed; startup backfill remains enabled for retry: {wake_error}"
+        )));
     }
     if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
         && let Some(task) = crate::StartupBackfillTask::from_managed_key(task_name)
@@ -2396,6 +2416,7 @@ pub(crate) async fn run_managed_task_now(
             "maintenance database unavailable"
         )));
     };
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key).to_string();
     store
         .request_run(&task_key)
         .await
@@ -2690,6 +2711,13 @@ mod managed_task_control_contract_tests {
                 .expect("disable via dedicated control handler");
         assert!(!dedicated.0.enabled);
         assert_eq!(dedicated.0.last_status, "disabled");
+        let catalog_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read synchronized prompt-cache catalog control");
+        assert!(!catalog_enabled);
         let disabled_generation = store
             .prompt_cache_materialization_control
             .snapshot()
@@ -2703,12 +2731,57 @@ mod managed_task_control_contract_tests {
                 .await
                 .expect("enable via managed-task control handler");
         assert!(managed.0.task.enabled);
+        let catalog_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read re-enabled prompt-cache catalog control");
+        assert!(catalog_enabled);
+        let top_level_disabled = update_managed_task_with_store(
+            state.clone(),
+            "prompt_cache_materialization".to_string(),
+            serde_json::from_str(r#"{"enabled":false}"#)
+                .expect("decode top-level managed-task disable request"),
+            &store,
+        )
+        .await
+        .expect("disable via top-level managed-task control handler");
+        assert!(!top_level_disabled.0.task.enabled);
+        assert!(
+            !store
+                .prompt_cache_materialization_control
+                .snapshot()
+                .expect("disabled top-level control snapshot")
+                .enabled
+        );
+        let top_level_enabled = update_managed_task_with_store(
+            state.clone(),
+            "prompt_cache_materialization".to_string(),
+            serde_json::from_str(r#"{"enabled":true}"#)
+                .expect("decode top-level managed-task enable request"),
+            &store,
+        )
+        .await
+        .expect("enable via top-level managed-task control handler");
+        assert!(top_level_enabled.0.task.enabled);
         let enabled_snapshot = store
             .prompt_cache_materialization_control
             .snapshot()
             .expect("enabled control snapshot");
         assert!(enabled_snapshot.enabled);
-        assert_eq!(enabled_snapshot.generation, disabled_generation + 1);
+        assert_eq!(enabled_snapshot.generation, disabled_generation + 3);
+        assert!(matches!(
+            update_managed_task_with_store(
+                state.clone(),
+                "prompt_cache_materialization".to_string(),
+                serde_json::from_str(r#"{"intervalSecs":30}"#)
+                    .expect("decode top-level prompt-cache schedule request"),
+                &store,
+            )
+            .await,
+            Err(ApiError::BadRequest(_))
+        ));
 
         let retry_deadline = "2099-01-01T00:00:00.000Z";
         sqlx::query(

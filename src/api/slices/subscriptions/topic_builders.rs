@@ -323,6 +323,7 @@ impl SubscriptionTopic {
                         "maintenance database unavailable"
                     )));
                 };
+                let task_key = crate::maintenance_store::canonical_managed_task_key(task_key);
                 let Some(detail) = store.detail(task_key).await.map_err(ApiError::from)? else {
                     return Err(ApiError::bad_request(anyhow!("managed task not found")));
                 };
@@ -338,6 +339,7 @@ impl SubscriptionTopic {
                         "maintenance database unavailable"
                     )));
                 };
+                let task_key = crate::maintenance_store::canonical_managed_task_key(task_key);
                 let Some(trend) = store
                     .workload_window(task_key, *limit)
                     .await
