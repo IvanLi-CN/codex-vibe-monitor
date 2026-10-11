@@ -48,7 +48,7 @@ class HttpsEntry(BaseHTTPRequestHandler):
             try: route = query_route(self.path.removeprefix("/tempo"), fixed_cases=False)
             except (ValueError, TypeError): self.deny(400); return
             self.tempo("GET", 3200, route); return
-        if re.fullmatch(r"/api/datasources/proxy/uid/cvm-tempo/api/(search|v2/traces/[a-f0-9]{32})", path):
+        if re.fullmatch(r"/api/datasources/proxy/uid/cvm-tempo/api/(search|v2/traces/[a-f0-9]{1,32})", path):
             try: query_route(self.path.removeprefix("/api/datasources/proxy/uid/cvm-tempo"))
             except (ValueError, TypeError): self.deny(400); return
             grafana = True

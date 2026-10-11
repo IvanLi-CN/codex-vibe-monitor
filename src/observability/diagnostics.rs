@@ -382,6 +382,7 @@ struct State {
     milestones: [Option<Duration>; 3],
     persistence: &'static str,
     ttft_applicable: Option<bool>,
+    detailed: Option<bool>,
 }
 struct Inner {
     metrics: Arc<ObservabilityRuntime>,
@@ -487,6 +488,7 @@ impl DiagnosticContext {
                 milestones: [None; 3],
                 persistence: "not_observed",
                 ttft_applicable: None,
+                detailed: None,
             }),
         })))
     }
@@ -585,7 +587,6 @@ impl DiagnosticContext {
         let at = self.at();
         let (
             mut root,
-            detail_bucket,
             normal_candidate,
             waits,
             longest,
@@ -598,6 +599,7 @@ impl DiagnosticContext {
             persistence,
             incomplete,
             ttft_applicable,
+            detailed,
         ) = {
             let mut state = self.state();
             if state.ended.is_some() {
@@ -605,6 +607,24 @@ impl DiagnosticContext {
             }
             state.ended = Some(at);
             let incomplete = state.wait_union.active > 0;
+            let detailed = if state.root.is_some() {
+                if state.truncated {
+                    false
+                } else if outcome != "complete" {
+                    state.detail_bucket == 1
+                } else if state.attempts > 1 {
+                    state.detail_bucket == 2
+                } else if state.wait_union.at(at) >= Duration::from_millis(250) {
+                    state.detail_bucket == 3
+                } else if at >= Duration::from_secs(30) {
+                    state.detail_bucket == 4
+                } else {
+                    state.detail_bucket == 0
+                }
+            } else {
+                false
+            };
+            state.detailed = Some(detailed);
             let mut waits = state.waits;
             for stats in &mut waits {
                 stats.sum += at
@@ -613,7 +633,6 @@ impl DiagnosticContext {
             }
             (
                 state.root.take(),
-                state.detail_bucket,
                 state.normal_candidate,
                 waits,
                 std::mem::take(&mut state.longest),
@@ -626,6 +645,7 @@ impl DiagnosticContext {
                 state.persistence,
                 incomplete,
                 state.ttft_applicable,
+                detailed,
             )
         };
         self.0
@@ -663,19 +683,6 @@ impl DiagnosticContext {
         if let Some(root) = root.as_mut() {
             // Select one deterministic category per request. Root spans retain the full
             // lightweight record; only the selected category receives waterfall children.
-            let detailed = if truncated {
-                false
-            } else if outcome != "complete" {
-                detail_bucket == 1
-            } else if attempts > 1 {
-                detail_bucket == 2
-            } else if wait_total >= Duration::from_millis(250) {
-                detail_bucket == 3
-            } else if at >= Duration::from_secs(30) {
-                detail_bucket == 4
-            } else {
-                detail_bucket == 0
-            };
             if detailed {
                 for interval in phases {
                     self.emit(
@@ -699,6 +706,26 @@ impl DiagnosticContext {
                             KeyValue::new("cvm.selected_interval", true),
                         ],
                     );
+                }
+                for (index, (name, milestone)) in [
+                    ("milestone.head", "head"),
+                    ("milestone.first_byte", "first_byte"),
+                    ("milestone.model_delta", "model_delta"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if let Some(at) = milestones[index] {
+                        self.emit(
+                            name,
+                            at,
+                            at,
+                            [
+                                KeyValue::new("cvm.milestone", milestone),
+                                KeyValue::new("cvm.milestone_ms", at.as_secs_f64() * 1000.0),
+                            ],
+                        );
+                    }
                 }
             }
             for kv in [
@@ -845,6 +872,15 @@ impl Drop for Guard {
         let end = self.context.at();
         let duration = end.saturating_sub(self.start);
         let mut state = self.context.state();
+        let late_phase = if state.ended.is_some()
+            && state.detailed == Some(true)
+            && self.detail
+            && let Kind::Phase(phase) = self.kind
+        {
+            Some((phase, self.start, end))
+        } else {
+            None
+        };
         if state.ended.is_none() {
             state.phase_union.end(end);
             if let Kind::Wait(resource) = self.kind {
@@ -898,6 +934,18 @@ impl Drop for Guard {
             }
         }
         drop(state);
+        if let Some((phase, start, end)) = late_phase {
+            self.context.emit(
+                phase.name(),
+                start,
+                end,
+                [
+                    KeyValue::new("cvm.phase", phase.name()),
+                    KeyValue::new("cvm.lower_bound", !self.complete),
+                    KeyValue::new("cvm.late", true),
+                ],
+            );
+        }
         match self.kind {
             Kind::Wait(resource) => {
                 self.context.0.metric_handles.resource_events[resource.index()]

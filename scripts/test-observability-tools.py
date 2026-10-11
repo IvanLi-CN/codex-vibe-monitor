@@ -28,6 +28,7 @@ migration = load("retire_performance", SCRIPTS / "retire-performance-db.py")
 observe = load("cvm_observe", SCRIPTS / "cvm-observe")
 cpu = load("cvm_cpu", SCRIPTS / "cvm-hotpath-cpu")
 preview = load("grafana_preview_metrics", SOURCE / "ops/observability/preview/metrics_server.py")
+preview_traces = load("grafana_preview_traces", SOURCE / "ops/observability/preview/traces.py")
 OLD_IMAGE = "example/cvm@sha256:" + "a" * 64
 
 def fixture(path, ddl_transform=None):
@@ -75,6 +76,22 @@ class GrafanaPreviewTests(unittest.TestCase):
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
 
+    def test_preview_trace_bridge_normalizes_short_ids_before_forwarding(self):
+        for length in range(1, 33):
+            shortened = "/api/v2/traces/" + "f" * length
+            self.assertEqual(preview_traces.tempo_route(shortened), "/api/v2/traces/" + "0" * (32 - length) + "f" * length)
+
+    def test_case_dashboard_links_select_the_trace_id_for_all_categories(self):
+        dashboard = json.loads((SOURCE / "ops/observability/grafana/dashboards/cvm-proxy-cases.json").read_text())
+        panels = {panel["id"]: panel for panel in dashboard["panels"]}
+        self.assertEqual(set(panels) & {10, 11, 12, 13, 14}, {10, 11, 12, 13, 14})
+        for panel_id in (10, 11, 12, 13, 14):
+            overrides = panels[panel_id]["fieldConfig"]["overrides"]
+            links = overrides[0]["properties"][0]["value"]
+            self.assertEqual(len(links), 1)
+            self.assertIn("var-trace_id=${__data.fields[0].text}", links[0]["url"])
+            self.assertIn("viewPanel=20", links[0]["url"])
+
 class TempoNetworkTests(unittest.TestCase):
     def test_tempo_uses_the_dedicated_backend_network(self):
         compose = (SOURCE / "ops/observability/compose.yml").read_text()
@@ -118,6 +135,9 @@ class TraceAccessTests(unittest.TestCase):
             self.assertEqual(query_route(target, now=100000), target)
         trace = "/api/v2/traces/" + "a" * 32
         self.assertEqual(query_route(trace), trace)
+        for length in range(1, 33):
+            shortened = "/api/v2/traces/" + "f" * length
+            self.assertEqual(query_route(shortened), "/api/v2/traces/" + "0" * (32 - length) + "f" * length)
         for path in ["/api/overrides", "/api/search/tags", trace + "?tenant=other", "/api/v2/traces/../status", "https://other" + trace]:
             with self.assertRaises(ValueError): query_route(path, now=100000)
 

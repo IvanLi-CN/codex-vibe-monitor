@@ -127,7 +127,7 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "正常容量内全量轻量采集，界面每类最多 **3 条**，默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。点击 TraceID 显示原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
+        "content": "正常容量内全量轻量采集，界面每类最多 **3 条**，默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。单击 TraceID 后选择“展开此请求瀑布图”查看原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
       }
     },
     {
@@ -174,7 +174,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
                   }
                 ]
               }
@@ -231,7 +231,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
                   }
                 ]
               }
@@ -288,7 +288,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
                   }
                 ]
               }
@@ -345,7 +345,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
                   }
                 ]
               }
@@ -402,7 +402,7 @@
                 "value": [
                   {
                     "title": "展开此请求瀑布图",
-                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__value.raw}&viewPanel=20"
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
                   }
                 ]
               }
@@ -419,7 +419,7 @@
       "id": 20,
       "type": "traces",
       "title": "选中请求：响应与落盘瀑布图",
-      "description": "响应 root span 的 duration 才是响应时间；整个 trace 还包含晚到落盘。共享批次通过 span links 关联，不能复制为每条请求的独占执行成本。",
+      "description": "响应 root span 的 duration 才是响应时间；整个 trace 还包含晚到落盘。共享批次通过 span links 关联，不能复制为每条请求的独占执行成本。原生 Trace 面板按 service.name 着色；CVM 是单一服务，因此阶段保持同色，critical path 会加深显示。head、first_byte、model_delta 同时保留累计里程碑属性和零时长时间点；forward、finalize、journal_append 在后台任务完成后可能作为带 late 标记的阶段出现。不存在或不适用的阶段不会伪造一行。",
       "gridPos": {
         "x": 0,
         "y": 26,
@@ -441,7 +441,12 @@
           "query": "$trace_id"
         }
       ],
-      "options": {}
+      "options": {
+        "spanFilters": {
+          "criticalPathOnly": true,
+          "matchesOnly": false
+        }
+      }
     }
   ]
 }
