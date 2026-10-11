@@ -66,15 +66,16 @@ impl SubscriptionTopic {
                         gaps,
                     )) = projection_with_overlay
                     {
-                        if crate::summary_delta_gap_affects_selection(
-                            projection.as_ref(),
-                            &gaps,
-                            &pending_terminal_deltas,
-                            &summary_window,
-                            reporting_tz,
-                            *upstream_account_id,
-                            crate::SummaryDeltaGapKind::Source,
-                        ) {
+                        let (source_gap_pending, source_gap_unavailable) =
+                            crate::summary_source_gap_status(
+                                projection.as_ref(),
+                                &gaps,
+                                &pending_terminal_deltas,
+                                &summary_window,
+                                reporting_tz,
+                                *upstream_account_id,
+                            );
+                        if source_gap_unavailable {
                             return Err(ApiError::unavailable(anyhow!(
                                 "summary delta journal has an unproven change for the requested selection"
                             )));
@@ -98,7 +99,8 @@ impl SubscriptionTopic {
                         let mut response = projection.response_for_query_with_rolling_delta(
                             &query,
                             state.config.list_limit_max as i64,
-                            terminal_delta_gap_pending
+                            source_gap_pending
+                                || terminal_delta_gap_pending
                                 || (!matches!(summary_window, SummaryWindow::All)
                                     && crate::summary_delta_affects_selection(
                                         projection.as_ref(),
@@ -139,7 +141,7 @@ impl SubscriptionTopic {
                                 },
                             );
                         }
-                        if terminal_delta_gap_pending {
+                        if source_gap_pending || terminal_delta_gap_pending {
                             response.data_quality =
                                 Some(StatsDataQualityResponse::summary_delta_journal_pending());
                         }

@@ -364,6 +364,8 @@ pub(crate) fn seeded_cached_topic(
         summary_refresh_in_flight: false,
         summary_pending_event_count: 0,
         summary_retry_backoff_ms: 0,
+        summary_gap_generation: 0,
+        summary_gap_degraded: false,
         parallel_work_refresh_scheduled: false,
         prompt_cache_refresh_scheduled: false,
         prompt_cache_reconcile_scheduled: false,

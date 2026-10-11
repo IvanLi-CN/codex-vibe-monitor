@@ -288,7 +288,7 @@ impl SubscriptionHub {
         let mut last_sent_cursors = HashMap::new();
         let mut outcomes = Vec::new();
 
-        for descriptor in descriptors {
+        'descriptor: for descriptor in descriptors {
             let topic = SubscriptionTopic::from_descriptor(&descriptor)?;
             let topic_key = topic.cache_key()?;
             let needs_initial_account_attempt_recheck = {
@@ -298,35 +298,50 @@ impl SubscriptionHub {
                     .get(&topic_key)
                     .is_none_or(|cached| cached.dirty)
             };
-            let cached = match self.ensure_cached_topic(state.clone(), topic.clone()).await {
-                Ok(cached) => cached,
-                Err(ApiError::Unavailable(_)) => {
-                    // Summary is exact-or-unavailable. Keep this expected projection gap local
-                    // to its topic so another Dashboard topic can still hydrate on the same SSE
-                    // connection. The frame deliberately carries no payload or cursor.
-                    initial.push(PreparedTopicFrame {
-                        frame: Arc::new(serialize_unavailable_topic_frame(
-                            topic.descriptor(),
-                            topic_key.clone(),
-                            topic.schema_epoch(),
-                        )?),
-                        kind: TopicFrameKind::Unavailable,
-                    });
-                    if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. }) {
-                        self.schedule_summary_topic_refresh(state.clone(), topic.clone(), 1)
-                            .await?;
+            let cached = 'cached: loop {
+                let cached = match self.ensure_cached_topic(state.clone(), topic.clone()).await {
+                    Ok(cached) => cached,
+                    Err(ApiError::Unavailable(_)) => {
+                        // Summary is exact-or-unavailable. Keep this expected projection gap local
+                        // to its topic so another Dashboard topic can still hydrate on the same SSE
+                        // connection. The frame deliberately carries no payload or cursor.
+                        initial.push(PreparedTopicFrame {
+                            frame: Arc::new(serialize_unavailable_topic_frame(
+                                topic.descriptor(),
+                                topic_key.clone(),
+                                topic.schema_epoch(),
+                            )?),
+                            kind: TopicFrameKind::Unavailable,
+                        });
+                        if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. }) {
+                            self.schedule_summary_topic_refresh(state.clone(), topic.clone(), 1)
+                                .await?;
+                        }
+                        outcomes.push(TopicInitOutcome {
+                            topic_key,
+                            disposition: TopicInitDisposition::Unavailable,
+                            replay_event_count: 0,
+                            replay_bytes: 0,
+                            cursor: 0,
+                            miss_reason: None,
+                        });
+                        continue 'descriptor;
                     }
-                    outcomes.push(TopicInitOutcome {
-                        topic_key,
-                        disposition: TopicInitDisposition::Unavailable,
-                        replay_event_count: 0,
-                        replay_bytes: 0,
-                        cursor: 0,
-                        miss_reason: None,
-                    });
-                    continue;
+                    Err(err) => return Err(err),
+                };
+                if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. }) {
+                    let guard = self.state.lock().await;
+                    let Some(current) = guard.topics.get(&topic_key).cloned() else {
+                        break 'cached cached;
+                    };
+                    if current.summary_gap_generation != guard.summary_delta_journal.gap_generation
+                        && current.summary_gap_degraded
+                    {
+                        continue 'cached;
+                    }
+                    break 'cached current;
                 }
-                Err(err) => return Err(err),
+                break 'cached cached;
             };
             let resume_cursor = resume_by_topic_key.get(&topic_key);
             let continuity_reset = resume_cursor
@@ -504,8 +519,60 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) -> Result<CachedSubscriptionTopic, ApiError> {
         let topic_key = topic.cache_key()?;
-        let (existing, has_active_owner) = {
+        let summary_selection = if let SubscriptionTopic::SummaryCurrent {
+            window,
+            time_zone,
+            limit,
+            upstream_account_id,
+        } = &topic
+        {
+            let query = SummaryQuery {
+                window: Some(window.clone()),
+                limit: *limit,
+                time_zone: Some(time_zone.clone()),
+                upstream_account_id: *upstream_account_id,
+            };
+            Some((
+                parse_summary_window(&query, state.config.list_limit_max as i64)?,
+                parse_reporting_tz(Some(time_zone))?,
+                *upstream_account_id,
+            ))
+        } else {
+            None
+        };
+        let (existing, has_active_owner, summary_gap_pending, summary_gap_generation) = {
             let guard = self.state.lock().await;
+            let summary_gap_pending = summary_selection.as_ref().is_some_and(
+                |(window, reporting_tz, upstream_account_id)| {
+                    guard.summary_projection.as_ref().is_some_and(|projection| {
+                        let gaps = guard
+                            .summary_delta_journal
+                            .gap_proofs
+                            .iter()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        let deltas = guard
+                            .summary_delta_journal
+                            .entries
+                            .iter()
+                            .map(|entry| &entry.delta)
+                            .chain(guard.summary_delta_journal.replayed_entries.iter())
+                            .filter(|delta| {
+                                !projection.contains_persisted_live_terminal_delta(delta)
+                            })
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        summary_gap_affects_selection(
+                            projection,
+                            &gaps,
+                            &deltas,
+                            window,
+                            *reporting_tz,
+                            *upstream_account_id,
+                        )
+                    })
+                },
+            );
             (
                 guard.topics.get(&topic_key).cloned(),
                 guard
@@ -514,8 +581,15 @@ impl SubscriptionHub {
                     .copied()
                     .unwrap_or_default()
                     > 0,
+                summary_gap_pending,
+                guard.summary_delta_journal.gap_generation,
             )
         };
+        let summary_cache_stale = summary_selection.is_some()
+            && existing.as_ref().is_some_and(|cached| {
+                cached.summary_gap_generation != summary_gap_generation
+                    && (summary_gap_pending || cached.summary_gap_degraded)
+            });
         if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. })
             && !has_active_owner
             && existing.as_ref().is_some_and(|cached| cached.dirty)
@@ -525,6 +599,7 @@ impl SubscriptionHub {
             )));
         }
         if let Some(existing) = existing
+            && !summary_cache_stale
             && ((has_active_owner
                 && existing.dirty
                 && !existing
@@ -552,7 +627,12 @@ impl SubscriptionHub {
             {
                 return Ok(cached);
             }
-            if let Some(existing) = self.state.lock().await.topics.get(&topic_key).cloned() {
+            let guard = self.state.lock().await;
+            if let Some(existing) = guard.topics.get(&topic_key).cloned()
+                && (summary_selection.is_none()
+                    || existing.summary_gap_generation
+                        == guard.summary_delta_journal.gap_generation)
+            {
                 return Ok(existing);
             }
         }
@@ -904,6 +984,12 @@ impl SubscriptionHub {
         let schema_epoch = topic.schema_epoch();
         let descriptor = topic.descriptor();
         let started = Instant::now();
+        let summary_gap_generation_at_build =
+            if matches!(&topic, SubscriptionTopic::SummaryCurrent { .. }) {
+                Some(self.state.lock().await.summary_delta_journal.gap_generation)
+            } else {
+                None
+            };
         let is_prompt_cache_topic = matches!(
             topic,
             SubscriptionTopic::PromptCacheWindow { .. }
@@ -1102,6 +1188,11 @@ impl SubscriptionHub {
                     {
                         cached.refresh_scheduled = false;
                     }
+                    return Ok(None);
+                }
+                if summary_gap_generation_at_build.is_some_and(|generation| {
+                    generation != guard.summary_delta_journal.gap_generation
+                }) {
                     return Ok(None);
                 }
             }
@@ -1357,6 +1448,11 @@ impl SubscriptionHub {
                     )?)
                 };
             let payload_bytes = snapshot_serialized_payload.len();
+            let summary_gap_degraded = matches!(&topic, SubscriptionTopic::SummaryCurrent { .. })
+                && serde_json::from_slice::<Value>(&snapshot_serialized_payload)
+                    .ok()
+                    .and_then(|payload| payload.get("dataQuality").cloned())
+                    .is_some_and(|quality| !quality.is_null());
             let dashboard_materializer = refreshed_dashboard_materializer;
             let dashboard_materialized_revision =
                 dashboard_materializer.as_ref().and_then(|materializer| {
@@ -1446,6 +1542,8 @@ impl SubscriptionHub {
                     .topics
                     .get(&topic_key)
                     .map_or(0, |entry| entry.summary_retry_backoff_ms),
+                summary_gap_generation: guard.summary_delta_journal.gap_generation,
+                summary_gap_degraded,
                 parallel_work_refresh_scheduled: false,
                 prompt_cache_refresh_scheduled: guard
                     .topics
