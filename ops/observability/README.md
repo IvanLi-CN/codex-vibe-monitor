@@ -90,7 +90,7 @@ Agent 排查顺序见[项目 Skill](../../.agents/skills/performance-investigati
 
 `scripts/cvm-observe cases --category normal|slow|wait|retry|error --minutes 30 [--environment production --instance primary --endpoint responses]` 返回每类最多 3 个候选；`scripts/cvm-observe trace --trace-id <32位小写十六进制>` 获取原生 trace JSON。CLI 需要从完整仓库运行，复用 `tempo_access.py` 的固定查询定义。采集覆盖正常容量内全量，正常案例仅从 TraceID 哈希 1/16 标记集合检索，Tempo first-match 结果不能当作总体统计或稳定随机样本。
 
-统计页 `cvm-proxy` 跳转 `cvm-proxy-cases` 时保留 UTC 窗口和筛选，案例页手动刷新，每类最多 3 条，选定 TraceID 展开原生瀑布图。响应时长以 response root 为准，trace 总 duration 可以包含后续落盘；root 的 persistence=pending 和 export_completeness=unknown 不证明丢失，晚到 span 可在下一次查询出现。无案例、未完整、截断、导出丢失或超过 24h 窗口须结合提示、质量计数和样本数解释，不能当作业务零。
+统计页 `cvm-proxy` 跳转 `cvm-proxy-cases` 时保留 UTC 窗口和筛选，案例页手动刷新，每类最多 3 条可展开的完整案例；案例查询只接受 `cvm.export_completeness=detailed`，摘要记录继续用于总体统计但不进入案例列表，选定 TraceID 展开原生瀑布图。响应时长以 response root 为准，trace 总 duration 可以包含后续落盘；root 的 persistence=pending 和 export_completeness=unknown 不证明丢失，晚到 span 可在下一次查询出现。无案例、未完整、截断、导出丢失或超过 24h 窗口须结合提示、质量计数和样本数解释，不能当作业务零。
 
 ## CPU 采样与符号
 

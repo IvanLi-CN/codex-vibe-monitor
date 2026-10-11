@@ -8,7 +8,7 @@
 
 前台 coordinator、DB API 获取、账户容量、退避、channel 背压及终态 priority/journal lock 等待由真实区间产生。响应 root 的本地等待并集不包含响应结束之后的落盘旁路，开放等待保留响应窗口内下界；终态命令仅增加内存 ticket。入队至 commit 逐命令终结一次，同批 coordinator/pool/execute 只记录一次共享工作并用 links 关联；coalesced/replay 缺少原上下文时不伪造业务身份。详细信号及分母见 [METRICS.md](METRICS.md)。
 
-隔离配置复用 `ops/observability/compose.yml` 和 acceptance fixture，固定 Tempo 3.1.0 digest、tenant cvm、24h 留存及单一 512MiB tmpfs；摄入/查询身份分别认证后覆盖 tenant header。Grafana provision `cvm-tempo` 与 `cvm-proxy-cases`，统计页新增阶段/等待分布与同窗统计，案例页五类各最多 3 条且手动刷新。已有 synthetic preview 提供合成统计和五类 trace 瀑布，无正式数据。正式环境存储、凭据、容量、主机资源及上线效果尚未验证。
+隔离配置复用 `ops/observability/compose.yml` 和 acceptance fixture，固定 Tempo 3.1.0 digest、tenant cvm、24h 留存及单一 512MiB tmpfs；摄入/查询身份分别认证后覆盖 tenant header。Grafana provision `cvm-tempo` 与 `cvm-proxy-cases`，统计页新增阶段/等待分布与同窗统计，案例页五类各最多 3 条可展开的完整案例且只查询 `cvm.export_completeness=detailed`，摘要记录仍用于总体统计但不进入案例列表，页面手动刷新。已有 synthetic preview 提供合成统计和五类 trace 瀑布，无正式数据。正式环境存储、凭据、容量、主机资源及上线效果尚未验证。
 
 生命周期、等待并集、晚到 commit、shared batch/replay、白名单、有界丢弃与 exporter 失败有定向 Rust 回归；Python 回归覆盖固定查询/权限、九窗口实测证据和单一 5% 预算。全工程检查及当前 SHA 的运行、性能证据由既有 CI 提供；实际渲染和正式审查是本次功能交付门禁。只有在显式启动性能专项时，当前候选 Actions 实测卡才是性能预算结论的必要证据；未启动或不可用不等于预算通过，也不阻塞本次功能 PR 的就绪。
 
