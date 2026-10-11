@@ -62,6 +62,12 @@ def fixtures(now=None):
             attr("deployment.environment.name", "synthetic-preview"), attr("service.instance.id", "fixture")]},
             "scopeSpans": [{"scope": {"name": "cvm.synthetic.preview"}, "spans": spans}]}]}
 
+def tempo_route(path):
+    """Validate and normalize a private Tempo route before forwarding it."""
+    if path == "/api/status/buildinfo":
+        return path
+    return query_route(path, fixed_cases=False)
+
 def seed():
     # Container restarts reuse the same Tempo. Do not append new timestamps to
     # deterministic IDs, which would merge unrelated fixture runs into one trace.
@@ -85,13 +91,14 @@ def seed():
 
 class QueryHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        if self.path != "/api/status/buildinfo":
-            try: query_route(self.path, fixed_cases=False)
-            except ValueError: self.send_error(400); return
+        try:
+            route = tempo_route(self.path)
+        except ValueError:
+            self.send_error(400); return
         headers = {"X-Scope-OrgID": "cvm"}
         if self.headers.get("Accept") in ("application/protobuf", "application/json"):
             headers["Accept"] = self.headers["Accept"]
-        request = urllib.request.Request("http://tempo:3200" + self.path, headers=headers)
+        request = urllib.request.Request("http://tempo:3200" + route, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 body = response.read(1024 * 1024 + 1)
