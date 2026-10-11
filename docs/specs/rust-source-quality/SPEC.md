@@ -207,6 +207,12 @@ remains 119. Query routing, aggregation semantics, minute projection fences,
 materializer overlays, parallel-work responses, and test resource buckets
 remain behaviorally unchanged.
 
+## Subscriptions Module Rollout
+
+The subscriptions slice is now a real `src/api/slices/subscriptions/` module directory. Its production responsibilities are split across `config.rs`, `protocol.rs`, `query.rs`, `topic.rs`, `state.rs`, `materializers.rs`, `hub_lifecycle.rs`, `hub_projection.rs`, `hub_projection_runtime.rs`, `hub_recovery.rs`, and `server_push.rs`; existing `topic_builders.rs` remains in place. The inline test suite is grouped into summary, parallel-work, hot-topic, conversation, network, replay, and shared-support modules while retaining the existing prompt-cache and managed-task test modules. No `include!` composition is used, the largest production file is below 2,500 lines, and the largest generated test/helper file is below 3,000 lines.
+
+The subscriptions parent is removed from the explicit source-quality inventory after the extraction. The policy now contains 35 selected entries; immutable baseline candidate counts remain 32 production and 23 test/helper entries, and the suppression inventory is unchanged.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such

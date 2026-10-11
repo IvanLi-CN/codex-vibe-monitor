@@ -365,3 +365,5 @@ candidates (38 total). The immutable preparation baseline remains 32 and 23,
 and the suppression baseline remains 119. Query routing, aggregation
 semantics, minute projection fences, materializer overlays, parallel-work
 responses, and test resource buckets remain unchanged.
+
+The subscriptions source extraction replaces the 24,445-line flat source with a real module directory. Configuration, protocol, query, topic, state, materializer, hub lifecycle, hub projection, hub recovery, and server-push responsibilities now have named Rust modules, with a separate runtime projection module keeping the production files below the 2,500-line target. The inline tests are grouped into summary, parallel-work, hot-topic, conversation, network, replay, and shared-support files below the 3,000-line test/helper target; existing topic-builder, prompt-cache, and managed-task test paths remain. The source-quality policy removes the obsolete parent entry, reducing the explicit inventory to 35 while retaining the immutable 32/23 candidate baseline and the existing suppression inventory.
