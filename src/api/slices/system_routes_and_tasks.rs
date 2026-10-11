@@ -2351,7 +2351,8 @@ pub(crate) async fn update_managed_task_with_store(
         .map_err(ApiError::unavailable)?;
         return get_managed_task_with_store(state, task_key, store).await;
     }
-    let previous_startup_control = if enabled.is_some() && task_key.starts_with("startup_backfill.")
+    let previous_startup_control = if enabled.is_some()
+        && (task_key == "startup_backfill" || task_key.starts_with("startup_backfill."))
     {
         store
             .detail(&task_key)
@@ -2367,6 +2368,26 @@ pub(crate) async fn update_managed_task_with_store(
         .map_err(ApiError::bad_request)?
     {
         return Err(ApiError::bad_request(anyhow!("managed task not found")));
+    }
+    if task_key == "startup_backfill"
+        && enabled == Some(true)
+        && let Err(wake_error) = crate::wake_startup_backfill_tasks(
+            &state.pool,
+            crate::StartupBackfillTask::ordered_tasks(),
+            "managed_task_enabled",
+        )
+        .await
+    {
+        if let Some(previous) = previous_startup_control.as_ref()
+            && let Err(rollback_error) = store.restore_control_state(previous).await
+        {
+            return Err(ApiError::from(anyhow!(
+                "startup backfill wake failed: {wake_error}; rollback failed: {rollback_error}"
+            )));
+        }
+        return Err(ApiError::from(anyhow!(
+            "startup backfill wake failed: {wake_error}"
+        )));
     }
     if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
         && let Some(task) = crate::StartupBackfillTask::from_managed_key(task_name)

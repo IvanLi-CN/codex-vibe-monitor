@@ -2343,6 +2343,89 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     Ok(())
 }
 
+async fn canonicalize_prompt_cache_alias_history(pool: &Pool<Sqlite>) -> Result<()> {
+    const ALIAS: &str = "startup_backfill.prompt_cache_conversations_materialization";
+    const OWNER: &str = "prompt_cache_materialization";
+    let mut transaction = pool.begin().await?;
+    let active_rows = sqlx::query_as::<_, (i64, String)>(
+        "SELECT id,task_key FROM managed_task_runs
+         WHERE task_key IN (?,?) AND status IN ('running','requested')
+         ORDER BY CASE WHEN task_key=? THEN 0 ELSE 1 END, id",
+    )
+    .bind(ALIAS)
+    .bind(OWNER)
+    .bind(OWNER)
+    .fetch_all(&mut *transaction)
+    .await?;
+    for (duplicate_index, (id, _)) in active_rows.into_iter().enumerate().skip(1) {
+        if duplicate_index > 0 {
+            sqlx::query(
+                "UPDATE managed_task_runs
+                 SET status='failed', finished_at=COALESCE(finished_at, ?), duration_ms=COALESCE(duration_ms, 0),
+                     summary=COALESCE(summary, '重复的 Prompt 缓存运行已停止'),
+                     error_detail=COALESCE(error_detail, '迁移时归并 Prompt 缓存任务别名')
+                 WHERE id=?",
+            )
+            .bind(format_utc_iso_millis(Utc::now()))
+            .bind(id)
+            .execute(&mut *transaction)
+            .await?;
+        }
+    }
+    sqlx::query("UPDATE managed_task_runs SET task_key=? WHERE task_key=?")
+        .bind(OWNER)
+        .bind(ALIAS)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "DELETE FROM managed_task_work_runs
+         WHERE task_key=? AND EXISTS (
+             SELECT 1 FROM managed_task_work_runs current
+             WHERE current.task_key=? AND current.execution_uid=managed_task_work_runs.execution_uid
+         )",
+    )
+    .bind(ALIAS)
+    .bind(OWNER)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("UPDATE managed_task_work_runs SET task_key=? WHERE task_key=?")
+        .bind(OWNER)
+        .bind(ALIAS)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "DELETE FROM managed_task_progress
+         WHERE task_key=? AND EXISTS (
+             SELECT 1 FROM managed_task_progress current WHERE current.task_key=?
+         )",
+    )
+    .bind(ALIAS)
+    .bind(OWNER)
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query("UPDATE managed_task_progress SET task_key=? WHERE task_key=?")
+        .bind(OWNER)
+        .bind(ALIAS)
+        .execute(&mut *transaction)
+        .await?;
+    sqlx::query(
+        "UPDATE task_timeline_segments
+         SET task_key=CASE WHEN task_key=? THEN ? ELSE task_key END,
+             active_child_task_key=CASE WHEN active_child_task_key=? THEN ? ELSE active_child_task_key END
+         WHERE task_key=? OR active_child_task_key=?",
+    )
+    .bind(ALIAS)
+    .bind(OWNER)
+    .bind(ALIAS)
+    .bind(OWNER)
+    .bind(ALIAS)
+    .bind(ALIAS)
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(())
+}
+
 async fn seed_tasks(pool: &Pool<Sqlite>) -> Result<()> {
     let now = format_utc_iso_millis(Utc::now());
     for (key, title, description, mode, manual) in MANAGED_TASKS {
@@ -2355,6 +2438,7 @@ async fn seed_tasks(pool: &Pool<Sqlite>) -> Result<()> {
         sqlx::query("INSERT INTO managed_tasks (task_key,title,description,trigger_mode,enabled,is_manual,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(task_key) DO UPDATE SET title=excluded.title, description=excluded.description, trigger_mode=excluded.trigger_mode, is_manual=excluded.is_manual")
             .bind(&task_key).bind(title).bind(description).bind("event").bind(task_enabled_by_default(&task_key, false) as i64).bind(0_i64).bind(&now).execute(pool).await?;
     }
+    canonicalize_prompt_cache_alias_history(pool).await?;
     Ok(())
 }
 
@@ -4713,6 +4797,55 @@ mod tests {
         .await
         .expect("count active runs");
         assert_eq!(active_count, 1);
+    }
+
+    #[tokio::test]
+    async fn schema_repair_canonicalizes_prompt_cache_alias_history() {
+        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+            .await
+            .expect("connect prompt cache migration fixture");
+        ensure_schema(&pool)
+            .await
+            .expect("create maintenance schema");
+        seed_tasks(&pool).await.expect("seed managed task registry");
+        sqlx::query(
+            "INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary)
+             VALUES ('startup_backfill.prompt_cache_conversations_materialization','manual','2026-10-01T00:00:00.000Z','requested','legacy request'),
+                    ('prompt_cache_materialization','manual','2026-10-01T00:01:00.000Z','running','canonical request'),
+                    ('startup_backfill.prompt_cache_conversations_materialization','manual','2026-10-01T00:02:00.000Z','success','legacy history')",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed prompt cache alias history");
+
+        seed_tasks(&pool)
+            .await
+            .expect("canonicalize prompt cache history");
+        ensure_schema(&pool)
+            .await
+            .expect("repeat maintenance schema");
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT task_key,status FROM managed_task_runs ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .expect("load canonical prompt cache history");
+        assert!(
+            rows.iter()
+                .all(|(task_key, _)| task_key == "prompt_cache_materialization")
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|(_, status)| status == "running")
+                .count(),
+            1
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|(_, status)| status == "requested")
+                .count(),
+            0
+        );
     }
 
     #[tokio::test]

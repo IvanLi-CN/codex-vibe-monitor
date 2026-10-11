@@ -387,6 +387,19 @@ pub(super) fn requeue_startup_backfill_tasks(
 ) {
     STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(tasks, retry_at);
 }
+
+fn startup_backfill_tasks_for_retry(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    startup_backfill_root_skipped: bool,
+) -> Vec<StartupBackfillTask> {
+    selected_tasks.map(ToOwned::to_owned).unwrap_or_else(|| {
+        if startup_backfill_root_skipped {
+            legacy_startup_backfill_tasks(None)
+        } else {
+            StartupBackfillTask::ordered_tasks().to_vec()
+        }
+    })
+}
 static STARTUP_BACKFILL_SCHEDULER: Lazy<StartupBackfillScheduler> =
     Lazy::new(StartupBackfillScheduler::default);
 
@@ -3459,15 +3472,15 @@ async fn run_background_startup_backfill_pass_with_gate(
 ) -> StartupBackfillMaintenancePass {
     let startup_backfill_root_skipped =
         crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
+    let retry_tasks =
+        startup_backfill_tasks_for_retry(selected_tasks, startup_backfill_root_skipped);
     let Some(_execution_lease) =
         crate::maintenance_store::try_acquire_task_execution("startup_backfill")
     else {
-        if let Some(tasks) = selected_tasks {
-            STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
-                tasks,
-                Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
-            );
-        }
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            &retry_tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
         return StartupBackfillMaintenancePass::default();
     };
     let pass = run_background_startup_backfill_pass_with_root_state_held(
@@ -3478,11 +3491,9 @@ async fn run_background_startup_backfill_pass_with_gate(
         startup_backfill_root_skipped,
     )
     .await;
-    if cancel.is_cancelled()
-        && let Some(tasks) = selected_tasks
-    {
+    if cancel.is_cancelled() {
         STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
-            tasks,
+            &retry_tasks,
             Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
         );
     }
