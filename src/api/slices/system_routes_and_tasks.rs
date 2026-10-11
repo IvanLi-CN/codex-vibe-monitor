@@ -2333,14 +2333,34 @@ pub(crate) async fn update_managed_task_with_store(
         crate::OptionalField::Value(value) => Some(Some(value)),
     };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
-    if task_key == "startup_backfill.prompt_cache_conversations_materialization"
-        && let Some(enabled) = enabled
-    {
+    if task_key == "prompt_cache_materialization" {
         if interval_secs.is_some() || cron_expr.is_some() {
             return Err(ApiError::bad_request(anyhow!(
                 "task does not support a new interval or cron override"
             )));
         }
+        let Some(enabled) = enabled else {
+            return get_managed_task_with_store(state, task_key, store).await;
+        };
+        crate::set_prompt_cache_materialization_enabled_with_store(
+            &state.pool,
+            store,
+            crate::StartupBackfillTask::PromptCacheConversationsMaterialization,
+            enabled,
+        )
+        .await
+        .map_err(ApiError::unavailable)?;
+        return get_managed_task_with_store(state, task_key, store).await;
+    }
+    if task_key == "startup_backfill.prompt_cache_conversations_materialization" {
+        if interval_secs.is_some() || cron_expr.is_some() {
+            return Err(ApiError::bad_request(anyhow!(
+                "task does not support a new interval or cron override"
+            )));
+        }
+        let Some(enabled) = enabled else {
+            return get_managed_task_with_store(state, task_key, store).await;
+        };
         crate::set_prompt_cache_materialization_enabled_with_store(
             &state.pool,
             store,
@@ -2690,6 +2710,13 @@ mod managed_task_control_contract_tests {
                 .expect("disable via dedicated control handler");
         assert!(!dedicated.0.enabled);
         assert_eq!(dedicated.0.last_status, "disabled");
+        let catalog_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read synchronized prompt-cache catalog control");
+        assert!(!catalog_enabled);
         let disabled_generation = store
             .prompt_cache_materialization_control
             .snapshot()
@@ -2703,12 +2730,57 @@ mod managed_task_control_contract_tests {
                 .await
                 .expect("enable via managed-task control handler");
         assert!(managed.0.task.enabled);
+        let catalog_enabled: bool = sqlx::query_scalar(
+            "SELECT enabled FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+        )
+        .fetch_one(&store.pool)
+        .await
+        .expect("read re-enabled prompt-cache catalog control");
+        assert!(catalog_enabled);
+        let top_level_disabled = update_managed_task_with_store(
+            state.clone(),
+            "prompt_cache_materialization".to_string(),
+            serde_json::from_str(r#"{"enabled":false}"#)
+                .expect("decode top-level managed-task disable request"),
+            &store,
+        )
+        .await
+        .expect("disable via top-level managed-task control handler");
+        assert!(!top_level_disabled.0.task.enabled);
+        assert!(
+            !store
+                .prompt_cache_materialization_control
+                .snapshot()
+                .expect("disabled top-level control snapshot")
+                .enabled
+        );
+        let top_level_enabled = update_managed_task_with_store(
+            state.clone(),
+            "prompt_cache_materialization".to_string(),
+            serde_json::from_str(r#"{"enabled":true}"#)
+                .expect("decode top-level managed-task enable request"),
+            &store,
+        )
+        .await
+        .expect("enable via top-level managed-task control handler");
+        assert!(top_level_enabled.0.task.enabled);
         let enabled_snapshot = store
             .prompt_cache_materialization_control
             .snapshot()
             .expect("enabled control snapshot");
         assert!(enabled_snapshot.enabled);
-        assert_eq!(enabled_snapshot.generation, disabled_generation + 1);
+        assert_eq!(enabled_snapshot.generation, disabled_generation + 3);
+        assert!(matches!(
+            update_managed_task_with_store(
+                state.clone(),
+                "prompt_cache_materialization".to_string(),
+                serde_json::from_str(r#"{"intervalSecs":30}"#)
+                    .expect("decode top-level prompt-cache schedule request"),
+                &store,
+            )
+            .await,
+            Err(ApiError::BadRequest(_))
+        ));
 
         let retry_deadline = "2099-01-01T00:00:00.000Z";
         sqlx::query(

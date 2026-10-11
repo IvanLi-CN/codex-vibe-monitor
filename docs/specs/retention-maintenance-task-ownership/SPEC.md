@@ -145,7 +145,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
   target_selector: `[data-visual-evidence-target]`
   story_id_or_title: `System/RetentionRunThroughput/Committed`
   state: committed throughput
-  evidence_note: Desktop component surface shows retained throughput metrics together with populated source identity, archive writer, and summary proof durations.
+  evidence_note: Desktop component surface shows retained throughput metrics; invocation archives expose all three phase durations while timestamped upstream archives expose source identity and archive writer durations and correctly show summary proof as unknown.
   image: ![Retention throughput desktop](./assets/retention-throughput-committed.png)
 
 - source_type: storybook_canvas
@@ -159,7 +159,7 @@ raw 清理 MUST 保持既有文件身份与引用重查、文件锁、隔离宽�
   target_selector: `[data-visual-evidence-target]`
   story_id_or_title: `System/RetentionRunThroughput/Mobile`
   state: committed throughput on mobile
-  evidence_note: Mobile component surface keeps the populated timing fields readable without horizontal overflow at the 393x852 CSS viewport.
+  evidence_note: Mobile component surface keeps the phase timing fields readable without horizontal overflow at the 393x852 CSS viewport, including the explicit unknown summary-proof value for timestamped upstream archives.
   image: ![Retention throughput mobile](./assets/retention-throughput-mobile.png)
 
 ## Related ADRs

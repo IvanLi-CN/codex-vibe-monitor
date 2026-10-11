@@ -2461,6 +2461,34 @@ impl MaintenanceStore {
         .bind(enabled as i64)
         .execute(&mut *transaction)
         .await?;
+        // Keep the declared managed task and its startup-backfill implementation
+        // on the same control value. Both rows are updated before the transaction
+        // commits so a failed control checkpoint cannot split their state.
+        if task_key != "prompt_cache_materialization" {
+            if let Some((top_interval_secs, top_cron_expr)) = sqlx::query_as::<
+                _,
+                (Option<i64>, Option<String>),
+            >(
+                "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+            )
+            .fetch_optional(&mut *transaction)
+            .await?
+            {
+                let top_next_trigger_at = if enabled {
+                    next_trigger_at(top_interval_secs, top_cron_expr.as_deref())
+                } else {
+                    None
+                };
+                sqlx::query(
+                    "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key='prompt_cache_materialization'",
+                )
+                .bind(enabled as i64)
+                .bind(top_next_trigger_at)
+                .bind(format_utc_iso_millis(Utc::now()))
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         transaction.commit().await?;
         Ok(self
             .prompt_cache_materialization_control
@@ -2498,7 +2526,7 @@ impl MaintenanceStore {
             ));
         }
         let changed = current_enabled != enabled;
-        let next_trigger_at = if enabled {
+        let child_next_trigger_at = if enabled {
             next_trigger_at(interval_secs, cron_expr.as_deref())
         } else {
             None
@@ -2507,7 +2535,7 @@ impl MaintenanceStore {
             "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key=?",
         )
         .bind(enabled as i64)
-        .bind(next_trigger_at)
+        .bind(child_next_trigger_at)
         .bind(format_utc_iso_millis(Utc::now()))
         .bind(task_key)
         .execute(&mut *transaction)
@@ -2549,6 +2577,30 @@ impl MaintenanceStore {
             .bind(enabled as i64)
             .bind(task_name)
             .bind(enabled as i64)
+            .execute(&mut *transaction)
+            .await?;
+        }
+        if task_key != "prompt_cache_materialization"
+            && let Some((top_interval_secs, top_cron_expr)) = sqlx::query_as::<
+                _,
+                (Option<i64>, Option<String>),
+            >(
+                "SELECT interval_secs,cron_expr FROM managed_tasks WHERE task_key='prompt_cache_materialization'",
+            )
+            .fetch_optional(&mut *transaction)
+            .await?
+        {
+            let top_next_trigger_at = if enabled {
+                next_trigger_at(top_interval_secs, top_cron_expr.as_deref())
+            } else {
+                None
+            };
+            sqlx::query(
+                "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key='prompt_cache_materialization'",
+            )
+            .bind(enabled as i64)
+            .bind(top_next_trigger_at)
+            .bind(format_utc_iso_millis(Utc::now()))
             .execute(&mut *transaction)
             .await?;
         }

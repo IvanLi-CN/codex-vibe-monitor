@@ -17,9 +17,9 @@ use prompt_cache_control::{
     wake_prompt_cache_materialization_with_scheduler,
 };
 use prompt_cache_control::{
-    coordinator_for_prompt_cache_run, persist_prompt_cache_materialization_defer,
-    prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
-    run_background_startup_backfill_pass_with_root_state,
+    coordinator_for_prompt_cache_run, legacy_startup_backfill_tasks,
+    persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
+    prompt_cache_stale_result_outcome, run_background_startup_backfill_pass_with_root_state,
     save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
@@ -1819,10 +1819,15 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_managed(
     observation_parent_task_key: Option<&'static str>,
     managed_run_id: Option<i64>,
 ) -> StartupBackfillMaintenancePass {
+    // The managed root owns legacy backfills. Prompt-cache materialization has
+    // its own managed task and must only enter through an explicit selection.
+    let owned_tasks = selected_tasks
+        .map(|tasks| tasks.to_vec())
+        .unwrap_or_else(|| legacy_startup_backfill_tasks(None));
     run_startup_backfill_maintenance_pass_with_gate_inner(
         state,
         cancel,
-        selected_tasks,
+        Some(&owned_tasks),
         crate::db_pressure::global_db_pressure_gate(),
         observation_parent_task_key,
         managed_run_id,
@@ -3518,24 +3523,45 @@ pub(crate) async fn run_pressure_eligible_startup_backfill_tasks(
     let startup_backfill_root_skipped =
         crate::maintenance_store::legacy_worker_should_skip("startup_backfill").await;
     let prompt_cache_task = [StartupBackfillTask::PromptCacheConversationsMaterialization];
-    let allowed_tasks = startup_backfill_root_skipped.then_some(prompt_cache_task.as_slice());
-    let tasks =
-        STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks_matching(Utc::now(), allowed_tasks);
-    if tasks.is_empty() {
+    let legacy_allowed_tasks = legacy_startup_backfill_tasks(None);
+    let legacy_tasks = if startup_backfill_root_skipped {
+        Vec::new()
+    } else {
+        STARTUP_BACKFILL_SCHEDULER.take_pressure_deferred_tasks_matching(
+            Utc::now(),
+            Some(legacy_allowed_tasks.as_slice()),
+        )
+    };
+    // The prompt task has an independent owner even when the legacy root is enabled.
+    let prompt_tasks = STARTUP_BACKFILL_SCHEDULER
+        .take_pressure_deferred_tasks_matching(Utc::now(), Some(prompt_cache_task.as_slice()));
+    if legacy_tasks.is_empty() && prompt_tasks.is_empty() {
         return;
     }
     debug!(
-        task_count = tasks.len(),
+        task_count = legacy_tasks.len() + prompt_tasks.len(),
         "pressure eligibility changed; dispatching deferred startup backfill tasks"
     );
-    run_background_startup_backfill_pass_with_root_state(
-        state,
-        cancel,
-        Some(&tasks),
-        gate,
-        startup_backfill_root_skipped,
-    )
-    .await;
+    if !legacy_tasks.is_empty() {
+        run_background_startup_backfill_pass_with_root_state(
+            state.clone(),
+            cancel,
+            Some(&legacy_tasks),
+            gate,
+            startup_backfill_root_skipped,
+        )
+        .await;
+    }
+    if !prompt_tasks.is_empty() {
+        run_background_startup_backfill_pass_with_root_state(
+            state,
+            cancel,
+            Some(&prompt_tasks),
+            gate,
+            true,
+        )
+        .await;
+    }
 }
 
 async fn run_background_startup_backfill_pass_with_gate(

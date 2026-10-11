@@ -1050,6 +1050,7 @@ pub(crate) async fn archive_timestamped_dataset(
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
+            let source_identity_started = Instant::now();
             let source_identity =
                 archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids)
                     .await?;
@@ -1065,17 +1066,23 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await?,
                 );
             }
+            batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
+            let archive_writer_started = Instant::now();
             let archive_future =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
             let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, archive_future).await {
                     Ok(result) => result,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 archive_future.await
             };
+            batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));

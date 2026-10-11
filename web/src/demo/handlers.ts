@@ -3703,7 +3703,7 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
                 filePrepareMs: 1800,
                 sourceIdentityMs: 380,
                 archiveWriterMs: 1900,
-                summaryProofMs: 150,
+                summaryProofMs: null,
                 lockWaitMs: 80,
               },
             ],

@@ -328,8 +328,36 @@ pub(super) async fn run_background_startup_backfill_pass_with_root_state(
         return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
             .await;
     }
-    let tasks = legacy_startup_backfill_tasks(selected_tasks);
-    run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate).await
+    let legacy_tasks = legacy_startup_backfill_tasks(selected_tasks);
+    let prompt_tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
+    let mut pass = if legacy_tasks.is_empty() {
+        StartupBackfillMaintenancePass::default()
+    } else {
+        run_startup_backfill_maintenance_pass_with_gate(
+            state.clone(),
+            cancel,
+            Some(&legacy_tasks),
+            gate,
+        )
+        .await
+    };
+    if !prompt_tasks.is_empty() {
+        let prompt_pass = run_startup_backfill_maintenance_pass_with_gate(
+            state,
+            cancel,
+            Some(&prompt_tasks),
+            gate,
+        )
+        .await;
+        pass.ran_actionable_task |= prompt_pass.ran_actionable_task;
+        pass.had_failure |= prompt_pass.had_failure;
+        pass.deferred |= prompt_pass.deferred;
+        pass.detail = match (pass.detail.take(), prompt_pass.detail) {
+            (Some(left), Some(right)) => Some(format!("{left}; {right}")),
+            (left, right) => left.or(right),
+        };
+    }
+    pass
 }
 
 pub(super) fn prompt_cache_stale_result_outcome() -> StartupBackfillTaskRunOutcome {

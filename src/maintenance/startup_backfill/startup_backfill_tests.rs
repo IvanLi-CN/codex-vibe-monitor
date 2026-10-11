@@ -694,6 +694,13 @@ fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
         vec![prompt_cache_task]
     );
     assert_eq!(
+        legacy_startup_backfill_tasks(Some(&selected)),
+        vec![
+            StartupBackfillTask::ProxyUsage,
+            StartupBackfillTask::ReasoningEffort,
+        ]
+    );
+    assert_eq!(
         prompt_cache_tasks_when_startup_backfill_root_is_skipped(None),
         vec![prompt_cache_task]
     );
