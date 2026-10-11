@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-required-ci-and-tier4-pending",
-  "candidate_head_sha": "50c3c19026abab6d8cae8224dc458368857d1362",
-  "implementation_commit": "50c3c19026abab6d8cae8224dc458368857d1362",
+  "candidate_head_sha": "f4f08ee76ded9e381197aec224a6812f1a1a8381",
+  "implementation_commit": "f4f08ee76ded9e381197aec224a6812f1a1a8381",
   "active_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
   "base_ref": "main",
   "pr_number": null,
@@ -20,13 +20,14 @@
   "affected_validation": {
     "refresh_reason": "PR-B starts from origin/main@c58a6d1f and adds eligible broad Source Journal degradation plus Summary HTTP/SSE cached-frame revalidation; all required CI and Tier4 review lanes must bind to the pushed candidate head.",
     "contract_regressions": [
-      "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
+      "summary_projection_rolling_localizes_late_historical_live_source_gap",
       "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
       "hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
       "summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
       "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
       "all_time_overlay_overflow_does_not_block_rolling_summary",
       "stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
+      "stats_rejects_source_gap_with_invalid_overlay_identity",
       "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
     ],
     "migration_and_compatibility_regressions": [
