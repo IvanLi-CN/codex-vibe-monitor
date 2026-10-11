@@ -118,6 +118,9 @@ class TraceAccessTests(unittest.TestCase):
             self.assertEqual(query_route(target, now=100000), target)
         trace = "/api/v2/traces/" + "a" * 32
         self.assertEqual(query_route(trace), trace)
+        for length in range(1, 33):
+            shortened = "/api/v2/traces/" + "f" * length
+            self.assertEqual(query_route(shortened), "/api/v2/traces/" + "0" * (32 - length) + "f" * length)
         for path in ["/api/overrides", "/api/search/tags", trace + "?tenant=other", "/api/v2/traces/../status", "https://other" + trace]:
             with self.assertRaises(ValueError): query_route(path, now=100000)
 
