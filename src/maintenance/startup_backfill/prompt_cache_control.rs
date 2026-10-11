@@ -351,6 +351,18 @@ pub(super) fn legacy_startup_backfill_tasks(
         .collect()
 }
 
+pub(super) fn requeue_legacy_startup_backfill_tasks(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) {
+    let paused_tasks = legacy_startup_backfill_tasks(selected_tasks);
+    if !paused_tasks.is_empty() {
+        super::requeue_startup_backfill_tasks(
+            &paused_tasks,
+            chrono::Utc::now() + chrono::Duration::minutes(5),
+        );
+    }
+}
+
 pub(super) async fn run_background_startup_backfill_pass_with_root_state(
     state: Arc<AppState>,
     cancel: &CancellationToken,
@@ -361,16 +373,8 @@ pub(super) async fn run_background_startup_backfill_pass_with_root_state(
     if startup_backfill_root_skipped {
         // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
         let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
+        requeue_legacy_startup_backfill_tasks(selected_tasks);
         if tasks.is_empty() {
-            if let Some(selected_tasks) = selected_tasks {
-                let paused_tasks = legacy_startup_backfill_tasks(Some(selected_tasks));
-                if !paused_tasks.is_empty() {
-                    super::requeue_startup_backfill_tasks(
-                        &paused_tasks,
-                        chrono::Utc::now() + chrono::Duration::minutes(5),
-                    );
-                }
-            }
             return StartupBackfillMaintenancePass::default();
         }
         return super::run_startup_backfill_maintenance_pass_with_gate_held(

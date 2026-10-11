@@ -2001,16 +2001,17 @@ pub(crate) async fn list_system_task_runs(
     } else {
         "(SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM system_task_runs)"
     };
-    let mut builder = QueryBuilder::<Sqlite>::new(
-        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM ",
-    );
-    builder.push(run_source).push(" WHERE 1 = 1");
-    if let Some(task_kind) = query
+    let task_kind = query
         .task_kind
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
+        .map(crate::maintenance_store::canonical_managed_task_key);
+    let mut builder = QueryBuilder::<Sqlite>::new(
+        "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM ",
+    );
+    builder.push(run_source).push(" WHERE 1 = 1");
+    if let Some(task_kind) = task_kind {
         builder.push(" AND task_kind = ").push_bind(task_kind);
     }
     if let Some(status) = query
@@ -2054,12 +2055,7 @@ pub(crate) async fn list_system_task_runs(
 
     let mut count_builder = QueryBuilder::<Sqlite>::new("SELECT COUNT(*) as total FROM ");
     count_builder.push(run_source).push(" WHERE 1 = 1");
-    if let Some(task_kind) = query
-        .task_kind
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+    if let Some(task_kind) = task_kind {
         count_builder.push(" AND task_kind = ").push_bind(task_kind);
     }
     if let Some(status) = query

@@ -729,6 +729,22 @@ fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
     );
 }
 
+#[test]
+fn disabled_root_requeues_legacy_tasks_when_prompt_cache_is_selected() {
+    let prompt_cache_task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let legacy_task = StartupBackfillTask::ProxyUsage;
+    clear_startup_backfill_task_scheduler_for_test(legacy_task);
+    clear_startup_backfill_task_scheduler_for_test(prompt_cache_task);
+    requeue_legacy_startup_backfill_tasks(Some(&[legacy_task, prompt_cache_task]));
+
+    let scheduled = STARTUP_BACKFILL_SCHEDULER
+        .next_due_for(legacy_task)
+        .expect("legacy task requeued after mixed root-disabled dispatch");
+    assert!(scheduled > Utc::now());
+    clear_startup_backfill_task_scheduler_for_test(legacy_task);
+    clear_startup_backfill_task_scheduler_for_test(prompt_cache_task);
+}
+
 #[tokio::test]
 async fn pressure_eligibility_change_preserves_background_busy_deadline() {
     let scheduler = Arc::new(StartupBackfillScheduler::default());

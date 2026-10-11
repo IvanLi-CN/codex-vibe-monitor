@@ -4006,7 +4006,7 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn list_tasks(&self) -> Result<Vec<ManagedTask>> {
-        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks ORDER BY task_key")
+        let tasks = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks WHERE task_key != 'startup_backfill.prompt_cache_conversations_materialization' ORDER BY task_key")
             .fetch_all(&self.pool).await?;
         let runtime_snapshot = crate::task_runtime_observation::task_runtime_snapshot().ok();
         let mut decorated = tasks
@@ -6177,8 +6177,11 @@ mod tests {
         let tasks = store.list_tasks().await.expect("list decorated tasks");
         assert_eq!(
             tasks.len(),
-            MANAGED_TASKS.len() + STARTUP_BACKFILL_TASKS.len()
+            MANAGED_TASKS.len() + STARTUP_BACKFILL_TASKS.len() - 1
         );
+        assert!(tasks.iter().all(|task| {
+            task.task_key != "startup_backfill.prompt_cache_conversations_materialization"
+        }));
         assert!(tasks.iter().all(|task| {
             !task.trigger_kinds.is_empty()
                 && !task.effective_policy.is_empty()
