@@ -419,7 +419,7 @@
       "id": 20,
       "type": "traces",
       "title": "选中请求：响应与落盘瀑布图",
-      "description": "响应 root span 的 duration 才是响应时间；整个 trace 还包含晚到落盘。共享批次通过 span links 关联，不能复制为每条请求的独占执行成本。",
+      "description": "响应 root span 的 duration 才是响应时间；整个 trace 还包含晚到落盘。共享批次通过 span links 关联，不能复制为每条请求的独占执行成本。原生 Trace 面板按 service.name 着色；CVM 是单一服务，因此阶段保持同色，critical path 会加深显示。head、first_byte、model_delta 是 root 上的累计里程碑属性；forward、finalize、journal_append 在后台任务完成后可能作为晚到阶段出现。不存在或不适用的阶段不会伪造一行。",
       "gridPos": {
         "x": 0,
         "y": 26,
@@ -441,7 +441,12 @@
           "query": "$trace_id"
         }
       ],
-      "options": {}
+      "options": {
+        "spanFilters": {
+          "criticalPathOnly": true,
+          "matchesOnly": false
+        }
+      }
     }
   ]
 }

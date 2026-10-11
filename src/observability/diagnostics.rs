@@ -382,6 +382,7 @@ struct State {
     milestones: [Option<Duration>; 3],
     persistence: &'static str,
     ttft_applicable: Option<bool>,
+    detailed: Option<bool>,
 }
 struct Inner {
     metrics: Arc<ObservabilityRuntime>,
@@ -487,6 +488,7 @@ impl DiagnosticContext {
                 milestones: [None; 3],
                 persistence: "not_observed",
                 ttft_applicable: None,
+                detailed: None,
             }),
         })))
     }
@@ -676,6 +678,7 @@ impl DiagnosticContext {
             } else {
                 detail_bucket == 0
             };
+            self.state().detailed = Some(detailed);
             if detailed {
                 for interval in phases {
                     self.emit(
@@ -699,6 +702,26 @@ impl DiagnosticContext {
                             KeyValue::new("cvm.selected_interval", true),
                         ],
                     );
+                }
+                for (index, (name, milestone)) in [
+                    ("milestone.head", "head"),
+                    ("milestone.first_byte", "first_byte"),
+                    ("milestone.model_delta", "model_delta"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if let Some(at) = milestones[index] {
+                        self.emit(
+                            name,
+                            at,
+                            at,
+                            [
+                                KeyValue::new("cvm.milestone", milestone),
+                                KeyValue::new("cvm.milestone_ms", at.as_secs_f64() * 1000.0),
+                            ],
+                        );
+                    }
                 }
             }
             for kv in [
@@ -845,6 +868,15 @@ impl Drop for Guard {
         let end = self.context.at();
         let duration = end.saturating_sub(self.start);
         let mut state = self.context.state();
+        let late_phase = if state.ended.is_some()
+            && state.detailed == Some(true)
+            && self.detail
+            && let Kind::Phase(phase) = self.kind
+        {
+            Some((phase, self.start, end))
+        } else {
+            None
+        };
         if state.ended.is_none() {
             state.phase_union.end(end);
             if let Kind::Wait(resource) = self.kind {
@@ -898,6 +930,18 @@ impl Drop for Guard {
             }
         }
         drop(state);
+        if let Some((phase, start, end)) = late_phase {
+            self.context.emit(
+                phase.name(),
+                start,
+                end,
+                [
+                    KeyValue::new("cvm.phase", phase.name()),
+                    KeyValue::new("cvm.lower_bound", !self.complete),
+                    KeyValue::new("cvm.late", true),
+                ],
+            );
+        }
         match self.kind {
             Kind::Wait(resource) => {
                 self.context.0.metric_handles.resource_events[resource.index()]
