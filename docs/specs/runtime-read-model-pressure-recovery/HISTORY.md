@@ -1,6 +1,7 @@
 # Runtime Read-Model Pressure Recovery - History
 
-- The active PR #1097 validation base is now `main@1f3881075b1fe749e964dda3ec66ab10b710c797`, after a normal merge of merged Proxy PR #1096; the old `6447cec2e9f6790b04f4e828e9d43f440f3105f0` review base is superseded, and all required lanes must be refreshed against the post-sync candidate head.
+- PR-B starts directly from `origin/main@c58a6d1f7567298983f6532523df322ea30dd1af`; implementation commit `50c3c19026abab6d8cae8224dc458368857d1362` adds eligible broad Source Journal degradation and cached Summary SSE gap revalidation. No deploy or merge is authorized by this candidate, and final CI/Tier4 evidence must bind to the pushed branch head.
+- The preceding PR #1097 validation used `main@1f3881075b1fe749e964dda3ec66ab10b710c797` after a normal merge of merged Proxy PR #1096; that historical review base is superseded for PR-B.
 - The Initiative adopts an exact-read-model contract: Summary availability may not be obtained by returning partial, empty or request-time reconstructed data.
 - Summary Delta Journal proof gaps now preserve a published last-good snapshot and acknowledged terminal overlay as an explicitly degraded, proof-pending response; legacy `/api/stats` shares the all-time memory path, while archive proof remains a bounded background task.
 - Broad Summary Source Journal compaction proofs now use the same explicit degraded path when an acknowledged in-memory overlay is available; scoped source identity gaps, late historical coverage gaps, and missing overlays remain fail-closed while background reconciliation and audit continue.

@@ -3,7 +3,7 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Install the pending Summary archive seek indexes and durable force-repair seen-ID state, then repair invocation Summary rollups with fail-closed SHA replay reconciliation and bounded or full idempotent transactions.",
-    "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
+    "release_unit_description": "PR-B runtime Summary read-model recovery.",
     "version_impact": "patch"
   },
   "durable_state": {
@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite main database; archive batches remain gzip SQLite files read only by the bounded background repair path.",
     "source_compatibility_range": {
       "from_program_versions": "Supported earlier same-Minor program versions that already understand archive_batches, hourly_rollup_archive_replay, and invocation_rollup_hourly.",
-      "to_program_version": "PR #1097 candidate.",
+      "to_program_version": "PR-B candidate.",
       "direct_major_skips_supported": false
     }
   },
@@ -114,13 +114,13 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "d84dd334e77977423752202d8e5e2537ab7d6240",
+    "candidate_head_sha": "50c3c19026abab6d8cae8224dc458368857d1362",
     "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
-    "previous_review_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
+    "active_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "Merged main normally after merged PR #1099; the incoming task-timeline performance and support changes are outside the Stats implementation surface.",
-    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the current post-sync candidate head; prior 1f388107 and older-head CI/review are superseded.",
+    "base_sync_scope": "PR-B starts directly from origin/main@c58a6d1f7567298983f6532523df322ea30dd1af; no unrelated base merge is included.",
+    "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
     "release_compatibility": "Index installation and bounded/full repair remain idempotent and forward-repairable; no old-version allocator writeback, deployment state, or deployment action is in scope."
   }
 }

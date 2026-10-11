@@ -2,29 +2,28 @@
   "schema_version": 1,
   "kind": "current-candidate-validation",
   "status": "current-head-required-ci-and-tier4-pending",
-  "candidate_head_sha": "d84dd334e77977423752202d8e5e2537ab7d6240",
-  "implementation_commit": "d84dd334e77977423752202d8e5e2537ab7d6240",
-  "active_base_sha": "397f41db64f25141fe4e3967866ba61bf22e6943",
+  "candidate_head_sha": "50c3c19026abab6d8cae8224dc458368857d1362",
+  "implementation_commit": "50c3c19026abab6d8cae8224dc458368857d1362",
+  "active_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
   "base_ref": "main",
-  "pr_number": 1097,
-  "candidate_branch": "th/pr-stats",
+  "pr_number": null,
+  "candidate_branch": "th/fix-summary-live-overlay",
   "base_sync": {
-    "previous_base_sha": "1f3881075b1fe749e964dda3ec66ab10b710c797",
-    "merge_commit_sha": "4d97c3cfd376fbea3aedfca15c2802c0afe9a315",
-    "merge_strategy": "normal-git-merge-no-ff",
-    "shared_fix_deduplicated": [
-      "src/maintenance_store.rs"
-    ],
-    "mainline_scope": "Task-timeline performance and support changes from merged PR #1099; no Stats or schema additions enter the candidate from this base merge.",
+    "previous_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "merge_commit_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "merge_strategy": "branch-start-at-origin/main",
+    "shared_fix_deduplicated": [],
+    "mainline_scope": "PR-B starts from origin/main; no unrelated base merge is included.",
     "stats_or_schema_additions_from_base": false,
     "supersedes_previous_review_base": true
   },
   "affected_validation": {
-    "refresh_reason": "The candidate was aligned by normal merge onto main@8c76ec4b, then Summary replay identity, cross-page force-repair deduplication, safe-bucket replacement, and archive-ID seek indexing were fixed; all required CI and five Tier4 lanes must bind to the final pushed head.",
+    "refresh_reason": "PR-B starts from origin/main@c58a6d1f and adds eligible broad Source Journal degradation plus Summary HTTP/SSE cached-frame revalidation; all required CI and Tier4 review lanes must bind to the pushed candidate head.",
     "contract_regressions": [
       "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
       "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
       "hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
+      "summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
       "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
       "all_time_overlay_overflow_does_not_block_rolling_summary",
       "stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
@@ -85,7 +84,7 @@
       "linux/arm64"
     ],
     "production_deployment": false,
-    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR #1097 or authorize production deployment."
+    "scope": "This is evidence for the already merged Proxy/base release only; it does not certify PR-B or authorize production deployment."
   },
   "local_validation_boundary": {
     "required_local_checks": [
