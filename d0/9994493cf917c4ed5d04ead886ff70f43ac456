@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.5.8",
+  "base_stable_version": "4.5.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-11T15:45:11Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.5.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ecc56b515822ff4df8e8c161dc5b5993b7830128",
+  "pr_number": 1107,
+  "pr_title": "refactor(stats): split long-term statistics module",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.5.8",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.5.8",
+  "target_sha": "d09994493cf917c4ed5d04ead886ff70f43ac456",
+  "type_label": "type:patch"
+}
