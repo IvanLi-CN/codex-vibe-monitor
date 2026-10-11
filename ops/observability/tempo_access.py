@@ -5,6 +5,7 @@ import time
 import urllib.parse
 
 TENANT = "cvm"
+TRACE_ID_RE = re.compile(r"[a-f0-9]{1,32}")
 CASE_PREDICATES = {
     "normal": "span.cvm.normal_candidate = true",
     "slow": "span.cvm.slow = true",
@@ -26,12 +27,19 @@ def case_query(category, environment=None, instance=None, endpoint=None):
 def authorized(header, expected):
     return bool(expected and hmac.compare_digest((header or "").encode(), ("Bearer " + expected).encode()))
 
+def normalize_trace_id(value):
+    """Restore the leading zeroes omitted by some Tempo trace responses."""
+    if not TRACE_ID_RE.fullmatch(value):
+        raise ValueError("invalid trace ID")
+    return value.rjust(32, "0")
+
 def query_route(target, now=None, fixed_cases=True):
     """Return a private Tempo GET path; reject management and unbounded searches."""
     parsed = urllib.parse.urlsplit(target)
     if parsed.scheme or parsed.netloc or parsed.fragment:
         raise ValueError("invalid trace path")
-    if re.fullmatch(r"/api/v2/traces/[a-f0-9]{32}", parsed.path):
+    trace_match = re.fullmatch(r"/api/v2/traces/([a-f0-9]{1,32})", parsed.path)
+    if trace_match:
         if parsed.query:
             query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)
             if fixed_cases or set(query) != {"start", "end"} or any(len(v) != 1 for v in query.values()):
@@ -40,7 +48,8 @@ def query_route(target, now=None, fixed_cases=True):
             clock = time.time() if now is None else now
             if not 0 < end - start <= 86400 or start < clock - 86400 - 60 or end > clock + 60:
                 raise ValueError("trace lookup exceeds retention bounds")
-        return target
+        normalized = "/api/v2/traces/" + normalize_trace_id(trace_match.group(1))
+        return urllib.parse.urlunsplit(("", "", normalized, parsed.query, ""))
     if parsed.path != "/api/search":
         raise ValueError("trace route is not allowed")
     query = urllib.parse.parse_qs(parsed.query, strict_parsing=True)

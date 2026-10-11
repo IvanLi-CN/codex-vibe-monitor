@@ -27,7 +27,8 @@ def fixtures(now=None):
         trace_id = str(index) * 32
         root_id = str(index) * 16
         duration = 31_000_000_000 if category == "slow" else 900_000_000
-        start = now - duration
+        root_end = now - 250_000_000
+        start = root_end - duration
         attributes = {"cvm.record": "response", "cvm.endpoint": "responses", "cvm.fixture": True,
                       "cvm.outcome": "error" if category == "error" else "complete",
                       "cvm.status_class": "5xx" if category == "error" else "2xx",
@@ -35,21 +36,37 @@ def fixtures(now=None):
                       "cvm.high_wait": category == "wait", "cvm.retry": category == "retry",
                       "cvm.response_ms": duration / 1e6, "cvm.local_wait_ms": 300.0 if category == "wait" else 45.0,
                       "cvm.detail_truncated": False, "cvm.export_completeness": "unknown", "cvm.persistence": "pending"}
-        spans.append(span(trace_id, root_id, "cvm.proxy.response", start, now, attributes))
+        spans.append(span(trace_id, root_id, "cvm.proxy.response", start, root_end, attributes))
         intervals = [("auth_route", 0, 10), ("request_read", 10, 25), ("request_parse", 25, 30),
                      ("attempt", 30, 700), ("connect", 30, 65), ("upstream_head", 65, 350),
                      ("forward", 350, 820), ("finalize", 820, 900)]
-        for child_index, (name, begin, end) in enumerate(intervals, 20):
+        for child_index, (name, begin, end_ms) in enumerate(intervals, 20):
             spans.append(span(trace_id, f"{child_index:016x}", name, start + begin * 1_000_000,
-                              start + end * 1_000_000, {"cvm.phase": name}, root_id))
+                              start + end_ms * 1_000_000, {"cvm.phase": name}, root_id))
+        milestones = [("head", 350), ("first_byte", 365)]
+        if category != "error":
+            milestones.append(("model_delta", 430))
+        for milestone_index, (name, offset_ms) in enumerate(milestones, 50):
+            at = start + offset_ms * 1_000_000
+            spans.append(span(trace_id, f"{milestone_index:016x}", f"milestone.{name}", at, at,
+                              {"cvm.milestone": name, "cvm.milestone_ms": float(offset_ms)}, root_id))
         spans.append(span(trace_id, "0000000000000030", "cvm.resource.wait", start + 30_000_000,
                           start + 75_000_000, {"cvm.resource": "sqlite_coordinator", "cvm.selected_interval": True}, root_id))
-        spans.append(span(trace_id, "0000000000000040", "cvm.terminal.enqueue_to_commit", now - 50_000_000,
-                          now + 100_000_000, {"cvm.record": "persistence", "cvm.outcome": "committed",
-                                              "cvm.shared_batch": True, "cvm.exclusive_cost": False}, root_id))
+        spans.append(span(trace_id, "0000000000000040", "journal_append", root_end + 25_000_000,
+                          root_end + 75_000_000, {"cvm.phase": "journal_append", "cvm.late": True}, root_id))
+        spans.append(span(trace_id, "0000000000000041", "cvm.terminal.enqueue_to_commit", root_end + 20_000_000,
+                          root_end + 150_000_000, {"cvm.record": "persistence", "cvm.outcome": "committed",
+                                              "cvm.shared_batch": True, "cvm.exclusive_cost": False,
+                                              "cvm.late": True}, root_id))
     return {"resourceSpans": [{"resource": {"attributes": [attr("service.name", "codex-vibe-monitor"),
             attr("deployment.environment.name", "synthetic-preview"), attr("service.instance.id", "fixture")]},
             "scopeSpans": [{"scope": {"name": "cvm.synthetic.preview"}, "spans": spans}]}]}
+
+def tempo_route(path):
+    """Validate and normalize a private Tempo route before forwarding it."""
+    if path == "/api/status/buildinfo":
+        return path
+    return query_route(path, fixed_cases=False)
 
 def seed():
     # Container restarts reuse the same Tempo. Do not append new timestamps to
@@ -74,13 +91,14 @@ def seed():
 
 class QueryHandler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        if self.path != "/api/status/buildinfo":
-            try: query_route(self.path, fixed_cases=False)
-            except ValueError: self.send_error(400); return
+        try:
+            route = tempo_route(self.path)
+        except ValueError:
+            self.send_error(400); return
         headers = {"X-Scope-OrgID": "cvm"}
         if self.headers.get("Accept") in ("application/protobuf", "application/json"):
             headers["Accept"] = self.headers["Accept"]
-        request = urllib.request.Request("http://tempo:3200" + self.path, headers=headers)
+        request = urllib.request.Request("http://tempo:3200" + route, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=5) as response:
                 body = response.read(1024 * 1024 + 1)

@@ -90,6 +90,74 @@ fn request_diagnostics_body_end_once_and_late_commit_share_trace() {
 }
 
 #[test]
+fn request_diagnostics_late_phase_is_exported_after_response_end() {
+    let (metrics, exporter) = observed();
+    let context = loop {
+        let candidate = DiagnosticContext::begin(metrics.clone(), "responses").unwrap();
+        if candidate.state().detail_bucket == 0 {
+            break candidate;
+        }
+        drop(candidate);
+    };
+    context.finish_response("complete", "2xx");
+    let late = context.phase(Phase::Finalize);
+    late.complete();
+
+    let spans = exporter.0.lock().unwrap();
+    let root = spans
+        .iter()
+        .rev()
+        .find(|span| span.name == "cvm.proxy.response")
+        .unwrap();
+    let finalize = spans.iter().find(|span| span.name == "finalize").unwrap();
+    assert_eq!(
+        finalize.span_context.trace_id(),
+        root.span_context.trace_id()
+    );
+    assert_eq!(attribute(finalize, "cvm.late").as_deref(), Some("true"));
+    assert!(finalize.end_time >= root.end_time);
+}
+
+#[test]
+fn request_diagnostics_milestones_are_visible_in_detail_waterfall() {
+    let (metrics, exporter) = observed();
+    let context = loop {
+        let candidate = DiagnosticContext::begin(metrics.clone(), "responses").unwrap();
+        if candidate.state().detail_bucket == 0 {
+            break candidate;
+        }
+        drop(candidate);
+    };
+    context.milestone("head");
+    context.milestone("first_byte");
+    context.milestone("model_delta");
+    context.finish_response("complete", "2xx");
+
+    let spans = exporter.0.lock().unwrap();
+    for name in [
+        "milestone.head",
+        "milestone.first_byte",
+        "milestone.model_delta",
+    ] {
+        let span = spans.iter().find(|span| span.name == name).unwrap();
+        assert_eq!(
+            span.span_context.trace_id(),
+            spans
+                .iter()
+                .rev()
+                .find(|span| span.name == "cvm.proxy.response")
+                .unwrap()
+                .span_context
+                .trace_id()
+        );
+        assert_eq!(
+            attribute(span, "cvm.milestone").as_deref(),
+            Some(&name[10..])
+        );
+    }
+}
+
+#[test]
 fn request_diagnostics_nonstream_ttft_is_not_applicable() {
     let (metrics, exporter) = observed();
     for endpoint in ["responses", "chat_completions", "image_generation"] {
