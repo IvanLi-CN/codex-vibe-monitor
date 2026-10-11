@@ -168,6 +168,7 @@ pub(crate) struct SummaryDeltaJournal {
     pub(crate) overflowed_through_sequence: Option<u64>,
     pub(crate) gap_proofs: VecDeque<DeltaGapProof>,
     pub(crate) gap_proof_budget_exhausted: bool,
+    pub(crate) gap_generation: u64,
 }
 
 impl SummaryDeltaJournal {
@@ -379,6 +380,7 @@ impl SummaryDeltaJournal {
         self.gap_proofs.retain(|proof| !proof.compaction_gap);
         self.source_compaction_gap = false;
         self.gap_proof_budget_exhausted = false;
+        self.gap_generation = self.gap_generation.saturating_add(1);
     }
 
     pub(crate) fn note_gap(&mut self, delta: &DashboardActivityTerminalDelta) {
@@ -396,6 +398,7 @@ impl SummaryDeltaJournal {
     }
 
     pub(crate) fn retain_gap_proof(&mut self, proof: DeltaGapProof) {
+        self.gap_generation = self.gap_generation.saturating_add(1);
         if self.gap_proof_budget_exhausted {
             if proof.source_gap {
                 for existing in &mut self.gap_proofs {
@@ -633,6 +636,7 @@ impl SummaryDeltaJournal {
             .iter()
             .filter_map(SummarySourceIdentity::from_delta)
             .collect::<HashSet<_>>();
+        let gap_count = self.gap_proofs.len();
         self.gap_proofs.retain(|proof| {
             if proof.row_id.is_none() {
                 // No durable identity means the reconciliation cannot prove which source row
@@ -654,6 +658,9 @@ impl SummaryDeltaJournal {
                         && proof.occurred_at == identity.occurred_at
                 }))
         });
+        if self.gap_proofs.len() != gap_count {
+            self.gap_generation = self.gap_generation.saturating_add(1);
+        }
         if self.gap_proofs.is_empty() {
             self.overflowed_through_sequence = None;
             self.gap_proof_budget_exhausted = false;
@@ -793,6 +800,8 @@ pub(crate) struct CachedSubscriptionTopic {
     pub(crate) summary_refresh_in_flight: bool,
     pub(crate) summary_pending_event_count: u64,
     pub(crate) summary_retry_backoff_ms: u64,
+    pub(crate) summary_gap_generation: u64,
+    pub(crate) summary_gap_degraded: bool,
     pub(crate) parallel_work_refresh_scheduled: bool,
     pub(crate) prompt_cache_refresh_scheduled: bool,
     pub(crate) prompt_cache_reconcile_scheduled: bool,

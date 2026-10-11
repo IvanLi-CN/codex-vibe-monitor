@@ -416,6 +416,37 @@ async fn summary_sse_reconnect_revalidates_source_gap_against_cached_frame() {
 
     state
         .subscription_hub
+        .record_summary_source_change_scoped_gap(
+            913_201,
+            Some(99),
+            "1970-01-01T00:00:00Z".to_string(),
+            Some(913_201),
+            Some("summary-sse-disjoint-source-gap".to_string()),
+        )
+        .await;
+    let disjoint = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.subscription_hub.prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key: topic_key.clone(),
+                cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        ),
+    )
+    .await
+    .expect("disjoint Summary source gap must not retry the cached frame forever")
+    .expect("prepare cached Summary frame for a disjoint source gap");
+    assert_eq!(
+        disjoint.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotResumeMiss
+    );
+    assert!(disjoint.initial[0].frame.payload_value()["dataQuality"].is_null());
+
+    state
+        .subscription_hub
         .record_summary_source_change_gap(913_202)
         .await;
     state.pool.close().await;
@@ -425,7 +456,7 @@ async fn summary_sse_reconnect_revalidates_source_gap_against_cached_frame() {
             state.clone(),
             vec![descriptor.clone()],
             vec![SubscriptionResumeCursor {
-                topic_key,
+                topic_key: topic_key.clone(),
                 cursor,
                 schema_epoch: "stale-summary-schema".to_string(),
             }],
