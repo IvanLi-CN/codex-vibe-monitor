@@ -587,7 +587,6 @@ impl DiagnosticContext {
         let at = self.at();
         let (
             mut root,
-            detail_bucket,
             normal_candidate,
             waits,
             longest,
@@ -600,6 +599,7 @@ impl DiagnosticContext {
             persistence,
             incomplete,
             ttft_applicable,
+            detailed,
         ) = {
             let mut state = self.state();
             if state.ended.is_some() {
@@ -607,6 +607,24 @@ impl DiagnosticContext {
             }
             state.ended = Some(at);
             let incomplete = state.wait_union.active > 0;
+            let detailed = if state.root.is_some() {
+                if state.truncated {
+                    false
+                } else if outcome != "complete" {
+                    state.detail_bucket == 1
+                } else if state.attempts > 1 {
+                    state.detail_bucket == 2
+                } else if state.wait_union.at(at) >= Duration::from_millis(250) {
+                    state.detail_bucket == 3
+                } else if at >= Duration::from_secs(30) {
+                    state.detail_bucket == 4
+                } else {
+                    state.detail_bucket == 0
+                }
+            } else {
+                false
+            };
+            state.detailed = Some(detailed);
             let mut waits = state.waits;
             for stats in &mut waits {
                 stats.sum += at
@@ -615,7 +633,6 @@ impl DiagnosticContext {
             }
             (
                 state.root.take(),
-                state.detail_bucket,
                 state.normal_candidate,
                 waits,
                 std::mem::take(&mut state.longest),
@@ -628,6 +645,7 @@ impl DiagnosticContext {
                 state.persistence,
                 incomplete,
                 state.ttft_applicable,
+                detailed,
             )
         };
         self.0
@@ -665,20 +683,6 @@ impl DiagnosticContext {
         if let Some(root) = root.as_mut() {
             // Select one deterministic category per request. Root spans retain the full
             // lightweight record; only the selected category receives waterfall children.
-            let detailed = if truncated {
-                false
-            } else if outcome != "complete" {
-                detail_bucket == 1
-            } else if attempts > 1 {
-                detail_bucket == 2
-            } else if wait_total >= Duration::from_millis(250) {
-                detail_bucket == 3
-            } else if at >= Duration::from_secs(30) {
-                detail_bucket == 4
-            } else {
-                detail_bucket == 0
-            };
-            self.state().detailed = Some(detailed);
             if detailed {
                 for interval in phases {
                     self.emit(
