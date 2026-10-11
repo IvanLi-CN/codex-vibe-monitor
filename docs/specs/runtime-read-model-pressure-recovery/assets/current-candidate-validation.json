@@ -6,7 +6,7 @@
   "implementation_commit": "f34d3663c305de0f31db6cb997fbff90e0ab4167",
   "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
   "base_ref": "main",
-  "pr_number": null,
+  "pr_number": 1106,
   "candidate_branch": "th/fix-summary-live-overlay",
   "base_sync": {
     "previous_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
