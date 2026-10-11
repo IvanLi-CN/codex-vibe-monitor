@@ -86,6 +86,8 @@ class GrafanaPreviewTests(unittest.TestCase):
         panels = {panel["id"]: panel for panel in dashboard["panels"]}
         self.assertEqual(set(panels) & {10, 11, 12, 13, 14}, {10, 11, 12, 13, 14})
         for panel_id in (10, 11, 12, 13, 14):
+            query = panels[panel_id]["targets"][0]["query"]
+            self.assertIn('span.cvm.export_completeness = "detailed"', query)
             overrides = panels[panel_id]["fieldConfig"]["overrides"]
             links = overrides[0]["properties"][0]["value"]
             self.assertEqual(len(links), 1)

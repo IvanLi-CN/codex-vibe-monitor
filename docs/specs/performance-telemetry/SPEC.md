@@ -37,7 +37,7 @@
 - REQ-020: 正常容量内全量轻量记录通过 OpenTelemetry 0.33.0 后台 batch processor 与 OTLP/HTTP protobuf 导出到 Tempo 3.1.0，严格白名单属性，不自动导出 tracing 日志、baggage 或环境资源。每请求细节上限为 64 spans/64 KiB、8 attempts、8 个最长等待区间，活跃上下文 1024；SDK 队列 2048、batch 128、间隔 1 秒，HTTP body 1 MiB、超时 2 秒、无重试、关闭 flush 最多 2 秒；超限丢弃诊断并记录固定原因，业务继续完成。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
 - REQ-021: tracing 默认关闭，新配置或初始化失败只使 tracing degraded，`OBSERVABILITY_ENABLED=false` 关闭全部观测。OTLP 仅完整无凭据 HTTPS `/v1/traces` 地址、私有 token 文件、禁重定向及环境代理；environment/instance 默认 unknown 并与 Prometheus 标签一致。能力 API 仅增加 tracing 的本地状态和固定入口，不依赖 Tempo 健康。 covers: [接入合同](../../design/request-lifecycle-observability.md)
 - REQ-022: 共享 Tempo 接入使用独立 CVM tenant，摄入与查询凭据分离，认证入口覆盖 tenant header，拒绝伪造权限并关闭跨租户查询；原始接口不暴露公网。隔离 fixture 保留 24 小时，WAL/blocks/工作目录同处 512 MiB tmpfs、1 CPU/2 GiB、512 KiB/s/1 MiB burst、128 KiB/trace、查询并发 2/超时 5 秒；这些不构成正式容量或存储建议。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
-- REQ-023: Grafana 原生统计及案例页提供正常随机候选、慢响应（≥30 秒）、高本地等待（≥250 ms）、重试、错误/取消五类，每类最多 3 条；随机候选为独立 TraceID 哈希 1/16 标记，不限制采集。手动刷新，时间及 service/environment/instance/endpoint 筛选跳转，原生瀑布图展示选定 trace；缺测、截断、未完整、导出丢失及超过 24 小时窗口明确说明。 covers: [案例合同](../../design/request-lifecycle-observability.md)
+- REQ-023: Grafana 原生统计及案例页提供正常随机候选、慢响应（≥30 秒）、高本地等待（≥250 ms）、重试、错误/取消五类，每类最多 3 条可展开的完整案例；案例查询只接受 `cvm.export_completeness=detailed`，摘要记录继续用于总体统计但不进入案例列表。随机候选为独立 TraceID 哈希 1/16 标记，不限制采集。手动刷新，时间及 service/environment/instance/endpoint 筛选跳转，原生瀑布图展示选定 trace；缺测、截断、未完整、导出丢失及超过 24 小时窗口明确说明。 covers: [案例合同](../../design/request-lifecycle-observability.md)
 
 ## API Contract
 
