@@ -7,6 +7,9 @@ pub(crate) mod lifecycle;
 
 const RANGE_SIZE: u32 = 64;
 const WAIT_BUDGET: Duration = Duration::from_millis(100);
+// Keep one shared SQLite transaction below the empty-range wait budget even
+// when many owners become eligible at once.
+const MAX_REFILL_BATCH_SIZE: usize = 64;
 const MIN_CAPACITY: usize = 128;
 const MAX_CAPACITY: usize = 4096;
 const ACTIVITY_WINDOW_MS: i64 = 48 * 3600 * 1000;
@@ -641,7 +644,7 @@ impl InvocationRangeManager {
                 });
             }
             if trigger {
-                self.start_refill(pool);
+                self.start_refill(pool, &owner);
             }
             if let Some(invoke_id) = issued {
                 if matches!(owner, Owner::Conversation(_)) {
@@ -748,25 +751,41 @@ impl InvocationRangeManager {
         Ok((prefix, range))
     }
 
-    fn start_refill(self: &Arc<Self>, pool: &Pool<Sqlite>) {
+    fn start_refill(self: &Arc<Self>, pool: &Pool<Sqlite>, trigger_owner: &Owner) {
         let reservations = {
             let mut memory = self.memory.lock().expect("invocation range memory");
             if memory.batch_running {
                 return;
             }
             let current_hour = Utc::now().timestamp().div_euclid(3600);
-            let reservations = memory
+            let mut candidates = memory
                 .entries
-                .iter_mut()
+                .iter()
                 .filter_map(|(owner, entry)| {
                     if owner.hour().is_some_and(|hour| hour != current_hour)
                         || !entry.can_refill(48)
                     {
                         return None;
                     }
+                    Some((
+                        owner.clone(),
+                        entry.current.remaining(),
+                        owner == trigger_owner,
+                    ))
+                })
+                .collect::<Vec<_>>();
+            candidates.sort_by_key(|(_, remaining, is_trigger)| (!*is_trigger, *remaining));
+            let reservations = candidates
+                .into_iter()
+                .take(MAX_REFILL_BATCH_SIZE)
+                .filter_map(|(owner, _, _)| {
+                    let entry = memory.entries.get_mut(&owner)?;
+                    if !entry.can_refill(48) {
+                        return None;
+                    }
                     entry.operation = true;
                     Some(Reservation {
-                        owner: owner.clone(),
+                        owner,
                         prefix: entry.prefix.clone().unwrap(),
                         generation: entry.generation,
                         floor: entry.ceiling,
@@ -880,7 +899,6 @@ async fn reserve_on_connection(
 }
 
 async fn load_or_create_hour(pool: &Pool<Sqlite>, hour: i64) -> Result<String> {
-    let _namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
     if let Some(prefix) = sqlx::query_scalar::<_, String>(
         "SELECT prefix FROM hourly_invoke_prefixes WHERE utc_hour=?1",
     )
@@ -893,14 +911,31 @@ async fn load_or_create_hour(pool: &Pool<Sqlite>, hour: i64) -> Result<String> {
     }
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
         let prefix = generate_prompt_cache_conversation_id();
+        let Some(_reservation) = reserve_prompt_cache_prefix(&prefix) else {
+            continue;
+        };
         if prompt_cache_conversation_id_candidate_conflicts(pool, &prefix).await? {
             continue;
         }
-        sqlx::query("INSERT INTO hourly_invoke_prefixes (utc_hour,prefix) VALUES (?1,?2)")
+        let insert_result = sqlx::query(
+            "INSERT OR IGNORE INTO hourly_invoke_prefixes (utc_hour,prefix) VALUES (?1,?2)",
+        )
+        .bind(hour)
+        .bind(&prefix)
+        .execute(pool)
+        .await?;
+        if insert_result.rows_affected() == 0 {
+            if let Some(prefix) = sqlx::query_scalar::<_, String>(
+                "SELECT prefix FROM hourly_invoke_prefixes WHERE utc_hour=?1",
+            )
             .bind(hour)
-            .bind(&prefix)
-            .execute(pool)
-            .await?;
+            .fetch_optional(pool)
+            .await?
+            {
+                return Ok(prefix);
+            }
+            continue;
+        }
         info!(utc_hour = hour, prefix = %prefix, attempt, "hourly invocation prefix created");
         return Ok(prefix);
     }
