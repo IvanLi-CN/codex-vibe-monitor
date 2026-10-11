@@ -2384,15 +2384,8 @@ pub(crate) async fn update_managed_task_with_store(
         None
     };
     if let Some(Err(wake_error)) = startup_backfill_wake_result {
-        if let Some(previous) = previous_startup_control.as_ref()
-            && let Err(rollback_error) = store.restore_control_state(previous).await
-        {
-            return Err(ApiError::from(anyhow!(
-                "startup backfill wake failed: {wake_error}; rollback failed: {rollback_error}"
-            )));
-        }
         return Err(ApiError::from(anyhow!(
-            "startup backfill wake failed: {wake_error}"
+            "startup backfill wake failed; startup backfill remains enabled for retry: {wake_error}"
         )));
     }
     if let (Some(enabled), Some(task_name)) = (enabled, task_key.strip_prefix("startup_backfill."))
