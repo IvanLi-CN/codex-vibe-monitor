@@ -636,7 +636,7 @@ async fn hydrated_summary_topics_materialize_without_sqlite_for_open_and_closed_
 }
 
 #[tokio::test]
-async fn hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap() {
+async fn hydrated_summary_topic_degrades_for_terminal_and_source_gaps() {
     let state = crate::tests::test_state_with_openai_base(
         Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -644,9 +644,19 @@ async fn hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap
     hydrate_summary_snapshots(state.as_ref())
         .await
         .expect("hydrate summary projection before recording the gap");
+    let mut overlay = summary_projection_test_invocation();
+    overlay.id = 913_101;
+    overlay.invoke_id = "hydrated-summary-source-gap-overlay".to_string();
+    overlay.occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let mut delta = persisted_dashboard_activity_terminal_delta(&overlay);
+    delta.terminal_sequence = 913_101;
     state
         .subscription_hub
-        .record_summary_terminal_sequence_gap(913_102)
+        .acknowledge_replayed_summary_delta(delta)
+        .await;
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_103)
         .await;
     state.pool.close().await;
 
@@ -654,40 +664,29 @@ async fn hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap
         window: "today".to_string(),
         time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
         limit: None,
-        upstream_account_id: None,
+        upstream_account_id: Some(17),
     };
     let payload = summary
         .build_cached_payload(state.clone())
         .await
-        .expect("terminal-only Summary gap should retain the last-good payload")
+        .expect("source-journal Summary gap should retain the last-good payload")
         .serialize(None, None, None)
         .expect("serialize degraded Summary payload");
     let payload: Value = serde_json::from_slice(&payload).expect("Summary payload JSON");
-    assert!(
-        !payload["dataQuality"].is_null(),
-        "terminal-only Summary gap must be visible in the payload quality"
-    );
-
+    assert!(!payload["dataQuality"].is_null());
     let current = SubscriptionTopic::SummaryCurrent {
         window: "current".to_string(),
         time_zone: SUBSCRIPTION_DEFAULT_TIME_ZONE.to_string(),
         limit: Some(1),
-        upstream_account_id: None,
+        upstream_account_id: Some(17),
     };
-    assert!(
-        matches!(
-            current.build_cached_payload(state.clone()).await,
-            Err(ApiError::Unavailable(_))
-        ),
-        "a terminal gap affecting current rank must remain unavailable"
-    );
-
     state
         .subscription_hub
-        .record_summary_source_change_gap(913_103)
+        .record_summary_terminal_sequence_gap(913_102)
         .await;
+    assert!(summary.build_cached_payload(state.clone()).await.is_ok());
     assert!(matches!(
-        summary.build_cached_payload(state).await,
+        current.build_cached_payload(state.clone()).await,
         Err(ApiError::Unavailable(_))
     ));
 }

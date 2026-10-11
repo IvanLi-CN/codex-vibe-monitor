@@ -178,7 +178,7 @@ async fn ensure_schema_adds_pending_summary_rollup_partial_index_idempotently() 
 }
 
 #[tokio::test]
-async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap() {
+async fn stats_serves_last_good_snapshot_for_terminal_and_source_gaps() {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -231,7 +231,7 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
         .await;
     state
         .subscription_hub
-        .record_summary_terminal_sequence_gap(913_102)
+        .record_summary_source_change_gap(913_103)
         .await;
     state.pool.close().await;
 
@@ -245,7 +245,7 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
         }),
     )
     .await
-    .expect("pending proof should serve the last-good summary snapshot");
+    .expect("source-journal proof gaps should serve the last-good summary snapshot");
     assert_eq!(summary.total_count, 2);
     assert_eq!(summary.total_tokens, 40);
     assert_eq!(
@@ -253,6 +253,107 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
         Some(StatsDataQualityResponse::summary_delta_journal_pending())
     );
 
+    let Json(current) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("source-journal proof gaps should serve the live current overlay");
+    assert_eq!(current.total_count, 1);
+    assert_eq!(current.total_tokens, 23);
+    assert_eq!(
+        current.data_quality,
+        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+
+    let Json(stats) = fetch_stats(State(state.clone()))
+        .await
+        .expect("legacy stats should share the degraded memory-only path");
+    assert_eq!(stats.total_count, 2);
+    assert_eq!(stats.total_tokens, 40);
+    assert_eq!(
+        stats.data_quality,
+        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+    );
+
+    let unrelated_account_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: Some(7),
+        }),
+    )
+    .await;
+    assert!(
+        matches!(unrelated_account_error, Err(ApiError::Unavailable(_))),
+        "an overlay for another account must not authorize a degraded read"
+    );
+
+    let disjoint_window_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("previous7d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(disjoint_window_error, Err(ApiError::Unavailable(_))),
+        "an overlay outside the requested window must not authorize a degraded read"
+    );
+
+    state
+        .subscription_hub
+        .record_summary_source_change_scoped_gap(
+            913_104,
+            None,
+            terminal.occurred_at.clone(),
+            Some(terminal.id),
+            Some(terminal.invoke_id.clone()),
+        )
+        .await;
+    let scoped_source_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(scoped_source_error, Err(ApiError::Unavailable(_))),
+        "a scoped source proof must remain unavailable even with a broad compaction proof"
+    );
+    let scoped_current_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(scoped_current_error, Err(ApiError::Unavailable(_))),
+        "a scoped source proof must remain unavailable when its row is also in the overlay"
+    );
+
+    state
+        .subscription_hub
+        .record_summary_terminal_sequence_gap(913_102)
+        .await;
     let current_error = fetch_summary(
         State(state.clone()),
         Query(SummaryQuery {
@@ -267,23 +368,157 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
         matches!(current_error, Err(ApiError::Unavailable(_))),
         "a terminal gap affecting current rank must remain unavailable"
     );
+}
 
-    let Json(stats) = fetch_stats(State(state.clone()))
+#[tokio::test]
+async fn summary_sse_reconnect_revalidates_source_gap_against_cached_frame() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    hydrate_summary_snapshots(state.as_ref())
         .await
-        .expect("legacy stats should share the degraded memory-only path");
-    assert_eq!(stats.total_count, 2);
-    assert_eq!(stats.total_tokens, 40);
+        .expect("hydrate Summary projection before caching the SSE frame");
+    let mut overlay = summary_projection_test_invocation();
+    overlay.id = 913_201;
+    overlay.invoke_id = "summary-sse-source-gap-overlay".to_string();
+    overlay.occurred_at = db_occurred_at_lower_bound(Utc::now());
+    let mut delta = persisted_dashboard_activity_terminal_delta(&overlay);
+    delta.terminal_sequence = 913_201;
+    state
+        .subscription_hub
+        .acknowledge_replayed_summary_delta(delta)
+        .await;
+    let descriptor = SubscriptionTopicDescriptor {
+        topic: "stats.summary.current".to_string(),
+        params: BTreeMap::from([
+            ("window".to_string(), "today".to_string()),
+            ("timeZone".to_string(), "UTC".to_string()),
+            ("upstreamAccountId".to_string(), "17".to_string()),
+        ]),
+    };
+    let initial = state
+        .subscription_hub
+        .prepare_connection(state.clone(), vec![descriptor.clone()], Vec::new())
+        .await
+        .expect("prepare initial cached Summary SSE frame");
     assert_eq!(
-        stats.data_quality,
-        Some(StatsDataQualityResponse::summary_delta_journal_pending())
+        initial.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotNoResume
     );
+    assert!(initial.initial[0].frame.payload_value()["dataQuality"].is_null());
+    let _lease = state
+        .subscription_hub
+        .register_test_topic_name("stats.summary.current")
+        .await;
+    let topic_key = initial.outcomes[0].topic_key.clone();
+    let cursor = initial.outcomes[0].cursor;
 
     state
         .subscription_hub
-        .record_summary_source_change_gap(913_103)
+        .record_summary_source_change_scoped_gap(
+            913_201,
+            Some(99),
+            "1970-01-01T00:00:00Z".to_string(),
+            Some(913_201),
+            Some("summary-sse-disjoint-source-gap".to_string()),
+        )
         .await;
-    let summary_error = fetch_summary(
-        State(state.clone()),
+    let disjoint = tokio::time::timeout(
+        Duration::from_secs(5),
+        state.subscription_hub.prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key: topic_key.clone(),
+                cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        ),
+    )
+    .await
+    .expect("disjoint Summary source gap must not retry the cached frame forever")
+    .expect("prepare cached Summary frame for a disjoint source gap");
+    assert_eq!(
+        disjoint.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotResumeMiss
+    );
+    assert!(disjoint.initial[0].frame.payload_value()["dataQuality"].is_null());
+
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_202)
+        .await;
+    state.pool.close().await;
+    let reconnect = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key: topic_key.clone(),
+                cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        )
+        .await
+        .expect("revalidate cached Summary SSE frame after source gap");
+    assert_eq!(
+        reconnect.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotResumeMiss
+    );
+    assert!(!reconnect.initial[0].frame.payload_value()["dataQuality"].is_null());
+    state
+        .subscription_hub
+        .clear_summary_source_compaction_gap()
+        .await;
+    let recovered = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor],
+            vec![SubscriptionResumeCursor {
+                topic_key: reconnect.outcomes[0].topic_key.clone(),
+                cursor: reconnect.outcomes[0].cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        )
+        .await
+        .expect("refresh cached Summary SSE frame after source gap recovery");
+    assert_eq!(
+        recovered.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotResumeMiss
+    );
+    assert!(recovered.initial[0].frame.payload_value()["dataQuality"].is_null());
+}
+
+#[tokio::test]
+async fn stats_rejects_source_gap_with_invalid_overlay_identity() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate Summary projection before invalid overlay");
+    let mut overlay = summary_projection_test_invocation();
+    overlay.id = 913_301;
+    overlay.invoke_id.clear();
+    overlay.occurred_at = "not-a-timestamp".to_string();
+    let mut delta = persisted_dashboard_activity_terminal_delta(&overlay);
+    delta.terminal_sequence = 913_301;
+    state
+        .subscription_hub
+        .acknowledge_replayed_summary_delta(delta)
+        .await;
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_302)
+        .await;
+    state.pool.close().await;
+
+    let result = fetch_summary(
+        State(state),
         Query(SummaryQuery {
             window: Some("all".to_string()),
             limit: None,
@@ -293,14 +528,8 @@ async fn stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap
     )
     .await;
     assert!(
-        matches!(summary_error, Err(ApiError::Unavailable(_))),
-        "durable source gaps must remain unavailable for Summary HTTP reads"
-    );
-
-    let stats_error = fetch_stats(State(state)).await;
-    assert!(
-        matches!(stats_error, Err(ApiError::Unavailable(_))),
-        "durable source gaps must remain unavailable for legacy stats reads"
+        matches!(result, Err(ApiError::Unavailable(_))),
+        "an invalid acknowledged overlay must not authorize a degraded source read"
     );
 }
 

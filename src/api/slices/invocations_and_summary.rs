@@ -4892,15 +4892,7 @@ impl SummaryProjection {
         // even though its descriptor was absent.  The current index can then prove its rank from
         // the overlay; do not reject that newest-N selection solely because the historical proof
         // marker is still waiting for background reconciliation.
-        if gap.row_id.is_some_and(|row_id| {
-            deltas.iter().any(|delta| {
-                delta.persisted_row_id == Some(row_id)
-                    && gap.invoke_id.as_deref() == Some(delta.invoke_id.as_str())
-                    && gap.occurred_at == delta.occurred_at
-                    && upstream_account_id
-                        .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
-            })
-        }) {
+        if summary_delta_gap_has_valid_overlay_identity(gap, deltas, upstream_account_id) {
             return false;
         }
         let Some(occurred_at) = parse_to_utc_datetime(&gap.occurred_at) else {
@@ -30303,16 +30295,15 @@ pub(crate) async fn fetch_summary(
         let window = parse_summary_window(&params, state.config.list_limit_max as i64)
             .map_err(ApiError::bad_request)?;
         let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-        let source_gap_pending = summary_delta_gap_affects_selection(
+        let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
             projection.as_ref(),
             &gaps,
             &deltas,
             &window,
             reporting_tz,
             params.upstream_account_id,
-            SummaryDeltaGapKind::Source,
         );
-        if source_gap_pending {
+        if source_gap_unavailable {
             return Err(ApiError::unavailable(anyhow!(
                 "summary source journal has an unproven change for the requested selection"
             )));
@@ -30329,7 +30320,7 @@ pub(crate) async fn fetch_summary(
         let mut response = projection.response_for_query_with_rolling_delta(
             &params,
             state.config.list_limit_max as i64,
-            delta_gap_pending,
+            source_gap_pending || delta_gap_pending,
         )?;
         let mut terminal_sequence = 0;
         apply_dashboard_terminal_slice_to_summary_response(
@@ -30344,7 +30335,7 @@ pub(crate) async fn fetch_summary(
                 deltas,
             },
         );
-        if delta_gap_pending {
+        if source_gap_pending || delta_gap_pending {
             response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
         }
         return Ok(Json(response));
@@ -30365,16 +30356,15 @@ pub(crate) async fn fetch_summary(
         .map_err(ApiError::bad_request)?;
     let account_id = params.upstream_account_id;
     let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
-    let source_gap_pending = summary_delta_gap_affects_selection(
+    let (source_gap_pending, source_gap_unavailable) = summary_source_gap_status(
         projection.as_ref(),
         &gaps,
         &deltas,
         &window,
         reporting_tz,
         account_id,
-        SummaryDeltaGapKind::Source,
     );
-    if source_gap_pending {
+    if source_gap_unavailable {
         return Err(ApiError::unavailable(anyhow!(
             "summary source journal has an unproven change for the requested selection"
         )));
@@ -30401,7 +30391,7 @@ pub(crate) async fn fetch_summary(
     let mut response = projection.response_for_query_with_rolling_delta(
         &params,
         state.config.list_limit_max as i64,
-        delta_gap_pending || delta_overlay_affects_selection,
+        source_gap_pending || delta_gap_pending || delta_overlay_affects_selection,
     )?;
     if let SummaryWindow::Current(limit) = window {
         projection.apply_rolling_delta_to_current_response(
@@ -30410,7 +30400,7 @@ pub(crate) async fn fetch_summary(
             account_id,
             &deltas,
         )?;
-        if delta_gap_pending {
+        if source_gap_pending || delta_gap_pending {
             response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
         }
         return Ok(Json(response));
@@ -30428,7 +30418,7 @@ pub(crate) async fn fetch_summary(
             deltas,
         },
     );
-    if delta_gap_pending {
+    if source_gap_pending || delta_gap_pending {
         response.data_quality = Some(StatsDataQualityResponse::summary_delta_journal_pending());
     }
     Ok(Json(response))

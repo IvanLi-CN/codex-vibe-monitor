@@ -949,6 +949,7 @@ impl SubscriptionHub {
         // A scoped legacy-source proof is consumed once the rebuilt immutable projection contains
         // the exact row identity.  Broad proofs (without a row id) remain fail-closed until their
         // generation watermark is explicitly absorbed.
+        let gap_count = state.summary_delta_journal.gap_proofs.len();
         state.summary_delta_journal.gap_proofs.retain(|proof| {
             let Some(row_id) = proof.row_id else {
                 return true;
@@ -962,6 +963,10 @@ impl SubscriptionHub {
                 &proof.occurred_at,
             )
         });
+        if state.summary_delta_journal.gap_proofs.len() != gap_count {
+            state.summary_delta_journal.gap_generation =
+                state.summary_delta_journal.gap_generation.saturating_add(1);
+        }
         if state.summary_delta_journal.gap_proofs.is_empty()
             && !state.summary_delta_journal.source_compaction_gap
         {

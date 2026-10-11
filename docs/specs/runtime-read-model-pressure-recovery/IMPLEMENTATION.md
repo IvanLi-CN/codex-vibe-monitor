@@ -56,9 +56,11 @@
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a range intersecting
   an independent archive/source coverage gap, is unavailable rather than
-  approximate. A range intersecting only a `DeltaGapProof` serves the published
-  last-good base plus acknowledged overlay with explicit `dataQuality` degraded
-  status; `/api/stats` uses the same all-time memory path.
+  approximate. A selection intersecting only a terminal `DeltaGapProof` or an
+  eligible broad Source Journal compaction proof serves the published last-good
+  base plus acknowledged overlay with explicit `dataQuality` degraded status;
+  scoped source identity gaps and missing overlays remain unavailable, and
+  `/api/stats` uses the same all-time memory path.
 - Summary archive replay-marker repair is ordered by dedicated partial SQLite
   indexes, and replay admission requires a nonblank marker matching the current
   archive SHA; NULL or blank markers fail closed. Additive repair reads at most 128
@@ -106,7 +108,7 @@
 
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The active delivery base is `main@1f3881075b1fe749e964dda3ec66ab10b710c797`; it supersedes the pre-merge `6447cec2e9f6790b04f4e828e9d43f440f3105f0` review base. The normal merge of PR #1096 deduplicated the content-identical `src/maintenance_store.rs` fix, and introduced no Stats or schema surface; current required-lane evidence is tracked in `assets/current-candidate-validation.json`.
+- The current PR-B delivery is rebased onto `origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0`; runtime implementation commit `f34d3663c305de0f31db6cb997fbff90e0ab4167` contains no unrelated base merge, and the test-only follow-up `535397fb30e0ee0953161d4c6a50d960f6cb13b4` records the split-module materialization regression. Current required-lane evidence is tracked in `assets/current-candidate-validation.json`; documentation follow-ups do not alter the runtime candidate.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary

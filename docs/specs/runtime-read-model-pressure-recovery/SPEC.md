@@ -14,7 +14,7 @@
 - [ADR 0010: Summary coverage fence and Snapshot authority](../../adr/0010-summary-coverage-fence-and-snapshot-authority.md)
 - [ADR 0012: Historical Summary Coverage Recovery Supervisor](../../adr/0012-historical-summary-coverage-supervisor.md)
 - [ADR 0014: Durable Summary coverage recovery](../../adr/0014-durable-summary-coverage-recovery.md)
-- [ADR 0034: Summary Delta degraded read path](../../adr/0034-summary-delta-degraded-read-path.md)
+- [ADR 0035: Summary Source Journal degraded read path](../../adr/0035-summary-source-journal-degraded-read-path.md)
 
 ## Context and Scope
 
@@ -60,12 +60,8 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
   impact, never raw text or duplicate Summary rows.
 - The active durable source-journal tail is bounded to 10,000 entries or 64
   MiB. Compaction must preserve a durable union proof; it must not time-delete
-  entries or silently advance a cursor. An intersecting time/account/current-rank
-  selection is unavailable while its proof is unabsorbed, while a disjoint
-  Exact-Ready selection remains memory-only. A missing cursor without durable
-  metadata remains broad unavailable until reconciliation instead of being
-  assigned the range of a later entry.
-- `RollingDelta` may rebuild bounded descriptor keys off-request after restart, but must not re-admit complete live source or raw archive data. It never authorizes request-time SQLite/archive/file I/O, partial data, or stale last-good success presented as exact. When the only affected proof is a pending in-memory Summary Delta Journal gap, the existing last-good Projection plus acknowledged terminal overlay may be served as an explicitly degraded response with `dataQuality.proofPending`; a descriptor gap still starts bounded reconciliation and all-time convergence remains independently owned by the historical checkpoint.
+  entries or silently advance a cursor. An intersecting time/account/current-rank selection is unavailable while its proof is unabsorbed unless the gap is a broad source-journal compaction proof with an acknowledged in-memory overlay; that narrow case is explicitly degraded, while a disjoint Exact-Ready selection remains memory-only. A missing cursor without durable metadata remains broad unavailable until reconciliation instead of being assigned the range of a later entry.
+- `RollingDelta` may rebuild bounded descriptor keys off-request after restart, but must not re-admit complete live source or raw archive data. It never authorizes request-time SQLite/archive/file I/O, partial data, or stale last-good success presented as exact. When the affected proof is a pending in-memory Summary Delta Journal gap or an eligible source-journal compaction proof, the existing last-good Projection plus acknowledged terminal overlay may be served as an explicitly degraded response with `dataQuality.proofPending`; scoped source identity and coverage gaps remain unavailable while background reconciliation and all-time convergence proceed independently.
 
 ### Non-goals
 
@@ -95,11 +91,11 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ### REQ-RMPR-001 — Exact-memory Summary reads
 
-- The Summary HTTP and SSE read paths MUST serve published in-memory projections without request-time SQLite, archive, or file I/O. A pending in-memory Summary Delta Journal proof MAY serve the last-good projection plus acknowledged overlay only when the response is explicitly marked degraded; missing proof without a published projection remains unavailable.
+- The Summary HTTP and SSE read paths MUST serve published in-memory projections without request-time SQLite, archive, or file I/O. A pending in-memory Summary Delta Journal proof or eligible broad source-journal compaction proof MAY serve the last-good projection plus acknowledged overlay only when the response is explicitly marked degraded; missing proof without a published projection, missing overlay, or scoped source/coverage proof remains unavailable.
 
 ### REQ-RMPR-002 — Durable coverage recovery
 
-- Historical Summary and archive coverage MUST advance through generation-fenced, bounded checkpoints and preserve exact scope, manifest, replay, and snapshot proof. Independent archive, source, or classification gaps MUST remain unavailable for the affected selection rather than being represented as partial or fabricated data.
+- Historical Summary and archive coverage MUST advance through generation-fenced, bounded checkpoints and preserve exact scope, manifest, replay, and snapshot proof. Independent archive, classification, late historical source, or scoped source-identity gaps MUST remain unavailable for the affected selection rather than being represented as partial or fabricated data; only the eligible source-journal compaction proof may use the explicit degraded path.
 
 ### REQ-RMPR-003 — Canonical facts and pressure boundaries
 
@@ -209,7 +205,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ### Core flows
 
-1. Summary HTTP 请求和 `SummaryCurrent` SSE topic 先校验 query，再从内存 Projection 选择精确 snapshot；若仅有待证明的 Summary Delta Journal gap，则选择已发布 last-good 并附加 degraded data-quality 状态。它们从不启动 hydrate、打开 archive 或回源 SQLite。首次没有已发布 snapshot 时返回 `unavailable`。
+1. Summary HTTP 请求和 `SummaryCurrent` SSE topic 先校验 query，再从内存 Projection 选择精确 snapshot；若仅有待证明的 Summary Delta Journal gap 或 eligible broad Source Journal compaction proof，则选择已发布 last-good 并附加 degraded data-quality 状态。它们从不启动 hydrate、打开 archive 或回源 SQLite。首次没有已发布 snapshot 时返回 `unavailable`。
 2. Terminal writer 在持久化 terminal outcome 的同一事务中保存 canonical classification。legacy/immutable archive materializer 在后台补齐 revisioned classification coverage，并重新建立受影响的 rollup coverage。
 3. Projection worker 在后台将 rollup 的完整 interiors 与精确 boundary/tail 组合成新的 immutable snapshot；它只消费 canonical classifications，失败保持 last-good 与明确 freshness 状态。
 4. 低优先级 backfill 遇到关闭的 pressure gate 时只注册一次内存 scheduler future-eligibility deadline；对应事件或 deadline 只重新选择候选任务，执行前仍检查 durable progress，durable progress 保持不变。Account Activity V2 coverage repair 在同一 permit 内完成这个 due 检查与 repair，避免嵌套获取 global gate。
@@ -219,7 +215,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 ### Edge cases / errors
 
 - 无精确 Summary snapshot 时保留既有 unavailable 错误，不伪造 200/zero response。
-- 过期或失败的 refresh 不得把不完整数据提升为 fresh/exact；Delta Journal proof pending 的 last-good 只能作为显式 degraded response 返回，且可诊断 freshness 必须一致。
+- 过期或失败的 refresh 不得把不完整数据提升为 fresh/exact；Delta Journal 或 eligible Source Journal proof pending 的 last-good 只能作为显式 degraded response 返回，且可诊断 freshness 必须一致。
 - account rollup 落后 global rollup、archive/live overlap、source partition 与未对齐窗口边界都必须保持 exactness。
 - 任何 legacy/archived row 的 classification revision 不足都不得由不同读取器各自推导；它阻止相应 exact coverage，直到 background materializer 完成。
 - pressure defer 与实际 lock 在 counters、日志、重试与审计中是不同状态。
@@ -227,7 +223,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 ## 接口契约（Interfaces & Contracts）
 
-Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `dataQuality`，仅当请求选择 intersecting 的 Summary Delta Journal proof gap 时在 `/api/stats` 与 `/api/stats/summary` 增加 `dataQuality`：`state = "degraded"`、`proofPending = true`、`reason = "summary_delta_journal_pending"`。该状态只来自内存，不改变请求期 zero-I/O 合同；无已发布 Projection 或命中独立 durable source/archive gap 仍返回既有 `unavailable`。
+Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `dataQuality`，仅当请求选择 intersecting 的 Summary Delta Journal proof gap 或 eligible Source Journal compaction proof 时在 `/api/stats` 与 `/api/stats/summary` 增加 `dataQuality`：`state = "degraded"`、`proofPending = true`、`reason = "summary_delta_journal_pending"`。该状态只来自内存，不改变请求期 zero-I/O 合同；无已发布 Projection、无 acknowledged overlay 或命中独立 durable source/archive gap 仍返回既有 `unavailable`。
 
 ## 关联合同
 
@@ -243,7 +239,7 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 
 - Method: lightweight and stateful SQLite tests for published projections, closed-database reads, current/rolling selection boundaries, and pending Summary Delta Journal gaps.
 - covers: `REQ-RMPR-001`
-- Pass condition: exact published selections remain zero-I/O; a pending in-memory proof gap returns last-good plus acknowledged overlay with the documented degraded `dataQuality`; no published projection or independent durable gap remains unavailable.
+- Pass condition: exact published selections remain zero-I/O; a pending in-memory or eligible source-journal proof gap returns last-good plus acknowledged overlay with the documented degraded `dataQuality`; no published projection, unsafe merge, or independent durable gap is made available.
 
 ### VER-RMPR-002 — Durable coverage and archive recovery
 
@@ -298,7 +294,7 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Given 任务的 durable `next_run_after` 仍在未来，When 该任务先因 `BackgroundBusy` defer 后收到 pressure eligibility event，Then 它不执行、不写 progress 或 task-run audit，并继续等待原 deadline。
 - Given legacy long-term backlog，When migration 运行、遇到 pressure 或取消，Then 每个写事务最多 512 行、cursor 可恢复且 P1 不被低优先级写入饥饿。
 - Given 一个 checkpoint 已发布且主人确认 exact version 已部署，When 执行 900 秒 `$srv-101-ops` 只读观察，Then 结果绑定同一 release identity，不执行服务器写入。
-- Given 已发布 last-good Summary Projection、已确认 terminal overlay 与 intersecting 的 Summary Delta Journal proof gap，When 请求 `/api/stats` 或 `/api/stats/summary`，Then handler 返回 last-good 加已确认 overlay、附带 `dataQuality.proofPending = true`，且关闭 SQLite 后仍不执行 SQL、archive 或文件访问。
+- Given 已发布 last-good Summary Projection、已确认 terminal overlay 与 intersecting 的 Summary Delta Journal 或 broad Source Journal compaction proof gap，When 请求 `/api/stats` 或 `/api/stats/summary`，Then handler 返回 last-good 加已确认 overlay、附带 `dataQuality.proofPending = true`，且关闭 SQLite 后仍不执行 SQL、archive 或文件访问；scoped source identity、late historical coverage 或无 overlay 的 gap 仍返回 `unavailable`。
 - Given Summary Delta Journal proof gap 仍待后台 reconciliation，When 请求路径执行，Then 不执行 archive proof、全历史扫描或 broad JSON parse；后台以固定有界批次继续恢复，首次没有已发布 Projection 的请求仍返回 `unavailable`。
 
 ## Contract Coverage
