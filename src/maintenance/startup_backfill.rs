@@ -1814,7 +1814,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
         cancel,
         selected_tasks,
         gate,
-        None,
+        startup_backfill_observation_parent_task_key(selected_tasks),
         None,
     )
     .await
@@ -1844,9 +1844,21 @@ fn startup_backfill_observation_task_key(
     observation_parent_task_key.unwrap_or("startup_backfill")
 }
 
+fn startup_backfill_observation_parent_task_key(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> Option<&'static str> {
+    selected_tasks
+        .filter(|tasks| {
+            tasks.len() == 1
+                && tasks[0] == StartupBackfillTask::PromptCacheConversationsMaterialization
+        })
+        .map(|_| "prompt_cache_materialization")
+}
+
 async fn begin_startup_backfill_audit(
     state: &Arc<AppState>,
     cancel: &CancellationToken,
+    task_kind: SystemTaskKind,
 ) -> Result<Option<SystemTaskRunHandle>> {
     tokio::select! {
         biased;
@@ -1854,10 +1866,22 @@ async fn begin_startup_backfill_audit(
         result = begin_system_task_run_admitted(
             state.as_ref(),
             crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived,
-            SystemTaskKind::StartupBackfill,
+            task_kind,
             "event_or_due",
             Some("startup backfill maintenance changed data or failed".to_string()),
         ) => result.map(Some),
+    }
+}
+
+fn startup_backfill_audit_task_kind(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> SystemTaskKind {
+    if selected_tasks.is_some_and(|tasks| {
+        tasks.len() == 1 && tasks[0] == StartupBackfillTask::PromptCacheConversationsMaterialization
+    }) {
+        SystemTaskKind::PromptCacheMaterialization
+    } else {
+        SystemTaskKind::StartupBackfill
     }
 }
 
@@ -2022,7 +2046,12 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 // Do not hold the background slot while waiting for the process-wide write
                 // coordinator. P1/interactive writes can still preempt this P2 audit waiter.
                 drop(pressure_permit);
-                let task_run = begin_startup_backfill_audit(&state, cancel).await;
+                let task_run = begin_startup_backfill_audit(
+                    &state,
+                    cancel,
+                    startup_backfill_audit_task_kind(selected_tasks),
+                )
+                .await;
                 match task_run {
                     Ok(Some(run)) => {
                         let audit_status = if had_failure {

@@ -60,7 +60,9 @@ const RETENTION_WRITE_WARNING: Duration = Duration::from_millis(250);
 const RETENTION_WRITE_INITIAL_ROWS: usize = 4;
 pub(super) const RETENTION_WRITE_MAX_ROWS: usize = 64;
 const RETENTION_WRITE_MAX_BYTES: usize = 1024 * 1024;
-const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(60);
+// Keep the archive run bounded while allowing one normal file-preparation cycle to finish.
+// Phase timings below make it possible to replace this calibration with a measured budget.
+const RETENTION_WORK_BUDGET: Duration = Duration::from_secs(120);
 const RETENTION_SQLITE_MAINTENANCE_QUERY_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_BACKLOG_OBSERVER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const RETENTION_BACKLOG_OBSERVER_QUERY_BUDGET: Duration = Duration::from_secs(2);
@@ -76,7 +78,7 @@ const RETENTION_RAW_RECONCILIATION_PENDING_BATCH: usize = 8;
 const RETENTION_RAW_RECONCILIATION_DIRECTORY_ENTRY_BATCH: usize = 128;
 const RETENTION_RAW_RECONCILIATION_SCOPE: &str = "raw_payload_files";
 const RETENTION_RAW_RECONCILIATION_PROGRESS_RETRY_SECS: i64 = 1;
-const RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS: i64 = 5 * 60;
+pub(super) const RETENTION_RAW_RECONCILIATION_PRESSURE_RETRY_SECS: i64 = 5 * 60;
 const RETENTION_RAW_RECONCILIATION_EMPTY_RETRY_SECS: i64 = 5 * 60;
 const RETENTION_RAW_RECONCILIATION_CANDIDATE_BUDGET: Duration = Duration::from_secs(2);
 const RETENTION_RAW_RECONCILIATION_FAILURE_BACKOFF_SECS: [i64; 5] =
@@ -944,7 +946,7 @@ fn raw_orphan_sweep_admission_deferred(stage: &'static str, cause: &'static str)
     anyhow::Error::new(RawOrphanSweepAdmissionDeferred { stage, cause })
 }
 
-fn raw_orphan_sweep_admission_details(
+pub(crate) fn raw_orphan_sweep_admission_details(
     error: &anyhow::Error,
 ) -> Option<(&'static str, &'static str)> {
     error

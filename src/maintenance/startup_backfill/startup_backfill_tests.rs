@@ -1151,6 +1151,24 @@ fn managed_prompt_cache_observation_keeps_root_task_identity() {
 }
 
 #[test]
+fn background_prompt_cache_pass_uses_its_managed_task_identity() {
+    let tasks = [StartupBackfillTask::PromptCacheConversationsMaterialization];
+    assert_eq!(
+        startup_backfill_observation_parent_task_key(Some(&tasks)),
+        Some("prompt_cache_materialization")
+    );
+    assert_eq!(startup_backfill_observation_parent_task_key(None), None);
+    assert_eq!(
+        startup_backfill_audit_task_kind(Some(&tasks)).as_str(),
+        "prompt_cache_materialization"
+    );
+    assert_eq!(
+        startup_backfill_audit_task_kind(None).as_str(),
+        "startup_backfill"
+    );
+}
+
+#[test]
 fn stale_prompt_cache_disable_schedule_cannot_erase_a_resume_wake() {
     let control = crate::maintenance_store::PromptCacheMaterializationControl::default();
     control.initialize(true);

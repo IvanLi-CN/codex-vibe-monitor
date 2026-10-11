@@ -2915,6 +2915,9 @@ export interface RetentionArchiveBatchMetrics {
   elapsedMs?: number | null;
   timeoutCount?: number | null;
   smallBatchReason?: string | null;
+  sourceIdentityMs?: number | null;
+  archiveWriterMs?: number | null;
+  summaryProofMs?: number | null;
 }
 
 export interface ManagedTaskRunDetails {
@@ -6008,6 +6011,9 @@ function normalizeArchiveBatch(raw: unknown): RetentionArchiveBatchMetrics | nul
     elapsedMs: nonNegative(batch.elapsedMs),
     timeoutCount: Number.isInteger(batch.timeoutCount) ? nonNegative(batch.timeoutCount) : null,
     smallBatchReason: typeof batch.smallBatchReason === "string" ? batch.smallBatchReason : null,
+    sourceIdentityMs: nonNegative(batch.sourceIdentityMs),
+    archiveWriterMs: nonNegative(batch.archiveWriterMs),
+    summaryProofMs: nonNegative(batch.summaryProofMs),
   };
 }
 

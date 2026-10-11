@@ -563,6 +563,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     prompt_cache_keys,
                 ));
             };
+            let source_identity_started = Instant::now();
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
@@ -571,7 +572,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, source_identity_query).await {
                     Ok(result) => result?,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation
+                            .source_identity_finished(source_identity_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 source_identity_query
@@ -590,6 +595,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .context("read task-local invocation source chunk identity")?,
                 );
             }
+            batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
             if retention_run_budget_expired() {
                 break;
@@ -604,14 +610,19 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 &ids,
                 &mut snapshot_pages,
             );
+            let archive_writer_started = Instant::now();
             let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, archive_future).await {
                     Ok(result) => result,
-                    Err(_) => break,
+                    Err(_) => {
+                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        break;
+                    }
                 }
             } else {
                 archive_future.await
             };
+            batch_observation.archive_writer_finished(archive_writer_started.elapsed());
             let Some(mut archive_outcome) = (match archive_result {
                 Ok(outcome) => Some(outcome),
                 Err(error) if is_retention_write_deferred(&error) => {
@@ -668,11 +679,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 bail!("retention task-local archive artifact changed before publication");
             }
             drop(archive_lock);
-            let Some(proof) =
+            let summary_proof_started = Instant::now();
+            let proof_result =
                 batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
                     .await
-                    .context("prepare task-local monthly Summary proof")?
-            else {
+                    .context("prepare task-local monthly Summary proof");
+            batch_observation.summary_proof_finished(summary_proof_started.elapsed());
+            let Some(proof) = proof_result? else {
                 return Ok((
                     rows_archived,
                     archive_batches,
