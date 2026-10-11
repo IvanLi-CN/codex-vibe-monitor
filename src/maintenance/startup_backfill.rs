@@ -1,12 +1,11 @@
 use super::*;
-
 mod coverage_repair;
 mod progress;
 use coverage_repair::run_startup_backfill_coverage_repair_if_due;
 #[cfg(test)]
 pub(crate) use coverage_repair::run_startup_backfill_coverage_repair_if_due_with_repair;
 mod prompt_cache_control;
-
+mod task_identity;
 pub(crate) use progress::load_startup_backfill_progress_from_pool;
 #[cfg(test)]
 pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_control_for_test;
@@ -14,18 +13,20 @@ pub(crate) use prompt_cache_control::run_prompt_cache_materialization_with_contr
 pub(crate) use prompt_cache_control::wake_prompt_cache_materialization_for_test;
 #[cfg(test)]
 use prompt_cache_control::{
-    apply_prompt_cache_control_schedule, wake_prompt_cache_materialization_with_scheduler,
+    apply_prompt_cache_control_schedule, prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    wake_prompt_cache_materialization_with_scheduler,
 };
 use prompt_cache_control::{
     coordinator_for_prompt_cache_run, persist_prompt_cache_materialization_defer,
     prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
-    prompt_cache_tasks_when_startup_backfill_root_is_skipped,
+    run_background_startup_backfill_pass_with_root_state,
     save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
     set_prompt_cache_materialization_enabled_with_store,
     wake_prompt_cache_materialization_with_store,
 };
+use task_identity::{audit_task_kind, observation_parent_task_key, should_record_audit};
 
 const STARTUP_HISTORICAL_ROLLUP_BATCH_LIMIT: u64 = 16;
 const STARTUP_HISTORICAL_ROLLUP_BUDGET_SECS: u64 = 6;
@@ -42,13 +43,11 @@ fn startup_backfill_progress_pool(pool: &Pool<Sqlite>) -> Option<&Pool<Sqlite>> 
     }
     None
 }
-
 pub(crate) fn push_backfill_sample(samples: &mut Vec<String>, sample: String) {
     if samples.len() < STARTUP_BACKFILL_LOG_SAMPLE_LIMIT {
         samples.push(sample);
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum StartupBackfillTask {
     ProxyUsage,
@@ -366,7 +365,6 @@ impl StartupBackfillScheduler {
         }
     }
 }
-
 static STARTUP_BACKFILL_SCHEDULER: Lazy<StartupBackfillScheduler> =
     Lazy::new(StartupBackfillScheduler::default);
 
@@ -393,7 +391,6 @@ fn startup_backfill_wait_duration(next_due: Option<DateTime<Utc>>) -> Duration {
         None => Duration::from_secs(24 * 60 * 60),
     }
 }
-
 fn startup_backfill_progress_due(progress: &StartupBackfillProgress) -> DateTime<Utc> {
     progress
         .next_run_after
@@ -417,7 +414,6 @@ impl StartupBackfillTaskRunOutcome {
         !self.actionable && !self.failed && self.deferred && self.completed
     }
 }
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupBackfillFailureKind {
     ArchiveLockBusy,
@@ -434,7 +430,6 @@ impl StartupBackfillFailureKind {
         }
     }
 }
-
 fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureKind {
     let has_archive_lock_busy_message = err.chain().any(|cause| {
         cause
@@ -457,7 +452,6 @@ fn startup_backfill_failure_kind(err: &anyhow::Error) -> StartupBackfillFailureK
         StartupBackfillFailureKind::Operation
     }
 }
-
 fn record_startup_backfill_pressure_error(
     gate: &crate::db_pressure::DbPressureGate,
     err: &anyhow::Error,
@@ -493,7 +487,6 @@ fn startup_backfill_pressure_retry_at(
         }
     }
 }
-
 fn startup_backfill_pressure_defer_outcome(
     task: StartupBackfillTask,
     gate: &crate::db_pressure::DbPressureGate,
@@ -529,7 +522,6 @@ fn startup_backfill_pressure_defer_outcome_at(
         next_due: retry_at,
     }
 }
-
 fn startup_backfill_coordinator_defer_outcome(
     scheduler: &StartupBackfillScheduler,
     task: StartupBackfillTask,
@@ -1814,7 +1806,7 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
         cancel,
         selected_tasks,
         gate,
-        startup_backfill_observation_parent_task_key(selected_tasks),
+        observation_parent_task_key(selected_tasks),
         None,
     )
     .await
@@ -1844,17 +1836,6 @@ fn startup_backfill_observation_task_key(
     observation_parent_task_key.unwrap_or("startup_backfill")
 }
 
-fn startup_backfill_observation_parent_task_key(
-    selected_tasks: Option<&[StartupBackfillTask]>,
-) -> Option<&'static str> {
-    selected_tasks
-        .filter(|tasks| {
-            tasks.len() == 1
-                && tasks[0] == StartupBackfillTask::PromptCacheConversationsMaterialization
-        })
-        .map(|_| "prompt_cache_materialization")
-}
-
 async fn begin_startup_backfill_audit(
     state: &Arc<AppState>,
     cancel: &CancellationToken,
@@ -1870,18 +1851,6 @@ async fn begin_startup_backfill_audit(
             "event_or_due",
             Some("startup backfill maintenance changed data or failed".to_string()),
         ) => result.map(Some),
-    }
-}
-
-fn startup_backfill_audit_task_kind(
-    selected_tasks: Option<&[StartupBackfillTask]>,
-) -> SystemTaskKind {
-    if selected_tasks.is_some_and(|tasks| {
-        tasks.len() == 1 && tasks[0] == StartupBackfillTask::PromptCacheConversationsMaterialization
-    }) {
-        SystemTaskKind::PromptCacheMaterialization
-    } else {
-        SystemTaskKind::StartupBackfill
     }
 }
 
@@ -2036,7 +2005,13 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
         }
     }
 
-    if (ran_actionable_task || had_failure || detail.is_some()) && !cancel.is_cancelled() {
+    if should_record_audit(
+        managed_run_id,
+        ran_actionable_task,
+        had_failure,
+        detail.is_some(),
+        cancel.is_cancelled(),
+    ) {
         // The audit row is non-critical bookkeeping. Do not hold a pressure slot while the
         // P2 admission waits: if cancellation wins, leave the row for the next pass. The durable
         // task/progress rows above remain the source of truth.
@@ -2046,12 +2021,9 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                 // Do not hold the background slot while waiting for the process-wide write
                 // coordinator. P1/interactive writes can still preempt this P2 audit waiter.
                 drop(pressure_permit);
-                let task_run = begin_startup_backfill_audit(
-                    &state,
-                    cancel,
-                    startup_backfill_audit_task_kind(selected_tasks),
-                )
-                .await;
+                let task_run =
+                    begin_startup_backfill_audit(&state, cancel, audit_task_kind(selected_tasks))
+                        .await;
                 match task_run {
                     Ok(Some(run)) => {
                         let audit_status = if had_failure {
@@ -3582,26 +3554,6 @@ async fn run_background_startup_backfill_pass_with_gate(
         startup_backfill_root_skipped,
     )
     .await
-}
-
-async fn run_background_startup_backfill_pass_with_root_state(
-    state: Arc<AppState>,
-    cancel: &CancellationToken,
-    selected_tasks: Option<&[StartupBackfillTask]>,
-    gate: &crate::db_pressure::DbPressureGate,
-    startup_backfill_root_skipped: bool,
-) -> StartupBackfillMaintenancePass {
-    if startup_backfill_root_skipped {
-        // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
-        let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
-        if tasks.is_empty() {
-            return StartupBackfillMaintenancePass::default();
-        }
-        return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
-            .await;
-    }
-
-    run_startup_backfill_maintenance_pass_with_gate(state, cancel, selected_tasks, gate).await
 }
 
 pub(crate) fn spawn_startup_backfill_maintenance(

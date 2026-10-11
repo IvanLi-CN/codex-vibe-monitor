@@ -42,7 +42,7 @@ export function RetentionRunThroughput({
             <div className="mb-2 font-medium">
               {DATASET_LABELS[batch.dataset] ?? batch.dataset} · {batch.monthKey}
             </div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-8">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-9">
               {[
                 [
                   "已提交 / 批次",

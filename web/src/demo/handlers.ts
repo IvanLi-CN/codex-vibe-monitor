@@ -3673,7 +3673,7 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
     details:
       taskKey === "retention_archive"
         ? {
-            budgetMs: 60000,
+            budgetMs: 120000,
             elapsedMs: latestRunDurationMs || 31_000,
             settlementMs: 2,
             timeoutCount: 0,
@@ -3687,6 +3687,9 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
                 arrivalRowsPerSecond: 0.3472,
                 serviceRateMultiple: retentionCommittedRows / retentionElapsedSeconds / 0.3472,
                 filePrepareMs: 3600,
+                sourceIdentityMs: 420,
+                archiveWriterMs: 2500,
+                summaryProofMs: 180,
                 lockWaitMs: 125,
               },
               {
@@ -3698,6 +3701,9 @@ function managedTaskDetail(taskKey: string): ManagedTaskDetail | null {
                 arrivalRowsPerSecond: 0.4167,
                 serviceRateMultiple: 1000 / retentionElapsedSeconds / 0.4167,
                 filePrepareMs: 1800,
+                sourceIdentityMs: 380,
+                archiveWriterMs: 1900,
+                summaryProofMs: 150,
                 lockWaitMs: 80,
               },
             ],
@@ -5358,7 +5364,7 @@ export async function handleDemoRequest(request: Request) {
       run.details = detail.task.isManual
         ? null
         : {
-            budgetMs: 60000,
+            budgetMs: 120000,
             elapsedMs: 60042,
             settlementMs: 42,
             waitReason: "prompt_cache_refresh_pending",
@@ -5681,5 +5687,5 @@ function demoOwnedMaintenanceDetails(taskKey: string, manual = true): Record<str
       coverage: "bounded_scan",
       overallRemaining: null,
     };
-  return { ...base, budgetMs: 60000, elapsedMs: 1200 };
+  return { ...base, budgetMs: 120000, elapsedMs: 1200 };
 }

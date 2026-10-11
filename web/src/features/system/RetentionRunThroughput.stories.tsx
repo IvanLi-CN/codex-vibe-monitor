@@ -13,6 +13,9 @@ const batches: NonNullable<ManagedTaskRunDetails["archiveBatches"]> = [
     arrivalRowsPerSecond: 0.3472,
     serviceRateMultiple: 92.9,
     filePrepareMs: 3600,
+    sourceIdentityMs: 420,
+    archiveWriterMs: 2500,
+    summaryProofMs: 180,
     lockWaitMs: 125,
   },
   {
@@ -24,6 +27,9 @@ const batches: NonNullable<ManagedTaskRunDetails["archiveBatches"]> = [
     arrivalRowsPerSecond: 0.4167,
     serviceRateMultiple: 77.4,
     filePrepareMs: 1800,
+    sourceIdentityMs: 380,
+    archiveWriterMs: 1900,
+    summaryProofMs: 150,
     lockWaitMs: 80,
   },
 ];
@@ -53,6 +59,8 @@ export const Committed: Story = {
     const canvas = within(canvasElement);
     await expect(canvas.getByText("调用记录 · 2026-09")).toBeVisible();
     await expect(canvas.getByText("92.9×")).toBeVisible();
+    await expect(canvas.getByText("0.42 s")).toBeVisible();
+    await expect(canvas.getByText("2.50 s")).toBeVisible();
     await expect(canvas.getAllByText("1000 / 1000 条")).toHaveLength(2);
   },
 };

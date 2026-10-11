@@ -301,6 +301,37 @@ pub(super) fn prompt_cache_tasks_when_startup_backfill_root_is_skipped(
         .collect()
 }
 
+pub(super) fn legacy_startup_backfill_tasks(
+    selected_tasks: Option<&[StartupBackfillTask]>,
+) -> Vec<StartupBackfillTask> {
+    selected_tasks
+        .unwrap_or(StartupBackfillTask::ordered_tasks())
+        .iter()
+        .copied()
+        .filter(|task| *task != StartupBackfillTask::PromptCacheConversationsMaterialization)
+        .collect()
+}
+
+pub(super) async fn run_background_startup_backfill_pass_with_root_state(
+    state: Arc<AppState>,
+    cancel: &CancellationToken,
+    selected_tasks: Option<&[StartupBackfillTask]>,
+    gate: &crate::db_pressure::DbPressureGate,
+    startup_backfill_root_skipped: bool,
+) -> StartupBackfillMaintenancePass {
+    if startup_backfill_root_skipped {
+        // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
+        let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
+        if tasks.is_empty() {
+            return StartupBackfillMaintenancePass::default();
+        }
+        return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
+            .await;
+    }
+    let tasks = legacy_startup_backfill_tasks(selected_tasks);
+    run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate).await
+}
+
 pub(super) fn prompt_cache_stale_result_outcome() -> StartupBackfillTaskRunOutcome {
     StartupBackfillTaskRunOutcome {
         actionable: false,
