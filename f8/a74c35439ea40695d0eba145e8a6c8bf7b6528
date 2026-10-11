@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.5.7",
+  "base_stable_version": "4.5.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-11T15:25:45Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.5.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "356d6c4ada894c6d6713475163f6a5d58ef240b0",
+  "pr_number": 1106,
+  "pr_title": "fix(stats): revalidate degraded Summary SSE cache",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.5.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.5.7",
+  "target_sha": "f8a74c35439ea40695d0eba145e8a6c8bf7b6528",
+  "type_label": "type:patch"
+}
