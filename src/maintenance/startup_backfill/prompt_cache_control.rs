@@ -354,7 +354,10 @@ pub(super) fn legacy_startup_backfill_tasks(
 pub(super) fn requeue_legacy_startup_backfill_tasks(
     selected_tasks: Option<&[StartupBackfillTask]>,
 ) {
-    let paused_tasks = legacy_startup_backfill_tasks(selected_tasks);
+    let Some(selected_tasks) = selected_tasks else {
+        return;
+    };
+    let paused_tasks = legacy_startup_backfill_tasks(Some(selected_tasks));
     if !paused_tasks.is_empty() {
         super::requeue_startup_backfill_tasks(
             &paused_tasks,
