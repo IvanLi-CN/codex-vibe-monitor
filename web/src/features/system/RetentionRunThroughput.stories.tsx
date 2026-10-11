@@ -61,6 +61,7 @@ export const Committed: Story = {
     await expect(canvas.getByText("92.9×")).toBeVisible();
     await expect(canvas.getByText("0.42 s")).toBeVisible();
     await expect(canvas.getByText("2.50 s")).toBeVisible();
+    await expect(canvas.getByText("未知")).toBeVisible();
     await expect(canvas.getAllByText("1000 / 1000 条")).toHaveLength(2);
   },
 };

@@ -82,6 +82,29 @@ pub(super) async fn save_prompt_cache_materialization_progress(
     .bind(crate::maintenance::maintenance_execution_is_manual())
     .execute(pool)
     .await?;
+    let updated_at = format_utc_iso_millis(Utc::now());
+    sqlx::query(
+        "INSERT OR IGNORE INTO managed_task_progress(task_key,updated_at,freshness) VALUES('prompt_cache_materialization',?,'fresh')",
+    )
+    .bind(&updated_at)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "UPDATE managed_task_progress
+         SET total=NULL,completed=?,phase=?,checkpoint=?,updated_at=?,freshness='fresh',
+             unit='conversations',source_scope='prompt_cache_materialization',last_progress_at=?,
+             next_inspection_at=(SELECT next_trigger_at FROM managed_tasks WHERE task_key='prompt_cache_materialization'),
+             next_catchup_at=(SELECT next_catchup_at FROM managed_tasks WHERE task_key='prompt_cache_materialization'),
+             catchup_state=(SELECT CASE WHEN enabled=0 THEN 'disabled' WHEN next_catchup_at IS NOT NULL THEN 'scheduled' ELSE 'idle' END FROM managed_tasks WHERE task_key='prompt_cache_materialization')
+         WHERE task_key='prompt_cache_materialization'",
+    )
+    .bind(update.updated as i64)
+    .bind(update.status)
+    .bind(update.cursor_id.to_string())
+    .bind(&updated_at)
+    .bind(&updated_at)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 
@@ -323,17 +346,31 @@ pub(super) async fn run_background_startup_backfill_pass_with_root_state(
         // Prompt-cache materialization has its own managed control; the root task gates legacy backfills.
         let tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
         if tasks.is_empty() {
+            if let Some(selected_tasks) = selected_tasks {
+                let paused_tasks = legacy_startup_backfill_tasks(Some(selected_tasks));
+                if !paused_tasks.is_empty() {
+                    super::requeue_startup_backfill_tasks(
+                        &paused_tasks,
+                        chrono::Utc::now() + chrono::Duration::minutes(5),
+                    );
+                }
+            }
             return StartupBackfillMaintenancePass::default();
         }
-        return run_startup_backfill_maintenance_pass_with_gate(state, cancel, Some(&tasks), gate)
-            .await;
+        return super::run_startup_backfill_maintenance_pass_with_gate_held(
+            state,
+            cancel,
+            Some(&tasks),
+            gate,
+        )
+        .await;
     }
     let legacy_tasks = legacy_startup_backfill_tasks(selected_tasks);
     let prompt_tasks = prompt_cache_tasks_when_startup_backfill_root_is_skipped(selected_tasks);
     let mut pass = if legacy_tasks.is_empty() {
         StartupBackfillMaintenancePass::default()
     } else {
-        run_startup_backfill_maintenance_pass_with_gate(
+        super::run_startup_backfill_maintenance_pass_with_gate_held(
             state.clone(),
             cancel,
             Some(&legacy_tasks),
@@ -342,7 +379,7 @@ pub(super) async fn run_background_startup_backfill_pass_with_root_state(
         .await
     };
     if !prompt_tasks.is_empty() {
-        let prompt_pass = run_startup_backfill_maintenance_pass_with_gate(
+        let prompt_pass = super::run_startup_backfill_maintenance_pass_with_gate_held(
             state,
             cancel,
             Some(&prompt_tasks),

@@ -2416,6 +2416,7 @@ pub(crate) async fn run_managed_task_now(
             "maintenance database unavailable"
         )));
     };
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key).to_string();
     store
         .request_run(&task_key)
         .await

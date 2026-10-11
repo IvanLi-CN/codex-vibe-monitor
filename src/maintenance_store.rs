@@ -1267,7 +1267,15 @@ pub(crate) fn task_execution_class(task_key: &str) -> Option<&'static str> {
 }
 
 pub(crate) fn task_enabled_by_default(task_key: &str, is_manual: bool) -> bool {
-    !is_manual && DEFAULT_ENABLED_TASKS.contains(&task_key)
+    !is_manual && DEFAULT_ENABLED_TASKS.contains(&canonical_managed_task_key(task_key))
+}
+
+pub(crate) fn canonical_managed_task_key(task_key: &str) -> &str {
+    if task_key == "startup_backfill.prompt_cache_conversations_materialization" {
+        "prompt_cache_materialization"
+    } else {
+        task_key
+    }
 }
 
 const EDITABLE_SCHEDULE_TASKS: &[&str] = &[
@@ -2464,8 +2472,8 @@ impl MaintenanceStore {
         // Keep the declared managed task and its startup-backfill implementation
         // on the same control value. Both rows are updated before the transaction
         // commits so a failed control checkpoint cannot split their state.
-        if task_key != "prompt_cache_materialization" {
-            if let Some((top_interval_secs, top_cron_expr)) = sqlx::query_as::<
+        if task_key != "prompt_cache_materialization"
+            && let Some((top_interval_secs, top_cron_expr)) = sqlx::query_as::<
                 _,
                 (Option<i64>, Option<String>),
             >(
@@ -2473,21 +2481,20 @@ impl MaintenanceStore {
             )
             .fetch_optional(&mut *transaction)
             .await?
-            {
-                let top_next_trigger_at = if enabled {
-                    next_trigger_at(top_interval_secs, top_cron_expr.as_deref())
-                } else {
-                    None
-                };
-                sqlx::query(
-                    "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key='prompt_cache_materialization'",
-                )
-                .bind(enabled as i64)
-                .bind(top_next_trigger_at)
-                .bind(format_utc_iso_millis(Utc::now()))
-                .execute(&mut *transaction)
-                .await?;
-            }
+        {
+            let top_next_trigger_at = if enabled {
+                next_trigger_at(top_interval_secs, top_cron_expr.as_deref())
+            } else {
+                None
+            };
+            sqlx::query(
+                "UPDATE managed_tasks SET enabled=?,next_trigger_at=?,updated_at=? WHERE task_key='prompt_cache_materialization'",
+            )
+            .bind(enabled as i64)
+            .bind(top_next_trigger_at)
+            .bind(format_utc_iso_millis(Utc::now()))
+            .execute(&mut *transaction)
+            .await?;
         }
         transaction.commit().await?;
         Ok(self
@@ -3106,6 +3113,7 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn request_run_with_mode(&self, task_key: &str, dry_run: bool) -> Result<i64> {
+        let task_key = canonical_managed_task_key(task_key);
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
                 .bind(task_key)
@@ -4573,9 +4581,9 @@ mod tests {
     use super::{
         MANAGED_TASKS, MaintenanceStore, RetentionBacklogObservation, STARTUP_BACKFILL_TASKS,
         TaskWorkloadMetric, TaskWorkloadSample, calculate_task_workload_summary,
-        canonical_task_execution_key, cron_day_matches, ensure_schema, ensure_task_colors,
-        floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks, task_enabled_by_default,
-        task_measurement_capabilities, validate_cron_expr,
+        canonical_managed_task_key, canonical_task_execution_key, cron_day_matches, ensure_schema,
+        ensure_task_colors, floor_utc_hour, next_trigger_at, sanitize_task_detail, seed_tasks,
+        task_enabled_by_default, task_measurement_capabilities, validate_cron_expr,
     };
 
     #[test]
@@ -4593,6 +4601,44 @@ mod tests {
         assert_eq!(
             canonical_task_execution_key("summary_snapshot"),
             "summary_snapshot"
+        );
+    }
+
+    #[test]
+    fn prompt_cache_materialization_alias_uses_top_level_default() {
+        assert_eq!(
+            canonical_managed_task_key(
+                "startup_backfill.prompt_cache_conversations_materialization"
+            ),
+            "prompt_cache_materialization"
+        );
+        assert!(task_enabled_by_default(
+            "startup_backfill.prompt_cache_conversations_materialization",
+            false
+        ));
+    }
+
+    #[tokio::test]
+    async fn prompt_cache_materialization_alias_requests_top_level_run() {
+        let store = super::ownership_test_store().await;
+        let run_id = store
+            .request_run_with_mode(
+                "startup_backfill.prompt_cache_conversations_materialization",
+                true,
+            )
+            .await
+            .expect("request prompt cache alias run");
+        let row: (String, Option<String>) =
+            sqlx::query_as("SELECT task_key,details FROM managed_task_runs WHERE id=?")
+                .bind(run_id)
+                .fetch_one(&store.pool)
+                .await
+                .expect("load prompt cache alias run");
+        assert_eq!(row.0, "prompt_cache_materialization");
+        assert!(
+            row.1
+                .expect("ownership details")
+                .contains("\"ownerScope\":\"prompt_cache_materialization\"")
         );
     }
 

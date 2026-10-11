@@ -1051,20 +1051,45 @@ pub(crate) async fn archive_timestamped_dataset(
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             let source_identity_started = Instant::now();
-            let source_identity =
-                archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids)
-                    .await?;
+            let source_identity_query =
+                archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids);
+            let source_identity = if let Some(remaining) = retention_run_remaining_budget() {
+                match tokio::time::timeout(remaining, source_identity_query).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        batch_observation
+                            .source_identity_finished(source_identity_started.elapsed());
+                        break;
+                    }
+                }
+            } else {
+                source_identity_query.await?
+            };
             let mut chunk_identities = Vec::new();
+            let mut source_identity_timed_out = false;
             for chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
-                chunk_identities.push(
-                    archive_table_source_identity_sha256(
-                        &mut source_connection,
-                        spec,
-                        "main",
-                        chunk,
-                    )
-                    .await?,
+                let chunk_identity_query = archive_table_source_identity_sha256(
+                    &mut source_connection,
+                    spec,
+                    "main",
+                    chunk,
                 );
+                let chunk_identity = if let Some(remaining) = retention_run_remaining_budget() {
+                    match tokio::time::timeout(remaining, chunk_identity_query).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            source_identity_timed_out = true;
+                            break;
+                        }
+                    }
+                } else {
+                    chunk_identity_query.await?
+                };
+                chunk_identities.push(chunk_identity);
+            }
+            if source_identity_timed_out {
+                batch_observation.source_identity_finished(source_identity_started.elapsed());
+                break;
             }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
