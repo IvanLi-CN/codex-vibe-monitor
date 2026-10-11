@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.5.10",
+  "base_stable_version": "4.5.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-11T22:01:02Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.5.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "983a0e0cc82413d8c9b77a7d7039ab0d4ffbd0e3",
+  "pr_number": 1108,
+  "pr_title": "fix(maintenance): diagnose retention progress and deferrals",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.5.10",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.5.10",
+  "target_sha": "441f18de5e13a429fe4084bcb5d61f412c68f8eb",
+  "type_label": "type:patch"
+}
