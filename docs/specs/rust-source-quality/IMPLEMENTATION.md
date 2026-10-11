@@ -337,6 +337,12 @@ baseline remains 32 and 23 and the suppression baseline remains 119. Query
 routing, aggregation semantics, minute projection fences, materializer
 overlays, parallel-work responses, and test resource buckets remain unchanged.
 
+## Subscriptions Extraction
+
+`src/api/slices/subscriptions.rs` was replaced by the `subscriptions/` module directory with explicit configuration, protocol, query, topic, state, materializer, hub lifecycle, hub projection, hub recovery, and server-push modules. The second projection implementation is isolated in `hub_projection_runtime.rs` to keep each production file below the 2,500-line target. Inline tests are grouped by summary, parallel-work, hot-topic, conversation, network, replay, and shared support concerns; `prompt_cache_projection.rs`, `managed_task_timeline.rs`, and `topic_builders.rs` retain their established paths. The extraction preserves test names and behavior and introduces no `include!` boundary.
+
+The source-quality policy removes the obsolete subscriptions parent entry and records 35 explicit inventory files. The immutable baseline remains 32 production and 23 test/helper candidates, with 118 suppression entries.
+
 ## Inventory Contract
 
 The policy has 19 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
