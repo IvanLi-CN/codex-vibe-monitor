@@ -37,8 +37,9 @@
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
         "src/api/slices/summary_delta_gap.rs",
-        "src/api/slices/subscriptions.rs",
-        "src/api/slices/subscriptions/summary_cache.rs",
+        "src/api/slices/subscriptions/hub_projection.rs",
+        "src/api/slices/subscriptions/state.rs",
+        "src/api/slices/subscriptions/hub_lifecycle.rs",
         "src/api/slices/subscriptions/topic_builders.rs",
         "src/stats/mod.rs",
         "src/tests/stateful_sqlite/record_budget.rs",
@@ -55,8 +56,9 @@
         "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame",
         "src/tests/stateful_sqlite/record_budget.rs::stats_rejects_source_gap_with_invalid_overlay_identity",
         "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
-        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions/summary_cache.rs",
+        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
+        "src/api/slices/subscriptions/hub_projection.rs",
+        "src/api/slices/subscriptions/state.rs",
         "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
         "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
@@ -77,7 +79,7 @@
         "src/api/slices/settings_models_and_cache.rs::StatsResponse",
         "web/src/lib/api/core-foundation.ts::StatsDataQuality",
         "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
-        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
+        "src/api/slices/subscriptions/tests/materialization.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
         "src/tests/stateful_sqlite/record_budget.rs::summary_sse_reconnect_revalidates_source_gap_against_cached_frame"
       ]
     },
@@ -111,12 +113,12 @@
     ]
   },
   "delivery_context": {
-    "candidate_head_sha": "f4f08ee76ded9e381197aec224a6812f1a1a8381",
+    "candidate_head_sha": "535397fb30e0ee0953161d4c6a50d960f6cb13b4",
     "candidate_validation_status": "current-head-required-ci-and-tier4-pending",
-    "active_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
+    "active_base_sha": "98698a24176c9ca7d9b5c35f8268f475b8d5d4d0",
     "previous_review_base_sha": "c58a6d1f7567298983f6532523df322ea30dd1af",
     "candidate_validation_record": "assets/current-candidate-validation.json",
-    "base_sync_scope": "PR-B starts directly from origin/main@c58a6d1f7567298983f6532523df322ea30dd1af; no unrelated base merge is included.",
+    "base_sync_scope": "PR-B was rebased onto origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0; no unrelated base merge is included.",
     "required_lanes_refresh": "All required PR lanes and Tier4 reviews must bind to the pushed PR-B candidate head; prior PR #1097 and older-head CI/review are superseded.",
     "release_compatibility": "Patch remains the maximum verified impact: dataQuality is optional, and candidate-written durable state remains readable by supported earlier same-Minor readers."
   }

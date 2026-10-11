@@ -108,7 +108,7 @@
 
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
-- The current PR-B delivery starts directly from `origin/main@c58a6d1f7567298983f6532523df322ea30dd1af`; runtime implementation commit `f4f08ee76ded9e381197aec224a6812f1a1a8381` contains no unrelated base merge, and current required-lane evidence is tracked in `assets/current-candidate-validation.json`. Evidence-only follow-up commits do not alter the runtime candidate.
+- The current PR-B delivery is rebased onto `origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0`; runtime implementation commit `f34d3663c305de0f31db6cb997fbff90e0ab4167` contains no unrelated base merge, and the test-only follow-up `535397fb30e0ee0953161d4c6a50d960f6cb13b4` records the split-module materialization regression. Current required-lane evidence is tracked in `assets/current-candidate-validation.json`; documentation follow-ups do not alter the runtime candidate.
 - Summary replay-marker repair treats NULL or blank marker SHA values as legacy-readable proof, reopens nonblank stale SHA values, and forces a full existing-rollup rebuild when a materialized archive lacks either Summary marker; incomplete unmaterialized archives remain additive and bounded.
 
 ## Approved Recovery Boundary
