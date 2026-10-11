@@ -1820,7 +1820,18 @@ pub(crate) async fn run_startup_backfill_maintenance_pass_with_gate(
         }
         return StartupBackfillMaintenancePass::default();
     };
-    run_startup_backfill_maintenance_pass_with_gate_held(state, cancel, selected_tasks, gate).await
+    let pass =
+        run_startup_backfill_maintenance_pass_with_gate_held(state, cancel, selected_tasks, gate)
+            .await;
+    if cancel.is_cancelled()
+        && let Some(tasks) = selected_tasks
+    {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+    }
+    pass
 }
 
 async fn run_startup_backfill_maintenance_pass_with_gate_held(
@@ -3627,14 +3638,23 @@ async fn run_background_startup_backfill_pass_with_gate(
         }
         return StartupBackfillMaintenancePass::default();
     };
-    run_background_startup_backfill_pass_with_root_state_held(
+    let pass = run_background_startup_backfill_pass_with_root_state_held(
         state,
         cancel,
         selected_tasks,
         gate,
         startup_backfill_root_skipped,
     )
-    .await
+    .await;
+    if cancel.is_cancelled()
+        && let Some(tasks) = selected_tasks
+    {
+        STARTUP_BACKFILL_SCHEDULER.requeue_after_dispatch_gap(
+            tasks,
+            Utc::now() + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
+        );
+    }
+    pass
 }
 
 async fn run_background_startup_backfill_pass_with_root_state_held(

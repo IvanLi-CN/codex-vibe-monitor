@@ -4075,6 +4075,7 @@ impl MaintenanceStore {
         task_key: &str,
         limit: usize,
     ) -> Result<Option<TaskWorkloadTrend>> {
+        let task_key = canonical_managed_task_key(task_key);
         let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks WHERE task_key=?")
             .bind(task_key)
             .fetch_optional(&self.pool)
@@ -4091,6 +4092,7 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn detail(&self, task_key: &str) -> Result<Option<ManagedTaskDetail>> {
+        let task_key = canonical_managed_task_key(task_key);
         let task = sqlx::query_as::<_, ManagedTask>("SELECT task_key,title,description,trigger_mode,enabled,interval_secs,cron_expr,next_trigger_at,next_catchup_at,catchup_reason,is_manual,display_color_light,display_color_dark,schedule_source FROM managed_tasks WHERE task_key=?")
         .bind(task_key).fetch_optional(&self.pool).await?;
         let Some(task) = task.map(decorate_effective_schedule).map(decorate_task) else {
@@ -4640,6 +4642,13 @@ mod tests {
                 .expect("ownership details")
                 .contains("\"ownerScope\":\"prompt_cache_materialization\"")
         );
+        let detail = store
+            .detail("startup_backfill.prompt_cache_conversations_materialization")
+            .await
+            .expect("load prompt cache alias detail")
+            .expect("prompt cache alias detail exists");
+        assert_eq!(detail.task.task_key, "prompt_cache_materialization");
+        assert_eq!(detail.recent_runs.len(), 1);
     }
 
     #[tokio::test]

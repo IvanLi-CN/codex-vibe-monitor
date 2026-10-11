@@ -82,6 +82,22 @@ pub(super) async fn save_prompt_cache_materialization_progress(
     .bind(crate::maintenance::maintenance_execution_is_manual())
     .execute(pool)
     .await?;
+    sync_prompt_cache_materialization_progress(
+        pool,
+        update.updated as i64,
+        update.status,
+        update.cursor_id,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn sync_prompt_cache_materialization_progress(
+    pool: &Pool<Sqlite>,
+    completed: i64,
+    phase: &str,
+    checkpoint: i64,
+) -> Result<()> {
     let updated_at = format_utc_iso_millis(Utc::now());
     sqlx::query(
         "INSERT OR IGNORE INTO managed_task_progress(task_key,updated_at,freshness) VALUES('prompt_cache_materialization',?,'fresh')",
@@ -98,9 +114,9 @@ pub(super) async fn save_prompt_cache_materialization_progress(
              catchup_state=(SELECT CASE WHEN enabled=0 THEN 'disabled' WHEN next_catchup_at IS NOT NULL THEN 'scheduled' ELSE 'idle' END FROM managed_tasks WHERE task_key='prompt_cache_materialization')
          WHERE task_key='prompt_cache_materialization'",
     )
-    .bind(update.updated as i64)
-    .bind(update.status)
-    .bind(update.cursor_id.to_string())
+    .bind(completed)
+    .bind(phase)
+    .bind(checkpoint.to_string())
     .bind(&updated_at)
     .bind(&updated_at)
     .execute(pool)
@@ -479,5 +495,7 @@ pub(super) async fn mark_prompt_cache_materialization_running(
     .bind(crate::maintenance::maintenance_execution_is_manual())
     .execute(pool)
     .await?;
+    sync_prompt_cache_materialization_progress(pool, 0, STARTUP_BACKFILL_STATUS_RUNNING, cursor_id)
+        .await?;
     Ok(())
 }

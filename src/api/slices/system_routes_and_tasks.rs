@@ -2264,8 +2264,9 @@ pub(crate) async fn get_managed_task_workload(
             "workload limit must be between 1 and 200".to_string(),
         ));
     }
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key);
     let trend = store
-        .workload_window(&task_key, limit)
+        .workload_window(task_key, limit)
         .await
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "managed task not found".to_string()))?;
@@ -2289,8 +2290,9 @@ pub(crate) async fn get_managed_task_with_store(
     task_key: String,
     store: &crate::maintenance_store::MaintenanceStore,
 ) -> Result<Json<crate::maintenance_store::ManagedTaskDetail>, ApiError> {
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key);
     let detail = store
-        .detail(&task_key)
+        .detail(task_key)
         .await
         .map_err(ApiError::from)?
         .map(Json)
@@ -2333,26 +2335,8 @@ pub(crate) async fn update_managed_task_with_store(
         crate::OptionalField::Value(value) => Some(Some(value)),
     };
     let cron_expr = cron_expr.as_ref().map(|value| value.as_deref());
+    let task_key = crate::maintenance_store::canonical_managed_task_key(&task_key).to_string();
     if task_key == "prompt_cache_materialization" {
-        if interval_secs.is_some() || cron_expr.is_some() {
-            return Err(ApiError::bad_request(anyhow!(
-                "task does not support a new interval or cron override"
-            )));
-        }
-        let Some(enabled) = enabled else {
-            return get_managed_task_with_store(state, task_key, store).await;
-        };
-        crate::set_prompt_cache_materialization_enabled_with_store(
-            &state.pool,
-            store,
-            crate::StartupBackfillTask::PromptCacheConversationsMaterialization,
-            enabled,
-        )
-        .await
-        .map_err(ApiError::unavailable)?;
-        return get_managed_task_with_store(state, task_key, store).await;
-    }
-    if task_key == "startup_backfill.prompt_cache_conversations_materialization" {
         if interval_secs.is_some() || cron_expr.is_some() {
             return Err(ApiError::bad_request(anyhow!(
                 "task does not support a new interval or cron override"
