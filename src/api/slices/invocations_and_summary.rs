@@ -4892,15 +4892,7 @@ impl SummaryProjection {
         // even though its descriptor was absent.  The current index can then prove its rank from
         // the overlay; do not reject that newest-N selection solely because the historical proof
         // marker is still waiting for background reconciliation.
-        if gap.row_id.is_some_and(|row_id| {
-            deltas.iter().any(|delta| {
-                delta.persisted_row_id == Some(row_id)
-                    && gap.invoke_id.as_deref() == Some(delta.invoke_id.as_str())
-                    && gap.occurred_at == delta.occurred_at
-                    && upstream_account_id
-                        .is_none_or(|account_id| delta.upstream_account_id == Some(account_id))
-            })
-        }) {
+        if summary_delta_gap_has_valid_overlay_identity(gap, deltas, upstream_account_id) {
             return false;
         }
         let Some(occurred_at) = parse_to_utc_datetime(&gap.occurred_at) else {

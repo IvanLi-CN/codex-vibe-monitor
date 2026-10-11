@@ -335,6 +335,20 @@ async fn stats_serves_last_good_snapshot_for_terminal_and_source_gaps() {
         matches!(scoped_source_error, Err(ApiError::Unavailable(_))),
         "a scoped source proof must remain unavailable even with a broad compaction proof"
     );
+    let scoped_current_error = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("current".to_string()),
+            limit: Some(1),
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(scoped_current_error, Err(ApiError::Unavailable(_))),
+        "a scoped source proof must remain unavailable when its row is also in the overlay"
+    );
 
     state
         .subscription_hub
@@ -393,6 +407,12 @@ async fn summary_sse_reconnect_revalidates_source_gap_against_cached_frame() {
         TopicInitDisposition::SnapshotNoResume
     );
     assert!(initial.initial[0].frame.payload_value()["dataQuality"].is_null());
+    let _lease = state
+        .subscription_hub
+        .register_test_topic_name("stats.summary.current")
+        .await;
+    let topic_key = initial.outcomes[0].topic_key.clone();
+    let cursor = initial.outcomes[0].cursor;
 
     state
         .subscription_hub
@@ -401,14 +421,85 @@ async fn summary_sse_reconnect_revalidates_source_gap_against_cached_frame() {
     state.pool.close().await;
     let reconnect = state
         .subscription_hub
-        .prepare_connection(state.clone(), vec![descriptor], Vec::new())
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key,
+                cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        )
         .await
         .expect("revalidate cached Summary SSE frame after source gap");
     assert_eq!(
         reconnect.outcomes[0].disposition,
-        TopicInitDisposition::SnapshotNoResume
+        TopicInitDisposition::SnapshotResumeMiss
     );
     assert!(!reconnect.initial[0].frame.payload_value()["dataQuality"].is_null());
+    state
+        .subscription_hub
+        .clear_summary_source_compaction_gap()
+        .await;
+    let recovered = state
+        .subscription_hub
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor],
+            vec![SubscriptionResumeCursor {
+                topic_key: reconnect.outcomes[0].topic_key.clone(),
+                cursor: reconnect.outcomes[0].cursor,
+                schema_epoch: "stale-summary-schema".to_string(),
+            }],
+        )
+        .await
+        .expect("refresh cached Summary SSE frame after source gap recovery");
+    assert_eq!(
+        recovered.outcomes[0].disposition,
+        TopicInitDisposition::SnapshotResumeMiss
+    );
+    assert!(recovered.initial[0].frame.payload_value()["dataQuality"].is_null());
+}
+
+#[tokio::test]
+async fn stats_rejects_source_gap_with_invalid_overlay_identity() {
+    let state = crate::tests::test_state_with_openai_base(
+        url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate Summary projection before invalid overlay");
+    let mut overlay = summary_projection_test_invocation();
+    overlay.id = 913_301;
+    overlay.invoke_id.clear();
+    overlay.occurred_at = "not-a-timestamp".to_string();
+    let mut delta = persisted_dashboard_activity_terminal_delta(&overlay);
+    delta.terminal_sequence = 913_301;
+    state
+        .subscription_hub
+        .acknowledge_replayed_summary_delta(delta)
+        .await;
+    state
+        .subscription_hub
+        .record_summary_source_change_gap(913_302)
+        .await;
+    state.pool.close().await;
+
+    let result = fetch_summary(
+        State(state),
+        Query(SummaryQuery {
+            window: Some("all".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(
+        matches!(result, Err(ApiError::Unavailable(_))),
+        "an invalid acknowledged overlay must not authorize a degraded source read"
+    );
 }
 
 #[tokio::test]
