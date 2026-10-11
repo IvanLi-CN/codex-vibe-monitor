@@ -276,7 +276,7 @@ export function ModelRoutingHealthPanel({
                   : null;
               return (
                 <div key={route.model} className="bg-base-100">
-                  <div className="flex flex-wrap items-start gap-2 px-3 py-2 md:grid md:grid-cols-[minmax(0,1fr)_auto_auto_auto_auto] md:items-center">
+                  <div className="flex flex-wrap items-start gap-2 px-3 py-2 md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,auto)] md:items-center">
                     <button
                       type="button"
                       className="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
@@ -310,7 +310,7 @@ export function ModelRoutingHealthPanel({
                       ) : null}
                     </button>
                     <Chip tone={routeTone(route.state)}>{routeStateLabel(route.state, t)}</Chip>
-                    <div className="flex min-w-0 basis-full flex-wrap items-center justify-end gap-2 md:contents">
+                    <div className="flex min-w-0 basis-full flex-wrap items-center justify-end gap-2 md:flex-nowrap">
                       {route.cooldownUntil ? (
                         <span className="hidden text-xs tabular-nums tone-ink-warning md:inline">
                           {formatBeijing(route.cooldownUntil)}
