@@ -760,8 +760,7 @@ fn disabled_root_does_not_requeue_unselected_startup_pass() {
 #[test]
 fn startup_backfill_retry_scope_keeps_initial_lease_contention_bounded() {
     let legacy = startup_backfill_tasks_for_retry(None, true);
-    assert!(!legacy.contains(&StartupBackfillTask::PromptCacheConversationsMaterialization));
-    assert_eq!(legacy.len(), StartupBackfillTask::ordered_tasks().len() - 1);
+    assert!(legacy.is_empty());
 
     let all = startup_backfill_tasks_for_retry(None, false);
     assert_eq!(all, StartupBackfillTask::ordered_tasks());

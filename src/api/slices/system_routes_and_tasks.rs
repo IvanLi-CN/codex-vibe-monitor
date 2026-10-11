@@ -2369,15 +2369,21 @@ pub(crate) async fn update_managed_task_with_store(
     {
         return Err(ApiError::bad_request(anyhow!("managed task not found")));
     }
-    if task_key == "startup_backfill"
-        && enabled == Some(true)
-        && let Err(wake_error) = crate::wake_startup_backfill_tasks(
-            &state.pool,
-            crate::StartupBackfillTask::ordered_tasks(),
-            "managed_task_enabled",
+    let startup_backfill_wake_result = if task_key == "startup_backfill" && enabled == Some(true) {
+        let pricing_catalog = state.pricing_catalog.read().await.clone();
+        Some(
+            crate::wake_startup_backfill_tasks_with_pricing_catalog(
+                &state.pool,
+                crate::StartupBackfillTask::ordered_tasks(),
+                Some(&pricing_catalog),
+                "managed_task_enabled",
+            )
+            .await,
         )
-        .await
-    {
+    } else {
+        None
+    };
+    if let Some(Err(wake_error)) = startup_backfill_wake_result {
         if let Some(previous) = previous_startup_control.as_ref()
             && let Err(rollback_error) = store.restore_control_state(previous).await
         {

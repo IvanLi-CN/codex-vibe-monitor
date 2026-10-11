@@ -394,7 +394,7 @@ fn startup_backfill_tasks_for_retry(
 ) -> Vec<StartupBackfillTask> {
     selected_tasks.map(ToOwned::to_owned).unwrap_or_else(|| {
         if startup_backfill_root_skipped {
-            legacy_startup_backfill_tasks(None)
+            Vec::new()
         } else {
             StartupBackfillTask::ordered_tasks().to_vec()
         }
