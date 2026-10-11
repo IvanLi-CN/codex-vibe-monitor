@@ -150,6 +150,17 @@ function assertCoolingRowLayout(canvasElement: HTMLElement, mobile: boolean) {
   }
 }
 
+function assertExpandButtonsAligned(canvasElement: HTMLElement) {
+  const expandButtons = within(canvasElement).getAllByLabelText("展开模型路由历史");
+  const expandRights = expandButtons.map((button) => button.getBoundingClientRect().right);
+  const firstRight = expandRights[0];
+
+  expect(firstRight).toBeDefined();
+  for (const right of expandRights.slice(1)) {
+    expect(Math.abs(right - firstRight)).toBeLessThanOrEqual(1);
+  }
+}
+
 async function assertMixedStates(canvasElement: HTMLElement, mobile: boolean) {
   const canvas = within(canvasElement);
   await expect(canvas.getByText("gpt-5.5", { exact: true })).toBeVisible();
@@ -157,6 +168,7 @@ async function assertMixedStates(canvasElement: HTMLElement, mobile: boolean) {
   await expect(canvas.getAllByLabelText("展开模型路由历史")[0]).toBeVisible();
   await expect(canvas.getByTestId("model-routing-cache-usage-missing-o4-mini")).toBeVisible();
   assertCoolingRowLayout(canvasElement, mobile);
+  assertExpandButtonsAligned(canvasElement);
 }
 
 const meta = {
