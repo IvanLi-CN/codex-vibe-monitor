@@ -367,3 +367,9 @@ semantics, minute projection fences, materializer overlays, parallel-work
 responses, and test resource buckets remain unchanged.
 
 The subscriptions source extraction replaces the 24,445-line flat source with a real module directory. Configuration, protocol, query, topic, state, materializer, hub lifecycle, hub projection, hub recovery, and server-push responsibilities now have named Rust modules, with a separate runtime projection module keeping the production files below the 2,500-line target. The inline tests are grouped into summary, parallel-work, hot-topic, conversation, network, replay, and shared-support files below the 3,000-line test/helper target; existing topic-builder, prompt-cache, and managed-task test paths remain. The source-quality policy removes the obsolete parent entry, reducing the explicit inventory to 35 while retaining the immutable 32/23 candidate baseline and the existing suppression inventory.
+
+## Long-Term Statistics Extraction
+
+The flat `src/long_term_stats.rs` source is replaced by the `src/long_term_stats/` module directory. Models, archive compatibility, schema, projection runtime/rebuild, integrity, refresh, intervals, and projection flushing now have explicit module boundaries, and the inline tests are grouped by control, integrity, intervals, refresh, archive, and shared support concerns. Existing names, visibility paths, SQL, timing, assertions, resource classification, and cleanup behavior remain unchanged, with no `include!` composition.
+
+After rustfmt, every production child is below 2,500 lines and every test/helper child is below 3,000 lines. The policy removes the obsolete parent entry and now has 34 explicit files, while immutable baseline candidate counts remain 32 production and 23 test/helper. The two moved refresh `#[expect]` declarations retain their suppression inventory entries under `src/long_term_stats/refresh.rs`.

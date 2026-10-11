@@ -343,6 +343,14 @@ overlays, parallel-work responses, and test resource buckets remain unchanged.
 
 The source-quality policy removes the obsolete subscriptions parent entry and records 35 explicit inventory files. The immutable baseline remains 32 production and 23 test/helper candidates, with 118 suppression entries.
 
+## Long-Term Statistics Extraction
+
+The flat `src/long_term_stats.rs` source is replaced by the `src/long_term_stats/` module directory. The extraction places models, archive compatibility, schema and migrations, projection runtime/rebuild, integrity, refresh lifecycle, intervals, and projection flushing in named modules, while the API-facing paths continue to resolve through the facade. The inline tests move into control, integrity, intervals, refresh, archive, and shared-support modules without changing test names, resource boundaries, assertions, SQL, timing, or cleanup behavior.
+
+After rustfmt, the production files are 69, 521, 890, 912, 1,904, 1,554, 1,250, 2,379, 1,283, and 33 lines; the test/helper files are 14, 265, 1,998, 1,632, 1,699, 1,048, and 1,534 lines. Every extracted file is below its destination target, so the obsolete parent is removed from the policy inventory. The current policy has 34 entries, the immutable baseline remains 32 production and 23 test/helper candidates, and the two refresh `#[expect]` declarations are recorded under their new path.
+
+Validation for this extraction is the focused long-term statistics test selector, rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
+
 ## Inventory Contract
 
 The policy has 19 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
