@@ -285,6 +285,31 @@ async fn invocation_ranges_parallel_issuance_is_unique() {
     assert!(ids.iter().all(|id| id.len() == 10));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn invocation_ranges_concurrent_cold_conversation_initialization_completes() {
+    let pool = ranges_fixture().await;
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let mut tasks = tokio::task::JoinSet::new();
+    for number in 0..32 {
+        let manager = manager.clone();
+        let pool = pool.clone();
+        tasks.spawn(async move {
+            let key = format!("concurrent-cold-{number}");
+            let result = manager.allocate(&pool, Some(&key)).await;
+            (key, result)
+        });
+    }
+
+    let mut ids = HashSet::new();
+    while let Some(result) = tasks.join_next().await {
+        let (key, result) = result.unwrap();
+        let id = result.unwrap_or_else(|error| panic!("cold allocation failed for {key}: {error}"));
+        assert!(ids.insert(id));
+    }
+    assert_eq!(ids.len(), 32);
+}
+
 #[tokio::test]
 async fn invocation_ranges_mixed_batch_respects_strict_thresholds() {
     let pool = ranges_fixture().await;
