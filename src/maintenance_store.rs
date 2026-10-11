@@ -3367,6 +3367,9 @@ impl MaintenanceStore {
             .await?;
         }
         transaction.commit().await?;
+        // Legacy progress is imported after task seeding, so canonicalize again
+        // before the first process exposes maintenance history to readers.
+        canonicalize_prompt_cache_alias_history(&self.pool).await?;
         Ok(())
     }
 
@@ -6968,6 +6971,12 @@ mod tests {
         .await
         .unwrap();
         assert!(enabled);
+        let progress_keys: Vec<String> =
+            sqlx::query_scalar("SELECT task_key FROM managed_task_progress ORDER BY task_key")
+                .fetch_all(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(progress_keys, vec!["prompt_cache_materialization"]);
         assert!(!store.apply_initial_task_defaults().await.unwrap());
     }
 
