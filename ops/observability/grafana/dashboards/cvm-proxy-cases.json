@@ -127,14 +127,14 @@
       },
       "options": {
         "mode": "markdown",
-        "content": "正常容量内全量轻量采集，界面每类最多 **3 条**，默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。单击 TraceID 后选择“展开此请求瀑布图”查看原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
+        "content": "正常容量内全量轻量采集，界面每类最多 **3 条可展开的完整案例**；案例列表只展示 `cvm.export_completeness=detailed`，摘要记录仍用于总体统计但不进入瀑布图案例。默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。若某类显示“无可用案例”，通常表示当前窗口没有命中详细样本，请扩大窗口后再查。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`summary` 记录只保留根 span 与落盘旁路，不能代表完整阶段；`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。单击 TraceID 后选择“展开此请求瀑布图”查看原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
       }
     },
     {
       "id": 10,
       "type": "table",
       "title": "正常随机候选",
-      "description": "同一 UTC 窗口和筛选，最多三条已留存案例；无记录可能是未结束、未匹配、过期或丢失。",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
       "gridPos": {
         "x": 0,
         "y": 5,
@@ -153,7 +153,7 @@
             "uid": "cvm-tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.normal_candidate = true }",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.normal_candidate = true }",
           "limit": 3,
           "tableType": "traces"
         }
@@ -191,7 +191,7 @@
       "id": 11,
       "type": "table",
       "title": "慢响应（≥30s）",
-      "description": "同一 UTC 窗口和筛选，最多三条已留存案例；无记录可能是未结束、未匹配、过期或丢失。",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
       "gridPos": {
         "x": 12,
         "y": 5,
@@ -210,7 +210,7 @@
             "uid": "cvm-tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.slow = true }",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.slow = true }",
           "limit": 3,
           "tableType": "traces"
         }
@@ -248,7 +248,7 @@
       "id": 12,
       "type": "table",
       "title": "高本地等待（≥250ms）",
-      "description": "同一 UTC 窗口和筛选，最多三条已留存案例；无记录可能是未结束、未匹配、过期或丢失。",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
       "gridPos": {
         "x": 0,
         "y": 12,
@@ -267,7 +267,7 @@
             "uid": "cvm-tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.high_wait = true }",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.high_wait = true }",
           "limit": 3,
           "tableType": "traces"
         }
@@ -305,7 +305,7 @@
       "id": 13,
       "type": "table",
       "title": "重试",
-      "description": "同一 UTC 窗口和筛选，最多三条已留存案例；无记录可能是未结束、未匹配、过期或丢失。",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
       "gridPos": {
         "x": 12,
         "y": 12,
@@ -324,7 +324,7 @@
             "uid": "cvm-tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.retry = true }",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.retry = true }",
           "limit": 3,
           "tableType": "traces"
         }
@@ -362,7 +362,7 @@
       "id": 14,
       "type": "table",
       "title": "错误 / 取消 / HTTP 拒绝",
-      "description": "同一 UTC 窗口和筛选，最多三条已留存案例；无记录可能是未结束、未匹配、过期或丢失。",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
       "gridPos": {
         "x": 0,
         "y": 19,
@@ -381,7 +381,7 @@
             "uid": "cvm-tempo"
           },
           "queryType": "traceql",
-          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && (span.cvm.outcome = \"error\" || span.cvm.outcome = \"cancelled\" || span.cvm.status_class = \"4xx\" || span.cvm.status_class = \"5xx\") }",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && (span.cvm.outcome = \"error\" || span.cvm.outcome = \"cancelled\" || span.cvm.status_class = \"4xx\" || span.cvm.status_class = \"5xx\") }",
           "limit": 3,
           "tableType": "traces"
         }
