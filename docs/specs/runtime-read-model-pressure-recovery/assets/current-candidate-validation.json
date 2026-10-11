@@ -24,10 +24,10 @@
     "contract_regressions": [
       "summary_projection_refresh_keeps_historical_gap_local_until_supervisor_proof",
       "hydrated_summary_topic_recovers_after_terminal_overlay_overflow_is_durably_covered",
-      "hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+      "hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
       "summary_delta_journal_proof_budget_retains_broad_fail_closed_guard",
       "all_time_overlay_overflow_does_not_block_rolling_summary",
-      "stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+      "stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
       "stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow"
     ],
     "migration_and_compatibility_regressions": [

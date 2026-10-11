@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Expose explicit degraded Summary data quality, fail closed for unproven current rank and source gaps, and repair pending invocation archive Summary rollups with fail-closed SHA identity, durable cross-page deduplication, and bounded background batches that resume from durable page state.",
+    "description": "Expose explicit degraded Summary data quality, serve eligible broad Source Journal compaction gaps with acknowledged overlays, fail closed for scoped source gaps and unproven current rank, and repair pending invocation archive Summary rollups with fail-closed SHA identity, durable cross-page deduplication, and bounded background batches that resume from durable page state.",
     "release_unit_description": "PR #1097 runtime Summary read-model recovery.",
     "affected_contracts": [
       "public-api",
@@ -20,7 +20,7 @@
       "reasoning": "The public change is one optional additive StatsResponse.dataQuality object. The durable change adds an optimizer-only partial index and reconciles existing replay-marker and hourly-rollup representations; no new row or column encoding is introduced.",
       "assessed_at": "2026-10-09T10:54:44Z",
       "evidence": [
-        "docs/adr/0034-summary-delta-degraded-read-path.md",
+        "docs/adr/0035-summary-source-journal-degraded-read-path.md",
         "docs/specs/runtime-read-model-pressure-recovery/SPEC.md",
         "src/api/slices/settings_models_and_cache.rs",
         "src/schema.rs"
@@ -32,7 +32,7 @@
         "detected": false,
         "description": "No new public or durable compatibility surface beyond the planned optional data-quality field, partial index, and bounded repair writes; the additional fail-closed decisions narrow claims without changing the response schema."
       },
-      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the archive and existing rollup representations while ignoring the additive seek index and repair-state table. Terminal-journal proof-budget overflow preserves a degraded last-good snapshot, while source-journal loss and an unproven current rank remain unavailable. NULL or blank replay-marker SHA values are unknown rather than legacy-readable coverage; stale or unknown markers and missing materialized Summary markers re-enter idempotent paged repair, with durable page and seen-ID state keeping the driver fail-closed until completion.",
+      "reasoning": "Healthy responses omit dataQuality, older JSON consumers ignore the optional field, and supported earlier same-Minor readers can read the archive and existing rollup representations while ignoring the additive seek index and repair-state table. Terminal-journal proof-budget overflow and an eligible broad Source Journal compaction proof with an acknowledged overlay preserve a degraded last-good snapshot, while scoped source loss and an unproven current rank remain unavailable. NULL or blank replay-marker SHA values are unknown rather than legacy-readable coverage; stale or unknown markers and missing materialized Summary markers re-enter idempotent paged repair, with durable page and seen-ID state keeping the driver fail-closed until completion.",
       "reassessed_at": "2026-10-09T15:28:55Z",
       "evidence": [
         "src/api/slices/invocations_and_summary.rs",
@@ -47,12 +47,12 @@
     },
     "verified": {
       "impact": "patch",
-      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the optimizer indexes idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, source-gap and current-rank fail-closed behavior, all-time missing-baseline handling, NULL/blank marker repair, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary, cross-page source-ID deduplication, safe-bucket replacement beside a preserved missing authority bucket, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
+      "reasoning": "The candidate preserves the existing Summary response fields, adds only a skipped optional field, installs the optimizer indexes idempotently, and replays bounded archive batches transactionally into existing state. Candidate source and named regressions verify terminal-gap degradation after proof-budget overflow, eligible broad source-compaction degradation with acknowledged overlays, scoped source and current-rank fail-closed behavior, all-time missing-baseline handling, NULL/blank marker repair, stale-marker reopening, a 129-archive stale-marker full rebuild, pagination past the 4,096-archive replacement boundary, cross-page source-ID deduplication, safe-bucket replacement beside a preserved missing authority bucket, same-bucket additive repair across the 128-batch boundary, restored-live deduplication, and incomplete live-cursor retry safety.",
       "verified_at": "2026-10-09T15:28:55Z",
       "evidence": [
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
+        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
         "src/tests/stateful_sqlite/record_budget.rs::stats_keeps_terminal_gap_degraded_after_gap_proof_budget_overflow",
-        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap",
+        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps",
         "src/api/slices/invocations_and_summary.rs::summary_projection_bootstrap_publishes_exact_rolling_before_all_time_reconciliation",
         "src/tests/stateful_sqlite/record_budget.rs::ensure_schema_adds_pending_summary_rollup_partial_index_idempotently",
         "src/tests/stateful_sqlite/record_budget.rs::summary_rollup_repair_reopens_stale_archive_sha_markers",
@@ -72,8 +72,8 @@
       "evidence": [
         "src/api/slices/settings_models_and_cache.rs::StatsResponse",
         "web/src/lib/api/core-foundation.ts::StatsDataQuality",
-        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_gap_but_rejects_source_gap",
-        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_gap_but_rejects_source_gap"
+        "src/tests/stateful_sqlite/record_budget.rs::stats_serves_last_good_snapshot_for_terminal_and_source_gaps",
+        "src/api/slices/subscriptions.rs::hydrated_summary_topic_degrades_for_terminal_and_source_gaps"
       ]
     },
     "persistent_state": {

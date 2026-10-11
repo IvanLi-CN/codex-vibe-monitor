@@ -56,9 +56,11 @@
 - HTTP and Summary SSE compose the immutable base and journal from hub memory.
   A current selection that would require rank replacement, or a range intersecting
   an independent archive/source coverage gap, is unavailable rather than
-  approximate. A range intersecting only a `DeltaGapProof` serves the published
-  last-good base plus acknowledged overlay with explicit `dataQuality` degraded
-  status; `/api/stats` uses the same all-time memory path.
+  approximate. A selection intersecting only a terminal `DeltaGapProof` or an
+  eligible broad Source Journal compaction proof serves the published last-good
+  base plus acknowledged overlay with explicit `dataQuality` degraded status;
+  scoped source identity gaps and missing overlays remain unavailable, and
+  `/api/stats` uses the same all-time memory path.
 - Summary archive replay-marker repair is ordered by dedicated partial SQLite
   indexes, and replay admission requires a nonblank marker matching the current
   archive SHA; NULL or blank markers fail closed. Additive repair reads at most 128
