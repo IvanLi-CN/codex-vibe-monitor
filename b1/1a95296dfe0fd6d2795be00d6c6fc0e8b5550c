@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.5.11",
+  "base_stable_version": "4.5.10",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-12T14:43:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.5.11",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "59d76f03d895c992a9bf376d23a4cf325be97532",
+  "pr_number": 1111,
+  "pr_title": "perf(web): reduce dashboard live frame cost",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.5.11",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.5.11",
+  "target_sha": "b11a95296dfe0fd6d2795be00d6c6fc0e8b5550c",
+  "type_label": "type:patch"
+}
