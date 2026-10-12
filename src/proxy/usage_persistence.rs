@@ -4391,6 +4391,78 @@ pub(crate) async fn observe_successful_proxy_capture_model_route_cache(
     }
 }
 
+pub(crate) fn schedule_successful_proxy_capture_model_route_cache_observation(
+    state: &AppState,
+    record: &ProxyCaptureRecord,
+) {
+    let pool = state.pool.clone();
+    let reservations = state.pool_routing_reservations.clone();
+    let availability = state.pool_routing_availability.clone();
+    let subscription_hub = state.subscription_hub.clone();
+    let record = record.clone();
+    crate::observability::diagnostics::spawn(async move {
+        if record.status != "success" {
+            return;
+        }
+        let metadata = terminal_payload_metadata(record.payload.as_deref());
+        let Some(account_id) = metadata.upstream_account_id else {
+            return;
+        };
+        let model = metadata
+            .request_model
+            .as_deref()
+            .or(record.model.as_deref())
+            .map(str::trim)
+            .filter(|model| !model.is_empty());
+        let reservation_key = pool_routing_reservation_key_for_invoke_id(&record.invoke_id);
+        let active_concurrency = {
+            let reservations_guard = reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned");
+            let reservation_held = reservation_key.as_deref().is_some_and(|key| {
+                reservations_guard.get(key).is_some_and(|reservation| {
+                    reservation.account_id == account_id
+                        && reservation.model.as_deref().is_some_and(|value| {
+                            model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                        })
+                })
+            });
+            reservations_guard
+                .values()
+                .filter(|reservation| {
+                    reservation.account_id == account_id
+                        && reservation.model.as_deref().is_some_and(|value| {
+                            model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                        })
+                })
+                .count() as i64
+                + i64::from(!reservation_held)
+        };
+        let Ok(outcome) = observe_model_route_cache_hit(
+            &pool,
+            account_id,
+            model,
+            record.usage.input_tokens,
+            record.usage.cache_input_tokens,
+            active_concurrency,
+        )
+        .await
+        else {
+            return;
+        };
+        if outcome.observed {
+            subscription_hub.publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+        }
+        if outcome.availability_increased
+            && pool_account_allows_model_route_availability_publish(&pool, account_id)
+                .await
+                .unwrap_or(false)
+        {
+            availability.publish();
+        }
+    });
+}
+
 pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
     state: &AppState,
     record: ProxyCaptureRecord,
@@ -4418,7 +4490,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 );
                 return Ok(());
             }
-            observe_successful_proxy_capture_model_route_cache(state, &record).await;
+            // Model-route cache observation belongs to the derived queue. It
+            // must not reacquire InteractiveProxy while finalizing an in-memory
+            // runtime attempt.
             let projection =
                 register_terminal_projection_before_enqueue(state, &persisted_record).await;
             let delta = &projection.dashboard;
@@ -4446,7 +4520,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                         enqueued_at: None,
                         diagnostic: crate::observability::diagnostics::current()
                             .map(|c| c.persistence()),
-                        record,
+                        record: record.clone(),
                         attempts: runtime_attempts.clone(),
                         capture_started: None,
                         raw_capture: false,
@@ -4497,6 +4571,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     .await;
             }
             if terminal_enqueued {
+                schedule_successful_proxy_capture_model_route_cache_observation(state, &record);
                 state
                     .subscription_hub
                     .publish_runtime_mutation(RuntimeMutation::invocation(

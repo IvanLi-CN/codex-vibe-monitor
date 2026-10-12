@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -3467,6 +3467,7 @@ pub(crate) async fn flush_pending_batch(
         )
         .await;
         let mut poison_record_count = 0_usize;
+        let mut quarantined_terminal_keys = HashSet::new();
         let p1_result = match initial_result {
             Err(err) if !is_sqlite_lock_error(&err) => {
                 let mut deferred = PendingBatch::default();
@@ -3495,10 +3496,15 @@ pub(crate) async fn flush_pending_batch(
                                 .ok()
                                 .and_then(|mut journal| {
                                     journal.as_mut().map(|journal| {
-                                        let result = journal.quarantine(
-                                            terminal,
-                                            "terminal_materialization_failed",
-                                        );
+                                        let result = journal
+                                            .quarantine(terminal, "terminal_materialization_failed")
+                                            .and_then(|()| {
+                                                journal.quarantine_shutdown_batch(
+                                                    &[terminal],
+                                                    &[],
+                                                    "terminal_materialization_failed",
+                                                )
+                                            });
                                         if result.is_ok()
                                             && !journal.remember_shutdown_recovery(&[terminal])
                                         {
@@ -3517,6 +3523,11 @@ pub(crate) async fn flush_pending_batch(
                                 break;
                             }
                             poison_record_count = poison_record_count.saturating_add(1);
+                            quarantined_terminal_keys.insert((
+                                terminal.record.invoke_id.clone(),
+                                terminal.record.occurred_at.clone(),
+                                terminal.raw_capture,
+                            ));
                             warn!(
                                 invoke_id = %terminal.record.invoke_id,
                                 occurred_at = %terminal.record.occurred_at,
@@ -3566,11 +3577,17 @@ pub(crate) async fn flush_pending_batch(
                     }
                     // Pending namespace protection covers the await above; only
                     // release it after the old in-memory reference is reconciled.
-                    terminal_journal.acknowledge(
-                        &terminal.record.invoke_id,
-                        &terminal.record.occurred_at,
+                    if !quarantined_terminal_keys.contains(&(
+                        terminal.record.invoke_id.clone(),
+                        terminal.record.occurred_at.clone(),
                         terminal.raw_capture,
-                    );
+                    )) {
+                        terminal_journal.acknowledge(
+                            &terminal.record.invoke_id,
+                            &terminal.record.occurred_at,
+                            terminal.raw_capture,
+                        );
+                    }
                 }
                 batch.merge_p2(deferred);
             }
@@ -4216,14 +4233,6 @@ pub(crate) async fn flush_pending_batch_inner(
                         upstream_account_id: record.upstream_account_id,
                         request_model: None,
                     });
-            if let Some(prompt_cache_key) = payload_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.prompt_cache_key.as_deref())
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-            {
-                prompt_cache_keys_touched.insert(prompt_cache_key.to_string());
-            }
             let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
                 persisted.as_ref().map(|record| {
                     let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
@@ -4245,60 +4254,9 @@ pub(crate) async fn flush_pending_batch_inner(
                 summary_delta,
             ));
         }
-        // Build derived work from the terminal rows, but execute it only after
-        // the terminal fact transaction commits. Derived projection failures must
-        // not roll back the business fact or extend its P1 write transaction.
-        let descriptor_entries = persisted_terminals
-            .iter()
-            .map(
-                |(terminal, invocation_id, occurred_at, payload_metadata, _)| {
-                    SummarySourceChangeEntry {
-                        row_id: *invocation_id,
-                        invoke_id: terminal.record.invoke_id.clone(),
-                        occurred_at: occurred_at.clone(),
-                        upstream_account_id: payload_metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.upstream_account_id),
-                        current_rank: None,
-                    }
-                },
-            )
-            .collect::<Vec<_>>();
-        let summary_descriptor = if !descriptor_entries.is_empty() {
-            let source_revision = persisted_terminals
-                .iter()
-                .filter_map(|(terminal, ..)| terminal.dashboard_terminal_sequence)
-                .max()
-                .unwrap_or_default();
-            Some(SummarySourceChangeDescriptor::terminal_batch(
-                source_revision,
-                descriptor_entries,
-            )?)
-        } else {
-            None
-        };
+        // The terminal fact is the only P1 responsibility. Summary and prompt-cache
+        // projections are converted into the returned P2 batch below, after this commit.
         terminal_tx.commit().await?;
-        if summary_descriptor.is_some() || !prompt_cache_keys_touched.is_empty() {
-            let derived_result: Result<()> = async {
-                let mut derived_tx = connection.begin().await?;
-                if let Some(descriptor) = summary_descriptor.as_ref() {
-                    append_summary_source_change_descriptor_tx(derived_tx.as_mut(), descriptor)
-                        .await?;
-                }
-                if !prompt_cache_keys_touched.is_empty() {
-                    mark_prompt_cache_conversation_stats_stale_on_connection(
-                        derived_tx.as_mut(),
-                    )
-                    .await?;
-                }
-                derived_tx.commit().await?;
-                Ok(())
-            }
-            .await;
-            if let Err(error) = derived_result {
-                warn!(error = %error, "terminal derived projection deferred after fact commit");
-            }
-        }
         Ok(())
         }.await;
         if let Some(m) = observability {

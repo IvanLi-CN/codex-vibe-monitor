@@ -1186,12 +1186,11 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
-    super::usage_persistence::observe_successful_proxy_capture_model_route_cache(state, &record)
-        .await;
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
     let delta = &projection.dashboard;
     if !delta.duplicate {state.observability.proxy_terminal(&record,inserted_record.endpoint.as_deref());}
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
+    let model_route_record = record.clone();
     let runtime_attempts = state
         .proxy_runtime_attempts
         .take_for_invocation(&inserted_record.invoke_id, &inserted_record.occurred_at);
@@ -1259,6 +1258,10 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .await;
     }
     if terminal_enqueued {
+        super::usage_persistence::schedule_successful_proxy_capture_model_route_cache_observation(
+            state,
+            &model_route_record,
+        );
         state
             .subscription_hub
             .publish_runtime_mutation(RuntimeMutation::invocation(

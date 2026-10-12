@@ -626,23 +626,32 @@ impl TerminalJournal {
                     format!("failed to open terminal recovery sink {}", path.display())
                 })?;
             for terminal in terminals {
-                serde_json::to_writer(
-                    &mut file,
-                    &ShutdownTerminalRecoveryLine {
-                        invoke_id: terminal.record.invoke_id.clone(),
-                        occurred_at: terminal.record.occurred_at.clone(),
-                        raw_capture: terminal.raw_capture,
-                        acknowledged: false,
-                        error: Some(error.to_string()),
-                        record: Some(journal_safe_terminal_record(&terminal.record)),
-                        attempts: terminal
-                            .attempts
-                            .iter()
-                            .map(journal_safe_attempt_snapshot)
-                            .collect(),
-                    },
-                )
+                let encoded = serde_json::to_vec(&ShutdownTerminalRecoveryLine {
+                    invoke_id: terminal.record.invoke_id.clone(),
+                    occurred_at: terminal.record.occurred_at.clone(),
+                    raw_capture: terminal.raw_capture,
+                    acknowledged: false,
+                    error: Some("terminal_materialization_failed".to_string()),
+                    record: Some(journal_safe_terminal_record(&terminal.record)),
+                    attempts: terminal
+                        .attempts
+                        .iter()
+                        .map(journal_safe_attempt_snapshot)
+                        .collect(),
+                })
                 .context("failed to encode terminal recovery entry")?;
+                let current_bytes = file
+                    .metadata()
+                    .context("failed to inspect terminal recovery capacity")?
+                    .len();
+                let encoded_bytes = encoded.len().saturating_add(1) as u64;
+                if current_bytes.saturating_add(encoded_bytes)
+                    > TERMINAL_JOURNAL_MAX_DEFERRED_BYTES as u64
+                {
+                    return Err(anyhow::anyhow!("terminal recovery capacity exhausted"));
+                }
+                file.write_all(&encoded)
+                    .context("failed to append terminal recovery entry")?;
                 file.write_all(b"\n")
                     .context("failed to append terminal recovery delimiter")?;
             }
@@ -1239,16 +1248,16 @@ impl TerminalJournal {
                 if recovery_only {
                     return;
                 }
-            } else if recovery_only || !recovery_shadowed_journal {
-                if let Some((record, attempts)) = self.shutdown_recovery_pending.remove(&key) {
-                    self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_sub(
-                        record.estimated_memory_bytes()
-                            + attempts
-                                .iter()
-                                .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
-                                .sum::<usize>(),
-                    );
-                }
+            } else if (recovery_only || !recovery_shadowed_journal)
+                && let Some((record, attempts)) = self.shutdown_recovery_pending.remove(&key)
+            {
+                self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_sub(
+                    record.estimated_memory_bytes()
+                        + attempts
+                            .iter()
+                            .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                            .sum::<usize>(),
+                );
             }
         }
         let mut pending_sequences = Vec::new();
@@ -1957,11 +1966,9 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
                 let _ = corrupt_file.sync_data();
             }
             corrupt = true;
-            // A malformed recovery line is an untrusted tail. Stop at the
-            // boundary so later lines are not treated as durable ordering
-            // evidence; the original file and its corrupt copy remain for
-            // operator repair.
-            break;
+            // Preserve the corrupt line for repair, but continue scanning so a
+            // later valid recovery record cannot be stranded behind it.
+            continue;
         };
         let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
         if entry.acknowledged {
