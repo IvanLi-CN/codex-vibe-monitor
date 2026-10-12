@@ -57,7 +57,7 @@
     {
       "path": "src/proxy/failover.rs",
       "role": "production",
-      "line_budget": 4869,
+      "line_budget": 4879,
       "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
     },
     {
