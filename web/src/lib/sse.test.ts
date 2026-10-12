@@ -510,6 +510,25 @@ describe("sse topic registry", () => {
     vi.advanceTimersByTime(0);
     expect(sse.getCachedTopicState(ordinary)).toBeNull();
 
+    const recoveryConnection = FakeEventSource.instances.at(-1)!;
+    recoveryConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: ordinary,
+          topicKey: "forward-proxy-live",
+          schemaEpoch: "forward-proxy.live/v1",
+          cursor: 1,
+          payload: [{ task: "valid-array-payload" }],
+        }),
+      }),
+    );
+    expect(sse.getCachedTopicState(ordinary)).toMatchObject({
+      cursor: 1,
+      payload: [{ task: "valid-array-payload" }],
+    });
+
     unsubscribeOrdinary();
     unsubscribeTimeseries();
   });

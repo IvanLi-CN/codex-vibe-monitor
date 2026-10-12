@@ -704,12 +704,16 @@ function isJsonShapeCompatible(previous: unknown, next: unknown): boolean {
 }
 
 function isValidFullPayload(topic: string, payload: unknown): boolean {
-  if (!isRecord(payload)) return false;
+  if (payload == null) return false;
   if (topic === "stats.timeseries.open-window") {
-    return Array.isArray(payload.points) && payload.points.every(isRecord);
+    return isRecord(payload) && Array.isArray(payload.points) && payload.points.every(isRecord);
   }
   if (topic === "dashboard.working-conversations.current") {
-    return Array.isArray(payload.conversations) && payload.conversations.every(isRecord);
+    return (
+      isRecord(payload) &&
+      Array.isArray(payload.conversations) &&
+      payload.conversations.every(isRecord)
+    );
   }
   return true;
 }
