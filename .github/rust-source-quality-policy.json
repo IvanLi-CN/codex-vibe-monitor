@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 34,
-    "suppression_entries": 119
+    "suppression_entries": 120
   },
   "loc_targets": {
     "production": 2500,
@@ -69,7 +69,7 @@
     {
       "path": "src/proxy/route_selection.rs",
       "role": "production",
-      "line_budget": 3793,
+      "line_budget": 3803,
       "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
     },
     {
@@ -787,6 +787,12 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky clear fencing carries the route identity, generation, and causal attempt metadata.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/sticky_routes.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/sticky_routes.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky clear fencing carries route identity, generation, request model, and causal attempt metadata.\" )]",
+      "reason": "Retain this targeted expect for the request-model-aware sticky clear boundary in src/upstream_accounts/routing/sticky_routes.rs; remove it when the listed boundary split is complete."
     },
     {
       "path": "src/upstream_accounts/sync.rs",

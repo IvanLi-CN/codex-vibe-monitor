@@ -1336,7 +1336,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             if is_scope_permission_error_message(error_message)
                 && let Some(sticky_key) = sticky_key
             {
-                sticky_route_cleared = delete_sticky_route_if_matches_with_cause(
+                sticky_route_cleared = delete_sticky_route_if_matches_with_cause_and_request_model(
                     pool,
                     sticky_key,
                     account_id,
@@ -1345,6 +1345,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     Some(i64::from(status.as_u16())),
                     Some(classification.reason_code),
                     prompt_cache_key,
+                    request_model,
                     &now_iso,
                 )
                 .await?;
@@ -1430,7 +1431,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                 && let Some(sticky_key) = sticky_key
             {
                 let now_iso = format_utc_iso(Utc::now());
-                sticky_route_cleared = delete_sticky_route_if_matches_with_cause(
+                sticky_route_cleared = delete_sticky_route_if_matches_with_cause_and_request_model(
                     pool,
                     sticky_key,
                     account_id,
@@ -1439,6 +1440,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
                     Some(i64::from(status.as_u16())),
                     Some(classification.reason_code),
                     prompt_cache_key,
+                    request_model,
                     &now_iso,
                 )
                 .await?;

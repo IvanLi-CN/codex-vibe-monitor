@@ -3066,7 +3066,12 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .and_then(|pending| pending.attempt_id),
                         pending_pool_attempt_record_for_task
                             .as_ref()
-                            .and_then(|pending| pending.sticky_affinity_generation),
+                            .and_then(|pending| {
+                                pending
+                                    .attempt_id
+                                    .map(|_| account.sticky_affinity_generation)
+                            })
+                            .flatten(),
                         request_info_for_task
                             .model
                             .as_deref()
