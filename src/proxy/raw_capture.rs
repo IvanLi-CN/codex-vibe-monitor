@@ -1321,7 +1321,7 @@ pub(crate) async fn persist_proxy_capture_record_tx(
     } else {
         String::new()
     };
-    let resp_raw = if record.response_body_preview_enabled || record.resp_raw.path.is_some() {
+    let resp_raw = if record.response_body_preview_enabled {
         record.resp_raw.clone()
     } else {
         RawPayloadMeta {

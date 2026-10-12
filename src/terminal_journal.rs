@@ -39,7 +39,7 @@ fn journal_safe_terminal_record(record: &ProxyCaptureRecord) -> ProxyCaptureReco
     let mut safe = record.clone();
     safe.payload = None;
     safe.raw_response.clear();
-    safe.response_body_preview_enabled = false;
+    safe.response_body_preview_enabled = safe.resp_raw.path.is_some();
     safe.error_message = None;
     safe
 }
