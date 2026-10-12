@@ -61,8 +61,15 @@ function preferNewerWorkloadTrend(
     : incoming;
 }
 
+function canonicalManagedTaskKey(taskKey: string): string {
+  return taskKey === "startup_backfill.prompt_cache_conversations_materialization"
+    ? "prompt_cache_materialization"
+    : taskKey;
+}
+
 export default function SystemTaskDetailPage() {
   const { taskKey = "" } = useParams();
+  const managedTaskKey = canonicalManagedTaskKey(taskKey);
   const [detail, setDetail] = useState<ManagedTaskDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [intervalSecs, setIntervalSecs] = useState("");
@@ -79,7 +86,7 @@ export default function SystemTaskDetailPage() {
     Boolean(taskKey),
   );
   const detailTopic = useSubscriptionTopic<ManagedTaskDetail>(
-    { topic: "system.managed-tasks.detail", params: { taskKey } },
+    { topic: "system.managed-tasks.detail", params: { taskKey: managedTaskKey } },
     Boolean(taskKey),
   );
 
@@ -87,7 +94,7 @@ export default function SystemTaskDetailPage() {
     if (!taskKey) return;
     setDetail(null);
     setError(null);
-    fetchManagedTask(taskKey)
+    fetchManagedTask(managedTaskKey)
       .then((next) => {
         setDetail((current) => preferNewerWorkloadTrend(current, next));
         setIntervalSecs(next.task.intervalSecs == null ? "" : String(next.task.intervalSecs));
@@ -95,7 +102,7 @@ export default function SystemTaskDetailPage() {
         setScheduleKind(next.task.cronExpr?.trim() ? "cron" : "interval");
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)));
-  }, [taskKey]);
+  }, [managedTaskKey, taskKey]);
 
   useEffect(() => {
     const snapshot = runtimeTopic.data;
@@ -108,7 +115,7 @@ export default function SystemTaskDetailPage() {
     if (!snapshot) return;
     const next =
       snapshot.activeRuns.find(
-        (run) => run.taskKey === taskKey || run.activeChildTaskKey === taskKey,
+        (run) => run.taskKey === managedTaskKey || run.activeChildTaskKey === managedTaskKey,
       ) ?? null;
     setActiveRuntime(next);
     setRuntimeSampleElapsedMs(
@@ -117,13 +124,13 @@ export default function SystemTaskDetailPage() {
         : null,
     );
     setRuntimeSampleClock(window.performance.now());
-  }, [taskKey, runtimeTopic.data, runtimeTopic.error, runtimeTopic.lastReceivedAt]);
+  }, [managedTaskKey, runtimeTopic.data, runtimeTopic.error, runtimeTopic.lastReceivedAt]);
 
   useEffect(() => {
     const incoming = detailTopic.data;
-    if (!incoming || incoming.task.taskKey !== taskKey) return;
+    if (!incoming || incoming.task.taskKey !== managedTaskKey) return;
     setDetail((current) => preferNewerWorkloadTrend(current, incoming));
-  }, [detailTopic.data, taskKey]);
+  }, [detailTopic.data, managedTaskKey]);
 
   useEffect(() => {
     if (!activeRuntime) return;
@@ -133,7 +140,7 @@ export default function SystemTaskDetailPage() {
 
   const hasActiveRun =
     activeRuntime != null ||
-    (isRetentionMaintenanceTask(taskKey) &&
+    (isRetentionMaintenanceTask(managedTaskKey) &&
       detail?.recentRuns.some((run) => run.status === "requested" || run.status === "running") ===
         true);
   const displayedElapsedMs =
@@ -152,7 +159,7 @@ export default function SystemTaskDetailPage() {
         ) : (
           <div className="text-sm text-base-content/65">正在读取任务详情…</div>
         )}
-        <TaskWorkloadTrend taskKey={taskKey} state={chartState} error={error} />
+        <TaskWorkloadTrend taskKey={managedTaskKey} state={chartState} error={error} />
       </section>
     );
   }
@@ -235,7 +242,7 @@ export default function SystemTaskDetailPage() {
             。暂停后仍可立即运行，已准入的本轮工作会正常结束。
           </p>
         ) : null}
-        {taskKey === "retention_archive" ? (
+        {managedTaskKey === "retention_archive" ? (
           <nav aria-label="关联维护任务" className="flex flex-wrap gap-3 text-sm">
             <Link className="text-primary" to="/system/tasks/prompt_cache_materialization">
               Prompt 缓存物化
@@ -524,21 +531,21 @@ export default function SystemTaskDetailPage() {
                   {run.details?.ownershipVersion === 1 ? (
                     <div className="text-xs text-base-content/65">
                       {run.details.dryRun ? "只读预演" : "实际运行"} · 本任务范围
-                      {taskKey === "invocation_identity_cleanup"
+                      {managedTaskKey === "invocation_identity_cleanup"
                         ? ` · 对话身份 ${String(run.details.conversationIdentitiesChecked ?? "未知")} 个已检查 / ${String(run.details.conversationIdentitiesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；小时前缀 ${String(run.details.hourPrefixesChecked ?? "未知")} 个已检查 / ${String(run.details.hourPrefixesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}`
                         : null}
-                      {taskKey === "raw_orphan_sweep"
+                      {managedTaskKey === "raw_orphan_sweep"
                         ? ` · 文件 ${String(run.details.filesChecked ?? "未知")} 个已检查 / ${String(run.details.filesReleased ?? "未知")} 个${run.details.dryRun ? "可释放" : "已释放"}；${String(run.details.bytesReleased ?? "未知")} 字节`
                         : null}
                       {run.details.coverage === "bounded_scan"
                         ? " · 有界扫描，总体剩余量未知"
                         : null}
                     </div>
-                  ) : taskKey === "retention_archive" ? (
+                  ) : managedTaskKey === "retention_archive" ? (
                     <div className="text-xs text-base-content/50">旧版组合范围，保留原始结果</div>
                   ) : null}
                   {run.errorDetail ? <div className="text-error">{run.errorDetail}</div> : null}
-                  {taskKey === "retention_archive" ? (
+                  {managedTaskKey === "retention_archive" ? (
                     <RetentionRunThroughput details={run.details} />
                   ) : null}
                 </div>

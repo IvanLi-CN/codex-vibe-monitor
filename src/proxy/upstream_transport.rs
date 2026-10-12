@@ -770,6 +770,9 @@ pub(crate) async fn send_counted_upstream_http_request(
             .is_some_and(|reporter| reporter.state.observability.enabled),
         "send_counted_upstream_http_request",
         async move {
+            let diagnostic_attempt = crate::observability::diagnostics::phase(
+                crate::observability::diagnostics::Phase::Attempt,
+            );
             let mut attempt = reporter.as_ref().map(|reporter| {
                 crate::observability::UpstreamAttempt::new(
                     reporter.state.observability.clone(),
@@ -792,17 +795,19 @@ pub(crate) async fn send_counted_upstream_http_request(
                     ],
                 )
             });
-            let stream =
-                connect_via_counted_transport(target_url, forward_proxy_url, meter.clone())
-                    .await
-                    .map_err(|err| {
-                        report_guard.record_now();
-                        report_guard.disarm();
-                        CountedHttpRequestError {
-                            message: format!("failed to connect upstream transport: {err}"),
-                            socket_totals: meter.snapshot(),
-                        }
-                    })?;
+            let stream = crate::observability::diagnostics::measure_phase(
+                crate::observability::diagnostics::Phase::Connect,
+                connect_via_counted_transport(target_url, forward_proxy_url, meter.clone()),
+            )
+            .await
+            .map_err(|err| {
+                report_guard.record_now();
+                report_guard.disarm();
+                CountedHttpRequestError {
+                    message: format!("failed to connect upstream transport: {err}"),
+                    socket_totals: meter.snapshot(),
+                }
+            })?;
             drop(connect_span);
             let head_span = reporter.as_ref().map(|reporter| {
                 crate::observability::ObservationSpan::new(
@@ -828,7 +833,7 @@ pub(crate) async fn send_counted_upstream_http_request(
                         socket_totals: meter.snapshot(),
                     }
                 })?;
-            tokio::spawn(async move {
+            crate::observability::diagnostics::spawn(async move {
                 if let Err(err) = connection.await {
                     debug!(error = %err, "counted upstream HTTP connection closed with error");
                 }
@@ -843,7 +848,12 @@ pub(crate) async fn send_counted_upstream_http_request(
                         socket_totals: meter.snapshot(),
                     }
                 })?;
-            let response = sender.send_request(request).await.map_err(|err| {
+            let response = crate::observability::diagnostics::measure_phase(
+                crate::observability::diagnostics::Phase::UpstreamHead,
+                sender.send_request(request),
+            )
+            .await
+            .map_err(|err| {
                 report_guard.record_now();
                 report_guard.disarm();
                 CountedHttpRequestError {
@@ -853,6 +863,9 @@ pub(crate) async fn send_counted_upstream_http_request(
             })?;
 
             drop(head_span);
+            if let Some(guard) = diagnostic_attempt {
+                guard.complete();
+            }
             if let Some(attempt) = attempt.as_mut() {
                 attempt.outcome = if response.status().is_success() {
                     "success"
@@ -937,7 +950,7 @@ mod tests {
         let address = listener
             .local_addr()
             .expect("read counted upstream address");
-        let server = tokio::spawn(async move {
+        let server = crate::observability::diagnostics::spawn(async move {
             axum::serve(listener, app)
                 .await
                 .expect("counted upstream test server should run");

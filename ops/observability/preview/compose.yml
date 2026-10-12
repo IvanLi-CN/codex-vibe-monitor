@@ -7,7 +7,24 @@ services:
     security_opt:
       - no-new-privileges:true
     volumes:
-      - ./metrics_server.py:/opt/cvm-preview/metrics_server.py:ro
+      - .:/opt/cvm-preview:ro
+      - ..:/observability:ro
+    networks: [preview]
+
+  tempo:
+    image: grafana/tempo:3.1.0@sha256:3076b8dcdfb32fd6bc5ccef85e7b7313e6199b9cb84366257fc17ecb696db5fd
+    command: ["-config.file=/etc/tempo.yml"]
+    user: "0:0"
+    environment:
+      TMPDIR: /var/tempo
+    read_only: true
+    cpus: 1
+    mem_limit: 2g
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ../tempo.yml:/etc/tempo.yml:ro
+    tmpfs:
+      - /var/tempo:rw,size=512m,mode=1777
     networks: [preview]
 
   prometheus:
@@ -39,6 +56,9 @@ services:
     ports:
       - "0.0.0.0:${GRAFANA_PREVIEW_PORT:-3101}:3000"
     environment:
+      CVM_TEMPO_QUERY_URL: http://fixture:8040
+      CVM_TEMPO_QUERY_TOKEN: synthetic-preview-only
+      CVM_TEMPO_CA_PEM: ""
       GF_SERVER_ROOT_URL: ${GRAFANA_PREVIEW_URL:-http://127.0.0.1:3101}
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
@@ -60,8 +80,10 @@ services:
     depends_on:
       prometheus:
         condition: service_healthy
+      tempo:
+        condition: service_started
     networks: [preview]
 
 networks:
   preview:
-    name: cvm-grafana-preview
+    driver: bridge

@@ -694,6 +694,13 @@ fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
         vec![prompt_cache_task]
     );
     assert_eq!(
+        legacy_startup_backfill_tasks(Some(&selected)),
+        vec![
+            StartupBackfillTask::ProxyUsage,
+            StartupBackfillTask::ReasoningEffort,
+        ]
+    );
+    assert_eq!(
         prompt_cache_tasks_when_startup_backfill_root_is_skipped(None),
         vec![prompt_cache_task]
     );
@@ -720,6 +727,43 @@ fn disabled_startup_backfill_root_keeps_prompt_cache_control_independent() {
         vec![generic_task],
         "root-disabled dispatch must leave generic pressure work queued"
     );
+}
+
+#[test]
+fn disabled_root_requeues_legacy_tasks_when_prompt_cache_is_selected() {
+    let prompt_cache_task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let legacy_task = StartupBackfillTask::ProxyUsage;
+    clear_startup_backfill_task_scheduler_for_test(legacy_task);
+    clear_startup_backfill_task_scheduler_for_test(prompt_cache_task);
+    requeue_legacy_startup_backfill_tasks(Some(&[legacy_task, prompt_cache_task]));
+
+    let scheduled = STARTUP_BACKFILL_SCHEDULER
+        .next_due_for(legacy_task)
+        .expect("legacy task requeued after mixed root-disabled dispatch");
+    assert!(scheduled > Utc::now());
+    clear_startup_backfill_task_scheduler_for_test(legacy_task);
+    clear_startup_backfill_task_scheduler_for_test(prompt_cache_task);
+}
+
+#[test]
+fn disabled_root_does_not_requeue_unselected_startup_pass() {
+    let legacy_task = StartupBackfillTask::ProxyUsage;
+    clear_startup_backfill_task_scheduler_for_test(legacy_task);
+    requeue_legacy_startup_backfill_tasks(None);
+    assert!(
+        STARTUP_BACKFILL_SCHEDULER
+            .next_due_for(legacy_task)
+            .is_none()
+    );
+}
+
+#[test]
+fn startup_backfill_retry_scope_keeps_initial_lease_contention_bounded() {
+    let legacy = startup_backfill_tasks_for_retry(None, true);
+    assert!(legacy.is_empty());
+
+    let all = startup_backfill_tasks_for_retry(None, false);
+    assert_eq!(all, StartupBackfillTask::ordered_tasks());
 }
 
 #[tokio::test]
@@ -1148,6 +1192,21 @@ fn managed_prompt_cache_observation_keeps_root_task_identity() {
         startup_backfill_observation_task_key(None),
         "startup_backfill"
     );
+}
+
+#[test]
+fn background_prompt_cache_pass_uses_its_managed_task_identity() {
+    let tasks = [StartupBackfillTask::PromptCacheConversationsMaterialization];
+    assert_eq!(
+        observation_parent_task_key(Some(&tasks)),
+        Some("prompt_cache_materialization")
+    );
+    assert_eq!(observation_parent_task_key(None), None);
+    assert_eq!(
+        audit_task_kind(Some(&tasks)).as_str(),
+        "prompt_cache_materialization"
+    );
+    assert_eq!(audit_task_kind(None).as_str(), "startup_backfill");
 }
 
 #[test]

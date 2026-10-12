@@ -66,29 +66,49 @@ impl SubscriptionTopic {
                         gaps,
                     )) = projection_with_overlay
                     {
-                        if crate::summary_delta_gap_affects_selection(
+                        let (source_gap_pending, source_gap_unavailable) =
+                            crate::summary_source_gap_status(
+                                projection.as_ref(),
+                                &gaps,
+                                &pending_terminal_deltas,
+                                &summary_window,
+                                reporting_tz,
+                                *upstream_account_id,
+                            );
+                        if source_gap_unavailable {
+                            return Err(ApiError::unavailable(anyhow!(
+                                "summary delta journal has an unproven change for the requested selection"
+                            )));
+                        }
+                        let terminal_delta_gap_pending = crate::summary_delta_gap_affects_selection(
                             projection.as_ref(),
                             &gaps,
                             &pending_terminal_deltas,
                             &summary_window,
                             reporting_tz,
                             *upstream_account_id,
-                        ) {
+                            crate::SummaryDeltaGapKind::Terminal,
+                        );
+                        if matches!(summary_window, SummaryWindow::Current(_))
+                            && terminal_delta_gap_pending
+                        {
                             return Err(ApiError::unavailable(anyhow!(
-                                "summary delta journal has an unproven change for the requested selection"
+                                "summary current rank is not proven for the requested selection"
                             )));
                         }
                         let mut response = projection.response_for_query_with_rolling_delta(
                             &query,
                             state.config.list_limit_max as i64,
-                            !matches!(summary_window, SummaryWindow::All)
-                                && crate::summary_delta_affects_selection(
-                                    projection.as_ref(),
-                                    &pending_terminal_deltas,
-                                    &summary_window,
-                                    reporting_tz,
-                                    *upstream_account_id,
-                                ),
+                            source_gap_pending
+                                || terminal_delta_gap_pending
+                                || (!matches!(summary_window, SummaryWindow::All)
+                                    && crate::summary_delta_affects_selection(
+                                        projection.as_ref(),
+                                        &pending_terminal_deltas,
+                                        &summary_window,
+                                        reporting_tz,
+                                        *upstream_account_id,
+                                    )),
                         )?;
                         let current_selection =
                             if let SummaryWindow::Current(limit) = &summary_window {
@@ -120,6 +140,10 @@ impl SubscriptionTopic {
                                     deltas: pending_terminal_deltas,
                                 },
                             );
+                        }
+                        if source_gap_pending || terminal_delta_gap_pending {
+                            response.data_quality =
+                                Some(StatsDataQualityResponse::summary_delta_journal_pending());
                         }
                         let range_start =
                             summary_window_range(&summary_window, reporting_tz, Utc::now())?
@@ -299,6 +323,7 @@ impl SubscriptionTopic {
                         "maintenance database unavailable"
                     )));
                 };
+                let task_key = crate::maintenance_store::canonical_managed_task_key(task_key);
                 let Some(detail) = store.detail(task_key).await.map_err(ApiError::from)? else {
                     return Err(ApiError::bad_request(anyhow!("managed task not found")));
                 };
@@ -314,6 +339,7 @@ impl SubscriptionTopic {
                         "maintenance database unavailable"
                     )));
                 };
+                let task_key = crate::maintenance_store::canonical_managed_task_key(task_key);
                 let Some(trend) = store
                     .workload_window(task_key, *limit)
                     .await

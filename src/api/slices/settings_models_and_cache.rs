@@ -285,6 +285,38 @@ pub(crate) struct StatsResponse {
     pub(crate) non_success_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) maintenance: Option<StatsMaintenanceResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) data_quality: Option<StatsDataQualityResponse>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatsDataQualityResponse {
+    pub(crate) state: StatsDataQualityState,
+    pub(crate) proof_pending: bool,
+    pub(crate) reason: StatsDataQualityReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatsDataQualityState {
+    Degraded,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatsDataQualityReason {
+    SummaryDeltaJournalPending,
+}
+
+impl StatsDataQualityResponse {
+    pub(crate) const fn summary_delta_journal_pending() -> Self {
+        Self {
+            state: StatsDataQualityState::Degraded,
+            proof_pending: true,
+            reason: StatsDataQualityReason::SummaryDeltaJournalPending,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -434,6 +466,7 @@ impl StatsTotals {
             non_success_cost: None,
             non_success_tokens: None,
             maintenance: None,
+            data_quality: None,
         }
     }
 }

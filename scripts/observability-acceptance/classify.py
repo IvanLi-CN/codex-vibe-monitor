@@ -10,6 +10,7 @@ from pathlib import Path
 EXPECTED_SCENARIOS = frozenset(
     {
         "https-auth-query",
+        "tempo-cases-tenant",
         "monitoring-fault-isolation",
         "original-process-cpu",
         "default-observability-ab",
@@ -23,6 +24,7 @@ RESOURCE_UNAVAILABLE_ERRORS = frozenset(
         "runner pressure evidence is invalid",
     }
 )
+UNSTABLE_MEASUREMENT_ERROR = "unstable measurement windows"
 
 
 class ClassificationError(RuntimeError):
@@ -46,6 +48,22 @@ def _resource_pressure_error(error: object) -> bool:
         return False
     codes = {code for code in error[len(prefix) :].strip().split(",") if code}
     return bool(codes) and codes <= {"pressure_exceeded"}
+
+
+def _unstable_budget_is_observable(root: Path) -> bool:
+    try:
+        report = _read_json(root, "ab-summary.json")
+        metrics = report["metrics"]
+        return (
+            isinstance(metrics, dict)
+            and set(metrics) == {"cpuSecondsPerRequest", "p95Seconds"}
+            and all(
+                isinstance(metric, dict) and metric.get("observedWithinBudget") is True
+                for metric in metrics.values()
+            )
+        )
+    except (KeyError, TypeError):
+        return False
 
 
 def _scenario_statuses(scenarios: object) -> dict[str, dict[str, object]]:
@@ -83,9 +101,15 @@ def classify_result(root: Path, step_outcome: str) -> str:
     default = scenarios["default-observability-ab"]
     if any(scenarios[name].get("status") != "passed" for name in EXPECTED_SCENARIOS - {"default-observability-ab"}):
         raise ClassificationError("a functional or CPU acceptance scenario failed")
-    if default.get("status") != "unavailable" or not _resource_pressure_error(default.get("error")):
-        raise ClassificationError("unavailable evidence was not caused by runner resource pressure")
-    return "neutral-unavailable"
+    if default.get("status") != "unavailable":
+        raise ClassificationError("unavailable evidence did not identify an environmental limitation")
+    error = default.get("error")
+    if _resource_pressure_error(error):
+        return "neutral-unavailable"
+    if error == UNSTABLE_MEASUREMENT_ERROR and _unstable_budget_is_observable(root):
+        print("Performance evidence unavailable because the raw median budget stayed within 5% but the hosted windows were unstable; preserving the unavailable card.")
+        return "neutral-unavailable"
+    raise ClassificationError("unavailable evidence did not preserve a valid environmental limitation")
 
 
 def main() -> int:

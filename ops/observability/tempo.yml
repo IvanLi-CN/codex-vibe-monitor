@@ -1,0 +1,70 @@
+# Single-node isolation only. All mutable paths share the bounded /var/tempo mount.
+target: all
+multitenancy_enabled: true
+stream_over_http_enabled: false
+server:
+  http_listen_port: 3200
+  log_level: warn
+  http_server_read_timeout: 5s
+  http_server_write_timeout: 5s
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http:
+          endpoint: 0.0.0.0:4318
+live_store:
+  wal:
+    path: /var/tempo/live-store/traces
+  shutdown_marker_dir: /var/tempo/live-store/shutdown-marker
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+backend_scheduler:
+  local_work_path: /var/tempo/work
+  provider:
+    retention:
+      interval: 1m
+backend_worker:
+  compaction:
+    block_retention: 24h
+query_frontend:
+  multi_tenant_queries_enabled: false
+  # Bounded pending jobs; execution concurrency is controlled by the querier below.
+  max_outstanding_per_tenant: 16
+  max_batch_size: 1
+  api_timeout: 5s
+  query_end_cutoff: 0s
+  max_query_expression_size_bytes: 2048
+  search:
+    concurrent_jobs: 2
+    ingester_shards: 1
+    default_result_limit: 3
+    max_result_limit: 3
+    max_duration: 24h
+  mcp_server:
+    enabled: false
+querier:
+  max_concurrent_queries: 2
+  trace_by_id:
+    query_timeout: 5s
+  search:
+    query_timeout: 5s
+overrides:
+  defaults:
+    ingestion:
+      rate_strategy: local
+      rate_limit_bytes: 524288
+      burst_size_bytes: 1048576
+    global:
+      max_bytes_per_trace: 131072
+    compaction:
+      block_retention: 24h
+    metrics_generator:
+      processors: []
+usage_report:
+  reporting_enabled: false

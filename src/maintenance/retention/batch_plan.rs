@@ -19,7 +19,7 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) month_key: String,
     pub(crate) batch_rows: usize,
     pub(crate) committed_rows: usize,
-    pub(crate) file_prepare_ms: u64,
+    pub(crate) file_prepare_ms: Option<u64>,
     pub(crate) lock_wait_ms: u64,
     pub(crate) elapsed_ms: u64,
     pub(crate) timeout_count: u64,
@@ -27,6 +27,9 @@ pub(crate) struct RetentionBatchMetrics {
     pub(crate) arrival_rows_per_second: Option<f64>,
     pub(crate) service_rate_multiple: Option<f64>,
     pub(crate) small_batch_reason: Option<String>,
+    pub(crate) source_identity_ms: Option<u64>,
+    pub(crate) archive_writer_ms: Option<u64>,
+    pub(crate) summary_proof_ms: Option<u64>,
 }
 
 tokio::task_local! {
@@ -47,7 +50,7 @@ impl BatchObservation {
                 month_key: month.to_string(),
                 batch_rows: rows,
                 committed_rows: 0,
-                file_prepare_ms: 0,
+                file_prepare_ms: None,
                 lock_wait_ms: 0,
                 elapsed_ms: 0,
                 timeout_count: 0,
@@ -56,11 +59,14 @@ impl BatchObservation {
                 service_rate_multiple: None,
                 small_batch_reason: (rows < 512)
                     .then(|| "tail_config_or_payload_limit".to_string()),
+                source_identity_ms: None,
+                archive_writer_ms: None,
+                summary_proof_ms: None,
             },
         }
     }
     pub(crate) fn file_prepared(&mut self, elapsed: Duration) {
-        self.metrics.file_prepare_ms = elapsed.as_millis() as u64;
+        self.metrics.file_prepare_ms = Some(elapsed.as_millis() as u64);
     }
     pub(crate) fn committed(&mut self, rows: usize, lock_wait: Duration) {
         self.metrics.committed_rows += rows;
@@ -68,6 +74,15 @@ impl BatchObservation {
             .metrics
             .lock_wait_ms
             .saturating_add(lock_wait.as_millis() as u64);
+    }
+    pub(crate) fn source_identity_finished(&mut self, elapsed: Duration) {
+        self.metrics.source_identity_ms = Some(elapsed.as_millis() as u64);
+    }
+    pub(crate) fn archive_writer_finished(&mut self, elapsed: Duration) {
+        self.metrics.archive_writer_ms = Some(elapsed.as_millis() as u64);
+    }
+    pub(crate) fn summary_proof_finished(&mut self, elapsed: Duration) {
+        self.metrics.summary_proof_ms = Some(elapsed.as_millis() as u64);
     }
 }
 

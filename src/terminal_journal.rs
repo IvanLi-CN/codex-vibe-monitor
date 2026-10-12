@@ -864,6 +864,7 @@ impl TerminalJournal {
                     .deferred_writes
                     .push_back(BatchedTerminalInvocationWrite {
                         enqueued_at: None,
+                        diagnostic: None,
                         record,
                         attempts,
                         capture_started: None,
@@ -1357,6 +1358,7 @@ impl TerminalJournal {
                 );
                 let write = BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    diagnostic: None,
                     capture_started: entry.capture_elapsed_ms.and_then(|elapsed_ms| {
                         Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
                     }),
@@ -1672,6 +1674,7 @@ fn load_system_task_finishes(paths: &[PathBuf]) -> VecDeque<BatchedSystemTaskFin
 fn parse_system_task_kind(value: &str) -> Option<SystemTaskKind> {
     match value {
         "retention_archive" => Some(SystemTaskKind::RetentionArchive),
+        "prompt_cache_materialization" => Some(SystemTaskKind::PromptCacheMaterialization),
         "startup_backfill" => Some(SystemTaskKind::StartupBackfill),
         "hourly_rollup_bootstrap" | "startup_hourly_rollup_bootstrap" => {
             Some(SystemTaskKind::HourlyRollupBootstrap)
@@ -1735,6 +1738,7 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
             |((invoke_id, occurred_at, raw_capture), (record, attempts))| {
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    diagnostic: None,
                     capture_started: None,
                     raw_capture: *raw_capture,
                     attempts: attempts.clone(),
@@ -2261,6 +2265,7 @@ mod tests {
         let attempt = test_attempt_snapshot();
         let terminal = BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            diagnostic: None,
             record: record.clone(),
             attempts: vec![attempt.clone()],
             capture_started: None,

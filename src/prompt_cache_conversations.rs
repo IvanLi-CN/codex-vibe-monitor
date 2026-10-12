@@ -70,10 +70,37 @@ static PROMPT_CACHE_CONVERSATION_BATCH_CONTROLLER: Lazy<
     std::sync::Mutex<PromptCacheConversationBatchController>,
 > = Lazy::new(|| std::sync::Mutex::new(PromptCacheConversationBatchController::default()));
 
-/// Serialize prefix creation independently of hot issuance. Durable rows and
-/// scoped active/pending fences own prefixes; this set is not a used-ID blacklist.
-static PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE: Lazy<Mutex<HashSet<String>>> =
-    Lazy::new(|| Mutex::new(HashSet::new()));
+/// Candidate prefixes are reserved only for the short interval between generation
+/// and durable commit. The mutex is never held across SQL, so unrelated cold
+/// owners do not inherit another owner's database wait.
+static PROMPT_CACHE_PREFIX_RESERVATIONS: Lazy<std::sync::Mutex<HashSet<String>>> =
+    Lazy::new(|| std::sync::Mutex::new(HashSet::new()));
+
+#[derive(Debug)]
+struct PromptCachePrefixReservation {
+    prefix: String,
+}
+
+impl Drop for PromptCachePrefixReservation {
+    fn drop(&mut self) {
+        PROMPT_CACHE_PREFIX_RESERVATIONS
+            .lock()
+            .expect("prompt-cache prefix namespace mutex")
+            .remove(&self.prefix);
+    }
+}
+
+fn reserve_prompt_cache_prefix(prefix: &str) -> Option<PromptCachePrefixReservation> {
+    let mut namespace = PROMPT_CACHE_PREFIX_RESERVATIONS
+        .lock()
+        .expect("prompt-cache prefix namespace mutex");
+    if !namespace.insert(prefix.to_owned()) {
+        return None;
+    }
+    Some(PromptCachePrefixReservation {
+        prefix: prefix.to_owned(),
+    })
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationIdentity {
@@ -242,6 +269,25 @@ impl From<PromptCacheStatsPageOutcome> for PromptCacheStatsPageWork {
 struct PromptCacheStatsPageOptions {
     checkpoint_source_max_invocation_id: Option<i64>,
     run_deadline: Option<Instant>,
+}
+
+#[cfg(test)]
+pub(crate) struct PromptCacheStatsPageCommitHook {
+    pub(crate) ready: Arc<tokio::sync::Notify>,
+    pub(crate) release: Arc<tokio::sync::Notify>,
+}
+
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK: Arc<PromptCacheStatsPageCommitHook>;
+}
+
+#[cfg(test)]
+async fn prompt_cache_test_wait_before_page_commit() {
+    if let Ok(hook) = PROMPT_CACHE_STATS_PAGE_COMMIT_HOOK.try_with(Arc::clone) {
+        hook.ready.notify_one();
+        hook.release.notified().await;
+    }
 }
 
 struct PromptCacheMaterializationBatchWork {
@@ -510,6 +556,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
             cursor_id INTEGER NOT NULL DEFAULT 0,\
             accumulator_json TEXT NOT NULL,\
             page_size INTEGER NOT NULL DEFAULT {PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE},\
+            pending_generation INTEGER,\
             updated_at TEXT NOT NULL DEFAULT (STRFTIME('%Y-%m-%dT%H:%M:%fZ', 'now'))\
         )"
     ))
@@ -520,6 +567,7 @@ pub(crate) async fn ensure_prompt_cache_conversations_schema(pool: &Pool<Sqlite>
         ("cursor_occurred_at", "TEXT"),
         ("cursor_id", "INTEGER NOT NULL DEFAULT 0"),
         ("page_size", "INTEGER NOT NULL DEFAULT 256"),
+        ("pending_generation", "INTEGER"),
     ] {
         ensure_prompt_cache_refresh_staging_column(pool, column, definition).await?;
     }
@@ -1306,22 +1354,23 @@ async fn prompt_cache_conversation_materialize_key_batch(
             }
         };
     {
-        let namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
+        let mut prefix_reservations = Vec::new();
         let mut tx = pool.begin().await?;
         let existing_keys =
             load_prompt_cache_conversation_keys_on_connection(tx.as_mut(), prompt_cache_keys)
                 .await?;
         for prompt_cache_key in prompt_cache_keys {
             if !existing_keys.contains(prompt_cache_key) {
-                let (_, created) =
-                    create_prompt_cache_conversation_row_on_connection_with_exclusions(
-                        tx.as_mut(),
-                        prompt_cache_key,
-                        &namespace,
-                    )
-                    .await?;
+                let (_, created, reservation) = create_prompt_cache_conversation_row_on_connection(
+                    tx.as_mut(),
+                    prompt_cache_key,
+                )
+                .await?;
                 if created {
                     identities_created += 1;
+                }
+                if let Some(reservation) = reservation {
+                    prefix_reservations.push(reservation);
                 }
             }
         }
@@ -2069,7 +2118,6 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
             }
         };
         {
-            let namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
             let mut tx = context.pool.begin().await?;
             let identity_exists = sqlx::query_scalar::<_, i64>(
                 "SELECT EXISTS(SELECT 1 FROM prompt_cache_conversations WHERE prompt_cache_key = ?1)",
@@ -2078,15 +2126,17 @@ async fn run_prompt_cache_conversation_adaptive_queue_drain_page(
             .fetch_one(tx.as_mut())
             .await?
                 != 0;
+            let mut prefix_reservation = None;
             if !identity_exists {
-                create_prompt_cache_conversation_row_on_connection_with_exclusions(
+                let (_, _, reservation) = create_prompt_cache_conversation_row_on_connection(
                     tx.as_mut(),
                     prompt_cache_key,
-                    &namespace,
                 )
                 .await?;
+                prefix_reservation = reservation;
             }
             tx.commit().await?;
+            drop(prefix_reservation);
         }
         drop(identity_step);
         let started_at = Instant::now();
@@ -2603,29 +2653,32 @@ async fn create_prompt_cache_conversation_row(
     pool: &Pool<Sqlite>,
     prompt_cache_key: &str,
 ) -> Result<PromptCacheConversationIdentity> {
-    let namespace = PROMPT_CACHE_UNBOUND_PREFIX_NAMESPACE.lock().await;
-    create_prompt_cache_conversation_row_with_generator_and_exclusions(
+    create_prompt_cache_conversation_row_with_generator(
         pool,
         prompt_cache_key,
         generate_prompt_cache_conversation_id,
-        Some(&namespace),
     )
     .await
 }
 
-async fn create_prompt_cache_conversation_row_on_connection_with_exclusions(
+async fn create_prompt_cache_conversation_row_on_connection(
     connection: &mut SqliteConnection,
     prompt_cache_key: &str,
-    excluded_prefixes: &HashSet<String>,
-) -> Result<(PromptCacheConversationIdentity, bool)> {
+) -> Result<(
+    PromptCacheConversationIdentity,
+    bool,
+    Option<PromptCachePrefixReservation>,
+)> {
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
         let conversation_id = generate_prompt_cache_conversation_id();
-        if excluded_prefixes.contains(&conversation_id)
-            || prompt_cache_conversation_id_candidate_conflicts_on_connection(
-                connection,
-                &conversation_id,
-            )
-            .await?
+        let Some(reservation) = reserve_prompt_cache_prefix(&conversation_id) else {
+            continue;
+        };
+        if prompt_cache_conversation_id_candidate_conflicts_on_connection(
+            connection,
+            &conversation_id,
+        )
+        .await?
         {
             debug!(
                 attempt,
@@ -2666,6 +2719,7 @@ async fn create_prompt_cache_conversation_row_on_connection_with_exclusions(
                         next_sequence: last_invoke_sequence.max(0) as u32,
                     },
                     false,
+                    None,
                 ));
             }
             continue;
@@ -2682,6 +2736,7 @@ async fn create_prompt_cache_conversation_row_on_connection_with_exclusions(
                 next_sequence: 0,
             },
             true,
+            Some(reservation),
         ));
     }
 
@@ -2698,29 +2753,12 @@ async fn create_prompt_cache_conversation_row_with_generator<F>(
 where
     F: FnMut() -> String,
 {
-    create_prompt_cache_conversation_row_with_generator_and_exclusions(
-        pool,
-        prompt_cache_key,
-        &mut generate,
-        None,
-    )
-    .await
-}
-
-async fn create_prompt_cache_conversation_row_with_generator_and_exclusions<F>(
-    pool: &Pool<Sqlite>,
-    prompt_cache_key: &str,
-    mut generate: F,
-    excluded_prefixes: Option<&HashSet<String>>,
-) -> Result<PromptCacheConversationIdentity>
-where
-    F: FnMut() -> String,
-{
     for attempt in 1..=PROMPT_CACHE_CONVERSATION_ID_GENERATION_ATTEMPTS {
         let conversation_id = generate();
-        if excluded_prefixes.is_some_and(|prefixes| prefixes.contains(&conversation_id))
-            || prompt_cache_conversation_id_candidate_conflicts(pool, &conversation_id).await?
-        {
+        let Some(_reservation) = reserve_prompt_cache_prefix(&conversation_id) else {
+            continue;
+        };
+        if prompt_cache_conversation_id_candidate_conflicts(pool, &conversation_id).await? {
             debug!(
                 attempt,
                 conversation_id = %conversation_id,
@@ -2956,6 +2994,7 @@ struct PromptCacheConversationStatsStagingRow {
     cursor_id: i64,
     accumulator_json: String,
     page_size: i64,
+    pending_generation: Option<i64>,
 }
 
 fn empty_prompt_cache_conversation_stats(
@@ -3196,16 +3235,36 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     let expected_generation = queue_generation.or(clock_generation).unwrap_or(0);
     let staging = budgeted_query!(
         sqlx::query_as::<_, PromptCacheConversationStatsStagingRow>(&format!(
-            "SELECT prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key = ?1"
+            "SELECT prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,pending_generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} WHERE prompt_cache_key = ?1"
         ))
         .bind(prompt_cache_key)
         .fetch_optional(&mut *connection.connection)
     );
-    let source_generation_changed = staging
-        .as_ref()
-        .is_some_and(|staging| staging.generation != expected_generation);
     let staging = match staging {
         Some(staging) if staging.generation == expected_generation => staging,
+        Some(staging) if staging.pending_generation != Some(expected_generation) => {
+            budgeted_query!(
+                sqlx::query(&format!(
+                    "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET pending_generation=?1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?2"
+                ))
+                .bind(expected_generation)
+                .bind(prompt_cache_key)
+                .execute(&mut *connection.connection)
+            );
+            info!(
+                prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
+                source_generation = expected_generation,
+                staged_cursor_id = staging.cursor_id,
+                "prompt-cache statistics generation change coalesced before restart"
+            );
+            connection.close_on_drop();
+            return Ok(PromptCacheStatsPageWork {
+                outcome: PromptCacheStatsPageOutcome::GenerationChanged,
+                rows_read: 0,
+                committed: true,
+                visited: true,
+            });
+        }
         _ => {
             let source_max_invocation_id = budgeted_query!(
                 sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
@@ -3217,7 +3276,7 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             let accumulator_json = serde_json::to_string(&accumulator)?;
             budgeted_query!(
                 sqlx::query(&format!(
-                    "INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,updated_at) VALUES (?1,?2,?3,NULL,0,?4,?5,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation,source_max_invocation_id=excluded.source_max_invocation_id,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=excluded.accumulator_json,page_size=excluded.page_size,updated_at=excluded.updated_at"
+                    "INSERT INTO {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} (prompt_cache_key,generation,source_max_invocation_id,cursor_occurred_at,cursor_id,accumulator_json,page_size,pending_generation,updated_at) VALUES (?1,?2,?3,NULL,0,?4,?5,NULL,STRFTIME('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(prompt_cache_key) DO UPDATE SET generation=excluded.generation,source_max_invocation_id=excluded.source_max_invocation_id,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=excluded.accumulator_json,page_size=excluded.page_size,pending_generation=NULL,updated_at=excluded.updated_at"
                 ))
                 .bind(prompt_cache_key)
                 .bind(expected_generation)
@@ -3237,24 +3296,10 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
                     &conversation_id,
                 ))?,
                 page_size: PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE,
+                pending_generation: None,
             }
         }
     };
-    if source_generation_changed {
-        info!(
-            prompt_cache_key_fingerprint = %prompt_cache_key_fingerprint(prompt_cache_key),
-            source_generation = expected_generation,
-            restart_cursor_id = 0,
-            "prompt-cache statistics staging restarted after generation change"
-        );
-        connection.close_on_drop();
-        return Ok(PromptCacheStatsPageWork {
-            outcome: PromptCacheStatsPageOutcome::GenerationChanged,
-            rows_read: 0,
-            committed: true,
-            visited: true,
-        });
-    }
     let mut accumulator: PromptCacheConversationStatsRow =
         serde_json::from_str(&staging.accumulator_json).with_context(|| {
             format!(
@@ -3338,6 +3383,8 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     for row in &page {
         merge_prompt_cache_conversation_invocation(&mut accumulator, row);
     }
+    #[cfg(test)]
+    prompt_cache_test_wait_before_page_commit().await;
     let mut tx = connection.connection.begin().await?;
     let current_generation = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT generation FROM {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_QUEUE_TABLE} WHERE prompt_cache_key = ?1"
@@ -3347,22 +3394,10 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
     .await?;
     if current_generation != queue_generation {
         let next_generation = current_generation.unwrap_or(0);
-        let source_max_invocation_id =
-            sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
-                .fetch_one(&mut *tx)
-                .await?
-                .unwrap_or_default();
-        let reset = serde_json::to_string(&empty_prompt_cache_conversation_stats(
-            prompt_cache_key,
-            &conversation_id,
-        ))?;
         sqlx::query(&format!(
-            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET generation=?1,source_max_invocation_id=?2,cursor_occurred_at=NULL,cursor_id=0,accumulator_json=?3,page_size=?4,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?5"
+            "UPDATE {PROMPT_CACHE_CONVERSATIONS_STATS_REFRESH_STAGING_TABLE} SET pending_generation=?1,updated_at=STRFTIME('%Y-%m-%dT%H:%M:%fZ','now') WHERE prompt_cache_key=?2"
         ))
         .bind(next_generation)
-        .bind(source_max_invocation_id)
-        .bind(reset)
-        .bind(PROMPT_CACHE_CONVERSATION_STATS_PAGE_INITIAL_SIZE)
         .bind(prompt_cache_key)
         .execute(&mut *tx)
         .await?;
@@ -3372,8 +3407,7 @@ async fn refresh_prompt_cache_conversation_stats_bounded_page(
             previous_generation = expected_generation,
             source_generation = next_generation,
             discarded_rows = page.len(),
-            restart_cursor_id = 0,
-            "prompt-cache statistics source changed before page publication"
+            "prompt-cache statistics source change deferred before page publication"
         );
         return Ok(PromptCacheStatsPageWork {
             outcome: PromptCacheStatsPageOutcome::GenerationChanged,

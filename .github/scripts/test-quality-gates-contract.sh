@@ -54,7 +54,7 @@ bash "$repo_root/.github/scripts/test-inline-metadata-workflows.sh"
 observability_artifact_repo="$tmp_dir/observability-artifact-repo"
 mkdir -p "$observability_artifact_repo"
 cp -R "$repo_root/.github" "$observability_artifact_repo/.github"
-python3 - "$observability_artifact_repo/.github/workflows/ci-pr.yml" <<'PY'
+python3 - "$observability_artifact_repo/.github/workflows/ci-observability-performance.yml" <<'PY'
 from pathlib import Path
 import sys
 

@@ -11,23 +11,23 @@ mod error_distribution_and_sse;
     reason = "Existing internal query adapters preserve established call-site contracts."
 )]
 mod invocations_and_summary;
-mod long_term_stats_api;
 mod model_management;
 mod prompt_cache_and_timeseries;
 mod public_blog_runtime;
 mod settings_models_and_cache;
 mod subscriptions;
+mod summary_delta_gap;
 mod system_routes_and_tasks;
 
 pub(crate) use error_distribution_and_sse::*;
 pub(crate) use invocations_and_summary::*;
-pub(crate) use long_term_stats_api::*;
 pub(crate) use model_management::*;
 pub(crate) use prompt_cache_and_timeseries::prompt_cache_and_timeseries_shared;
 pub(crate) use prompt_cache_and_timeseries::*;
 pub(crate) use public_blog_runtime::*;
 pub(crate) use settings_models_and_cache::*;
 pub(crate) use subscriptions::*;
+pub(crate) use summary_delta_gap::*;
 pub(crate) use system_routes_and_tasks::*;
 
 pub(crate) fn build_settings_routes(router: Router<Arc<AppState>>) -> Router<Arc<AppState>> {

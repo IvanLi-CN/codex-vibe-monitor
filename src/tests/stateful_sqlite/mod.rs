@@ -96,6 +96,18 @@ pub(crate) async fn fetch_summary_from_memory_snapshot(
     fetch_summary(State(state), Query(params)).await
 }
 
+pub(crate) async fn hydrate_stats_snapshot_for_test(state: &Arc<AppState>) {
+    hydrate_summary_snapshots(state.as_ref())
+        .await
+        .expect("hydrate Summary projection for stats test");
+    SummaryCoverageRecoverySupervisor::run(state.as_ref())
+        .await
+        .expect("recover Summary coverage for stats test");
+    refresh_summary_snapshots_with_mode(state.as_ref(), SummaryProjectionBuildMode::AllTime)
+        .await
+        .expect("publish all-time Summary projection for stats test");
+}
+
 mod account_activity_v2_progress_handler;
 mod gpt6_usage_integrity;
 mod invocation_query_filters_and_schema_migrations;

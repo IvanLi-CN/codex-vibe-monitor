@@ -1,4 +1,8 @@
+use super::test_support::{
+    fetch_prompt_cache_conversations, materialize_prompt_cache_hourly_rollups,
+};
 use super::*;
+use serde_json::json;
 
 #[test]
 fn prompt_cache_conversations_omitted_snapshot_preserves_current_precision() {

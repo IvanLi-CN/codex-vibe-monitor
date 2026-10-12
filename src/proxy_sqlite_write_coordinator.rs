@@ -257,6 +257,9 @@ impl ProxySqliteWriteCoordinator {
             // start SQLite work. Wake it so it can yield before becoming a writer.
             self.notify.notify_waiters();
         }
+        let diagnostic_wait = crate::observability::diagnostics::waiting(
+            crate::observability::diagnostics::Resource::Coordinator,
+        );
         let mut waiter = ProxySqliteWriteWaiter {
             coordinator: self.clone(),
             class,
@@ -271,6 +274,9 @@ impl ProxySqliteWriteCoordinator {
                     waiter.registered = false;
                     state.active = Some(class);
                     let lock_wait = requested_at.elapsed();
+                    if let Some(guard) = diagnostic_wait {
+                        guard.complete();
+                    }
                     state.record_admission(class, lock_wait);
                     return ProxySqliteWritePermit {
                         coordinator: self.clone(),

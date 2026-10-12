@@ -42,7 +42,7 @@ export function RetentionRunThroughput({
             <div className="mb-2 font-medium">
               {DATASET_LABELS[batch.dataset] ?? batch.dataset} · {batch.monthKey}
             </div>
-            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-6">
+            <dl className="grid grid-cols-2 gap-x-4 gap-y-2 sm:grid-cols-3 xl:grid-cols-9">
               {[
                 [
                   "已提交 / 批次",
@@ -57,6 +57,9 @@ export function RetentionRunThroughput({
                     : `${batch.serviceRateMultiple.toFixed(1)}×`,
                 ],
                 ["文件准备", duration(batch.filePrepareMs)],
+                ["身份读取", duration(batch.sourceIdentityMs)],
+                ["归档写入", duration(batch.archiveWriterMs)],
+                ["证明准备", duration(batch.summaryProofMs)],
                 ["锁等待", duration(batch.lockWaitMs)],
               ].map(([label, value]) => (
                 <div key={label}>

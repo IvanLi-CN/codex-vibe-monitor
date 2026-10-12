@@ -1336,6 +1336,7 @@ pub(crate) struct SettingsResponse {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SystemTaskKind {
     RetentionArchive,
+    PromptCacheMaterialization,
     StartupBackfill,
     HourlyRollupBootstrap,
     ForwardProxySubscriptionRefresh,
@@ -1345,6 +1346,7 @@ impl SystemTaskKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::RetentionArchive => "retention_archive",
+            Self::PromptCacheMaterialization => "prompt_cache_materialization",
             Self::StartupBackfill => "startup_backfill",
             Self::HourlyRollupBootstrap => "startup_hourly_rollup_bootstrap",
             Self::ForwardProxySubscriptionRefresh => "forward_proxy_subscription_refresh",

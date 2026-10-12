@@ -1,0 +1,452 @@
+{
+  "uid": "cvm-proxy-cases",
+  "title": "CVM 请求案例",
+  "description": "有界全量采集、分类展示；此页不是总体统计。",
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "timezone": "utc",
+  "refresh": "",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "tags": [
+    "cvm",
+    "observability"
+  ],
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "返回代理统计",
+      "url": "/d/cvm-proxy",
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "service",
+        "type": "query",
+        "label": "service",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up, service)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "environment",
+        "type": "query",
+        "label": "environment",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\"}, environment)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "instance",
+        "type": "query",
+        "label": "instance",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(up{service=~\"$service\",environment=~\"$environment\"}, instance)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "endpoint",
+        "type": "query",
+        "label": "endpoint",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "cvm-prometheus"
+        },
+        "query": "label_values(cvm_request_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, endpoint)",
+        "refresh": 1,
+        "includeAll": true,
+        "allValue": ".*",
+        "multi": true,
+        "current": {
+          "text": "全部 endpoint",
+          "value": "$__all"
+        }
+      },
+      {
+        "name": "trace_id",
+        "label": "选中 TraceID",
+        "type": "textbox",
+        "query": "",
+        "current": {
+          "text": "",
+          "value": ""
+        },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "案例选择与完整性",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "正常容量内全量轻量采集，界面每类最多 **3 条可展开的完整案例**；案例列表只展示 `cvm.export_completeness=detailed`，摘要记录仍用于总体统计但不进入瀑布图案例。默认手动刷新。正常候选为随机 TraceID 哈希 **1/16** 标记；慢响应 ≥30s，高本地等待 ≥250ms。类别可以重叠，列表不是总体发生率。\n\n保留 **24 小时**；超过该范围请缩短窗口。若某类显示“无可用案例”，通常表示当前窗口没有命中详细样本，请扩大窗口后再查。只展示已结束的响应；仍运行、进程退出、容量丢弃或导出失败会缺少案例。`summary` 记录只保留根 span 与落盘旁路，不能代表完整阶段；`lower_bound` 表示开放等待的下界，`detail_truncated` 表示细节达到上限，`export_completeness=unknown` 不保证历史完整。落盘可能晚到；按 TraceID 展开并核对 persistence/shared batch 关联。单击 TraceID 后选择“展开此请求瀑布图”查看原生瀑布图。\n\n列表 Duration 为完整 trace 的跨度，可能包含晚到落盘；响应时间请查看 response root 的 duration 或 `cvm.response_ms`。"
+      }
+    },
+    {
+      "id": 10,
+      "type": "table",
+      "title": "正常随机候选",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.normal_candidate = true }",
+          "limit": 3,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "无可用案例"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "traceID|Trace ID|TraceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "展开此请求瀑布图",
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 11,
+      "type": "table",
+      "title": "慢响应（≥30s）",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.slow = true }",
+          "limit": 3,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "无可用案例"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "traceID|Trace ID|TraceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "展开此请求瀑布图",
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "高本地等待（≥250ms）",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.high_wait = true }",
+          "limit": 3,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "无可用案例"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "traceID|Trace ID|TraceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "展开此请求瀑布图",
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "重试",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && span.cvm.retry = true }",
+          "limit": 3,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "无可用案例"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "traceID|Trace ID|TraceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "展开此请求瀑布图",
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "错误 / 取消 / HTTP 拒绝",
+      "description": "同一 UTC 窗口和筛选，最多三条可展开的完整案例；只保留 `cvm.export_completeness=detailed`。摘要记录继续用于总体统计但不进入案例列表；无记录可能是未结束、未匹配、过期、没有详细样本或导出丢失。请扩大时间窗口（最多 24 小时）后重试。",
+      "gridPos": {
+        "x": 0,
+        "y": 19,
+        "w": 24,
+        "h": 7
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "{ resource.service.name =~ \"${service:regex}\" && resource.deployment.environment.name =~ \"${environment:regex}\" && resource.service.instance.id =~ \"${instance:regex}\" && span.cvm.endpoint =~ \"${endpoint:regex}\" && span.cvm.record = \"response\" && span.cvm.export_completeness = \"detailed\" && (span.cvm.outcome = \"error\" || span.cvm.outcome = \"cancelled\" || span.cvm.status_class = \"4xx\" || span.cvm.status_class = \"5xx\") }",
+          "limit": 3,
+          "tableType": "traces"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "无可用案例"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "traceID|Trace ID|TraceID"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "展开此请求瀑布图",
+                    "url": "/d/cvm-proxy-cases?from=${__from}&to=${__to}&timezone=utc&${service:queryparam}&${environment:queryparam}&${instance:queryparam}&${endpoint:queryparam}&var-trace_id=${__data.fields[0].text}&viewPanel=20"
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 20,
+      "type": "traces",
+      "title": "选中请求：响应与落盘瀑布图",
+      "description": "响应 root span 的 duration 才是响应时间；整个 trace 还包含晚到落盘。共享批次通过 span links 关联，不能复制为每条请求的独占执行成本。原生 Trace 面板按 service.name 着色；CVM 是单一服务，因此阶段保持同色，critical path 会加深显示。head、first_byte、model_delta 同时保留累计里程碑属性和零时长时间点；forward、finalize、journal_append 在后台任务完成后可能作为带 late 标记的阶段出现。不存在或不适用的阶段不会伪造一行。",
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 18
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "cvm-tempo"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "tempo",
+            "uid": "cvm-tempo"
+          },
+          "queryType": "traceql",
+          "query": "$trace_id"
+        }
+      ],
+      "options": {
+        "spanFilters": {
+          "criticalPathOnly": true,
+          "matchesOnly": false
+        }
+      }
+    }
+  ]
+}

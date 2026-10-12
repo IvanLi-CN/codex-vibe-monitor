@@ -198,6 +198,8 @@ describe("retention throughput optional contract", () => {
                         arrivalRowsPerSecond: 0,
                         committedRowsPerSecond: "bad",
                         serviceRateMultiple: -1,
+                        sourceIdentityMs: 125,
+                        archiveWriterMs: "bad",
                       },
                       { dataset: 12, monthKey: "2026-09" },
                       {
@@ -229,6 +231,9 @@ describe("retention throughput optional contract", () => {
       arrivalRowsPerSecond: 0,
       committedRowsPerSecond: null,
       serviceRateMultiple: null,
+      sourceIdentityMs: 125,
+      archiveWriterMs: null,
+      summaryProofMs: null,
     });
     expect(detail.recentRuns[1].details?.archiveBatches?.[1]).toMatchObject({
       dataset: "pool_upstream_request_attempts",

@@ -215,6 +215,7 @@ export type {
   RoutingStateVersion,
   SettingsPayload,
   StartupBackfillResponse,
+  StatsDataQuality,
   StatsMaintenanceResponse,
   StatsResponse,
   StickyKeyConversation,
