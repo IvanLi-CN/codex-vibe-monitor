@@ -299,6 +299,16 @@ async fn record_pool_route_success_inner(
     sticky_affinity_generation: Option<i64>,
     request_model: Option<&str>,
 ) -> Result<PoolRouteSuccessOutcome> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        // Anonymous attempts are runtime-memory records. Route health and sticky
+        // observations are derived state and must not reintroduce a synchronous
+        // InteractiveProxy write into the request lifecycle.
+        return Ok(PoolRouteSuccessOutcome {
+            sticky_mutation: RuntimeStickyMutation::Unchanged,
+            availability_increased: false,
+            model_route_recovered: false,
+        });
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -609,6 +619,9 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     sticky_affinity_generation: Option<i64>,
     request_model: Option<&str>,
 ) -> Result<bool> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        return Ok(false);
+    }
     let outcome = match record_pool_route_success_inner(
         &state.pool,
         account_id,
@@ -1059,6 +1072,11 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     prompt_cache_key: Option<&str>,
     request_model: Option<&str>,
 ) -> Result<bool> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        // See the success path: an in-memory runtime attempt cannot acquire the
+        // interactive SQLite write permit from the hot request path.
+        return Ok(false);
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1691,6 +1709,9 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_an
     attempt_id: Option<i64>,
     model: Option<&str>,
 ) -> Result<()> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        return Ok(());
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1743,6 +1764,9 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_wit
     attempt_id: Option<i64>,
     exact_model: Option<&str>,
 ) -> Result<()> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        return Ok(());
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1906,6 +1930,9 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     prompt_cache_key: Option<&str>,
     request_model: Option<&str>,
 ) -> Result<()> {
+    if attempt_id.is_none() && invoke_id.is_none() {
+        return Ok(());
+    }
     let sticky_route_cleared = record_pool_route_http_failure_with_image_intent_inner(
         &state.pool,
         account_id,

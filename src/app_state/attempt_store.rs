@@ -298,16 +298,28 @@ impl RuntimeAttemptStore {
         let key = Self::key(invoke_id, occurred_at, attempt_public_id);
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
-        let Some(entry) = inner.entries.get_mut(&key) else {
-            return false;
+        let (previous_bytes, updated_bytes) = {
+            let Some(entry) = inner.entries.get_mut(&key) else {
+                return false;
+            };
+            if entry.snapshot.finished_at.is_some() {
+                return false;
+            }
+            let previous_bytes = entry.bytes;
+            entry.snapshot.finished_at = Some(finished_at.to_string());
+            entry.snapshot.status = "interrupted".to_string();
+            entry.snapshot.phase = Some("interrupted".to_string());
+            entry.snapshot.failure_kind = Some("invocation_interrupted".to_string());
+            entry.snapshot.error_message =
+                Some("proxy request ended before a terminal record was written".to_string());
+            entry.retained_at = Instant::now();
+            entry.bytes = Self::entry_memory_bytes(&entry.snapshot);
+            (previous_bytes, entry.bytes)
         };
-        entry.snapshot.finished_at = Some(finished_at.to_string());
-        entry.snapshot.status = "interrupted".to_string();
-        entry.snapshot.phase = Some("interrupted".to_string());
-        entry.snapshot.failure_kind = Some("invocation_interrupted".to_string());
-        entry.snapshot.error_message =
-            Some("proxy request ended before a terminal record was written".to_string());
-        entry.retained_at = Instant::now();
+        inner.bytes = inner
+            .bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(updated_bytes);
         true
     }
 
@@ -319,7 +331,11 @@ impl RuntimeAttemptStore {
     ) -> bool {
         let key = Self::key(invoke_id, occurred_at, attempt_public_id);
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        let removed = inner.entries.remove(&key);
+        let removable = inner.entries.get(&key).is_some_and(|entry| {
+            entry.snapshot.status == "interrupted"
+                && entry.snapshot.failure_kind.as_deref() == Some("invocation_interrupted")
+        });
+        let removed = removable.then(|| inner.entries.remove(&key)).flatten();
         if let Some(entry) = removed {
             inner.bytes = inner.bytes.saturating_sub(entry.bytes);
             inner.terminal_keys.insert(key, Instant::now());
@@ -486,7 +502,9 @@ impl RuntimeAttemptStore {
                 .entries
                 .iter()
                 .filter(|(key, entry)| {
-                    *key != protected_key && entry.snapshot.finished_at.is_some()
+                    *key != protected_key
+                        && entry.snapshot.finished_at.is_some()
+                        && inner.terminal_keys.contains_key(key)
                 })
                 .min_by_key(|(_, entry)| entry.retained_at)
                 .map(|(key, _)| key.clone())

@@ -3495,7 +3495,18 @@ pub(crate) async fn flush_pending_batch(
                                 .ok()
                                 .and_then(|mut journal| {
                                     journal.as_mut().map(|journal| {
-                                        journal.quarantine(terminal, &format!("{singleton_err:#}"))
+                                        let result = journal.quarantine(
+                                            terminal,
+                                            "terminal_materialization_failed",
+                                        );
+                                        if result.is_ok()
+                                            && !journal.remember_shutdown_recovery(&[terminal])
+                                        {
+                                            return Err(anyhow!(
+                                                "terminal shutdown recovery capacity exhausted"
+                                            ));
+                                        }
+                                        result
                                     })
                                 })
                                 .unwrap_or_else(|| {
@@ -4234,9 +4245,9 @@ pub(crate) async fn flush_pending_batch_inner(
                 summary_delta,
             ));
         }
-        // Persist one compact Summary source descriptor in the same transaction as the terminal
-        // rows.  It is intentionally identity-only: rolling recovery reconstructs the bounded
-        // preview from the source table after a restart instead of duplicating raw payloads.
+        // Build derived work from the terminal rows, but execute it only after
+        // the terminal fact transaction commits. Derived projection failures must
+        // not roll back the business fact or extend its P1 write transaction.
         let descriptor_entries = persisted_terminals
             .iter()
             .map(
@@ -4253,22 +4264,41 @@ pub(crate) async fn flush_pending_batch_inner(
                 },
             )
             .collect::<Vec<_>>();
-        if !descriptor_entries.is_empty() {
+        let summary_descriptor = if !descriptor_entries.is_empty() {
             let source_revision = persisted_terminals
                 .iter()
                 .filter_map(|(terminal, ..)| terminal.dashboard_terminal_sequence)
                 .max()
                 .unwrap_or_default();
-            let descriptor =
-                SummarySourceChangeDescriptor::terminal_batch(source_revision, descriptor_entries)?;
-            append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
-        }
-        if !prompt_cache_keys_touched.is_empty() {
-            // Keep aggregate reads fail-closed and let the durable queue be processed by the
-            // pressure-gated materialization task. A terminal P1 commit must not scan history.
-            mark_prompt_cache_conversation_stats_stale_on_connection(terminal_tx.as_mut()).await?;
-        }
+            Some(SummarySourceChangeDescriptor::terminal_batch(
+                source_revision,
+                descriptor_entries,
+            )?)
+        } else {
+            None
+        };
         terminal_tx.commit().await?;
+        if summary_descriptor.is_some() || !prompt_cache_keys_touched.is_empty() {
+            let derived_result: Result<()> = async {
+                let mut derived_tx = connection.begin().await?;
+                if let Some(descriptor) = summary_descriptor.as_ref() {
+                    append_summary_source_change_descriptor_tx(derived_tx.as_mut(), descriptor)
+                        .await?;
+                }
+                if !prompt_cache_keys_touched.is_empty() {
+                    mark_prompt_cache_conversation_stats_stale_on_connection(
+                        derived_tx.as_mut(),
+                    )
+                    .await?;
+                }
+                derived_tx.commit().await?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = derived_result {
+                warn!(error = %error, "terminal derived projection deferred after fact commit");
+            }
+        }
         Ok(())
         }.await;
         if let Some(m) = observability {

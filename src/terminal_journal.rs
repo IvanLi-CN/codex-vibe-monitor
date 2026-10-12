@@ -284,6 +284,7 @@ pub(crate) struct TerminalJournal {
     deferred_rejected: u64,
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
+    shutdown_recovery_bytes: usize,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
     deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
@@ -305,7 +306,7 @@ impl TerminalJournal {
     pub(crate) fn quarantine_terminals(
         &mut self,
         terminals: &[&BatchedTerminalInvocationWrite],
-        error: &str,
+        _error: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
         struct QuarantineEntry {
@@ -328,7 +329,10 @@ impl TerminalJournal {
                 invoke_id: terminal.record.invoke_id.clone(),
                 occurred_at: terminal.record.occurred_at.clone(),
                 raw_capture: terminal.raw_capture,
-                error: error.to_string(),
+                // Quarantine files are durable operational artifacts. Keep the
+                // reason categorical so an anyhow chain cannot smuggle payloads,
+                // credentials, or response fragments into the journal directory.
+                error: "terminal_materialization_failed".to_string(),
                 record: journal_safe_terminal_record(&terminal.record),
                 attempts: terminal
                     .attempts
@@ -804,6 +808,16 @@ impl TerminalJournal {
         let shutdown_recovery_path = directory.join("shutdown-terminal-quarantine.jsonl");
         let (shutdown_recovery_pending, recovery_writes) =
             load_shutdown_terminal_recovery(&shutdown_recovery_path);
+        let shutdown_recovery_bytes = shutdown_recovery_pending
+            .values()
+            .map(|(record, attempts)| {
+                record.estimated_memory_bytes()
+                    + attempts
+                        .iter()
+                        .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                        .sum::<usize>()
+            })
+            .sum();
         let mut deferred_writes = VecDeque::new();
         let mut deferred_write_bytes = 0_usize;
         for terminal in recovery_writes {
@@ -853,6 +867,7 @@ impl TerminalJournal {
             replay_blocked: false,
             pending_attempt_starts,
             shutdown_recovery_pending,
+            shutdown_recovery_bytes,
             system_task_quarantine_ids,
             replayed_system_task_ids,
             deferred_system_task_finishes,
@@ -1208,6 +1223,7 @@ impl TerminalJournal {
             return;
         };
         let recovery_only = recovery_pending && sequences.is_empty();
+        let recovery_shadowed_journal = recovery_pending && !sequences.is_empty();
         let mut recovery_ack_durable = true;
         if recovery_pending {
             if let Err(err) = append_shutdown_terminal_ack(
@@ -1223,8 +1239,16 @@ impl TerminalJournal {
                 if recovery_only {
                     return;
                 }
-            } else {
-                self.shutdown_recovery_pending.remove(&key);
+            } else if recovery_only || !recovery_shadowed_journal {
+                if let Some((record, attempts)) = self.shutdown_recovery_pending.remove(&key) {
+                    self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_sub(
+                        record.estimated_memory_bytes()
+                            + attempts
+                                .iter()
+                                .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                                .sum::<usize>(),
+                    );
+                }
             }
         }
         let mut pending_sequences = Vec::new();
@@ -1302,6 +1326,7 @@ impl TerminalJournal {
         self.remove_fully_acknowledged_segments();
         if recovery_pending
             && recovery_ack_durable
+            && !recovery_shadowed_journal
             && let Err(err) = compact_shutdown_terminal_recovery(
                 &self.directory.join("shutdown-terminal-quarantine.jsonl"),
                 &self.shutdown_recovery_pending,
@@ -1317,32 +1342,73 @@ impl TerminalJournal {
     pub(crate) fn remember_shutdown_recovery(
         &mut self,
         terminals: &[&BatchedTerminalInvocationWrite],
-    ) {
+    ) -> bool {
+        let mut accepted = true;
         for terminal in terminals {
             let key = (
                 terminal.record.invoke_id.clone(),
                 terminal.record.occurred_at.clone(),
                 terminal.raw_capture,
             );
+            let value = (
+                journal_safe_terminal_record(&terminal.record),
+                terminal
+                    .attempts
+                    .iter()
+                    .map(journal_safe_attempt_snapshot)
+                    .collect::<Vec<_>>(),
+            );
+            let value_bytes = value.0.estimated_memory_bytes()
+                + value
+                    .1
+                    .iter()
+                    .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                    .sum::<usize>();
+            let existing_bytes = self
+                .shutdown_recovery_pending
+                .get(&key)
+                .map(|(record, attempts)| {
+                    record.estimated_memory_bytes()
+                        + attempts
+                            .iter()
+                            .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                            .sum::<usize>()
+                })
+                .unwrap_or_default();
+            if !self.shutdown_recovery_pending.contains_key(&key)
+                && (self.shutdown_recovery_pending.len() >= TERMINAL_JOURNAL_MAX_DEFERRED_WRITES
+                    || self
+                        .shutdown_recovery_bytes
+                        .saturating_sub(existing_bytes)
+                        .saturating_add(value_bytes)
+                        > TERMINAL_JOURNAL_MAX_DEFERRED_BYTES)
+            {
+                self.deferred_rejected = self.deferred_rejected.saturating_add(1);
+                self.overflowed = true;
+                accepted = false;
+                continue;
+            }
             if self
                 .shutdown_recovery_pending
-                .insert(
-                    key.clone(),
-                    (
-                        journal_safe_terminal_record(&terminal.record),
-                        terminal
-                            .attempts
-                            .iter()
-                            .map(journal_safe_attempt_snapshot)
-                            .collect(),
-                    ),
-                )
+                .insert(key.clone(), value)
+                .map(|previous| {
+                    self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_sub(
+                        previous.0.estimated_memory_bytes()
+                            + previous
+                                .1
+                                .iter()
+                                .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                                .sum::<usize>(),
+                    );
+                })
                 .is_none()
                 && !self.pending_by_key.contains_key(&key)
             {
                 self.replay_count = self.replay_count.saturating_add(1);
             }
+            self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_add(value_bytes);
         }
+        accepted
     }
 
     pub(crate) fn take_replay(&mut self) -> Vec<BatchedTerminalInvocationWrite> {
@@ -1891,7 +1957,11 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
                 let _ = corrupt_file.sync_data();
             }
             corrupt = true;
-            continue;
+            // A malformed recovery line is an untrusted tail. Stop at the
+            // boundary so later lines are not treated as durable ordering
+            // evidence; the original file and its corrupt copy remain for
+            // operator repair.
+            break;
         };
         let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
         if entry.acknowledged {
@@ -2212,13 +2282,34 @@ fn repair_corrupt_segment_tail(path: &Path, valid_prefix: &[u8]) -> Result<()> {
         "jsonl.corrupt-{}",
         chrono::Utc::now().timestamp_millis()
     ));
-    fs::rename(path, &evidence_path).with_context(|| {
+    fs::copy(path, &evidence_path).with_context(|| {
         format!(
             "failed to preserve corrupt terminal journal segment {}",
             path.display()
         )
     })?;
-    fs::write(path, valid_prefix).with_context(|| {
+    let temporary_path = path.with_extension("jsonl.repaired");
+    let mut repaired = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .with_context(|| {
+            format!(
+                "failed to open repaired journal {}",
+                temporary_path.display()
+            )
+        })?;
+    repaired
+        .write_all(valid_prefix)
+        .and_then(|_| repaired.sync_data())
+        .with_context(|| {
+            format!(
+                "failed to write repaired terminal journal segment {}",
+                temporary_path.display()
+            )
+        })?;
+    fs::rename(&temporary_path, path).with_context(|| {
         format!(
             "failed to rebuild terminal journal segment {} after corruption",
             path.display()

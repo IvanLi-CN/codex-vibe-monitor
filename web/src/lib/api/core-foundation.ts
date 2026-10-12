@@ -2636,8 +2636,8 @@ export interface RuntimePressureHealth {
   state: string;
   process: RuntimePressureProcessHealth;
   allocator: { mallocArenaMax: string };
-  runtimeAttempts: RuntimePressureRuntimeAttemptsHealth;
-  terminalJournal: RuntimePressureTerminalJournalHealth;
+  runtimeAttempts?: RuntimePressureRuntimeAttemptsHealth;
+  terminalJournal?: RuntimePressureTerminalJournalHealth;
   writerAccounting: RuntimePressureWriterAccountingHealth;
   promptCacheProjection?: RuntimePressurePromptCacheProjectionHealth;
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
@@ -5414,25 +5414,31 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
     allocator: {
       mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown",
     },
-    runtimeAttempts: {
-      records: number(runtimeAttempts.records),
-      bytes: number(runtimeAttempts.bytes),
-      evictedRecords: number(runtimeAttempts.evictedRecords),
-      rejectedRecords: number(runtimeAttempts.rejectedRecords),
-    },
-    terminalJournal: {
-      pendingRecords: number(terminalJournal.pendingRecords),
-      pendingMaterializationRecords: number(terminalJournal.pendingMaterializationRecords),
-      pendingBytes: number(terminalJournal.pendingBytes),
-      segmentCount: number(terminalJournal.segmentCount),
-      replayCount: number(terminalJournal.replayCount),
-      checkpointLagMs: number(terminalJournal.checkpointLagMs),
-      overflowed: terminalJournal.overflowed === true,
-      unavailable: terminalJournal.unavailable === true,
-      deferredRecords: number(terminalJournal.deferredRecords),
-      deferredBytes: number(terminalJournal.deferredBytes),
-      deferredRejected: number(terminalJournal.deferredRejected),
-    },
+    runtimeAttempts:
+      payload.runtimeAttempts == null
+        ? undefined
+        : {
+            records: number(runtimeAttempts.records),
+            bytes: number(runtimeAttempts.bytes),
+            evictedRecords: number(runtimeAttempts.evictedRecords),
+            rejectedRecords: number(runtimeAttempts.rejectedRecords),
+          },
+    terminalJournal:
+      payload.terminalJournal == null
+        ? undefined
+        : {
+            pendingRecords: number(terminalJournal.pendingRecords),
+            pendingMaterializationRecords: number(terminalJournal.pendingMaterializationRecords),
+            pendingBytes: number(terminalJournal.pendingBytes),
+            segmentCount: number(terminalJournal.segmentCount),
+            replayCount: number(terminalJournal.replayCount),
+            checkpointLagMs: number(terminalJournal.checkpointLagMs),
+            overflowed: terminalJournal.overflowed === true,
+            unavailable: terminalJournal.unavailable === true,
+            deferredRecords: number(terminalJournal.deferredRecords),
+            deferredBytes: number(terminalJournal.deferredBytes),
+            deferredRejected: number(terminalJournal.deferredRejected),
+          },
     writerAccounting: {
       state: optionalString(writer.state) ?? "unknown",
       pendingDepth: number(writer.pendingDepth),

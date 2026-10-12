@@ -40,7 +40,7 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
     )
     .await;
 
-    let request_count = 16;
+    let request_count = 32;
     for index in 0..request_count {
         let prompt_cache_key = format!("pressure-key-{index}");
         allocate_proxy_invoke_id_with_active_lease(&state, Some(&prompt_cache_key))
@@ -68,6 +68,7 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
     for index in 0..request_count {
         let state = state.clone();
         requests.push(tokio::spawn(async move {
+            let started = Instant::now();
             let response = proxy_openai_v1_via_pool(
                 state.clone(),
                 20_000 + index as u64,
@@ -102,7 +103,7 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
             let _ = to_bytes(response.into_body(), usize::MAX)
                 .await
                 .expect("read proxy response body");
-            status
+            (status, started.elapsed())
         }));
     }
 
@@ -174,14 +175,28 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         .expect("release SQLite write pressure lock");
     drop(locked_connection);
 
-    let statuses = futures_util::future::join_all(requests)
+    let results = futures_util::future::join_all(requests)
         .await
         .into_iter()
         .map(|result| result.expect("join proxy pressure request"))
         .collect::<Vec<_>>();
+    let statuses = results
+        .iter()
+        .map(|(status, _)| *status)
+        .collect::<Vec<_>>();
     assert!(
         statuses.iter().all(|status| *status == StatusCode::OK),
         "representative proxy pressure requests should complete successfully: {statuses:?}"
+    );
+    let mut latencies = results
+        .iter()
+        .map(|(_, elapsed)| *elapsed)
+        .collect::<Vec<_>>();
+    latencies.sort_unstable();
+    let p95 = latencies[(latencies.len() * 95).div_ceil(100).saturating_sub(1)];
+    assert!(
+        p95 < Duration::from_secs(2),
+        "proxy request p95 must stay within the pressure budget: {p95:?}"
     );
     assert_eq!(
         state

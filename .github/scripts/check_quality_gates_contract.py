@@ -991,7 +991,7 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
                 "--archive-file",
                 "$RUNNER_TEMP/backend-tests.tar.zst",
                 "--test-filter",
-                "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)",
+            "test(=tests::stateful_sqlite::routing_timeout_and_overload_failover::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)",
             ],
             "ci-pr.yml representative-scale selector must replay its exact archived test",
         )

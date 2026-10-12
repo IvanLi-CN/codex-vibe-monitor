@@ -1187,6 +1187,12 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
 ) -> Result<()> {
+    // Runtime attempts are authoritative in memory until their terminal batch is
+    // materialized. A capture update must not turn a rejected in-memory update
+    // into a synchronous SQLite write on the request path.
+    if pending.attempt_id.is_none() {
+        return Ok(());
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
