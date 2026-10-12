@@ -1639,24 +1639,7 @@ impl SqliteBatchWriter {
                 .map(|journal| journal.append_attempt_start(snapshot))
         });
         match outcome {
-            Some(mut outcome) => {
-                if matches!(
-                    outcome.durability_mode,
-                    TerminalJournalDurabilityMode::Journal
-                ) && outcome.sequence.is_some()
-                {
-                    let sync_result = self
-                        .terminal_journal
-                        .lock()
-                        .ok()
-                        .and_then(|mut guard| guard.as_mut().map(TerminalJournal::force_sync))
-                        .unwrap_or_else(|| Err(anyhow::anyhow!("terminal journal is unavailable")));
-                    if sync_result.is_err() {
-                        outcome.durability_mode = TerminalJournalDurabilityMode::MemoryOverflow;
-                    }
-                }
-                outcome
-            }
+            Some(outcome) => outcome,
             None => {
                 #[cfg(test)]
                 {

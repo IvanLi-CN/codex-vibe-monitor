@@ -917,7 +917,7 @@ fn resolved_pool_request_compression_algorithm(
     }
 }
 
-fn spawn_pool_attempt_response_capture(
+async fn persist_pool_attempt_response_capture(
     state: Arc<AppState>,
     pending: PendingPoolAttemptRecord,
     response_body: Bytes,
@@ -925,7 +925,7 @@ fn spawn_pool_attempt_response_capture(
     response_content_encoding: Option<String>,
 ) {
     let capture_key = pool_attempt_response_capture_key(&pending);
-    crate::observability::diagnostics::spawn(async move {
+    {
         let raw_meta = spawn_raw_payload_file_write(
             state.as_ref(),
             &capture_key,
@@ -968,6 +968,7 @@ fn spawn_pool_attempt_response_capture(
                 "failed to broadcast asynchronous pool attempt response capture"
             );
         } else if !capture_persisted {
+            let mut fallback_persisted = false;
             for _ in 0..3 {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 if persist_pool_upstream_request_attempt_response_capture_fallback(
@@ -977,15 +978,22 @@ fn spawn_pool_attempt_response_capture(
                 .await
                 .is_ok()
                 {
+                    fallback_persisted = true;
                     break;
                 }
             }
-            warn!(
-                invoke_id = %pending.invoke_id,
-                "skipping asynchronous pool attempt response capture broadcast because metadata was not persisted"
-            );
+            if fallback_persisted {
+                if let Err(err) =
+                    broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id)
+                        .await
+                {
+                    warn!(invoke_id = %pending.invoke_id, error = %err, "failed to broadcast fallback pool attempt response capture");
+                }
+            } else {
+                warn!(invoke_id = %pending.invoke_id, "skipping asynchronous pool attempt response capture broadcast because metadata was not persisted");
+            }
         }
-    });
+    }
 }
 
 fn take_priority_handoff_terminal_error(
@@ -3874,13 +3882,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     let response_content_encoding = response_headers
                         .get(header::CONTENT_ENCODING)
                         .and_then(|value| value.to_str().ok());
-                    spawn_pool_attempt_response_capture(
+                    persist_pool_attempt_response_capture(
                         state.clone(),
                         pending_attempt_record.clone(),
                         response_body.clone(),
                         response_body_logging_enabled,
                         response_content_encoding.map(str::to_string),
-                    );
+                    )
+                    .await;
                     true
                 } else {
                     false
@@ -4451,13 +4460,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     .read()
                                     .await
                                     .response_body_logging_enabled;
-                                spawn_pool_attempt_response_capture(
+                                persist_pool_attempt_response_capture(
                                     state.clone(),
                                     pending_attempt_record.clone(),
                                     raw_body.clone(),
                                     response_body_logging_enabled,
                                     response_content_encoding_for_attempt.clone(),
-                                );
+                                )
+                                .await;
                                 true
                             } else {
                                 false

@@ -909,6 +909,11 @@ impl TerminalJournal {
                     journal.replay_count = journal.replay_count.saturating_add(1);
                     recovered_any = true;
                 } else {
+                    journal.pending_by_key.remove(&(
+                        recovery_write.record.invoke_id.clone(),
+                        recovery_write.record.occurred_at.clone(),
+                        recovery_write.raw_capture,
+                    ));
                     journal.remember_shutdown_recovery(&[&recovery_write]);
                 }
             }
@@ -1112,12 +1117,24 @@ impl TerminalJournal {
             .iter()
             .find_map(|(start, segment)| segment.current.then_some(*start))
             .expect("current terminal journal segment exists");
-        let segment = self
+        {
+            let segment = self
+                .segments
+                .get_mut(&current_start)
+                .expect("current terminal journal segment exists");
+            segment.bytes = segment.bytes.saturating_add(encoded.len() as u64);
+        }
+        let acknowledgement_target = self
             .segments
-            .get_mut(&current_start)
-            .expect("current terminal journal segment exists");
-        segment.bytes = segment.bytes.saturating_add(encoded.len() as u64);
-        segment.acknowledged.insert(sequence);
+            .iter()
+            .find_map(|(start, segment)| segment.sequences.contains(&sequence).then_some(*start));
+        if let Some(target) = acknowledgement_target {
+            self.segments
+                .get_mut(&target)
+                .expect("terminal journal acknowledgement target exists")
+                .acknowledged
+                .insert(sequence);
+        }
         self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
         self.pending_attempt_starts.remove(attempt_public_id);
         true
@@ -1560,7 +1577,8 @@ impl TerminalJournal {
             pending_records: self
                 .pending_by_key
                 .len()
-                .saturating_add(self.pending_attempt_starts.len()),
+                .saturating_add(self.pending_attempt_starts.len())
+                .saturating_add(self.shutdown_recovery_pending.len()),
             pending_bytes: self.pending_bytes,
             segment_count: self.segments.len(),
             replay_count: self.replay_count,

@@ -231,14 +231,6 @@ impl RuntimeAttemptStore {
     }
 
     pub(crate) fn upsert_terminal(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
-        let key = Self::key(
-            &snapshot.invoke_id,
-            &snapshot.occurred_at,
-            &snapshot.attempt_public_id,
-        );
-        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        inner.terminal_keys.remove(&key);
-        drop(inner);
         self.upsert_inner(snapshot, true)
     }
 
@@ -375,7 +367,9 @@ impl RuntimeAttemptStore {
         self.evict_expired(&mut inner);
         RuntimeAttemptStoreHealth {
             records: inner.entries.len(),
-            bytes: inner.bytes,
+            bytes: inner
+                .bytes
+                .saturating_add(Self::terminal_fence_memory_bytes(&inner)),
             evicted_records: inner.evicted_records,
             rejected_records: inner.rejected_records,
         }
@@ -421,7 +415,10 @@ impl RuntimeAttemptStore {
         terminal_priority: bool,
     ) -> bool {
         while inner.entries.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
-            || inner.bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+            || inner
+                .bytes
+                .saturating_add(Self::terminal_fence_memory_bytes(inner))
+                > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
         {
             let Some(oldest_key) = inner
                 .entries
@@ -450,6 +447,20 @@ impl RuntimeAttemptStore {
             .saturating_add(snapshot.occurred_at.capacity())
             .saturating_add(snapshot.attempt_public_id.capacity())
             .saturating_add(std::mem::size_of::<RuntimeAttemptEntry>())
+    }
+
+    fn terminal_fence_memory_bytes(inner: &RuntimeAttemptStoreInner) -> usize {
+        inner
+            .terminal_keys
+            .keys()
+            .map(|(invoke_id, occurred_at, attempt_public_id)| {
+                std::mem::size_of::<(String, String, String)>()
+                    + invoke_id.capacity()
+                    + occurred_at.capacity()
+                    + attempt_public_id.capacity()
+                    + std::mem::size_of::<Instant>()
+            })
+            .sum()
     }
 }
 
