@@ -894,21 +894,23 @@ impl TerminalJournal {
                 let startup_backfill_tasks = startup_backfill_tasks_for_terminal(
                     &api_invocation_from_runtime_record(&record),
                 );
-                journal
-                    .deferred_writes
-                    .push_back(BatchedTerminalInvocationWrite {
-                        enqueued_at: None,
-                        diagnostic: None,
-                        record,
-                        attempts,
-                        capture_started: None,
-                        raw_capture,
-                        dashboard_terminal_sequence: Some(0),
-                        terminal_projection_event_ids: Vec::new(),
-                        startup_backfill_tasks,
-                    });
-                journal.replay_count = journal.replay_count.saturating_add(1);
-                recovered_any = true;
+                let recovery_write = BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
+                    diagnostic: None,
+                    record,
+                    attempts,
+                    capture_started: None,
+                    raw_capture,
+                    dashboard_terminal_sequence: Some(0),
+                    terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks,
+                };
+                if journal.defer_write(recovery_write.clone()) {
+                    journal.replay_count = journal.replay_count.saturating_add(1);
+                    recovered_any = true;
+                } else {
+                    journal.remember_shutdown_recovery(&[&recovery_write]);
+                }
             }
         }
         if recovered_any {
@@ -1337,6 +1339,12 @@ impl TerminalJournal {
         let replay = self.take_replay_chunk(available, TERMINAL_JOURNAL_REPLAY_MAX_BYTES);
         for write in replay {
             if !self.defer_write(write.clone()) {
+                let key = (
+                    write.record.invoke_id.clone(),
+                    write.record.occurred_at.clone(),
+                    write.raw_capture,
+                );
+                self.pending_by_key.remove(&key);
                 self.overflowed = true;
                 self.remember_shutdown_recovery(&[&write]);
             }
@@ -1849,7 +1857,16 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
             break;
         }
         let Ok(entry) = serde_json::from_str::<ShutdownTerminalRecoveryLine>(&line) else {
-            warn!(path = %path.display(), "ignoring corrupt shutdown terminal recovery line");
+            warn!(path = %path.display(), "preserving corrupt shutdown terminal recovery line");
+            let corrupt_path = path.with_extension("jsonl.corrupt");
+            if let Ok(mut corrupt_file) = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&corrupt_path)
+            {
+                let _ = corrupt_file.write_all(line.as_bytes());
+                let _ = corrupt_file.sync_data();
+            }
             corrupt = true;
             continue;
         };

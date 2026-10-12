@@ -152,6 +152,7 @@ struct RuntimeAttemptEntry {
 #[derive(Debug, Default)]
 struct RuntimeAttemptStoreInner {
     entries: HashMap<(String, String, String), RuntimeAttemptEntry>,
+    terminal_keys: HashMap<(String, String, String), Instant>,
     bytes: usize,
     evicted_records: u64,
     rejected_records: u64,
@@ -176,6 +177,10 @@ impl RuntimeAttemptStore {
     }
 
     pub(crate) fn upsert(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
+        self.upsert_inner(snapshot, false)
+    }
+
+    fn upsert_inner(&self, snapshot: RuntimeAttemptSnapshot, terminal_priority: bool) -> bool {
         let key = Self::key(
             &snapshot.invoke_id,
             &snapshot.occurred_at,
@@ -183,6 +188,9 @@ impl RuntimeAttemptStore {
         );
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
+        if !terminal_priority && inner.terminal_keys.contains_key(&key) {
+            return false;
+        }
 
         let bytes = Self::entry_memory_bytes(&snapshot);
         if bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES {
@@ -208,7 +216,7 @@ impl RuntimeAttemptStore {
                 bytes,
             },
         );
-        if self.evict_to_bound(&mut inner, &key) {
+        if self.evict_to_bound(&mut inner, &key, terminal_priority) {
             return true;
         }
         if let Some(rejected) = inner.entries.remove(&key) {
@@ -223,7 +231,15 @@ impl RuntimeAttemptStore {
     }
 
     pub(crate) fn upsert_terminal(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
-        self.upsert(snapshot)
+        let key = Self::key(
+            &snapshot.invoke_id,
+            &snapshot.occurred_at,
+            &snapshot.attempt_public_id,
+        );
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        inner.terminal_keys.remove(&key);
+        drop(inner);
+        self.upsert_inner(snapshot, true)
     }
 
     pub(crate) fn get(
@@ -296,6 +312,7 @@ impl RuntimeAttemptStore {
             .collect::<Vec<_>>();
         let mut snapshots = Vec::with_capacity(keys.len());
         for key in keys {
+            inner.terminal_keys.insert(key.clone(), Instant::now());
             if let Some(entry) = inner.entries.remove(&key) {
                 inner.bytes = inner.bytes.saturating_sub(entry.bytes);
                 snapshots.push(entry.snapshot);
@@ -339,6 +356,16 @@ impl RuntimeAttemptStore {
 
     pub(crate) fn restore(&self, snapshots: impl IntoIterator<Item = RuntimeAttemptSnapshot>) {
         for snapshot in snapshots {
+            let key = Self::key(
+                &snapshot.invoke_id,
+                &snapshot.occurred_at,
+                &snapshot.attempt_public_id,
+            );
+            self.inner
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .terminal_keys
+                .remove(&key);
             let _ = self.upsert(snapshot);
         }
     }
@@ -356,6 +383,9 @@ impl RuntimeAttemptStore {
 
     fn evict_expired(&self, inner: &mut RuntimeAttemptStoreInner) {
         let now = Instant::now();
+        inner.terminal_keys.retain(|_, retained_at| {
+            now.duration_since(*retained_at) <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE
+        });
         let expired = inner
             .entries
             .iter()
@@ -371,12 +401,24 @@ impl RuntimeAttemptStore {
                 inner.evicted_records = inner.evicted_records.saturating_add(1);
             }
         }
+        while inner.terminal_keys.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS {
+            let Some(oldest_key) = inner
+                .terminal_keys
+                .iter()
+                .min_by_key(|(_, retained_at)| **retained_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            inner.terminal_keys.remove(&oldest_key);
+        }
     }
 
     fn evict_to_bound(
         &self,
         inner: &mut RuntimeAttemptStoreInner,
         protected_key: &(String, String, String),
+        terminal_priority: bool,
     ) -> bool {
         while inner.entries.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
             || inner.bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
@@ -385,7 +427,8 @@ impl RuntimeAttemptStore {
                 .entries
                 .iter()
                 .filter(|(key, entry)| {
-                    *key != protected_key && entry.snapshot.finished_at.is_some()
+                    *key != protected_key
+                        && (terminal_priority || entry.snapshot.finished_at.is_some())
                 })
                 .min_by_key(|(_, entry)| entry.retained_at)
                 .map(|(key, _)| key.clone())
@@ -483,6 +526,17 @@ mod tests {
             response_raw_truncated_reason: None,
             response_content_encoding: None,
         }
+    }
+
+    #[test]
+    fn terminal_extraction_rejects_late_progress_until_restore() {
+        let store = RuntimeAttemptStore::default();
+        assert!(store.upsert(snapshot("attempt-fenced", "connecting")));
+        let terminal = store.take_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        assert_eq!(terminal.len(), 1);
+        assert!(!store.upsert(snapshot("attempt-fenced", "late_progress")));
+        store.restore(terminal);
+        assert!(store.upsert(snapshot("attempt-fenced", "recovered_progress")));
     }
 
     #[test]

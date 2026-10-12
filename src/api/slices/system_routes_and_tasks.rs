@@ -293,6 +293,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || event_bus.state == "degraded"
             || runtime_attempts.rejected_records > 0
             || terminal_journal.overflowed
+            || terminal_journal.unavailable
             || backfill.state == "degraded",
         projection_deferred
             || cursor_growth

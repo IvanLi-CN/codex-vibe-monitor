@@ -968,6 +968,18 @@ fn spawn_pool_attempt_response_capture(
                 "failed to broadcast asynchronous pool attempt response capture"
             );
         } else if !capture_persisted {
+            for _ in 0..3 {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                if persist_pool_upstream_request_attempt_response_capture_fallback(
+                    &state.pool,
+                    &pending,
+                )
+                .await
+                .is_ok()
+                {
+                    break;
+                }
+            }
             warn!(
                 invoke_id = %pending.invoke_id,
                 "skipping asynchronous pool attempt response capture broadcast because metadata was not persisted"

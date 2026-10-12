@@ -381,7 +381,10 @@ fn api_attempt_from_runtime_snapshot(
         first_byte_latency_ms: snapshot.first_byte_latency_ms,
         stream_latency_ms: snapshot.stream_latency_ms,
         upstream_request_id: snapshot.upstream_request_id,
-        downstream_request_content_encoding: snapshot.response_content_encoding,
+        // The runtime attempt snapshot currently stores response encoding only. Match the
+        // persisted query's identity fallback instead of exposing response metadata as request
+        // metadata until a separate request codec field is available.
+        downstream_request_content_encoding: Some("identity".to_string()),
         upstream_request_compression_algorithm: snapshot.upstream_request_compression_algorithm,
         upstream_request_compression_mode: snapshot.upstream_request_compression_mode,
         upstream_request_logical_body_bytes: snapshot.upstream_request_logical_body_bytes,

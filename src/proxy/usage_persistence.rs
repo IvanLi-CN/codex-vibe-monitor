@@ -760,12 +760,13 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
         .proxy_runtime_attempts
         .upsert(runtime_snapshot.clone())
     {
-        let _ = state
+        let acknowledged = state
             .sqlite_batch_writer
             .acknowledge_runtime_attempt_start(&runtime_snapshot.attempt_public_id);
         warn!(
             invoke_id = %pending.invoke_id,
             attempt_public_id = ?pending.attempt_public_id,
+            acknowledged,
             "proxy attempt start event was accepted by the journal but rejected by the bounded runtime store"
         );
         return None;
