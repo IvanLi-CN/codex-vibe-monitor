@@ -1649,8 +1649,8 @@ pub(crate) async fn finalize_tracked_pool_attempt(
         )
     });
     let finished_at = shanghai_now_string();
-    if let Err(err) = finalize_pool_upstream_request_attempt(
-        &state.pool,
+    if let Err(err) = finalize_pool_upstream_request_attempt_in_memory(
+        state,
         pending_attempt_record,
         finished_at.as_str(),
         status,
@@ -3065,7 +3065,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             if pool_route_success {
                 consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast_with_model(
                         state.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc,
@@ -3078,7 +3078,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
                     )
                     .await
                 {
@@ -3125,7 +3136,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
             } else {
                 release_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
                         state.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -3142,8 +3153,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
                         prompt_cache_key.as_deref(),
+                        pending_pool_attempt_record
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
                     )
                     .await
                 {
@@ -3312,7 +3334,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast_with_model(
                         state_for_record.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc_for_record,
@@ -3325,7 +3347,18 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
                     )
                     .await
                 {
@@ -3380,7 +3413,7 @@ pub(crate) fn proxy_openai_v1_via_pool(
                     &reservation_key_for_record,
                 );
                 if let Err(route_err) =
-                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
                         state_for_record.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -3395,8 +3428,19 @@ pub(crate) fn proxy_openai_v1_via_pool(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
                         prompt_cache_key_for_record.as_deref(),
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| {
+                                pending
+                                    .request_model
+                                    .as_deref()
+                                    .or(pending.upstream_request_model.as_deref())
+                            }),
                     )
                     .await
                 {

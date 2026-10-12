@@ -2995,7 +2995,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                     persist_pool_route_success_then_release(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
-                        record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast(
+                        record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast_with_model(
                         state_for_task.as_ref(),
                         account.account_id,
                         upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
@@ -3008,7 +3008,21 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         pending_pool_attempt_record_for_task
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_pool_attempt_record_for_task
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
+                        request_info_for_task
+                            .model
+                            .as_deref()
+                            .or_else(|| {
+                                pending_pool_attempt_record_for_task.as_ref().and_then(|pending| {
+                                    pending
+                                        .request_model
+                                        .as_deref()
+                                        .or(pending.upstream_request_model.as_deref())
+                                })
+                            }),
                         ),
                     )
                     .await
@@ -3053,7 +3067,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             state_for_task.as_ref(),
                             &reservation_key_for_task,
                             reservation_guard.as_mut(),
-                            record_pool_route_retryable_overload_failure_for_attempt(
+                            record_pool_route_retryable_overload_failure_for_attempt_with_model(
                                 &state_for_task.pool,
                                 account.account_id,
                                 sticky_key_for_task.as_deref(),
@@ -3062,6 +3076,16 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 pending_pool_attempt_record_for_task
                                     .as_ref()
                                     .and_then(|pending| pending.attempt_id),
+                                request_info_for_task.model.as_deref().or_else(|| {
+                                    pending_pool_attempt_record_for_task.as_ref().and_then(
+                                        |pending| {
+                                            pending
+                                                .request_model
+                                                .as_deref()
+                                                .or(pending.upstream_request_model.as_deref())
+                                        },
+                                    )
+                                }),
                             ),
                         )
                         .await
@@ -3070,7 +3094,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             state_for_task.as_ref(),
                             &reservation_key_for_task,
                             reservation_guard.as_mut(),
-                            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                            record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
                             state_for_task.as_ref(),
                             account.account_id,
                             &account.kind,
@@ -3084,10 +3108,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pending_pool_attempt_record_for_task
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
-                            account.sticky_affinity_generation,
+                            pending_pool_attempt_record_for_task
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                                .flatten(),
                             prompt_cache_key_for_task
                                 .as_deref()
                                 .or(request_info_for_task.sticky_key.as_deref()),
+                            request_info_for_task.model.as_deref(),
                             ),
                         )
                         .await
@@ -3138,8 +3166,8 @@ pub(crate) async fn proxy_openai_v1_capture_target(
             } else {
                 failure_kind
             };
-            final_attempt_persisted = match finalize_pool_upstream_request_attempt(
-                &state_for_task.pool,
+            final_attempt_persisted = match finalize_pool_upstream_request_attempt_in_memory(
+                state_for_task.as_ref(),
                 pending_attempt_record,
                 finished_at.as_str(),
                 attempt_status,

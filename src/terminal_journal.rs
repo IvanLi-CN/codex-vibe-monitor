@@ -12,8 +12,9 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 use crate::{
-    BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ProxyCaptureRecord, SystemTaskKind,
-    SystemTaskStatus, api_invocation_from_runtime_record, startup_backfill_tasks_for_terminal,
+    BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ParsedUsage, ProxyCaptureRecord,
+    RawPayloadMeta, RuntimeAttemptSnapshot, StageTimings, SystemTaskKind, SystemTaskStatus,
+    api_invocation_from_runtime_record, startup_backfill_tasks_for_terminal,
 };
 
 pub(crate) const TERMINAL_JOURNAL_SEGMENT_BYTES: u64 = 16 * 1024 * 1024;
@@ -25,10 +26,71 @@ const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES: usize = 4 * 1024 * 1024;
 const TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES: usize = 1024;
 
 type ShutdownRecoveryKey = (String, String, bool);
+type ShutdownRecoveryValue = (ProxyCaptureRecord, Vec<RuntimeAttemptSnapshot>);
 type LoadedShutdownTerminalRecovery = (
-    HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
+    HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     Vec<BatchedTerminalInvocationWrite>,
 );
+
+fn journal_safe_terminal_record(record: &ProxyCaptureRecord) -> ProxyCaptureRecord {
+    let mut safe = record.clone();
+    safe.payload = None;
+    safe.raw_response.clear();
+    safe.response_body_preview_enabled = false;
+    safe.error_message = None;
+    safe
+}
+
+fn journal_safe_attempt_snapshot(snapshot: &RuntimeAttemptSnapshot) -> RuntimeAttemptSnapshot {
+    let mut safe = snapshot.clone();
+    safe.request_summary_json = None;
+    safe.error_message = None;
+    safe.downstream_error_message = None;
+    safe.requester_ip = None;
+    safe.sticky_key = None;
+    safe.proxy_binding_key_snapshot = None;
+    safe.routing_selection_audit_json = None;
+    safe.upstream_request_id = None;
+    safe
+}
+
+fn interrupted_terminal_record(
+    invoke_id: &str,
+    occurred_at: &str,
+    attempts: &[RuntimeAttemptSnapshot],
+) -> ProxyCaptureRecord {
+    ProxyCaptureRecord {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        model: attempts
+            .first()
+            .and_then(|attempt| attempt.request_model.clone()),
+        usage: ParsedUsage::default(),
+        cost: None,
+        cost_breakdown: None,
+        cost_estimated: false,
+        price_version: None,
+        status: crate::INVOCATION_STATUS_INTERRUPTED.to_string(),
+        error_message: Some(crate::INVOCATION_INTERRUPTED_MESSAGE.to_string()),
+        failure_kind: Some(crate::PROXY_FAILURE_INVOCATION_INTERRUPTED.to_string()),
+        payload: None,
+        raw_response: String::new(),
+        response_body_preview_enabled: false,
+        req_raw: RawPayloadMeta::default(),
+        resp_raw: RawPayloadMeta::default(),
+        timings: StageTimings {
+            t_total_ms: 0.0,
+            t_req_read_ms: 0.0,
+            t_req_parse_ms: 0.0,
+            t_upstream_connect_ms: 0.0,
+            t_upstream_ttfb_ms: 0.0,
+            first_token_ms: None,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        },
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TerminalJournalDurabilityMode {
@@ -53,7 +115,8 @@ pub(crate) struct TerminalJournalAppendOutcome {
     pub(crate) pending_bytes: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct TerminalJournalStats {
     pub(crate) pending_records: usize,
     pub(crate) pending_bytes: u64,
@@ -69,13 +132,31 @@ struct JournalTerminalRecord {
     raw_capture: bool,
     #[serde(default)]
     capture_elapsed_ms: Option<u64>,
+    #[serde(default)]
+    attempts: Vec<RuntimeAttemptSnapshot>,
     record: ProxyCaptureRecord,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct JournalAttemptStart {
+    #[serde(default = "default_journal_event_version")]
+    event_version: u8,
+    sequence: u64,
+    attempt: RuntimeAttemptSnapshot,
+}
+
+fn default_journal_event_version() -> u8 {
+    1
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct JournalLine {
+    #[serde(default = "default_journal_event_version")]
+    event_version: u8,
     #[serde(default)]
     entry: Option<JournalTerminalRecord>,
+    #[serde(default)]
+    attempt_start: Option<JournalAttemptStart>,
     #[serde(default)]
     acknowledged_sequence: Option<u64>,
     checksum: String,
@@ -92,6 +173,8 @@ struct ShutdownTerminalRecoveryLine {
     error: Option<String>,
     #[serde(default)]
     record: Option<ProxyCaptureRecord>,
+    #[serde(default)]
+    attempts: Vec<RuntimeAttemptSnapshot>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -138,6 +221,7 @@ impl JournalSegment {
 struct LoadedJournalSegment {
     segment: JournalSegment,
     entries: Vec<JournalEntryMetadata>,
+    attempt_starts: Vec<JournalAttemptStartMetadata>,
     acknowledgement_sequences: HashSet<u64>,
 }
 
@@ -147,6 +231,13 @@ struct JournalEntryMetadata {
     invoke_id: String,
     occurred_at: String,
     raw_capture: bool,
+    attempt_public_ids: Vec<String>,
+}
+
+#[derive(Debug)]
+struct JournalAttemptStartMetadata {
+    sequence: u64,
+    snapshot: RuntimeAttemptSnapshot,
 }
 
 #[derive(Debug)]
@@ -161,13 +252,14 @@ pub(crate) struct TerminalJournal {
     current_file: File,
     segments: BTreeMap<u64, JournalSegment>,
     pending_by_key: HashMap<(String, String, bool), Vec<u64>>,
+    pending_attempt_starts: HashMap<String, u64>,
     next_sequence: u64,
     pending_bytes: u64,
     replay_segments: VecDeque<JournalReplayCursor>,
     replay_count: usize,
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
     replay_blocked: bool,
-    shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
+    shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
     deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
@@ -192,12 +284,13 @@ impl TerminalJournal {
         error: &str,
     ) -> Result<()> {
         #[derive(Serialize)]
-        struct QuarantineEntry<'a> {
-            invoke_id: &'a str,
-            occurred_at: &'a str,
+        struct QuarantineEntry {
+            invoke_id: String,
+            occurred_at: String,
             raw_capture: bool,
-            error: &'a str,
-            record: &'a ProxyCaptureRecord,
+            error: String,
+            record: ProxyCaptureRecord,
+            attempts: Vec<RuntimeAttemptSnapshot>,
         }
 
         let path = self.directory.join("quarantine.jsonl");
@@ -208,11 +301,16 @@ impl TerminalJournal {
             .with_context(|| format!("failed to open terminal quarantine {}", path.display()))?;
         for terminal in terminals {
             let entry = QuarantineEntry {
-                invoke_id: &terminal.record.invoke_id,
-                occurred_at: &terminal.record.occurred_at,
+                invoke_id: terminal.record.invoke_id.clone(),
+                occurred_at: terminal.record.occurred_at.clone(),
                 raw_capture: terminal.raw_capture,
-                error,
-                record: &terminal.record,
+                error: error.to_string(),
+                record: journal_safe_terminal_record(&terminal.record),
+                attempts: terminal
+                    .attempts
+                    .iter()
+                    .map(journal_safe_attempt_snapshot)
+                    .collect(),
             };
             serde_json::to_writer(&mut file, &entry)
                 .context("failed to encode terminal quarantine")?;
@@ -508,7 +606,12 @@ impl TerminalJournal {
                         raw_capture: terminal.raw_capture,
                         acknowledged: false,
                         error: Some(error.to_string()),
-                        record: Some(terminal.record.clone()),
+                        record: Some(journal_safe_terminal_record(&terminal.record)),
+                        attempts: terminal
+                            .attempts
+                            .iter()
+                            .map(journal_safe_attempt_snapshot)
+                            .collect(),
                     },
                 )
                 .context("failed to encode terminal recovery entry")?;
@@ -593,7 +696,11 @@ impl TerminalJournal {
             next_sequence = next_sequence.max(loaded.segment.last_sequence.saturating_add(1));
             pending_bytes = pending_bytes.saturating_add(loaded.segment.bytes);
             acknowledged_sequences.extend(loaded.acknowledgement_sequences);
-            loaded_segments.push((loaded.segment.first_sequence, loaded.entries));
+            loaded_segments.push((
+                loaded.segment.first_sequence,
+                loaded.entries,
+                loaded.attempt_starts,
+            ));
             segments.insert(loaded.segment.first_sequence, loaded.segment);
         }
 
@@ -621,9 +728,26 @@ impl TerminalJournal {
             );
         }
         let mut pending_by_key = HashMap::new();
+        let mut pending_attempt_starts = HashMap::new();
+        let mut unmatched_attempt_starts = Vec::new();
         let mut replay_segments = VecDeque::new();
         let mut replay_count = 0_usize;
-        for (first_sequence, entries) in loaded_segments {
+        let mut terminal_attempt_public_ids = HashSet::new();
+        for (_, entries, _) in &loaded_segments {
+            for entry in entries {
+                terminal_attempt_public_ids.extend(entry.attempt_public_ids.iter().cloned());
+            }
+        }
+        for (first_sequence, entries, attempt_starts) in loaded_segments {
+            for start in attempt_starts {
+                if !terminal_attempt_public_ids.contains(&start.snapshot.attempt_public_id) {
+                    pending_attempt_starts
+                        .insert(start.snapshot.attempt_public_id.clone(), start.sequence);
+                    unmatched_attempt_starts.push(start.snapshot);
+                } else if let Some(segment) = segments.get_mut(&first_sequence) {
+                    segment.acknowledged.insert(start.sequence);
+                }
+            }
             let mut segment_has_replay = false;
             for entry in entries {
                 if acknowledged_sequences.contains(&entry.sequence) {
@@ -681,7 +805,7 @@ impl TerminalJournal {
             .iter()
             .map(|finish| finish.run_id)
             .collect();
-        let journal = Self {
+        let mut journal = Self {
             directory,
             current_file: open_append_file(&current_path)?,
             segments,
@@ -692,6 +816,7 @@ impl TerminalJournal {
             replay_count: replay_count.saturating_add(deferred_writes.len()),
             deferred_writes,
             replay_blocked: false,
+            pending_attempt_starts,
             shutdown_recovery_pending,
             system_task_quarantine_ids,
             replayed_system_task_ids,
@@ -701,12 +826,75 @@ impl TerminalJournal {
             overflowed: pending_bytes >= TERMINAL_JOURNAL_MAX_BYTES,
             sync_failed: false,
         };
+        let mut interrupted_by_invocation =
+            HashMap::<(String, String, bool), Vec<RuntimeAttemptSnapshot>>::new();
+        for snapshot in unmatched_attempt_starts {
+            interrupted_by_invocation
+                .entry((
+                    snapshot.invoke_id.clone(),
+                    snapshot.occurred_at.clone(),
+                    false,
+                ))
+                .or_default()
+                .push(snapshot);
+        }
+        let mut recovered_any = false;
+        for ((invoke_id, occurred_at, raw_capture), mut attempts) in interrupted_by_invocation {
+            attempts.sort_by_key(|attempt| attempt.attempt_index);
+            let finished_at = chrono::Utc::now().to_rfc3339();
+            for attempt in &mut attempts {
+                attempt.finished_at = Some(finished_at.clone());
+                attempt.status =
+                    crate::POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_INTERRUPTED.to_string();
+                attempt.phase = Some(crate::POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED.to_string());
+                attempt.failure_kind =
+                    Some(crate::PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED.to_string());
+                attempt.error_message = Some(crate::POOL_ATTEMPT_INTERRUPTED_MESSAGE.to_string());
+            }
+            let record = interrupted_terminal_record(&invoke_id, &occurred_at, &attempts);
+            let outcome = journal.append_with_attempts(&record, &attempts, raw_capture, None);
+            if matches!(
+                outcome.durability_mode,
+                TerminalJournalDurabilityMode::Journal
+            ) {
+                let startup_backfill_tasks = startup_backfill_tasks_for_terminal(
+                    &api_invocation_from_runtime_record(&record),
+                );
+                journal
+                    .deferred_writes
+                    .push_back(BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        record,
+                        attempts,
+                        capture_started: None,
+                        raw_capture,
+                        dashboard_terminal_sequence: Some(0),
+                        terminal_projection_event_ids: Vec::new(),
+                        startup_backfill_tasks,
+                    });
+                journal.replay_count = journal.replay_count.saturating_add(1);
+                recovered_any = true;
+            }
+        }
+        if recovered_any {
+            let _ = journal.force_sync();
+        }
         Ok(journal)
     }
 
     pub(crate) fn append(
         &mut self,
         record: &ProxyCaptureRecord,
+        raw_capture: bool,
+        capture_started: Option<Instant>,
+    ) -> TerminalJournalAppendOutcome {
+        self.append_with_attempts(record, &[], raw_capture, capture_started)
+    }
+
+    pub(crate) fn append_with_attempts(
+        &mut self,
+        record: &ProxyCaptureRecord,
+        attempts: &[RuntimeAttemptSnapshot],
         raw_capture: bool,
         capture_started: Option<Instant>,
     ) -> TerminalJournalAppendOutcome {
@@ -726,7 +914,8 @@ impl TerminalJournal {
             raw_capture,
             capture_elapsed_ms: capture_started
                 .map(|started| started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
-            record: record.clone(),
+            attempts: attempts.iter().map(journal_safe_attempt_snapshot).collect(),
+            record: journal_safe_terminal_record(record),
         };
         let Ok(encoded) = encode_entry_line(&entry) else {
             warn!(invoke_id = %record.invoke_id, occurred_at = %record.occurred_at, "terminal journal serialization failed; using memory fallback");
@@ -770,7 +959,91 @@ impl TerminalJournal {
         self.pending_by_key.insert(key, vec![entry.sequence]);
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
+        for attempt in attempts {
+            let Some(start_sequence) = self
+                .pending_attempt_starts
+                .get(&attempt.attempt_public_id)
+                .copied()
+            else {
+                continue;
+            };
+            let Ok(acknowledgement) = encode_acknowledgement_line(start_sequence) else {
+                continue;
+            };
+            if self.current_file.write_all(&acknowledgement).is_err() {
+                continue;
+            }
+            let acknowledgement_len = acknowledgement.len() as u64;
+            let current_start = self
+                .segments
+                .iter()
+                .find_map(|(start, segment)| segment.current.then_some(*start))
+                .expect("current terminal journal segment exists");
+            let segment = self
+                .segments
+                .get_mut(&current_start)
+                .expect("current terminal journal segment exists");
+            segment.bytes = segment.bytes.saturating_add(acknowledgement_len);
+            segment.acknowledged.insert(start_sequence);
+            self.pending_bytes = self.pending_bytes.saturating_add(acknowledgement_len);
+            self.pending_attempt_starts
+                .remove(&attempt.attempt_public_id);
+        }
         self.append_outcome(TerminalJournalDurabilityMode::Journal, Some(entry.sequence))
+    }
+
+    pub(crate) fn append_attempt_start(
+        &mut self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> TerminalJournalAppendOutcome {
+        if self.sync_failed
+            || self
+                .pending_attempt_starts
+                .contains_key(&snapshot.attempt_public_id)
+        {
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
+        let event = JournalAttemptStart {
+            event_version: 1,
+            sequence: self.next_sequence,
+            attempt: journal_safe_attempt_snapshot(snapshot),
+        };
+        let Ok(encoded) = encode_attempt_start_line(&event) else {
+            self.overflowed = true;
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        };
+        let encoded_len = encoded.len() as u64;
+        if self.pending_bytes.saturating_add(encoded_len) > TERMINAL_JOURNAL_MAX_BYTES {
+            self.overflowed = true;
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
+        if let Err(err) = self.rotate_if_needed(encoded_len) {
+            warn!(error = %err, "terminal journal start-event rotation failed");
+            self.overflowed = true;
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
+        if let Err(err) = self.current_file.write_all(&encoded) {
+            warn!(error = %err, "terminal journal start-event append failed");
+            self.overflowed = true;
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
+        let current_start = self
+            .segments
+            .iter()
+            .find_map(|(start, segment)| segment.current.then_some(*start))
+            .expect("current terminal journal segment exists");
+        let segment = self
+            .segments
+            .get_mut(&current_start)
+            .expect("current terminal journal segment exists");
+        segment.last_sequence = event.sequence;
+        segment.bytes = segment.bytes.saturating_add(encoded_len);
+        segment.sequences.insert(event.sequence);
+        self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
+        self.pending_attempt_starts
+            .insert(snapshot.attempt_public_id.clone(), event.sequence);
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        self.append_outcome(TerminalJournalDurabilityMode::Journal, Some(event.sequence))
     }
 
     pub(crate) fn sync_if_due(&mut self) -> Option<u64> {
@@ -958,7 +1231,17 @@ impl TerminalJournal {
             );
             if self
                 .shutdown_recovery_pending
-                .insert(key.clone(), terminal.record.clone())
+                .insert(
+                    key.clone(),
+                    (
+                        journal_safe_terminal_record(&terminal.record),
+                        terminal
+                            .attempts
+                            .iter()
+                            .map(journal_safe_attempt_snapshot)
+                            .collect(),
+                    ),
+                )
                 .is_none()
                 && !self.pending_by_key.contains_key(&key)
             {
@@ -1078,6 +1361,7 @@ impl TerminalJournal {
                         Instant::now().checked_sub(Duration::from_millis(elapsed_ms))
                     }),
                     raw_capture: entry.raw_capture,
+                    attempts: entry.attempts,
                     // The original process-local dashboard sequence is unavailable after a
                     // restart. The writer treats this sentinel as an exact replay overlay.
                     dashboard_terminal_sequence: Some(0),
@@ -1132,7 +1416,10 @@ impl TerminalJournal {
 
     pub(crate) fn stats(&self) -> TerminalJournalStats {
         TerminalJournalStats {
-            pending_records: self.pending_by_key.len(),
+            pending_records: self
+                .pending_by_key
+                .len()
+                .saturating_add(self.pending_attempt_starts.len()),
             pending_bytes: self.pending_bytes,
             segment_count: self.segments.len(),
             replay_count: self.replay_count,
@@ -1266,6 +1553,7 @@ fn append_shutdown_terminal_ack(
             acknowledged: true,
             error: None,
             record: None,
+            attempts: Vec::new(),
         },
     )
     .context("failed to encode shutdown terminal recovery acknowledgement")?;
@@ -1411,7 +1699,7 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
     };
     let mut reader = BufReader::new(file);
     let mut line = String::new();
-    let mut entries = HashMap::<ShutdownRecoveryKey, Option<ProxyCaptureRecord>>::new();
+    let mut entries = HashMap::<ShutdownRecoveryKey, Option<ShutdownRecoveryValue>>::new();
     let mut corrupt = false;
     loop {
         line.clear();
@@ -1430,36 +1718,39 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
         let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
         if entry.acknowledged {
             entries.insert(key, None);
-        } else if entry.record.is_some() {
-            entries.insert(key, entry.record);
+        } else if let Some(record) = entry.record {
+            entries.insert(key, Some((record, entry.attempts)));
         }
     }
     let pending = entries
         .into_iter()
-        .filter_map(|((invoke_id, occurred_at, raw_capture), record)| {
-            let record = record?;
-            Some(((invoke_id, occurred_at, raw_capture), record))
+        .filter_map(|((invoke_id, occurred_at, raw_capture), value)| {
+            let value = value?;
+            Some(((invoke_id, occurred_at, raw_capture), value))
         })
         .collect::<HashMap<_, _>>();
     let writes = pending
         .iter()
         .map(
-            |((invoke_id, occurred_at, raw_capture), record)| BatchedTerminalInvocationWrite {
-                enqueued_at: None,
-                capture_started: None,
-                raw_capture: *raw_capture,
-                // Shutdown recovery has the same post-restart sequence boundary as journal
-                // replay and must not force Summary into a full rolling rebuild.
-                dashboard_terminal_sequence: Some(0),
-                terminal_projection_event_ids: Vec::new(),
-                startup_backfill_tasks: startup_backfill_tasks_for_terminal(
-                    &api_invocation_from_runtime_record(record),
-                ),
-                record: ProxyCaptureRecord {
-                    invoke_id: invoke_id.clone(),
-                    occurred_at: occurred_at.clone(),
-                    ..record.clone()
-                },
+            |((invoke_id, occurred_at, raw_capture), (record, attempts))| {
+                BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
+                    capture_started: None,
+                    raw_capture: *raw_capture,
+                    attempts: attempts.clone(),
+                    // Shutdown recovery has the same post-restart sequence boundary as journal
+                    // replay and must not force Summary into a full rolling rebuild.
+                    dashboard_terminal_sequence: Some(0),
+                    terminal_projection_event_ids: Vec::new(),
+                    startup_backfill_tasks: startup_backfill_tasks_for_terminal(
+                        &api_invocation_from_runtime_record(record),
+                    ),
+                    record: ProxyCaptureRecord {
+                        invoke_id: invoke_id.clone(),
+                        occurred_at: occurred_at.clone(),
+                        ..record.clone()
+                    },
+                }
             },
         )
         .collect();
@@ -1471,7 +1762,7 @@ fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecover
 
 fn compact_shutdown_terminal_recovery(
     path: &Path,
-    pending: &HashMap<ShutdownRecoveryKey, ProxyCaptureRecord>,
+    pending: &HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
 ) -> Result<()> {
     if !path.exists() {
         return Ok(());
@@ -1488,7 +1779,7 @@ fn compact_shutdown_terminal_recovery(
                 temporary_path.display()
             )
         })?;
-    for ((invoke_id, occurred_at, raw_capture), record) in pending {
+    for ((invoke_id, occurred_at, raw_capture), (record, attempts)) in pending {
         serde_json::to_writer(
             &mut file,
             &ShutdownTerminalRecoveryLine {
@@ -1498,6 +1789,7 @@ fn compact_shutdown_terminal_recovery(
                 acknowledged: false,
                 error: Some("recovery snapshot".to_string()),
                 record: Some(record.clone()),
+                attempts: attempts.clone(),
             },
         )
         .context("failed to encode shutdown terminal recovery snapshot")?;
@@ -1541,6 +1833,7 @@ fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
     let raw = fs::read(path)
         .with_context(|| format!("failed to read terminal journal segment {}", path.display()))?;
     let mut entries = Vec::new();
+    let mut attempt_starts = Vec::new();
     let mut acknowledged = HashSet::new();
     let mut valid_bytes = 0usize;
     let mut corrupt_tail = false;
@@ -1566,20 +1859,36 @@ fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
             corrupt_tail = true;
             break;
         };
-        if journal_line_checksum(line.entry.as_ref(), line.acknowledged_sequence)? != line.checksum
-        {
+        let checksum_matches = journal_line_checksum(
+            line.entry.as_ref(),
+            line.attempt_start.as_ref(),
+            line.acknowledged_sequence,
+        )? == line.checksum
+            || (line.attempt_start.is_none()
+                && legacy_journal_line_checksum(line.entry.as_ref(), line.acknowledged_sequence)?
+                    == line.checksum);
+        if !checksum_matches {
             warn!(path = %path.display(), line_number, "terminal journal checksum mismatch; repairing segment tail");
             corrupt_tail = true;
             break;
         }
-        match (line.entry, line.acknowledged_sequence) {
-            (Some(entry), None) => entries.push(JournalEntryMetadata {
+        match (line.entry, line.attempt_start, line.acknowledged_sequence) {
+            (Some(entry), None, None) => entries.push(JournalEntryMetadata {
                 sequence: entry.sequence,
                 invoke_id: entry.record.invoke_id,
                 occurred_at: entry.record.occurred_at,
                 raw_capture: entry.raw_capture,
+                attempt_public_ids: entry
+                    .attempts
+                    .into_iter()
+                    .map(|attempt| attempt.attempt_public_id)
+                    .collect(),
             }),
-            (None, Some(sequence)) => {
+            (None, Some(start), None) => attempt_starts.push(JournalAttemptStartMetadata {
+                sequence: start.sequence,
+                snapshot: start.attempt,
+            }),
+            (None, None, Some(sequence)) => {
                 acknowledged.insert(sequence);
             }
             _ => {
@@ -1597,10 +1906,14 @@ fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
     let last_sequence = entries
         .last()
         .map(|entry| entry.sequence)
+        .into_iter()
+        .chain(attempt_starts.last().map(|entry| entry.sequence))
+        .max()
         .unwrap_or(first_sequence.saturating_sub(1));
     let sequences = entries
         .iter()
         .map(|entry| entry.sequence)
+        .chain(attempt_starts.iter().map(|entry| entry.sequence))
         .collect::<HashSet<_>>();
     Ok(LoadedJournalSegment {
         segment: JournalSegment {
@@ -1613,6 +1926,7 @@ fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
             current: false,
         },
         entries,
+        attempt_starts,
         acknowledgement_sequences: acknowledged,
     })
 }
@@ -1633,20 +1947,38 @@ fn terminal_journal_segment_start(path: &Path) -> Result<u64> {
 
 fn encode_entry_line(entry: &JournalTerminalRecord) -> Result<Vec<u8>> {
     let line = JournalLine {
+        event_version: 1,
         entry: Some(entry.clone()),
+        attempt_start: None,
         acknowledged_sequence: None,
-        checksum: journal_line_checksum(Some(entry), None)?,
+        checksum: journal_line_checksum(Some(entry), None, None)?,
     };
     let mut bytes = serde_json::to_vec(&line).context("failed to encode terminal journal line")?;
     bytes.push(b'\n');
     Ok(bytes)
 }
 
+fn encode_attempt_start_line(event: &JournalAttemptStart) -> Result<Vec<u8>> {
+    let line = JournalLine {
+        event_version: 1,
+        entry: None,
+        attempt_start: Some(event.clone()),
+        acknowledged_sequence: None,
+        checksum: journal_line_checksum(None, Some(event), None)?,
+    };
+    let mut bytes =
+        serde_json::to_vec(&line).context("failed to encode terminal journal start event")?;
+    bytes.push(b'\n');
+    Ok(bytes)
+}
+
 fn encode_acknowledgement_line(sequence: u64) -> Result<Vec<u8>> {
     let line = JournalLine {
+        event_version: 1,
         entry: None,
+        attempt_start: None,
         acknowledged_sequence: Some(sequence),
-        checksum: journal_line_checksum(None, Some(sequence))?,
+        checksum: journal_line_checksum(None, None, Some(sequence))?,
     };
     let mut bytes =
         serde_json::to_vec(&line).context("failed to encode terminal journal acknowledgement")?;
@@ -1656,10 +1988,20 @@ fn encode_acknowledgement_line(sequence: u64) -> Result<Vec<u8>> {
 
 fn journal_line_checksum(
     entry: Option<&JournalTerminalRecord>,
+    attempt_start: Option<&JournalAttemptStart>,
+    acknowledged_sequence: Option<u64>,
+) -> Result<String> {
+    let encoded = serde_json::to_vec(&(entry, attempt_start, acknowledged_sequence))
+        .context("failed to checksum terminal journal event")?;
+    Ok(format!("{:x}", Sha256::digest(encoded)))
+}
+
+fn legacy_journal_line_checksum(
+    entry: Option<&JournalTerminalRecord>,
     acknowledged_sequence: Option<u64>,
 ) -> Result<String> {
     let encoded = serde_json::to_vec(&(entry, acknowledged_sequence))
-        .context("failed to checksum terminal journal event")?;
+        .context("failed to checksum legacy terminal journal event")?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
@@ -1692,6 +2034,145 @@ fn repair_corrupt_segment_tail(path: &Path, valid_prefix: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_attempt_snapshot() -> RuntimeAttemptSnapshot {
+        RuntimeAttemptSnapshot {
+            attempt_public_id: "attempt-journal-1".to_string(),
+            invoke_id: "journal-invoke-1".to_string(),
+            occurred_at: "2026-07-29T00:00:00Z".to_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: Some("sticky-secret".to_string()),
+            routing_source: Some("pool".to_string()),
+            routing_selection_audit_json: Some("audit-secret".to_string()),
+            requester_ip: Some("192.0.2.1".to_string()),
+            upstream_base_url_host: Some("example.invalid".to_string()),
+            group_name_snapshot: Some("group-a".to_string()),
+            proxy_binding_key_snapshot: Some("binding-secret".to_string()),
+            request_model: Some("gpt-test".to_string()),
+            upstream_request_model: Some("gpt-upstream".to_string()),
+            model_mapping_pattern: None,
+            request_summary_json: Some("request-summary-secret".to_string()),
+            upstream_account_id: 7,
+            upstream_route_key: "route-1".to_string(),
+            attempt_index: 1,
+            distinct_account_index: 1,
+            same_account_retry_index: 0,
+            started_at: "2026-07-29T00:00:00Z".to_string(),
+            finished_at: None,
+            status: "pending".to_string(),
+            phase: Some("connecting".to_string()),
+            http_status: None,
+            downstream_http_status: None,
+            failure_kind: None,
+            error_message: Some("error-secret".to_string()),
+            downstream_error_message: Some("downstream-secret".to_string()),
+            connect_latency_ms: None,
+            first_byte_latency_ms: None,
+            stream_latency_ms: None,
+            upstream_request_id: Some("request-id-secret".to_string()),
+            compact_support_status: None,
+            compact_support_reason: None,
+            upstream_request_compression_algorithm: None,
+            upstream_request_compression_mode: None,
+            upstream_request_logical_body_bytes: None,
+            upstream_request_transmitted_body_bytes: None,
+            upstream_request_header_bytes_approx: None,
+            upstream_response_body_bytes: None,
+            upstream_response_header_bytes_approx: None,
+            response_raw_path: None,
+            response_raw_codec: None,
+            response_raw_size: None,
+            response_raw_truncated: false,
+            response_raw_truncated_reason: None,
+            response_content_encoding: None,
+        }
+    }
+
+    #[test]
+    fn attempt_start_is_journaled_before_terminal_materialization() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-attempt-start-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let attempt = test_attempt_snapshot();
+        let record =
+            crate::tests::test_proxy_capture_record(&attempt.invoke_id, &attempt.occurred_at);
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        assert_eq!(
+            journal.append_attempt_start(&attempt).durability_mode,
+            TerminalJournalDurabilityMode::Journal
+        );
+        journal.force_sync().expect("sync start event");
+        let directory = terminal_journal_directory(&database_path);
+        let contents = fs::read_dir(&directory)
+            .expect("read journal directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("terminal-"))
+            .map(|entry| fs::read_to_string(entry.path()).expect("read journal segment"))
+            .collect::<String>();
+        assert!(contents.contains(&attempt.attempt_public_id));
+        assert!(!contents.contains("request-summary-secret"));
+        assert!(!contents.contains("error-secret"));
+        assert!(!contents.contains("sticky-secret"));
+
+        journal
+            .append_with_attempts(&record, &[attempt], false, None)
+            .sequence
+            .expect("append terminal event");
+        journal.force_sync().expect("sync terminal event");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        assert_eq!(reopened.stats().pending_records, 1);
+        let replay = reopened.take_replay();
+        assert_eq!(replay.len(), 1);
+        assert_eq!(replay[0].attempts.len(), 1);
+        assert_eq!(replay[0].attempts[0].attempt_public_id, "attempt-journal-1");
+        assert!(replay[0].attempts[0].request_summary_json.is_none());
+        assert!(replay[0].attempts[0].requester_ip.is_none());
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn unmatched_attempt_start_is_recovered_as_interrupted_terminal_event() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-attempt-interrupted-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let attempt = test_attempt_snapshot();
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append_attempt_start(&attempt);
+        journal.force_sync().expect("sync start event");
+        drop(journal);
+
+        let mut recovered = TerminalJournal::open(&database_path).expect("reopen journal");
+        let write = recovered
+            .take_deferred_writes(1)
+            .pop()
+            .expect("recovered interrupted terminal write");
+        assert_eq!(write.record.status, crate::INVOCATION_STATUS_INTERRUPTED);
+        assert_eq!(
+            write.record.failure_kind.as_deref(),
+            Some(crate::PROXY_FAILURE_INVOCATION_INTERRUPTED)
+        );
+        assert_eq!(write.attempts.len(), 1);
+        assert_eq!(
+            write.attempts[0].status,
+            crate::POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_INTERRUPTED
+        );
+        assert_eq!(
+            write.attempts[0].failure_kind.as_deref(),
+            Some(crate::PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+        );
+
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
 
     #[test]
     fn replays_unacknowledged_record_and_clears_pending_ack() {
@@ -1739,6 +2220,35 @@ mod tests {
     }
 
     #[test]
+    fn journal_does_not_persist_request_or_response_body_values() {
+        let root =
+            std::env::temp_dir().join(format!("terminal-journal-redaction-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let mut record =
+            crate::tests::test_proxy_capture_record("journal-redaction-1", "2026-07-29T00:00:00Z");
+        record.payload = Some("request-secret-body".to_string());
+        record.raw_response = "response-secret-body".to_string();
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal
+            .append(&record, false, None)
+            .sequence
+            .expect("append redacted terminal record");
+        journal.force_sync().expect("sync journal");
+        let directory = terminal_journal_directory(&database_path);
+        let contents = fs::read_dir(directory)
+            .expect("read journal directory")
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("terminal-"))
+            .map(|entry| fs::read_to_string(entry.path()).expect("read journal segment"))
+            .collect::<String>();
+        assert!(!contents.contains("request-secret-body"));
+        assert!(!contents.contains("response-secret-body"));
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
     fn shutdown_recovery_replays_and_compacts_after_acknowledgement() {
         let root = std::env::temp_dir().join(format!(
             "terminal-journal-shutdown-recovery-{}",
@@ -1748,9 +2258,11 @@ mod tests {
         let database_path = root.join("monitor.db");
         let record =
             crate::tests::test_proxy_capture_record("shutdown-recovery-1", "2026-07-29T00:00:00Z");
+        let attempt = test_attempt_snapshot();
         let terminal = BatchedTerminalInvocationWrite {
             enqueued_at: None,
             record: record.clone(),
+            attempts: vec![attempt.clone()],
             capture_started: None,
             raw_capture: false,
             dashboard_terminal_sequence: None,
@@ -1770,7 +2282,15 @@ mod tests {
 
         let mut recovered = TerminalJournal::open(&database_path).expect("reopen recovery journal");
         assert_eq!(recovered.stats().replay_count, 1);
-        assert_eq!(recovered.take_deferred_writes(1).len(), 1);
+        let recovered_write = recovered
+            .take_deferred_writes(1)
+            .pop()
+            .expect("recover terminal write");
+        assert_eq!(recovered_write.attempts.len(), 1);
+        assert_eq!(
+            recovered_write.attempts[0].attempt_public_id,
+            attempt.attempt_public_id
+        );
         recovered.acknowledge(&record.invoke_id, &record.occurred_at, false);
         assert_eq!(recovered.stats().replay_count, 0);
         drop(recovered);

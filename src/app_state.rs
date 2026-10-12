@@ -1,8 +1,12 @@
 use super::*;
 
+mod attempt_store;
 mod dashboard;
 mod invocation_store;
 
+pub(crate) use attempt_store::{
+    RuntimeAttemptSnapshot, RuntimeAttemptStore, RuntimeAttemptStoreHealth,
+};
 use dashboard::DashboardRuntimeProjection;
 pub(crate) use dashboard::{
     DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE, DASHBOARD_RUNTIME_PROJECTION_COALESCE,
@@ -815,6 +819,7 @@ pub(crate) struct AppState {
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
     pub(crate) pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
     pub(crate) proxy_runtime_invocations: Arc<RuntimeProjectionHub>,
+    pub(crate) proxy_runtime_attempts: Arc<RuntimeAttemptStore>,
     pub(crate) dashboard_network_speed_cache: Arc<DashboardNetworkSpeedCache>,
     pub(crate) oauth_installation_seed: [u8; 32],
     pub(crate) hourly_rollup_sync_lock: Arc<Mutex<()>>,

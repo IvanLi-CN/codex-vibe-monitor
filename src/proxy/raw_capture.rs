@@ -1192,6 +1192,9 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     let delta = &projection.dashboard;
     if !delta.duplicate {state.observability.proxy_terminal(&record,inserted_record.endpoint.as_deref());}
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
+    let runtime_attempts = state
+        .proxy_runtime_attempts
+        .take_for_invocation(&inserted_record.invoke_id, &inserted_record.occurred_at);
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -1206,6 +1209,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .enqueue_terminal(BatchedTerminalInvocationWrite {
                 enqueued_at: None,
                 record,
+                attempts: runtime_attempts.clone(),
                 capture_started: Some(capture_started),
                 raw_capture: true,
                 dashboard_terminal_sequence: delta.terminal_sequence,
@@ -1214,6 +1218,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             });
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
+        state.proxy_runtime_attempts.restore(runtime_attempts);
         rollback_terminal_projection_before_enqueue(state, &inserted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations

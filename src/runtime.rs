@@ -366,6 +366,7 @@ pub(crate) async fn run() -> Result<()> {
             .start_sizing(&pool, shutdown.clone());
         let proxy_runtime_invocations =
             Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
+        let proxy_runtime_attempts = Arc::new(RuntimeAttemptStore::default());
         let dashboard_network_speed_cache =
             Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
         proxy_runtime_invocations
@@ -403,6 +404,7 @@ pub(crate) async fn run() -> Result<()> {
             sqlite_batch_writer,
             pool_account_selection_runtime,
             proxy_runtime_invocations,
+            proxy_runtime_attempts,
             dashboard_network_speed_cache,
             oauth_installation_seed,
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),

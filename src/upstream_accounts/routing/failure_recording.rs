@@ -146,6 +146,7 @@ pub(crate) async fn record_pool_route_success(
         invoke_id,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -193,6 +194,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_and_broad
         invoke_id,
         attempt_id,
         sticky_affinity_generation,
+        None,
     )
     .await
     {
@@ -261,6 +263,7 @@ pub(crate) async fn record_pool_route_success_with_affinity_generation_for_attem
         invoke_id,
         attempt_id,
         sticky_affinity_generation,
+        None,
     )
     .await
     {
@@ -294,6 +297,7 @@ async fn record_pool_route_success_inner(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
+    request_model: Option<&str>,
 ) -> Result<PoolRouteSuccessOutcome> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
@@ -308,16 +312,26 @@ async fn record_pool_route_success_inner(
     // Model recovery is independently fenced by the attempt timestamp, so it
     // must still run when a newer account-level failure makes the account
     // update stale.
-    let model_route_recovered = if let Some(attempt_id) = attempt_id {
-        record_model_route_success_from_attempt_admitted(
-            pool,
-            account_id,
-            attempt_id,
-            Some(&model_request_started_at_iso),
-        )
-        .await?
-    } else {
-        false
+    let model_route_recovered = match (attempt_id, request_model) {
+        (Some(attempt_id), _) => {
+            record_model_route_success_from_attempt_admitted(
+                pool,
+                account_id,
+                attempt_id,
+                Some(&model_request_started_at_iso),
+            )
+            .await?
+        }
+        (None, Some(request_model)) => {
+            record_model_route_success_for_model_admitted(
+                pool,
+                account_id,
+                request_model,
+                Some(&model_request_started_at_iso),
+            )
+            .await?
+        }
+        (None, None) => false,
     };
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     let account = sqlx::query(
@@ -529,6 +543,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         invoke_id,
         attempt_id,
         sticky_affinity_generation,
+        None,
     )
     .await
     {
@@ -574,6 +589,26 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
 ) -> Result<bool> {
+    record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast_with_model(
+        state, account_id, request_started_at_utc, sticky_key, prompt_cache_key, invoke_id,
+        endpoint, image_intent, codex_imagegen_rewrite, attempt_id, sticky_affinity_generation, None,
+    ).await
+}
+
+pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and_affinity_generation_for_attempt_and_broadcast_with_model(
+    state: &AppState,
+    account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
+    sticky_key: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    codex_imagegen_rewrite: Option<&Value>,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+    request_model: Option<&str>,
+) -> Result<bool> {
     let outcome = match record_pool_route_success_inner(
         &state.pool,
         account_id,
@@ -583,6 +618,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_and
         invoke_id,
         attempt_id,
         sticky_affinity_generation,
+        request_model,
     )
     .await
     {
@@ -656,6 +692,7 @@ pub(crate) async fn record_pool_route_success_for_endpoint_with_image_intent_for
         None,
         invoke_id,
         attempt_id,
+        None,
         None,
     )
     .await?;
@@ -968,6 +1005,7 @@ pub(crate) async fn record_pool_route_http_failure_with_image_intent(
         None,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -999,6 +1037,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         None,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -1018,6 +1057,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     attempt_id: Option<i64>,
     sticky_affinity_generation: Option<i64>,
     prompt_cache_key: Option<&str>,
+    request_model: Option<&str>,
 ) -> Result<bool> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
@@ -1162,6 +1202,7 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
             error_message,
             invoke_id,
             attempt_id,
+            request_model,
         )
         .await
         .map(|_| false);
@@ -1194,17 +1235,36 @@ async fn record_pool_route_http_failure_with_image_intent_inner(
     {
         ensure_account_has_unsupported_model_tag(pool, account_id, &model).await?;
     }
-    if !api_key_temporary_http_failure && let Some(attempt_id) = attempt_id {
-        record_model_route_failure_from_attempt_with_start_admitted(
-            pool,
-            account_id,
-            attempt_id,
-            status,
-            Some(error_message),
-            Some(classification.failure_kind),
-            None,
-        )
-        .await?;
+    if !api_key_temporary_http_failure {
+        if let Some(attempt_id) = attempt_id {
+            record_model_route_failure_from_attempt_with_start_admitted(
+                pool,
+                account_id,
+                attempt_id,
+                status,
+                Some(error_message),
+                Some(classification.failure_kind),
+                None,
+            )
+            .await?;
+        } else if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+            && let Some(request_model) = request_model
+        {
+            if explicit_model_failure {
+                record_temporary_model_route_failure_for_model(
+                    pool,
+                    account_id,
+                    request_model,
+                    status,
+                    Some(error_message),
+                    Some(classification.failure_kind),
+                    classification.reason_code,
+                )
+                .await?;
+            } else {
+                observe_model_route_seen_admitted(pool, account_id, Some(request_model)).await?;
+            }
+        }
     }
     if account_kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
         && explicit_model_failure
@@ -1405,6 +1465,7 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
         error_message,
         invoke_id,
         None,
+        None,
     )
     .await
 }
@@ -1416,6 +1477,7 @@ async fn record_pool_route_retryable_overload_failure_inner(
     error_message: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    exact_model: Option<&str>,
 ) -> Result<()> {
     complete_priority_handoff_from_attempt_or_invoke_admitted(
         pool, attempt_id, invoke_id, false, true,
@@ -1428,6 +1490,7 @@ async fn record_pool_route_retryable_overload_failure_inner(
         error_message,
         invoke_id,
         attempt_id,
+        exact_model,
     )
     .await
 }
@@ -1439,12 +1502,13 @@ async fn record_pool_route_retryable_overload_failure_admitted(
     error_message: &str,
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
+    exact_model: Option<&str>,
 ) -> Result<()> {
     let account = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
     if account.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
-        record_api_key_temporary_model_failure_or_diagnostic(
+        record_api_key_temporary_model_failure_or_diagnostic_with_model(
             pool,
             account_id,
             sticky_key,
@@ -1454,6 +1518,7 @@ async fn record_pool_route_retryable_overload_failure_admitted(
             StatusCode::OK,
             invoke_id,
             attempt_id,
+            exact_model,
         )
         .await?;
         return Ok(());
@@ -1639,6 +1704,31 @@ pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt(
         error_message,
         invoke_id,
         attempt_id,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_retryable_overload_failure_for_attempt_with_model(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    exact_model: Option<&str>,
+) -> Result<()> {
+    let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
+        .await;
+    record_pool_route_retryable_overload_failure_inner(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        invoke_id,
+        attempt_id,
+        exact_model,
     )
     .await
 }
@@ -1700,6 +1790,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -1734,6 +1825,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         prompt_cache_key,
+        None,
     )
     .await
     .map(|_| ())
@@ -1754,6 +1846,41 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
     sticky_affinity_generation: Option<i64>,
     prompt_cache_key: Option<&str>,
 ) -> Result<()> {
+    record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
+        state,
+        account_id,
+        account_kind,
+        single_account_rotation_enabled,
+        sticky_key,
+        status,
+        error_message,
+        invoke_id,
+        endpoint,
+        image_intent,
+        attempt_id,
+        sticky_affinity_generation,
+        prompt_cache_key,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
+    state: &AppState,
+    account_id: i64,
+    account_kind: &str,
+    single_account_rotation_enabled: bool,
+    sticky_key: Option<&str>,
+    status: StatusCode,
+    error_message: &str,
+    invoke_id: Option<&str>,
+    endpoint: &str,
+    image_intent: ImageIntent,
+    attempt_id: Option<i64>,
+    sticky_affinity_generation: Option<i64>,
+    prompt_cache_key: Option<&str>,
+    request_model: Option<&str>,
+) -> Result<()> {
     let sticky_route_cleared = record_pool_route_http_failure_with_image_intent_inner(
         &state.pool,
         account_id,
@@ -1768,6 +1895,7 @@ pub(crate) async fn record_pool_route_http_failure_for_endpoint_with_image_inten
         attempt_id,
         sticky_affinity_generation,
         prompt_cache_key,
+        request_model,
     )
     .await?;
     if sticky_route_cleared

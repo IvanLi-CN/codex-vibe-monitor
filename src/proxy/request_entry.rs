@@ -1407,6 +1407,7 @@ pub(crate) struct PoolOrphanRecoveryOutcome {
 }
 
 pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
+pub(crate) const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_INTERRUPTED: &str = "interrupted";
 pub(crate) struct CompactSupportObservation {
     pub(crate) status: &'static str,
     pub(crate) reason: Option<String>,

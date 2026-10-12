@@ -365,6 +365,7 @@ pub(crate) struct BatchedInvocationDerivedWrites {
 pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) enqueued_at: Option<Instant>,
     pub(crate) record: ProxyCaptureRecord,
+    pub(crate) attempts: Vec<RuntimeAttemptSnapshot>,
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
     pub(crate) dashboard_terminal_sequence: Option<u64>,
@@ -394,6 +395,12 @@ impl BatchedTerminalInvocationWrite {
     pub(crate) fn estimated_memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.record.estimated_memory_bytes())
+            .saturating_add(
+                self.attempts
+                    .iter()
+                    .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                    .sum::<usize>(),
+            )
             .saturating_add(
                 self.terminal_projection_event_ids
                     .capacity()
@@ -1428,8 +1435,9 @@ impl SqliteBatchWriter {
             .ok()
             .and_then(|mut journal| {
                 journal.as_mut().map(|journal| {
-                    journal.append(
+                    journal.append_with_attempts(
                         &terminal.record,
+                        &terminal.attempts,
                         terminal.raw_capture,
                         terminal.capture_started,
                     )
@@ -1441,10 +1449,44 @@ impl SqliteBatchWriter {
                 pending_records: 0,
                 pending_bytes: 0,
             });
-        let enqueued = self.enqueue_terminal_write(
-            SqliteBatchWrite::TerminalInvocation(terminal),
+        if matches!(
             journal.durability_mode,
-        );
+            TerminalJournalDurabilityMode::Journal
+        ) && journal.sequence.is_some()
+        {
+            let sync_result = self
+                .terminal_journal
+                .lock()
+                .ok()
+                .and_then(|mut guard| guard.as_mut().map(TerminalJournal::force_sync))
+                .unwrap_or_else(|| Err(anyhow::anyhow!("terminal journal is unavailable")));
+            if let Err(err) = sync_result {
+                warn!(
+                    error = %err,
+                    invoke_id = %terminal.record.invoke_id,
+                    occurred_at = %terminal.record.occurred_at,
+                    "terminal journal durability acknowledgement failed"
+                );
+                return TerminalEnqueueOutcome {
+                    enqueued: false,
+                    durability_mode: journal.durability_mode,
+                    journal_sequence: journal.sequence,
+                    journal_pending_records: journal.pending_records,
+                    journal_pending_bytes: journal.pending_bytes,
+                };
+            }
+        }
+        let enqueued = if matches!(
+            journal.durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        ) {
+            false
+        } else {
+            self.enqueue_terminal_write(
+                SqliteBatchWrite::TerminalInvocation(terminal),
+                journal.durability_mode,
+            )
+        };
         if matches!(
             journal.durability_mode,
             TerminalJournalDurabilityMode::MemoryOverflow
@@ -1570,6 +1612,47 @@ impl SqliteBatchWriter {
             .ok()
             .and_then(|journal| journal.as_ref().map(TerminalJournal::stats))
             .unwrap_or_default()
+    }
+
+    pub(crate) fn append_runtime_attempt_start(
+        &self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> TerminalJournalAppendOutcome {
+        let _p1_priority_guard = self
+            .p1_priority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let outcome = self.terminal_journal.lock().ok().and_then(|mut guard| {
+            guard
+                .as_mut()
+                .map(|journal| journal.append_attempt_start(snapshot))
+        });
+        match outcome {
+            Some(outcome) => outcome,
+            None => {
+                #[cfg(test)]
+                {
+                    // Lightweight AppState fixtures use an in-memory writer without a
+                    // file-backed journal. Production writers always open the journal and take
+                    // the fail-closed branch below.
+                    TerminalJournalAppendOutcome {
+                        durability_mode: TerminalJournalDurabilityMode::Journal,
+                        sequence: None,
+                        pending_records: 0,
+                        pending_bytes: 0,
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    TerminalJournalAppendOutcome {
+                        durability_mode: TerminalJournalDurabilityMode::MemoryOverflow,
+                        sequence: None,
+                        pending_records: 0,
+                        pending_bytes: 0,
+                    }
+                }
+            }
+        }
     }
 
     pub(crate) fn telemetry_snapshot(&self) -> (usize, usize, u64) {
@@ -3792,6 +3875,173 @@ pub(crate) fn summarize_system_task_batch_scope(batch: &PendingBatch) -> String 
     values.join(",")
 }
 
+async fn persist_runtime_attempt_snapshot_tx(
+    connection: &mut SqliteConnection,
+    snapshot: &RuntimeAttemptSnapshot,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            attempt_public_id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            routing_source,
+            routing_selection_audit_json,
+            upstream_base_url_host,
+            group_name_snapshot,
+            proxy_binding_key_snapshot,
+            request_model,
+            upstream_request_model,
+            model_mapping_pattern,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            phase,
+            http_status,
+            downstream_http_status,
+            failure_kind,
+            error_message,
+            downstream_error_message,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            upstream_request_id,
+            upstream_request_compression_algorithm,
+            upstream_request_compression_mode,
+            upstream_request_logical_body_bytes,
+            upstream_request_transmitted_body_bytes,
+            upstream_request_header_bytes_approx,
+            upstream_response_body_bytes,
+            upstream_response_header_bytes_approx,
+            compact_support_status,
+            compact_support_reason,
+            request_summary_json,
+            response_raw_path,
+            response_raw_codec,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            response_content_encoding
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, 'pool', ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
+            ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24,
+            ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36,
+            ?37, ?38, ?39, ?40, ?41, ?42, ?43, ?44, ?45, ?46, ?47, ?48
+        )
+        ON CONFLICT DO UPDATE SET
+            invoke_id = excluded.invoke_id,
+            occurred_at = excluded.occurred_at,
+            endpoint = excluded.endpoint,
+            route_mode = excluded.route_mode,
+            sticky_key = excluded.sticky_key,
+            routing_source = excluded.routing_source,
+            routing_selection_audit_json = excluded.routing_selection_audit_json,
+            upstream_base_url_host = excluded.upstream_base_url_host,
+            group_name_snapshot = excluded.group_name_snapshot,
+            proxy_binding_key_snapshot = excluded.proxy_binding_key_snapshot,
+            request_model = excluded.request_model,
+            upstream_request_model = excluded.upstream_request_model,
+            model_mapping_pattern = excluded.model_mapping_pattern,
+            upstream_account_id = excluded.upstream_account_id,
+            upstream_route_key = excluded.upstream_route_key,
+            attempt_index = excluded.attempt_index,
+            distinct_account_index = excluded.distinct_account_index,
+            same_account_retry_index = excluded.same_account_retry_index,
+            requester_ip = excluded.requester_ip,
+            started_at = excluded.started_at,
+            finished_at = excluded.finished_at,
+            status = excluded.status,
+            phase = excluded.phase,
+            http_status = excluded.http_status,
+            downstream_http_status = excluded.downstream_http_status,
+            failure_kind = excluded.failure_kind,
+            error_message = excluded.error_message,
+            downstream_error_message = excluded.downstream_error_message,
+            connect_latency_ms = excluded.connect_latency_ms,
+            first_byte_latency_ms = excluded.first_byte_latency_ms,
+            stream_latency_ms = excluded.stream_latency_ms,
+            upstream_request_id = excluded.upstream_request_id,
+            upstream_request_compression_algorithm = excluded.upstream_request_compression_algorithm,
+            upstream_request_compression_mode = excluded.upstream_request_compression_mode,
+            upstream_request_logical_body_bytes = excluded.upstream_request_logical_body_bytes,
+            upstream_request_transmitted_body_bytes = excluded.upstream_request_transmitted_body_bytes,
+            upstream_request_header_bytes_approx = excluded.upstream_request_header_bytes_approx,
+            upstream_response_body_bytes = excluded.upstream_response_body_bytes,
+            upstream_response_header_bytes_approx = excluded.upstream_response_header_bytes_approx,
+            compact_support_status = excluded.compact_support_status,
+            compact_support_reason = excluded.compact_support_reason,
+            request_summary_json = excluded.request_summary_json,
+            response_raw_path = excluded.response_raw_path,
+            response_raw_codec = excluded.response_raw_codec,
+            response_raw_size = excluded.response_raw_size,
+            response_raw_truncated = excluded.response_raw_truncated,
+            response_raw_truncated_reason = excluded.response_raw_truncated_reason,
+            response_content_encoding = excluded.response_content_encoding
+        "#,
+    )
+    .bind(&snapshot.attempt_public_id)
+    .bind(&snapshot.invoke_id)
+    .bind(&snapshot.occurred_at)
+    .bind(&snapshot.endpoint)
+    .bind(snapshot.sticky_key.as_deref())
+    .bind(snapshot.routing_source.as_deref())
+    .bind(snapshot.routing_selection_audit_json.as_deref())
+    .bind(snapshot.upstream_base_url_host.as_deref())
+    .bind(snapshot.group_name_snapshot.as_deref())
+    .bind(snapshot.proxy_binding_key_snapshot.as_deref())
+    .bind(snapshot.request_model.as_deref())
+    .bind(snapshot.upstream_request_model.as_deref())
+    .bind(snapshot.model_mapping_pattern.as_deref())
+    .bind(snapshot.upstream_account_id)
+    .bind(&snapshot.upstream_route_key)
+    .bind(snapshot.attempt_index)
+    .bind(snapshot.distinct_account_index)
+    .bind(snapshot.same_account_retry_index)
+    .bind(snapshot.requester_ip.as_deref())
+    .bind(&snapshot.started_at)
+    .bind(snapshot.finished_at.as_deref())
+    .bind(&snapshot.status)
+    .bind(snapshot.phase.as_deref())
+    .bind(snapshot.http_status)
+    .bind(snapshot.downstream_http_status)
+    .bind(snapshot.failure_kind.as_deref())
+    .bind(snapshot.error_message.as_deref())
+    .bind(snapshot.downstream_error_message.as_deref())
+    .bind(snapshot.connect_latency_ms)
+    .bind(snapshot.first_byte_latency_ms)
+    .bind(snapshot.stream_latency_ms)
+    .bind(snapshot.upstream_request_id.as_deref())
+    .bind(snapshot.upstream_request_compression_algorithm.as_deref())
+    .bind(snapshot.upstream_request_compression_mode.as_deref())
+    .bind(snapshot.upstream_request_logical_body_bytes)
+    .bind(snapshot.upstream_request_transmitted_body_bytes)
+    .bind(snapshot.upstream_request_header_bytes_approx)
+    .bind(snapshot.upstream_response_body_bytes)
+    .bind(snapshot.upstream_response_header_bytes_approx)
+    .bind(snapshot.compact_support_status.as_deref())
+    .bind(snapshot.compact_support_reason.as_deref())
+    .bind(snapshot.request_summary_json.as_deref())
+    .bind(snapshot.response_raw_path.as_deref())
+    .bind(snapshot.response_raw_codec.as_deref().unwrap_or("identity"))
+    .bind(snapshot.response_raw_size)
+    .bind(i64::from(snapshot.response_raw_truncated))
+    .bind(snapshot.response_raw_truncated_reason.as_deref())
+    .bind(snapshot.response_content_encoding.as_deref())
+    .execute(&mut *connection)
+    .await?;
+    Ok(())
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Flush dependencies mirror the single-writer ownership boundaries."
@@ -3871,6 +4121,16 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.record.occurred_at
             )
         })?;
+            for attempt in &terminal.attempts {
+                persist_runtime_attempt_snapshot_tx(terminal_tx.as_mut(), attempt)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "flush terminal proxy attempt {}",
+                            attempt.attempt_public_id
+                        )
+                    })?;
+            }
             let payload_metadata =
                 persisted
                     .as_ref()
@@ -4952,6 +5212,44 @@ mod tests {
         pending
     }
 
+    #[tokio::test]
+    async fn terminal_attempt_snapshot_materialization_is_idempotent() {
+        let pool = test_pool().await;
+        let pending = pending_attempt(&pool, "terminal-attempt-idempotence").await;
+        let snapshot = crate::runtime_attempt_snapshot_from_pending(&pending);
+        sqlx::query("DELETE FROM pool_upstream_request_attempts WHERE attempt_public_id = ?1")
+            .bind(&snapshot.attempt_public_id)
+            .execute(&pool)
+            .await
+            .expect("remove seed attempt row");
+
+        let mut transaction = pool.begin().await.expect("begin materializer transaction");
+        persist_runtime_attempt_snapshot_tx(transaction.as_mut(), &snapshot)
+            .await
+            .expect("materialize first attempt snapshot");
+        let mut terminal = snapshot.clone();
+        terminal.status = "success".to_string();
+        terminal.phase = Some("completed".to_string());
+        persist_runtime_attempt_snapshot_tx(transaction.as_mut(), &terminal)
+            .await
+            .expect("materialize repeated terminal snapshot");
+        transaction
+            .commit()
+            .await
+            .expect("commit materializer transaction");
+
+        let row = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT COUNT(*), status, phase FROM pool_upstream_request_attempts WHERE attempt_public_id = ?1",
+        )
+        .bind(&snapshot.attempt_public_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load materialized attempt");
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "success");
+        assert_eq!(row.2, "completed");
+    }
+
     fn terminal_write_for_coalescing(
         invoke_id: &str,
         dashboard_terminal_sequence: Option<u64>,
@@ -4959,6 +5257,7 @@ mod tests {
         let request_info = RequestCaptureInfo::default();
         BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            attempts: Vec::new(),
             record: build_running_proxy_capture_record(
                 invoke_id,
                 "2026-07-01 10:00:00",
@@ -5002,6 +5301,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -5078,6 +5378,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: Some(1),
@@ -5200,6 +5501,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 capture_started: None,
                 raw_capture: false,
                 // Terminal journal replay uses the reserved post-restart marker rather than an
@@ -5268,6 +5570,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    attempts: Vec::new(),
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -5901,6 +6204,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    attempts: Vec::new(),
                     capture_started: None,
                     raw_capture: false,
                     dashboard_terminal_sequence: None,
@@ -6006,6 +6310,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,
@@ -6113,6 +6418,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 record: crate::tests::test_proxy_capture_record(
                     "flush-now-coordinator-p2",
                     "2026-08-10 12:00:00",
@@ -6187,6 +6493,7 @@ mod tests {
         );
         assert!(journal.defer_write(BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            attempts: Vec::new(),
             record,
             capture_started: None,
             raw_capture: true,
@@ -6268,6 +6575,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 capture_started: None,
                 raw_capture: false,
                 dashboard_terminal_sequence: None,

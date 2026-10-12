@@ -68,8 +68,8 @@ async fn record_pool_request_prepare_failure_attempt(
     let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
     let upstream_route_key = account.upstream_route_key();
     let started_at = format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
-    let mut pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
-        &state.pool,
+    let Some(mut pending) = begin_pool_upstream_request_attempt_in_memory(
+        state,
         &attempt_trace,
         group_name_snapshot.as_deref(),
         None,
@@ -82,7 +82,14 @@ async fn record_pool_request_prepare_failure_attempt(
         same_account_retry_index,
         &started_at,
     )
-    .await;
+    .await
+    else {
+        warn!(
+            invoke_id = %attempt_trace.invoke_id,
+            "pool attempt preparation failure could not be recorded because the runtime journal rejected the start event"
+        );
+        return;
+    };
     if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
         &mut pending,
         None,
@@ -95,8 +102,8 @@ async fn record_pool_request_prepare_failure_attempt(
         );
     }
     let finished_at = shanghai_now_string();
-    if let Err(err) = finalize_pool_upstream_request_attempt(
-        &state.pool,
+    if let Err(err) = finalize_pool_upstream_request_attempt_in_memory(
+        state,
         &pending,
         &finished_at,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
@@ -655,6 +662,37 @@ pub(crate) fn build_pool_route_selection_failure_error(
     }
 }
 
+fn build_pool_attempt_journal_failure_error(
+    account: &PoolResolvedAccount,
+    error: &str,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        codex_imagegen_rewrite: None,
+        account: Some(account.clone()),
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: format!("proxy attempt durability unavailable: {error}"),
+        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        blocked_binding: None,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        canonical_error_message: None,
+        downstream_error_message: None,
+        upstream_request_id: None,
+        proxy_binding_key_snapshot: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+        ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
+    }
+}
+
 async fn maybe_build_and_record_single_account_binding_terminal_error(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
@@ -987,20 +1025,9 @@ fn spawn_pool_attempt_response_capture(
             &raw_meta,
             response_content_encoding.as_deref(),
         );
-        let progress_admitted =
-            enqueue_pool_upstream_request_attempt_snapshot_reliably(state.as_ref(), &pending);
-        if progress_admitted
-            && let Err(err) = state.sqlite_batch_writer.flush_now(&state.pool).await
-        {
-            warn!(
-                invoke_id = %pending.invoke_id,
-                error = %err,
-                "failed to flush deferred pool attempt response capture"
-            );
-        }
         let capture_persisted =
-            match persist_pool_upstream_request_attempt_response_capture_fallback(
-                &state.pool,
+            match persist_pool_upstream_request_attempt_response_capture_in_memory(
+                state.as_ref(),
                 &pending,
             )
             .await
@@ -2360,32 +2387,43 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         if attempt_trace.request_model.is_none() {
                             attempt_trace.request_model = runtime_snapshot_context
                                 .as_ref()
-                                .and_then(|context| context.request_info.model.clone());
+                                .and_then(|context| context.request_info.model.clone())
+                                .or_else(|| requested_model.clone());
                         }
                         attempt_trace.upstream_base_url_host = account
                             .upstream_base_url
                             .host_str()
                             .and_then(normalize_upstream_base_url_host_value);
-                        Some(
-                            begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
-                                &state.pool,
-                                &attempt_trace,
-                                group_name_snapshot.as_deref(),
-                                proxy_binding_key_snapshot.as_deref(),
-                                Some(account.routing_source),
-                                account.routing_selection_audit.as_ref(),
-                                account.account_id,
-                                upstream_route_key.as_str(),
-                                attempt_index,
-                                distinct_account_index,
-                                same_account_retry_index,
-                                attempt_started_at.as_str(),
-                            )
-                            .await,
+                        begin_pool_upstream_request_attempt_in_memory(
+                            state.as_ref(),
+                            &attempt_trace,
+                            group_name_snapshot.as_deref(),
+                            proxy_binding_key_snapshot.as_deref(),
+                            Some(account.routing_source),
+                            account.routing_selection_audit.as_ref(),
+                            account.account_id,
+                            upstream_route_key.as_str(),
+                            attempt_index,
+                            distinct_account_index,
+                            same_account_retry_index,
+                            attempt_started_at.as_str(),
                         )
+                        .await
                     } else {
                         None
                     };
+                    if trace_context.is_some() && pending_attempt_record.is_none() {
+                        release_pool_routing_reservation_without_availability(
+                            state.as_ref(),
+                            &reservation_key,
+                        );
+                        return Err(build_pool_attempt_journal_failure_error(
+                            &account,
+                            "start event was rejected by the bounded runtime journal",
+                            attempt_count,
+                            distinct_account_count,
+                        ));
+                    }
                     if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
                         if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
                             pending_attempt_record,
@@ -2623,28 +2661,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 uses_timeout_route_failover && timeout_shaped_failure;
                             let finished_at = shanghai_now_string();
                             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                                && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                    &state.pool,
-                                    pending_attempt_record,
-                                    finished_at.as_str(),
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                    None,
-                                    None,
-                                    Some(failure_kind),
-                                    Some(message.as_str()),
-                                    None,
-                                    Some(elapsed_ms(connect_started)),
-                                    None,
-                                    None,
-                                    None,
-                                    compact_support_observation
-                                        .as_ref()
-                                        .map(|value| value.status),
-                                    compact_support_observation
-                                        .as_ref()
-                                        .and_then(|value| value.reason.as_deref()),
-                                )
-                                .await
+                                && let Err(record_err) =
+                                    finalize_pool_upstream_request_attempt_in_memory(
+                                        state.as_ref(),
+                                        pending_attempt_record,
+                                        finished_at.as_str(),
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                        None,
+                                        None,
+                                        Some(failure_kind),
+                                        Some(message.as_str()),
+                                        None,
+                                        Some(elapsed_ms(connect_started)),
+                                        None,
+                                        None,
+                                        None,
+                                        compact_support_observation
+                                            .as_ref()
+                                            .map(|value| value.status),
+                                        compact_support_observation
+                                            .as_ref()
+                                            .and_then(|value| value.reason.as_deref()),
+                                    )
+                                    .await
                             {
                                 warn!(
                                     invoke_id = pending_attempt_record.invoke_id,
@@ -2834,28 +2873,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             let should_timeout_route_failover = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
                             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                                && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                    &state.pool,
-                                    pending_attempt_record,
-                                    finished_at.as_str(),
-                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                    None,
-                                    None,
-                                    Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
-                                    Some(message.as_str()),
-                                    None,
-                                    Some(elapsed_ms(connect_started)),
-                                    None,
-                                    None,
-                                    None,
-                                    compact_support_observation
-                                        .as_ref()
-                                        .map(|value| value.status),
-                                    compact_support_observation
-                                        .as_ref()
-                                        .and_then(|value| value.reason.as_deref()),
-                                )
-                                .await
+                                && let Err(record_err) =
+                                    finalize_pool_upstream_request_attempt_in_memory(
+                                        state.as_ref(),
+                                        pending_attempt_record,
+                                        finished_at.as_str(),
+                                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                        None,
+                                        None,
+                                        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+                                        Some(message.as_str()),
+                                        None,
+                                        Some(elapsed_ms(connect_started)),
+                                        None,
+                                        None,
+                                        None,
+                                        compact_support_observation
+                                            .as_ref()
+                                            .map(|value| value.status),
+                                        compact_support_observation
+                                            .as_ref()
+                                            .and_then(|value| value.reason.as_deref()),
+                                    )
+                                    .await
                             {
                                 warn!(
                                     invoke_id = pending_attempt_record.invoke_id,
@@ -3245,32 +3285,43 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         if attempt_trace.request_model.is_none() {
                             attempt_trace.request_model = runtime_snapshot_context
                                 .as_ref()
-                                .and_then(|context| context.request_info.model.clone());
+                                .and_then(|context| context.request_info.model.clone())
+                                .or_else(|| requested_model.clone());
                         }
                         attempt_trace.upstream_base_url_host = account
                             .upstream_base_url
                             .host_str()
                             .and_then(normalize_upstream_base_url_host_value);
-                        Some(
-                            begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
-                                &state.pool,
-                                &attempt_trace,
-                                group_name_snapshot.as_deref(),
-                                proxy_binding_key_snapshot.as_deref(),
-                                Some(account.routing_source),
-                                account.routing_selection_audit.as_ref(),
-                                account.account_id,
-                                upstream_route_key.as_str(),
-                                attempt_index,
-                                distinct_account_index,
-                                same_account_retry_index,
-                                attempt_started_at.as_str(),
-                            )
-                            .await,
+                        begin_pool_upstream_request_attempt_in_memory(
+                            state.as_ref(),
+                            &attempt_trace,
+                            group_name_snapshot.as_deref(),
+                            proxy_binding_key_snapshot.as_deref(),
+                            Some(account.routing_source),
+                            account.routing_selection_audit.as_ref(),
+                            account.account_id,
+                            upstream_route_key.as_str(),
+                            attempt_index,
+                            distinct_account_index,
+                            same_account_retry_index,
+                            attempt_started_at.as_str(),
                         )
+                        .await
                     } else {
                         None
                     };
+                    if trace_context.is_some() && pending_attempt_record.is_none() {
+                        release_pool_routing_reservation_without_availability(
+                            state.as_ref(),
+                            &reservation_key,
+                        );
+                        return Err(build_pool_attempt_journal_failure_error(
+                            &account,
+                            "start event was rejected by the bounded runtime journal",
+                            attempt_count,
+                            distinct_account_count,
+                        ));
+                    }
                     if let Some(pending_attempt_record) = pending_attempt_record.as_mut()
                         && let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
                             pending_attempt_record,
@@ -3821,8 +3872,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                 });
                 let finished_at = shanghai_now_string();
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                    && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                        &state.pool,
+                    && let Err(record_err) = finalize_pool_upstream_request_attempt_in_memory(
+                        state.as_ref(),
                         pending_attempt_record,
                         finished_at.as_str(),
                         normalized_failure.attempt_status,
@@ -3971,7 +4022,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         ))
                         .await
                 } else {
-                    reservation_guard.fence_failure(record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast(
+                    reservation_guard.fence_failure(record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
                         state.as_ref(),
                         account.account_id,
                         &account.kind,
@@ -3985,8 +4036,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         pending_attempt_record
                             .as_ref()
                             .and_then(|pending| pending.attempt_id),
-                        account.sticky_affinity_generation,
+                        pending_attempt_record
+                            .as_ref()
+                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
+                            .flatten(),
                         prompt_cache_key.or(sticky_event_prompt_cache_key),
+                        requested_model_for_failure,
                     ))
                     .await
                 };
@@ -4136,28 +4191,29 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             uses_timeout_route_failover && timeout_shaped_failure;
                         let finished_at = shanghai_now_string();
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                &state.pool,
-                                pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                None,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                None,
-                                None,
-                                None,
-                                compact_support_observation
-                                    .as_ref()
-                                    .map(|value| value.status),
-                                compact_support_observation
-                                    .as_ref()
-                                    .and_then(|value| value.reason.as_deref()),
-                            )
-                            .await
+                            && let Err(record_err) =
+                                finalize_pool_upstream_request_attempt_in_memory(
+                                    state.as_ref(),
+                                    pending_attempt_record,
+                                    finished_at.as_str(),
+                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    None,
+                                    None,
+                                    Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                    Some(message.as_str()),
+                                    None,
+                                    Some(connect_latency_ms),
+                                    None,
+                                    None,
+                                    None,
+                                    compact_support_observation
+                                        .as_ref()
+                                        .map(|value| value.status),
+                                    compact_support_observation
+                                        .as_ref()
+                                        .and_then(|value| value.reason.as_deref()),
+                                )
+                                .await
                         {
                             warn!(
                                 invoke_id = pending_attempt_record.invoke_id,
@@ -4397,24 +4453,25 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     }) => {
                         let finished_at = shanghai_now_string();
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                &state.pool,
-                                pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
-                                Some(status),
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                upstream_request_id.as_deref(),
-                                None,
-                                None,
-                            )
-                            .await
+                            && let Err(record_err) =
+                                finalize_pool_upstream_request_attempt_in_memory(
+                                    state.as_ref(),
+                                    pending_attempt_record,
+                                    finished_at.as_str(),
+                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+                                    Some(status),
+                                    None,
+                                    Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                                    Some(message.as_str()),
+                                    None,
+                                    Some(connect_latency_ms),
+                                    Some(first_byte_latency_ms),
+                                    None,
+                                    upstream_request_id.as_deref(),
+                                    None,
+                                    None,
+                                )
+                                .await
                         {
                             warn!(
                                 invoke_id = pending_attempt_record.invoke_id,
@@ -4476,7 +4533,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
 
                         if let Err(route_err) = reservation_guard
                             .fence_failure(
-                                record_pool_route_retryable_overload_failure_for_attempt(
+                                record_pool_route_retryable_overload_failure_for_attempt_with_model(
                                     &state.pool,
                                     account.account_id,
                                     sticky_key,
@@ -4485,6 +4542,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
+                                    requested_model.as_deref().or_else(|| {
+                                        pending_attempt_record.as_ref().and_then(|pending| {
+                                            pending
+                                                .request_model
+                                                .as_deref()
+                                                .or(pending.upstream_request_model.as_deref())
+                                        })
+                                    }),
                                 ),
                             )
                             .await
@@ -4543,24 +4608,25 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         let message = format!("failed to gate initial upstream response: {err}");
                         let finished_at = shanghai_now_string();
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                &state.pool,
-                                pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                None,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                Some(message.as_str()),
-                                None,
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await
+                            && let Err(record_err) =
+                                finalize_pool_upstream_request_attempt_in_memory(
+                                    state.as_ref(),
+                                    pending_attempt_record,
+                                    finished_at.as_str(),
+                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    None,
+                                    None,
+                                    Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                    Some(message.as_str()),
+                                    None,
+                                    Some(connect_latency_ms),
+                                    Some(first_byte_latency_ms),
+                                    None,
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await
                         {
                             warn!(
                                 invoke_id = pending_attempt_record.invoke_id,

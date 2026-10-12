@@ -161,6 +161,7 @@ pub(crate) async fn spawn_kaisoumail_test_harness(
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
+        proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

@@ -1726,6 +1726,118 @@ pub(crate) async fn record_model_route_success_from_attempt_admitted(
     Ok(changed)
 }
 
+pub(crate) async fn record_model_route_success_for_model_admitted(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    model: &str,
+    request_started_at: Option<&str>,
+) -> Result<bool> {
+    if !account_is_api_key(load_account_kind(pool, account_id).await?.as_deref()) {
+        return Ok(false);
+    }
+    let model = model.trim();
+    if model.is_empty() {
+        return Ok(false);
+    }
+    let cache_protection_enabled =
+        resolve_cache_hit_protection_settings(&load_pool_routing_settings(pool).await?).enabled;
+    let now = now_string();
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    let row = sqlx::query_as::<_, ModelRouteRow>(
+        "SELECT account_id, model, state, priority, consecutive_failures, streak_started_at, changed_at, last_seen_at, last_success_at, last_failure_at, last_failure_kind, last_failure_message, cooldown_until, reset_fence_at, cache_concurrency_limit, cache_recovery_limit, cache_low_hit_streak, cache_cooldown_level, cache_last_hit_rate_percent, cache_usage_missing_since, cache_usage_missing_reason FROM pool_upstream_account_model_routes WHERE account_id = ?1 AND model = ?2",
+    )
+    .bind(account_id)
+    .bind(model)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some(row) = row else {
+        sqlx::query(
+            "INSERT INTO pool_upstream_account_model_routes (account_id, model, state, priority, consecutive_failures, changed_at, last_seen_at, last_success_at) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?5, ?5) ON CONFLICT(account_id, model) DO UPDATE SET last_seen_at = excluded.last_seen_at, last_success_at = excluded.last_success_at",
+        )
+        .bind(account_id)
+        .bind(model)
+        .bind(MODEL_ROUTE_STATE_AVAILABLE)
+        .bind(MODEL_ROUTE_PRIORITY_NORMAL)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    };
+    if cache_protection_enabled && is_cache_owned_route(&row) {
+        sqlx::query(
+            "UPDATE pool_upstream_account_model_routes SET last_seen_at = ?3, last_success_at = ?3 WHERE account_id = ?1 AND model = ?2",
+        )
+        .bind(account_id)
+        .bind(model)
+        .bind(&now)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        return Ok(false);
+    }
+    if let (Some(started), Some(last_failure)) =
+        (request_started_at, row.last_failure_at.as_deref())
+        && parse_to_utc_datetime(last_failure).is_some_and(|failure| {
+            parse_to_utc_datetime(started).is_some_and(|request| failure > request)
+        })
+    {
+        return Ok(false);
+    }
+    if request_started_at
+        .and_then(parse_to_utc_datetime)
+        .zip(
+            row.reset_fence_at
+                .as_deref()
+                .and_then(parse_to_utc_datetime),
+        )
+        .is_some_and(|(request, reset)| request <= reset)
+    {
+        tx.commit().await?;
+        return Ok(false);
+    }
+    let (before_state, before_priority, _) = effective_row_state(&row, Utc::now());
+    let changed = before_state != MODEL_ROUTE_STATE_AVAILABLE
+        || before_priority != MODEL_ROUTE_PRIORITY_NORMAL
+        || row.consecutive_failures != 0
+        || row.cooldown_until.is_some();
+    sqlx::query(
+        "UPDATE pool_upstream_account_model_routes SET state = ?3, priority = ?4, consecutive_failures = 0, streak_started_at = NULL, changed_at = CASE WHEN ?5 = 1 THEN ?2 ELSE changed_at END, last_seen_at = ?2, last_success_at = ?2, last_failure_at = NULL, last_failure_kind = NULL, last_failure_message = NULL, cooldown_until = NULL, cache_concurrency_limit = NULL, cache_recovery_limit = NULL, cache_low_hit_streak = 0, cache_cooldown_level = 0, cache_usage_missing_since = NULL, cache_usage_missing_reason = NULL WHERE account_id = ?1 AND model = ?6",
+    )
+    .bind(account_id)
+    .bind(&now)
+    .bind(MODEL_ROUTE_STATE_AVAILABLE)
+    .bind(MODEL_ROUTE_PRIORITY_NORMAL)
+    .bind(if changed { 1 } else { 0 })
+    .bind(model)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    if changed {
+        persist_model_event(
+            pool,
+            account_id,
+            None,
+            model,
+            UPSTREAM_ACCOUNT_ACTION_MODEL_ROUTE_RECOVERED,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            "recovered",
+            Some(&before_state),
+            Some(MODEL_ROUTE_STATE_AVAILABLE),
+            Some(&before_priority),
+            Some(MODEL_ROUTE_PRIORITY_NORMAL),
+            0,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+    }
+    Ok(changed)
+}
+
 pub(crate) async fn record_model_route_failure_from_attempt(
     pool: &Pool<Sqlite>,
     account_id: i64,

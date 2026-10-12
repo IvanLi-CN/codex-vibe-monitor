@@ -7726,7 +7726,8 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
 }
 
 #[tokio::test]
-async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_persisted() {
+async fn send_pool_request_with_failover_keeps_runtime_streaming_phase_without_persisted_attempt_row()
+ {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -7822,41 +7823,48 @@ async fn send_pool_request_with_failover_disarms_guard_after_streaming_phase_is_
         upstream
             .pending_attempt_record
             .as_ref()
-            .and_then(|pending| pending.attempt_id)
-            .is_some()
+            .is_some_and(|pending| pending.attempt_id.is_none())
     );
+    let attempt_public_id = upstream
+        .pending_attempt_record
+        .as_ref()
+        .and_then(|pending| pending.attempt_public_id.clone())
+        .expect("runtime attempt should have a stable public id");
     assert!(upstream.deferred_early_phase_cleanup_guard.is_some());
     state
         .sqlite_batch_writer
         .flush_buffered_for_test(&state.pool)
         .await;
 
-    let attempt = sqlx::query_as::<_, (String, Option<String>)>(
+    let runtime_attempt = state
+        .proxy_runtime_attempts
+        .get(invoke_id, occurred_at, &attempt_public_id)
+        .expect("streaming phase should remain in the runtime attempt store");
+    assert_eq!(
+        runtime_attempt.phase.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+    );
+
+    let attempt_count = sqlx::query_scalar::<_, i64>(
         r#"
-        SELECT status, phase
+        SELECT COUNT(*)
         FROM pool_upstream_request_attempts
         WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
         "#,
     )
     .bind(invoke_id)
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load attempt after persisted streaming-phase update");
-    assert_eq!(attempt.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
-    assert_eq!(
-        attempt.1.as_deref(),
-        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
-    );
+    .expect("count attempts after runtime streaming-phase update");
+    assert_eq!(attempt_count, 0);
     let mut upstream = upstream;
     disarm_pool_early_phase_cleanup_guard(&mut upstream.deferred_early_phase_cleanup_guard);
     upstream_handle.abort();
 }
 
 #[tokio::test]
-async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_streaming_phase_was_not_persisted()
+async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_runtime_phase_is_memory_only()
  {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7968,22 +7976,32 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
         upstream
             .pending_attempt_record
             .as_ref()
-            .and_then(|pending| pending.attempt_id)
-            .is_some()
+            .is_some_and(|pending| pending.attempt_id.is_none())
+    );
+    let attempt_public_id = upstream
+        .pending_attempt_record
+        .as_ref()
+        .and_then(|pending| pending.attempt_public_id.clone())
+        .expect("runtime attempt should have a stable public id");
+    let runtime_attempt = state
+        .proxy_runtime_attempts
+        .get(invoke_id, occurred_at, &attempt_public_id)
+        .expect("streaming phase should remain in the runtime attempt store");
+    assert_eq!(
+        runtime_attempt.phase.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
     );
     assert!(upstream.deferred_early_phase_cleanup_guard.is_some());
 
     drop(upstream);
-    let attempt = {
+    let attempt_count = {
         let mut poll_count = 0;
         loop {
-            let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+            let attempt_count = sqlx::query_scalar::<_, i64>(
                 r#"
-                SELECT status, phase, failure_kind
+                SELECT COUNT(*)
                 FROM pool_upstream_request_attempts
                 WHERE invoke_id = ?1 AND occurred_at = ?2
-                ORDER BY id DESC
-                LIMIT 1
                 "#,
             )
             .bind(invoke_id)
@@ -7991,26 +8009,16 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_stre
             .fetch_one(&state.pool)
             .await
             .expect("load attempt after suppressed streaming-phase update");
-            if attempt.0 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-                || poll_count >= 100
-            {
-                break attempt;
+            if attempt_count > 0 || poll_count >= 100 {
+                break attempt_count;
             }
             poll_count += 1;
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     };
     assert_eq!(
-        attempt.0,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
-    );
-    assert_eq!(
-        attempt.1.as_deref(),
-        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-    );
-    assert_eq!(
-        attempt.2.as_deref(),
-        Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+        attempt_count, 0,
+        "drop recovery must not create a live attempt row"
     );
 
     let invocation_count = {
