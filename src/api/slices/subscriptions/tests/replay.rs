@@ -808,6 +808,75 @@ async fn prepare_connection_reports_replay_hit_and_resume_caught_up() {
 }
 
 #[tokio::test]
+async fn prepare_connection_selects_delta_only_for_capable_consumers() {
+    let state =
+        crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap()).await;
+    let hub = SubscriptionHub::new();
+    let topic = summary_topic();
+    let descriptor = topic.descriptor();
+    let topic_key = topic.cache_key().expect("topic key");
+    let schema_epoch = topic.schema_epoch();
+    let mut cached = seeded_cached_topic(topic, &[1, 2, 3, 4], Utc::now());
+    let full_frame = cached
+        .replay_events
+        .back()
+        .expect("seeded replay event")
+        .full_frame
+        .clone();
+    let delta_frame = Arc::new(
+        serialize_topic_delta_frame(
+            descriptor.clone(),
+            topic_key.clone(),
+            schema_epoch.clone(),
+            4,
+            3,
+            serde_json::to_vec(&json!({ "kind": "test-delta" })).expect("delta payload"),
+        )
+        .expect("delta frame"),
+    );
+    let replay = cached
+        .replay_events
+        .back_mut()
+        .expect("seeded replay event");
+    replay.frame = delta_frame.clone();
+    replay.bytes = full_frame.retained_bytes();
+    hub.state
+        .lock()
+        .await
+        .topics
+        .insert(topic_key.clone(), cached);
+
+    let full = hub
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key: topic_key.clone(),
+                cursor: 3,
+                schema_epoch: schema_epoch.clone(),
+            }],
+        )
+        .await
+        .expect("full-frame connection");
+    assert!(Arc::ptr_eq(&full.initial[0].frame, &full_frame));
+
+    let delta = hub
+        .prepare_connection_with_capability(
+            state,
+            vec![descriptor],
+            vec![SubscriptionResumeCursor {
+                topic_key,
+                cursor: 3,
+                schema_epoch,
+            }],
+            true,
+        )
+        .await
+        .expect("delta-capable connection");
+    assert!(Arc::ptr_eq(&delta.initial[0].frame, &delta_frame));
+}
+
+#[tokio::test]
 async fn prepare_connection_reports_snapshot_resume_miss() {
     let state =
         crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap()).await;

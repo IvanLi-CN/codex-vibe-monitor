@@ -264,6 +264,7 @@ function buildConnectionRequest(attempt: number, reason: SseReconnectReason) {
   }
   search.set("attempt", `${attempt}`);
   search.set("reason", reason);
+  search.set("delta", "1");
   return {
     path: `/events?${search.toString()}`,
     activeTopics: descriptors.map(formatTopicLabel),
@@ -526,6 +527,10 @@ function handleMessage(event: MessageEvent<string>) {
         rebuildConnection("topic-refresh");
         return;
       }
+    } else if (!isValidFullPayload(descriptor.topic, raw.payload)) {
+      forcedSnapshotDescriptors.add(descriptorKey);
+      rebuildConnection("topic-refresh");
+      return;
     }
     const nextPayload = isDelta
       ? applySubscriptionDelta(
@@ -604,10 +609,19 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
     if (topic !== "stats.timeseries.open-window") return null;
     if (
       !Array.isArray(baseRecord.points) ||
+      !baseRecord.points.every(isRecord) ||
       !("rangeEnd" in deltaRecord) ||
       !("snapshotId" in deltaRecord) ||
       !("pointIndex" in deltaRecord) ||
       !("point" in deltaRecord)
+    ) {
+      return null;
+    }
+    if (
+      typeof deltaRecord.rangeEnd !== "string" ||
+      typeof deltaRecord.snapshotId !== "number" ||
+      !Number.isSafeInteger(deltaRecord.snapshotId) ||
+      deltaRecord.snapshotId < 0
     ) {
       return null;
     }
@@ -621,6 +635,7 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
       ) {
         return null;
       }
+      if (!isRecord(deltaRecord.point)) return null;
       points[deltaRecord.pointIndex] = deltaRecord.point;
     } else if (deltaRecord.point !== null) {
       return null;
@@ -646,6 +661,7 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
     return null;
   }
   const items = [...(baseRecord[deltaRecord.collection] as unknown[])];
+  if (!items.every(isRecord)) return null;
   if (deltaRecord.itemIndex != null) {
     if (
       typeof deltaRecord.itemIndex !== "number" ||
@@ -656,15 +672,50 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
     ) {
       return null;
     }
+    if (!isRecord(deltaRecord.item)) return null;
     items[deltaRecord.itemIndex] = deltaRecord.item;
   } else if (deltaRecord.item !== null) {
     return null;
   }
+  const fields = deltaRecord.fields as Record<string, unknown>;
+  if (
+    Object.entries(fields).some(
+      ([key, value]) => !(key in baseRecord) || !isJsonShapeCompatible(baseRecord[key], value),
+    )
+  ) {
+    return null;
+  }
   return {
     ...baseRecord,
-    ...((deltaRecord.fields as Record<string, unknown>) ?? {}),
+    ...fields,
     [deltaRecord.collection]: items,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isJsonShapeCompatible(previous: unknown, next: unknown): boolean {
+  if (previous === null || next === null) return true;
+  if (Array.isArray(previous)) return Array.isArray(next);
+  if (typeof previous === "object") return isRecord(next);
+  return typeof previous === typeof next;
+}
+
+function isValidFullPayload(topic: string, payload: unknown): boolean {
+  if (payload == null) return false;
+  if (topic === "stats.timeseries.open-window") {
+    return isRecord(payload) && Array.isArray(payload.points) && payload.points.every(isRecord);
+  }
+  if (topic === "dashboard.working-conversations.current") {
+    return (
+      isRecord(payload) &&
+      Array.isArray(payload.conversations) &&
+      payload.conversations.every(isRecord)
+    );
+  }
+  return true;
 }
 
 function handleError() {

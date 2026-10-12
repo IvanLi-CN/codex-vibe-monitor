@@ -4,6 +4,7 @@ use super::*;
 
 pub(crate) struct ReplayableTopicEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
+    pub(crate) full_frame: Arc<SerializedTopicFrame>,
     pub(crate) bytes: usize,
     pub(crate) emitted_at: DateTime<Utc>,
 }

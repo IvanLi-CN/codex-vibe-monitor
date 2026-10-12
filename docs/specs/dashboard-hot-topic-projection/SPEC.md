@@ -61,6 +61,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - working-conversations 每个对话 MUST 输出后端权威 `inFlightPhaseCounts`，由完整进行中 identity 索引按 `queued`、`requesting`、`responding` 计数；该摘要不得从 `recentInvocations`、三槽位或 Web 可见列表推导。
 - materializer MUST 在 identity 的相位、Prompt Cache key、终态、运行时移除、prune 和 replay 变化时撤销旧贡献并加入新贡献；初次 baseline、键级 hydration 和 dirty recovery MUST 使用精确查询。恢复不完整时 MUST 保留 last-good 摘要，不得发布伪造的零计数或终态。
 - Dashboard delta frame MUST 只表达一个 timeseries point/metadata 更新或一个 working-conversation item 更新；多点、多项、列表长度变化、cursor gap 或 merge 失败必须请求完整快照，且不得把不连续的 delta 应用到 owner-facing 状态。
+- Delta delivery MUST be capability-negotiated on the SSE connection (`delta=1` for the current Web client); clients without that capability MUST receive the canonical full frame for both replay and live delivery. The server MUST retain the full frame alongside an eligible delta so mixed-version consumers remain safe during rollout.
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
 - working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留与普通无方案调用行相同的 `57px` 槽位基线，且该高度不包含相邻槽位的既有间距。缺失历史必须显示明确的静态“暂无上一条调用”或“暂无更早调用”状态，不得使用骨架条、spinner、pulse 或其他加载暗示。该展示数量不改变 payload topic、HTTP/SSE 语义、`recentInvocationLimit=16` 或后端 compact 默认值。
 - 三个槽位的正常/进行中记录保留两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。缺失槽位使用静态历史说明垂直居中，并保持 `role="group"` 的无交互语义、准确可访问名称和与普通无方案行不超过 1px 的高度差。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。

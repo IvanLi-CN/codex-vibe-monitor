@@ -1387,6 +1387,7 @@ async fn dashboard_network_recent_legacy_push_cadence_emits_live_payload() {
             resume: None,
             attempt: Some(1),
             reason: Some("legacy-network-cadence-test".to_string()),
+            delta: None,
         }),
     )
     .await

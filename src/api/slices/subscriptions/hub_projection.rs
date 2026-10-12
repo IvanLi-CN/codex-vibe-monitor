@@ -280,6 +280,17 @@ impl SubscriptionHub {
         descriptors: Vec<SubscriptionTopicDescriptor>,
         resume: Vec<SubscriptionResumeCursor>,
     ) -> Result<PreparedSubscriptionConnection, ApiError> {
+        self.prepare_connection_with_capability(state, descriptors, resume, false)
+            .await
+    }
+
+    pub(crate) async fn prepare_connection_with_capability(
+        &self,
+        state: Arc<AppState>,
+        descriptors: Vec<SubscriptionTopicDescriptor>,
+        resume: Vec<SubscriptionResumeCursor>,
+        supports_deltas: bool,
+    ) -> Result<PreparedSubscriptionConnection, ApiError> {
         let resume_by_topic_key = resume
             .into_iter()
             .map(|item| (item.topic_key.clone(), item))
@@ -357,7 +368,18 @@ impl SubscriptionHub {
             match replay_attempt {
                 Ok(Some(events)) if !events.is_empty() => {
                     let replay_event_count = events.len();
-                    let replay_bytes = events.iter().map(|event| event.bytes).sum::<usize>();
+                    let replay_bytes = events
+                        .iter()
+                        .map(|event| {
+                            if supports_deltas {
+                                event.frame.retained_bytes()
+                            } else if Arc::ptr_eq(&event.frame, &event.full_frame) {
+                                event.bytes
+                            } else {
+                                event.full_frame.retained_bytes()
+                            }
+                        })
+                        .sum::<usize>();
                     tracing::debug!(
                         topic_key,
                         replay_event_count,
@@ -366,7 +388,11 @@ impl SubscriptionHub {
                     );
                     for event in events {
                         initial.push(PreparedTopicFrame {
-                            frame: event.frame,
+                            frame: if supports_deltas {
+                                event.frame
+                            } else {
+                                event.full_frame
+                            },
                             kind: TopicFrameKind::Replay,
                         });
                     }
@@ -1647,18 +1673,20 @@ impl SubscriptionHub {
                     .map_or(0, |entry| entry.replay_bytes),
             };
             if emit_live {
-                let retained_bytes = frame.retained_bytes();
                 let replay_event = ReplayableTopicEvent {
                     frame: frame.clone(),
-                    bytes: retained_bytes,
+                    full_frame: full_frame.clone(),
+                    bytes: full_frame.retained_bytes(),
                     emitted_at: Utc::now(),
                 };
                 next.replay_events.push_back(replay_event);
-                next.replay_bytes = next.replay_bytes.saturating_add(retained_bytes);
+                next.replay_bytes = next
+                    .replay_bytes
+                    .saturating_add(full_frame.retained_bytes());
                 prune_replay_window(&mut next.replay_events, &mut next.replay_bytes);
             }
             guard.topics.insert(topic_key.clone(), next.clone());
-            let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame });
+            let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame, full_frame });
             (
                 next,
                 dispatch,
@@ -1971,19 +1999,21 @@ impl SubscriptionHub {
             } else {
                 full_frame.clone()
             };
-            let retained_bytes = frame.retained_bytes();
             cached.cursor = next_cursor;
             cached.snapshot_bytes = full_frame.payload_bytes.len();
-            cached.snapshot_frame = full_frame;
+            cached.snapshot_frame = full_frame.clone();
             cached.dashboard_materialized_revision = Some(pending.revision);
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
-                bytes: retained_bytes,
+                full_frame: full_frame.clone(),
+                bytes: full_frame.retained_bytes(),
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.replay_bytes = cached
+                .replay_bytes
+                .saturating_add(full_frame.retained_bytes());
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            SubscriptionDispatchEvent { frame }
+            SubscriptionDispatchEvent { frame, full_frame }
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())

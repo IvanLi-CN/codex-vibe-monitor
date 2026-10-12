@@ -69,6 +69,7 @@ function decodePath(path: string) {
       : [],
     attempt: url.searchParams.get("attempt"),
     reason: url.searchParams.get("reason"),
+    delta: url.searchParams.get("delta"),
   };
 }
 
@@ -444,6 +445,75 @@ describe("sse topic registry", () => {
     unsubscribe();
   });
 
+  it("rejects invalid payload and delta value shapes before caching", async () => {
+    const sse = await loadSseModule();
+    const timeseries = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribeTimeseries = sse.subscribeToTopic(timeseries, vi.fn());
+    const firstConnection = FakeEventSource.instances[0]!;
+    firstConnection.emit("open", new Event("open"));
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: timeseries,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic: timeseries,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: 0,
+            point: "invalid",
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(sse.getCachedTopicState(timeseries)?.cursor).toBe(7);
+
+    const ordinary = sse.buildTopicDescriptor("forward-proxy.live");
+    const unsubscribeOrdinary = sse.subscribeToTopic(ordinary, vi.fn());
+    const secondConnection = FakeEventSource.instances.at(-1)!;
+    secondConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: ordinary,
+          topicKey: "forward-proxy-live",
+          schemaEpoch: "forward-proxy.live/v1",
+          cursor: 1,
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(sse.getCachedTopicState(ordinary)).toBeNull();
+
+    unsubscribeOrdinary();
+    unsubscribeTimeseries();
+  });
+
   it("keeps an unavailable topic isolated from healthy topic snapshots", async () => {
     const sse = await loadSseModule();
     const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {
@@ -555,6 +625,7 @@ describe("sse topic registry", () => {
         schemaEpoch: "stats.summary.current/v1",
       },
     ]);
+    expect(decoded.delta).toBe("1");
 
     unsubscribeQuota();
 
