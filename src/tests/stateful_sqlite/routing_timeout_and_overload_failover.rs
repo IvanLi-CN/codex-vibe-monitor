@@ -41,6 +41,12 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
     .await;
 
     let request_count = 16;
+    for index in 0..request_count {
+        let prompt_cache_key = format!("pressure-key-{index}");
+        allocate_proxy_invoke_id_with_active_lease(&state, Some(&prompt_cache_key))
+            .await
+            .expect("prewarm invocation range for pressure request");
+    }
     let progress_before = state
         .sqlite_batch_writer
         .accounting_snapshot()
@@ -117,8 +123,8 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
                     .interactive_proxy
                     .admission_count,
             ),
-        request_count as u64,
-        "each request should use only its one request-admission write; attempts add none"
+        0,
+        "prewarmed request admission should add no SQLite writes for attempt lifecycle"
     );
 
     let mut locked_connection = state
