@@ -2317,6 +2317,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             proxy_binding_key_snapshot.as_deref(),
                             Some(account.routing_source),
                             account.routing_selection_audit.as_ref(),
+                            account.sticky_affinity_generation,
                             account.account_id,
                             upstream_route_key.as_str(),
                             attempt_index,
@@ -2648,7 +2649,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             }
                             if let Err(route_err) = reservation_guard
                                 .fence_failure(
-                                    record_pool_route_transport_failure_for_attempt_with_kind(
+                                    record_pool_route_transport_failure_for_attempt_with_kind_and_model(
                                         &state.pool,
                                         account.account_id,
                                         sticky_key,
@@ -2660,6 +2661,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                         pending_attempt_record
                                             .as_ref()
                                             .and_then(|pending| pending.attempt_id),
+                                        pending_attempt_record.as_ref().and_then(|pending| {
+                                            pending
+                                                .request_model
+                                                .as_deref()
+                                                .or(pending.upstream_request_model.as_deref())
+                                        }),
                                     ),
                                 )
                                 .await
@@ -3223,6 +3230,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             proxy_binding_key_snapshot.as_deref(),
                             Some(account.routing_source),
                             account.routing_selection_audit.as_ref(),
+                            account.sticky_affinity_generation,
                             account.account_id,
                             upstream_route_key.as_str(),
                             attempt_index,
@@ -3974,8 +3982,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             .and_then(|pending| pending.attempt_id),
                         pending_attempt_record
                             .as_ref()
-                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
-                            .flatten(),
+                            .and_then(|pending| pending.sticky_affinity_generation),
                         prompt_cache_key.or(sticky_event_prompt_cache_key),
                         requested_model_for_failure,
                     ))
@@ -4255,7 +4262,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
                         if let Err(route_err) = reservation_guard
                             .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind(
+                                record_pool_route_transport_failure_for_attempt_with_kind_and_model(
                                     &state.pool,
                                     account.account_id,
                                     sticky_key,
@@ -4265,6 +4272,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    }),
                                 ),
                             )
                             .await
@@ -4593,7 +4606,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
                         if let Err(route_err) = reservation_guard
                             .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind(
+                                record_pool_route_transport_failure_for_attempt_with_kind_and_model(
                                     &state.pool,
                                     account.account_id,
                                     sticky_key,
@@ -4603,6 +4616,12 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                     pending_attempt_record
                                         .as_ref()
                                         .and_then(|pending| pending.attempt_id),
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    }),
                                 ),
                             )
                             .await

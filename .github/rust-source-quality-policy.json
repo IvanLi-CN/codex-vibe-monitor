@@ -57,7 +57,7 @@
     {
       "path": "src/proxy/failover.rs",
       "role": "production",
-      "line_budget": 4842,
+      "line_budget": 4857,
       "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
     },
     {
@@ -69,13 +69,13 @@
     {
       "path": "src/proxy/route_selection.rs",
       "role": "production",
-      "line_budget": 3788,
+      "line_budget": 3793,
       "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
     },
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 7306,
+      "line_budget": 7323,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
@@ -87,7 +87,7 @@
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6647,
+      "line_budget": 6692,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 9757,
+      "line_budget": 9763,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {

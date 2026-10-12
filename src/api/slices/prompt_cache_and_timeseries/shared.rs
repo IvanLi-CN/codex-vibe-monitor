@@ -311,6 +311,98 @@ pub(crate) async fn query_pool_attempt_records_from_live(
     Ok(records)
 }
 
+pub(crate) async fn query_pool_attempt_records_from_live_with_runtime(
+    pool: &Pool<Sqlite>,
+    runtime_attempts: &RuntimeAttemptStore,
+    invoke_id: &str,
+) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
+    let mut records = query_pool_attempt_records_from_live(pool, invoke_id).await?;
+    let persisted_ids = records
+        .iter()
+        .map(|record| record.attempt_id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    let mut runtime_records = runtime_attempts
+        .list_for_invocation(invoke_id, None)
+        .into_iter()
+        .filter(|snapshot| !persisted_ids.contains(&snapshot.attempt_public_id))
+        .map(api_attempt_from_runtime_snapshot)
+        .collect::<Vec<_>>();
+    load_pool_attempt_account_names(pool, &mut runtime_records).await?;
+    records.append(&mut runtime_records);
+    records.sort_by_key(|record| (record.attempt_index, record.id));
+    Ok(records)
+}
+
+fn api_attempt_from_runtime_snapshot(
+    snapshot: RuntimeAttemptSnapshot,
+) -> ApiPoolUpstreamRequestAttempt {
+    ApiPoolUpstreamRequestAttempt {
+        id: -1,
+        attempt_id: snapshot.attempt_public_id,
+        invoke_id: snapshot.invoke_id,
+        occurred_at: snapshot.occurred_at.clone(),
+        endpoint: snapshot.endpoint,
+        sticky_key: snapshot.sticky_key,
+        routing_source: snapshot.routing_source,
+        routing_selection_audit_json: snapshot.routing_selection_audit_json.clone(),
+        routing_selection_audit: snapshot
+            .routing_selection_audit_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str(value).ok()),
+        upstream_account_id: Some(snapshot.upstream_account_id),
+        upstream_account_name: None,
+        model: snapshot.request_model.clone(),
+        request_model: snapshot.request_model,
+        upstream_request_model: snapshot.upstream_request_model,
+        model_mapping_pattern: snapshot.model_mapping_pattern,
+        response_model: None,
+        compaction_request_kind: None,
+        compaction_response_kind: None,
+        image_intent: None,
+        upstream_route_key: Some(snapshot.upstream_route_key),
+        proxy_binding_key_snapshot: snapshot.proxy_binding_key_snapshot,
+        attempt_index: snapshot.attempt_index,
+        distinct_account_index: snapshot.distinct_account_index,
+        same_account_retry_index: snapshot.same_account_retry_index,
+        requester_ip: snapshot.requester_ip,
+        started_at: Some(snapshot.started_at.clone()),
+        finished_at: snapshot.finished_at,
+        status: snapshot.status,
+        phase: snapshot
+            .phase
+            .unwrap_or_else(|| "sending_request".to_string()),
+        http_status: snapshot.http_status,
+        downstream_http_status: snapshot.downstream_http_status,
+        failure_kind: snapshot.failure_kind,
+        error_message: snapshot.error_message,
+        downstream_error_message: snapshot.downstream_error_message,
+        connect_latency_ms: snapshot.connect_latency_ms,
+        first_token_ms: None,
+        first_byte_latency_ms: snapshot.first_byte_latency_ms,
+        stream_latency_ms: snapshot.stream_latency_ms,
+        upstream_request_id: snapshot.upstream_request_id,
+        downstream_request_content_encoding: snapshot.response_content_encoding,
+        upstream_request_compression_algorithm: snapshot.upstream_request_compression_algorithm,
+        upstream_request_compression_mode: snapshot.upstream_request_compression_mode,
+        upstream_request_logical_body_bytes: snapshot.upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes: snapshot.upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx: snapshot.upstream_request_header_bytes_approx,
+        upstream_response_body_bytes: snapshot.upstream_response_body_bytes,
+        upstream_response_header_bytes_approx: snapshot.upstream_response_header_bytes_approx,
+        logical_body_bytes: None,
+        transmitted_body_bytes: None,
+        saved_bytes: None,
+        ratio_pct: None,
+        approx_upload_bytes: None,
+        approx_download_bytes: None,
+        compact_support_status: snapshot.compact_support_status,
+        compact_support_reason: snapshot.compact_support_reason,
+        created_at: snapshot.started_at,
+        invocation_record: None,
+        workflow_entry: None,
+    }
+}
+
 pub(crate) async fn query_invocation_aggregate_records_from_live_range_executor<'e, E>(
     executor: E,
     range: ExactUtcRange,

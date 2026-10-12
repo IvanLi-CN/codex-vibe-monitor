@@ -687,6 +687,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
     proxy_binding_key_snapshot: Option<&str>,
     routing_source: Option<PoolRoutingSelectionSource>,
     routing_selection_audit: Option<&PoolRoutingSelectionAudit>,
+    sticky_affinity_generation: Option<i64>,
     upstream_account_id: i64,
     upstream_route_key: &str,
     attempt_index: i64,
@@ -707,6 +708,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
         sticky_key: trace.sticky_key.clone(),
         routing_source: routing_source_value.map(ToOwned::to_owned),
         routing_selection_audit_json,
+        sticky_affinity_generation,
         requester_ip: trace.requester_ip.clone(),
         upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
@@ -754,7 +756,13 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
         );
         return None;
     }
-    if !state.proxy_runtime_attempts.upsert(runtime_snapshot) {
+    if !state
+        .proxy_runtime_attempts
+        .upsert(runtime_snapshot.clone())
+    {
+        let _ = state
+            .sqlite_batch_writer
+            .acknowledge_runtime_attempt_start(&runtime_snapshot.attempt_public_id);
         warn!(
             invoke_id = %pending.invoke_id,
             attempt_public_id = ?pending.attempt_public_id,
@@ -885,7 +893,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt_in_memory(
     snapshot.compact_support_reason = compact_support_reason
         .map(ToOwned::to_owned)
         .or(snapshot.compact_support_reason);
-    if !state.proxy_runtime_attempts.upsert(snapshot) {
+    if !state.proxy_runtime_attempts.upsert_terminal(snapshot) {
         bail!("proxy runtime attempt store rejected terminal snapshot")
     }
     Ok(())
@@ -1090,6 +1098,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         sticky_key: trace.sticky_key.clone(),
         routing_source: routing_source_value.map(ToOwned::to_owned),
         routing_selection_audit_json,
+        sticky_affinity_generation: None,
         requester_ip: trace.requester_ip.clone(),
         upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
@@ -1261,17 +1270,19 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_in_me
         .attempt_public_id
         .clone()
         .unwrap_or_else(|| pool_attempt_response_capture_key(pending));
-    let mut snapshot = state
-        .proxy_runtime_attempts
-        .get(&pending.invoke_id, &pending.occurred_at, &attempt_public_id)
-        .unwrap_or_else(|| runtime_attempt_snapshot_from_pending(pending));
-    snapshot.response_raw_path = pending.response_raw_path.clone();
-    snapshot.response_raw_codec = pending.response_raw_codec.clone();
-    snapshot.response_raw_size = pending.response_raw_size;
-    snapshot.response_raw_truncated = pending.response_raw_truncated;
-    snapshot.response_raw_truncated_reason = pending.response_raw_truncated_reason.clone();
-    snapshot.response_content_encoding = pending.response_content_encoding.clone();
-    if state.proxy_runtime_attempts.upsert(snapshot) {
+    if state.proxy_runtime_attempts.update_response_capture(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        &attempt_public_id,
+        RuntimeAttemptResponseCapture {
+            raw_path: pending.response_raw_path.clone(),
+            raw_codec: pending.response_raw_codec.clone(),
+            raw_size: pending.response_raw_size,
+            raw_truncated: pending.response_raw_truncated,
+            raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
+            content_encoding: pending.response_content_encoding.clone(),
+        },
+    ) {
         Ok(())
     } else {
         bail!("proxy runtime attempt store rejected response capture metadata")
@@ -2740,7 +2751,13 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
         .subscription_hub
         .has_external_broadcaster_receiver(state.broadcaster.receiver_count());
     if has_account_attempt_topic || has_external_broadcaster_receiver {
-        let attempts = match query_pool_attempt_records_from_live(&state.pool, invoke_id).await {
+        let attempts = match query_pool_attempt_records_from_live_with_runtime(
+            &state.pool,
+            &state.proxy_runtime_attempts,
+            invoke_id,
+        )
+        .await
+        {
             Ok(attempts) => attempts,
             Err(err) => {
                 // A failed source query cannot identify the affected account. Preserve the

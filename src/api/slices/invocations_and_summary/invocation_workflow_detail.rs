@@ -5,7 +5,12 @@ pub(crate) async fn fetch_invocation_pool_attempts(
     axum::extract::Path(invoke_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<ApiPoolUpstreamRequestAttempt>>, ApiError> {
     Ok(Json(
-        query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?,
+        query_pool_attempt_records_from_live_with_runtime(
+            &state.pool,
+            &state.proxy_runtime_attempts,
+            &invoke_id,
+        )
+        .await?,
     ))
 }
 

@@ -3066,8 +3066,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             .and_then(|pending| pending.attempt_id),
                         pending_pool_attempt_record_for_task
                             .as_ref()
-                            .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
-                            .flatten(),
+                            .and_then(|pending| pending.sticky_affinity_generation),
                         request_info_for_task
                             .model
                             .as_deref()
@@ -3097,7 +3096,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                         reservation_guard.as_mut(),
-                        record_pool_route_transport_failure_for_attempt_with_kind(
+                        record_pool_route_transport_failure_for_attempt_with_kind_and_model(
                             &state_for_task.pool,
                             account.account_id,
                             sticky_key_for_task.as_deref(),
@@ -3107,6 +3106,14 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                             pending_pool_attempt_record_for_task
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            pending_pool_attempt_record_for_task
+                                .as_ref()
+                                .and_then(|pending| {
+                                    pending
+                                        .request_model
+                                        .as_deref()
+                                        .or(pending.upstream_request_model.as_deref())
+                                }),
                         ),
                     )
                     .await
@@ -3166,8 +3173,7 @@ pub(crate) async fn proxy_openai_v1_capture_target(
                                 .and_then(|pending| pending.attempt_id),
                             pending_pool_attempt_record_for_task
                                 .as_ref()
-                                .and_then(|pending| pending.attempt_id.map(|_| account.sticky_affinity_generation))
-                                .flatten(),
+                                .and_then(|pending| pending.sticky_affinity_generation),
                             prompt_cache_key_for_task
                                 .as_deref()
                                 .or(request_info_for_task.sticky_key.as_deref()),

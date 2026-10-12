@@ -1300,6 +1300,7 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) sticky_key: Option<String>,
     pub(crate) routing_source: Option<String>,
     pub(crate) routing_selection_audit_json: Option<String>,
+    pub(crate) sticky_affinity_generation: Option<i64>,
     pub(crate) requester_ip: Option<String>,
     pub(crate) upstream_base_url_host: Option<String>,
     pub(crate) group_name_snapshot: Option<String>,

@@ -1666,6 +1666,29 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
     invoke_id: Option<&str>,
     attempt_id: Option<i64>,
 ) -> Result<()> {
+    record_pool_route_transport_failure_for_attempt_with_kind_and_model(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        failure_kind,
+        invoke_id,
+        attempt_id,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind_and_model(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    failure_kind: &str,
+    invoke_id: Option<&str>,
+    attempt_id: Option<i64>,
+    model: Option<&str>,
+) -> Result<()> {
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1681,7 +1704,7 @@ pub(crate) async fn record_pool_route_transport_failure_for_attempt_with_kind(
         invoke_id,
         failure_kind,
         attempt_id,
-        None,
+        model,
     )
     .await
 }

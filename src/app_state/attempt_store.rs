@@ -62,6 +62,16 @@ pub(crate) struct RuntimeAttemptSnapshot {
     pub(crate) response_content_encoding: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(crate) struct RuntimeAttemptResponseCapture {
+    pub(crate) raw_path: Option<String>,
+    pub(crate) raw_codec: Option<String>,
+    pub(crate) raw_size: Option<i64>,
+    pub(crate) raw_truncated: bool,
+    pub(crate) raw_truncated_reason: Option<String>,
+    pub(crate) content_encoding: Option<String>,
+}
+
 impl RuntimeAttemptSnapshot {
     pub(crate) fn estimated_memory_bytes(&self) -> usize {
         let optional_string_bytes =
@@ -166,7 +176,6 @@ impl RuntimeAttemptStore {
     }
 
     pub(crate) fn upsert(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
-        let bytes = snapshot.estimated_memory_bytes();
         let key = Self::key(
             &snapshot.invoke_id,
             &snapshot.occurred_at,
@@ -175,25 +184,46 @@ impl RuntimeAttemptStore {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
 
+        let bytes = Self::entry_memory_bytes(&snapshot);
         if bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES {
             inner.rejected_records = inner.rejected_records.saturating_add(1);
             return false;
         }
 
-        if let Some(previous) = inner.entries.remove(&key) {
+        let previous = inner.entries.remove(&key);
+        let snapshot = match previous.as_ref() {
+            Some(previous) => merge_runtime_attempt_snapshot(&previous.snapshot, snapshot),
+            None => snapshot,
+        };
+        let bytes = Self::entry_memory_bytes(&snapshot);
+        if let Some(previous) = previous.as_ref() {
             inner.bytes = inner.bytes.saturating_sub(previous.bytes);
         }
         inner.bytes = inner.bytes.saturating_add(bytes);
         inner.entries.insert(
-            key,
+            key.clone(),
             RuntimeAttemptEntry {
                 snapshot,
                 retained_at: Instant::now(),
                 bytes,
             },
         );
-        self.evict_to_bound(&mut inner);
-        true
+        if self.evict_to_bound(&mut inner, &key) {
+            return true;
+        }
+        if let Some(rejected) = inner.entries.remove(&key) {
+            inner.bytes = inner.bytes.saturating_sub(rejected.bytes);
+        }
+        if let Some(previous) = previous {
+            inner.bytes = inner.bytes.saturating_add(previous.bytes);
+            inner.entries.insert(key, previous);
+        }
+        inner.rejected_records = inner.rejected_records.saturating_add(1);
+        false
+    }
+
+    pub(crate) fn upsert_terminal(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
+        self.upsert(snapshot)
     }
 
     pub(crate) fn get(
@@ -208,6 +238,46 @@ impl RuntimeAttemptStore {
             .entries
             .get(&Self::key(invoke_id, occurred_at, attempt_public_id))
             .map(|entry| entry.snapshot.clone())
+    }
+
+    pub(crate) fn update_response_capture(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        attempt_public_id: &str,
+        capture: RuntimeAttemptResponseCapture,
+    ) -> bool {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        self.evict_expired(&mut inner);
+        let key = Self::key(invoke_id, occurred_at, attempt_public_id);
+        let Some(existing) = inner.entries.get(&key) else {
+            return false;
+        };
+        let old_bytes = existing.bytes;
+        let mut updated = existing.snapshot.clone();
+        updated.response_raw_path = capture.raw_path;
+        updated.response_raw_codec = capture.raw_codec;
+        updated.response_raw_size = capture.raw_size;
+        updated.response_raw_truncated = capture.raw_truncated;
+        updated.response_raw_truncated_reason = capture.raw_truncated_reason;
+        updated.response_content_encoding = capture.content_encoding;
+        let updated_bytes = Self::entry_memory_bytes(&updated);
+        let available = inner
+            .bytes
+            .saturating_sub(old_bytes)
+            .saturating_add(updated_bytes);
+        if updated_bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+            || available > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+        {
+            return false;
+        }
+        inner.bytes = available;
+        let Some(entry) = inner.entries.get_mut(&key) else {
+            return false;
+        };
+        entry.snapshot = updated;
+        entry.bytes = updated_bytes;
+        true
     }
 
     pub(crate) fn take_for_invocation(
@@ -241,6 +311,32 @@ impl RuntimeAttemptStore {
         snapshots
     }
 
+    pub(crate) fn list_for_invocation(
+        &self,
+        invoke_id: &str,
+        occurred_at: Option<&str>,
+    ) -> Vec<RuntimeAttemptSnapshot> {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        self.evict_expired(&mut inner);
+        let mut snapshots = inner
+            .entries
+            .values()
+            .filter(|entry| {
+                entry.snapshot.invoke_id == invoke_id
+                    && occurred_at.is_none_or(|value| entry.snapshot.occurred_at == value)
+            })
+            .map(|entry| entry.snapshot.clone())
+            .collect::<Vec<_>>();
+        snapshots.sort_by_key(|snapshot| {
+            (
+                snapshot.attempt_index,
+                snapshot.distinct_account_index,
+                snapshot.same_account_retry_index,
+            )
+        });
+        snapshots
+    }
+
     pub(crate) fn restore(&self, snapshots: impl IntoIterator<Item = RuntimeAttemptSnapshot>) {
         for snapshot in snapshots {
             let _ = self.upsert(snapshot);
@@ -264,7 +360,8 @@ impl RuntimeAttemptStore {
             .entries
             .iter()
             .filter_map(|(key, entry)| {
-                (now.duration_since(entry.retained_at) > PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE)
+                (entry.snapshot.finished_at.is_some()
+                    && now.duration_since(entry.retained_at) > PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE)
                     .then_some(key.clone())
             })
             .collect::<Vec<_>>();
@@ -276,23 +373,58 @@ impl RuntimeAttemptStore {
         }
     }
 
-    fn evict_to_bound(&self, inner: &mut RuntimeAttemptStoreInner) {
+    fn evict_to_bound(
+        &self,
+        inner: &mut RuntimeAttemptStoreInner,
+        protected_key: &(String, String, String),
+    ) -> bool {
         while inner.entries.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
             || inner.bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
         {
             let Some(oldest_key) = inner
                 .entries
                 .iter()
+                .filter(|(key, entry)| {
+                    *key != protected_key && entry.snapshot.finished_at.is_some()
+                })
                 .min_by_key(|(_, entry)| entry.retained_at)
                 .map(|(key, _)| key.clone())
             else {
-                break;
+                return false;
             };
             if let Some(entry) = inner.entries.remove(&oldest_key) {
                 inner.bytes = inner.bytes.saturating_sub(entry.bytes);
                 inner.evicted_records = inner.evicted_records.saturating_add(1);
             }
         }
+        true
+    }
+
+    fn entry_memory_bytes(snapshot: &RuntimeAttemptSnapshot) -> usize {
+        snapshot
+            .estimated_memory_bytes()
+            .saturating_add(snapshot.invoke_id.capacity())
+            .saturating_add(snapshot.occurred_at.capacity())
+            .saturating_add(snapshot.attempt_public_id.capacity())
+            .saturating_add(std::mem::size_of::<RuntimeAttemptEntry>())
+    }
+}
+
+fn merge_runtime_attempt_snapshot(
+    previous: &RuntimeAttemptSnapshot,
+    incoming: RuntimeAttemptSnapshot,
+) -> RuntimeAttemptSnapshot {
+    if previous.finished_at.is_some() && incoming.finished_at.is_none() {
+        let mut terminal = previous.clone();
+        terminal.response_raw_path = incoming.response_raw_path;
+        terminal.response_raw_codec = incoming.response_raw_codec;
+        terminal.response_raw_size = incoming.response_raw_size;
+        terminal.response_raw_truncated = incoming.response_raw_truncated;
+        terminal.response_raw_truncated_reason = incoming.response_raw_truncated_reason;
+        terminal.response_content_encoding = incoming.response_content_encoding;
+        terminal
+    } else {
+        incoming
     }
 }
 

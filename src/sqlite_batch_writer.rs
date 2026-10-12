@@ -1455,8 +1455,21 @@ impl SqliteBatchWriter {
                     occurred_at = %terminal.record.occurred_at,
                     "terminal journal durability acknowledgement failed"
                 );
+                let deferred = self
+                    .terminal_journal
+                    .lock()
+                    .ok()
+                    .and_then(|mut guard| {
+                        guard
+                            .as_mut()
+                            .map(|journal| journal.defer_write(recovery_terminal.clone()))
+                    })
+                    .unwrap_or(false);
+                if !deferred {
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                }
                 return TerminalEnqueueOutcome {
-                    enqueued: false,
+                    enqueued: deferred,
                     durability_mode: journal.durability_mode,
                     journal_sequence: journal.sequence,
                     journal_pending_records: journal.pending_records,
@@ -1599,7 +1612,10 @@ impl SqliteBatchWriter {
             .lock()
             .ok()
             .and_then(|journal| journal.as_ref().map(TerminalJournal::stats))
-            .unwrap_or_default()
+            .unwrap_or(TerminalJournalStats {
+                unavailable: true,
+                ..TerminalJournalStats::default()
+            })
     }
 
     pub(crate) fn append_runtime_attempt_start(
@@ -1616,7 +1632,24 @@ impl SqliteBatchWriter {
                 .map(|journal| journal.append_attempt_start(snapshot))
         });
         match outcome {
-            Some(outcome) => outcome,
+            Some(mut outcome) => {
+                if matches!(
+                    outcome.durability_mode,
+                    TerminalJournalDurabilityMode::Journal
+                ) && outcome.sequence.is_some()
+                {
+                    let sync_result = self
+                        .terminal_journal
+                        .lock()
+                        .ok()
+                        .and_then(|mut guard| guard.as_mut().map(TerminalJournal::force_sync))
+                        .unwrap_or_else(|| Err(anyhow::anyhow!("terminal journal is unavailable")));
+                    if sync_result.is_err() {
+                        outcome.durability_mode = TerminalJournalDurabilityMode::MemoryOverflow;
+                    }
+                }
+                outcome
+            }
             None => {
                 #[cfg(test)]
                 {
@@ -1641,6 +1674,18 @@ impl SqliteBatchWriter {
                 }
             }
         }
+    }
+
+    pub(crate) fn acknowledge_runtime_attempt_start(&self, attempt_public_id: &str) -> bool {
+        self.terminal_journal
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                guard
+                    .as_mut()
+                    .map(|journal| journal.acknowledge_attempt_start(attempt_public_id))
+            })
+            .unwrap_or(false)
     }
 
     pub(crate) fn telemetry_snapshot(&self) -> (usize, usize, u64) {
