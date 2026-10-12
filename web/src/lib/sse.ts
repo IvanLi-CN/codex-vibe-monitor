@@ -494,9 +494,17 @@ function handleMessage(event: MessageEvent<string>) {
     ) {
       return;
     }
-    const isDelta = raw.delivery === "delta";
+    const rawDelivery = (raw as { delivery?: unknown }).delivery;
+    if (rawDelivery != null && rawDelivery !== "delta") {
+      forcedSnapshotDescriptors.add(descriptorKey);
+      rebuildConnection("topic-refresh");
+      return;
+    }
+    const isDelta = rawDelivery === "delta";
     if (isDelta) {
-      if (typeof raw.baseCursor !== "number") {
+      if (raw.type === "snapshot" || typeof raw.baseCursor !== "number") {
+        forcedSnapshotDescriptors.add(descriptorKey);
+        rebuildConnection("topic-refresh");
         return;
       }
       const cached = topicCache.get(descriptorKey);
@@ -513,7 +521,11 @@ function handleMessage(event: MessageEvent<string>) {
       }
     }
     const nextPayload = isDelta
-      ? applySubscriptionDelta(topicCache.get(descriptorKey)?.payload, raw.payload)
+      ? applySubscriptionDelta(
+          topicCache.get(descriptorKey)?.payload,
+          raw.payload,
+          descriptor.topic,
+        )
       : raw.payload;
     if (isDelta && nextPayload == null) {
       forcedSnapshotDescriptors.add(descriptorKey);
@@ -568,7 +580,7 @@ function handleMessage(event: MessageEvent<string>) {
   }
 }
 
-function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
+function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): unknown | null {
   if (
     !base ||
     typeof base !== "object" ||
@@ -582,6 +594,7 @@ function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
   const baseRecord = base as Record<string, unknown>;
   const deltaRecord = delta as Record<string, unknown>;
   if (deltaRecord.kind === "timeseries-point/v1") {
+    if (topic !== "stats.timeseries.open-window") return null;
     if (
       !Array.isArray(baseRecord.points) ||
       !("rangeEnd" in deltaRecord) ||
@@ -593,6 +606,7 @@ function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
     if (deltaRecord.pointIndex != null) {
       if (
         typeof deltaRecord.pointIndex !== "number" ||
+        !Number.isInteger(deltaRecord.pointIndex) ||
         deltaRecord.pointIndex < 0 ||
         deltaRecord.pointIndex >= baseRecord.points.length ||
         !("point" in deltaRecord)
@@ -610,7 +624,8 @@ function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
   }
   if (
     deltaRecord.kind !== "collection-item/v1" ||
-    typeof deltaRecord.collection !== "string" ||
+    topic !== "dashboard.working-conversations.current" ||
+    deltaRecord.collection !== "conversations" ||
     !Array.isArray(baseRecord[deltaRecord.collection]) ||
     !deltaRecord.fields ||
     typeof deltaRecord.fields !== "object" ||
@@ -622,6 +637,7 @@ function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
   if (deltaRecord.itemIndex != null) {
     if (
       typeof deltaRecord.itemIndex !== "number" ||
+      !Number.isInteger(deltaRecord.itemIndex) ||
       deltaRecord.itemIndex < 0 ||
       deltaRecord.itemIndex >= items.length ||
       !("item" in deltaRecord)
