@@ -11,6 +11,7 @@
 ## Coverage / rollout summary
 
 - working-conversations、open-range parallel-work 与 open-window timeseries 均使用 revision-aware typed materializer；健康 live path 不进入通用 builder。
+- open-window timeseries 与 working-conversations 的 live/replay 路径在可证明连续时发送 compact delta；首订阅、显式刷新、列表结构变化或 cursor/merge 校验失败均保留完整快照回退，Web 合并后继续向既有完整 payload 消费者提供同一 owner-facing 模型。
 - working-conversations response 已提供后端 `inFlightPhaseCounts`；materializer 维护完整 active identity 与 Prompt Cache key 计数，delta 相位迁移、终态和运行时移除均按 identity 精确撤销/加入，Web 头部不再从 recent 预览推导。
 - activity SSE descriptor 固定 `recentLimit=16`，组件按当前可见数量在客户端截断，避免 visibility 变化重建 topic key。
 - working-conversations 卡片继续消费每 key 最多 16 条 recent 预览，但客户端固定映射 current/previous/earlier 三个槽位；缺失槽位使用与普通无方案调用行相同的 57px 基线和明确静态历史说明，正常记录收紧为两行，失败记录保留无 label 的错误摘要行。骨架条、spinner 和 pulse 不再用于表达历史缺失。

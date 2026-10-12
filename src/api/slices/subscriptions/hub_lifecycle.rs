@@ -1285,6 +1285,29 @@ impl SubscriptionHub {
         Ok(frame)
     }
 
+    pub(crate) fn serialize_delta_frame(
+        &self,
+        descriptor: SubscriptionTopicDescriptor,
+        topic_key: String,
+        schema_epoch: String,
+        cursor: u64,
+        base_cursor: u64,
+        payload_bytes: Vec<u8>,
+    ) -> Result<SerializedTopicFrame, ApiError> {
+        let frame = serialize_topic_delta_frame(
+            descriptor,
+            topic_key,
+            schema_epoch,
+            cursor,
+            base_cursor,
+            payload_bytes,
+        )?;
+        self.serialization_count.fetch_add(1, Ordering::Relaxed);
+        self.dashboard_topology_counters
+            .record_serialization(&frame.descriptor.topic, frame.retained_bytes());
+        Ok(frame)
+    }
+
     #[cfg(test)]
     pub(crate) fn serialization_count(&self) -> u64 {
         self.serialization_count.load(Ordering::Relaxed)

@@ -446,13 +446,17 @@ impl SubscriptionHub {
                     cached.snapshot_bytes = frame.payload_bytes.len();
                     cached.replay_events.push_back(ReplayableTopicEvent {
                         frame: frame.clone(),
+                        full_frame: frame.clone(),
                         bytes: retained_bytes,
                         emitted_at: Utc::now(),
                     });
                     cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
                     cached.prompt_cache_response_source = "database_bounded_key_hydrate";
                     prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-                    Some(SubscriptionDispatchEvent { frame })
+                    Some(SubscriptionDispatchEvent {
+                        frame: frame.clone(),
+                        full_frame: frame,
+                    })
                 } else {
                     None
                 };
@@ -593,6 +597,7 @@ impl SubscriptionHub {
                 cached.snapshot_bytes = frame.payload_bytes.len();
                 cached.replay_events.push_back(ReplayableTopicEvent {
                     frame: frame.clone(),
+                    full_frame: frame.clone(),
                     bytes: retained_bytes,
                     emitted_at: Utc::now(),
                 });
@@ -610,7 +615,10 @@ impl SubscriptionHub {
                         .unwrap_or_default(),
                     "prompt cache topic materialized from active projection"
                 );
-                Some(SubscriptionDispatchEvent { frame })
+                Some(SubscriptionDispatchEvent {
+                    frame: frame.clone(),
+                    full_frame: frame,
+                })
             }
         };
         if let Some(topic) = bounded_hydration_topic {
@@ -690,13 +698,17 @@ impl SubscriptionHub {
             cached.snapshot_bytes = frame.payload_bytes.len();
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             cached.prompt_cache_response_source = "memory";
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            Some(SubscriptionDispatchEvent { frame })
+            Some(SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            })
         };
         if let Some(dispatch) = dispatch {
             let _ = self.broadcaster.send(dispatch);
@@ -813,12 +825,16 @@ impl SubscriptionHub {
             cached.snapshot_bytes = frame.payload_bytes.len();
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: now,
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            Some(SubscriptionDispatchEvent { frame })
+            Some(SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            })
         };
         if let Some(dispatch) = dispatch {
             let _ = self.broadcaster.send(dispatch);
@@ -959,13 +975,17 @@ impl SubscriptionHub {
             cached.snapshot_bytes = frame.payload_bytes.len();
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             cached.prompt_cache_response_source = "memory";
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            dispatches.push(SubscriptionDispatchEvent { frame });
+            dispatches.push(SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            });
         }
         drop(guard);
         for dispatch in dispatches {
@@ -1067,13 +1087,17 @@ impl SubscriptionHub {
             cached.snapshot_bytes = frame.payload_bytes.len();
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             cached.prompt_cache_response_source = "memory";
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            dispatches.push(SubscriptionDispatchEvent { frame });
+            dispatches.push(SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            });
         }
         drop(guard);
         for dispatch in dispatches {
@@ -1471,12 +1495,16 @@ impl SubscriptionHub {
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            SubscriptionDispatchEvent { frame }
+            SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            }
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
@@ -1521,13 +1549,17 @@ impl SubscriptionHub {
             cached.snapshot_bytes = payload_bytes;
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: Utc::now(),
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
 
-            SubscriptionDispatchEvent { frame }
+            SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            }
         };
 
         let _ = self.broadcaster.send(dispatch);
@@ -1617,12 +1649,16 @@ impl SubscriptionHub {
             cached.snapshot_frame = frame.clone();
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
+                full_frame: frame.clone(),
                 bytes: retained_bytes,
                 emitted_at: now,
             });
             cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            SubscriptionDispatchEvent { frame }
+            SubscriptionDispatchEvent {
+                frame: frame.clone(),
+                full_frame: frame,
+            }
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())

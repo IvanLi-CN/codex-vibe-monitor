@@ -280,6 +280,17 @@ impl SubscriptionHub {
         descriptors: Vec<SubscriptionTopicDescriptor>,
         resume: Vec<SubscriptionResumeCursor>,
     ) -> Result<PreparedSubscriptionConnection, ApiError> {
+        self.prepare_connection_with_capability(state, descriptors, resume, false)
+            .await
+    }
+
+    pub(crate) async fn prepare_connection_with_capability(
+        &self,
+        state: Arc<AppState>,
+        descriptors: Vec<SubscriptionTopicDescriptor>,
+        resume: Vec<SubscriptionResumeCursor>,
+        supports_deltas: bool,
+    ) -> Result<PreparedSubscriptionConnection, ApiError> {
         let resume_by_topic_key = resume
             .into_iter()
             .map(|item| (item.topic_key.clone(), item))
@@ -357,7 +368,18 @@ impl SubscriptionHub {
             match replay_attempt {
                 Ok(Some(events)) if !events.is_empty() => {
                     let replay_event_count = events.len();
-                    let replay_bytes = events.iter().map(|event| event.bytes).sum::<usize>();
+                    let replay_bytes = events
+                        .iter()
+                        .map(|event| {
+                            if supports_deltas {
+                                event.frame.retained_bytes()
+                            } else if Arc::ptr_eq(&event.frame, &event.full_frame) {
+                                event.bytes
+                            } else {
+                                event.full_frame.retained_bytes()
+                            }
+                        })
+                        .sum::<usize>();
                     tracing::debug!(
                         topic_key,
                         replay_event_count,
@@ -366,7 +388,11 @@ impl SubscriptionHub {
                     );
                     for event in events {
                         initial.push(PreparedTopicFrame {
-                            frame: event.frame,
+                            frame: if supports_deltas {
+                                event.frame
+                            } else {
+                                event.full_frame
+                            },
                             kind: TopicFrameKind::Replay,
                         });
                     }
@@ -1428,16 +1454,40 @@ impl SubscriptionHub {
                     entry.continuity_reset_cursor
                 }
             });
-            let frame = Arc::new(self.serialize_frame(
+            let full_frame = Arc::new(self.serialize_frame(
                 descriptor.clone(),
                 topic_key.clone(),
                 schema_epoch.clone(),
                 next_cursor,
                 serialized_payload,
             )?);
+            let delta_payload = guard
+                .topics
+                .get(&topic_key)
+                .filter(|_| emit_live)
+                .and_then(|existing| {
+                    build_dashboard_delta_payload(
+                        &topic,
+                        existing.snapshot_frame.payload_bytes.as_ref(),
+                        full_frame.payload_bytes.as_ref(),
+                    )
+                })
+                .filter(|delta| delta.len() < full_frame.payload_bytes.len());
+            let frame = if let Some(delta) = delta_payload {
+                Arc::new(self.serialize_delta_frame(
+                    descriptor.clone(),
+                    topic_key.clone(),
+                    schema_epoch.clone(),
+                    next_cursor,
+                    current_cursor,
+                    delta,
+                )?)
+            } else {
+                full_frame.clone()
+            };
             let snapshot_frame =
-                if snapshot_serialized_payload.as_slice() == frame.payload_bytes.as_ref() {
-                    frame.clone()
+                if snapshot_serialized_payload.as_slice() == full_frame.payload_bytes.as_ref() {
+                    full_frame.clone()
                 } else {
                     Arc::new(self.serialize_frame(
                         descriptor.clone(),
@@ -1623,18 +1673,20 @@ impl SubscriptionHub {
                     .map_or(0, |entry| entry.replay_bytes),
             };
             if emit_live {
-                let retained_bytes = frame.retained_bytes();
                 let replay_event = ReplayableTopicEvent {
                     frame: frame.clone(),
-                    bytes: retained_bytes,
+                    full_frame: full_frame.clone(),
+                    bytes: full_frame.retained_bytes(),
                     emitted_at: Utc::now(),
                 };
                 next.replay_events.push_back(replay_event);
-                next.replay_bytes = next.replay_bytes.saturating_add(retained_bytes);
+                next.replay_bytes = next
+                    .replay_bytes
+                    .saturating_add(full_frame.retained_bytes());
                 prune_replay_window(&mut next.replay_events, &mut next.replay_bytes);
             }
             guard.topics.insert(topic_key.clone(), next.clone());
-            let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame });
+            let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame, full_frame });
             (
                 next,
                 dispatch,
@@ -1914,26 +1966,54 @@ impl SubscriptionHub {
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
                 .record_materialization(pending.topic_name, false);
-            let frame = Arc::new(self.serialize_frame(
+            let full_frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
                 cached.schema_epoch.clone(),
                 next_cursor,
                 serialized_payload,
             )?);
-            let retained_bytes = frame.retained_bytes();
+            let delta_payload = matches!(
+                &cached.topic,
+                SubscriptionTopic::TimeseriesOpenWindow { .. }
+                    | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+            )
+            .then(|| {
+                build_dashboard_delta_payload(
+                    &cached.topic,
+                    cached.snapshot_frame.payload_bytes.as_ref(),
+                    full_frame.payload_bytes.as_ref(),
+                )
+            })
+            .flatten()
+            .filter(|delta| delta.len() < full_frame.payload_bytes.len());
+            let frame = if let Some(delta) = delta_payload {
+                Arc::new(self.serialize_delta_frame(
+                    cached.descriptor.clone(),
+                    pending.topic_key.clone(),
+                    cached.schema_epoch.clone(),
+                    next_cursor,
+                    cached.cursor,
+                    delta,
+                )?)
+            } else {
+                full_frame.clone()
+            };
             cached.cursor = next_cursor;
-            cached.snapshot_bytes = frame.payload_bytes.len();
-            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = full_frame.payload_bytes.len();
+            cached.snapshot_frame = full_frame.clone();
             cached.dashboard_materialized_revision = Some(pending.revision);
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),
-                bytes: retained_bytes,
+                full_frame: full_frame.clone(),
+                bytes: full_frame.retained_bytes(),
                 emitted_at: Utc::now(),
             });
-            cached.replay_bytes = cached.replay_bytes.saturating_add(retained_bytes);
+            cached.replay_bytes = cached
+                .replay_bytes
+                .saturating_add(full_frame.retained_bytes());
             prune_replay_window(&mut cached.replay_events, &mut cached.replay_bytes);
-            SubscriptionDispatchEvent { frame }
+            SubscriptionDispatchEvent { frame, full_frame }
         };
         let _ = self.broadcaster.send(dispatch);
         Ok(())
