@@ -1104,6 +1104,77 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     Ok(())
 }
 
+pub(crate) fn schedule_successful_proxy_capture_model_route_cache_observation(
+    state: &AppState,
+    record: &ProxyCaptureRecord,
+) {
+    let pool = state.pool.clone();
+    let reservations = state.pool_routing_reservations.clone();
+    let availability = state.pool_routing_availability.clone();
+    let subscription_hub = state.subscription_hub.clone();
+    let record = record.clone();
+    crate::observability::diagnostics::spawn(async move {
+        if record.status != "success" {
+            return;
+        }
+        let metadata = terminal_payload_metadata(record.payload.as_deref());
+        let Some(account_id) = metadata.upstream_account_id else {
+            return;
+        };
+        let model = metadata
+            .request_model
+            .as_deref()
+            .or(record.model.as_deref())
+            .map(str::trim);
+        let key = pool_routing_reservation_key_for_invoke_id(&record.invoke_id);
+        let active_concurrency = {
+            let guard = reservations
+                .lock()
+                .expect("pool routing reservations mutex poisoned");
+            let held = key.as_deref().is_some_and(|key| {
+                guard.get(key).is_some_and(|r| {
+                    r.account_id == account_id
+                        && r.model.as_deref().is_some_and(|value| {
+                            model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                        })
+                })
+            });
+            guard
+                .values()
+                .filter(|r| {
+                    r.account_id == account_id
+                        && r.model.as_deref().is_some_and(|value| {
+                            model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                        })
+                })
+                .count() as i64
+                + i64::from(!held)
+        };
+        let Ok(outcome) = observe_model_route_cache_hit(
+            &pool,
+            account_id,
+            model,
+            record.usage.input_tokens,
+            record.usage.cache_input_tokens,
+            active_concurrency,
+        )
+        .await
+        else {
+            return;
+        };
+        if outcome.observed {
+            subscription_hub.publish_runtime_mutation(RuntimeMutation::ModelRoutingChanged);
+        }
+        if outcome.availability_increased
+            && pool_account_allows_model_route_availability_publish(&pool, account_id)
+                .await
+                .unwrap_or(false)
+        {
+            availability.publish();
+        }
+    });
+}
+
 pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
     state: &AppState,
     invoke_id: &str,
@@ -1258,7 +1329,7 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
             .await;
     }
     if terminal_enqueued {
-        super::usage_persistence::schedule_successful_proxy_capture_model_route_cache_observation(
+        schedule_successful_proxy_capture_model_route_cache_observation(
             state,
             &model_route_record,
         );

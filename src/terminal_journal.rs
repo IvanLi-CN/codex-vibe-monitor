@@ -990,6 +990,17 @@ impl TerminalJournal {
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         };
         let encoded_len = encoded.len() as u64;
+        if encoded.len() > TERMINAL_JOURNAL_REPLAY_MAX_BYTES {
+            self.overflowed = true;
+            warn!(
+                invoke_id = %record.invoke_id,
+                occurred_at = %record.occurred_at,
+                encoded_bytes = encoded.len(),
+                max_bytes = TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
+                "terminal journal event exceeds the bounded replay size"
+            );
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
         let acknowledgement_sequences = attempts
             .iter()
             .filter_map(|attempt| {
@@ -1091,6 +1102,16 @@ impl TerminalJournal {
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         };
         let encoded_len = encoded.len() as u64;
+        if encoded.len() > TERMINAL_JOURNAL_REPLAY_MAX_BYTES {
+            self.overflowed = true;
+            warn!(
+                attempt_public_id = %snapshot.attempt_public_id,
+                encoded_bytes = encoded.len(),
+                max_bytes = TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
+                "terminal journal attempt-start event exceeds the bounded replay size"
+            );
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
+        }
         if self.pending_bytes.saturating_add(encoded_len) > TERMINAL_JOURNAL_MAX_BYTES {
             self.overflowed = true;
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
