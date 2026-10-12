@@ -70,6 +70,8 @@ export interface SubscriptionTopicEnvelope<T = unknown> {
   schemaEpoch: string;
   cursor: number;
   payload: T;
+  delivery?: "delta";
+  baseCursor?: number;
   deliverySource?: "cache" | "network";
 }
 
@@ -492,13 +494,40 @@ function handleMessage(event: MessageEvent<string>) {
     ) {
       return;
     }
+    const isDelta = raw.delivery === "delta";
+    if (isDelta) {
+      if (typeof raw.baseCursor !== "number") {
+        return;
+      }
+      const cached = topicCache.get(descriptorKey);
+      if (
+        !cached ||
+        cached.topicKey !== topicKey ||
+        cached.schemaEpoch !== schemaEpoch ||
+        cached.cursor !== raw.baseCursor ||
+        raw.cursor !== raw.baseCursor + 1
+      ) {
+        forcedSnapshotDescriptors.add(descriptorKey);
+        rebuildConnection("topic-refresh");
+        return;
+      }
+    }
+    const nextPayload = isDelta
+      ? applySubscriptionDelta(topicCache.get(descriptorKey)?.payload, raw.payload)
+      : raw.payload;
+    if (isDelta && nextPayload == null) {
+      forcedSnapshotDescriptors.add(descriptorKey);
+      rebuildConnection("topic-refresh");
+      return;
+    }
     const payload: SubscriptionTopicEnvelope = {
       type: raw.type,
       topic: descriptor,
       topicKey,
       schemaEpoch,
       cursor: raw.cursor,
-      payload: raw.payload,
+      payload: nextPayload,
+      ...(isDelta ? { delivery: "delta" as const, baseCursor: raw.baseCursor } : {}),
     };
     const nextState: TopicCacheEntry = {
       descriptor,
@@ -537,6 +566,75 @@ function handleMessage(event: MessageEvent<string>) {
   } catch (error) {
     console.error("Failed to parse subscription SSE message", error);
   }
+}
+
+function applySubscriptionDelta(base: unknown, delta: unknown): unknown | null {
+  if (
+    !base ||
+    typeof base !== "object" ||
+    !delta ||
+    typeof delta !== "object" ||
+    Array.isArray(base) ||
+    Array.isArray(delta)
+  ) {
+    return null;
+  }
+  const baseRecord = base as Record<string, unknown>;
+  const deltaRecord = delta as Record<string, unknown>;
+  if (deltaRecord.kind === "timeseries-point/v1") {
+    if (
+      !Array.isArray(baseRecord.points) ||
+      !("rangeEnd" in deltaRecord) ||
+      !("snapshotId" in deltaRecord)
+    ) {
+      return null;
+    }
+    const points = [...baseRecord.points];
+    if (deltaRecord.pointIndex != null) {
+      if (
+        typeof deltaRecord.pointIndex !== "number" ||
+        deltaRecord.pointIndex < 0 ||
+        deltaRecord.pointIndex >= baseRecord.points.length ||
+        !("point" in deltaRecord)
+      ) {
+        return null;
+      }
+      points[deltaRecord.pointIndex] = deltaRecord.point;
+    }
+    return {
+      ...baseRecord,
+      rangeEnd: deltaRecord.rangeEnd,
+      snapshotId: deltaRecord.snapshotId,
+      points,
+    };
+  }
+  if (
+    deltaRecord.kind !== "collection-item/v1" ||
+    typeof deltaRecord.collection !== "string" ||
+    !Array.isArray(baseRecord[deltaRecord.collection]) ||
+    !deltaRecord.fields ||
+    typeof deltaRecord.fields !== "object" ||
+    Array.isArray(deltaRecord.fields)
+  ) {
+    return null;
+  }
+  const items = [...(baseRecord[deltaRecord.collection] as unknown[])];
+  if (deltaRecord.itemIndex != null) {
+    if (
+      typeof deltaRecord.itemIndex !== "number" ||
+      deltaRecord.itemIndex < 0 ||
+      deltaRecord.itemIndex >= items.length ||
+      !("item" in deltaRecord)
+    ) {
+      return null;
+    }
+    items[deltaRecord.itemIndex] = deltaRecord.item;
+  }
+  return {
+    ...baseRecord,
+    ...((deltaRecord.fields as Record<string, unknown>) ?? {}),
+    [deltaRecord.collection]: items,
+  };
 }
 
 function handleError() {

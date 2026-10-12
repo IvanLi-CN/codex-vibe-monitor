@@ -1428,16 +1428,40 @@ impl SubscriptionHub {
                     entry.continuity_reset_cursor
                 }
             });
-            let frame = Arc::new(self.serialize_frame(
+            let full_frame = Arc::new(self.serialize_frame(
                 descriptor.clone(),
                 topic_key.clone(),
                 schema_epoch.clone(),
                 next_cursor,
                 serialized_payload,
             )?);
+            let delta_payload = guard
+                .topics
+                .get(&topic_key)
+                .filter(|_| emit_live)
+                .and_then(|existing| {
+                    build_dashboard_delta_payload(
+                        &topic,
+                        existing.snapshot_frame.payload_bytes.as_ref(),
+                        full_frame.payload_bytes.as_ref(),
+                    )
+                })
+                .filter(|delta| delta.len() < full_frame.payload_bytes.len());
+            let frame = if let Some(delta) = delta_payload {
+                Arc::new(self.serialize_delta_frame(
+                    descriptor.clone(),
+                    topic_key.clone(),
+                    schema_epoch.clone(),
+                    next_cursor,
+                    current_cursor,
+                    delta,
+                )?)
+            } else {
+                full_frame.clone()
+            };
             let snapshot_frame =
-                if snapshot_serialized_payload.as_slice() == frame.payload_bytes.as_ref() {
-                    frame.clone()
+                if snapshot_serialized_payload.as_slice() == full_frame.payload_bytes.as_ref() {
+                    full_frame.clone()
                 } else {
                     Arc::new(self.serialize_frame(
                         descriptor.clone(),
@@ -1914,17 +1938,43 @@ impl SubscriptionHub {
             let next_cursor = cached.cursor.saturating_add(1);
             self.dashboard_topology_counters
                 .record_materialization(pending.topic_name, false);
-            let frame = Arc::new(self.serialize_frame(
+            let full_frame = Arc::new(self.serialize_frame(
                 cached.descriptor.clone(),
                 pending.topic_key.clone(),
                 cached.schema_epoch.clone(),
                 next_cursor,
                 serialized_payload,
             )?);
+            let delta_payload = matches!(
+                &cached.topic,
+                SubscriptionTopic::TimeseriesOpenWindow { .. }
+                    | SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+            )
+            .then(|| {
+                build_dashboard_delta_payload(
+                    &cached.topic,
+                    cached.snapshot_frame.payload_bytes.as_ref(),
+                    full_frame.payload_bytes.as_ref(),
+                )
+            })
+            .flatten()
+            .filter(|delta| delta.len() < full_frame.payload_bytes.len());
+            let frame = if let Some(delta) = delta_payload {
+                Arc::new(self.serialize_delta_frame(
+                    cached.descriptor.clone(),
+                    pending.topic_key.clone(),
+                    cached.schema_epoch.clone(),
+                    next_cursor,
+                    cached.cursor,
+                    delta,
+                )?)
+            } else {
+                full_frame.clone()
+            };
             let retained_bytes = frame.retained_bytes();
             cached.cursor = next_cursor;
-            cached.snapshot_bytes = frame.payload_bytes.len();
-            cached.snapshot_frame = frame.clone();
+            cached.snapshot_bytes = full_frame.payload_bytes.len();
+            cached.snapshot_frame = full_frame;
             cached.dashboard_materialized_revision = Some(pending.revision);
             cached.replay_events.push_back(ReplayableTopicEvent {
                 frame: frame.clone(),

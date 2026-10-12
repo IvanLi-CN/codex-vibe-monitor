@@ -124,6 +124,161 @@ pub(crate) fn serialize_topic_frame(
     })
 }
 
+pub(crate) fn serialize_topic_delta_frame(
+    descriptor: SubscriptionTopicDescriptor,
+    topic_key: String,
+    schema_epoch: String,
+    cursor: u64,
+    base_cursor: u64,
+    payload_bytes: Vec<u8>,
+) -> Result<SerializedTopicFrame, ApiError> {
+    let mut hasher = DefaultHasher::new();
+    payload_bytes.hash(&mut hasher);
+    let fingerprint = hasher.finish();
+    let descriptor_json = serde_json::to_string(&descriptor)?;
+    let topic_key_json = serde_json::to_string(&topic_key)?;
+    let schema_epoch_json = serde_json::to_string(&schema_epoch)?;
+    let envelope_metadata_bytes = Bytes::from(format!(
+        r#"","topic":{descriptor_json},"topicKey":{topic_key_json},"schemaEpoch":{schema_epoch_json},"cursor":{cursor},"delivery":"delta","baseCursor":{base_cursor},"payload":"#
+    ));
+    Ok(SerializedTopicFrame {
+        topic_key,
+        schema_epoch,
+        cursor,
+        descriptor,
+        fingerprint,
+        payload_bytes: Bytes::from(payload_bytes),
+        envelope_metadata_bytes,
+    })
+}
+
+pub(crate) fn build_timeseries_delta_payload(
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+) -> Option<Vec<u8>> {
+    let previous = serde_json::from_slice::<Value>(previous_bytes).ok()?;
+    let next = serde_json::from_slice::<Value>(next_bytes).ok()?;
+    let previous_object = previous.as_object()?;
+    let next_object = next.as_object()?;
+    let previous_points = previous_object.get("points")?.as_array()?;
+    let next_points = next_object.get("points")?.as_array()?;
+    if previous_points.len() != next_points.len() {
+        return None;
+    }
+
+    for (key, previous_value) in previous_object {
+        if matches!(key.as_str(), "rangeEnd" | "snapshotId" | "points") {
+            continue;
+        }
+        if next_object.get(key) != Some(previous_value) {
+            return None;
+        }
+    }
+    for (key, next_value) in next_object {
+        if matches!(key.as_str(), "rangeEnd" | "snapshotId" | "points") {
+            continue;
+        }
+        if previous_object.get(key) != Some(next_value) {
+            return None;
+        }
+    }
+
+    let changed_points = previous_points
+        .iter()
+        .zip(next_points)
+        .enumerate()
+        .filter_map(|(index, (previous, next))| (previous != next).then_some((index, next)))
+        .collect::<Vec<_>>();
+    if changed_points.len() > 1 {
+        return None;
+    }
+    let (point_index, point) = changed_points
+        .first()
+        .map(|(index, point)| (Value::from(*index), (*point).clone()))
+        .unwrap_or((Value::Null, Value::Null));
+    serde_json::to_vec(&serde_json::json!({
+        "kind": "timeseries-point/v1",
+        "rangeEnd": next_object.get("rangeEnd")?,
+        "snapshotId": next_object.get("snapshotId")?,
+        "pointIndex": point_index,
+        "point": point,
+    }))
+    .ok()
+}
+
+pub(crate) fn build_dashboard_delta_payload(
+    topic: &SubscriptionTopic,
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+) -> Option<Vec<u8>> {
+    if topic.uses_timeseries_live_projection() {
+        return build_timeseries_delta_payload(previous_bytes, next_bytes);
+    }
+    if matches!(
+        topic,
+        SubscriptionTopic::DashboardWorkingConversationsCurrent { .. }
+    ) {
+        return build_collection_item_delta_payload(previous_bytes, next_bytes, "conversations");
+    }
+    None
+}
+
+fn build_collection_item_delta_payload(
+    previous_bytes: &[u8],
+    next_bytes: &[u8],
+    collection: &str,
+) -> Option<Vec<u8>> {
+    let previous = serde_json::from_slice::<Value>(previous_bytes).ok()?;
+    let next = serde_json::from_slice::<Value>(next_bytes).ok()?;
+    let previous_object = previous.as_object()?;
+    let next_object = next.as_object()?;
+    let previous_items = previous_object.get(collection)?.as_array()?;
+    let next_items = next_object.get(collection)?.as_array()?;
+    if previous_items.len() != next_items.len() {
+        return None;
+    }
+    let mut changed_fields = serde_json::Map::new();
+    for (key, previous_value) in previous_object {
+        if key == collection {
+            continue;
+        }
+        let next_value = next_object.get(key)?;
+        if next_value != previous_value {
+            changed_fields.insert(key.clone(), next_value.clone());
+        }
+    }
+    if next_object
+        .keys()
+        .any(|key| key != collection && !previous_object.contains_key(key))
+    {
+        return None;
+    }
+    let changed_items = previous_items
+        .iter()
+        .zip(next_items)
+        .enumerate()
+        .filter_map(|(index, (previous, next))| (previous != next).then_some((index, next)))
+        .collect::<Vec<_>>();
+    if changed_items.len() > 1 {
+        return None;
+    }
+    let (item_index, item) = changed_items
+        .first()
+        .map(|(index, item)| (Value::from(*index), (*item).clone()))
+        .unwrap_or((Value::Null, Value::Null));
+    if changed_fields.is_empty() && item.is_null() {
+        return None;
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "kind": "collection-item/v1",
+        "collection": collection,
+        "itemIndex": item_index,
+        "item": item,
+        "fields": Value::Object(changed_fields),
+    }))
+    .ok()
+}
+
 pub(crate) fn serialize_unavailable_topic_frame(
     descriptor: SubscriptionTopicDescriptor,
     topic_key: String,
