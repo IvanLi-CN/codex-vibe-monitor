@@ -597,6 +597,8 @@ impl PendingBatch {
                             _ => {}
                         }
                         terminal.dashboard_terminal_sequence = preserved_sequence;
+                        terminal.attempts =
+                            merge_terminal_attempts(&existing.attempts, terminal.attempts);
                         terminal
                             .terminal_projection_event_ids
                             .extend(existing.terminal_projection_event_ids.iter().copied());
@@ -991,6 +993,33 @@ impl PendingBatch {
         );
         writes
     }
+}
+
+fn merge_terminal_attempts(
+    existing: &[RuntimeAttemptSnapshot],
+    incoming: Vec<RuntimeAttemptSnapshot>,
+) -> Vec<RuntimeAttemptSnapshot> {
+    let mut merged = BTreeMap::new();
+    for attempt in existing.iter().cloned().chain(incoming) {
+        let key = attempt.attempt_public_id.clone();
+        if let Some(previous) = merged.remove(&key) {
+            merged.insert(
+                key,
+                crate::app_state::merge_runtime_attempt_snapshot(&previous, attempt),
+            );
+        } else {
+            merged.insert(key, attempt);
+        }
+    }
+    let mut attempts = merged.into_values().collect::<Vec<_>>();
+    attempts.sort_by_key(|attempt| {
+        (
+            attempt.attempt_index,
+            attempt.distinct_account_index,
+            attempt.same_account_retry_index,
+        )
+    });
+    attempts
 }
 
 #[derive(Debug)]

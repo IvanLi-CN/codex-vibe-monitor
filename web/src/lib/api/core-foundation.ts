@@ -2379,6 +2379,27 @@ export interface RuntimePressureProcessHealth {
   pressureLevel: string;
 }
 
+export interface RuntimePressureRuntimeAttemptsHealth {
+  records: number;
+  bytes: number;
+  evictedRecords: number;
+  rejectedRecords: number;
+}
+
+export interface RuntimePressureTerminalJournalHealth {
+  pendingRecords: number;
+  pendingMaterializationRecords: number;
+  pendingBytes: number;
+  segmentCount: number;
+  replayCount: number;
+  checkpointLagMs: number;
+  overflowed: boolean;
+  unavailable: boolean;
+  deferredRecords: number;
+  deferredBytes: number;
+  deferredRejected: number;
+}
+
 export interface RuntimePressureWriterAccountingHealth {
   state: string;
   pendingDepth: number;
@@ -2615,6 +2636,8 @@ export interface RuntimePressureHealth {
   state: string;
   process: RuntimePressureProcessHealth;
   allocator: { mallocArenaMax: string };
+  runtimeAttempts: RuntimePressureRuntimeAttemptsHealth;
+  terminalJournal: RuntimePressureTerminalJournalHealth;
   writerAccounting: RuntimePressureWriterAccountingHealth;
   promptCacheProjection?: RuntimePressurePromptCacheProjectionHealth;
   proxySqliteWriteCoordinator?: RuntimePressureProxySqliteWriteCoordinatorHealth;
@@ -5277,6 +5300,8 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
   const payload = raw as Record<string, unknown>;
   const process = (payload.process ?? {}) as Record<string, unknown>;
   const allocator = (payload.allocator ?? {}) as Record<string, unknown>;
+  const runtimeAttempts = (payload.runtimeAttempts ?? {}) as Record<string, unknown>;
+  const terminalJournal = (payload.terminalJournal ?? {}) as Record<string, unknown>;
   const writer = (payload.writerAccounting ?? {}) as Record<string, unknown>;
   const promptCacheProjection = (payload.promptCacheProjection ?? {}) as Record<string, unknown>;
   const writeCoordinator = payload.proxySqliteWriteCoordinator as
@@ -5388,6 +5413,25 @@ function normalizeRuntimePressureHealth(raw: unknown): RuntimePressureHealth | u
     },
     allocator: {
       mallocArenaMax: optionalString(allocator.mallocArenaMax) ?? "unknown",
+    },
+    runtimeAttempts: {
+      records: number(runtimeAttempts.records),
+      bytes: number(runtimeAttempts.bytes),
+      evictedRecords: number(runtimeAttempts.evictedRecords),
+      rejectedRecords: number(runtimeAttempts.rejectedRecords),
+    },
+    terminalJournal: {
+      pendingRecords: number(terminalJournal.pendingRecords),
+      pendingMaterializationRecords: number(terminalJournal.pendingMaterializationRecords),
+      pendingBytes: number(terminalJournal.pendingBytes),
+      segmentCount: number(terminalJournal.segmentCount),
+      replayCount: number(terminalJournal.replayCount),
+      checkpointLagMs: number(terminalJournal.checkpointLagMs),
+      overflowed: terminalJournal.overflowed === true,
+      unavailable: terminalJournal.unavailable === true,
+      deferredRecords: number(terminalJournal.deferredRecords),
+      deferredBytes: number(terminalJournal.deferredBytes),
+      deferredRejected: number(terminalJournal.deferredRejected),
     },
     writerAccounting: {
       state: optionalString(writer.state) ?? "unknown",

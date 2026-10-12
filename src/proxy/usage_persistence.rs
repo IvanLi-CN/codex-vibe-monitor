@@ -854,6 +854,27 @@ pub(crate) fn update_runtime_attempt_from_pending(
         .upsert(runtime_attempt_snapshot_from_pending(pending))
 }
 
+pub(crate) fn discard_runtime_attempt_for_drop(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    let Some(attempt_public_id) = pending.attempt_public_id.as_deref() else {
+        return false;
+    };
+    let marked = state.proxy_runtime_attempts.mark_interrupted(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        attempt_public_id,
+        &shanghai_now_string(),
+    );
+    let discarded = state.proxy_runtime_attempts.discard_for_attempt(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        attempt_public_id,
+    );
+    marked || discarded
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "Runtime attempt terminal adapter mirrors the established lifecycle contract."
@@ -2521,6 +2542,10 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
         tx.commit().await?;
         (recovered_attempts, recovered_invocations)
     };
+
+    if pending_attempt_record.attempt_id.is_none() {
+        discard_runtime_attempt_for_drop(state, &pending_attempt_record);
+    }
 
     let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
         || !recovered_attempts.is_empty()

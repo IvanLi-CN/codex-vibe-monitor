@@ -423,6 +423,8 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
   const alertVariant = state === "healthy" ? "success" : state === "unknown" ? "info" : "warning";
   const eventBus = health?.eventBus;
   const backfill = health?.backfill;
+  const runtimeAttempts = health?.runtimeAttempts;
+  const terminalJournal = health?.terminalJournal;
   const retention = health?.retentionWriteHealth;
   const eventBusState = eventBus?.state ?? "unknown";
   const backfillState = backfill?.state ?? "unknown";
@@ -695,6 +697,39 @@ function RuntimePressureHealthSection({ status, t }: OverviewPanelProps) {
                 label={t("system.status.runtimePressure.writerQueue")}
                 value={`${health.writerAccounting.pendingDepth.toLocaleString()} / ${formatBytes(health.writerAccounting.pendingBytes)}`}
                 hint={health.writerAccounting.degradedReason}
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.runtimeAttempts")}
+                value={
+                  runtimeAttempts
+                    ? `${runtimeAttempts.records.toLocaleString()} / ${formatBytes(runtimeAttempts.bytes)}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  runtimeAttempts
+                    ? t("system.status.runtimePressure.runtimeAttemptsHint", {
+                        evicted: runtimeAttempts.evictedRecords.toLocaleString(),
+                        rejected: runtimeAttempts.rejectedRecords.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
+              />
+              <BreakdownRow
+                label={t("system.status.runtimePressure.terminalJournal")}
+                value={
+                  terminalJournal
+                    ? `${terminalJournal.pendingMaterializationRecords.toLocaleString()} / ${terminalJournal.pendingRecords.toLocaleString()}`
+                    : t("system.status.runtimePressure.states.unknown")
+                }
+                hint={
+                  terminalJournal
+                    ? t("system.status.runtimePressure.terminalJournalHint", {
+                        bytes: formatBytes(terminalJournal.pendingBytes),
+                        lag: terminalJournal.checkpointLagMs.toLocaleString(),
+                        deferred: terminalJournal.deferredRecords.toLocaleString(),
+                      })
+                    : t("system.status.runtimePressure.additiveUnknown")
+                }
               />
               <BreakdownRow
                 label={t("system.status.runtimePressure.dashboardProducer")}

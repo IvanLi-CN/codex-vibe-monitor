@@ -127,6 +127,7 @@ pub(crate) struct TerminalJournalAppendOutcome {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TerminalJournalStats {
     pub(crate) pending_records: usize,
+    pub(crate) pending_materialization_records: usize,
     pub(crate) pending_bytes: u64,
     pub(crate) segment_count: usize,
     pub(crate) replay_count: usize,
@@ -1578,6 +1579,10 @@ impl TerminalJournal {
                 .pending_by_key
                 .len()
                 .saturating_add(self.pending_attempt_starts.len())
+                .saturating_add(self.shutdown_recovery_pending.len()),
+            pending_materialization_records: self
+                .pending_by_key
+                .len()
                 .saturating_add(self.shutdown_recovery_pending.len()),
             pending_bytes: self.pending_bytes,
             segment_count: self.segments.len(),

@@ -288,6 +288,48 @@ impl RuntimeAttemptStore {
         true
     }
 
+    pub(crate) fn mark_interrupted(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        attempt_public_id: &str,
+        finished_at: &str,
+    ) -> bool {
+        let key = Self::key(invoke_id, occurred_at, attempt_public_id);
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        self.evict_expired(&mut inner);
+        let Some(entry) = inner.entries.get_mut(&key) else {
+            return false;
+        };
+        entry.snapshot.finished_at = Some(finished_at.to_string());
+        entry.snapshot.status = "interrupted".to_string();
+        entry.snapshot.phase = Some("interrupted".to_string());
+        entry.snapshot.failure_kind = Some("invocation_interrupted".to_string());
+        entry.snapshot.error_message =
+            Some("proxy request ended before a terminal record was written".to_string());
+        entry.retained_at = Instant::now();
+        true
+    }
+
+    pub(crate) fn discard_for_attempt(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        attempt_public_id: &str,
+    ) -> bool {
+        let key = Self::key(invoke_id, occurred_at, attempt_public_id);
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let removed = inner.entries.remove(&key);
+        if let Some(entry) = removed {
+            inner.bytes = inner.bytes.saturating_sub(entry.bytes);
+            inner.terminal_keys.insert(key, Instant::now());
+            self.evict_expired(&mut inner);
+            true
+        } else {
+            false
+        }
+    }
+
     pub(crate) fn take_for_invocation(
         &self,
         invoke_id: &str,
@@ -310,6 +352,7 @@ impl RuntimeAttemptStore {
                 snapshots.push(entry.snapshot);
             }
         }
+        self.evict_expired(&mut inner);
         snapshots.sort_by_key(|snapshot| {
             (
                 snapshot.attempt_index,
@@ -395,7 +438,13 @@ impl RuntimeAttemptStore {
                 inner.evicted_records = inner.evicted_records.saturating_add(1);
             }
         }
-        while inner.terminal_keys.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS {
+        while inner
+            .entries
+            .len()
+            .saturating_add(inner.terminal_keys.len())
+            > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
+            || Self::terminal_fence_memory_bytes(inner) > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+        {
             let Some(oldest_key) = inner
                 .terminal_keys
                 .iter()
@@ -412,20 +461,32 @@ impl RuntimeAttemptStore {
         &self,
         inner: &mut RuntimeAttemptStoreInner,
         protected_key: &(String, String, String),
-        terminal_priority: bool,
+        _terminal_priority: bool,
     ) -> bool {
-        while inner.entries.len() > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
+        while inner
+            .entries
+            .len()
+            .saturating_add(inner.terminal_keys.len())
+            > PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
             || inner
                 .bytes
                 .saturating_add(Self::terminal_fence_memory_bytes(inner))
                 > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
         {
+            if let Some(oldest_key) = inner
+                .terminal_keys
+                .iter()
+                .min_by_key(|(_, retained_at)| **retained_at)
+                .map(|(key, _)| key.clone())
+            {
+                inner.terminal_keys.remove(&oldest_key);
+                continue;
+            }
             let Some(oldest_key) = inner
                 .entries
                 .iter()
                 .filter(|(key, entry)| {
-                    *key != protected_key
-                        && (terminal_priority || entry.snapshot.finished_at.is_some())
+                    *key != protected_key && entry.snapshot.finished_at.is_some()
                 })
                 .min_by_key(|(_, entry)| entry.retained_at)
                 .map(|(key, _)| key.clone())
@@ -464,7 +525,7 @@ impl RuntimeAttemptStore {
     }
 }
 
-fn merge_runtime_attempt_snapshot(
+pub(crate) fn merge_runtime_attempt_snapshot(
     previous: &RuntimeAttemptSnapshot,
     incoming: RuntimeAttemptSnapshot,
 ) -> RuntimeAttemptSnapshot {

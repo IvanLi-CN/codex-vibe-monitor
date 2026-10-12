@@ -1894,6 +1894,12 @@ const baseTranslations = {
     "system.status.runtimePressure.managed": "Managed memory",
     "system.status.runtimePressure.unattributed": "Unattributed anonymous memory",
     "system.status.runtimePressure.writerQueue": "Writer queue depth / bytes",
+    "system.status.runtimePressure.runtimeAttempts": "Runtime attempts / bytes",
+    "system.status.runtimePressure.runtimeAttemptsHint":
+      "{{evicted}} evicted, {{rejected}} rejected by bounds.",
+    "system.status.runtimePressure.terminalJournal": "Terminal journal pending / total",
+    "system.status.runtimePressure.terminalJournalHint":
+      "{{bytes}} pending bytes, checkpoint lag {{lag}} ms, {{deferred}} deferred.",
     "system.status.runtimePressure.dashboardProducer": "Dashboard producer",
     "system.status.runtimePressure.liveDbReads": "Live-path DB reads",
     "system.status.runtimePressure.cadenceMisses": "Projection cadence misses",
@@ -5389,6 +5395,12 @@ const baseTranslations = {
     "system.status.runtimePressure.managed": "已归因内存",
     "system.status.runtimePressure.unattributed": "未归因匿名内存",
     "system.status.runtimePressure.writerQueue": "写入队列深度 / 字节",
+    "system.status.runtimePressure.runtimeAttempts": "运行态 attempt 数 / 字节",
+    "system.status.runtimePressure.runtimeAttemptsHint":
+      "淘汰 {{evicted}}，因边界拒绝 {{rejected}}。",
+    "system.status.runtimePressure.terminalJournal": "终态日志待物化 / 总 pending",
+    "system.status.runtimePressure.terminalJournalHint":
+      "待处理 {{bytes}}，检查点延迟 {{lag}} 毫秒，延后 {{deferred}}。",
     "system.status.runtimePressure.dashboardProducer": "Dashboard producer",
     "system.status.runtimePressure.liveDbReads": "实时路径数据库读取",
     "system.status.runtimePressure.cadenceMisses": "投影节奏错过次数",

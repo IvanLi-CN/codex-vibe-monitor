@@ -6,7 +6,7 @@ mod invocation_store;
 
 pub(crate) use attempt_store::{
     RuntimeAttemptResponseCapture, RuntimeAttemptSnapshot, RuntimeAttemptStore,
-    RuntimeAttemptStoreHealth,
+    RuntimeAttemptStoreHealth, merge_runtime_attempt_snapshot,
 };
 use dashboard::DashboardRuntimeProjection;
 pub(crate) use dashboard::{

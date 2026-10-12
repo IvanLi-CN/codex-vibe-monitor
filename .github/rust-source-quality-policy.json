@@ -75,7 +75,7 @@
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 7324,
+      "line_budget": 7349,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
@@ -87,7 +87,7 @@
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6708,
+      "line_budget": 6720,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {

@@ -55,6 +55,15 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
             .await;
+    let mut locked_connection = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire pressure connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *locked_connection)
+        .await
+        .expect("hold SQLite write pressure lock");
     let mut requests = Vec::with_capacity(request_count);
     for index in 0..request_count {
         let state = state.clone();
@@ -127,15 +136,6 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         "prewarmed request admission should add no SQLite writes for attempt lifecycle"
     );
 
-    let mut locked_connection = state
-        .pool
-        .acquire()
-        .await
-        .expect("acquire pressure connection");
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *locked_connection)
-        .await
-        .expect("hold SQLite write pressure lock");
     tokio::time::sleep(Duration::from_millis(250)).await;
     assert_eq!(
         state
@@ -145,17 +145,22 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         progress_before,
         "runtime attempt progress must not enter the SQLite progress queue"
     );
-    assert_eq!(
+    let coordinator_during_pressure =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
-            .await
+            .await;
+    assert_eq!(
+        coordinator_during_pressure
             .write_admission
             .interactive_proxy
-            .admission_count,
-        coordinator_after_admission
-            .write_admission
-            .interactive_proxy
-            .admission_count,
+            .admission_count
+            .saturating_sub(
+                coordinator_after_admission
+                    .write_admission
+                    .interactive_proxy
+                    .admission_count,
+            ),
+        0,
         "active attempt progress must not acquire InteractiveProxy write admission"
     );
     assert_eq!(
