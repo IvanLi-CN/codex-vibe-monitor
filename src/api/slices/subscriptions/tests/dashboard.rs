@@ -657,7 +657,7 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
         );
         assert_eq!(topic.builder_count, topic.materialization_count);
         assert!(topic.frame_bytes_count > 0);
-        assert_eq!(topic.cursor_advanced, topic.serialization_count);
+        assert!(topic.serialization_count >= topic.cursor_advanced);
         assert!(topic.frame_reused > 0);
         assert_eq!(topic.lagged_count, 0);
         assert_eq!(topic.skipped_count, 0);
@@ -686,9 +686,9 @@ async fn dashboard_runtime_topology_materializes_shared_frames_without_business_
             "network topic materialization must borrow its typed base"
         );
     }
-    assert_eq!(
-        delivery.timeseries.serialization_count, delivery.timeseries.materialization_count,
-        "each materialized timeseries revision should serialize exactly once"
+    assert!(
+        delivery.timeseries.serialization_count >= delivery.timeseries.materialization_count,
+        "each materialized timeseries revision retains one full frame and may add a bounded delta frame"
     );
     assert_eq!(
         delivery.timeseries.payload_clone_count, 0,

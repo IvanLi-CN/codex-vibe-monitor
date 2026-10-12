@@ -20,7 +20,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - 将订阅 topic 强制分类为 `HotProjection`、`ClosedSnapshot` 或 `BoundedColdHydrate`。
 - 将 working-conversations、parallel-work open range 与 open-window timeseries 迁入 revision-aware typed projection。
 - 保持 Dashboard payload 的 HTTP/SSE topic、排序、range、recent 上限、调用详情/账号跳转交互与 owner-facing 语义不变；working-conversations 卡片允许通过客户端投影收紧信息密度，live/replay 传输可以增加可回退的增量元数据。
-- 每个 topic revision 只生成一个共享不可变 serialized frame，订阅者数量不增加 builder、serialization 或数据库读取。
+- 每个 topic revision 必须生成一个共享不可变 canonical full snapshot frame；满足严格体积收益条件时，live/replay 可以基于同一份 canonical payload 额外生成一个共享 compact delta frame。订阅者数量不得增加 builder 或数据库读取，delta 的额外 serialization 必须受 topic 资格与体积比较约束。
 - 初始订阅、显式刷新以及无法证明连续可合并的 live/replay 事件必须发送完整快照；仅当 topic、schema、base cursor 和 payload 结构均匹配时，live/replay 才可发送并合并 `delivery: "delta"` 帧。
 - 通过 additive `runtimePressureHealth.dashboardHotTopics` 准确报告 hot topic 的事实源、负载与退化状态。
 
@@ -73,7 +73,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - 直接非代理 terminal row replacement、in-flight-to-terminal transition，以及 proxy in-flight row 被直接修正为非代理 terminal 的 source transition，必须通过 durable recovery generation 使 global、account 和 hot-topic minute selection 回退到 exact；replacement comparison 必须覆盖所有持久化 aggregate 输入，包括 `t_upstream_stream_ms`。recovery table 必须在任何引用它的 live trigger 前存在，并与 trigger rebuild 同事务保护；schema 安装 trigger 后，runtime startup 必须在 HTTP 读服务前推进同一 recovery generation。projection supervisor 作为 P2 延后运行时不得留下 replacement 窗口：它必须分批将 coverage 标为 warming，并仅在 generation 未变化时清除 recovery marker；清除后精确回退可重新预热对应 selection。读路径若异常发现 fence 缺失或 recovery pending，不得复用 ready coverage 或触发会使其可复用的 P2 warm，而必须保持 exact fallback，并在 projection payload snapshot 的最终校验前后复核 durable recovery marker 和 in-process coverage invalidation；account 的 projection snapshot 失效回退必须替换已载入 aggregate，不得叠加，并保留预填充的 reporting buckets 以接收 exact records。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
 - activity topic descriptor 必须固定 `recentLimit=16`；动态可见数量仅由客户端本地截断，显式 range、分页和筛选操作仍可改变 descriptor。
-- 每个依赖 revision tuple 最多 materialize 和 serialize 一次，生成一个 `Arc<SerializedTopicFrame>`；内容未变化时不得推进 cursor。
+- 每个依赖 revision tuple 最多 materialize 一次，并生成一个共享 `Arc<SerializedTopicFrame>` canonical full snapshot；仅对允许的 live/replay topic，在 delta 严格小于 full payload 且可证明连续时，额外生成一个共享 `Arc<SerializedTopicFrame>` compact delta。两种 frame 必须复用同一 revision、cursor 和 canonical payload，内容未变化时不得推进 cursor。
 - 已有 last-good 时，projection 异常不得在订阅请求任务中同步查库或发布部分累计值。
 
 ### SHOULD

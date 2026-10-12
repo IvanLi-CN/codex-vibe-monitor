@@ -379,6 +379,71 @@ describe("sse topic registry", () => {
     unsubscribe();
   });
 
+  it("rejects omitted delta fields and unsafe cursors", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribe = sse.subscribeToTopic(topic, vi.fn());
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+
+    const reconnect = FakeEventSource.instances[1]!;
+    reconnect.emit("open", new Event("open"));
+    reconnect.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: -1,
+          payload: { rangeEnd: "bad", snapshotId: 12, points: [] },
+        }),
+      }),
+    );
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+    unsubscribe();
+  });
+
   it("keeps an unavailable topic isolated from healthy topic snapshots", async () => {
     const sse = await loadSseModule();
     const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {

@@ -490,7 +490,9 @@ function handleMessage(event: MessageEvent<string>) {
     }
     if (
       (raw.type !== "snapshot" && raw.type !== "replay" && raw.type !== "live") ||
-      typeof raw.cursor !== "number"
+      typeof raw.cursor !== "number" ||
+      !Number.isSafeInteger(raw.cursor) ||
+      raw.cursor < 0
     ) {
       return;
     }
@@ -502,7 +504,12 @@ function handleMessage(event: MessageEvent<string>) {
     }
     const isDelta = rawDelivery === "delta";
     if (isDelta) {
-      if (raw.type === "snapshot" || typeof raw.baseCursor !== "number") {
+      if (
+        raw.type === "snapshot" ||
+        typeof raw.baseCursor !== "number" ||
+        !Number.isSafeInteger(raw.baseCursor) ||
+        raw.baseCursor < 0
+      ) {
         forcedSnapshotDescriptors.add(descriptorKey);
         rebuildConnection("topic-refresh");
         return;
@@ -598,7 +605,9 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
     if (
       !Array.isArray(baseRecord.points) ||
       !("rangeEnd" in deltaRecord) ||
-      !("snapshotId" in deltaRecord)
+      !("snapshotId" in deltaRecord) ||
+      !("pointIndex" in deltaRecord) ||
+      !("point" in deltaRecord)
     ) {
       return null;
     }
@@ -608,12 +617,13 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
         typeof deltaRecord.pointIndex !== "number" ||
         !Number.isInteger(deltaRecord.pointIndex) ||
         deltaRecord.pointIndex < 0 ||
-        deltaRecord.pointIndex >= baseRecord.points.length ||
-        !("point" in deltaRecord)
+        deltaRecord.pointIndex >= baseRecord.points.length
       ) {
         return null;
       }
       points[deltaRecord.pointIndex] = deltaRecord.point;
+    } else if (deltaRecord.point !== null) {
+      return null;
     }
     return {
       ...baseRecord,
@@ -629,7 +639,9 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
     !Array.isArray(baseRecord[deltaRecord.collection]) ||
     !deltaRecord.fields ||
     typeof deltaRecord.fields !== "object" ||
-    Array.isArray(deltaRecord.fields)
+    Array.isArray(deltaRecord.fields) ||
+    !("itemIndex" in deltaRecord) ||
+    !("item" in deltaRecord)
   ) {
     return null;
   }
@@ -645,6 +657,8 @@ function applySubscriptionDelta(base: unknown, delta: unknown, topic: string): u
       return null;
     }
     items[deltaRecord.itemIndex] = deltaRecord.item;
+  } else if (deltaRecord.item !== null) {
+    return null;
   }
   return {
     ...baseRecord,
