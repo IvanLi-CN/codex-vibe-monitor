@@ -79,6 +79,7 @@ pub(crate) struct SubscriptionStreamQuery {
     pub(crate) resume: Option<String>,
     pub(crate) attempt: Option<u64>,
     pub(crate) reason: Option<String>,
+    pub(crate) delta: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -605,6 +606,7 @@ impl DashboardDeliveryTopologyCounters {
 #[derive(Debug, Clone)]
 pub(crate) struct SubscriptionDispatchEvent {
     pub(crate) frame: Arc<SerializedTopicFrame>,
+    pub(crate) full_frame: Arc<SerializedTopicFrame>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]

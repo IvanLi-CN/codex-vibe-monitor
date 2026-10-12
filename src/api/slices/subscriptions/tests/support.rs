@@ -174,6 +174,7 @@ pub(crate) fn dashboard_runtime_topology_stream_query(attempt: u64) -> Subscript
         resume: None,
         attempt: Some(attempt),
         reason: Some(DASHBOARD_RUNTIME_TOPOLOGY_CONTRACT_REASON.to_string()),
+        delta: None,
     }
 }
 
@@ -412,8 +413,10 @@ pub(crate) fn test_replay_event(
         serde_json::to_vec(&json!({ "cursor": cursor })).expect("test payload"),
     )
     .expect("test frame");
+    let frame = Arc::new(frame);
     ReplayableTopicEvent {
-        frame: Arc::new(frame),
+        frame: frame.clone(),
+        full_frame: frame,
         bytes,
         emitted_at,
     }

@@ -59,6 +59,140 @@ fn serialized_topic_frame_reuses_shared_chunks_for_each_delivery_kind() {
 }
 
 #[test]
+fn timeseries_delta_payload_replaces_one_point_and_preserves_wire_metadata() {
+    let previous = json!({
+        "rangeStart": "2026-10-12T00:00:00Z",
+        "rangeEnd": "2026-10-12T00:01:00Z",
+        "snapshotId": 10,
+        "bucketSeconds": 60,
+        "points": [{"bucketStart": "2026-10-12T00:00:00Z", "total": 1}]
+    });
+    let next = json!({
+        "rangeStart": "2026-10-12T00:00:00Z",
+        "rangeEnd": "2026-10-12T00:02:00Z",
+        "snapshotId": 11,
+        "bucketSeconds": 60,
+        "points": [{"bucketStart": "2026-10-12T00:00:00Z", "total": 2}]
+    });
+    let delta = build_timeseries_delta_payload(
+        &serde_json::to_vec(&previous).expect("previous payload"),
+        &serde_json::to_vec(&next).expect("next payload"),
+    )
+    .expect("single point delta");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delta).expect("delta json"),
+        json!({
+            "kind": "timeseries-point/v1",
+            "rangeEnd": "2026-10-12T00:02:00Z",
+            "snapshotId": 11,
+            "pointIndex": 0,
+            "point": {"bucketStart": "2026-10-12T00:00:00Z", "total": 2}
+        })
+    );
+
+    let topic = SubscriptionTopic::TimeseriesOpenWindow {
+        range: "today".to_string(),
+        time_zone: "UTC".to_string(),
+        bucket: None,
+        settlement_hour: None,
+        upstream_account_id: None,
+    };
+    let frame = serialize_topic_delta_frame(
+        topic.descriptor(),
+        topic.cache_key().expect("topic key"),
+        topic.schema_epoch(),
+        8,
+        7,
+        delta,
+    )
+    .expect("delta frame");
+    let chunks = frame.event_chunks(TopicFrameKind::Live);
+    let wire = chunks.concat();
+    let envelope: Value = serde_json::from_slice(&wire[6..wire.len() - 2]).expect("wire envelope");
+    assert_eq!(envelope["type"], "live");
+    assert_eq!(envelope["delivery"], "delta");
+    assert_eq!(envelope["baseCursor"], 7);
+    assert_eq!(envelope["cursor"], 8);
+}
+
+#[test]
+fn timeseries_delta_payload_falls_back_when_multiple_points_change() {
+    let previous = json!({
+        "rangeEnd": "2026-10-12T00:01:00Z",
+        "snapshotId": 10,
+        "points": [{"total": 1}, {"total": 1}]
+    });
+    let next = json!({
+        "rangeEnd": "2026-10-12T00:02:00Z",
+        "snapshotId": 11,
+        "points": [{"total": 2}, {"total": 2}]
+    });
+    assert!(
+        build_timeseries_delta_payload(
+            &serde_json::to_vec(&previous).expect("previous payload"),
+            &serde_json::to_vec(&next).expect("next payload"),
+        )
+        .is_none()
+    );
+}
+
+#[test]
+fn timeseries_delta_payload_handles_metadata_only_refreshes() {
+    let previous = json!({
+        "rangeEnd": "2026-10-12T00:01:00Z",
+        "snapshotId": 10,
+        "points": [{"total": 1}]
+    });
+    let next = json!({
+        "rangeEnd": "2026-10-12T00:02:00Z",
+        "snapshotId": 11,
+        "points": [{"total": 1}]
+    });
+    let delta = build_timeseries_delta_payload(
+        &serde_json::to_vec(&previous).expect("previous payload"),
+        &serde_json::to_vec(&next).expect("next payload"),
+    )
+    .expect("metadata delta");
+    let delta: Value = serde_json::from_slice(&delta).expect("delta json");
+    assert_eq!(delta["pointIndex"], Value::Null);
+    assert_eq!(delta["point"], Value::Null);
+}
+
+#[test]
+fn working_conversations_delta_replaces_one_conversation_and_metadata() {
+    let previous = json!({
+        "hasMore": false,
+        "conversations": [{"promptCacheKey": "alpha", "requestCount": 1}, {"promptCacheKey": "beta", "requestCount": 1}]
+    });
+    let next = json!({
+        "hasMore": true,
+        "conversations": [{"promptCacheKey": "alpha", "requestCount": 2}, {"promptCacheKey": "beta", "requestCount": 1}]
+    });
+    let topic = SubscriptionTopic::DashboardWorkingConversationsCurrent {
+        page_size: 20,
+        recent_invocation_limit: 10,
+        blocked_binding_upstream_account_id: None,
+        blocked_binding_constraint_source: None,
+    };
+    let delta = build_dashboard_delta_payload(
+        &topic,
+        &serde_json::to_vec(&previous).expect("previous payload"),
+        &serde_json::to_vec(&next).expect("next payload"),
+    )
+    .expect("working conversations delta");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delta).expect("delta json"),
+        json!({
+            "kind": "collection-item/v1",
+            "collection": "conversations",
+            "itemIndex": 0,
+            "item": {"promptCacheKey": "alpha", "requestCount": 2},
+            "fields": {"hasMore": true}
+        })
+    );
+}
+
+#[test]
 fn unchanged_refresh_clears_scheduled_flag_for_the_next_terminal_event() {
     let topic = summary_topic();
     let mut cached = seeded_cached_topic(topic, &[], Utc::now());
@@ -671,6 +805,75 @@ async fn prepare_connection_reports_replay_hit_and_resume_caught_up() {
             miss_reason: None,
         }
     );
+}
+
+#[tokio::test]
+async fn prepare_connection_selects_delta_only_for_capable_consumers() {
+    let state =
+        crate::tests::test_state_with_openai_base(Url::parse("http://127.0.0.1:9").unwrap()).await;
+    let hub = SubscriptionHub::new();
+    let topic = summary_topic();
+    let descriptor = topic.descriptor();
+    let topic_key = topic.cache_key().expect("topic key");
+    let schema_epoch = topic.schema_epoch();
+    let mut cached = seeded_cached_topic(topic, &[1, 2, 3, 4], Utc::now());
+    let full_frame = cached
+        .replay_events
+        .back()
+        .expect("seeded replay event")
+        .full_frame
+        .clone();
+    let delta_frame = Arc::new(
+        serialize_topic_delta_frame(
+            descriptor.clone(),
+            topic_key.clone(),
+            schema_epoch.clone(),
+            4,
+            3,
+            serde_json::to_vec(&json!({ "kind": "test-delta" })).expect("delta payload"),
+        )
+        .expect("delta frame"),
+    );
+    let replay = cached
+        .replay_events
+        .back_mut()
+        .expect("seeded replay event");
+    replay.frame = delta_frame.clone();
+    replay.bytes = full_frame.retained_bytes();
+    hub.state
+        .lock()
+        .await
+        .topics
+        .insert(topic_key.clone(), cached);
+
+    let full = hub
+        .prepare_connection(
+            state.clone(),
+            vec![descriptor.clone()],
+            vec![SubscriptionResumeCursor {
+                topic_key: topic_key.clone(),
+                cursor: 3,
+                schema_epoch: schema_epoch.clone(),
+            }],
+        )
+        .await
+        .expect("full-frame connection");
+    assert!(Arc::ptr_eq(&full.initial[0].frame, &full_frame));
+
+    let delta = hub
+        .prepare_connection_with_capability(
+            state,
+            vec![descriptor],
+            vec![SubscriptionResumeCursor {
+                topic_key,
+                cursor: 3,
+                schema_epoch,
+            }],
+            true,
+        )
+        .await
+        .expect("delta-capable connection");
+    assert!(Arc::ptr_eq(&delta.initial[0].frame, &delta_frame));
 }
 
 #[tokio::test]

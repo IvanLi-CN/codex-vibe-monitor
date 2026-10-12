@@ -1520,7 +1520,12 @@ pub(crate) async fn topic_sse_stream(
         .await?;
     let prepared = state
         .subscription_hub
-        .prepare_connection(state.clone(), descriptors, resume)
+        .prepare_connection_with_capability(
+            state.clone(),
+            descriptors,
+            resume,
+            query.delta == Some(1),
+        )
         .await?;
     if selected_topics.iter().any(|topic| {
         topic.uses_dashboard_activity_live_overlay()
@@ -1631,15 +1636,20 @@ pub(crate) async fn topic_sse_stream(
                             continue;
                         }
                         last_seen.insert(dispatch.frame.topic_key.clone(), dispatch.frame.cursor);
+                        let frame = if query.delta == Some(1) {
+                            &dispatch.frame
+                        } else {
+                            &dispatch.full_frame
+                        };
                         dashboard_topology_hub
-                            .record_dashboard_topology_frame_delivery(&dispatch.frame);
+                            .record_dashboard_topology_frame_delivery(frame);
                         #[cfg(test)]
                         if let Some(attempt) = dashboard_topology_observer_attempt {
                             dashboard_topology_hub
-                                .record_dashboard_topology_sse_frame_delivery(attempt, &dispatch.frame)
+                                .record_dashboard_topology_sse_frame_delivery(attempt, frame)
                                 .await;
                         }
-                        for chunk in dispatch.frame.event_chunks(TopicFrameKind::Live) {
+                        for chunk in frame.event_chunks(TopicFrameKind::Live) {
                             yield Ok::<_, Infallible>(chunk);
                         }
                     }

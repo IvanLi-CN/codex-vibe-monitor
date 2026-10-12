@@ -5,6 +5,7 @@
 ## Related ADRs
 
 - [ADR 0011: Prompt Cache In-Flight Phase Index](../../adr/0011-prompt-cache-in-flight-phase-index.md)
+- [ADR 0036: Dashboard incremental SSE frames](../../adr/0036-dashboard-incremental-sse-frames.md)
 
 ## Context and Scope
 
@@ -18,8 +19,9 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 
 - 将订阅 topic 强制分类为 `HotProjection`、`ClosedSnapshot` 或 `BoundedColdHydrate`。
 - 将 working-conversations、parallel-work open range 与 open-window timeseries 迁入 revision-aware typed projection。
-- 保持 Dashboard HTTP/SSE wire shape、topic、排序、range、recent 上限与调用详情/账号跳转交互不变；working-conversations 卡片允许通过客户端投影收紧 owner-facing 信息密度。
-- 每个 topic revision 只生成一个共享不可变 serialized frame，订阅者数量不增加 builder、serialization 或数据库读取。
+- 保持 Dashboard payload 的 HTTP/SSE topic、排序、range、recent 上限、调用详情/账号跳转交互与 owner-facing 语义不变；working-conversations 卡片允许通过客户端投影收紧信息密度，live/replay 传输可以增加可回退的增量元数据。
+- 每个 topic revision 必须生成一个共享不可变 canonical full snapshot frame；满足严格体积收益条件时，live/replay 可以基于同一份 canonical payload 额外生成一个共享 compact delta frame。订阅者数量不得增加 builder 或数据库读取，delta 的额外 serialization 必须受 topic 资格与体积比较约束。
+- 初始订阅、显式刷新以及无法证明连续可合并的 live/replay 事件必须发送完整快照；仅当 topic、schema、base cursor 和 payload 结构均匹配时，live/replay 才可发送并合并 `delivery: "delta"` 帧。
 - 通过 additive `runtimePressureHealth.dashboardHotTopics` 准确报告 hot topic 的事实源、负载与退化状态。
 
 ### Non-goals
@@ -58,8 +60,10 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - working-conversations 首订阅必须建立同一事务 cursor baseline，后续只应用 compact delta；旧 key 重入、metadata 变化和候选补位只允许按 key 或 identity 有界 hydrate。
 - working-conversations 每个对话 MUST 输出后端权威 `inFlightPhaseCounts`，由完整进行中 identity 索引按 `queued`、`requesting`、`responding` 计数；该摘要不得从 `recentInvocations`、三槽位或 Web 可见列表推导。
 - materializer MUST 在 identity 的相位、Prompt Cache key、终态、运行时移除、prune 和 replay 变化时撤销旧贡献并加入新贡献；初次 baseline、键级 hydration 和 dirty recovery MUST 使用精确查询。恢复不完整时 MUST 保留 last-good 摘要，不得发布伪造的零计数或终态。
+- Dashboard delta frame MUST 只表达一个 timeseries point/metadata 更新或一个 working-conversation item 更新；多点、多项、列表长度变化、cursor gap 或 merge 失败必须请求完整快照，且不得把不连续的 delta 应用到 owner-facing 状态。
+- Delta delivery MUST be capability-negotiated on the SSE connection (`delta=1` for the current Web client); clients without that capability MUST receive the canonical full frame for both replay and live delivery. The server MUST retain the full frame alongside an eligible delta so mixed-version consumers remain safe during rollout.
 - working-conversations 必须保持 5 分钟 working selection、分页排序、blocked binding、账号/owner/sticky metadata、精确 24 小时 points 和每 key 最多 16 条 recent。
-- working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留与普通无方案调用行相同的 `57px` 槽位基线，且该高度不包含相邻槽位的既有间距。缺失历史必须显示明确的静态“暂无上一条调用”或“暂无更早调用”状态，不得使用骨架条、spinner、pulse 或其他加载暗示。该展示数量不改变 HTTP/SSE wire shape、`recentInvocationLimit=16` 或后端 compact 默认值。
+- working-conversations 客户端卡片必须从排序后的 recent 预览固定展示 `current`、`previous`、`earlier` 三个槽位；不足三条时保留与普通无方案调用行相同的 `57px` 槽位基线，且该高度不包含相邻槽位的既有间距。缺失历史必须显示明确的静态“暂无上一条调用”或“暂无更早调用”状态，不得使用骨架条、spinner、pulse 或其他加载暗示。该展示数量不改变 payload topic、HTTP/SSE 语义、`recentInvocationLimit=16` 或后端 compact 默认值。
 - 三个槽位的正常/进行中记录保留两行：第一行按“时间、模型、状态/传输/端点/耗时”排列，第二行按“账号、右端用量”排列；失败记录可以追加无 label 的错误摘要行。缺失槽位使用静态历史说明垂直居中，并保持 `role="group"` 的无交互语义、准确可访问名称和与普通无方案行不超过 1px 的高度差。卡片表面不显示槽位、账号或用量 label，完整值仍须通过 title/aria 与详情抽屉可读。
 - 工作对话卡片与上游账号卡片的 recent 调用行使用同一组紧凑延迟合同：秒值最多保留一位小数，数值与 `s` 之间不留空格；按十分之一秒四舍五入后达到 `100s` 时显示整数。请求使用表示经过时间的 `clock-outline`/`text-info`，TTFT 使用表示计时测量的 `timer-outline`/`text-success`，响应耗时使用表示速率/输出耗时的 `speedometer`/`text-secondary`；三枚图标都不得复用状态、路由或成功/失败图标，前置状态/端点 chip 与计时组保持 6px 间隔，计时组内部各指标保持 4px 的可见间隔，表面只显示图标和数值或 `--`，完整语义放入 title/aria。账号详情调用记录继续使用其既有汇总时长格式。TTFT 使用 `firstTokenMs`，响应耗时始终使用 `tUpstreamStreamMs`；有限且非负的 `firstTokenMs`（包括 `0 ms`）是已测得的合法 TTFT，响应耗时只有有限且严格大于零才是已完成测量，`null`、零、负值或非有限值均显示 `--`。调用级 TTFT 只能归属同一调用的最终真实 upstream attempt，持久化列表与两条工作流 hydration 路径均按 `attempt_index DESC, id DESC` 选择该行，最终 attempt 必须已经进入终态，`budget_exhausted_final` 等伪终态不参与选择，较早 retry 显示 `--`；失败终态的零毫秒 TTFT 只有在最终 attempt 的 first-byte 也为零时保留，正值必须有最终 attempt 的 stream 证据，不能用 earlier retry 的 first-byte 进度冒充完成测量。仅含 `codex_invocations` 的历史归档没有重试明细表，归档聚合必须使用其已存储且经有限值校验的 `firstTokenMs` 与 `tUpstreamStreamMs`，不得引用缺失的重试表或从旧归档推断 attempt 归属。HTTP、SSE、运行时 hydration 叠加与 Demo 数据都必须保留有限的 `0 ms` TTFT，并且只能在该值已测得时声明“响应中”；负值或非有限值不是测量结果，必须按不可用显示且不得采用成功色。格式化、颜色、汇总样本与工作流展示必须分别复用“有限且非负 TTFT”和“有限且为正响应耗时”判定；无效响应耗时不得遮蔽有效 TTFT。持久化 SQL、JSON DTO 与客户端合并都必须在输出前排除负值和非有限测量；hourly `upstreamStream` rollup 也不得计入零时长样本。持久化 SQL 必须在阶段推断、均值、P95、账号汇总和性能汇总中排除非有限测量。不得以 `tUpstreamTtfbMs`、流耗时或 `now - occurredAt` 的经过时长替代持久化 TTFT/响应真值。紧凑调用行可在请求中以 section 级本地时钟暂估请求用时；首字节已知且 TTFT 未测时显示权威请求用时与暂估 TTFT；TTFT 已测后显示严格 TTFT 与暂估或已测响应耗时；终态固定显示严格 TTFT（无有效 token 时为 `--`）与已测响应耗时（缺失为 `--`）。本地暂估不得写回记录、不得冒充严格指标；若本地值领先 SSE 锚点则卡住显示值，服务器锚点追平后再继续，服务器定值和终态直接跳变。Demo workflow detail 同样不得为其伪造完成流耗时。TTFT 使用与其他成功指标一致的绿色。
 - 上述终态要求约束完成态归属；进行中的最终真实 attempt 是唯一例外：只有该 attempt 自身的 phase 已进入 `responding` 或 `streaming_response`，且调用已记录有限非负 `firstTokenMs` 时，实时列表与 workflow hydration 才显示 TTFT。仅为 `running`、`waiting_first_byte` 或缺少当前 attempt 响应阶段证据时不得继承 earlier retry 的 TTFT；响应耗时仍须等待最终 attempt 的有限正 stream 测量。普通调用 summary 的均值/P95、Dashboard 汇总与上游账号 model-performance 必须复用同一最终 attempt timing predicate；终态运行时 delta 必须保留最终 retry 已写回的合法 TTFT，不能继续套用进行中 retry 的屏蔽规则。
@@ -70,7 +74,7 @@ Dashboard 已具备 Runtime/Terminal Projection、共享 SSE frame，以及 acti
 - 直接非代理 terminal row replacement、in-flight-to-terminal transition，以及 proxy in-flight row 被直接修正为非代理 terminal 的 source transition，必须通过 durable recovery generation 使 global、account 和 hot-topic minute selection 回退到 exact；replacement comparison 必须覆盖所有持久化 aggregate 输入，包括 `t_upstream_stream_ms`。recovery table 必须在任何引用它的 live trigger 前存在，并与 trigger rebuild 同事务保护；schema 安装 trigger 后，runtime startup 必须在 HTTP 读服务前推进同一 recovery generation。projection supervisor 作为 P2 延后运行时不得留下 replacement 窗口：它必须分批将 coverage 标为 warming，并仅在 generation 未变化时清除 recovery marker；清除后精确回退可重新预热对应 selection。读路径若异常发现 fence 缺失或 recovery pending，不得复用 ready coverage 或触发会使其可复用的 P2 warm，而必须保持 exact fallback，并在 projection payload snapshot 的最终校验前后复核 durable recovery marker 和 in-process coverage invalidation；account 的 projection snapshot 失效回退必须替换已载入 aggregate，不得叠加，并保留预填充的 reporting buckets 以接收 exact records。
 - working-conversations 使用固定 `500ms` 合并 deadline；parallel-work 与 timeseries current bucket 使用 `1s`；terminal totals 保持 `5s`；后台精确 reconcile 每 selection 最多 `60s` 一次。
 - activity topic descriptor 必须固定 `recentLimit=16`；动态可见数量仅由客户端本地截断，显式 range、分页和筛选操作仍可改变 descriptor。
-- 每个依赖 revision tuple 最多 materialize 和 serialize 一次，生成一个 `Arc<SerializedTopicFrame>`；内容未变化时不得推进 cursor。
+- 每个依赖 revision tuple 最多 materialize 一次，并生成一个共享 `Arc<SerializedTopicFrame>` canonical full snapshot；仅对允许的 live/replay topic，在 delta 严格小于 full payload 且可证明连续时，额外生成一个共享 `Arc<SerializedTopicFrame>` compact delta。两种 frame 必须复用同一 revision、cursor 和 canonical payload，内容未变化时不得推进 cursor。
 - 已有 last-good 时，projection 异常不得在订阅请求任务中同步查库或发布部分累计值。
 
 ### SHOULD

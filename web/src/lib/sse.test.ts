@@ -69,6 +69,7 @@ function decodePath(path: string) {
       : [],
     attempt: url.searchParams.get("attempt"),
     reason: url.searchParams.get("reason"),
+    delta: url.searchParams.get("delta"),
   };
 }
 
@@ -97,6 +98,441 @@ afterEach(() => {
 });
 
 describe("sse topic registry", () => {
+  it("merges a timeseries point delta into the cached snapshot", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const listener = vi.fn();
+    const unsubscribe = sse.subscribeToTopic(topic, listener);
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: 0,
+            point: { total: 2 },
+          },
+        }),
+      }),
+    );
+
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "live",
+        delivery: "delta",
+        baseCursor: 7,
+        cursor: 8,
+        payload: {
+          rangeEnd: "2026-10-12T00:02:00Z",
+          snapshotId: 11,
+          points: [{ total: 2 }],
+        },
+      }),
+    );
+    expect(sse.getCachedTopicState(topic)).toMatchObject({
+      cursor: 8,
+      payload: {
+        rangeEnd: "2026-10-12T00:02:00Z",
+        snapshotId: 11,
+        points: [{ total: 2 }],
+      },
+    });
+    unsubscribe();
+  });
+
+  it("merges a metadata-only timeseries delta without changing points", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const listener = vi.fn();
+    const unsubscribe = sse.subscribeToTopic(topic, listener);
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: null,
+            point: null,
+          },
+        }),
+      }),
+    );
+
+    expect(sse.getCachedTopicState(topic)?.payload).toEqual({
+      rangeEnd: "2026-10-12T00:02:00Z",
+      snapshotId: 11,
+      points: [{ total: 1 }],
+    });
+    unsubscribe();
+  });
+
+  it("merges a working-conversations item delta into the cached collection", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("dashboard.working-conversations.current");
+    const listener = vi.fn();
+    const unsubscribe = sse.subscribeToTopic(topic, listener);
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "dashboard-working-conversations-current",
+          schemaEpoch: "dashboard.working-conversations.current/v1",
+          cursor: 3,
+          payload: {
+            hasMore: false,
+            conversations: [{ promptCacheKey: "alpha", requestCount: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 3,
+          topic,
+          topicKey: "dashboard-working-conversations-current",
+          schemaEpoch: "dashboard.working-conversations.current/v1",
+          cursor: 4,
+          payload: {
+            kind: "collection-item/v1",
+            collection: "conversations",
+            itemIndex: 0,
+            item: { promptCacheKey: "alpha", requestCount: 2 },
+            fields: { hasMore: true },
+          },
+        }),
+      }),
+    );
+
+    expect(sse.getCachedTopicState(topic)?.payload).toEqual({
+      hasMore: true,
+      conversations: [{ promptCacheKey: "alpha", requestCount: 2 }],
+    });
+    unsubscribe();
+  });
+
+  it("forces a full snapshot for malformed or unsupported delta envelopes", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribe = sse.subscribeToTopic(topic, vi.fn());
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: null,
+            point: null,
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+    expect(sse.getCurrentSseDiagnostics().forcedSnapshotTopics).toEqual([
+      "stats.timeseries.open-window?range=today",
+    ]);
+
+    unsubscribe();
+  });
+
+  it("rejects fractional indexes and unsupported collection deltas", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribe = sse.subscribeToTopic(topic, vi.fn());
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: 0.5,
+            point: { total: 2 },
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+    unsubscribe();
+  });
+
+  it("rejects omitted delta fields and unsafe cursors", async () => {
+    const sse = await loadSseModule();
+    const topic = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribe = sse.subscribeToTopic(topic, vi.fn());
+    const connection = FakeEventSource.instances[0]!;
+    connection.emit("open", new Event("open"));
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    connection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(createEventSourceMock).toHaveBeenCalledTimes(2);
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+
+    const reconnect = FakeEventSource.instances[1]!;
+    reconnect.emit("open", new Event("open"));
+    reconnect.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: -1,
+          payload: { rangeEnd: "bad", snapshotId: 12, points: [] },
+        }),
+      }),
+    );
+    expect(sse.getCachedTopicState(topic)?.cursor).toBe(7);
+    unsubscribe();
+  });
+
+  it("rejects invalid payload and delta value shapes before caching", async () => {
+    const sse = await loadSseModule();
+    const timeseries = sse.buildTopicDescriptor("stats.timeseries.open-window", { range: "today" });
+    const unsubscribeTimeseries = sse.subscribeToTopic(timeseries, vi.fn());
+    const firstConnection = FakeEventSource.instances[0]!;
+    firstConnection.emit("open", new Event("open"));
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: timeseries,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 7,
+          payload: {
+            rangeEnd: "2026-10-12T00:01:00Z",
+            snapshotId: 10,
+            points: [{ total: 1 }],
+          },
+        }),
+      }),
+    );
+    firstConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "live",
+          delivery: "delta",
+          baseCursor: 7,
+          topic: timeseries,
+          topicKey: "stats-timeseries-open-window",
+          schemaEpoch: "stats.timeseries.open-window/v1",
+          cursor: 8,
+          payload: {
+            kind: "timeseries-point/v1",
+            rangeEnd: "2026-10-12T00:02:00Z",
+            snapshotId: 11,
+            pointIndex: 0,
+            point: "invalid",
+          },
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(sse.getCachedTopicState(timeseries)?.cursor).toBe(7);
+
+    const ordinary = sse.buildTopicDescriptor("forward-proxy.live");
+    const unsubscribeOrdinary = sse.subscribeToTopic(ordinary, vi.fn());
+    const secondConnection = FakeEventSource.instances.at(-1)!;
+    secondConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: ordinary,
+          topicKey: "forward-proxy-live",
+          schemaEpoch: "forward-proxy.live/v1",
+          cursor: 1,
+        }),
+      }),
+    );
+    vi.advanceTimersByTime(0);
+    expect(sse.getCachedTopicState(ordinary)).toBeNull();
+
+    const recoveryConnection = FakeEventSource.instances.at(-1)!;
+    recoveryConnection.emit(
+      "message",
+      new MessageEvent("message", {
+        data: JSON.stringify({
+          type: "snapshot",
+          topic: ordinary,
+          topicKey: "forward-proxy-live",
+          schemaEpoch: "forward-proxy.live/v1",
+          cursor: 1,
+          payload: [{ task: "valid-array-payload" }],
+        }),
+      }),
+    );
+    expect(sse.getCachedTopicState(ordinary)).toMatchObject({
+      cursor: 1,
+      payload: [{ task: "valid-array-payload" }],
+    });
+
+    unsubscribeOrdinary();
+    unsubscribeTimeseries();
+  });
+
   it("keeps an unavailable topic isolated from healthy topic snapshots", async () => {
     const sse = await loadSseModule();
     const summaryTopic = sse.buildTopicDescriptor("stats.summary.current", {
@@ -208,6 +644,7 @@ describe("sse topic registry", () => {
         schemaEpoch: "stats.summary.current/v1",
       },
     ]);
+    expect(decoded.delta).toBe("1");
 
     unsubscribeQuota();
 
