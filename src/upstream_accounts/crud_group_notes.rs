@@ -839,7 +839,18 @@ pub(crate) async fn load_upstream_account_attempt_page_from_query(
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
     let filters = normalize_upstream_account_attempt_filters(params);
-    load_upstream_account_attempt_page(state, account_id, page, page_size, &filters).await
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
+    let runtime_items =
+        load_runtime_upstream_account_attempts(state, account_id, &cutoff, &filters).await?;
+    load_upstream_account_attempt_page_with_runtime_items(
+        state,
+        account_id,
+        page,
+        page_size,
+        &filters,
+        runtime_items,
+    )
+    .await
 }
 
 pub(crate) async fn locate_upstream_account_attempt(
@@ -894,10 +905,16 @@ pub(crate) async fn locate_upstream_account_attempt(
     .await
     .map_err(internal_error_tuple)?;
     let page = newer_count / page_size + 1;
-    let response =
-        load_upstream_account_attempt_page(state.as_ref(), account_id, page, page_size, &filters)
-            .await
-            .map_err(internal_error_tuple)?;
+    let response = load_upstream_account_attempt_page_with_runtime_items(
+        state.as_ref(),
+        account_id,
+        page,
+        page_size,
+        &filters,
+        runtime_items,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     Ok(Json(response))
 }
 
@@ -908,11 +925,31 @@ async fn load_upstream_account_attempt_page(
     page_size: usize,
     filters: &UpstreamAccountAttemptFilters,
 ) -> Result<UpstreamAccountAttemptListResponse> {
-    let pool = &state.pool;
     let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
-    // Capture runtime ownership before SQL so acknowledgement cannot create a read gap.
     let runtime_items =
         load_runtime_upstream_account_attempts(state, account_id, &cutoff, filters).await?;
+    load_upstream_account_attempt_page_with_runtime_items(
+        state,
+        account_id,
+        page,
+        page_size,
+        filters,
+        runtime_items,
+    )
+    .await
+}
+
+async fn load_upstream_account_attempt_page_with_runtime_items(
+    state: &AppState,
+    account_id: i64,
+    page: usize,
+    page_size: usize,
+    filters: &UpstreamAccountAttemptFilters,
+    runtime_items: Vec<ApiPoolUpstreamRequestAttempt>,
+) -> Result<UpstreamAccountAttemptListResponse> {
+    let pool = &state.pool;
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
+    // Keep the runtime snapshot captured by the caller across rank and page materialization.
     let global_offset = page.saturating_sub(1).saturating_mul(page_size);
     let (total, merged_page_ids) = if runtime_items.is_empty() {
         (
