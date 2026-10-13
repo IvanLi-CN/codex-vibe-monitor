@@ -1094,17 +1094,21 @@ async fn load_merged_account_attempt_page_ids(
         .iter()
         .map(|item| {
             serde_json::json!({
-                "attempt_id": item.attempt_id, "occurred_at": item.occurred_at,
+                "attempt_id": item.attempt_id,
+                "occurred_at": item.occurred_at,
+                "attempt_index": item.attempt_index,
             })
         })
         .collect::<Vec<_>>();
     let mut query = QueryBuilder::<Sqlite>::new(
         "WITH runtime_attempts AS (SELECT json_extract(value, '$.attempt_id') AS attempt_id, \
-         json_extract(value, '$.occurred_at') AS occurred_at, 9223372036854775807 AS id FROM json_each(",
+         json_extract(value, '$.occurred_at') AS occurred_at, \
+         json_extract(value, '$.attempt_index') AS attempt_index, \
+         9223372036854775807 AS id FROM json_each(",
     );
     query.push_bind(serde_json::to_string(&identities)?).push(
         ")) , durable_attempts AS (SELECT attempts.attempt_public_id AS attempt_id, \
-         attempts.occurred_at, attempts.id FROM pool_upstream_request_attempts AS attempts \
+         attempts.occurred_at, attempts.attempt_index, attempts.id FROM pool_upstream_request_attempts AS attempts \
          LEFT JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id \
          AND inv.occurred_at = attempts.occurred_at",
     );
@@ -1113,8 +1117,8 @@ async fn load_merged_account_attempt_page_ids(
     query.push(
         " AND attempts.attempt_public_id NOT IN (SELECT attempt_id FROM runtime_attempts)), \
          combined AS (SELECT * FROM durable_attempts UNION ALL SELECT * FROM runtime_attempts), \
-         page AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, id DESC, attempt_id DESC) AS ordinal \
-         FROM combined ORDER BY occurred_at DESC, id DESC, attempt_id DESC LIMIT "
+         page AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC) AS ordinal \
+         FROM combined ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC LIMIT "
     ).push_bind(page_size as i64).push(" OFFSET ").push_bind(offset as i64).push(
         ") SELECT page.attempt_id, (SELECT COUNT(*) FROM combined) AS total \
          FROM (SELECT 1) LEFT JOIN page ON 1 = 1 ORDER BY page.ordinal"

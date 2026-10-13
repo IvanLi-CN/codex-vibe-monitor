@@ -205,6 +205,8 @@ async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
         .expect("fixture timestamp")
         + ChronoDuration::seconds(1);
     let original_id = baseline.attempt_public_id.clone();
+    let original_occurred_at = baseline.occurred_at.clone();
+    let original_attempt_index = baseline.attempt_index;
     // Retain a runtime copy of an already committed fact and interleave new runtime/SQL facts.
     baseline.attempt_public_id = "mixed-overlap".to_string();
     baseline.invoke_id = "mixed-overlap".to_string();
@@ -222,22 +224,30 @@ async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
     .await
     .expect("insert a fact while its runtime ownership is retained");
     assert!(state.proxy_runtime_attempts.upsert(baseline.clone()));
-    let mut expected = vec![original_id, baseline.attempt_public_id.clone()];
+    let mut expected = vec![(
+        baseline.occurred_at.clone(),
+        baseline.attempt_index,
+        baseline.attempt_public_id.clone(),
+    )];
+    expected.push((original_occurred_at, original_attempt_index, original_id));
     for index in 1..46 {
         let id = format!("mixed-account-attempt-{index}");
-        let occurred_at = (base_time + ChronoDuration::seconds(index))
+        let seconds = if index <= 2 { 2 } else { index + 1 };
+        let occurred_at = (base_time + ChronoDuration::seconds(seconds))
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
+        let attempt_index = if index <= 2 { index } else { 1 };
         if index % 2 == 0 {
             sqlx::query(
                 "INSERT INTO pool_upstream_request_attempts \
                  (attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, \
                   upstream_account_id, attempt_index, distinct_account_index, same_account_retry_index, status) \
-                 VALUES (?1, ?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, 'success')",
+                 VALUES (?1, ?1, ?2, '/v1/responses', 'pool', ?3, ?4, 1, 0, 'success')",
             )
             .bind(&id)
             .bind(&occurred_at)
             .bind(account)
+            .bind(attempt_index)
             .execute(&state.pool)
             .await
             .expect("insert interleaved durable fact");
@@ -246,12 +256,23 @@ async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
             snapshot.attempt_public_id = id.clone();
             snapshot.invoke_id = id.clone();
             snapshot.occurred_at = occurred_at.clone();
-            snapshot.started_at = occurred_at;
+            snapshot.started_at = occurred_at.clone();
+            snapshot.attempt_index = attempt_index;
             assert!(state.proxy_runtime_attempts.upsert(snapshot));
         }
-        expected.push(id);
+        expected.push((occurred_at, attempt_index, id));
     }
-    expected.reverse();
+    expected.sort_by(|left, right| {
+        right
+            .0
+            .cmp(&left.0)
+            .then_with(|| right.1.cmp(&left.1))
+            .then_with(|| right.2.cmp(&left.2))
+    });
+    let expected = expected
+        .into_iter()
+        .map(|(_, _, id)| id)
+        .collect::<Vec<_>>();
     let mut actual = Vec::new();
     for page in 1..=3 {
         let response = load_upstream_account_attempt_page_from_query(
