@@ -57,6 +57,7 @@ async fn send_pool_request_with_failover_keeps_early_phase_guard_armed_when_runt
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

@@ -589,6 +589,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1072,6 +1073,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1216,6 +1218,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1588,6 +1591,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

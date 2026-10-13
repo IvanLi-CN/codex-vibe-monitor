@@ -34,8 +34,9 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## Module Boundaries
 
-- Supplemental shutdown recovery is isolated in `src/terminal_journal/shutdown_recovery.rs`. It ignores an incomplete tail with a warning, preserves an isolated copy of middle corruption before cleanup, and reports open/read/isolation/cleanup errors without aborting service startup. A retained incomplete tail is delimited before appending a fact or ACK; ACK compaction cannot overwrite an incompletely read or unsuccessfully isolated source. Valid recovery facts retain their source order through replay and compaction, and primary journal ACK serialization or write failures fail closed instead of returning a false confirmation.
+- Supplemental shutdown recovery is isolated in `src/terminal_journal/shutdown_recovery.rs`. It ignores an incomplete tail with a warning, preserves an isolated copy of middle corruption before cleanup, and reports open/read/isolation/cleanup errors without aborting service startup. A retained incomplete tail is delimited before appending a fact or ACK; ACK compaction cannot overwrite an incompletely read or unsuccessfully isolated source. Valid recovery facts retain their source order through replay and compaction, and primary journal ACK serialization or write failures fail closed instead of returning a false confirmation. Runtime terminal append and group-sync confirmation failures both enter this recovery path with an explicit warning.
 - Final attempt snapshots retain bounded runtime read ownership until materialization acknowledgement. Attempt readers capture runtime state before the SQLite read and deduplicate stable public IDs, preserving visibility during commit and cleanup. Capacity coverage verifies that terminal claiming retains the record count and actual bytes until acknowledgement; completing an attempt can release its unused terminal reservation without evicting the snapshot.
+- Account attempt REST and SSE readers merge the bounded runtime snapshot with SQLite using the same global ordering and pagination, so an accepted attempt remains visible before terminal materialization and does not disappear between pages.
 - Proxy attempt interruption recovery is owned by `src/proxy/usage_persistence/runtime_recovery.rs`; terminal attempt SQL is isolated in `src/sqlite_batch_writer/terminal_attempts.rs`.
 - Routing observations and encrypted journal recovery live under `src/upstream_accounts/routing/runtime_facts/`; account administration generation fencing remains in `src/upstream_accounts/oauth_sessions_callbacks/account_update.rs`, separate from request observations.
 - Runtime account state ownership lives in `src/upstream_accounts/core_runtime_types/runtime_state.rs`. Cancellation fixtures assert no live SQL row followed by exactly one interrupted terminal fact; routing replay fixtures stop the worker before releasing its batch gate so confirmed-before-materialized recovery is deterministic.
@@ -43,7 +44,7 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 - Runtime projection: a dedicated `RuntimeProjectionHub` owned by application state; Dashboard renderers depend on this Hub rather than SQLite.
 - Terminal durability: existing journal, SQLite batch writer and `TerminalProjectionHub`; queue accounting moves behind `PendingQueueAccounting`.
 - Delivery: subscription cache, replay and fan-out share immutable serialized frames.
-- Health: in-memory counters feed `runtimePressureHealth`; System Status only formats those counters.
+- Health: in-memory counters feed `runtimePressureHealth`; System Status only formats those counters, including terminal journal backlog age.
 
 ## Migration Sequence
 

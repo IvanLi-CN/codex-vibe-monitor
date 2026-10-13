@@ -5009,6 +5009,7 @@ async fn insert_pool_upstream_terminal_attempt_skips_pre_dispatch_pseudo_attempt
                 upstream_base_url: Url::parse("https://api.openai.com/")
                     .expect("valid upstream base"),
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
+                routing_control_fingerprint: None,
                 sticky_affinity_generation: None,
                 routing_selection_audit: None,
                 priority_handoff_permit: None,
@@ -7641,6 +7642,7 @@ async fn send_pool_request_with_failover_defers_armed_guard_when_pending_attempt
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -7773,6 +7775,7 @@ async fn send_pool_request_with_failover_keeps_runtime_streaming_phase_without_p
         },
         upstream_base_url: Url::parse(&upstream_base).expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

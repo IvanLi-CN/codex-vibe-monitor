@@ -2,7 +2,11 @@ use super::*;
 
 #[tokio::test]
 async fn terminal_attempt_stays_visible_until_sqlite_commit() {
-    let mut state = test_state_from_config(test_config(), true).await;
+    let fixture = std::env::temp_dir().join(format!("runtime-visibility-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&fixture).expect("create owned visibility fixture");
+    let mut config = test_config();
+    config.database_path = fixture.join("business.sqlite");
+    let mut state = test_state_from_config(config, true).await;
     let mutable = Arc::get_mut(&mut state).expect("fixture has one state owner");
     mutable.sqlite_batch_writer = SqliteBatchWriter::spawn(
         mutable.pool.clone(),
@@ -28,6 +32,7 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
     let attempt = begin_pool_upstream_request_attempt_in_memory(
         &state,
         &trace,
+        None,
         None,
         None,
         None,
@@ -61,6 +66,26 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
     )
     .await
     .expect("finalize attempt in memory");
+    let account_page = load_upstream_account_attempt_page_from_query(
+        &state,
+        account,
+        &ListUpstreamAccountAttemptsQuery::default(),
+    )
+    .await
+    .expect("read running attempt through account REST/SSE projection");
+    assert_eq!(account_page.total, 1);
+    assert_eq!(account_page.items.len(), 1);
+    assert_eq!(
+        account_page.items[0].attempt_id,
+        attempt
+            .attempt_public_id
+            .clone()
+            .expect("stable attempt id")
+    );
+    assert_eq!(
+        account_page.items[0].upstream_account_name.as_deref(),
+        Some("Visibility")
+    );
     let mut locked = state
         .pool
         .acquire()
@@ -160,6 +185,91 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
         "read switches to the durable database fact"
     );
     assert_eq!(state.proxy_runtime_attempts.health_snapshot().records, 0);
+    assert_account_attempt_pages_merge_and_deduplicate_runtime(
+        &state,
+        runtime_attempt_snapshot_from_pending(&attempt),
+    )
+    .await;
     state.shutdown.cancel();
     state.sqlite_batch_writer.shutdown_and_drain().await;
+    drop(state);
+    fs::remove_dir_all(fixture).expect("remove owned visibility fixture");
+}
+
+async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
+    state: &AppState,
+    mut baseline: crate::app_state::RuntimeAttemptSnapshot,
+) {
+    let account = baseline.upstream_account_id;
+    let base_time = NaiveDateTime::parse_from_str(&baseline.occurred_at, "%Y-%m-%d %H:%M:%S")
+        .expect("fixture timestamp")
+        + ChronoDuration::seconds(1);
+    let original_id = baseline.attempt_public_id.clone();
+    // Retain a runtime copy of an already committed fact and interleave new runtime/SQL facts.
+    baseline.attempt_public_id = "mixed-overlap".to_string();
+    baseline.invoke_id = "mixed-overlap".to_string();
+    baseline.occurred_at = base_time.format("%Y-%m-%d %H:%M:%S").to_string();
+    sqlx::query(
+        "INSERT INTO pool_upstream_request_attempts \
+         (attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, \
+          upstream_account_id, attempt_index, distinct_account_index, same_account_retry_index, status) \
+         VALUES (?1, ?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, 'success')",
+    )
+    .bind(&baseline.attempt_public_id)
+    .bind(&baseline.occurred_at)
+    .bind(account)
+    .execute(&state.pool)
+    .await
+    .expect("insert a fact while its runtime ownership is retained");
+    assert!(state.proxy_runtime_attempts.upsert(baseline.clone()));
+    let mut expected = vec![original_id, baseline.attempt_public_id.clone()];
+    for index in 1..46 {
+        let id = format!("mixed-account-attempt-{index}");
+        let occurred_at = (base_time + ChronoDuration::seconds(index))
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        if index % 2 == 0 {
+            sqlx::query(
+                "INSERT INTO pool_upstream_request_attempts \
+                 (attempt_public_id, invoke_id, occurred_at, endpoint, route_mode, \
+                  upstream_account_id, attempt_index, distinct_account_index, same_account_retry_index, status) \
+                 VALUES (?1, ?1, ?2, '/v1/responses', 'pool', ?3, 1, 1, 0, 'success')",
+            )
+            .bind(&id)
+            .bind(&occurred_at)
+            .bind(account)
+            .execute(&state.pool)
+            .await
+            .expect("insert interleaved durable fact");
+        } else {
+            let mut snapshot = baseline.clone();
+            snapshot.attempt_public_id = id.clone();
+            snapshot.invoke_id = id.clone();
+            snapshot.occurred_at = occurred_at.clone();
+            snapshot.started_at = occurred_at;
+            assert!(state.proxy_runtime_attempts.upsert(snapshot));
+        }
+        expected.push(id);
+    }
+    expected.reverse();
+    let mut actual = Vec::new();
+    for page in 1..=3 {
+        let response = load_upstream_account_attempt_page_from_query(
+            state,
+            account,
+            &ListUpstreamAccountAttemptsQuery {
+                page: Some(page),
+                page_size: Some(20),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("read mixed runtime/durable page");
+        assert_eq!(response.total, 47, "committed runtime copy is counted once");
+        actual.extend(response.items.into_iter().map(|item| item.attempt_id));
+    }
+    assert_eq!(
+        actual, expected,
+        "global ordering spans pages without gaps or duplicates"
+    );
 }

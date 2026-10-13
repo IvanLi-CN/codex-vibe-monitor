@@ -683,6 +683,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
     proxy_binding_key_snapshot: Option<&str>,
     routing_source: Option<PoolRoutingSelectionSource>,
     routing_selection_audit: Option<&PoolRoutingSelectionAudit>,
+    selected_control_fingerprint: Option<&str>,
     sticky_affinity_generation: Option<i64>,
     upstream_account_id: i64,
     upstream_route_key: &str,
@@ -746,8 +747,9 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
             return None;
         }
     };
-    runtime_snapshot.routing_control_fingerprint =
-        Some(route_account_control_fingerprint(&account));
+    runtime_snapshot.routing_control_fingerprint = selected_control_fingerprint
+        .map(ToOwned::to_owned)
+        .or_else(|| Some(route_account_control_fingerprint(&account)));
     if !state
         .proxy_runtime_attempts
         .upsert(runtime_snapshot.clone())

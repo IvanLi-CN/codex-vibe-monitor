@@ -33,6 +33,7 @@ pub(super) async fn record_pool_request_prepare_failure_attempt(
         None,
         Some(account.routing_source),
         account.routing_selection_audit.as_ref(),
+        account.routing_control_fingerprint.as_deref(),
         account.sticky_affinity_generation,
         account.account_id,
         &upstream_route_key,

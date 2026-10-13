@@ -4,6 +4,8 @@ PR #1110 将代理请求 attempt 的高频生命周期写入移入有界内存�
 
 Owner clarification narrowed historical supplemental recovery failure to an isolated, warning-visible problem: an incomplete tail is ignored, other damaged frames are preserved in isolation, and this file alone cannot prevent service startup. ADR 0037 supersedes the unconditional recovery-failure wording in ADR 0035. Formal contract review also identified an attempt read gap between terminal claim and SQLite commit; final read ownership now remains bounded until materialization acknowledgement, with a pre-query runtime snapshot protecting concurrent cleanup.
 
+The repair batch extends the same runtime overlay to account-level REST/SSE attempt pages with stable cross-page ordering. A terminal event that cannot be appended or group-synced is written to the supplemental recovery sink and warned about instead of being reported as a successful in-memory-only completion; terminal backlog age is exposed as a health metric. Selected routing control fingerprints are carried from the chosen account into the runtime attempt, preventing a late database read from crossing an administration generation boundary.
+
 ## Typed Runtime Event Bus Initiative
 
 - Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.

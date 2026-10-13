@@ -337,7 +337,7 @@ pub(crate) async fn query_pool_attempt_records_from_live_with_runtime(
     Ok(records)
 }
 
-fn api_attempt_from_runtime_snapshot(
+pub(crate) fn api_attempt_from_runtime_snapshot(
     snapshot: RuntimeAttemptSnapshot,
 ) -> ApiPoolUpstreamRequestAttempt {
     ApiPoolUpstreamRequestAttempt {

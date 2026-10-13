@@ -86,6 +86,11 @@ async fn sample_runtime(state: &AppState) {
         &[("journal", "terminal")],
         terminal_journal.pending_bytes as f64,
     );
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_age_seconds",
+        &[("journal", "terminal")],
+        terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
+    );
     if let Some(runtime) = state.upstream_accounts.route_facts.lock().await.clone() {
         let health = runtime.health_snapshot();
         for (name, value) in [

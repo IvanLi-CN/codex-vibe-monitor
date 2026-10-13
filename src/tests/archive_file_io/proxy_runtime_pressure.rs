@@ -1,6 +1,92 @@
 use super::*;
 
 #[tokio::test]
+async fn runtime_terminal_append_and_confirmation_failures_preserve_recovery_fact() {
+    for fail_after_append in [false, true] {
+        let fixture = std::env::temp_dir().join(format!("runtime-failure-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&fixture).expect("create owned recovery fixture");
+        let mut config = test_config();
+        config.database_path = fixture.join("business.sqlite");
+        let mut state = test_state_from_config(config, true).await;
+        let mutable = Arc::get_mut(&mut state).expect("fixture has one state owner");
+        mutable.sqlite_batch_writer = SqliteBatchWriter::spawn(
+            mutable.pool.clone(),
+            mutable.shutdown.clone(),
+            mutable.prompt_cache_conversation_cache.clone(),
+            mutable.pricing_catalog.clone(),
+            &mutable.config.database_path,
+        )
+        .expect("production file journal");
+        let writer = state.sqlite_batch_writer.clone();
+        writer.set_auto_flush_terminal_for_test(false);
+        let pause = writer.pause_runtime_terminal_confirmation_for_test().await;
+        if !fail_after_append {
+            writer.fail_runtime_journal_for_test();
+        }
+        let id = if fail_after_append {
+            "unconfirmed-terminal"
+        } else {
+            "rejected-terminal"
+        };
+        let producer = tokio::spawn({
+            let writer = writer.clone();
+            async move {
+                writer
+                    .enqueue_runtime_terminal(BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        diagnostic: None,
+                        record: test_proxy_capture_record(id, "2026-10-13 12:00:00"),
+                        attempts: Vec::new(),
+                        capture_started: None,
+                        raw_capture: false,
+                        dashboard_terminal_sequence: None,
+                        terminal_projection_event_ids: Vec::new(),
+                        startup_backfill_tasks: Vec::new(),
+                    })
+                    .await
+            }
+        });
+        if fail_after_append {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while writer
+                    .terminal_journal_stats()
+                    .pending_materialization_records
+                    != 1
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("append precedes the confirmation failure");
+            writer.fail_runtime_journal_for_test();
+        }
+        drop(pause);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), producer)
+            .await
+            .expect("failure is bounded")
+            .expect("producer completed");
+        assert!(!outcome.enqueued, "unconfirmed event cannot report success");
+        assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 0);
+        let recovery =
+            crate::terminal_journal::terminal_journal_directory(&state.config.database_path)
+                .join("shutdown-terminal-quarantine.jsonl");
+        let contents = fs::read_to_string(recovery).expect("durable supplemental recovery fact");
+        let line: Value = serde_json::from_str(contents.lines().next().expect("recovery frame"))
+            .expect("complete recovery frame");
+        assert_eq!(line["invoke_id"], id);
+        assert!(
+            line["record"].is_object(),
+            "full safe terminal fact is recoverable"
+        );
+        state.shutdown.cancel();
+        writer.shutdown_and_drain().await;
+        drop(writer);
+        drop(state);
+        fs::remove_dir_all(fixture).expect("remove owned recovery fixture");
+    }
+}
+
+#[tokio::test]
 async fn runtime_terminal_append_does_not_confirm_materializer_admission() {
     let fixture = std::env::temp_dir().join(format!("runtime-confirmation-{}", nanoid::nanoid!()));
     fs::create_dir_all(&fixture).expect("create owned confirmation fixture");

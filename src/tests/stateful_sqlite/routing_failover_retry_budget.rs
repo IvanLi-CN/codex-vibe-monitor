@@ -142,6 +142,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::StickyReuse,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

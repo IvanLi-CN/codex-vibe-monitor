@@ -530,6 +530,25 @@ impl RuntimeAttemptStore {
         snapshots
     }
 
+    pub(crate) fn list_for_account(&self, upstream_account_id: i64) -> Vec<RuntimeAttemptSnapshot> {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        self.evict_expired(&mut inner);
+        let mut snapshots = inner
+            .entries
+            .values()
+            .filter(|entry| entry.snapshot.upstream_account_id == upstream_account_id)
+            .map(|entry| entry.snapshot.clone())
+            .collect::<Vec<_>>();
+        snapshots.sort_by(|left, right| {
+            right
+                .occurred_at
+                .cmp(&left.occurred_at)
+                .then_with(|| right.attempt_index.cmp(&left.attempt_index))
+                .then_with(|| right.attempt_public_id.cmp(&left.attempt_public_id))
+        });
+        snapshots
+    }
+
     pub(crate) fn restore(&self, snapshots: impl IntoIterator<Item = RuntimeAttemptSnapshot>) {
         for snapshot in snapshots {
             let key = Self::key(

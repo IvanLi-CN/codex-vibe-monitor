@@ -290,6 +290,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

@@ -1379,6 +1379,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) standalone_search_capability: CapabilitySupport,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
+    pub(crate) routing_control_fingerprint: Option<String>,
     pub(crate) sticky_affinity_generation: Option<i64>,
     pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     pub(crate) priority_handoff_permit: Option<Arc<PriorityHandoffPermit>>,

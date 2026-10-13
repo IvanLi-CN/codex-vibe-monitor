@@ -140,6 +140,7 @@ pub(crate) struct TerminalJournalStats {
     pub(crate) segment_count: usize,
     pub(crate) replay_count: usize,
     pub(crate) checkpoint_lag_ms: u64,
+    pub(crate) oldest_pending_age_ms: u64,
     pub(crate) overflowed: bool,
     pub(crate) unavailable: bool,
     pub(crate) deferred_records: usize,
@@ -299,6 +300,7 @@ pub(crate) struct TerminalJournal {
     shutdown_recovery_next_order: u64,
     shutdown_recovery_source_clean: bool,
     shutdown_recovery_bytes: usize,
+    pending_since: Option<Instant>,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
     deferred_system_task_finishes: VecDeque<BatchedSystemTaskFinish>,
@@ -858,6 +860,10 @@ impl TerminalJournal {
                         .sum::<usize>()
             })
             .sum();
+        let pending_since = (!pending_attempt_starts.is_empty()
+            || !pending_by_key.is_empty()
+            || !shutdown_recovery_pending.is_empty())
+        .then_some(Instant::now());
         let mut deferred_writes = VecDeque::new();
         let mut deferred_write_bytes = 0_usize;
         for terminal in recovery_writes {
@@ -913,6 +919,7 @@ impl TerminalJournal {
             shutdown_recovery_next_order: shutdown_recovery_ordered_keys.len() as u64,
             shutdown_recovery_source_clean,
             shutdown_recovery_bytes,
+            pending_since,
             system_task_quarantine_ids,
             replayed_system_task_ids,
             deferred_system_task_finishes,
@@ -1105,6 +1112,9 @@ impl TerminalJournal {
         segment.bytes = segment.bytes.saturating_add(encoded_len);
         segment.sequences.insert(entry.sequence);
         self.pending_by_key.insert(key, vec![entry.sequence]);
+        if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
         let mut acknowledgement_failed = false;
@@ -1223,6 +1233,9 @@ impl TerminalJournal {
         self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
         self.pending_attempt_starts
             .insert(snapshot.attempt_public_id.clone(), event.sequence);
+        if self.pending_since.is_none() {
+            self.pending_since = Some(Instant::now());
+        }
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.append_outcome(TerminalJournalDurabilityMode::Journal, Some(event.sequence))
     }
@@ -1330,6 +1343,11 @@ impl TerminalJournal {
             return Err(anyhow::anyhow!("runtime journal group sync failed"));
         }
         Ok(sequence <= self.synced_sequence)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_append_for_test(&mut self) {
+        self.append_failed = true;
     }
 
     pub(crate) fn defer_from_log(&mut self, id: &str, occurred_at: &str, raw: bool) -> bool {
@@ -1470,6 +1488,12 @@ impl TerminalJournal {
             .replay_count
             .saturating_sub(acknowledged_replay_count + usize::from(recovery_only));
         self.remove_fully_acknowledged_segments();
+        if self.pending_by_key.is_empty()
+            && self.pending_attempt_starts.is_empty()
+            && self.shutdown_recovery_pending.is_empty()
+        {
+            self.pending_since = None;
+        }
         if recovery_pending
             && recovery_ack_durable
             && self.shutdown_recovery_source_clean
@@ -1574,6 +1598,9 @@ impl TerminalJournal {
                     self.shutdown_recovery_next_order.saturating_add(1);
             }
             self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_add(value_bytes);
+            if self.pending_since.is_none() {
+                self.pending_since = Some(Instant::now());
+            }
         }
         accepted
     }
@@ -1838,6 +1865,9 @@ impl TerminalJournal {
             segment_count: self.segments.len(),
             replay_count: self.replay_count,
             checkpoint_lag_ms: self.last_checkpoint_at.elapsed().as_millis() as u64,
+            oldest_pending_age_ms: self
+                .pending_since
+                .map_or(0, |instant| instant.elapsed().as_millis() as u64),
             overflowed: self.overflowed,
             unavailable: false,
             deferred_records: self.deferred_writes.len(),
