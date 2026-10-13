@@ -2,6 +2,7 @@
 use super::*;
 mod proxy_runtime_pressure;
 mod proxy_runtime_routing;
+mod runtime_attempt_cancellation;
 
 pub(crate) use super::*;
 

@@ -2,6 +2,12 @@ use super::*;
 
 #[tokio::test]
 async fn runtime_routing_replays_confirmed_facts_and_deduplicates_after_commit() {
+    tokio::time::timeout(Duration::from_secs(30), replay_confirmed_routing_facts())
+        .await
+        .expect("routing replay fixture must complete without a worker deadlock");
+}
+
+async fn replay_confirmed_routing_facts() {
     let state =
         test_state_with_openai_base(Url::parse("http://127.0.0.1:9").expect("fixture URL")).await;
     state
@@ -37,8 +43,10 @@ async fn runtime_routing_replays_confirmed_facts_and_deduplicates_after_commit()
         !String::from_utf8_lossy(&bytes).contains("replay-sticky"),
         "conversation identifiers must be encrypted"
     );
-    drop(pause);
+    // Stop while the batch gate is held: this models a confirmed event whose
+    // SQLite transaction never started, without racing the background worker.
     runtime.shutdown_and_sync().await;
+    drop(pause);
     state.upstream_accounts.route_facts.lock().await.take();
     let restored = runtime_route_facts(&state)
         .await

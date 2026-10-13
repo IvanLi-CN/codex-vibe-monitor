@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 34,
-    "suppression_entries": 120
+    "suppression_entries": 125
   },
   "loc_targets": {
     "production": 2500,
@@ -218,6 +218,36 @@
     }
   ],
   "suppressions": [
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime adapters preserve the established proxy route outcome contract.\" )]",
+      "reason": "Success adapter retains transport call-site compatibility while reducing outcomes into journal facts; remove after a shared request-context boundary replaces positional fields."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky facts retain causal identity and scope.\" )]",
+      "reason": "Sticky construction keeps generation, owner, model scope and causal identity explicit; remove after these become a dedicated sticky observation context."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime adapters preserve the established proxy route failure contract.\" )]",
+      "reason": "HTTP failure adapter retains the established transport contract; remove after the common failure observation context replaces positional fields."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Temporary route failure reducer carries the existing evidence fields.\" )]",
+      "reason": "Temporary failure reduction preserves the existing cooldown evidence; remove after consolidating these fields into a failure observation context."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Established proxy transport outcome contract.\" )]",
+      "reason": "Transport failure adapter preserves existing retry inputs; remove after transport outcomes use the common failure observation context."
+    },
     {
       "path": "src/api/slices/mod.rs",
       "kind": "expect",
