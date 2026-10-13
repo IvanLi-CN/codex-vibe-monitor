@@ -6,6 +6,8 @@ Owner clarification narrowed historical supplemental recovery failure to an isol
 
 The repair batch extends the same runtime overlay to account-level REST/SSE attempt pages with stable cross-page ordering. A terminal event that cannot be appended or group-synced is written to the supplemental recovery sink and warned about instead of being reported as a successful in-memory-only completion; terminal backlog age is exposed as a health metric. Selected routing control fingerprints are carried from the chosen account into the runtime attempt, preventing a late database read from crossing an administration generation boundary.
 
+The follow-up integrity repair adds `attempt_index` to the account-page merge tie-break so same-timestamp retries retain deterministic order. It also prevents shutdown-recovery ACK compaction after a bounded-memory rejection, preserving durable facts that were accepted by the file sink but could not enter the in-memory recovery projection; both paths emit the existing warning/health signals without making supplemental recovery faults block startup.
+
 ## Typed Runtime Event Bus Initiative
 
 - Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.
