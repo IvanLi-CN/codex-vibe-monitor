@@ -62,6 +62,7 @@ fn journal_safe_attempt_snapshot(snapshot: &RuntimeAttemptSnapshot) -> RuntimeAt
     safe.proxy_binding_key_snapshot = None;
     safe.routing_selection_audit_json = None;
     safe.upstream_request_id = None;
+    safe.compact_support_reason = None;
     if let Ok(mut route) = url::Url::parse(&safe.upstream_route_key) {
         let _ = route.set_username("");
         let _ = route.set_password(None);
@@ -2441,7 +2442,8 @@ mod tests {
         ));
         fs::create_dir_all(&root).expect("create journal test directory");
         let database_path = root.join("monitor.db");
-        let attempt = test_attempt_snapshot();
+        let mut attempt = test_attempt_snapshot();
+        attempt.compact_support_reason = Some("compact-error-secret".to_string());
         let record =
             crate::tests::test_proxy_capture_record(&attempt.invoke_id, &attempt.occurred_at);
 
@@ -2464,6 +2466,7 @@ mod tests {
         assert!(!contents.contains("sticky-secret"));
         assert!(!contents.contains("journal-user"));
         assert!(!contents.contains("journal-password"));
+        assert!(!contents.contains("compact-error-secret"));
         assert!(contents.contains("example.invalid"));
 
         journal
@@ -2481,6 +2484,7 @@ mod tests {
         assert_eq!(replay[0].attempts[0].attempt_public_id, "attempt-journal-1");
         assert!(replay[0].attempts[0].request_summary_json.is_none());
         assert!(replay[0].attempts[0].requester_ip.is_none());
+        assert!(replay[0].attempts[0].compact_support_reason.is_none());
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }

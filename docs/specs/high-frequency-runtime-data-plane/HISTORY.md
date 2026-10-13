@@ -4,6 +4,8 @@ PR #1110 将代理请求 attempt 的高频生命周期写入移入有界内存�
 
 Owner clarification narrowed historical supplemental recovery failure to an isolated, warning-visible problem: an incomplete tail is ignored, other damaged frames are preserved in isolation, and this file alone cannot prevent service startup. ADR 0037 supersedes the unconditional recovery-failure wording in ADR 0035. Formal contract review also identified an attempt read gap between terminal claim and SQLite commit; final read ownership now remains bounded until materialization acknowledgement, with a pre-query runtime snapshot protecting concurrent cleanup.
 
+The journal safety follow-up removes upstream compact-support error reasons from persisted attempt snapshots, preserving the structured status while keeping raw error text out of begin, terminal and supplemental recovery records.
+
 The locate query now carries that same runtime snapshot through rank calculation and final page loading, so acknowledgement or cleanup cannot reorder the target between the two reads.
 
 The follow-up repair also makes locate page selection use one durable read snapshot, refuses to report runtime response-capture fallback success when the bounded store rejected the update, and records that rollback must drain or retain newer versioned journal frames rather than starting an incompatible older reader.
