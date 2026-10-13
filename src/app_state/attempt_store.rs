@@ -152,6 +152,7 @@ struct RuntimeAttemptEntry {
     snapshot: RuntimeAttemptSnapshot,
     retained_at: Instant,
     bytes: usize,
+    terminal_claimed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -166,9 +167,31 @@ struct RuntimeAttemptStoreInner {
 #[derive(Debug, Default)]
 pub(crate) struct RuntimeAttemptStore {
     inner: Mutex<RuntimeAttemptStoreInner>,
+    #[cfg(test)]
+    query_after_sql_gate: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    query_after_sql_count: std::sync::atomic::AtomicUsize,
 }
 
 impl RuntimeAttemptStore {
+    #[cfg(test)]
+    pub(crate) async fn pause_queries_after_sql_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.query_after_sql_gate.lock().await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn query_after_sql_count_for_test(&self) -> usize {
+        self.query_after_sql_count
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pass_query_after_sql_for_test(&self) {
+        self.query_after_sql_count
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        drop(self.query_after_sql_gate.lock().await);
+    }
+
     fn key(
         invoke_id: &str,
         occurred_at: &str,
@@ -210,7 +233,12 @@ impl RuntimeAttemptStore {
         );
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
-        if inner.terminal_keys.contains_key(&key) {
+        if inner.terminal_keys.contains_key(&key)
+            || inner
+                .entries
+                .get(&key)
+                .is_some_and(|entry| entry.terminal_claimed)
+        {
             return false;
         }
         if terminal_priority
@@ -264,6 +292,7 @@ impl RuntimeAttemptStore {
                 snapshot,
                 retained_at: Instant::now(),
                 bytes,
+                terminal_claimed: false,
             },
         );
         if self.evict_to_bound(&mut inner, &key, terminal_priority) {
@@ -298,7 +327,7 @@ impl RuntimeAttemptStore {
             return None;
         }
         let previous = inner.entries.get(&key)?;
-        if previous.snapshot.finished_at.is_some() {
+        if previous.terminal_claimed || previous.snapshot.finished_at.is_some() {
             return None;
         }
         // Preserve newer progress while atomically claiming only the terminal
@@ -321,6 +350,7 @@ impl RuntimeAttemptStore {
                 snapshot: claimed.clone(),
                 retained_at: Instant::now(),
                 bytes,
+                terminal_claimed: false,
             },
         );
         Some(claimed)
@@ -353,6 +383,9 @@ impl RuntimeAttemptStore {
         let Some(existing) = inner.entries.get(&key) else {
             return false;
         };
+        if existing.terminal_claimed {
+            return false;
+        }
         let old_bytes = existing.bytes;
         let mut updated = existing.snapshot.clone();
         updated.response_raw_path = capture.raw_path;
@@ -411,7 +444,8 @@ impl RuntimeAttemptStore {
         let key = Self::key(invoke_id, occurred_at, attempt_public_id);
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         let removable = inner.entries.get(&key).is_some_and(|entry| {
-            entry.snapshot.status == "interrupted"
+            !entry.terminal_claimed
+                && entry.snapshot.status == "interrupted"
                 && entry.snapshot.failure_kind.as_deref() == Some("invocation_interrupted")
         });
         let removed = removable.then(|| inner.entries.remove(&key)).flatten();
@@ -438,7 +472,7 @@ impl RuntimeAttemptStore {
         }
     }
 
-    pub(crate) fn take_for_invocation(
+    pub(crate) fn claim_for_invocation(
         &self,
         invoke_id: &str,
         occurred_at: &str,
@@ -454,10 +488,9 @@ impl RuntimeAttemptStore {
             .collect::<Vec<_>>();
         let mut snapshots = Vec::with_capacity(keys.len());
         for key in keys {
-            inner.terminal_keys.insert(key.clone(), Instant::now());
-            if let Some(entry) = inner.entries.remove(&key) {
-                inner.bytes = inner.bytes.saturating_sub(entry.bytes);
-                snapshots.push(entry.snapshot);
+            if let Some(entry) = inner.entries.get_mut(&key) {
+                entry.terminal_claimed = true;
+                snapshots.push(entry.snapshot.clone());
             }
         }
         self.evict_expired(&mut inner);
@@ -504,13 +537,29 @@ impl RuntimeAttemptStore {
                 &snapshot.occurred_at,
                 &snapshot.attempt_public_id,
             );
-            self.inner
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .terminal_keys
-                .remove(&key);
-            let _ = self.upsert(snapshot);
+            let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+            // A commit may have raced with enqueue failure. Never resurrect a
+            // materialized snapshot or clear its late-update fence.
+            if let Some(entry) = inner.entries.get_mut(&key) {
+                entry.terminal_claimed = false;
+            }
         }
+    }
+
+    pub(crate) fn acknowledge_materialized(&self, snapshots: &[RuntimeAttemptSnapshot]) {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        for snapshot in snapshots {
+            let key = Self::key(
+                &snapshot.invoke_id,
+                &snapshot.occurred_at,
+                &snapshot.attempt_public_id,
+            );
+            if let Some(entry) = inner.entries.remove(&key) {
+                inner.bytes = inner.bytes.saturating_sub(entry.bytes);
+            }
+            inner.terminal_keys.insert(key, Instant::now());
+        }
+        self.evict_expired(&mut inner);
     }
 
     pub(crate) fn health_snapshot(&self) -> RuntimeAttemptStoreHealth {
@@ -538,21 +587,8 @@ impl RuntimeAttemptStore {
         inner.terminal_keys.retain(|_, retained_at| {
             now.duration_since(*retained_at) <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE
         });
-        let expired = inner
-            .entries
-            .iter()
-            .filter_map(|(key, entry)| {
-                (entry.snapshot.finished_at.is_some()
-                    && now.duration_since(entry.retained_at) > PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE)
-                    .then_some(key.clone())
-            })
-            .collect::<Vec<_>>();
-        for key in expired {
-            if let Some(entry) = inner.entries.remove(&key) {
-                inner.bytes = inner.bytes.saturating_sub(entry.bytes);
-                inner.evicted_records = inner.evicted_records.saturating_add(1);
-            }
-        }
+        // Every entry still owns an unmaterialized fact. Only committed
+        // tombstones expire; a database backlog must apply backpressure.
         while inner
             .entries
             .len()
@@ -735,11 +771,22 @@ mod tests {
     fn terminal_extraction_rejects_late_progress_until_restore() {
         let store = RuntimeAttemptStore::default();
         assert!(store.upsert(snapshot("attempt-fenced", "connecting")));
-        let terminal = store.take_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        let terminal = store.claim_for_invocation("invoke-1", "2026-10-12 10:00:00");
         assert_eq!(terminal.len(), 1);
         assert!(!store.upsert(snapshot("attempt-fenced", "late_progress")));
         store.restore(terminal);
         assert!(store.upsert(snapshot("attempt-fenced", "recovered_progress")));
+    }
+
+    #[test]
+    fn failed_enqueue_restore_cannot_resurrect_a_materialized_attempt() {
+        let store = RuntimeAttemptStore::default();
+        assert!(store.upsert(snapshot("attempt-committed", "connecting")));
+        let terminal = store.claim_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        store.acknowledge_materialized(&terminal);
+        store.restore(terminal);
+        assert!(store.list_for_invocation("invoke-1", None).is_empty());
+        assert!(!store.upsert(snapshot("attempt-committed", "late_progress")));
     }
 
     #[test]
@@ -748,9 +795,11 @@ mod tests {
         assert!(store.upsert(snapshot("attempt-1", "connecting")));
         assert!(store.upsert(snapshot("attempt-1", "waiting_first_byte")));
 
-        let snapshots = store.take_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        let snapshots = store.claim_for_invocation("invoke-1", "2026-10-12 10:00:00");
         assert_eq!(snapshots.len(), 1);
         assert_eq!(snapshots[0].phase.as_deref(), Some("waiting_first_byte"));
+        assert_eq!(store.health_snapshot().records, 1);
+        store.acknowledge_materialized(&snapshots);
         assert_eq!(store.health_snapshot().records, 0);
     }
 
@@ -794,7 +843,9 @@ mod tests {
                 <= TERMINAL_DIAGNOSTIC_MAX_BYTES
         );
         assert!(store.health_snapshot().bytes <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES);
-        store.take_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        let snapshots = store.claim_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        assert!(store.capacity_exhausted());
+        store.acknowledge_materialized(&snapshots);
         assert!(!store.capacity_exhausted());
         assert!(store.health_snapshot().rejected_records > 0);
     }

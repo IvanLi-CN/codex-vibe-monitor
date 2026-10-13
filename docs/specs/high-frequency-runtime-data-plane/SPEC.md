@@ -15,7 +15,7 @@
 ## Related ADRs
 
 - [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
-- [ADR 0035: Proxy runtime memory state and terminal materialization](../../adr/0035-proxy-runtime-memory-and-terminal-materialization.md)
+- [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
 
 ## Goals
 
@@ -74,6 +74,10 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 代理 attempt 运行状态和影响下一次选路的路由事实由有界内存投影拥有，关键开始、终止、中断和路由观察先进入可恢复日志。正常请求生命周期不获取 SQLite 写准入，不将高频阶段或元数据转成 AttemptProgress SQL。路由事实覆盖 sticky 绑定、账号健康与冷却、模型和端点能力；缺少数据库 attempt 行不允许跳过业务观察。下一次重试和后续请求必须立即读取已接受的未物化观察，管理端更新和迟到请求结果通过既有代际及观察时间规则隔离；未物化事实不得被普通缓存淘汰。
 
 SQLite 后台终态物化与路由物化经过统一写协调器，采用有界短批次并在 commit 后 ACK；锁冲突保留完整批次并退避，新事件不能重置 retry deadline。终态事务原子写入 invocation、最终 attempt 快照和紧凑 Summary 来源变化凭据，不执行派生计算。Summary、统计、缓存刷新与维护使用独立可恢复消费路径，不得延长终态事务或在一个事务内无界追赶 rollup cursor。内存与日志容量不足必须产生可观测的背压或失败，禁止跳过关键事实仍报告成功。既有无运行态上下文调用与旧数据库行修复保留原持久记录契约。
+
+最终 attempt 快照在 SQLite 提交成功前继续保留在有界运行态读投影中，终态认领只阻止迟到进度，不提前移除可见记录。HTTP/SSE attempt 查询先捕获内存快照，再查询 SQLite，并按 attempt_public_id 去重；提交与清理并发时不得出现查询缺口。未物化终态不得按 TTL 或普通容量淘汰，仍计入准入背压。
+
+shutdown terminal 补救恢复文件的末尾不完整帧忽略并记录 warning，其他损坏帧隔离并记录 warning，正常帧保持重放及 ACK 顺序。清理活动文件前必须保留中间损坏文件的原始副本；打开、读取、隔离或清理失败均告警并保留来源，不因该历史补救文件单独阻止服务启动。保留原文件时，后续追加必须隔开不完整尾部，避免吞掉新记录。主日志及路由日志仍保持真实同步确认和校验门禁，不能降级为仅内存成功。
 
 正常转发前必须完成 begin 日志的分组同步确认；terminal 同样以日志同步为请求侧确认，SQLite commit 后才推进消费检查点。attempt 内存至少限制记录数、字节数和存活时间，并预留已接受请求的终态空间。路由投影限制为 4096 条/16 MiB，恢复 sidecar 限制为 64 MiB、单帧 128 KiB，物化采用 20ms/32 条/4 MiB 边界。partial append 或无法可靠重建的恢复必须 fail closed 并保留来源；普通容量拒绝可在积压释放后恢复。控制端账号、组和全局策略变化必须推进持久代际，包括值恢复原样的 ABA 更新；sticky 清理必须验证 owner 和 exact-model/fallback 范围。退出前先排空 HTTP 请求，再关闭路由日志准入、同步并 join 工作任务。
 

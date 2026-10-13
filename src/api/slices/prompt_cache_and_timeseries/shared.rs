@@ -316,13 +316,17 @@ pub(crate) async fn query_pool_attempt_records_from_live_with_runtime(
     runtime_attempts: &RuntimeAttemptStore,
     invoke_id: &str,
 ) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
+    // Capture before the SQL snapshot: a concurrent commit may release the
+    // runtime copy while the database query is awaiting its connection.
+    let runtime_snapshots = runtime_attempts.list_for_invocation(invoke_id, None);
     let mut records = query_pool_attempt_records_from_live(pool, invoke_id).await?;
+    #[cfg(test)]
+    runtime_attempts.pass_query_after_sql_for_test().await;
     let persisted_ids = records
         .iter()
         .map(|record| record.attempt_id.clone())
         .collect::<std::collections::HashSet<_>>();
-    let mut runtime_records = runtime_attempts
-        .list_for_invocation(invoke_id, None)
+    let mut runtime_records = runtime_snapshots
         .into_iter()
         .filter(|snapshot| !persisted_ids.contains(&snapshot.attempt_public_id))
         .map(api_attempt_from_runtime_snapshot)

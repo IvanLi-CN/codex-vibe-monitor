@@ -3,6 +3,8 @@ use super::*;
 mod proxy_runtime_pressure;
 mod proxy_runtime_routing;
 mod runtime_attempt_cancellation;
+mod runtime_attempt_visibility;
+mod shutdown_terminal_recovery;
 
 pub(crate) use super::*;
 

@@ -1351,6 +1351,10 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) fn set_runtime_attempt_store(&self, store: Arc<RuntimeAttemptStore>) {
+        self.terminal_journal.bind_runtime_attempts(store);
+    }
+
     pub(crate) fn set_dashboard_activity_snapshot_cache(
         &self,
         cache: Arc<Mutex<DashboardActivitySnapshotCacheState>>,
@@ -2126,6 +2130,7 @@ impl SqliteBatchWriter {
                     &terminal.record.invoke_id,
                     &terminal.record.occurred_at,
                     terminal.raw_capture,
+                    &terminal.attempts,
                 );
             }
             let deferred_writes = deferred.into_writes();
@@ -3687,6 +3692,7 @@ pub(crate) async fn flush_pending_batch(
                             &terminal.record.invoke_id,
                             &terminal.record.occurred_at,
                             terminal.raw_capture,
+                            &terminal.attempts,
                         );
                     }
                 }

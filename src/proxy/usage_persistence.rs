@@ -4307,9 +4307,12 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     .proxy_terminal(&record, persisted_record.endpoint.as_deref());
             }
             let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
+            state
+                .sqlite_batch_writer
+                .set_runtime_attempt_store(state.proxy_runtime_attempts.clone());
             let runtime_attempts = state
                 .proxy_runtime_attempts
-                .take_for_invocation(&persisted_record.invoke_id, &persisted_record.occurred_at);
+                .claim_for_invocation(&persisted_record.invoke_id, &persisted_record.occurred_at);
             debug!(
                 invoke_id = %invoke_id,
                 terminal_delta_applied_selection_count = delta.applied_selection_count,

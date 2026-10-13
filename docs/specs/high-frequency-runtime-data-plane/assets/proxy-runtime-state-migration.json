@@ -39,7 +39,7 @@
       "background-batch-materialization"
     ],
     "progress_signals": [
-      "Fail-closed startup errors preserve source files",
+      "Main journal integrity failures preserve source files; supplemental shutdown recovery warns, isolates middle damage and ignores an incomplete tail without blocking startup",
       "cvm_proxy_runtime_journal_pending",
       "cvm_proxy_runtime_journal_age_seconds",
       "cvm_proxy_runtime_materialization_delay_seconds",
@@ -47,7 +47,7 @@
       "cvm_proxy_runtime_journal_failed"
     ],
     "pause_points": [
-      "Before listener readiness on schema or recovery failure",
+        "Before listener readiness on schema or main journal integrity failure; supplemental recovery failures warn and retain source",
       "Between committed materialization batches; confirmed pending events remain durable"
     ]
   },
@@ -72,7 +72,9 @@
         "Shared stateful-sqlite runner: legacy pool routing settings and legacy block policy upgrade tests passed",
         "Shared archive-file-io runner: runtime_routing_replays_confirmed_facts_and_deduplicates_after_commit passed",
         "Shared archive-file-io runner: runtime_pending_sticky_is_fenced_by_control_aba and runtime_sticky_clear_preserves_a_reassigned_owner passed",
-        "Terminal journal recovery, idempotence and corruption-preservation regression coverage passed"
+        "Terminal journal recovery, idempotence and corruption-preservation regression coverage passed",
+        "Shared archive-file-io runner: six supplemental shutdown recovery regressions passed for incomplete tails, middle damage isolation, cleanup failure, unreadable source, complete undelimited records and acknowledgement failure",
+        "Shared archive-file-io runner: terminal_attempt_stays_visible_until_sqlite_commit passed, including a reader overlapping commit and runtime cleanup"
       ]
     }
   }

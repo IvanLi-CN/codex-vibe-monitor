@@ -2,6 +2,7 @@
 
 ## 关键决策
 
+- PR #1110 的 shutdown terminal 补救恢复采用主人明确要求的隔离与告警策略，尾部半帧忽略，不因旧补救文件直接阻止服务启动；ADR 0037 取代 ADR 0035 的无条件启动失败规则。终态 attempt 提交前保持有界读投影，提交 ACK 才释放，避免异步物化期间查询缺口。
 - P2 pressure defer 与 SQLite retry 分离：派生写使用 250ms 固定合并并按 gate eligibility 唤醒，只有实际执行失败才推进 retry/backoff。
 
 - P1 journal 是 raw terminal durability 边界，不把投影完成当作 journal 回收条件。

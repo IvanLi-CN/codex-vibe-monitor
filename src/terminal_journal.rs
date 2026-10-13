@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
+mod shutdown_recovery;
+use shutdown_recovery::{
+    compact_shutdown_terminal_recovery, load_shutdown_terminal_recovery,
+    open_shutdown_recovery_append,
+};
+
 use crate::{
     BatchedSystemTaskFinish, BatchedTerminalInvocationWrite, ParsedUsage, ProxyCaptureRecord,
     RawPayloadMeta, RuntimeAttemptSnapshot, StageTimings, SystemTaskKind, SystemTaskStatus,
@@ -33,6 +39,7 @@ type ShutdownRecoveryValue = (ProxyCaptureRecord, Vec<RuntimeAttemptSnapshot>);
 type LoadedShutdownTerminalRecovery = (
     HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     Vec<BatchedTerminalInvocationWrite>,
+    bool,
 );
 
 fn journal_safe_terminal_record(record: &ProxyCaptureRecord) -> ProxyCaptureRecord {
@@ -287,6 +294,7 @@ pub(crate) struct TerminalJournal {
     deferred_rejected: u64,
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
+    shutdown_recovery_source_clean: bool,
     shutdown_recovery_bytes: usize,
     system_task_quarantine_ids: HashSet<i64>,
     replayed_system_task_ids: HashSet<i64>,
@@ -576,7 +584,17 @@ impl TerminalJournal {
         finishes: &[&BatchedSystemTaskFinish],
         error: &str,
     ) -> Result<()> {
-        Self::quarantine_shutdown_batch_at_directory(&self.directory, terminals, finishes, error)
+        let result = Self::quarantine_shutdown_batch_at_directory(
+            &self.directory,
+            terminals,
+            finishes,
+            error,
+        );
+        if result.is_err() {
+            // A partial supplemental append must survive any later ACK cleanup.
+            self.shutdown_recovery_source_clean = false;
+        }
+        result
     }
 
     pub(crate) fn quarantine_shutdown_batch_at_database_path(
@@ -622,13 +640,9 @@ impl TerminalJournal {
         })?;
         if !terminals.is_empty() {
             let path = directory.join("shutdown-terminal-quarantine.jsonl");
-            let mut file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&path)
-                .with_context(|| {
-                    format!("failed to open terminal recovery sink {}", path.display())
-                })?;
+            let mut file = open_shutdown_recovery_append(&path, true).with_context(|| {
+                format!("failed to open terminal recovery sink {}", path.display())
+            })?;
             for terminal in terminals {
                 let encoded = serde_json::to_vec(&ShutdownTerminalRecoveryLine {
                     invoke_id: terminal.record.invoke_id.clone(),
@@ -820,7 +834,7 @@ impl TerminalJournal {
             .path
             .clone();
         let shutdown_recovery_path = directory.join("shutdown-terminal-quarantine.jsonl");
-        let (shutdown_recovery_pending, recovery_writes) =
+        let (shutdown_recovery_pending, recovery_writes, shutdown_recovery_source_clean) =
             load_shutdown_terminal_recovery(&shutdown_recovery_path);
         let shutdown_recovery_bytes = shutdown_recovery_pending
             .values()
@@ -883,6 +897,7 @@ impl TerminalJournal {
             replay_blocked: false,
             pending_attempt_starts,
             shutdown_recovery_pending,
+            shutdown_recovery_source_clean,
             shutdown_recovery_bytes,
             system_task_quarantine_ids,
             replayed_system_task_ids,
@@ -1324,8 +1339,7 @@ impl TerminalJournal {
                 raw_capture,
             ) {
                 warn!(error = %err, invoke_id, occurred_at, "failed to checkpoint shutdown terminal recovery acknowledgement");
-                self.sync_failed = true;
-                self.overflowed = true;
+                self.shutdown_recovery_source_clean = false;
                 recovery_ack_durable = false;
                 if recovery_only {
                     return;
@@ -1415,6 +1429,7 @@ impl TerminalJournal {
         self.remove_fully_acknowledged_segments();
         if recovery_pending
             && recovery_ack_durable
+            && self.shutdown_recovery_source_clean
             && let Err(err) = compact_shutdown_terminal_recovery(
                 &self.directory.join("shutdown-terminal-quarantine.jsonl"),
                 &self.shutdown_recovery_pending,
@@ -1868,15 +1883,12 @@ fn append_shutdown_terminal_ack(
             path.display()
         ));
     }
-    let mut file = OpenOptions::new()
-        .append(true)
-        .open(path)
-        .with_context(|| {
-            format!(
-                "failed to open shutdown terminal recovery {}",
-                path.display()
-            )
-        })?;
+    let mut file = open_shutdown_recovery_append(path, false).with_context(|| {
+        format!(
+            "failed to open shutdown terminal recovery {}",
+            path.display()
+        )
+    })?;
     serde_json::to_writer(
         &mut file,
         &ShutdownTerminalRecoveryLine {
@@ -2025,132 +2037,6 @@ fn parse_system_task_status(value: &str) -> Option<SystemTaskStatus> {
         "skipped" => Some(SystemTaskStatus::Skipped),
         _ => None,
     }
-}
-
-fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerminalRecovery {
-    let Ok(file) = File::open(path) else {
-        return (HashMap::new(), Vec::new());
-    };
-    let mut reader = BufReader::new(file);
-    let mut line = String::new();
-    let mut entries = HashMap::<ShutdownRecoveryKey, Option<ShutdownRecoveryValue>>::new();
-    let mut corrupt = false;
-    loop {
-        line.clear();
-        let Ok(read) = reader.read_line(&mut line) else {
-            corrupt = true;
-            break;
-        };
-        if read == 0 {
-            break;
-        }
-        let Ok(entry) = serde_json::from_str::<ShutdownTerminalRecoveryLine>(&line) else {
-            warn!(path = %path.display(), "preserving corrupt shutdown terminal recovery line");
-            let corrupt_path = path.with_extension("jsonl.corrupt");
-            if let Ok(mut corrupt_file) = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&corrupt_path)
-            {
-                let _ = corrupt_file.write_all(line.as_bytes());
-                let _ = corrupt_file.sync_data();
-            }
-            corrupt = true;
-            // Preserve the corrupt line for repair, but continue scanning so a
-            // later valid recovery record cannot be stranded behind it.
-            continue;
-        };
-        let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
-        if entry.acknowledged {
-            entries.insert(key, None);
-        } else if let Some(record) = entry.record {
-            entries.insert(key, Some((record, entry.attempts)));
-        }
-    }
-    let pending = entries
-        .into_iter()
-        .filter_map(|((invoke_id, occurred_at, raw_capture), value)| {
-            let value = value?;
-            Some(((invoke_id, occurred_at, raw_capture), value))
-        })
-        .collect::<HashMap<_, _>>();
-    let writes = pending
-        .iter()
-        .map(
-            |((invoke_id, occurred_at, raw_capture), (record, attempts))| {
-                BatchedTerminalInvocationWrite {
-                    enqueued_at: None,
-                    diagnostic: None,
-                    capture_started: None,
-                    raw_capture: *raw_capture,
-                    attempts: attempts.clone(),
-                    // Shutdown recovery has the same post-restart sequence boundary as journal
-                    // replay and must not force Summary into a full rolling rebuild.
-                    dashboard_terminal_sequence: Some(0),
-                    terminal_projection_event_ids: Vec::new(),
-                    startup_backfill_tasks: startup_backfill_tasks_for_terminal(
-                        &api_invocation_from_runtime_record(record),
-                    ),
-                    record: ProxyCaptureRecord {
-                        invoke_id: invoke_id.clone(),
-                        occurred_at: occurred_at.clone(),
-                        ..record.clone()
-                    },
-                }
-            },
-        )
-        .collect();
-    if !corrupt {
-        let _ = compact_shutdown_terminal_recovery(path, &pending);
-    }
-    (pending, writes)
-}
-
-fn compact_shutdown_terminal_recovery(
-    path: &Path,
-    pending: &HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
-) -> Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let temporary_path = path.with_extension("jsonl.tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary_path)
-        .with_context(|| {
-            format!(
-                "failed to open temporary shutdown terminal recovery {}",
-                temporary_path.display()
-            )
-        })?;
-    for ((invoke_id, occurred_at, raw_capture), (record, attempts)) in pending {
-        serde_json::to_writer(
-            &mut file,
-            &ShutdownTerminalRecoveryLine {
-                invoke_id: invoke_id.clone(),
-                occurred_at: occurred_at.clone(),
-                raw_capture: *raw_capture,
-                acknowledged: false,
-                error: Some("recovery snapshot".to_string()),
-                record: Some(record.clone()),
-                attempts: attempts.clone(),
-            },
-        )
-        .context("failed to encode shutdown terminal recovery snapshot")?;
-        file.write_all(b"\n")
-            .context("failed to append shutdown terminal recovery snapshot delimiter")?;
-    }
-    file.sync_data()
-        .context("failed to sync shutdown terminal recovery snapshot")?;
-    fs::rename(&temporary_path, path).with_context(|| {
-        format!(
-            "failed to atomically publish shutdown terminal recovery {}",
-            path.display()
-        )
-    })?;
-    Ok(())
 }
 
 fn segment_path(directory: &Path, first_sequence: u64) -> PathBuf {

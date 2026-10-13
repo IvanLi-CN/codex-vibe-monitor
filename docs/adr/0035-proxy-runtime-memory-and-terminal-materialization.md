@@ -1,4 +1,10 @@
+---
+status: superseded
+---
+
 # ADR 0035: Proxy runtime memory state and terminal materialization
+
+Superseded by [ADR 0037](0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md).
 
 ## Context
 

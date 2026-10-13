@@ -390,6 +390,7 @@ pub(crate) async fn run() -> Result<()> {
         )?;
         sqlite_batch_writer.bind_observability(observability.clone());
         sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
+        sqlite_batch_writer.set_runtime_attempt_store(proxy_runtime_attempts.clone());
         sqlite_batch_writer
             .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
         sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
