@@ -32,6 +32,9 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## Module Boundaries
 
+- Proxy attempt interruption recovery is owned by `src/proxy/usage_persistence/runtime_recovery.rs`; terminal attempt SQL is isolated in `src/sqlite_batch_writer/terminal_attempts.rs`.
+- Routing observations and encrypted journal recovery live under `src/upstream_accounts/routing/runtime_facts/`; account administration generation fencing remains in `src/upstream_accounts/oauth_sessions_callbacks/account_update.rs`, separate from request observations.
+- Runtime account state ownership lives in `src/upstream_accounts/core_runtime_types/runtime_state.rs`. Cancellation fixtures assert no live SQL row followed by exactly one interrupted terminal fact; routing replay fixtures stop the worker before releasing its batch gate so confirmed-before-materialized recovery is deterministic.
 - Request ingress and semantic projection: `src/proxy/dispatch.rs`, `src/proxy/stream_gate.rs` and a dedicated semantic projection module.
 - Runtime projection: a dedicated `RuntimeProjectionHub` owned by application state; Dashboard renderers depend on this Hub rather than SQLite.
 - Terminal durability: existing journal, SQLite batch writer and `TerminalProjectionHub`; queue accounting moves behind `PendingQueueAccounting`.

@@ -5,6 +5,7 @@
 - `src/terminal_projection.rs` 保存紧凑 terminal event key、P1 ACK 水位和每个消费者的可回收 cursor。
 - `src/sqlite_batch_writer.rs` 在 raw terminal P1 成功后通知 Hub；journal ACK 仍在同一 P1 成功边界完成。
 - 终态事务还原子追加 Summary 来源变化凭据，恢复消费者凭持久 descriptor 推进派生读模型；事务内不运行 Summary 计算。代理 begin/terminal 的请求侧确认等待 20ms 分组日志同步，SQLite 消费 ACK 在批量 commit 后推进。
+- `src/sqlite_batch_writer/terminal_attempts.rs` owns idempotent final attempt writes. Runtime cancellation recovery appends one interrupted invocation with its final attempt snapshot; it never inserts a running attempt row. The replay fixture preserves the accepted event while stopping the background worker, then verifies one materialized audit identity after reopen and repeated flush.
 - `src/long_term_stats.rs` 使用 `long_term_projection_state`、`long_term_projection_intervals` 与 `long_term_projection_dirty_buckets` 将持久 row cursor 变成受 pressure gate 约束的增量 rollup 物化；正常路径只 hydrate 新 terminal row，目标自然日重建只处理修复。invocation 修正、invocation archive 与 attempt archive 的 completed manifest 变更都会在其源事务中入队对应上海自然日；archive 覆盖范围重写同时入队旧、新范围。
 - `src/api/slices/system_routes_and_tasks.rs` 将 Hub 和长期 projection 的内存 health 作为 additive `projectionHealth` 暴露；页面只读展示并可展开细项。
 - `proxy_raw_payload_blobs` 与 `proxy_raw_payload_blob_links` 把已发布 response raw 的物理对象与 invocation/attempt owner 分开。保留流程先解除 owner link，最后一个 link 消失后才允许删除物理文件；新 link 同时驱动 System Status raw 指标的有界增量盘点。
