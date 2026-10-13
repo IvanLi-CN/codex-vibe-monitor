@@ -1163,6 +1163,10 @@ pub(crate) struct SqliteBatchWriter {
     buffered_writes: Option<Arc<std::sync::Mutex<Vec<SqliteBatchWrite>>>>,
     #[cfg(test)]
     auto_flush_terminal_for_test: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    runtime_terminal_confirmation_count: AtomicUsize,
+    #[cfg(test)]
+    runtime_terminal_confirmation_gate: Mutex<()>,
 }
 
 impl SqliteBatchWriter {
@@ -1256,6 +1260,10 @@ impl SqliteBatchWriter {
             buffered_writes: None,
             #[cfg(test)]
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            #[cfg(test)]
+            runtime_terminal_confirmation_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            runtime_terminal_confirmation_gate: Mutex::new(()),
         });
         if replay_writes > 0 {
             warn!(
@@ -1305,6 +1313,8 @@ impl SqliteBatchWriter {
             journal_sync_handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            runtime_terminal_confirmation_count: AtomicUsize::new(0),
+            runtime_terminal_confirmation_gate: Mutex::new(()),
         })
     }
 
@@ -1312,6 +1322,19 @@ impl SqliteBatchWriter {
     pub(crate) fn set_auto_flush_terminal_for_test(&self, enabled: bool) {
         self.auto_flush_terminal_for_test
             .store(enabled, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_terminal_confirmation_count_for_test(&self) -> usize {
+        self.runtime_terminal_confirmation_count
+            .load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_runtime_terminal_confirmation_for_test(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, ()> {
+        self.runtime_terminal_confirmation_gate.lock().await
     }
 
     #[cfg(test)]
@@ -1625,6 +1648,8 @@ impl SqliteBatchWriter {
             journal.durability_mode,
             TerminalJournalDurabilityMode::Journal
         ) && journal.sequence.is_some();
+        #[cfg(test)]
+        drop(self.runtime_terminal_confirmation_gate.lock().await);
         let confirmed = accepted
             && self
                 .wait_for_runtime_journal(journal.sequence)
@@ -1643,6 +1668,13 @@ impl SqliteBatchWriter {
         } else {
             false
         };
+        #[cfg(test)]
+        if enqueued {
+            // Append counters include producers still awaiting synchronization; publish only
+            // after both durable confirmation and materializer admission have completed.
+            self.runtime_terminal_confirmation_count
+                .fetch_add(1, Ordering::Release);
+        }
         TerminalEnqueueOutcome {
             enqueued,
             durability_mode: journal.durability_mode,
@@ -4941,6 +4973,8 @@ mod tests {
                 journal_sync_handle: Mutex::new(None),
                 buffered_writes: None,
                 auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+                runtime_terminal_confirmation_count: AtomicUsize::new(0),
+                runtime_terminal_confirmation_gate: Mutex::new(()),
             }),
             write_receiver,
         )

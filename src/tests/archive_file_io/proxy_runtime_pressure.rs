@@ -1,6 +1,95 @@
 use super::*;
 
 #[tokio::test]
+async fn runtime_terminal_append_does_not_confirm_materializer_admission() {
+    let fixture = std::env::temp_dir().join(format!("runtime-confirmation-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&fixture).expect("create owned confirmation fixture");
+    let mut config = test_config();
+    config.database_path = fixture.join("business.sqlite");
+    let state = test_state_from_config(config, true).await;
+    let writer = SqliteBatchWriter::spawn(
+        state.pool.clone(),
+        state.shutdown.clone(),
+        state.prompt_cache_conversation_cache.clone(),
+        state.pricing_catalog.clone(),
+        &state.config.database_path,
+    )
+    .expect("start file journal and materializer");
+    writer.set_auto_flush_terminal_for_test(false);
+    let pause = writer.pause_runtime_terminal_confirmation_for_test().await;
+    let producer = tokio::spawn({
+        let writer = writer.clone();
+        async move {
+            writer
+                .enqueue_runtime_terminal(
+                    crate::sqlite_batch_writer::BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        record: test_proxy_capture_record(
+                            "confirmation-boundary",
+                            "2026-10-13 00:00:00",
+                        ),
+                        attempts: Vec::new(),
+                        diagnostic: None,
+                        capture_started: None,
+                        raw_capture: false,
+                        dashboard_terminal_sequence: None,
+                        terminal_projection_event_ids: Vec::new(),
+                        startup_backfill_tasks: Vec::new(),
+                    },
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while writer
+            .terminal_journal_stats()
+            .pending_materialization_records
+            != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("producer must append while confirmation is paused");
+    assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 0);
+    writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush admitted work");
+    let before_confirmation: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("query materialized facts before producer confirmation");
+    assert_eq!(before_confirmation, 0);
+    assert!(!producer.is_finished());
+    drop(pause);
+    let outcome = tokio::time::timeout(Duration::from_secs(2), producer)
+        .await
+        .expect("producer confirmation deadline")
+        .expect("producer task completes");
+    assert!(outcome.enqueued);
+    assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 1);
+    writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush confirmed terminal");
+    let committed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("query materialized confirmed fact");
+    assert_eq!(committed, 1);
+    assert_eq!(
+        writer
+            .terminal_journal_stats()
+            .pending_materialization_records,
+        0
+    );
+    state.shutdown.cancel();
+    writer.shutdown_and_drain().await;
+    fs::remove_dir_all(fixture).expect("remove owned confirmation fixture");
+}
+
+#[tokio::test]
 async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure() {
     let (upstream_base, upstream_handle) =
         spawn_pool_delayed_first_chunk_upstream(Duration::from_secs(1)).await;
@@ -209,17 +298,24 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         "terminal materialization must not reintroduce AttemptProgress SQL writes"
     );
     // EOF closes the response channel before the capture task finishes journal admission.
-    // Observe that causal boundary while keeping the SQLite lock held.
+    // Append statistics include unconfirmed producers. Wait for sync and queue admission
+    // before taking the flush barrier, while keeping the SQLite lock held.
     let journal_deadline = Instant::now() + Duration::from_secs(2);
     while state
         .sqlite_batch_writer
-        .terminal_journal_stats()
-        .pending_materialization_records
+        .runtime_terminal_confirmation_count_for_test()
         < request_count
         && Instant::now() < journal_deadline
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .runtime_terminal_confirmation_count_for_test(),
+        request_count,
+        "every producer must confirm durability and materializer admission within two seconds"
+    );
     let held_lock_journal = state.sqlite_batch_writer.terminal_journal_stats();
     assert!(
         !held_lock_journal.unavailable,
@@ -259,7 +355,7 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         "complete runtime requests must never enter InteractiveProxy write admission"
     );
     println!(
-        "runtime_pressure requests={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
+        "runtime_pressure requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
         p95.as_millis(),
         held_lock_journal.pending_records,
         held_lock_journal.pending_materialization_records,
