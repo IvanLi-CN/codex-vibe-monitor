@@ -843,9 +843,12 @@ mod tests {
                 <= TERMINAL_DIAGNOSTIC_MAX_BYTES
         );
         assert!(store.health_snapshot().bytes <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES);
+        let retained = store.health_snapshot();
         let snapshots = store.claim_for_invocation("invoke-1", "2026-10-12 10:00:00");
-        assert!(store.capacity_exhausted());
+        assert_eq!(store.health_snapshot().records, retained.records);
+        assert_eq!(store.health_snapshot().bytes, retained.bytes);
         store.acknowledge_materialized(&snapshots);
+        assert_eq!(store.health_snapshot().records, 0);
         assert!(!store.capacity_exhausted());
         assert!(store.health_snapshot().rejected_records > 0);
     }
