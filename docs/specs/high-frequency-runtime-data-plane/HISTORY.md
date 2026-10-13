@@ -8,6 +8,8 @@ The repair batch extends the same runtime overlay to account-level REST/SSE atte
 
 The follow-up integrity repair adds `attempt_index` to the account-page merge tie-break so same-timestamp retries retain deterministic order. It also prevents shutdown-recovery ACK compaction after a bounded-memory rejection, preserving durable facts that were accepted by the file sink but could not enter the in-memory recovery projection; both paths emit the existing warning/health signals without making supplemental recovery faults block startup.
 
+The same repair wave now resolves account attempt locations by scanning the merged runtime/durable pages instead of calculating a SQLite-only offset, keeping locate responses stable while an attempt moves from memory to materialized storage.
+
 ## Typed Runtime Event Bus Initiative
 
 - Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.
