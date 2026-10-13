@@ -4,6 +4,7 @@
 
 ## Lifecycle / Compatibility
 
+- Public model discovery is an authentication exception for exact `GET /v1/models`: unrecognized credentials read only configured local presets, while recognized pool route keys retain upstream model-list behavior. Other proxy routes keep their authentication contract. This change adds no persistent state or migration.
 - 旧版静态代理预置候选和已启用状态由一次性迁移导入持久模型目录；迁移完成后，重启不得重新加入已删除候选。
 - 新表为增量 SQLite 状态。旧版程序不理解动态候选；旧版设置写入可能无法保留动态预置成员，回滚不删除迁移数据。
 - 模型删除、手工编辑和价格同步均不改写历史非空调用成本。

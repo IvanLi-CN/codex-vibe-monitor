@@ -140,6 +140,13 @@
 - Inputs: a failed price-application request and the current selected applicable changes.
 - Outputs: a localized retryable error and an in-Alert action that retries the current applicable selection.
 
+### REQ-MODEL-MGMT-019
+
+- The exact `GET /v1/models` endpoint MUST allow public discovery without a pool route key. Missing, malformed, unrecognized, or unavailable credentials MUST return the locally enabled preset models in the OpenAI list format, including an empty `data` array when no presets are enabled. Public discovery MUST NOT contact an upstream, select an account, allocate an invocation identity, or require a working database after settings have loaded.
+- Requests with a valid pool route key MUST retain the existing preset, upstream merge, and passthrough behavior. Other methods and paths, including inference endpoints and individual-model paths, MUST retain pool route key authentication.
+- Inputs: the request method/path, optional authorization, and the current enabled preset models.
+- Outputs: a public local catalog for unrecognized credentials, or the existing authenticated model-list response.
+
 ## Verification
 
 ### VER-MODEL-MGMT-001
@@ -213,6 +220,12 @@
 - Method: selection/apply-scope fixtures with unchanged selected quotes, later price changes, search-hidden selected rows, excluded providers, deprecated quotes, and remembered quote-provider choices.
 - covers: `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-011`, `REQ-MODEL-MGMT-015`, `REQ-MODEL-MGMT-016`, `REQ-MODEL-MGMT-017`
 - Pass condition: an unchanged quote remains checked and editable as a preference but contributes no write; a later price change restores that preference; model search preserves applicable selections and reports hidden applicable rows; provider/status exclusions omit their quotes from apply without erasing memory; the button count equals the actual payload count and is disabled at zero; applying prices preserves quote-provider and checkbox memory.
+
+### VER-MODEL-MGMT-013
+
+- Method: HTTP router regression fixtures for public model discovery and protected neighboring routes, plus the existing authenticated model-list regressions.
+- covers: `REQ-MODEL-MGMT-002`, `REQ-MODEL-MGMT-019`
+- Pass condition: missing, malformed, and invalid credentials receive exactly the configured presets without invoking an upstream or allocating invocation state; disabled legacy hijacking and enabled legacy merging do not prevent public discovery; an empty catalog and a closed database still return a valid list; authenticated preset/merge/passthrough behavior stays covered; other methods, individual-model paths, and inference routes reject missing or invalid keys.
 
 ## Related ADRs
 

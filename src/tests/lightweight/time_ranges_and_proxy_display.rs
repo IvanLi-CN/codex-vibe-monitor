@@ -313,7 +313,7 @@ async fn proxy_openai_v1_missing_pool_key_terminalizes_admitted_running_shell() 
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
+async fn proxy_openai_v1_models_returns_public_presets_for_non_pool_bearer_key() {
     let state = test_state_with_openai_base(
         Url::parse("https://example.invalid").expect("valid upstream base url"),
     )
@@ -331,17 +331,15 @@ async fn proxy_openai_v1_models_rejects_non_pool_bearer_key() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::OK);
     let payload: Value = serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX)
             .await
-            .expect("read non-pool models error body"),
+            .expect("read public models body"),
     )
-    .expect("decode non-pool models error payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
-    );
+    .expect("decode public models payload");
+    assert_eq!(payload["object"], "list");
+    assert!(!extract_model_ids(&payload).is_empty());
 }
 
 #[test]

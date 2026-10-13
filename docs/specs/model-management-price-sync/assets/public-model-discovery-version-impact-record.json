@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Allow public GET /v1/models discovery using locally enabled presets without a recognized pool route key.",
+    "release_unit_description": "Public model discovery authentication exception.",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Public API impact is patch: existing authenticated successes keep their response format and behavior; previously unauthorized discovery requests gain read-only access to configured presets. Persistent-state impact is not applicable: no schema, migration, or serialized state changes.",
+      "assessed_at": "2026-10-13T12:19:00Z",
+      "evidence": [
+        "REQ-MODEL-MGMT-019 in docs/specs/model-management-price-sync/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "Only public discovery falls back to the local catalog; valid-key upstream behavior and all other protected routes remain unchanged."
+      },
+      "reasoning": "Public API impact is patch: existing authenticated successes keep their response format and behavior; previously unauthorized discovery requests gain read-only access to configured presets. Persistent-state impact is not applicable: no schema, migration, or serialized state changes.",
+      "reassessed_at": "2026-10-13T12:19:00Z",
+      "evidence": [
+        "src/proxy/request_entry.rs handles only exact GET /v1/models before protected proxy dispatch."
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Existing authenticated model-list successes keep their response format and behavior; anonymous discovery gains a read-only local preset response. No persistent state changes are introduced, so patch is the highest verified impact.",
+      "verified_at": "2026-10-13T12:28:00Z",
+      "evidence": [
+        "15 model-list regression tests passed, including anonymous, malformed, unknown, empty, closed-database, authenticated merge, passthrough, and adjacent protected-route cases.",
+        "cargo check, clippy, formatting, Rust source-quality, Spec contract, and Spec drift checks passed."
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing OpenAI-compatible HTTP consumers on the current major line.",
+      "evidence": [
+        "The OpenAI object=list and object=model response shapes are reused.",
+        "Requests with recognized pool route keys retain preset, upstream merge, and passthrough behavior."
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Existing enabled preset settings are read without persistent writes.",
+      "source_program_compatibility_range": "Not applicable; existing SQLite state and serialized formats are unchanged.",
+      "evidence": [
+        "No schema, settings write, migration, or persisted invocation format changes."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "public-model-discovery"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "The release unit changes one additive public API exception and has no persistent-state impact."
+    ]
+  }
+}
