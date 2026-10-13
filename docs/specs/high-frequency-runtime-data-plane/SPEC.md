@@ -149,6 +149,12 @@ VER-RUNTIME-PRESSURE-01: 覆盖 32 并发代表性代理请求叠加 BEGIN IMMED
 
 ## Visual Evidence
 
+代理运行健康指标使用 mock-only Web Demo 的 `runtime-pressure-deferred` 场景生成。桌面页面视口为 `1280x1000`，移动端使用源码固定的 `393x852` CSS px；截图聚焦运行压力详情中的 attempt 内存和终态日志指标，不依赖后端、生产数据或登录状态。
+
+![Proxy runtime attempt and terminal journal health on desktop](assets/proxy-runtime-health-desktop.png)
+
+![Proxy runtime attempt and terminal journal health on mobile](assets/proxy-runtime-health-mobile393.png)
+
 以下证据由 mock-only Storybook canvas 在真实浏览器视口生成，不依赖生产数据或登录状态；桌面使用 `1660x900`，移动使用 `393x852` CSS px。
 
 ![System Status runtime pressure degraded state on desktop](assets/runtime-pressure-desktop.png)
