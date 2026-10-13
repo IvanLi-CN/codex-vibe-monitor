@@ -40,6 +40,7 @@ type LoadedShutdownTerminalRecovery = (
     HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     Vec<BatchedTerminalInvocationWrite>,
     bool,
+    Vec<ShutdownRecoveryKey>,
 );
 
 fn journal_safe_terminal_record(record: &ProxyCaptureRecord) -> ProxyCaptureRecord {
@@ -294,6 +295,8 @@ pub(crate) struct TerminalJournal {
     deferred_rejected: u64,
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
+    shutdown_recovery_order: HashMap<ShutdownRecoveryKey, u64>,
+    shutdown_recovery_next_order: u64,
     shutdown_recovery_source_clean: bool,
     shutdown_recovery_bytes: usize,
     system_task_quarantine_ids: HashSet<i64>,
@@ -834,8 +837,17 @@ impl TerminalJournal {
             .path
             .clone();
         let shutdown_recovery_path = directory.join("shutdown-terminal-quarantine.jsonl");
-        let (shutdown_recovery_pending, recovery_writes, shutdown_recovery_source_clean) =
-            load_shutdown_terminal_recovery(&shutdown_recovery_path);
+        let (
+            shutdown_recovery_pending,
+            recovery_writes,
+            shutdown_recovery_source_clean,
+            shutdown_recovery_ordered_keys,
+        ) = load_shutdown_terminal_recovery(&shutdown_recovery_path);
+        let shutdown_recovery_order = shutdown_recovery_ordered_keys
+            .iter()
+            .enumerate()
+            .map(|(order, key)| (key.clone(), order as u64))
+            .collect::<HashMap<_, _>>();
         let shutdown_recovery_bytes = shutdown_recovery_pending
             .values()
             .map(|(record, attempts)| {
@@ -897,6 +909,8 @@ impl TerminalJournal {
             replay_blocked: false,
             pending_attempt_starts,
             shutdown_recovery_pending,
+            shutdown_recovery_order,
+            shutdown_recovery_next_order: shutdown_recovery_ordered_keys.len() as u64,
             shutdown_recovery_source_clean,
             shutdown_recovery_bytes,
             system_task_quarantine_ids,
@@ -1093,11 +1107,23 @@ impl TerminalJournal {
         self.pending_by_key.insert(key, vec![entry.sequence]);
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
+        let mut acknowledgement_failed = false;
         for (attempt_public_id, start_sequence) in acknowledgement_sequences {
             let Ok(acknowledgement) = encode_acknowledgement_line(start_sequence) else {
+                warn!(
+                    sequence = start_sequence,
+                    "terminal journal attempt acknowledgement serialization failed"
+                );
+                self.append_failed = true;
+                self.overflowed = true;
+                acknowledgement_failed = true;
                 continue;
             };
-            if self.current_file.write_all(&acknowledgement).is_err() {
+            if let Err(error) = self.current_file.write_all(&acknowledgement) {
+                warn!(error = %error, sequence = start_sequence, "terminal journal attempt acknowledgement append failed");
+                self.append_failed = true;
+                self.overflowed = true;
+                acknowledgement_failed = true;
                 continue;
             }
             let acknowledgement_len = acknowledgement.len() as u64;
@@ -1120,6 +1146,9 @@ impl TerminalJournal {
             }
             self.pending_bytes = self.pending_bytes.saturating_add(acknowledgement_len);
             self.pending_attempt_starts.remove(attempt_public_id);
+        }
+        if acknowledgement_failed {
+            return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         }
         self.append_outcome(TerminalJournalDurabilityMode::Journal, Some(entry.sequence))
     }
@@ -1203,11 +1232,21 @@ impl TerminalJournal {
             return false;
         };
         let Ok(encoded) = encode_acknowledgement_line(sequence) else {
+            warn!(
+                sequence,
+                "terminal journal attempt acknowledgement serialization failed"
+            );
+            self.append_failed = true;
+            self.overflowed = true;
             return false;
         };
-        if self.pending_bytes.saturating_add(encoded.len() as u64) > TERMINAL_JOURNAL_MAX_BYTES
-            || self.current_file.write_all(&encoded).is_err()
-        {
+        if self.pending_bytes.saturating_add(encoded.len() as u64) > TERMINAL_JOURNAL_MAX_BYTES {
+            self.overflowed = true;
+            return false;
+        }
+        if let Err(error) = self.current_file.write_all(&encoded) {
+            warn!(error = %error, attempt_public_id, "terminal journal attempt acknowledgement append failed");
+            self.append_failed = true;
             self.overflowed = true;
             return false;
         }
@@ -1362,11 +1401,15 @@ impl TerminalJournal {
                     sequence,
                     "terminal journal acknowledgement serialization failed"
                 );
+                self.append_failed = true;
+                self.overflowed = true;
                 pending_sequences.push(sequence);
                 continue;
             };
             if let Err(err) = self.current_file.write_all(&encoded) {
                 warn!(error = %err, sequence, "terminal journal acknowledgement append failed");
+                self.append_failed = true;
+                self.overflowed = true;
                 pending_sequences.push(sequence);
                 continue;
             }
@@ -1432,7 +1475,7 @@ impl TerminalJournal {
             && self.shutdown_recovery_source_clean
             && let Err(err) = compact_shutdown_terminal_recovery(
                 &self.directory.join("shutdown-terminal-quarantine.jsonl"),
-                &self.shutdown_recovery_pending,
+                &self.shutdown_recovery_entries_in_order(),
             )
         {
             warn!(error = %err, "failed to compact shutdown terminal recovery sink");
@@ -1440,6 +1483,23 @@ impl TerminalJournal {
         if !self.sync_failed && self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
             self.overflowed = false;
         }
+    }
+
+    fn shutdown_recovery_entries_in_order(
+        &self,
+    ) -> Vec<(ShutdownRecoveryKey, ShutdownRecoveryValue)> {
+        let mut entries = self
+            .shutdown_recovery_pending
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|(key, _)| {
+            self.shutdown_recovery_order
+                .get(key)
+                .copied()
+                .unwrap_or(u64::MAX)
+        });
+        entries
     }
 
     pub(crate) fn remember_shutdown_recovery(
@@ -1508,6 +1568,10 @@ impl TerminalJournal {
                 && !self.pending_by_key.contains_key(&key)
             {
                 self.replay_count = self.replay_count.saturating_add(1);
+                self.shutdown_recovery_order
+                    .insert(key.clone(), self.shutdown_recovery_next_order);
+                self.shutdown_recovery_next_order =
+                    self.shutdown_recovery_next_order.saturating_add(1);
             }
             self.shutdown_recovery_bytes = self.shutdown_recovery_bytes.saturating_add(value_bytes);
         }
@@ -1548,9 +1612,16 @@ impl TerminalJournal {
             .shutdown_recovery_pending
             .keys()
             .filter(|key| !self.pending_by_key.contains_key(*key))
-            .take(max_writes)
             .cloned()
             .collect::<Vec<_>>();
+        let mut keys = keys;
+        keys.sort_by_key(|key| {
+            self.shutdown_recovery_order
+                .get(key)
+                .copied()
+                .unwrap_or(u64::MAX)
+        });
+        let keys = keys.into_iter().take(max_writes).collect::<Vec<_>>();
         for key in keys {
             let Some((record, attempts)) = self.shutdown_recovery_pending.get(&key).cloned() else {
                 continue;
@@ -2378,6 +2449,37 @@ mod tests {
         assert!(replay[0].attempts[0].request_summary_json.is_none());
         assert!(replay[0].attempts[0].requester_ip.is_none());
 
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn attempt_acknowledgement_append_failure_blocks_following_terminal_confirmation() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-attempt-ack-failure-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let attempt = test_attempt_snapshot();
+        let record =
+            crate::tests::test_proxy_capture_record(&attempt.invoke_id, &attempt.occurred_at);
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        assert!(
+            journal.append_attempt_start(&attempt).sequence.is_some(),
+            "attempt start must be accepted before injecting the append failure"
+        );
+        journal.current_file = File::open(&root).expect("open directory as failed append target");
+
+        assert!(!journal.acknowledge_attempt_start(&attempt.attempt_public_id));
+        let outcome = journal.append_with_attempts(&record, &[attempt], false, None);
+        assert_eq!(
+            outcome.durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        );
+        assert_eq!(outcome.sequence, None);
+        assert!(journal.append_failed);
+
+        drop(journal);
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 

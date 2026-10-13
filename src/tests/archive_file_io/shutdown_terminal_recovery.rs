@@ -85,12 +85,11 @@ fn shutdown_recovery_isolates_middle_damage_and_replays_valid_records() {
     fs::write(&path, &damaged).expect("damage owned fixture");
     let mut journal =
         TerminalJournal::open(&database_path).expect("middle damage must not prevent startup");
-    let mut ids = journal
+    let ids = journal
         .take_deferred_writes(32)
         .into_iter()
         .map(|write| write.record.invoke_id)
         .collect::<Vec<_>>();
-    ids.sort();
     assert_eq!(ids, ["first", "last"]);
     assert!(
         !fs::read_to_string(&path)

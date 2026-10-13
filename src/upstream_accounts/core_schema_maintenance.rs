@@ -2019,7 +2019,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         )
         .fetch_all(pool)
         .await?;
-        let controls = columns
+        let mut controls = columns
             .iter()
             .map(|column| column.1.as_str())
             .filter(|column| {
@@ -2028,6 +2028,15 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
                     || column.starts_with("cache_hit_")
             })
             .collect::<Vec<_>>();
+        if table == "pool_routing_settings" {
+            for column in ["available_models_json", "available_models_mode"] {
+                if columns.iter().any(|candidate| candidate.1 == column)
+                    && !controls.contains(&column)
+                {
+                    controls.push(column);
+                }
+            }
+        }
         if controls.is_empty() {
             continue;
         }

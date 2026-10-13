@@ -74,6 +74,8 @@
         "Shared archive-file-io runner: runtime_pending_sticky_is_fenced_by_control_aba and runtime_sticky_clear_preserves_a_reassigned_owner passed",
         "Terminal journal recovery, idempotence and corruption-preservation regression coverage passed",
         "Shared archive-file-io runner: six supplemental shutdown recovery regressions passed for incomplete tails, middle damage isolation, cleanup failure, unreadable source, complete undelimited records and acknowledgement failure",
+        "Recovery replay preserves valid source order after middle-frame isolation and primary attempt acknowledgement failures remain fail-closed",
+        "Stateful SQLite generation-fence regression confirms global model-policy updates advance existing account routing generations",
         "Shared archive-file-io runner: terminal_attempt_stays_visible_until_sqlite_commit passed, including a reader overlapping commit and runtime cleanup"
       ]
     }

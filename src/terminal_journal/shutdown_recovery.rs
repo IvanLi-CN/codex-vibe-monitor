@@ -11,6 +11,7 @@ pub(super) fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerm
                 HashMap::new(),
                 Vec::new(),
                 error.kind() == io::ErrorKind::NotFound,
+                Vec::new(),
             );
         }
     };
@@ -23,12 +24,13 @@ pub(super) fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerm
         }
         result => {
             warn!(path = %path.display(), metadata = ?result, "shutdown terminal recovery source unreadable or oversized; retaining source and continuing startup");
-            return (HashMap::new(), Vec::new(), false);
+            return (HashMap::new(), Vec::new(), false, Vec::new());
         }
     };
     let mut reader = BufReader::new(file.take(metadata.len()));
     let mut line = Vec::new();
     let mut entries = HashMap::<ShutdownRecoveryKey, Option<ShutdownRecoveryValue>>::new();
+    let mut orders = HashMap::<ShutdownRecoveryKey, u64>::new();
     let mut damaged = false;
     let mut readable = true;
     let mut line_number = 0_u64;
@@ -59,18 +61,25 @@ pub(super) fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerm
             }
         };
         let key = (entry.invoke_id, entry.occurred_at, entry.raw_capture);
+        orders.insert(key.clone(), line_number);
         if entry.acknowledged {
             entries.insert(key, None);
         } else if let Some(record) = entry.record {
             entries.insert(key, Some((record, entry.attempts)));
         }
     }
+    let mut ordered_keys = entries
+        .iter()
+        .filter_map(|(key, value)| value.as_ref().map(|_| key.clone()))
+        .collect::<Vec<_>>();
+    ordered_keys.sort_by_key(|key| orders.get(key).copied().unwrap_or_default());
     let pending = entries
         .into_iter()
         .filter_map(|(key, value)| value.map(|value| (key, value)))
         .collect::<HashMap<_, _>>();
-    let writes = pending
+    let writes = ordered_keys
         .iter()
+        .filter_map(|key| pending.get(key).map(|value| (key, value)))
         .map(
             |((invoke_id, occurred_at, raw_capture), (record, attempts))| {
                 BatchedTerminalInvocationWrite {
@@ -93,17 +102,21 @@ pub(super) fn load_shutdown_terminal_recovery(path: &Path) -> LoadedShutdownTerm
             },
         )
         .collect();
+    let ordered_pending = ordered_keys
+        .iter()
+        .filter_map(|key| pending.get(key).map(|value| (key.clone(), value.clone())))
+        .collect::<Vec<_>>();
     // Never replace a partially unread source, or damaged bytes before isolation is durable.
     let clean_source = readable
         && (!damaged || isolate_damaged_source(path).is_ok())
-        && match compact_shutdown_terminal_recovery(path, &pending) {
+        && match compact_shutdown_terminal_recovery(path, &ordered_pending) {
             Ok(()) => true,
             Err(error) => {
                 warn!(path = %path.display(), %error, "shutdown terminal recovery cleanup failed; retaining source");
                 false
             }
         };
-    (pending, writes, clean_source)
+    (pending, writes, clean_source, ordered_keys)
 }
 
 fn isolate_damaged_source(path: &Path) -> Result<()> {
@@ -153,7 +166,7 @@ pub(super) fn open_shutdown_recovery_append(path: &Path, create: bool) -> Result
 
 pub(super) fn compact_shutdown_terminal_recovery(
     path: &Path,
-    pending: &HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
+    pending: &[(ShutdownRecoveryKey, ShutdownRecoveryValue)],
 ) -> Result<()> {
     if !path.exists() {
         return Ok(());

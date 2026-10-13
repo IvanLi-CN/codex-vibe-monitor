@@ -2121,6 +2121,35 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
 }
 
 #[tokio::test]
+async fn global_model_policy_update_advances_account_routing_generation() {
+    let state = test_state_from_config(test_config(), true).await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Generation Fence", "fence-key").await;
+    let before = sqlx::query_scalar::<_, i64>(
+        "SELECT runtime_routing_generation FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account routing generation before global policy update");
+
+    sqlx::query("UPDATE pool_routing_settings SET available_models_json = ?1 WHERE id = 1")
+        .bind("[\"gpt-fenced\"]")
+        .execute(&state.pool)
+        .await
+        .expect("update global model policy");
+
+    let after = sqlx::query_scalar::<_, i64>(
+        "SELECT runtime_routing_generation FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account routing generation after global policy update");
+    assert_eq!(after, before + 1);
+}
+
+#[tokio::test]
 async fn pool_routing_cache_hit_settings_are_validated_and_partially_updated() {
     let state = test_state_from_config(test_config(), true).await;
     let Json(initial) = get_pool_routing_settings(State(state.clone()))
