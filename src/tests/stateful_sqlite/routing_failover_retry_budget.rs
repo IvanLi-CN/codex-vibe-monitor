@@ -125,7 +125,6 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
     assert_eq!(account.account_id, fallback_id);
     assert_ne!(account.account_id, preferred_id);
 }
-
 #[tokio::test]
 async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
     let state = test_state_with_openai_base(

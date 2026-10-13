@@ -1670,58 +1670,7 @@ impl SqliteBatchWriter {
                 .await
                 .is_ok();
         if !confirmed {
-            let terminals = [&terminal];
-            let mut recovery_persisted = false;
-            let recovery_reason = if accepted {
-                "runtime terminal journal confirmation failed"
-            } else {
-                "runtime terminal journal append failed"
-            };
-            warn!(
-                invoke_id = %terminal.record.invoke_id,
-                occurred_at = %terminal.record.occurred_at,
-                recovery_reason,
-                "runtime terminal was not confirmed; preserving a supplemental recovery obligation"
-            );
-            if let Ok(mut guard) = self.terminal_journal.lock()
-                && let Some(journal) = guard.as_mut()
-            {
-                match journal.quarantine_shutdown_batch(&terminals, &[], recovery_reason) {
-                    Ok(()) => {
-                        recovery_persisted = true;
-                        if !journal.remember_shutdown_recovery(&terminals) {
-                            warn!(
-                                invoke_id = %terminal.record.invoke_id,
-                                occurred_at = %terminal.record.occurred_at,
-                                "runtime terminal recovery memory is at capacity; durable fact retained for restart replay"
-                            );
-                        }
-                    }
-                    Err(error) => warn!(
-                        %error,
-                        invoke_id = %terminal.record.invoke_id,
-                        occurred_at = %terminal.record.occurred_at,
-                        recovery_reason,
-                        "runtime terminal recovery sink failed"
-                    ),
-                }
-            }
-            if !recovery_persisted
-                && let Err(error) = TerminalJournal::quarantine_shutdown_batch_at_database_path(
-                    &self.database_path,
-                    &terminals,
-                    &[],
-                    recovery_reason,
-                )
-            {
-                warn!(
-                    %error,
-                    invoke_id = %terminal.record.invoke_id,
-                    occurred_at = %terminal.record.occurred_at,
-                    recovery_reason,
-                    "independent runtime terminal recovery sink failed"
-                );
-            }
+            self.preserve_unconfirmed_runtime_terminal(&terminal, accepted);
         }
         let enqueued = if confirmed {
             self.terminal_journal.pending.register(

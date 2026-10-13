@@ -577,7 +577,6 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
     tokio::fs::write(&temp_file.path, &body)
         .await
         .expect("write large oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Large Responses OAuth".to_string(),
@@ -1061,7 +1060,6 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
     tokio::fs::write(&temp_file.path, &body)
         .await
         .expect("write oversized oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Responses OAuth".to_string(),
@@ -1206,7 +1204,6 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
     tokio::fs::write(&temp_file.path, &compressed_body)
         .await
         .expect("write compressed oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Compressed OAuth".to_string(),
@@ -1577,7 +1574,6 @@ fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
         upstream_handle.abort();
     });
 }
-
 #[test]
 fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite() {
     let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
