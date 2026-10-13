@@ -6,6 +6,8 @@ Owner clarification narrowed historical supplemental recovery failure to an isol
 
 The locate query now carries that same runtime snapshot through rank calculation and final page loading, so acknowledgement or cleanup cannot reorder the target between the two reads.
 
+The follow-up repair also makes locate page selection use one durable read snapshot, refuses to report runtime response-capture fallback success when the bounded store rejected the update, and records that rollback must drain or retain newer versioned journal frames rather than starting an incompatible older reader.
+
 The repair batch extends the same runtime overlay to account-level REST/SSE attempt pages with stable cross-page ordering. A terminal event that cannot be appended or group-synced is written to the supplemental recovery sink and warned about instead of being reported as a successful in-memory-only completion; terminal backlog age is exposed as a health metric. Selected routing control fingerprints are carried from the chosen account into the runtime attempt, preventing a late database read from crossing an administration generation boundary.
 
 The follow-up integrity repair adds `attempt_index` to the account-page merge tie-break so same-timestamp retries retain deterministic order. It also prevents shutdown-recovery ACK compaction after a bounded-memory rejection, preserving durable facts that were accepted by the file sink but could not enter the in-memory recovery projection; both paths emit the existing warning/health signals without making supplemental recovery faults block startup.

@@ -1210,7 +1210,7 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     // materialized. A capture update must not turn a rejected in-memory update
     // into a synchronous SQLite write on the request path.
     if pending.attempt_id.is_none() {
-        return Ok(());
+        bail!("runtime proxy attempt response capture metadata was not retained");
     }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)

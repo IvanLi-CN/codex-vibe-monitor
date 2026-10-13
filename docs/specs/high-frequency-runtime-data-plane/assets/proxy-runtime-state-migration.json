@@ -56,7 +56,7 @@
     "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
     "faulty_release_recovery": "forward-repair-by-a-new-program-version",
     "backup_restore_role": "separate-disaster-recovery",
-    "rollback_precondition": "Drain confirmed routing sidecar events before running a release that cannot replay them; otherwise preserve files and repair forward"
+    "rollback_precondition": "Drain confirmed routing sidecar events and all terminal journal begin/terminal obligations before running a release that cannot replay the versioned attempt-start frames; otherwise retain the journal files and repair forward. A legacy reader must never truncate or reinterpret a newer terminal journal."
   },
   "validation": {
     "minor": {

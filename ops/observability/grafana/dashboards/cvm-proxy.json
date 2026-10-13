@@ -870,6 +870,69 @@
       }
     },
     {
+      "id": 112,
+      "type": "timeseries",
+      "title": "代理运行态与终态日志健康",
+      "description": "运行态内存、终态日志积压和物化延迟；非零拒绝或失败表示需要处理，补充恢复文件问题不会阻止启动但会保留 warning。",
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 16,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cvm_proxy_runtime_journal_pending{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 未物化事件"
+        },
+        {
+          "refId": "B",
+          "expr": "cvm_proxy_runtime_journal_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 最老年龄"
+        },
+        {
+          "refId": "C",
+          "expr": "cvm_proxy_runtime_materialization_delay_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 最近物化延迟"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "id": 99,
       "type": "row",
       "title": "首字节、模型输出与上游尝试",

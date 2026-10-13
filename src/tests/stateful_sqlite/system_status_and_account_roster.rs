@@ -536,6 +536,12 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(payload["process"]["unattributedAnonBytes"].is_u64());
     assert!(payload["allocator"]["mallocArenaMax"].is_string());
     assert_eq!(payload["writerAccounting"]["state"], "healthy");
+    assert!(payload["runtimeAttempts"]["records"].is_u64());
+    assert!(payload["runtimeAttempts"]["bytes"].is_u64());
+    assert!(payload["runtimeAttempts"]["rejectedRecords"].is_u64());
+    assert!(payload["terminalJournal"]["pendingMaterializationRecords"].is_u64());
+    assert!(payload["terminalJournal"]["pendingBytes"].is_u64());
+    assert!(payload["terminalJournal"]["oldestPendingAgeMs"].is_u64());
     assert!(payload["databasePressure"]["pressureEvents"].is_u64());
     assert!(payload["databasePressure"]["sqliteBusyEvents"].is_u64());
     assert!(payload["databasePressure"]["sqliteLockedEvents"].is_u64());

@@ -45,6 +45,11 @@ struct UpstreamAccountAttemptFilters {
     sticky_key: Option<String>,
 }
 
+struct MergedAttemptPageOverride {
+    ids: Vec<String>,
+    total: usize,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct ModelRoutingAttemptRow {
     id: i64,
@@ -849,6 +854,7 @@ pub(crate) async fn load_upstream_account_attempt_page_from_query(
         page_size,
         &filters,
         runtime_items,
+        None,
     )
     .await
 }
@@ -894,13 +900,14 @@ pub(crate) async fn locate_upstream_account_attempt(
             )
         })?
     };
-    let newer_count = load_merged_account_attempt_rank(
+    let (newer_count, total, merged_page_ids) = load_merged_account_attempt_page_for_target(
         &state.pool,
         account_id,
         &cutoff,
         &filters,
         &runtime_items,
         &target,
+        page_size,
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -912,6 +919,10 @@ pub(crate) async fn locate_upstream_account_attempt(
         page_size,
         &filters,
         runtime_items,
+        Some(MergedAttemptPageOverride {
+            ids: merged_page_ids,
+            total,
+        }),
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -935,6 +946,7 @@ async fn load_upstream_account_attempt_page(
         page_size,
         filters,
         runtime_items,
+        None,
     )
     .await
 }
@@ -946,12 +958,15 @@ async fn load_upstream_account_attempt_page_with_runtime_items(
     page_size: usize,
     filters: &UpstreamAccountAttemptFilters,
     runtime_items: Vec<ApiPoolUpstreamRequestAttempt>,
+    page_override: Option<MergedAttemptPageOverride>,
 ) -> Result<UpstreamAccountAttemptListResponse> {
     let pool = &state.pool;
     let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
     // Keep the runtime snapshot captured by the caller across rank and page materialization.
     let global_offset = page.saturating_sub(1).saturating_mul(page_size);
-    let (total, merged_page_ids) = if runtime_items.is_empty() {
+    let (total, merged_page_ids) = if let Some(page_override) = page_override {
+        (page_override.total, Some(page_override.ids))
+    } else if runtime_items.is_empty() {
         (
             load_upstream_account_attempt_total(pool, account_id, &cutoff, filters).await?,
             None,
@@ -1161,14 +1176,15 @@ async fn load_merged_account_attempt_page_ids(
     Ok((total, rows.into_iter().filter_map(|(id, _)| id).collect()))
 }
 
-async fn load_merged_account_attempt_rank(
+async fn load_merged_account_attempt_page_for_target(
     pool: &Pool<Sqlite>,
     account_id: i64,
     cutoff: &str,
     filters: &UpstreamAccountAttemptFilters,
     runtime_items: &[ApiPoolUpstreamRequestAttempt],
     target: &(String, i64, i64, String),
-) -> Result<usize> {
+    page_size: usize,
+) -> Result<(usize, usize, Vec<String>)> {
     let identities = runtime_items
         .iter()
         .map(|item| {
@@ -1196,8 +1212,8 @@ async fn load_merged_account_attempt_rank(
     push_upstream_account_attempt_filters(&mut query, filters, true);
     query.push(
         " AND attempts.attempt_public_id NOT IN (SELECT attempt_id FROM runtime_attempts)), \
-         combined AS (SELECT * FROM durable_attempts UNION ALL SELECT * FROM runtime_attempts) \
-         SELECT COUNT(*) FROM combined WHERE occurred_at > ",
+         combined AS (SELECT * FROM durable_attempts UNION ALL SELECT * FROM runtime_attempts), \
+         target_rank AS (SELECT COUNT(*) AS newer_count FROM combined WHERE occurred_at > ",
     );
     query
         .push_bind(&target.0)
@@ -1219,11 +1235,38 @@ async fn load_merged_account_attempt_rank(
         .push_bind(target.2)
         .push(" AND attempt_id > ")
         .push_bind(&target.3);
-    Ok(query
-        .build_query_scalar::<i64>()
-        .fetch_one(pool)
-        .await?
-        .max(0) as usize)
+    query
+        .push(
+            "), ranked AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC) AS ordinal FROM combined), totals AS (SELECT COUNT(*) AS total FROM combined), page AS (SELECT ranked.attempt_id FROM ranked CROSS JOIN target_rank WHERE ranked.ordinal > (target_rank.newer_count / ",
+        )
+        .push_bind(page_size as i64)
+        .push(") * ")
+        .push_bind(page_size as i64)
+        .push(" AND ranked.ordinal <= ((target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") + 1) * ")
+        .push_bind(page_size as i64)
+        .push("), page_or_empty AS (SELECT attempt_id, ordinal FROM ranked CROSS JOIN target_rank WHERE ordinal > (target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") * ")
+        .push_bind(page_size as i64)
+        .push(" AND ordinal <= ((target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") + 1) * ")
+        .push_bind(page_size as i64)
+        .push(" UNION ALL SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM page)) SELECT page_or_empty.attempt_id, totals.total, target_rank.newer_count FROM page_or_empty CROSS JOIN totals CROSS JOIN target_rank ORDER BY page_or_empty.ordinal IS NULL, page_or_empty.ordinal");
+    let rows = query
+        .build_query_as::<(Option<String>, i64, i64)>()
+        .fetch_all(pool)
+        .await?;
+    let Some((_, total, newer_count)) = rows.first() else {
+        return Ok((0, 0, Vec::new()));
+    };
+    Ok((
+        (*newer_count).max(0) as usize,
+        (*total).max(0) as usize,
+        rows.into_iter().filter_map(|(id, _, _)| id).collect(),
+    ))
 }
 
 async fn load_runtime_upstream_account_attempts(

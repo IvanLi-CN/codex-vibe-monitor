@@ -29,6 +29,8 @@
 
 资源枚举为 sqlite_coordinator、db_pool、account_capacity、retry_backoff、downstream_channel、terminal_priority、journal_lock。downstream_channel 只在 `try_send` 发现容量已满后记录实际等待，避免把立即发送归作背压。前台 DB 获取与 begin 测量的是 API 等待区间，不声称排除了驱动内部执行。connect 包括当前可见的 DNS/TCP/TLS/代理建立区间，不拆出无法单独观测的成本；attempt 区间结束于上游 head，body 转发另列。
 
+代理运行态与终态日志指标是固定无动态标签的 Gauge/Counter；`journal` 仅为 `terminal` 或 `routing`。`cvm_proxy_runtime_attempt_store{measure="records|bytes"}` 表示有界内存占用，`cvm_proxy_runtime_attempt_rejections` 表示容量拒绝累计；`cvm_proxy_runtime_journal_pending`、`_bytes`、`_age_seconds` 表示确认后尚未物化的终态或路由日志积压；`cvm_proxy_runtime_materialization_delay_seconds` 表示最近一次物化耗时；`cvm_proxy_runtime_journal_rejections`、`_replayed`、`_failed` 表示路由日志的拒绝、重放和失败累计；`cvm_proxy_runtime_interactive_write_admissions` 与 `cvm_proxy_runtime_attempt_progress_enqueued` 是代理热路径不应增长的保护计数。它们在 `cvm-proxy` 的“代理运行态与终态日志健康”面板中展示，缺失值保持 Unknown。
+
 完整响应、阶段、累计里程碑、每请求等待、未归因与落盘使用 16 个有限 buckets（秒）：`0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60, 120, 300, 600`；其余短等待保留既有 short buckets。统计页同窗计算 p50/p95/p99、平均值与样本数；不同分位数、事件和请求分母不得混用。
 
 响应 root 的 count/sum/max 及八个最长已结束等待区间是有界明细；响应关闭时仍在等待的区间累计到该时刻，root 标记 lower_bound，未结束事件的 max/count 尚未成为完整值。非流式、非文本、前置拒绝或不支持 model delta 的路径标记 TTFT not_applicable；应观测但未见有效 delta 的成功流标记 unobserved。落盘完成可晚于响应 root；共享 coordinator、pool 和执行工作仅记录一次，并通过 span links 关联，不能给每条请求复制独占成本。
