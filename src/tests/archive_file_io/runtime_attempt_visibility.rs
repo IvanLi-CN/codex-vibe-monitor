@@ -197,7 +197,7 @@ async fn terminal_attempt_stays_visible_until_sqlite_commit() {
 }
 
 async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
-    state: &AppState,
+    state: &Arc<AppState>,
     mut baseline: crate::app_state::RuntimeAttemptSnapshot,
 ) {
     let account = baseline.upstream_account_id;
@@ -292,5 +292,22 @@ async fn assert_account_attempt_pages_merge_and_deduplicate_runtime(
     assert_eq!(
         actual, expected,
         "global ordering spans pages without gaps or duplicates"
+    );
+    let Json(located) = locate_upstream_account_attempt(
+        State(state.clone()),
+        axum::extract::Path(account),
+        Query(LocateUpstreamAccountAttemptQuery {
+            attempt_id: "mixed-account-attempt-1".to_string(),
+            page_size: Some(20),
+        }),
+    )
+    .await
+    .expect("locate should use the merged runtime ordering");
+    assert_eq!(located.page, 3);
+    assert!(
+        located
+            .items
+            .iter()
+            .any(|item| item.attempt_id == "mixed-account-attempt-1")
     );
 }

@@ -65,6 +65,42 @@ fn recovery_terminal(id: &str) -> BatchedTerminalInvocationWrite {
 }
 
 #[test]
+fn shutdown_recovery_capacity_rejection_survives_ack_compaction() {
+    let root =
+        std::env::temp_dir().join(format!("shutdown-recovery-capacity-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&root).expect("create owned recovery fixture");
+    let database_path = root.join("business.sqlite");
+    let mut journal = TerminalJournal::open(&database_path).expect("open recovery journal");
+    for index in 0..4095 {
+        let terminal = recovery_terminal(&format!("capacity-filler-{index}"));
+        assert!(journal.remember_shutdown_recovery(&[&terminal]));
+    }
+    let accepted = recovery_terminal("capacity-accepted");
+    journal
+        .quarantine_shutdown_batch(&[&accepted], &[], "fixture")
+        .expect("persist accepted recovery");
+    assert!(journal.remember_shutdown_recovery(&[&accepted]));
+    let rejected = recovery_terminal("capacity-rejected");
+    journal
+        .quarantine_shutdown_batch(&[&rejected], &[], "fixture")
+        .expect("persist rejected recovery");
+    assert!(!journal.remember_shutdown_recovery(&[&rejected]));
+    journal.acknowledge(
+        &accepted.record.invoke_id,
+        &accepted.record.occurred_at,
+        false,
+    );
+    let path =
+        terminal_journal_directory(&database_path).join("shutdown-terminal-quarantine.jsonl");
+    assert!(
+        fs::read_to_string(path)
+            .expect("read retained recovery source")
+            .contains("capacity-rejected")
+    );
+    fs::remove_dir_all(root).expect("remove owned recovery fixture");
+}
+
+#[test]
 fn shutdown_recovery_isolates_middle_damage_and_replays_valid_records() {
     let root = std::env::temp_dir().join(format!("shutdown-middle-{}", nanoid::nanoid!()));
     fs::create_dir_all(&root).expect("create owned fixture");

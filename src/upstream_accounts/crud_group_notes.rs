@@ -848,66 +848,33 @@ pub(crate) async fn locate_upstream_account_attempt(
     Query(params): Query<LocateUpstreamAccountAttemptQuery>,
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
-    let target_occurred_at = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT occurred_at
-        FROM pool_upstream_request_attempts
-        WHERE attempt_public_id = ?1
-          AND upstream_account_id = ?2
-          AND occurred_at >= ?3
-        "#,
-    )
-    .bind(&params.attempt_id)
-    .bind(account_id)
-    .bind(&cutoff)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(internal_error_tuple)?
-    .ok_or_else(|| {
-        (
-            StatusCode::NOT_FOUND,
-            "upstream account attempt was not found".to_string(),
+    let filters = UpstreamAccountAttemptFilters::default();
+    let mut page = 1;
+    loop {
+        let response = load_upstream_account_attempt_page(
+            state.as_ref(),
+            account_id,
+            page,
+            page_size,
+            &filters,
         )
-    })?;
-    let newer_count = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM pool_upstream_request_attempts
-        WHERE upstream_account_id = ?1
-          AND occurred_at >= ?2
-          AND (
-                occurred_at > ?3
-                OR (
-                    occurred_at = ?3
-                    AND id > (
-                        SELECT id
-                        FROM pool_upstream_request_attempts
-                        WHERE attempt_public_id = ?4
-                    )
-                )
-              )
-        "#,
-    )
-    .bind(account_id)
-    .bind(&cutoff)
-    .bind(&target_occurred_at)
-    .bind(&params.attempt_id)
-    .fetch_one(&state.pool)
-    .await
-    .map_err(internal_error_tuple)?
-    .max(0) as usize;
-    let page = newer_count / page_size + 1;
-    let response = load_upstream_account_attempt_page(
-        state.as_ref(),
-        account_id,
-        page,
-        page_size,
-        &UpstreamAccountAttemptFilters::default(),
-    )
-    .await
-    .map_err(internal_error_tuple)?;
-    Ok(Json(response))
+        .await
+        .map_err(internal_error_tuple)?;
+        if response
+            .items
+            .iter()
+            .any(|item| item.attempt_id == params.attempt_id)
+        {
+            return Ok(Json(response));
+        }
+        if response.items.is_empty() || page >= response.total.div_ceil(page_size) {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "upstream account attempt was not found".to_string(),
+            ));
+        }
+        page += 1;
+    }
 }
 
 async fn load_upstream_account_attempt_page(
@@ -1029,7 +996,7 @@ async fn load_upstream_account_attempt_page(
         separated.push_unseparated(")");
     }
     query
-        .push(" ORDER BY attempts.occurred_at DESC, attempts.id DESC LIMIT ")
+        .push(" ORDER BY attempts.occurred_at DESC, attempts.attempt_index DESC, attempts.id DESC, attempts.attempt_public_id DESC LIMIT ")
         .push_bind(page_size as i64)
         .push(" OFFSET ")
         .push_bind(if merged_page_ids.is_some() {
