@@ -8,6 +8,8 @@ Activity、summary 与 network topic 已有 typed projection/materializer。work
 
 ## Typed Runtime Event Bus Boundary
 
+代理运行压力测试把日志 append、分组同步确认、物化准入和 SQLite 提交分别观测。`runtime_terminal_append_does_not_confirm_materializer_admission` 暂停 append 后的生产者并验证确认前后 flush 的区别；代表性 32 请求场景在持续持有 SQLite 写锁期间等待全部生产者确认，随后要求精确 32 条终态业务事实和零未物化积压。测试确认计数与暂停 gate 仅在 `cfg(test)` 存在，不改变生产路由或持久化行为。
+
 The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.
 
 Backfill scheduling is event-driven. `startup_backfill_progress` persists each task cursor, `next_run_after`, source-unavailable state, daily probe deadline and wake generation; the supervisor mirrors the recovered per-task deadlines in memory, then sleeps until the earliest deadline or a matching task wake. Archive materialization wakes only archive-activity and historical-rollup work. A source-unavailable probe remains bounded to 100 rows or two seconds, while pressure deferral persists a retry deadline without producing a `system_task_runs` audit row. A no-op pass does not run unrelated rollup maintenance or create a task-run audit row. Health aggregates event-bus lag, projection recovery, and writer pressure using in-memory counters without adding status-page SQL.

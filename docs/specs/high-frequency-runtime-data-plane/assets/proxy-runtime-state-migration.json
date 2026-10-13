@@ -67,7 +67,13 @@
         "Re-entry after confirmed-before-materialized interruption",
         "Account disable-enable and sticky ownership fences"
       ],
-      "evidence_status": "pending-final-candidate-validation"
+      "evidence_status": "passed",
+      "evidence": [
+        "Shared stateful-sqlite runner: legacy pool routing settings and legacy block policy upgrade tests passed",
+        "Shared archive-file-io runner: runtime_routing_replays_confirmed_facts_and_deduplicates_after_commit passed",
+        "Shared archive-file-io runner: runtime_pending_sticky_is_fenced_by_control_aba and runtime_sticky_clear_preserves_a_reassigned_owner passed",
+        "Terminal journal recovery, idempotence and corruption-preservation regression coverage passed"
+      ]
     }
   }
 }

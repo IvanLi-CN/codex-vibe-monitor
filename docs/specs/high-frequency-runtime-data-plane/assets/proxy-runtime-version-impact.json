@@ -36,7 +36,15 @@
         "src/upstream_accounts/routing/runtime_facts/journal.rs"
       ]
     },
-    "verified": null
+    "verified": {
+      "impact": "minor",
+      "reasoning": "Existing HTTP/SSE routing regressions and legacy SQLite fixtures remain supported; new authenticated routing sidecar state requires the next Minor for recovery compatibility",
+      "evidence": [
+        "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs legacy routing settings and policy migration tests",
+        "src/tests/archive_file_io/proxy_runtime_routing.rs reopen replay, audit deduplication, control ABA and sticky ownership tests",
+        "src/terminal_journal.rs legacy terminal decoder and restart recovery tests"
+      ]
+    }
   },
   "compatibility_evidence": {
     "public_api": {
@@ -44,7 +52,7 @@
       "supported_consumer_range": "Existing HTTP/SSE clients within Major 4",
       "impact": "patch",
       "evidence": [
-        "Existing route regression suite, pending final validation"
+        "Existing stateful SQLite route regression cases passed in the shared runner; final release still requires current-head CI"
       ]
     },
     "persistent_state": {
@@ -62,7 +70,9 @@
     "member_change_records": [
       "proxy-runtime-version-impact.json"
     ],
-    "maximum_verified_impact": null,
-    "calculation_evidence": []
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": [
+      "max(public_api=patch,persistent_state=minor)=minor"
+    ]
   }
 }
