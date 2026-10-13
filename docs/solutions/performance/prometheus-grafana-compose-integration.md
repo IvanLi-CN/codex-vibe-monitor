@@ -1,5 +1,5 @@
 ---
-title: Prometheus 与 Grafana Compose 集成
+title: Prometheus、Tempo 与 Grafana Compose 观测集成
 module: observability
 problem_type: external performance observability deployment
 component: Prometheus, Tempo, Grafana, Docker Compose, hotpath-rs
@@ -15,7 +15,7 @@ related_specs:
   - docs/specs/performance-telemetry/SPEC.md
 ---
 
-# Prometheus 与 Grafana Compose 集成
+# Prometheus、Tempo 与 Grafana Compose 观测集成
 
 这篇 solution 是本项目把性能观测接入 Prometheus、Grafana，并通过 Docker Compose 部署监控组件时的可复用操作合同。它面向后续开发者和运维人员，解释职责、配置入口、鉴权边界、验证顺序和诊断工具。示例只适用于本地或 CI 隔离环境；其中的域名、路径、凭据和镜像身份均为占位符或运行时生成值，不代表任何部署实例。
 
