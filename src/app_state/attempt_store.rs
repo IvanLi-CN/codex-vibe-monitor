@@ -526,6 +526,13 @@ impl RuntimeAttemptStore {
         }
     }
 
+    pub(crate) fn capacity_exhausted(&self) -> bool {
+        let health = self.health_snapshot();
+        health.records >= PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS
+            || health.bytes.saturating_add(TERMINAL_MEMORY_RESERVE)
+                >= PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+    }
+
     fn evict_expired(&self, inner: &mut RuntimeAttemptStoreInner) {
         let now = Instant::now();
         inner.terminal_keys.retain(|_, retained_at| {
@@ -757,6 +764,7 @@ mod tests {
         let health = store.health_snapshot();
         assert_eq!(health.records, 0);
         assert_eq!(health.rejected_records, 1);
+        assert!(!store.capacity_exhausted());
     }
 
     #[test]
@@ -767,6 +775,7 @@ mod tests {
             count += 1;
         }
         assert!(count > 1);
+        assert!(store.capacity_exhausted());
         let mut terminal = snapshot("attempt-0", "failed");
         terminal.finished_at = Some("2026-10-12 10:00:01".to_string());
         terminal.status = "failed".to_string();
@@ -785,5 +794,8 @@ mod tests {
                 <= TERMINAL_DIAGNOSTIC_MAX_BYTES
         );
         assert!(store.health_snapshot().bytes <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES);
+        store.take_for_invocation("invoke-1", "2026-10-12 10:00:00");
+        assert!(!store.capacity_exhausted());
+        assert!(store.health_snapshot().rejected_records > 0);
     }
 }

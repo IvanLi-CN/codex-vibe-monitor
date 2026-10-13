@@ -387,7 +387,7 @@ pub(crate) async fn run() -> Result<()> {
             prompt_cache_conversation_cache.clone(),
             pricing_catalog.clone(),
             &config.database_path,
-        );
+        )?;
         sqlite_batch_writer.bind_observability(observability.clone());
         sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
         sqlite_batch_writer

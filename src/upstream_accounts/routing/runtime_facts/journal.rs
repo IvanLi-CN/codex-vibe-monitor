@@ -204,16 +204,25 @@ impl RouteJournal {
     }
 
     fn compact(&mut self) -> Result<()> {
+        self.compact_with(atomic_replace)
+    }
+
+    fn compact_with(&mut self, replace: impl FnOnce(&Path, &[u8]) -> Result<()>) -> Result<()> {
         let mut pending = Vec::new();
         for (_, frame) in &self.frames {
             pending.extend_from_slice(frame);
         }
-        atomic_replace(&self.path, &pending)?;
-        self.file = OpenOptions::new()
+        // Replacement may have renamed the path before reporting a directory-sync error.
+        // Never acknowledge a later append to the old, unlinked inode in that case.
+        self.append_failed = true;
+        replace(&self.path, &pending)?;
+        let file = OpenOptions::new()
             .append(true)
             .open(&self.path)
             .context("reopen compacted route journal")?;
+        self.file = file;
         self.bytes = pending.len();
+        self.append_failed = false;
         Ok(())
     }
 }
@@ -287,4 +296,32 @@ fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<()> {
     )?
     .sync_all()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replacement_sync_failure_closes_durability_acknowledgements() {
+        let root =
+            std::env::temp_dir().join(format!("route-replace-failure-{}", nanoid::nanoid!()));
+        let (mut journal, _) = RouteJournal::open(&root, &[0; 32]).expect("open fixture");
+        let result = journal.compact_with(|path, bytes| {
+            let temporary = path.with_extension("failure-fixture");
+            fs::write(&temporary, bytes)?;
+            fs::rename(&temporary, path)?;
+            bail!("injected directory sync failure after rename")
+        });
+        assert!(result.is_err());
+        assert!(journal.append_failed());
+        assert!(
+            journal.sync().is_err(),
+            "old inode cannot confirm new facts"
+        );
+        drop(journal);
+        let (_, recovered) = RouteJournal::open(&root, &[0; 32]).expect("reopen active path");
+        assert!(recovered.is_empty());
+        fs::remove_dir_all(root).expect("remove owned fixture");
+    }
 }

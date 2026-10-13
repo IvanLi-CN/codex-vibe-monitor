@@ -291,7 +291,7 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || retention_write_health.state == "degraded"
             || retention_recovery.state == "degraded"
             || event_bus.state == "degraded"
-            || runtime_attempts.rejected_records > 0
+            || state.proxy_runtime_attempts.capacity_exhausted()
             || terminal_journal.overflowed
             || backfill.state == "degraded",
         projection_deferred

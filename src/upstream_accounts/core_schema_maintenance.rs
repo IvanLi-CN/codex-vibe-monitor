@@ -591,8 +591,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             ) || column.starts_with("policy_")
         })
         .collect::<Vec<_>>();
+    let mut fence_tx = pool.begin_with("BEGIN IMMEDIATE").await?;
     sqlx::query("DROP TRIGGER IF EXISTS pool_upstream_accounts_runtime_control_fence")
-        .execute(pool)
+        .execute(&mut *fence_tx)
         .await?;
     let predicate = controls
         .iter()
@@ -604,9 +605,10 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         controls.join(",")
     );
     sqlx::query(&trigger)
-        .execute(pool)
+        .execute(&mut *fence_tx)
         .await
         .context("install routing control generation fence")?;
+    fence_tx.commit().await?;
 
     sqlx::query(
         r#"
@@ -2029,15 +2031,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         if controls.is_empty() {
             continue;
         }
+        let mut fence_tx = pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
-            .execute(pool)
+            .execute(&mut *fence_tx)
             .await?;
         let predicate = controls
             .iter()
             .map(|column| format!("OLD.{column} IS NOT NEW.{column}"))
             .collect::<Vec<_>>()
             .join(" OR ");
-        sqlx::query(&format!("CREATE TRIGGER {trigger_name} AFTER UPDATE OF {} ON {table} WHEN {predicate} BEGIN UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE {account_filter}; END", controls.join(","))).execute(pool).await?;
+        sqlx::query(&format!("CREATE TRIGGER {trigger_name} AFTER UPDATE OF {} ON {table} WHEN {predicate} BEGIN UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE {account_filter}; END", controls.join(","))).execute(&mut *fence_tx).await?;
+        fence_tx.commit().await?;
     }
 
     Ok(())

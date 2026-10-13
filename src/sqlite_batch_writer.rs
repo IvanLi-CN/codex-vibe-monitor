@@ -1173,7 +1173,7 @@ impl SqliteBatchWriter {
         prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
         pricing_catalog: Arc<RwLock<PricingCatalog>>,
         database_path: &Path,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let queued_p1_count = Arc::new(AtomicUsize::new(0));
         let p1_priority_gate = Arc::new(std::sync::Mutex::new(()));
@@ -1187,13 +1187,10 @@ impl SqliteBatchWriter {
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
         let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
-        let terminal_journal = match TerminalJournal::open(database_path) {
-            Ok(journal) => Some(journal),
-            Err(err) => {
-                warn!(error = %err, path = %database_path.display(), "terminal journal unavailable; using memory durability fallback");
-                None
-            }
-        };
+        let terminal_journal = Some(
+            TerminalJournal::open(database_path)
+                .context("terminal journal recovery failed; refusing memory durability fallback")?,
+        );
         let replay_writes = terminal_journal
             .as_ref()
             .map(|journal| journal.stats().replay_count)
@@ -1264,7 +1261,7 @@ impl SqliteBatchWriter {
                 "requeued terminal journal records during startup"
             );
         }
-        writer
+        Ok(writer)
     }
 
     #[cfg(test)]
@@ -5276,7 +5273,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
@@ -5958,7 +5956,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
@@ -6013,7 +6012,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
@@ -6063,7 +6063,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
                 account_id: 999_995,
@@ -6124,7 +6125,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
                 account_id: 999_993,
@@ -6569,7 +6571,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
@@ -6728,7 +6731,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,

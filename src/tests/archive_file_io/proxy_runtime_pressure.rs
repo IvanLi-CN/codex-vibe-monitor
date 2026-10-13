@@ -8,7 +8,22 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
     config.pool_upstream_responses_attempt_timeout = Duration::from_secs(5);
-    let state = test_state_from_config(config, true).await;
+    let fixture = std::env::temp_dir().join(format!("runtime-pressure-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&fixture).expect("create owned pressure fixture");
+    config.database_path = fixture.join("business.sqlite");
+    let mut state = test_state_from_config(config, true).await;
+    let mutable = Arc::get_mut(&mut state).expect("fixture has one state owner");
+    mutable.sqlite_batch_writer = SqliteBatchWriter::spawn(
+        mutable.pool.clone(),
+        mutable.shutdown.clone(),
+        mutable.prompt_cache_conversation_cache.clone(),
+        mutable.pricing_catalog.clone(),
+        &mutable.config.database_path,
+    )
+    .expect("use the production file journal and background materializer");
+    mutable
+        .sqlite_batch_writer
+        .set_terminal_runtime_store(mutable.proxy_runtime_invocations.clone());
     state
         .sqlite_batch_writer
         .set_auto_flush_terminal_for_test(false);
@@ -47,15 +62,16 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         .execute(&mut *locked_connection)
         .await
         .expect("hold SQLite write pressure lock");
+    let scenario_started = Instant::now();
     let mut requests = Vec::with_capacity(request_count);
     for index in 0..request_count {
         let state = state.clone();
         requests.push(tokio::spawn(async move {
             let started = Instant::now();
-            let response = proxy_openai_v1_via_pool(
+            let response = proxy_openai_v1_inner(
                 state.clone(),
                 20_000 + index as u64,
-                &"/v1/responses".parse().expect("valid uri"),
+                "/v1/responses".parse().expect("valid uri"),
                 Method::POST,
                 HeaderMap::from_iter([
                     (
@@ -75,10 +91,19 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
                 Body::from(Bytes::from_static(
                     br#"{"model":"gpt-5","input":"pressure"}"#,
                 )),
+                state
+                    .config
+                    .openai_upstream_base_url
+                    .join("v1/responses")
+                    .expect("target URL"),
+                None,
+                true,
                 resolve_proxy_request_timeouts(state.as_ref(), true)
                     .await
                     .expect("resolve proxy request timeouts"),
                 None,
+                None,
+                started,
             )
             .await
             .expect("proxy request should complete");
@@ -183,7 +208,41 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         progress_before,
         "terminal materialization must not reintroduce AttemptProgress SQL writes"
     );
+    // EOF closes the response channel before the capture task finishes journal admission.
+    // Observe that causal boundary while keeping the SQLite lock held.
+    let journal_deadline = Instant::now() + Duration::from_secs(2);
+    while state
+        .sqlite_batch_writer
+        .terminal_journal_stats()
+        .pending_materialization_records
+        < request_count
+        && Instant::now() < journal_deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let held_lock_journal = state.sqlite_batch_writer.terminal_journal_stats();
+    assert!(
+        !held_lock_journal.unavailable,
+        "file journal must be active"
+    );
+    assert_eq!(
+        held_lock_journal.pending_materialization_records, request_count,
+        "all confirmed terminal events must remain recoverable while the writer is locked: {held_lock_journal:?}"
+    );
+    assert!(held_lock_journal.pending_bytes > 0);
+    assert!(
+        held_lock_journal.checkpoint_lag_ms < 5_000,
+        "journal age budget"
+    );
+    let before_commit: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE source='proxy'")
+            .fetch_one(&mut *locked_connection)
+            .await
+            .expect("read held-lock snapshot");
+    assert_eq!(
+        before_commit, 0,
+        "no terminal fact commits through the held write lock"
+    );
     let coordinator_after_terminal =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
@@ -221,13 +280,33 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         drain_started.elapsed() < Duration::from_secs(5),
         "terminal materialization drain budget"
     );
+    let committed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE source='proxy'")
+            .fetch_one(&state.pool)
+            .await
+            .expect("read materialized business facts");
+    assert_eq!(committed, request_count as i64);
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .terminal_journal_stats()
+            .pending_materialization_records,
+        0
+    );
+    assert!(
+        scenario_started.elapsed() < Duration::from_secs(5),
+        "request-start to durable terminal commit upper bound includes journal and materialization delay"
+    );
     println!(
-        "runtime_pressure materialization_drain_ms={}",
-        drain_started.elapsed().as_millis()
+        "runtime_pressure materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
+        drain_started.elapsed().as_millis(),
+        scenario_started.elapsed().as_millis()
     );
     if let Some(runtime) = state.upstream_accounts.route_facts.lock().await.clone() {
         runtime.shutdown_and_sync().await;
     }
     state.shutdown.cancel();
+    state.sqlite_batch_writer.shutdown_and_drain().await;
     upstream_handle.abort();
+    fs::remove_dir_all(fixture).expect("remove owned pressure fixture");
 }
