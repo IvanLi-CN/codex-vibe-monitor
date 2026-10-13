@@ -783,7 +783,9 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Run deterministic representative-scale acceptance
-        run: bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::routing_timeout_and_overload_failover::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
+        run: |
+          bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
+          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
 
   backend-tests-archive-file-io:
     needs: backend-test-archive

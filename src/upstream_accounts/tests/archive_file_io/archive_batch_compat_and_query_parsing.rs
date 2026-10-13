@@ -3171,6 +3171,7 @@ async fn resolve_pool_account_upstream_base_url_only_overrides_api_key_accounts(
 
     fn build_row(kind: &str, upstream_base_url: Option<&str>) -> UpstreamAccountRow {
         UpstreamAccountRow {
+            runtime_routing_generation: 0,
             id: 1,
             kind: kind.to_string(),
             provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),

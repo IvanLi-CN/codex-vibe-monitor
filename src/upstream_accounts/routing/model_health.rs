@@ -37,36 +37,36 @@ pub(crate) struct ModelRouteCacheObservationOutcome {
     pub(crate) availability_increased: bool,
 }
 
-#[derive(Debug, Clone, FromRow)]
-struct ModelRouteRow {
-    account_id: i64,
-    model: String,
-    state: String,
-    priority: String,
-    consecutive_failures: i64,
-    streak_started_at: Option<String>,
-    changed_at: Option<String>,
-    last_seen_at: String,
-    last_success_at: Option<String>,
-    last_failure_at: Option<String>,
-    last_failure_kind: Option<String>,
-    last_failure_message: Option<String>,
-    cooldown_until: Option<String>,
-    reset_fence_at: Option<String>,
+#[derive(Debug, Clone, FromRow, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub(super) struct ModelRouteRow {
+    pub(super) account_id: i64,
+    pub(super) model: String,
+    pub(super) state: String,
+    pub(super) priority: String,
+    pub(super) consecutive_failures: i64,
+    pub(super) streak_started_at: Option<String>,
+    pub(super) changed_at: Option<String>,
+    pub(super) last_seen_at: String,
+    pub(super) last_success_at: Option<String>,
+    pub(super) last_failure_at: Option<String>,
+    pub(super) last_failure_kind: Option<String>,
+    pub(super) last_failure_message: Option<String>,
+    pub(super) cooldown_until: Option<String>,
+    pub(super) reset_fence_at: Option<String>,
     #[sqlx(default)]
-    cache_concurrency_limit: Option<i64>,
+    pub(super) cache_concurrency_limit: Option<i64>,
     #[sqlx(default)]
-    cache_recovery_limit: Option<i64>,
+    pub(super) cache_recovery_limit: Option<i64>,
     #[sqlx(default)]
-    cache_low_hit_streak: i64,
+    pub(super) cache_low_hit_streak: i64,
     #[sqlx(default)]
-    cache_cooldown_level: i64,
+    pub(super) cache_cooldown_level: i64,
     #[sqlx(default)]
-    cache_last_hit_rate_percent: Option<i64>,
+    pub(super) cache_last_hit_rate_percent: Option<i64>,
     #[sqlx(default)]
-    cache_usage_missing_since: Option<String>,
+    pub(super) cache_usage_missing_since: Option<String>,
     #[sqlx(default)]
-    cache_usage_missing_reason: Option<String>,
+    pub(super) cache_usage_missing_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -173,6 +173,15 @@ pub(crate) struct ModelRouteRuntimeSnapshot {
 }
 
 impl ModelRouteRuntimeSnapshot {
+    pub(super) fn from_runtime_row(row: &ModelRouteRow) -> Self {
+        Self {
+            state: row.state.clone(),
+            cooldown_until: row.cooldown_until.clone(),
+            last_failure_kind: row.last_failure_kind.clone(),
+            cache_concurrency_limit: row.cache_concurrency_limit,
+            cache_recovery_limit: row.cache_recovery_limit,
+        }
+    }
     pub(crate) fn penalty_at(&self, now: DateTime<Utc>) -> ModelRoutePenalty {
         let cooling_down = self.state == MODEL_ROUTE_STATE_COOLING_DOWN
             && self

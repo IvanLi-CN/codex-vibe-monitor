@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Durable proxy routing projection and atomic terminal recovery obligations",
+    "release_unit_description": "PR #1110 proxy request runtime",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Existing terminal JSONL with begin/terminal events; encrypted proxy-route-facts-v1 sidecar; account generation and audit identity columns",
+    "storage_implementation": "SQLite plus authenticated append-only sidecar files beside the terminal journal",
+    "source_compatibility_range": {
+      "from_program_versions": "v4.5.x terminal-journal and SQLite layouts, including supported legacy account schemas",
+      "to_program_version": "next stable minor selected by repository release policy",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {
+        "id": "ddl-runtime-fences",
+        "description": "Idempotently add account runtime_routing_generation DEFAULT 0 and nullable audit runtime_event_key with unique partial index; install column-aware account/group/global control triggers in existing tables",
+        "order": 1,
+        "observable": true,
+        "pauseable": true
+      }
+    ],
+    "dml_changes": [],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": [
+      "ddl-runtime-fences",
+      "read-compatible-terminal-journal",
+      "restore-routing-sidecar",
+      "publish-http-readiness",
+      "background-batch-materialization"
+    ],
+    "progress_signals": [
+      "Fail-closed startup errors preserve source files",
+      "cvm_proxy_runtime_journal_pending",
+      "cvm_proxy_runtime_journal_age_seconds",
+      "cvm_proxy_runtime_materialization_delay_seconds",
+      "cvm_proxy_runtime_journal_rejections",
+      "cvm_proxy_runtime_journal_failed"
+    ],
+    "pause_points": [
+      "Before listener readiness on schema or recovery failure",
+      "Between committed materialization batches; confirmed pending events remain durable"
+    ]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery",
+    "rollback_precondition": "Drain confirmed routing sidecar events before running a release that cannot replay them; otherwise preserve files and repair forward"
+  },
+  "validation": {
+    "minor": {
+      "required_test_evidence": [
+        "Legacy policy schema migration",
+        "Terminal JSONL recovery compatibility and idempotence",
+        "Routing sidecar reopen replay, authenticated metadata and audit deduplication",
+        "Re-entry after confirmed-before-materialized interruption",
+        "Account disable-enable and sticky ownership fences"
+      ],
+      "evidence_status": "pending-final-candidate-validation"
+    }
+  }
+}

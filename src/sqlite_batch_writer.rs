@@ -1206,13 +1206,10 @@ impl SqliteBatchWriter {
         queued_p1_count.store(replay_writes, Ordering::SeqCst);
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let journal_sync_shutdown = shutdown.child_token();
-        #[cfg(not(test))]
         let journal_sync_handle = Some(tokio::spawn(run_terminal_journal_sync(
             terminal_journal.clone(),
             journal_sync_shutdown.clone(),
         )));
-        #[cfg(test)]
-        let journal_sync_handle = None;
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -1588,6 +1585,74 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) async fn wait_for_runtime_journal(&self, sequence: Option<u64>) -> Result<()> {
+        let Some(sequence) = sequence else {
+            return Ok(());
+        };
+        loop {
+            let synced = {
+                let mut guard = self
+                    .terminal_journal
+                    .lock()
+                    .map_err(|_| anyhow!("runtime journal lock poisoned"))?;
+                let journal = guard.as_mut().context("runtime journal unavailable")?;
+                if self.journal_sync_shutdown.is_cancelled() {
+                    journal.force_sync()?;
+                }
+                #[cfg(test)]
+                if self.auto_flush_terminal_for_test() {
+                    journal.force_sync()?;
+                }
+                journal.sequence_is_synced(sequence)?
+            };
+            if synced {
+                return Ok(());
+            }
+            tokio::time::sleep(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL).await;
+        }
+    }
+
+    pub(crate) async fn enqueue_runtime_terminal(
+        &self,
+        mut terminal: BatchedTerminalInvocationWrite,
+    ) -> TerminalEnqueueOutcome {
+        #[cfg(test)]
+        if self.buffered_writes.is_some() {
+            return self.enqueue_terminal(terminal);
+        }
+        terminal.enqueued_at = Some(Instant::now());
+        let journal = append_terminal_journal(&self.terminal_journal, &terminal);
+        let accepted = matches!(
+            journal.durability_mode,
+            TerminalJournalDurabilityMode::Journal
+        ) && journal.sequence.is_some();
+        let confirmed = accepted
+            && self
+                .wait_for_runtime_journal(journal.sequence)
+                .await
+                .is_ok();
+        let enqueued = if confirmed {
+            self.terminal_journal.pending.register(
+                &terminal.record.invoke_id,
+                &terminal.record.occurred_at,
+                terminal.raw_capture,
+            );
+            self.enqueue_terminal_write(
+                SqliteBatchWrite::TerminalInvocation(terminal),
+                journal.durability_mode,
+            )
+        } else {
+            false
+        };
+        TerminalEnqueueOutcome {
+            enqueued,
+            durability_mode: journal.durability_mode,
+            journal_sequence: journal.sequence,
+            journal_pending_records: journal.pending_records,
+            journal_pending_bytes: journal.pending_bytes,
+        }
+    }
+
     fn enqueue_terminal_write(
         &self,
         write: SqliteBatchWrite,
@@ -1613,7 +1678,13 @@ impl SqliteBatchWriter {
                         .and_then(|mut journal| {
                             journal.as_mut().map(|journal| match write {
                                 SqliteBatchWrite::TerminalInvocation(terminal) => {
+                                    let key = (
+                                        terminal.record.invoke_id.clone(),
+                                        terminal.record.occurred_at.clone(),
+                                        terminal.raw_capture,
+                                    );
                                     journal.defer_write(terminal)
+                                        || journal.defer_from_log(&key.0, &key.1, key.2)
                                 }
                                 _ => false,
                             })
@@ -3005,7 +3076,6 @@ pub(crate) async fn run_sqlite_batch_writer(
     }
 }
 
-#[cfg(not(test))]
 async fn run_terminal_journal_sync(
     terminal_journal: Arc<TrackedTerminalJournal>,
     shutdown: CancellationToken,
@@ -4254,8 +4324,31 @@ pub(crate) async fn flush_pending_batch_inner(
                 summary_delta,
             ));
         }
-        // The terminal fact is the only P1 responsibility. Summary and prompt-cache
-        // projections are converted into the returned P2 batch below, after this commit.
+        // Persist the compact recovery obligation atomically with its source rows.
+        // Summary computation remains in the independently admitted derived consumer.
+        if !persisted_terminals.is_empty() {
+            let source_revision = persisted_terminals
+                .iter()
+                .filter_map(|(terminal, ..)| terminal.dashboard_terminal_sequence)
+                .max()
+                .unwrap_or_default();
+            let entries = persisted_terminals
+                .iter()
+                .map(|(terminal, invocation_id, occurred_at, metadata, _)| {
+                    SummarySourceChangeEntry {
+                        row_id: *invocation_id,
+                        invoke_id: terminal.record.invoke_id.clone(),
+                        occurred_at: occurred_at.clone(),
+                        upstream_account_id: metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.upstream_account_id),
+                        current_rank: None,
+                    }
+                })
+                .collect();
+            let descriptor = SummarySourceChangeDescriptor::terminal_batch(source_revision, entries)?;
+            append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
+        }
         terminal_tx.commit().await?;
         Ok(())
         }.await;

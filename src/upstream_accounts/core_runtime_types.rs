@@ -199,6 +199,7 @@ pub(crate) const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macinto
 #[derive(Debug)]
 pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
+    pub(crate) route_facts: Mutex<Option<Arc<RuntimeRouteFacts>>>,
     pub(crate) account_ops: AccountOpCoordinator,
     pub(crate) validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
     pub(crate) bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
@@ -351,6 +352,7 @@ impl UpstreamAccountsRuntime {
 
         Ok(Self {
             crypto_key,
+            route_facts: Mutex::new(None),
             account_ops: AccountOpCoordinator::default(),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
@@ -387,6 +389,7 @@ impl UpstreamAccountsRuntime {
     ) -> Self {
         Self {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
+            route_facts: Mutex::new(None),
             account_ops: AccountOpCoordinator::new(maintenance_parallelism),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
             bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),

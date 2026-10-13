@@ -469,6 +469,7 @@ pub(crate) async fn run() -> Result<()> {
         // the early routing and dashboard reads before progressing through the remaining startup
         // stages. Summary/System Status hydration itself is intentionally deferred to the final
         // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
+        runtime_route_facts(state.as_ref()).await.context("recover proxy routing facts before readiness")?;
         warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
         warm_dashboard_runtime_projection(state.as_ref()).await;
         if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
@@ -2280,6 +2281,9 @@ pub(crate) async fn drain_runtime_after_shutdown(
         );
     }
     state.sqlite_batch_writer.shutdown_and_drain().await;
+    if let Some(route_facts) = state.upstream_accounts.route_facts.lock().await.clone() {
+        route_facts.shutdown_and_sync().await;
+    }
 
     let broadcast_handles = {
         let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;

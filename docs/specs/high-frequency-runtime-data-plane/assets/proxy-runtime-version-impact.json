@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Remove SQLite writes from normal proxy attempt and routing outcomes",
+    "release_unit_description": "PR #1110",
+    "affected_contracts": [
+      "public-api",
+      "persistent-state"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Initial plan reused tables and existing terminal layout",
+      "assessed_at": "2026-10-12T00:00:00Z",
+      "evidence": [
+        "Initial approved plan"
+      ]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {
+        "detected": true,
+        "description": "Owner-approved routing facts require a recovery sidecar that earlier releases do not consume"
+      },
+      "reasoning": "HTTP/SSE contracts stay compatible; earlier minor releases cannot replay newly accepted routing events",
+      "reassessed_at": "2026-10-13T05:00:00Z",
+      "evidence": [
+        "docs/adr/0035-proxy-runtime-memory-and-terminal-materialization.md",
+        "src/upstream_accounts/routing/runtime_facts/journal.rs"
+      ]
+    },
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing HTTP/SSE clients within Major 4",
+      "impact": "patch",
+      "evidence": [
+        "Existing route regression suite, pending final validation"
+      ]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "impact": "minor",
+      "state_description": "Authenticated routing recovery sidecar, additive internal account generation and audit identity",
+      "source_program_compatibility_range": "v4.5.x and declared legacy SQLite fixtures",
+      "evidence": [
+        "proxy-runtime-state-migration.json",
+        "Existing terminal JSONL decoder retained"
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "proxy-runtime-version-impact.json"
+    ],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

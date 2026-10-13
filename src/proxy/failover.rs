@@ -2121,12 +2121,14 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     Err(message) => {
                         // The drop guard releases silently if cancellation interrupts this fence.
                         let failure_recorded = reservation_guard
-                            .fence_failure(record_pool_route_transport_failure_for_model(
-                                &state.pool,
+                            .fence_failure(record_runtime_pool_route_transport_failure(
+                                state.as_ref(),
                                 account.account_id,
                                 sticky_key,
                                 &message,
+                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
                                 trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                None,
                                 requested_model.as_deref(),
                             ))
                             .await;
@@ -2668,27 +2670,23 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 continue;
                             }
                             if let Err(route_err) = reservation_guard
-                                .fence_failure(
-                                    record_pool_route_transport_failure_for_attempt_with_kind_and_model(
-                                        &state.pool,
-                                        account.account_id,
-                                        sticky_key,
-                                        &message,
-                                        failure_kind,
-                                        trace_context
-                                            .as_ref()
-                                            .map(|trace| trace.invoke_id.as_str()),
-                                        pending_attempt_record
-                                            .as_ref()
-                                            .and_then(|pending| pending.attempt_id),
-                                        pending_attempt_record.as_ref().and_then(|pending| {
-                                            pending
-                                                .request_model
-                                                .as_deref()
-                                                .or(pending.upstream_request_model.as_deref())
-                                        }),
-                                    ),
-                                )
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    state.as_ref(),
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    failure_kind,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    }),
+                                ))
                                 .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
@@ -2944,21 +2942,18 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 continue;
                             }
                             if let Err(route_err) = reservation_guard
-                                .fence_failure(
-                                    record_pool_route_transport_failure_for_attempt_with_kind(
-                                        &state.pool,
-                                        account.account_id,
-                                        sticky_key,
-                                        &message,
-                                        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
-                                        trace_context
-                                            .as_ref()
-                                            .map(|trace| trace.invoke_id.as_str()),
-                                        pending_attempt_record
-                                            .as_ref()
-                                            .and_then(|pending| pending.attempt_id),
-                                    ),
-                                )
+                                .fence_failure(record_runtime_pool_route_transport_failure(
+                                    state.as_ref(),
+                                    account.account_id,
+                                    sticky_key,
+                                    &message,
+                                    PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                    pending_attempt_record
+                                        .as_ref()
+                                        .and_then(|pending| pending.attempt_id),
+                                    requested_model.as_deref(),
+                                ))
                                 .await
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
@@ -3975,39 +3970,43 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     Ok(())
                 } else if oauth_transport_failure_kind.is_some() {
                     reservation_guard
-                        .fence_failure(record_pool_route_transport_failure_for_attempt(
-                            &state.pool,
+                        .fence_failure(record_runtime_pool_route_transport_failure(
+                            state.as_ref(),
                             account.account_id,
                             sticky_key,
                             normalized_failure.canonical_error_message.as_str(),
+                            oauth_transport_failure_kind
+                                .unwrap_or(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
                             trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                             pending_attempt_record
                                 .as_ref()
                                 .and_then(|pending| pending.attempt_id),
+                            requested_model.as_deref(),
                         ))
                         .await
                 } else {
-                    reservation_guard.fence_failure(record_pool_route_http_failure_for_endpoint_with_image_intent_and_prompt_cache_key_for_attempt_and_broadcast_with_model(
-                        state.as_ref(),
-                        account.account_id,
-                        &account.kind,
-                        account.single_account_rotation_enabled,
-                        sticky_key,
-                        status,
-                        &route_error_message,
-                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        capability_endpoint,
-                        attempted_requested_hosted_image_intent,
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.attempt_id),
-                        pending_attempt_record
-                            .as_ref()
-                            .and_then(|pending| pending.sticky_affinity_generation),
-                        prompt_cache_key.or(sticky_event_prompt_cache_key),
-                        requested_model_for_failure,
-                    ))
-                    .await
+                    reservation_guard
+                        .fence_failure(record_runtime_pool_route_http_failure(
+                            state.as_ref(),
+                            account.account_id,
+                            &account.kind,
+                            account.single_account_rotation_enabled,
+                            sticky_key,
+                            status,
+                            &route_error_message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                            capability_endpoint,
+                            attempted_requested_hosted_image_intent,
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.attempt_id),
+                            pending_attempt_record
+                                .as_ref()
+                                .and_then(|pending| pending.sticky_affinity_generation),
+                            prompt_cache_key.or(sticky_event_prompt_cache_key),
+                            requested_model_for_failure,
+                        ))
+                        .await
                 };
                 if let Err(route_err) = route_failure_result {
                     warn!(
@@ -4282,25 +4281,23 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             continue;
                         }
                         if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind_and_model(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                    pending_attempt_record.as_ref().and_then(|pending| {
-                                        pending
-                                            .request_model
-                                            .as_deref()
-                                            .or(pending.upstream_request_model.as_deref())
-                                    }),
-                                ),
-                            )
+                            .fence_failure(record_runtime_pool_route_transport_failure(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                                pending_attempt_record.as_ref().and_then(|pending| {
+                                    pending
+                                        .request_model
+                                        .as_deref()
+                                        .or(pending.upstream_request_model.as_deref())
+                                }),
+                            ))
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
@@ -4511,26 +4508,24 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         }
 
                         if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_retryable_overload_failure_for_attempt_with_model(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                    requested_model.as_deref().or_else(|| {
-                                        pending_attempt_record.as_ref().and_then(|pending| {
-                                            pending
-                                                .request_model
-                                                .as_deref()
-                                                .or(pending.upstream_request_model.as_deref())
-                                        })
-                                    }),
-                                ),
-                            )
+                            .fence_failure(record_runtime_pool_route_overload_failure(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                                requested_model.as_deref().or_else(|| {
+                                    pending_attempt_record.as_ref().and_then(|pending| {
+                                        pending
+                                            .request_model
+                                            .as_deref()
+                                            .or(pending.upstream_request_model.as_deref())
+                                    })
+                                }),
+                            ))
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
@@ -4627,25 +4622,23 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                             );
                         }
                         if let Err(route_err) = reservation_guard
-                            .fence_failure(
-                                record_pool_route_transport_failure_for_attempt_with_kind_and_model(
-                                    &state.pool,
-                                    account.account_id,
-                                    sticky_key,
-                                    &message,
-                                    PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                                    pending_attempt_record
-                                        .as_ref()
-                                        .and_then(|pending| pending.attempt_id),
-                                    pending_attempt_record.as_ref().and_then(|pending| {
-                                        pending
-                                            .request_model
-                                            .as_deref()
-                                            .or(pending.upstream_request_model.as_deref())
-                                    }),
-                                ),
-                            )
+                            .fence_failure(record_runtime_pool_route_transport_failure(
+                                state.as_ref(),
+                                account.account_id,
+                                sticky_key,
+                                &message,
+                                PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                                pending_attempt_record
+                                    .as_ref()
+                                    .and_then(|pending| pending.attempt_id),
+                                pending_attempt_record.as_ref().and_then(|pending| {
+                                    pending
+                                        .request_model
+                                        .as_deref()
+                                        .or(pending.upstream_request_model.as_deref())
+                                }),
+                            ))
                             .await
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");

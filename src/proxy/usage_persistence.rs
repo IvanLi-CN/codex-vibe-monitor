@@ -1,4 +1,4 @@
-use super::raw_capture::schedule_successful_proxy_capture_model_route_cache_observation as schedule_model_route_observation;
+use super::raw_capture::record_successful_proxy_capture_model_route_cache_observation as record_model_route_observation;
 use super::*;
 use crate::terminal_journal::TerminalJournalDurabilityMode;
 mod invocation_identity;
@@ -735,7 +735,24 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
         response_raw_truncated_reason: None,
         response_content_encoding: None,
     };
-    let runtime_snapshot = runtime_attempt_snapshot_from_pending(&pending);
+    let mut runtime_snapshot = runtime_attempt_snapshot_from_pending(&pending);
+    let account = match load_upstream_account_row(&state.pool, upstream_account_id).await {
+        Ok(Some(account)) => account,
+        Ok(None) => return None,
+        Err(error) => {
+            warn!(%error, "cannot fence proxy attempt before admission");
+            return None;
+        }
+    };
+    runtime_snapshot.routing_control_fingerprint =
+        Some(route_account_control_fingerprint(&account));
+    if !state
+        .proxy_runtime_attempts
+        .upsert(runtime_snapshot.clone())
+    {
+        warn!(invoke_id = %pending.invoke_id, "bounded attempt capacity exhausted before journal admission");
+        return None;
+    }
     let journal = state
         .sqlite_batch_writer
         .append_runtime_attempt_start(&runtime_snapshot);
@@ -748,20 +765,23 @@ pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
             attempt_public_id = %runtime_snapshot.attempt_public_id,
             "proxy attempt start event was rejected by the terminal journal"
         );
+        state.proxy_runtime_attempts.reject_unaccepted_start(
+            &pending.invoke_id,
+            &pending.occurred_at,
+            &runtime_snapshot.attempt_public_id,
+        );
         return None;
     }
-    if !state
-        .proxy_runtime_attempts
-        .upsert(runtime_snapshot.clone())
+    if let Err(error) = state
+        .sqlite_batch_writer
+        .wait_for_runtime_journal(journal.sequence)
+        .await
     {
-        let acknowledged = state
-            .sqlite_batch_writer
-            .acknowledge_runtime_attempt_start(&runtime_snapshot.attempt_public_id);
-        warn!(
-            invoke_id = %pending.invoke_id,
-            attempt_public_id = ?pending.attempt_public_id,
-            acknowledged,
-            "proxy attempt start event was accepted by the journal but rejected by the bounded runtime store"
+        warn!(error = %error, invoke_id = %pending.invoke_id, "attempt start durability confirmation failed");
+        state.proxy_runtime_attempts.reject_unaccepted_start(
+            &pending.invoke_id,
+            &pending.occurred_at,
+            &runtime_snapshot.attempt_public_id,
         );
         return None;
     }
@@ -781,6 +801,7 @@ pub(crate) fn runtime_attempt_snapshot_from_pending(
     pending: &PendingPoolAttemptRecord,
 ) -> RuntimeAttemptSnapshot {
     RuntimeAttemptSnapshot {
+        routing_control_fingerprint: None,
         attempt_public_id: pending
             .attempt_public_id
             .clone()
@@ -2479,6 +2500,43 @@ pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
     first_byte_observed: bool,
     terminal_outcome_observed: bool,
 ) -> Result<()> {
+    if pending_attempt_record.attempt_public_id.is_some()
+        && pending_attempt_record.attempt_id.is_none()
+    {
+        if first_byte_observed && terminal_outcome_observed {
+            return Ok(());
+        }
+        let Some(id) = pending_attempt_record.attempt_public_id.as_deref() else {
+            return Ok(());
+        };
+        let Some(mut snapshot) = state.proxy_runtime_attempts.get(
+            &pending_attempt_record.invoke_id,
+            &pending_attempt_record.occurred_at,
+            id,
+        ) else {
+            return Ok(());
+        };
+        if snapshot.finished_at.is_some() {
+            return Ok(());
+        }
+        snapshot.finished_at = Some(shanghai_now_string());
+        snapshot.status = POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_INTERRUPTED.to_string();
+        snapshot.phase = Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED.to_string());
+        snapshot.failure_kind = Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED.to_string());
+        snapshot.error_message = Some(POOL_ATTEMPT_INTERRUPTED_MESSAGE.to_string());
+        let Some(snapshot) = state.proxy_runtime_attempts.claim_interruption(snapshot) else {
+            return Ok(());
+        };
+        let mut record = crate::terminal_journal::interrupted_terminal_record(
+            &snapshot.invoke_id,
+            &snapshot.occurred_at,
+            std::slice::from_ref(&snapshot),
+        );
+        record.payload = Some(json!({"source":"proxy","routeMode":"pool","endpoint":snapshot.endpoint,"upstreamAccountId":snapshot.upstream_account_id,"requestModel":snapshot.request_model}).to_string());
+        persist_and_broadcast_proxy_capture(state, Instant::now(), record).await?;
+        forget_priority_handoff_attempt_for_invoke(&pending_attempt_record.invoke_id);
+        return Ok(());
+    }
     state.sqlite_batch_writer.flush_now(&state.pool).await?;
     persist_pool_upstream_request_attempt_metadata_before_recovery(
         &state.pool,
@@ -4412,6 +4470,15 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 );
                 return Ok(());
             }
+            if let Err(error) = record_model_route_observation(state, &record).await {
+                state.proxy_runtime_invocations.clear_terminal_tombstone(
+                    &persisted_record.invoke_id,
+                    &persisted_record.occurred_at,
+                );
+                return Err(error).context(
+                    "cache routing observation was not accepted; terminal can be retried",
+                );
+            }
             let projection =
                 register_terminal_projection_before_enqueue(state, &persisted_record).await;
             let delta = &projection.dashboard;
@@ -4432,21 +4499,21 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 response_source = "memory",
                 "registered terminal record in dashboard activity read model before sqlite enqueue"
             );
-            let terminal_enqueue =
-                state
-                    .sqlite_batch_writer
-                    .enqueue_terminal(BatchedTerminalInvocationWrite {
-                        enqueued_at: None,
-                        diagnostic: crate::observability::diagnostics::current()
-                            .map(|c| c.persistence()),
-                        record: record.clone(),
-                        attempts: runtime_attempts.clone(),
-                        capture_started: None,
-                        raw_capture: false,
-                        dashboard_terminal_sequence: delta.terminal_sequence,
-                        terminal_projection_event_ids: projection.event_id.into_iter().collect(),
-                        startup_backfill_tasks,
-                    });
+            let terminal_enqueue = state
+                .sqlite_batch_writer
+                .enqueue_runtime_terminal(BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
+                    diagnostic: crate::observability::diagnostics::current()
+                        .map(|c| c.persistence()),
+                    record: record.clone(),
+                    attempts: runtime_attempts.clone(),
+                    capture_started: None,
+                    raw_capture: false,
+                    dashboard_terminal_sequence: delta.terminal_sequence,
+                    terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                    startup_backfill_tasks,
+                })
+                .await;
             let terminal_enqueued = terminal_enqueue.enqueued;
             if !terminal_enqueued {
                 state.proxy_runtime_attempts.restore(runtime_attempts);
@@ -4490,7 +4557,6 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     .await;
             }
             if terminal_enqueued {
-                schedule_model_route_observation(state, &record);
                 state
                     .subscription_hub
                     .publish_runtime_mutation(RuntimeMutation::invocation(

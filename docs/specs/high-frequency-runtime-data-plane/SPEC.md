@@ -4,6 +4,10 @@
 
 ## 背景
 
+## Context and Scope
+
+本主题覆盖代理请求运行态、终态日志/物化、路由内存投影、Dashboard 实时快照及其直接持久化边界；不覆盖上游服务或无关历史归档。
+
 项目已经具备 terminal journal、Terminal Projection、Dashboard read model、SQLite rollup 与 SSE topic，但这些能力没有形成一条可执行的统一边界：Dashboard live 构建仍可反向读取 SQLite，订阅分发按消费者重复克隆和序列化 payload，file-backed 大请求会在 dispatch 阶段重新整体物化，writer queue 的跨阶段 accounting 也可能下溢并污染内存归因。
 
 该问题不能继续通过逐条慢 SQL 或延长 TTL 收口。高频数据面必须明确区分 ingress、projection、delivery、persistence/reconcile 五层，并在类型和测试层禁止反向依赖。
@@ -11,6 +15,7 @@
 ## Related ADRs
 
 - [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
+- [ADR 0035: Proxy runtime memory state and terminal materialization](../../adr/0035-proxy-runtime-memory-and-terminal-materialization.md)
 
 ## Goals
 
@@ -66,7 +71,11 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 
 ### Persistence And Reconcile
 
-代理请求热写必须经过统一写协调器。P1 terminal、同步 attempt/route 与 P2 derived 的优先级固定，禁止同一代理生命周期内的多个 helper 独立争抢 SQLite writer。P1 采用有界短批次并在 commit 后 ACK；锁冲突保留完整批次并指数退避，新事件只能合并，不能重置 retry deadline。P2 不得在一个事务内无界追赶 rollup cursor。
+代理 attempt 运行状态和影响下一次选路的路由事实由有界内存投影拥有，关键开始、终止、中断和路由观察先进入可恢复日志。正常请求生命周期不获取 SQLite 写准入，不将高频阶段或元数据转成 AttemptProgress SQL。路由事实覆盖 sticky 绑定、账号健康与冷却、模型和端点能力；缺少数据库 attempt 行不允许跳过业务观察。下一次重试和后续请求必须立即读取已接受的未物化观察，管理端更新和迟到请求结果通过既有代际及观察时间规则隔离；未物化事实不得被普通缓存淘汰。
+
+SQLite 后台终态物化与路由物化经过统一写协调器，采用有界短批次并在 commit 后 ACK；锁冲突保留完整批次并退避，新事件不能重置 retry deadline。终态事务原子写入 invocation、最终 attempt 快照和紧凑 Summary 来源变化凭据，不执行派生计算。Summary、统计、缓存刷新与维护使用独立可恢复消费路径，不得延长终态事务或在一个事务内无界追赶 rollup cursor。内存与日志容量不足必须产生可观测的背压或失败，禁止跳过关键事实仍报告成功。既有无运行态上下文调用与旧数据库行修复保留原持久记录契约。
+
+正常转发前必须完成 begin 日志的分组同步确认；terminal 同样以日志同步为请求侧确认，SQLite commit 后才推进消费检查点。attempt 内存至少限制记录数、字节数和存活时间，并预留已接受请求的终态空间。路由投影限制为 4096 条/16 MiB，恢复 sidecar 限制为 64 MiB、单帧 128 KiB，物化采用 20ms/32 条/4 MiB 边界。partial append 或无法可靠重建的恢复必须 fail closed 并保留来源；普通容量拒绝可在积压释放后恢复。控制端账号、组和全局策略变化必须推进持久代际，包括值恢复原样的 ABA 更新；sticky 清理必须验证 owner 和 exact-model/fallback 范围。退出前先排空 HTTP 请求，再关闭路由日志准入、同步并 join 工作任务。
 
 - SQLite 是 terminal durable source、projection warm restore、closed-range exact query 与 drift reconcile 的事实源，不是 Dashboard current-state 的请求内查询依赖。
 - terminal totals 使用 `5s` 内存发布，baseline reconcile 使用 `60s` cadence。压力或 last-good 状态机沿用既有退避与精确恢复语义。
@@ -100,7 +109,27 @@ Activity、summary 与 network topic 已建立上述 typed delivery 基础；wor
 - accounting/memory: `pending_depth`, `pending_bytes`, `accounting_transfer_bytes`, `accounting_invariant`, `rss_anon_bytes`, `swap_bytes`, `managed_bytes`, `unattributed_anon_bytes`。
 - healthy/no-change 高频事件降为 debug；DB live read、whole-body materialization、accounting invariant violation、持续 stale 与序列化重复保留 warning。
 
+## Requirements
+
+REQ-RUNTIME-MEMORY-01: 代理 attempt 高频状态和路由事实必须先进入有界内存投影，运行态生命周期不得获取 InteractiveProxy SQLite 写准入。
+
+REQ-RUNTIME-JOURNAL-01: begin、terminal 和关键路由事实必须写入版本化、可恢复、敏感值脱敏的日志，并在确认前完成分组同步。
+
+REQ-RUNTIME-MATERIALIZE-01: SQLite 只在 20ms、32 事件、4MiB 边界内批量物化终态事实与 Summary 来源凭据，派生计算不得延长终态事务。
+
+REQ-RUNTIME-FENCE-01: 管理端控制代际、sticky owner/scope 和模型设置代际必须隔离迟到结果并支持幂等重放。
+
+REQ-RUNTIME-HEALTH-01: 内存、日志、物化积压、拒绝、重放、延迟和写准入计数必须可观测。
+
 ## Verification
+
+VER-RUNTIME-UNIT-01: 覆盖 bounded latest-wins、terminal reserve 和 capacity rejection；covers: REQ-RUNTIME-MEMORY-01。
+
+VER-RUNTIME-ARCHIVE-01: 覆盖日志加密脱敏、损坏恢复、重启重放、幂等物化和 sticky/control ABA；covers: REQ-RUNTIME-JOURNAL-01 REQ-RUNTIME-FENCE-01。
+
+VER-RUNTIME-STATEFUL-01: 覆盖 SQLite 写锁下的内存路由/模型可见性、Summary descriptor 原子提交和 derived isolation；covers: REQ-RUNTIME-MATERIALIZE-01。
+
+VER-RUNTIME-PRESSURE-01: 覆盖 32 并发代表性代理请求叠加 BEGIN IMMEDIATE，验证 InteractiveProxy 增量为零、AttemptProgress 增量为零并记录 p95、日志积压和物化延迟；covers: REQ-RUNTIME-HEALTH-01。
 
 - `16 MiB` 与 `64 MiB` file-backed 请求只进行一次语义解析，业务峰值缓冲不超过 `64 KiB`；转发、编码、failover 与 `include_usage` 结果保持一致。
 - 10,000 次 runtime mutation 后健康 live render 的 SQL query count 为 `0`。

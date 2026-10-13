@@ -1712,6 +1712,8 @@ pub(crate) async fn update_upstream_account_inner(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
     let is_api_key_account = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX;
+    let invalidate_runtime_outcomes =
+        account_update_requests_manual_recovery(&payload) || payload.routing_rule.is_some();
     if is_api_key_account
         && (payload.group_name.is_some()
             || payload.group_bound_proxy_keys.is_some()
@@ -2482,6 +2484,10 @@ pub(crate) async fn update_upstream_account_inner(
     .execute(tx.as_mut())
     .await
     .map_err(internal_error_tuple)?;
+    if invalidate_runtime_outcomes {
+        sqlx::query("UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE id=?1")
+            .bind(id).execute(tx.as_mut()).await.map_err(internal_error_tuple)?;
+    }
     if !is_api_key_account {
         apply_mother_assignment(&mut tx, id, row.group_name.as_deref(), row.is_mother != 0)
             .await

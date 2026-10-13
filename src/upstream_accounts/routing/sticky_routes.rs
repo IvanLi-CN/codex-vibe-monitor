@@ -495,7 +495,7 @@ pub(crate) fn unpack_sticky_affinity_token(token: i64) -> (i64, i64) {
     )
 }
 
-async fn load_sticky_model_route_executor<'e, E>(
+pub(super) async fn load_sticky_model_route_executor<'e, E>(
     executor: E,
     sticky_key: &str,
     model_key: &str,

@@ -9,10 +9,14 @@ use serde::{Deserialize, Serialize};
 pub(crate) const PROXY_RUNTIME_ATTEMPT_STORE_MAX_AGE: Duration = Duration::from_secs(6 * 60 * 60);
 pub(crate) const PROXY_RUNTIME_ATTEMPT_STORE_MAX_RECORDS: usize = 10_000;
 pub(crate) const PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const TERMINAL_MEMORY_RESERVE: usize = 64 * 1024;
+const TERMINAL_DIAGNOSTIC_MAX_BYTES: usize = 8 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RuntimeAttemptSnapshot {
     pub(crate) attempt_public_id: String,
+    #[serde(default)]
+    pub(crate) routing_control_fingerprint: Option<String>,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) endpoint: String,
@@ -78,6 +82,7 @@ impl RuntimeAttemptSnapshot {
             |value: &Option<String>| value.as_ref().map_or(0, String::capacity);
         std::mem::size_of::<Self>()
             + self.attempt_public_id.capacity()
+            + optional_string_bytes(&self.routing_control_fingerprint)
             + self.invoke_id.capacity()
             + self.occurred_at.capacity()
             + self.endpoint.capacity()
@@ -180,7 +185,24 @@ impl RuntimeAttemptStore {
         self.upsert_inner(snapshot, false)
     }
 
-    fn upsert_inner(&self, snapshot: RuntimeAttemptSnapshot, terminal_priority: bool) -> bool {
+    fn upsert_inner(&self, mut snapshot: RuntimeAttemptSnapshot, terminal_priority: bool) -> bool {
+        if terminal_priority {
+            for value in [
+                &mut snapshot.error_message,
+                &mut snapshot.downstream_error_message,
+                &mut snapshot.upstream_request_id,
+                &mut snapshot.compact_support_reason,
+            ] {
+                if let Some(text) = value.as_mut() {
+                    let mut end = text.len().min(TERMINAL_DIAGNOSTIC_MAX_BYTES);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    text.truncate(end);
+                    text.shrink_to_fit();
+                }
+            }
+        }
         let key = Self::key(
             &snapshot.invoke_id,
             &snapshot.occurred_at,
@@ -188,8 +210,36 @@ impl RuntimeAttemptStore {
         );
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
-        if !terminal_priority && inner.terminal_keys.contains_key(&key) {
+        if inner.terminal_keys.contains_key(&key) {
             return false;
+        }
+        if terminal_priority
+            && let Some(previous) = inner.entries.get(&key)
+            && Self::entry_memory_bytes(&snapshot) > previous.bytes
+        {
+            let mut bounded = previous.snapshot.clone();
+            bounded.finished_at = snapshot.finished_at;
+            bounded.status = snapshot.status;
+            bounded.phase = snapshot.phase;
+            bounded.http_status = snapshot.http_status;
+            bounded.downstream_http_status = snapshot.downstream_http_status;
+            bounded.failure_kind = snapshot.failure_kind;
+            bounded.error_message = snapshot.error_message;
+            bounded.downstream_error_message = snapshot.downstream_error_message;
+            bounded.connect_latency_ms = snapshot.connect_latency_ms;
+            bounded.first_byte_latency_ms = snapshot.first_byte_latency_ms;
+            bounded.stream_latency_ms = snapshot.stream_latency_ms;
+            bounded.upstream_request_id = snapshot.upstream_request_id;
+            bounded.upstream_request_logical_body_bytes =
+                snapshot.upstream_request_logical_body_bytes;
+            bounded.upstream_request_transmitted_body_bytes =
+                snapshot.upstream_request_transmitted_body_bytes;
+            bounded.upstream_request_header_bytes_approx =
+                snapshot.upstream_request_header_bytes_approx;
+            bounded.upstream_response_body_bytes = snapshot.upstream_response_body_bytes;
+            bounded.upstream_response_header_bytes_approx =
+                snapshot.upstream_response_header_bytes_approx;
+            snapshot = bounded;
         }
 
         let bytes = Self::entry_memory_bytes(&snapshot);
@@ -232,6 +282,48 @@ impl RuntimeAttemptStore {
 
     pub(crate) fn upsert_terminal(&self, snapshot: RuntimeAttemptSnapshot) -> bool {
         self.upsert_inner(snapshot, true)
+    }
+
+    pub(crate) fn claim_interruption(
+        &self,
+        mut snapshot: RuntimeAttemptSnapshot,
+    ) -> Option<RuntimeAttemptSnapshot> {
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        let key = Self::key(
+            &snapshot.invoke_id,
+            &snapshot.occurred_at,
+            &snapshot.attempt_public_id,
+        );
+        if inner.terminal_keys.contains_key(&key) {
+            return None;
+        }
+        let previous = inner.entries.get(&key)?;
+        if previous.snapshot.finished_at.is_some() {
+            return None;
+        }
+        // Preserve newer progress while atomically claiming only the terminal
+        // fields. Its fixed diagnostic fits the start's terminal reservation.
+        let mut claimed = previous.snapshot.clone();
+        claimed.finished_at = snapshot.finished_at.take();
+        claimed.status = snapshot.status;
+        claimed.phase = snapshot.phase;
+        claimed.failure_kind = snapshot.failure_kind;
+        claimed.error_message = snapshot.error_message;
+        let bytes = Self::entry_memory_bytes(&claimed);
+        if bytes > previous.bytes {
+            return None;
+        }
+        let old_bytes = previous.bytes;
+        inner.bytes = inner.bytes.saturating_sub(old_bytes).saturating_add(bytes);
+        inner.entries.insert(
+            key,
+            RuntimeAttemptEntry {
+                snapshot: claimed.clone(),
+                retained_at: Instant::now(),
+                bytes,
+            },
+        );
+        Some(claimed)
     }
 
     pub(crate) fn get(
@@ -295,32 +387,19 @@ impl RuntimeAttemptStore {
         attempt_public_id: &str,
         finished_at: &str,
     ) -> bool {
-        let key = Self::key(invoke_id, occurred_at, attempt_public_id);
-        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
-        self.evict_expired(&mut inner);
-        let (previous_bytes, updated_bytes) = {
-            let Some(entry) = inner.entries.get_mut(&key) else {
-                return false;
-            };
-            if entry.snapshot.finished_at.is_some() {
-                return false;
-            }
-            let previous_bytes = entry.bytes;
-            entry.snapshot.finished_at = Some(finished_at.to_string());
-            entry.snapshot.status = "interrupted".to_string();
-            entry.snapshot.phase = Some("interrupted".to_string());
-            entry.snapshot.failure_kind = Some("invocation_interrupted".to_string());
-            entry.snapshot.error_message =
-                Some("proxy request ended before a terminal record was written".to_string());
-            entry.retained_at = Instant::now();
-            entry.bytes = Self::entry_memory_bytes(&entry.snapshot);
-            (previous_bytes, entry.bytes)
+        let Some(mut snapshot) = self.get(invoke_id, occurred_at, attempt_public_id) else {
+            return false;
         };
-        inner.bytes = inner
-            .bytes
-            .saturating_sub(previous_bytes)
-            .saturating_add(updated_bytes);
-        true
+        if snapshot.finished_at.is_some() {
+            return false;
+        }
+        snapshot.finished_at = Some(finished_at.to_string());
+        snapshot.status = "interrupted".to_string();
+        snapshot.phase = Some("interrupted".to_string());
+        snapshot.failure_kind = Some("invocation_interrupted".to_string());
+        snapshot.error_message =
+            Some("proxy request ended before a terminal record was written".to_string());
+        self.upsert_terminal(snapshot)
     }
 
     pub(crate) fn discard_for_attempt(
@@ -343,6 +422,19 @@ impl RuntimeAttemptStore {
             true
         } else {
             false
+        }
+    }
+
+    pub(crate) fn reject_unaccepted_start(
+        &self,
+        invoke_id: &str,
+        occurred_at: &str,
+        attempt_public_id: &str,
+    ) {
+        let key = Self::key(invoke_id, occurred_at, attempt_public_id);
+        let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = inner.entries.remove(&key) {
+            inner.bytes = inner.bytes.saturating_sub(entry.bytes);
         }
     }
 
@@ -526,6 +618,11 @@ impl RuntimeAttemptStore {
             .saturating_add(snapshot.occurred_at.capacity())
             .saturating_add(snapshot.attempt_public_id.capacity())
             .saturating_add(std::mem::size_of::<RuntimeAttemptEntry>())
+            .saturating_add(if snapshot.finished_at.is_none() {
+                TERMINAL_MEMORY_RESERVE
+            } else {
+                0
+            })
     }
 
     fn terminal_fence_memory_bytes(inner: &RuntimeAttemptStoreInner) -> usize {
@@ -545,8 +642,16 @@ impl RuntimeAttemptStore {
 
 pub(crate) fn merge_runtime_attempt_snapshot(
     previous: &RuntimeAttemptSnapshot,
-    incoming: RuntimeAttemptSnapshot,
+    mut incoming: RuntimeAttemptSnapshot,
 ) -> RuntimeAttemptSnapshot {
+    if incoming.routing_control_fingerprint.is_none() {
+        incoming
+            .routing_control_fingerprint
+            .clone_from(&previous.routing_control_fingerprint);
+    }
+    if previous.finished_at.is_some() && incoming.status == "interrupted" {
+        return previous.clone();
+    }
     if previous.finished_at.is_some() && incoming.finished_at.is_none() {
         let mut terminal = previous.clone();
         terminal.response_raw_path = incoming.response_raw_path;
@@ -567,6 +672,7 @@ mod tests {
 
     fn snapshot(id: &str, phase: &str) -> RuntimeAttemptSnapshot {
         RuntimeAttemptSnapshot {
+            routing_control_fingerprint: None,
             attempt_public_id: id.to_string(),
             invoke_id: "invoke-1".to_string(),
             occurred_at: "2026-10-12 10:00:00".to_string(),
@@ -651,5 +757,33 @@ mod tests {
         let health = store.health_snapshot();
         assert_eq!(health.records, 0);
         assert_eq!(health.rejected_records, 1);
+    }
+
+    #[test]
+    fn accepted_attempt_can_finish_at_memory_capacity() {
+        let store = RuntimeAttemptStore::default();
+        let mut count = 0;
+        while store.upsert(snapshot(&format!("attempt-{count}"), "connecting")) {
+            count += 1;
+        }
+        assert!(count > 1);
+        let mut terminal = snapshot("attempt-0", "failed");
+        terminal.finished_at = Some("2026-10-12 10:00:01".to_string());
+        terminal.status = "failed".to_string();
+        terminal.error_message = Some("x".repeat(PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES));
+        assert!(
+            store.upsert_terminal(terminal),
+            "accepted starts retain a terminal memory reservation"
+        );
+        let finished = store
+            .get("invoke-1", "2026-10-12 10:00:00", "attempt-0")
+            .expect("terminal snapshot");
+        assert_eq!(finished.status, "failed");
+        assert!(finished.finished_at.is_some());
+        assert!(
+            finished.error_message.expect("bounded diagnostic").len()
+                <= TERMINAL_DIAGNOSTIC_MAX_BYTES
+        );
+        assert!(store.health_snapshot().bytes <= PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES);
     }
 }

@@ -1,5 +1,7 @@
 # High-Frequency Runtime Data Plane History
 
+PR #1110 将代理请求 attempt 的高频生命周期写入移入有界内存，关键 begin/terminal 经分组同步日志确认并由后台批量物化。主人确认将 sticky、账号健康/冷却、模型能力纳入同一恢复模型，以保持即时选路和零运行态 SQLite 写等待；因此补充控制代际、scoped sticky owner fencing 和加密路由 sidecar，持久状态影响从 patch 调整为 minor。终态事务仅追加 Summary 的紧凑恢复凭据，计算仍由独立消费者完成。回归涵盖旧账号 schema、管理端 ABA、锁下即时 sticky/model 投影和日志重启幂等；32 并发验收持续持有 SQLite 写锁至终态确认。
+
 ## Typed Runtime Event Bus Initiative
 
 - Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.

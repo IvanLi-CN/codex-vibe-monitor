@@ -12,7 +12,9 @@ The next delivery boundary is a single typed runtime mutation bus and router. Ho
 
 Backfill scheduling is event-driven. `startup_backfill_progress` persists each task cursor, `next_run_after`, source-unavailable state, daily probe deadline and wake generation; the supervisor mirrors the recovered per-task deadlines in memory, then sleeps until the earliest deadline or a matching task wake. Archive materialization wakes only archive-activity and historical-rollup work. A source-unavailable probe remains bounded to 100 rows or two seconds, while pressure deferral persists a retry deadline without producing a `system_task_runs` audit row. A no-op pass does not run unrelated rollup maintenance or create a task-run audit row. Health aggregates event-bus lag, projection recovery, and writer pressure using in-memory counters without adding status-page SQL.
 
-`ProxySqliteWriteCoordinator` 是代理热写的统一 admission 面。实现覆盖 terminal P1/P2 actor、attempt 生命周期和 route success/failure 汇聚路径，并通过 `runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、各优先级 waiter 与 legacy bypass 计数。
+`ProxySqliteWriteCoordinator` 是后台终态、路由物化和派生写的统一 admission 面。正常代理 attempt 生命周期与路由结果不获取 `InteractiveProxy`：实时 attempt 存储有界快照，begin/terminal 等待日志分组同步，sticky、健康/冷却和模型能力从已确认的有界路由投影读取。旧数据库行修复保持独立同步路径。`runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、waiter 与 legacy bypass；Prometheus 同时记录 attempt 容量、日志积压/年龄、路由物化延迟、拒绝和重放数量。
+
+代理运行数据的持久化兼容性由 [migration record](assets/proxy-runtime-state-migration.json) 和 [version-impact record](assets/proxy-runtime-version-impact.json) 跟踪。新增状态是加密路由 sidecar、账号控制代际与审计事件幂等键，复用现有 SQLite 表。模型绑定与 fallback sticky 分别比较代际和 owner；管理端账号、组和全局策略更新对未物化旧请求结果进行 fencing。请求确认与 SQLite 消费 ACK 分离，物化失败保留日志，partial append 关闭确认路径，容量拒绝可在积压释放后恢复。
 
 P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 使用独立 250ms 固定 deadline，pressure defer、background busy 和实际 lock retry 分开调度与计数；hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
 

@@ -177,6 +177,33 @@ fn take_priority_handoff_attempt_for_invoke(
         .and_then(|mut contexts| contexts.remove(invoke_id))
 }
 
+// Runtime routing has already confirmed recovery in its journal. Completion is
+// local admission state; diagnostics are materialized with that routing fact.
+pub(crate) fn complete_runtime_priority_handoff(
+    attempt_id: Option<i64>,
+    invoke_id: Option<&str>,
+    recovered: bool,
+) -> Option<&'static str> {
+    let context = attempt_id
+        .and_then(take_priority_handoff_attempt)
+        .or_else(|| invoke_id.and_then(take_priority_handoff_attempt_for_invoke))?;
+    if !recovered {
+        release_priority_handoff_for_key(
+            context.account_id,
+            &context.model_key,
+            context.generation,
+        );
+        return None;
+    }
+    complete_priority_handoff_for_request(
+        context.account_id,
+        Some(&context.model_key),
+        Some(context.generation),
+        true,
+        false,
+    )
+}
+
 pub(crate) fn forget_priority_handoff_attempt(attempt_id: Option<i64>) {
     if let Some(attempt_id) = attempt_id {
         let _ = take_priority_handoff_attempt(attempt_id);
