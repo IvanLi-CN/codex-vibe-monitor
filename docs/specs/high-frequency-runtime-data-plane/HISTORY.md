@@ -10,6 +10,8 @@ The follow-up integrity repair adds `attempt_index` to the account-page merge ti
 
 The same repair wave now resolves account attempt locations by scanning the merged runtime/durable pages instead of calculating a SQLite-only offset, keeping locate responses stable while an attempt moves from memory to materialized storage.
 
+The final locate refinement keeps that merged ordering but computes the target rank in one SQL merge query, avoiding repeated page hydration for older attempts.
+
 ## Typed Runtime Event Bus Initiative
 
 - Approved initiative baseline: `origin/main@5ddf8d596a0648fe67f5a1c92073eccdd3a3a9cb`; integration branch: `prd/typed-runtime-event-bus`.
