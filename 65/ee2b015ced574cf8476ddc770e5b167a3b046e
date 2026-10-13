@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-13T03:30:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9ca8944398e704677987a8424fef49032ae51eb4",
+  "pr_number": 1112,
+  "pr_title": "docs(observability): clarify metrics and tracing solution title",
+  "registry": "ghcr.io",
+  "release_bump": "docs",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "65ee2b015ced574cf8476ddc770e5b167a3b046e",
+  "type_label": "type:docs"
+}
