@@ -107,6 +107,17 @@ pub(crate) async fn proxy_openai_v1_common(
     peer_ip: Option<IpAddr>,
     downstream_transport: Option<DownstreamTransportObserver>,
 ) -> Response {
+    if method == Method::GET
+        && is_models_list_path(original_uri.path())
+        && !request_matches_pool_route(state.as_ref(), &headers)
+            .await
+            .unwrap_or(false)
+    {
+        // Public discovery exposes only local presets; upstream access remains authenticated.
+        let settings = state.proxy_model_settings.read().await;
+        return Json(build_preset_models_payload(&settings.enabled_preset_models)).into_response();
+    }
+
     let diagnostic_auth_route = crate::observability::diagnostics::phase(
         crate::observability::diagnostics::Phase::AuthRoute,
     );

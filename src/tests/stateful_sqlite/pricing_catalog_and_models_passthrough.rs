@@ -22,6 +22,7 @@ where
 }
 
 mod pricing_catalog;
+mod public_models;
 
 async fn seed_pool_models_route(state: &Arc<AppState>) -> HeaderMap {
     seed_pool_routing_api_key(state, "pool-live-key").await;
