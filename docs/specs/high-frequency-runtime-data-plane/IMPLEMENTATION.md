@@ -38,6 +38,8 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## Module Boundaries
 
+- `src/proxy/raw_capture/finalization.rs` completes pending request and response capture together. A live response writer may hold the same bounded writer slot that a queued request snapshot needs; polling both completions allows response EOF to release that slot while preserving both complete metadata records and payload files. Writer limits, capture admission, storage formats and downstream response semantics remain unchanged.
+
 - `src/terminal_journal/completion_capacity.rs` owns the per-attempt completion ledger and shared invocation-envelope credit. Runtime updates acquire monotonic credit inside store admission before publishing retained metadata. Actual frame bytes and ACKs remain checked against the unchanged disk/replay limits; a separate Prometheus gauge exposes reserved bytes without adding HTTP fields. The ledger rebuilds from existing unmatched begins and does not introduce a new persistent format.
 
 - Supplemental shutdown recovery is isolated in `src/terminal_journal/shutdown_recovery.rs`. It ignores an incomplete tail with a warning, preserves an isolated copy of middle corruption before cleanup, and reports open/read/isolation/cleanup errors without aborting service startup. A retained incomplete tail is delimited before appending a fact or ACK; ACK compaction cannot overwrite an incompletely read or unsuccessfully isolated source. Valid recovery facts retain their source order through replay and compaction, and primary journal ACK serialization or write failures fail closed instead of returning a false confirmation. Runtime terminal append and group-sync confirmation failures both enter this recovery path with an explicit warning.

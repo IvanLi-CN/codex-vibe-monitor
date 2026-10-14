@@ -1,5 +1,7 @@
 # Terminal Projection 中间层与增量物化实现说明
 
+代理流结束后，通过 `finish_proxy_raw_captures` 同时完成请求和响应原始日志，再构造既有终态记录。响应 EOF 释放共享写入槽，使已排队的请求日志可以完成；两份日志的完整元数据进入原有终态链路，真实 journal 确认与后台 SQLite 物化仍各自承担既定持久性边界。
+
 ## 结构
 
 - `src/terminal_projection.rs` 保存紧凑 terminal event key、P1 ACK 水位和每个消费者的可回收 cursor。
