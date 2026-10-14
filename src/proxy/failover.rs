@@ -917,7 +917,7 @@ fn resolved_pool_request_compression_algorithm(
     }
 }
 
-async fn persist_pool_attempt_response_capture(
+pub(crate) async fn persist_pool_attempt_response_capture(
     state: Arc<AppState>,
     pending: PendingPoolAttemptRecord,
     response_body: Bytes,

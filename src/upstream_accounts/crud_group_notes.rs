@@ -1072,7 +1072,7 @@ async fn load_upstream_account_attempt_page_with_runtime_items(
         separated.push_unseparated(")");
     }
     query
-        .push(" ORDER BY attempts.occurred_at DESC, attempts.attempt_index DESC, attempts.id DESC, attempts.attempt_public_id DESC LIMIT ")
+        .push(" ORDER BY attempts.occurred_at DESC, attempts.id DESC LIMIT ")
         .push_bind(page_size as i64)
         .push(" OFFSET ")
         .push_bind(if merged_page_ids.is_some() {
@@ -1218,26 +1218,37 @@ async fn load_merged_account_attempt_page_for_target(
     query
         .push_bind(&target.0)
         .push(" OR occurred_at = ")
-        .push_bind(&target.0)
-        .push(" AND attempt_index > ")
-        .push_bind(target.1)
-        .push(" OR occurred_at = ")
-        .push_bind(&target.0)
-        .push(" AND attempt_index = ")
-        .push_bind(target.1)
-        .push(" AND id > ")
-        .push_bind(target.2)
-        .push(" OR occurred_at = ")
-        .push_bind(&target.0)
-        .push(" AND attempt_index = ")
-        .push_bind(target.1)
-        .push(" AND id = ")
-        .push_bind(target.2)
-        .push(" AND attempt_id > ")
-        .push_bind(&target.3);
+        .push_bind(&target.0);
+    if !runtime_items.is_empty() {
+        query
+            .push(" AND attempt_index > ")
+            .push_bind(target.1)
+            .push(" OR occurred_at = ")
+            .push_bind(&target.0)
+            .push(" AND attempt_index = ")
+            .push_bind(target.1);
+    }
+    query.push(" AND id > ").push_bind(target.2);
+    if !runtime_items.is_empty() {
+        query
+            .push(" OR occurred_at = ")
+            .push_bind(&target.0)
+            .push(" AND attempt_index = ")
+            .push_bind(target.1)
+            .push(" AND id = ")
+            .push_bind(target.2)
+            .push(" AND attempt_id > ")
+            .push_bind(&target.3);
+    }
     query
+        .push("), ranked AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, ")
+        .push(if runtime_items.is_empty() {
+            "id DESC"
+        } else {
+            "attempt_index DESC, id DESC, attempt_id DESC"
+        })
         .push(
-            "), ranked AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC) AS ordinal FROM combined), totals AS (SELECT COUNT(*) AS total FROM combined), page AS (SELECT ranked.attempt_id FROM ranked CROSS JOIN target_rank WHERE ranked.ordinal > (target_rank.newer_count / ",
+            ") AS ordinal FROM combined), totals AS (SELECT COUNT(*) AS total FROM combined), page AS (SELECT ranked.attempt_id FROM ranked CROSS JOIN target_rank WHERE ranked.ordinal > (target_rank.newer_count / ",
         )
         .push_bind(page_size as i64)
         .push(") * ")

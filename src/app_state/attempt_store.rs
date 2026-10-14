@@ -168,12 +168,20 @@ struct RuntimeAttemptStoreInner {
 pub(crate) struct RuntimeAttemptStore {
     inner: Mutex<RuntimeAttemptStoreInner>,
     #[cfg(test)]
+    reject_next_response_capture: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
     query_after_sql_gate: tokio::sync::Mutex<()>,
     #[cfg(test)]
     query_after_sql_count: std::sync::atomic::AtomicUsize,
 }
 
 impl RuntimeAttemptStore {
+    #[cfg(test)]
+    pub(crate) fn reject_next_response_capture_for_test(&self) {
+        self.reject_next_response_capture
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
     #[cfg(test)]
     pub(crate) async fn pause_queries_after_sql_for_test(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.query_after_sql_gate.lock().await
@@ -413,12 +421,19 @@ impl RuntimeAttemptStore {
         updated.response_raw_truncated_reason = capture.raw_truncated_reason;
         updated.response_content_encoding = capture.content_encoding;
         let updated_bytes = Self::entry_memory_bytes(&updated);
+        #[cfg(test)]
+        let reject_for_test = self
+            .reject_next_response_capture
+            .swap(false, std::sync::atomic::Ordering::AcqRel);
+        #[cfg(not(test))]
+        let reject_for_test = false;
         let available = inner
             .bytes
             .saturating_sub(old_bytes)
             .saturating_add(updated_bytes);
         if updated_bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
             || available > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+            || reject_for_test
             || !admit(&updated)
         {
             inner.rejected_records = inner.rejected_records.saturating_add(1);
