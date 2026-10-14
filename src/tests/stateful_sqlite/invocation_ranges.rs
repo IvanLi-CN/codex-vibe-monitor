@@ -296,7 +296,9 @@ async fn invocation_ranges_concurrent_cold_conversation_initialization_completes
         let pool = pool.clone();
         tasks.spawn(async move {
             let key = format!("concurrent-cold-{number}");
-            let result = manager.allocate(&pool, Some(&key)).await;
+            let result =
+                allocate_fixture_with_bounded_timeout_retry(|| manager.allocate(&pool, Some(&key)))
+                    .await;
             (key, result)
         });
     }
