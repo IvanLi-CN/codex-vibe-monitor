@@ -138,6 +138,7 @@ mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
 mod proxy_long_wait_allocation_and_index;
 mod proxy_pool_roundtrip_and_retry_servers;
+mod proxy_routing_observer;
 mod record_budget;
 mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;

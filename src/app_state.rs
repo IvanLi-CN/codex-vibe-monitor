@@ -859,8 +859,7 @@ pub(crate) struct AppState {
     pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     #[cfg(test)]
-    pub(crate) pool_routing_test_data_version_connection:
-        Arc<Mutex<Option<sqlx::pool::PoolConnection<Sqlite>>>>,
+    pub(crate) pool_routing_test_data_version_connection: Arc<Mutex<Option<SqliteConnection>>>,
     pub(crate) pool_model_routing_cache_write_lock: Arc<Mutex<()>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,
