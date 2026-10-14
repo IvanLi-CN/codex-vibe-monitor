@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 36 current explicit file budgets (19 production and 17 test/helper), and 117 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 33 current explicit file budgets (16 production and 17 test/helper), and 118 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -351,10 +351,20 @@ After rustfmt, the production files are 69, 521, 890, 912, 1,904, 1,554, 1,250, 
 
 Validation for this extraction is the focused long-term statistics test selector, rustfmt, the Rust source-quality checker and fixture harness, all-target Cargo checking, all-target Clippy, and `git diff --check`.
 
+## Archive Cleanup Extraction
+
+The archive cleanup source is now a facade over explicit compression-backlog, deletion, historical-rollup, legacy-mirror, storage, Summary Snapshot, and test modules under `src/maintenance/archive/cleanup/`. The parent retains the archive-file identity implementation and `prune_archive_batches` coordinator; all other responsibilities move as complete contiguous regions. The 21 existing tests remain under `maintenance::archive::archive_cleanup::tests`, with their names, assertions, SQL, fixtures, timing, file-identity checks, deletion transaction boundaries, proof state, and resource classification unchanged. After rustfmt, every extracted production file is below 2,500 physical lines and the test helper is below 3,000 lines, so the parent is removed from the explicit policy inventory. The current policy has 33 entries, 16 production and 17 test/helper, with 118 suppression declarations; immutable candidate counts remain 32 and 23.
+
+Validation evidence is the exact 21-test selector, `cargo check --locked --tests`, the source-quality fixture harness, the canonical source-quality runner, the three backend profiles, and `git diff --check`.
+
+The two companion all-time Summary repair fixtures in `parallel_work_stats_and_timeseries.rs` place the pruned archive 500 days before Shanghai today and its existing sibling 440 days before today. Their legacy manifests have no exact coverage bounds and fall back to an entire local month; the 60-day separation keeps those scopes disjoint across calendar boundaries. Only the two pruned-date offsets change; existing-date offsets, SQL, assertions, and production Summary behavior remain unchanged.
+
+The concurrent cold-conversation initialization fixture uses the existing bounded allocation helper, which retries only the exact 100 ms allocation timeout for at most five attempts. The fixture still starts 32 distinct cold owners concurrently and asserts 32 unique IDs; other errors fail immediately. Production allocation deadlines and behavior remain unchanged. Validation includes this exact fixture through the canonical stateful SQLite runner, and its focused result does not replace the three complete backend profiles.
+
 ## Inventory Contract
 
-The policy has 19 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 36 paths; a long path absent from the inventory is
+The policy has 16 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
+The checker only reads those 33 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no

@@ -9259,7 +9259,7 @@ async fn all_time_summary_repair_replays_existing_materialized_archives_when_oth
     let state = test_state_from_config(config, true).await;
 
     let pruned_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(470))
+        - ChronoDuration::days(500))
     .and_hms_opt(8, 0, 0)
     .expect("valid pruned local hour");
     let pruned_success_at = format_naive(
@@ -10128,7 +10128,7 @@ async fn all_time_summary_repair_rebuilds_non_materialized_archives_when_others_
     let state = test_state_from_config(config, true).await;
 
     let pruned_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days(470))
+        - ChronoDuration::days(500))
     .and_hms_opt(8, 0, 0)
     .expect("valid pruned local hour");
     let pruned_success_at = format_naive(
