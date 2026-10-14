@@ -16,3 +16,22 @@ threads-required = "num-test-threads"
 [[profile.default.overrides]]
 filter = 'test(=tests::stateful_sqlite::prompt_cache_materialization_control::prompt_cache_statistics_checkpoint_budget_preserves_prefix_and_real_work_counts)'
 threads-required = "num-test-threads"
+
+# These fixtures retain real allocator, routing, hydration and scheduler deadlines.
+# Reserve the original profile's slots while they run; do not stretch a deadline.
+[[profile.default.overrides]]
+filter = '''test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_concurrent_cold_conversation_initialization_completes)
+| test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_hot_issuance_survives_closed_database)
+| test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_retirement_returns_only_unissued_tail)
+| test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::background_startup_hourly_rollup_bootstrap_defers_when_repair_cursor_remains_pending)
+| test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::startup_system_status_hydrates_while_summary_hydration_is_delayed)
+| test(=tests::stateful_sqlite::routing_failover_retry_budget::resolve_pool_account_for_request_with_wait_wakes_when_a_routable_account_is_created)
+| test(=tests::stateful_sqlite::routing_failover_terminal_reasoning::capture_target_pool_route_persists_attempt_rows_and_summary_fields)'''
+threads-required = "num-test-threads"
+
+[[profile.default.overrides]]
+filter = '''test(=long_term_stats::tests::control::controlled_transaction_timeout_waits_for_pressure_cooldown_before_retry)
+| test(=long_term_stats::tests::control::refresh_publication_commits_state_before_cleanup_can_cancel)
+| test(=tests::lightweight::time_ranges_and_proxy_display::proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure)
+| test(=sqlite_batch_writer::tests::p2_pressure_defer_waits_for_its_deadline_without_a_20ms_retry)'''
+threads-required = "num-test-threads"
