@@ -1,5 +1,8 @@
 use super::*;
 
+mod finalization;
+pub(crate) use finalization::finish_proxy_raw_captures;
+
 pub(crate) fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
     if header.len() < 2 {
         return true;

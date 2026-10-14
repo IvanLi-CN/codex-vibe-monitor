@@ -2829,15 +2829,13 @@ pub(crate) async fn proxy_openai_v1_capture_target(
         }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
-        let req_raw_for_task = req_raw_pending_for_task.finish().await;
-        let raw_response_finish_started = Instant::now();
-        let resp_raw = response_raw_writer.finish().await;
+        let (req_raw_for_task, resp_raw, raw_response_write_elapsed) =
+            finish_proxy_raw_captures(req_raw_pending_for_task, response_raw_writer).await;
         let attempt_resp_raw = if attempt_response_capture_enabled {
             resp_raw.clone()
         } else {
             RawPayloadMeta::default()
         };
-        let raw_response_write_elapsed = raw_response_finish_started.elapsed().as_millis() as u64;
         if raw_response_write_log_at_info(raw_response_write_elapsed, resp_raw.size_bytes) {
             info!(
                 invoke_id = %invoke_id_for_task,

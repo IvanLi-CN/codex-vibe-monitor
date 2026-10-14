@@ -1,5 +1,6 @@
 #[allow(unused_imports)]
 use super::*;
+mod proxy_raw_finalization;
 mod proxy_runtime_pressure;
 mod proxy_runtime_routing;
 mod runtime_attempt_cancellation;
