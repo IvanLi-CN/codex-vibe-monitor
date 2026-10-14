@@ -5,7 +5,7 @@
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 38 large-file entries explicit.
+  its 33 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
@@ -373,3 +373,7 @@ The subscriptions source extraction replaces the 24,445-line flat source with a 
 The flat `src/long_term_stats.rs` source is replaced by the `src/long_term_stats/` module directory. Models, archive compatibility, schema, projection runtime/rebuild, integrity, refresh, intervals, and projection flushing now have explicit module boundaries, and the inline tests are grouped by control, integrity, intervals, refresh, archive, and shared support concerns. Existing names, visibility paths, SQL, timing, assertions, resource classification, and cleanup behavior remain unchanged, with no `include!` composition.
 
 After rustfmt, every production child is below 2,500 lines and every test/helper child is below 3,000 lines. The policy removes the obsolete parent entry and now has 34 explicit files, while immutable baseline candidate counts remain 32 production and 23 test/helper. The two moved refresh `#[expect]` declarations retain their suppression inventory entries under `src/long_term_stats/refresh.rs`.
+
+## Archive Cleanup Extraction
+
+The archive cleanup facade now delegates to explicit compression-backlog, deletion, historical-rollup, legacy-mirror, storage, Summary Snapshot, and test modules under `src/maintenance/archive/cleanup/`. The production coordinator, archive-file identity implementation, and `prune_archive_batches` orchestration remain in `cleanup.rs`; the 21 existing tests remain under the same `archive_cleanup::tests` module path. After rustfmt, every extracted production file is below 2,500 physical lines and the test helper is below 3,000 lines, so the obsolete parent is removed from the policy inventory. Names, SQL, timing, file-identity checks, deletion transaction boundaries, proof state, test names, and resource classification remain unchanged. The current policy is 33 entries with 16 production and 17 test/helper candidates and 118 suppression entries; immutable candidate counts remain 32 and 23.
