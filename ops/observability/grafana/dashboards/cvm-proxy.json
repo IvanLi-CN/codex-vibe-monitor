@@ -870,15 +870,23 @@
       }
     },
     {
+      "id": 115,
+      "type": "row",
+      "title": "代理运行态与日志健康",
+      "collapsed": false,
+      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 1 },
+      "panels": []
+    },
+    {
       "id": 112,
       "type": "timeseries",
-      "title": "代理运行态与终态日志健康",
-      "description": "运行态内存、终态日志积压和物化延迟；非零拒绝或失败表示需要处理，补充恢复文件问题不会阻止启动但会保留 warning。",
+      "title": "代理运行态数量与保护计数",
+      "description": "运行态记录、终态积压、拒绝/失败与热路径写准入保护计数；非零拒绝或失败表示需要处理。",
       "gridPos": {
         "x": 0,
-        "y": 30,
-        "w": 16,
-        "h": 8
+        "y": 40,
+        "w": 8,
+        "h": 6
       },
       "datasource": {
         "type": "prometheus",
@@ -895,6 +903,101 @@
         },
         {
           "refId": "B",
+          "expr": "cvm_proxy_runtime_attempt_store{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",measure=\"records\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "运行态记录"
+        },
+        {
+          "refId": "C",
+          "expr": "cvm_proxy_runtime_attempt_rejections{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "运行态容量拒绝"
+        },
+        {
+          "refId": "D",
+          "expr": "cvm_proxy_runtime_journal_rejections{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 日志拒绝"
+        },
+        {
+          "refId": "E",
+          "expr": "cvm_proxy_runtime_journal_failed{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 日志失败"
+        },
+        {
+          "refId": "F",
+          "expr": "cvm_proxy_runtime_interactive_write_admissions{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "InteractiveProxy 写准入"
+        },
+        {
+          "refId": "G",
+          "expr": "cvm_proxy_runtime_attempt_progress_enqueued{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "AttemptProgress SQL"
+        },
+        {
+          "refId": "H",
+          "expr": "cvm_proxy_runtime_journal_replayed{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 重放"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 113,
+      "type": "timeseries",
+      "title": "代理运行态年龄与物化延迟",
+      "description": "终态日志最老积压年龄与最近物化延迟；补充恢复文件问题会保留 warning，但不会阻止服务启动。",
+      "gridPos": {
+        "x": 8,
+        "y": 40,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
           "expr": "cvm_proxy_runtime_journal_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
           "instant": false,
           "range": true,
@@ -902,7 +1005,7 @@
           "legendFormat": "{{journal}} 最老年龄"
         },
         {
-          "refId": "C",
+          "refId": "B",
           "expr": "cvm_proxy_runtime_materialization_delay_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
           "instant": false,
           "range": true,
@@ -933,13 +1036,46 @@
       }
     },
     {
+      "id": 114,
+      "type": "timeseries",
+      "title": "代理运行态内存与日志容量",
+      "description": "内存占用、实际日志字节与已接受请求的终态预留额度分别计量；预留额度不是磁盘占用。",
+      "gridPos": { "x": 16, "y": 40, "w": 8, "h": 6 },
+      "datasource": { "type": "prometheus", "uid": "cvm-prometheus" },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cvm_proxy_runtime_attempt_store{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",measure=\"bytes\"}",
+          "instant": false, "range": true, "format": "time_series", "legendFormat": "运行态内存"
+        },
+        {
+          "refId": "B",
+          "expr": "cvm_proxy_runtime_journal_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false, "range": true, "format": "time_series", "legendFormat": "{{journal}} 日志字节"
+        },
+        {
+          "refId": "C",
+          "expr": "cvm_proxy_runtime_journal_completion_reserved_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false, "range": true, "format": "time_series", "legendFormat": "终态预留额度"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "bytes", "noValue": "Unknown", "color": { "mode": "palette-classic" } },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      }
+    },
+    {
       "id": 99,
       "type": "row",
       "title": "首字节、模型输出与上游尝试",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 39,
+        "y": 47,
         "w": 24,
         "h": 1
       },
@@ -952,7 +1088,7 @@
       "description": "所选时间范围内按终态去重的业务 invocation 数；不等于 upstream attempt 数。",
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 48,
         "w": 6,
         "h": 4
       },
@@ -1006,7 +1142,7 @@
       "description": "分母为 success + error + cancelled；取消单独显示，不并入失败。",
       "gridPos": {
         "x": 6,
-        "y": 40,
+        "y": 48,
         "w": 6,
         "h": 4
       },
@@ -1060,7 +1196,7 @@
       "description": "upstream retry 事件，按 reason 分类；一次 invocation 可以有多个 attempt。",
       "gridPos": {
         "x": 12,
-        "y": 40,
+        "y": 48,
         "w": 6,
         "h": 4
       },
@@ -1114,7 +1250,7 @@
       "description": "仅有首 token 的请求才产生 TTFT 样本；无样本显示未知。",
       "gridPos": {
         "x": 18,
-        "y": 40,
+        "y": 48,
         "w": 6,
         "h": 4
       },
@@ -1168,7 +1304,7 @@
       "description": "窗口内 cancelled invocation；与 HTTP body 的 cancelled 生命周期信号分开。",
       "gridPos": {
         "x": 0,
-        "y": 44,
+        "y": 52,
         "w": 6,
         "h": 4
       },
@@ -1222,7 +1358,7 @@
       "description": "TTFT Histogram 的 `_count` 增量；p95 必须和这个样本数一起看。",
       "gridPos": {
         "x": 6,
-        "y": 44,
+        "y": 52,
         "w": 6,
         "h": 4
       },
@@ -1276,7 +1412,7 @@
       "description": "TTFB 是上游首字节，TTFT 是首 token；两者都来自代理终态样本。",
       "gridPos": {
         "x": 0,
-        "y": 48,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -1346,7 +1482,7 @@
       "description": "阶段可能重叠，不能堆叠或相加为总耗时。",
       "gridPos": {
         "x": 12,
-        "y": 48,
+        "y": 56,
         "w": 12,
         "h": 8
       },
@@ -1401,7 +1537,7 @@
       "description": "attempt 是上游交互次数，不是 invocation；按 outcome 展示窗口变化。",
       "gridPos": {
         "x": 0,
-        "y": 56,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -1478,7 +1614,7 @@
       "description": "rate_limit、overload、route_failover 等 reason 单独展示，不把 retry 解释成失败数。",
       "gridPos": {
         "x": 12,
-        "y": 56,
+        "y": 64,
         "w": 12,
         "h": 8
       },
@@ -1539,7 +1675,7 @@
       "description": "表格查询覆盖整个所选窗口；TTFB/TTFT 是独立 Histogram，样本数用于低样本判断。",
       "gridPos": {
         "x": 0,
-        "y": 64,
+        "y": 72,
         "w": 24,
         "h": 10
       },
@@ -1633,7 +1769,7 @@
       "description": "这是上游 stream lifetime；SSE/body lifetime 见底部 HTTP route 表，不能与普通响应时间混用。",
       "gridPos": {
         "x": 0,
-        "y": 74,
+        "y": 82,
         "w": 12,
         "h": 8
       },
@@ -1694,7 +1830,7 @@
       "description": "upload/download 为代理上游 socket 观测的方向字节；不是调用次数。",
       "gridPos": {
         "x": 12,
-        "y": 74,
+        "y": 82,
         "w": 12,
         "h": 8
       },
@@ -1755,7 +1891,7 @@
       "description": "响应头耗时在 response head 返回前结束；body lifetime 到 complete/error/cancelled。两者严格分开，表格覆盖整个窗口。",
       "gridPos": {
         "x": 0,
-        "y": 82,
+        "y": 90,
         "w": 24,
         "h": 10
       },
@@ -1849,7 +1985,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 92,
+        "y": 100,
         "w": 24,
         "h": 1
       },
@@ -1860,7 +1996,7 @@
           "title": "高级：协议与覆盖说明说明",
           "gridPos": {
             "x": 0,
-            "y": 40,
+            "y": 48,
             "w": 24,
             "h": 5
           },

@@ -13,6 +13,7 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 ## Related ADRs
 
 - [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
+- [ADR 0038: Proxy journal completion capacity](../../adr/0038-proxy-journal-completion-capacity.md)
 
 ## Goals
 
@@ -50,6 +51,8 @@ shutdown terminal 补救恢复文件采用非阻断恢复：末尾不完整帧�
 ## Runtime Data Plane Boundary
 
 Terminal journal 的消费 ACK 只能发生在 P1 SQLite 事务提交后；请求侧日志确认发生在分组同步后，允许先于 SQLite 提交。P1 锁冲突时保留完整未提交批次并指数退避；新 terminal 事件不得提前既有重试 deadline。Summary 来源变化凭据与 terminal 事实原子提交，Summary 计算由独立消费者恢复。P2 projection materialization 不参与 P1 ACK，也不得在单事务内无界追赶 cursor。
+
+主日志以实际保留字节加已接受请求的终态额度执行 512 MiB 硬容量准入；终态额度覆盖转义、增长、共享 invocation envelope 和 ACK，不为每个小请求固定占用一个 4 MiB 最大帧。元数据增长先取得额度再发布，终态只释放其确实 ACK 的开始记录额度；实际终态仍受 4 MiB 单帧与总容量检查。额度不足必须进入可观测恢复/背压，不能以仅内存成功确认关键事实。额度由现有日志的未完成开始记录重建，不引入持久格式或 schema 变化。
 
 - `TerminalProjectionHub` 继续拥有 terminal durable cursor；current-state 由 [`RuntimeProjectionHub`](../high-frequency-runtime-data-plane/SPEC.md) 承担，二者不得合并为一个共享可变缓存。
 - Dashboard live render 只消费 Runtime/Terminal Projection 的不可变 snapshot，不得从 Terminal Projection 的订阅回调反向调用 SQLite builder。

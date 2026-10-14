@@ -208,7 +208,16 @@ impl RuntimeAttemptStore {
         self.upsert_inner(snapshot, false)
     }
 
-    fn upsert_inner(&self, mut snapshot: RuntimeAttemptSnapshot, terminal_priority: bool) -> bool {
+    fn upsert_inner(&self, snapshot: RuntimeAttemptSnapshot, terminal_priority: bool) -> bool {
+        self.upsert_with_admission(snapshot, terminal_priority, |_| true)
+    }
+
+    pub(crate) fn upsert_with_admission(
+        &self,
+        mut snapshot: RuntimeAttemptSnapshot,
+        terminal_priority: bool,
+        admit: impl FnOnce(&RuntimeAttemptSnapshot) -> bool,
+    ) -> bool {
         if terminal_priority {
             for value in [
                 &mut snapshot.error_message,
@@ -295,7 +304,15 @@ impl RuntimeAttemptStore {
                 terminal_claimed: false,
             },
         );
-        if self.evict_to_bound(&mut inner, &key, terminal_priority) {
+        if self.evict_to_bound(&mut inner, &key, terminal_priority)
+            && admit(
+                &inner
+                    .entries
+                    .get(&key)
+                    .expect("candidate remains present")
+                    .snapshot,
+            )
+        {
             return true;
         }
         if let Some(rejected) = inner.entries.remove(&key) {
@@ -376,6 +393,7 @@ impl RuntimeAttemptStore {
         occurred_at: &str,
         attempt_public_id: &str,
         capture: RuntimeAttemptResponseCapture,
+        admit: impl FnOnce(&RuntimeAttemptSnapshot) -> bool,
     ) -> bool {
         let mut inner = self.inner.lock().unwrap_or_else(|error| error.into_inner());
         self.evict_expired(&mut inner);
@@ -401,7 +419,9 @@ impl RuntimeAttemptStore {
             .saturating_add(updated_bytes);
         if updated_bytes > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
             || available > PROXY_RUNTIME_ATTEMPT_STORE_MAX_BYTES
+            || !admit(&updated)
         {
+            inner.rejected_records = inner.rejected_records.saturating_add(1);
             return false;
         }
         inner.bytes = available;

@@ -16,6 +16,7 @@
 
 - [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
 - [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
+- [ADR 0038: Proxy journal completion capacity](../../adr/0038-proxy-journal-completion-capacity.md)
 
 ## Goals
 
@@ -119,6 +120,8 @@ REQ-RUNTIME-MEMORY-01: 代理 attempt 高频状态和路由事实必须先进入
 
 REQ-RUNTIME-JOURNAL-01: begin、terminal 和关键路由事实必须写入版本化、可恢复、敏感值脱敏的日志，并在确认前完成分组同步。
 
+REQ-RUNTIME-CAPACITY-01: 主日志实际字节与已接受请求的终态额度总和不得超过 512 MiB；额度覆盖转义、终态增长、invocation envelope 和 ACK，元数据增长先取得额度再进入运行态投影。同一 invocation 的重试共享 envelope。128 和 256 个小请求不得因每次固定预留 4 MiB 而被拒绝；超过单帧 4 MiB 或未获额度的关键终态必须进入可观测恢复/背压，不能报告仅内存成功。
+
 REQ-RUNTIME-MATERIALIZE-01: SQLite 只在 20ms、32 事件、4MiB 边界内批量物化终态事实与 Summary 来源凭据，派生计算不得延长终态事务。
 
 REQ-RUNTIME-FENCE-01: 管理端控制代际、sticky owner/scope 和模型设置代际必须隔离迟到结果并支持幂等重放。
@@ -128,6 +131,8 @@ REQ-RUNTIME-HEALTH-01: 内存、日志、物化积压、拒绝、重放、延迟
 ## Verification
 
 VER-RUNTIME-UNIT-01: 覆盖 bounded latest-wins、terminal reserve 和 capacity rejection；covers: REQ-RUNTIME-MEMORY-01。
+
+VER-RUNTIME-CAPACITY-01: 覆盖 256 个独立 attempt 的逆序终态及重启、最坏 JSON 转义、最大 ACK、重试 envelope 去重、元数据发布前的拒绝和积压释放后的恢复；covers: REQ-RUNTIME-CAPACITY-01。
 
 VER-RUNTIME-ARCHIVE-01: 覆盖日志加密脱敏、损坏恢复、重启重放、幂等物化和 sticky/control ABA；covers: REQ-RUNTIME-JOURNAL-01 REQ-RUNTIME-FENCE-01。
 

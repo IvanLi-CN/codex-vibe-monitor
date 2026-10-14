@@ -868,9 +868,25 @@ pub(crate) fn update_runtime_attempt_from_pending(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
 ) -> bool {
+    upsert_runtime_attempt_with_completion_capacity(
+        state,
+        runtime_attempt_snapshot_from_pending(pending),
+        false,
+    )
+}
+
+fn upsert_runtime_attempt_with_completion_capacity(
+    state: &AppState,
+    snapshot: RuntimeAttemptSnapshot,
+    terminal: bool,
+) -> bool {
     state
         .proxy_runtime_attempts
-        .upsert(runtime_attempt_snapshot_from_pending(pending))
+        .upsert_with_admission(snapshot, terminal, |candidate| {
+            state
+                .sqlite_batch_writer
+                .reserve_runtime_attempt_completion_growth(candidate)
+        })
 }
 
 pub(crate) fn discard_runtime_attempt_for_drop(
@@ -934,7 +950,7 @@ pub(crate) async fn finalize_pool_upstream_request_attempt_in_memory(
     snapshot.compact_support_reason = compact_support_reason
         .map(ToOwned::to_owned)
         .or(snapshot.compact_support_reason);
-    if !state.proxy_runtime_attempts.upsert_terminal(snapshot) {
+    if !upsert_runtime_attempt_with_completion_capacity(state, snapshot, true) {
         bail!("proxy runtime attempt store rejected terminal snapshot")
     }
     Ok(())
@@ -1329,6 +1345,11 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_in_me
             raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
             content_encoding: pending.response_content_encoding.clone(),
         },
+        |candidate| {
+            state
+                .sqlite_batch_writer
+                .reserve_runtime_attempt_completion_growth(candidate)
+        },
     ) {
         Ok(())
     } else {
@@ -1682,7 +1703,7 @@ fn update_runtime_attempt_progress(
     } else if let Some(current) = current {
         snapshot = current;
     }
-    state.proxy_runtime_attempts.upsert(snapshot)
+    upsert_runtime_attempt_with_completion_capacity(state, snapshot, false)
 }
 
 fn build_pool_upstream_request_attempt_progress(

@@ -87,6 +87,11 @@ async fn sample_runtime(state: &AppState) {
         terminal_journal.pending_bytes as f64,
     );
     metrics.gauge(
+        "cvm_proxy_runtime_journal_completion_reserved_bytes",
+        &[],
+        terminal_journal.completion_reserved_bytes as f64,
+    );
+    metrics.gauge(
         "cvm_proxy_runtime_journal_age_seconds",
         &[("journal", "terminal")],
         terminal_journal.oldest_pending_age_ms as f64 / 1000.0,

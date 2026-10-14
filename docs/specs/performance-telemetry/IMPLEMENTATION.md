@@ -1,5 +1,9 @@
 # 外部性能观测实现
 
+## 代理运行态健康
+
+`cvm-proxy` 将运行态数量/保护计数、年龄/物化延迟、内存/日志容量分别放在独立面板，使用 count、seconds 与 bytes 单位。终态预留额度单独导出，不计为已写入日志字节；所有系列不包含请求身份。新增面板拥有独立网格行，后续面板保持相对布局。隔离 synthetic preview 为这些系列提供固定合成数据，当前桌面与窄屏截图已经主人确认；这些图片只验证渲染，不证明生产竞争或性能预算。
+
 ## 请求生命周期与链路覆盖
 
 `src/observability/diagnostics.rs` 在内存中管理独立随机 trace 身份和单调/UTC 基准；最外层 HTTP middleware 在鉴权、路由及 CORS 处理之前建立上下文，body 包装器在 EOF、error 或 Drop 终结一次。显式 task-local scope 与代理自有 spawn 传播上下文，业务 `StageTimings`、SQLite schema 和 terminal journal 格式保留。Responses、Chat Completions、Compact、`/v1/alpha/search`、图像生成/编辑以及其他 `/v1/*` 请求均有入口与响应结束；非适用 TTFT 明确标记，未见有效 delta 的成功文本流不补零。

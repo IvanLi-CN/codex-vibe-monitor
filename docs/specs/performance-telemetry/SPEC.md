@@ -92,3 +92,8 @@ Mock-only `ui_demo` evidence uses the current implementation, including the reta
 ![Lifecycle cases mobile](assets/lifecycle-cases-mobile.png)
 ![Lifecycle waterfall desktop](assets/lifecycle-waterfall-desktop.png)
 ![Lifecycle waterfall mobile](assets/lifecycle-waterfall-mobile.png)
+
+代理运行态健康证据来自当前仓库实际 provision 的隔离 Grafana/Prometheus synthetic preview。桌面视口为 1280×900，窄屏视口为 393×852；截图只包含数量/保护计数、年龄/物化延迟和内存/日志容量三个面板，保留 Grafana 原生滚动图例。两张新增图片没有同路径基线，已展示并获主人确认准确；页面级 trim-only 处理未裁剪。
+
+![Proxy runtime Grafana desktop](assets/proxy-runtime-grafana-desktop.png)
+![Proxy runtime Grafana mobile](assets/proxy-runtime-grafana-mobile393.png)

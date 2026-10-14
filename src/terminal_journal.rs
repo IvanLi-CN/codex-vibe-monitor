@@ -11,7 +11,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::warn;
 
+mod completion_capacity;
 mod shutdown_recovery;
+use completion_capacity::CompletionCapacity;
 use shutdown_recovery::{
     compact_shutdown_terminal_recovery, load_shutdown_terminal_recovery,
     open_shutdown_recovery_append,
@@ -138,6 +140,8 @@ pub(crate) struct TerminalJournalStats {
     pub(crate) pending_records: usize,
     pub(crate) pending_materialization_records: usize,
     pub(crate) pending_bytes: u64,
+    #[serde(skip)]
+    pub(crate) completion_reserved_bytes: u64,
     pub(crate) segment_count: usize,
     pub(crate) replay_count: usize,
     pub(crate) checkpoint_lag_ms: u64,
@@ -286,6 +290,7 @@ pub(crate) struct TerminalJournal {
     segments: BTreeMap<u64, JournalSegment>,
     pending_by_key: HashMap<(String, String, bool), Vec<u64>>,
     pending_attempt_starts: HashMap<String, u64>,
+    completion_capacity: CompletionCapacity,
     dispatch_offsets: HashMap<(String, String, bool), (u64, u64, u64)>,
     next_sequence: u64,
     synced_sequence: u64,
@@ -865,6 +870,10 @@ impl TerminalJournal {
             || !pending_by_key.is_empty()
             || !shutdown_recovery_pending.is_empty())
         .then_some(Instant::now());
+        let mut completion_capacity = CompletionCapacity::default();
+        for snapshot in &unmatched_attempt_starts {
+            completion_capacity.insert(snapshot);
+        }
         let mut deferred_writes = VecDeque::new();
         let mut deferred_write_bytes = 0_usize;
         for terminal in recovery_writes {
@@ -915,6 +924,7 @@ impl TerminalJournal {
             deferred_rejected: 0,
             replay_blocked: false,
             pending_attempt_starts,
+            completion_capacity,
             shutdown_recovery_pending,
             shutdown_recovery_order,
             shutdown_recovery_next_order: shutdown_recovery_ordered_keys.len() as u64,
@@ -1050,8 +1060,10 @@ impl TerminalJournal {
             );
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         }
+        let mut acknowledged_ids = HashSet::new();
         let acknowledgement_sequences = attempts
             .iter()
+            .filter(|attempt| acknowledged_ids.insert(attempt.attempt_public_id.as_str()))
             .filter_map(|attempt| {
                 self.pending_attempt_starts
                     .get(&attempt.attempt_public_id)
@@ -1064,15 +1076,17 @@ impl TerminalJournal {
             .filter_map(|(_, sequence)| encode_acknowledgement_line(*sequence).ok())
             .map(|line| line.len() as u64)
             .sum::<u64>();
-        let remaining_starts = self
-            .pending_attempt_starts
-            .len()
-            .saturating_sub(acknowledgement_sequences.len());
+        let acknowledged_ids = acknowledgement_sequences
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        let remaining_reservation = self
+            .completion_capacity
+            .reserved_bytes()
+            .saturating_sub(self.completion_capacity.released_bytes(&acknowledged_ids));
         if self
             .pending_bytes
-            .saturating_add(
-                (remaining_starts as u64).saturating_mul(TERMINAL_JOURNAL_REPLAY_MAX_BYTES as u64),
-            )
+            .saturating_add(remaining_reservation)
             .saturating_add(encoded_len)
             .saturating_add(acknowledgement_bytes)
             > TERMINAL_JOURNAL_MAX_BYTES
@@ -1157,6 +1171,7 @@ impl TerminalJournal {
             }
             self.pending_bytes = self.pending_bytes.saturating_add(acknowledgement_len);
             self.pending_attempt_starts.remove(attempt_public_id);
+            self.completion_capacity.release(attempt_public_id);
         }
         if acknowledgement_failed {
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
@@ -1196,13 +1211,12 @@ impl TerminalJournal {
             );
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         }
+        let completion_increment = self.completion_capacity.start_increment(snapshot);
         if self
             .pending_bytes
             .saturating_add(encoded_len)
-            .saturating_add(
-                (self.pending_attempt_starts.len().saturating_add(1) as u64)
-                    .saturating_mul(TERMINAL_JOURNAL_REPLAY_MAX_BYTES as u64),
-            )
+            .saturating_add(self.completion_capacity.reserved_bytes())
+            .saturating_add(completion_increment)
             > TERMINAL_JOURNAL_MAX_BYTES
         {
             self.overflowed = true;
@@ -1232,6 +1246,7 @@ impl TerminalJournal {
         segment.bytes = segment.bytes.saturating_add(encoded_len);
         segment.sequences.insert(event.sequence);
         self.pending_bytes = self.pending_bytes.saturating_add(encoded_len);
+        self.completion_capacity.insert(snapshot);
         self.pending_attempt_starts
             .insert(snapshot.attempt_public_id.clone(), event.sequence);
         if self.pending_since.is_none() {
@@ -1289,7 +1304,24 @@ impl TerminalJournal {
         }
         self.pending_bytes = self.pending_bytes.saturating_add(encoded.len() as u64);
         self.pending_attempt_starts.remove(attempt_public_id);
+        self.completion_capacity.release(attempt_public_id);
         true
+    }
+
+    pub(crate) fn reserve_attempt_completion_growth(
+        &mut self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> bool {
+        if self.sync_failed || self.append_failed {
+            return false;
+        }
+        let accepted = self
+            .completion_capacity
+            .reserve_growth(snapshot, self.pending_bytes);
+        if !accepted {
+            self.overflowed = true;
+        }
+        accepted
     }
 
     pub(crate) fn sync_if_due(&mut self) -> Option<u64> {
@@ -1505,7 +1537,13 @@ impl TerminalJournal {
         {
             warn!(error = %err, "failed to compact shutdown terminal recovery sink");
         }
-        if !self.sync_failed && self.pending_bytes < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5 {
+        if !self.sync_failed
+            && !self.append_failed
+            && self
+                .pending_bytes
+                .saturating_add(self.completion_capacity.reserved_bytes())
+                < TERMINAL_JOURNAL_MAX_BYTES * 3 / 5
+        {
             self.overflowed = false;
         }
     }
@@ -1866,6 +1904,7 @@ impl TerminalJournal {
                 .len()
                 .saturating_add(self.shutdown_recovery_pending.len()),
             pending_bytes: self.pending_bytes,
+            completion_reserved_bytes: self.completion_capacity.reserved_bytes(),
             segment_count: self.segments.len(),
             replay_count: self.replay_count,
             checkpoint_lag_ms: self.last_checkpoint_at.elapsed().as_millis() as u64,
@@ -2376,10 +2415,13 @@ fn legacy_journal_line_checksum(
 }
 
 #[cfg(test)]
+pub(crate) use tests::test_attempt_snapshot;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn test_attempt_snapshot() -> RuntimeAttemptSnapshot {
+    pub(crate) fn test_attempt_snapshot() -> RuntimeAttemptSnapshot {
         RuntimeAttemptSnapshot {
             routing_control_fingerprint: None,
             attempt_public_id: "attempt-journal-1".to_string(),

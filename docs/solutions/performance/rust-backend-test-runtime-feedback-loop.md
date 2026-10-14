@@ -71,6 +71,9 @@ bash .github/scripts/test-live-quality-gates.sh
 
 ## 常见坑
 
+- 权限拒绝 fixture 的运行身份必须真的受文件权限约束。root 持有 `CAP_DAC_OVERRIDE` 或 `CAP_DAC_READ_SEARCH` 时，`chmod 000` 仍可读，测试报错不能据此归因生产实现；在会话 VM 内用非特权用户或对测试进程移除这两项 capability，保留原权限断言并重跑。
+- 用相对天数制造不同月度归档时，30 天间隔可能仍落在同一个 31 天月份。应选择至少 60 天间隔并断言不同 `YYYY-MM`，避免缺失旧归档的整月保护逻辑污染“另一个可读月份”的 fixture；不能为修正 fixture 放宽计数、token 或成本断言。
+
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
 - 不要用 lockfile-only key 缓存整个 `target`，也不要让 Clippy 恢复或写入 legacy `target`；Lint 只可复用 registry/git，nextest target archive 必须保持 source fingerprint 隔离。

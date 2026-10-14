@@ -1814,6 +1814,21 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) fn reserve_runtime_attempt_completion_growth(
+        &self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> bool {
+        let Ok(mut guard) = self.terminal_journal.lock() else {
+            return false;
+        };
+        if let Some(journal) = guard.as_mut() {
+            journal.reserve_attempt_completion_growth(snapshot)
+        } else {
+            // Only lightweight fixtures have no file journal.
+            cfg!(test)
+        }
+    }
+
     pub(crate) fn acknowledge_runtime_attempt_start(&self, attempt_public_id: &str) -> bool {
         let acknowledged = self
             .terminal_journal
