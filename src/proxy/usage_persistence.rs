@@ -4294,6 +4294,10 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
         "persist_and_broadcast_proxy_capture_terminal_record",
         async move {
             let enqueue_started = Instant::now();
+            #[cfg(test)]
+            state
+                .sqlite_batch_writer
+                .runtime_terminal_diagnostic_stage_for_test(0);
             let persisted_record = api_invocation_from_runtime_record(&record);
             let invoke_id = persisted_record.invoke_id.clone();
             let duplicate_terminal =
@@ -4321,8 +4325,16 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     "cache routing observation was not accepted; terminal can be retried",
                 );
             }
+            #[cfg(test)]
+            state
+                .sqlite_batch_writer
+                .runtime_terminal_diagnostic_stage_for_test(1);
             let projection =
                 register_terminal_projection_before_enqueue(state, &persisted_record).await;
+            #[cfg(test)]
+            state
+                .sqlite_batch_writer
+                .runtime_terminal_diagnostic_stage_for_test(2);
             let delta = &projection.dashboard;
             if !delta.duplicate {
                 state

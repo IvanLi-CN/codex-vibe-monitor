@@ -1220,6 +1220,8 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
 ) -> Result<()> {
     crate::observability::observed_future(state.observability.enabled,"persist_and_broadcast_proxy_capture",async move {
     let enqueue_started = Instant::now();
+    #[cfg(test)]
+    state.sqlite_batch_writer.runtime_terminal_diagnostic_stage_for_test(0);
     if !record.timings.t_total_ms.is_finite() || record.timings.t_total_ms <= 0.0 {
         record.timings.t_total_ms = elapsed_ms(capture_started);
     }
@@ -1244,7 +1246,11 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         state.proxy_runtime_invocations.clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);
         return Err(error).context("cache routing observation was not accepted; terminal can be retried");
     }
+    #[cfg(test)]
+    state.sqlite_batch_writer.runtime_terminal_diagnostic_stage_for_test(1);
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
+    #[cfg(test)]
+    state.sqlite_batch_writer.runtime_terminal_diagnostic_stage_for_test(2);
     let delta = &projection.dashboard;
     if !delta.duplicate {state.observability.proxy_terminal(&record,inserted_record.endpoint.as_deref());}
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
