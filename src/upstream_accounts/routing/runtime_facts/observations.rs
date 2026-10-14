@@ -18,19 +18,11 @@ pub(crate) async fn record_runtime_pool_route_success(
     sticky_affinity_generation: Option<i64>,
     request_model: Option<&str>,
 ) -> Result<bool> {
-    #[cfg(test)]
-    state
-        .sqlite_batch_writer
-        .runtime_terminal_diagnostic_stage_for_test(6);
     let runtime = runtime_route_facts(state).await?;
     let gate = runtime.admission_gate.lock().await;
     let account = load_account_projection(state, Some(&runtime), account_id, true)
         .await?
         .context("route account not found")?;
-    #[cfg(test)]
-    state
-        .sqlite_batch_writer
-        .runtime_terminal_diagnostic_stage_for_test(7);
     if runtime_request_control_is_stale(state, &account, invoke_id) {
         return Ok(false);
     }
@@ -144,16 +136,8 @@ pub(crate) async fn record_runtime_pool_route_success(
         memory_error: None,
     };
     let acknowledgement = runtime.append(event)?;
-    #[cfg(test)]
-    state
-        .sqlite_batch_writer
-        .runtime_terminal_diagnostic_stage_for_test(8);
     drop(gate);
     confirm(state, &runtime, acknowledgement).await?;
-    #[cfg(test)]
-    state
-        .sqlite_batch_writer
-        .runtime_terminal_diagnostic_stage_for_test(9);
     complete_runtime_priority_handoff(_attempt_id, invoke_id, can_recover && model_recovered);
     if can_recover {
         publish_pool_routing_availability(state);

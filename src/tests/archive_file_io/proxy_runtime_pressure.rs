@@ -330,12 +330,11 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
             )
             .await
             .expect("proxy request should complete");
-            let response_ready_at = started.elapsed();
             let status = response.status();
             let _ = to_bytes(response.into_body(), usize::MAX)
                 .await
                 .expect("read proxy response body");
-            (status, started.elapsed(), response_ready_at)
+            (status, started.elapsed())
         }));
     }
 
@@ -408,7 +407,7 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
         .collect::<Vec<_>>();
     let statuses = results
         .iter()
-        .map(|(status, _, _)| *status)
+        .map(|(status, _)| *status)
         .collect::<Vec<_>>();
     assert!(
         statuses.iter().all(|status| *status == StatusCode::OK),
@@ -416,29 +415,10 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
     );
     let mut latencies = results
         .iter()
-        .map(|(_, elapsed, _)| *elapsed)
+        .map(|(_, elapsed)| *elapsed)
         .collect::<Vec<_>>();
     latencies.sort_unstable();
     let p95 = latencies[(latencies.len() * 95).div_ceil(100).saturating_sub(1)];
-    let mut response_ready_latencies = results
-        .iter()
-        .map(|(_, _, elapsed)| *elapsed)
-        .collect::<Vec<_>>();
-    response_ready_latencies.sort_unstable();
-    let response_ready_p95 = response_ready_latencies[(response_ready_latencies.len() * 95)
-        .div_ceil(100)
-        .saturating_sub(1)];
-    eprintln!(
-        "[DEBUG-pr1110-ci-stage] http_complete p95_ms={} response_ready_p95_ms={} stages={:?} elapsed_ms={} pool_size={} pool_idle={}",
-        p95.as_millis(),
-        response_ready_p95.as_millis(),
-        state
-            .sqlite_batch_writer
-            .runtime_terminal_diagnostic_snapshot_for_test(),
-        scenario_started.elapsed().as_millis(),
-        state.pool.size(),
-        state.pool.num_idle()
-    );
     if performance_gate {
         assert!(
             p95 < Duration::from_secs(2),
@@ -465,30 +445,11 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let confirmed_at_deadline = state
-        .sqlite_batch_writer
-        .runtime_terminal_confirmation_count_for_test();
-    let route_health = state
-        .upstream_accounts
-        .route_facts
-        .lock()
-        .await
-        .as_ref()
-        .map(|runtime| runtime.health_snapshot());
-    eprintln!(
-        "[DEBUG-pr1110-ci-stage] terminal_confirmations={} stages={:?} elapsed_ms={} pool_size={} pool_idle={} journal={:?} routing={:?}",
-        confirmed_at_deadline,
+    assert_eq!(
         state
             .sqlite_batch_writer
-            .runtime_terminal_diagnostic_snapshot_for_test(),
-        scenario_started.elapsed().as_millis(),
-        state.pool.size(),
-        state.pool.num_idle(),
-        state.sqlite_batch_writer.terminal_journal_stats(),
-        route_health
-    );
-    assert_eq!(
-        confirmed_at_deadline, request_count,
+            .runtime_terminal_confirmation_count_for_test(),
+        request_count,
         "every producer must confirm durability and materializer admission within two seconds"
     );
     let held_lock_journal = state.sqlite_batch_writer.terminal_journal_stats();

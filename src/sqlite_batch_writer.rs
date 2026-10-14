@@ -1166,8 +1166,6 @@ pub(crate) struct SqliteBatchWriter {
     #[cfg(test)]
     runtime_terminal_confirmation_count: AtomicUsize,
     #[cfg(test)]
-    runtime_terminal_diagnostic_stages: [AtomicUsize; 10],
-    #[cfg(test)]
     runtime_terminal_confirmation_gate: Mutex<()>,
 }
 
@@ -1265,8 +1263,6 @@ impl SqliteBatchWriter {
             #[cfg(test)]
             runtime_terminal_confirmation_count: AtomicUsize::new(0),
             #[cfg(test)]
-            runtime_terminal_diagnostic_stages: std::array::from_fn(|_| AtomicUsize::new(0)),
-            #[cfg(test)]
             runtime_terminal_confirmation_gate: Mutex::new(()),
         });
         if replay_writes > 0 {
@@ -1318,7 +1314,6 @@ impl SqliteBatchWriter {
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
             runtime_terminal_confirmation_count: AtomicUsize::new(0),
-            runtime_terminal_diagnostic_stages: std::array::from_fn(|_| AtomicUsize::new(0)),
             runtime_terminal_confirmation_gate: Mutex::new(()),
         })
     }
@@ -1333,18 +1328,6 @@ impl SqliteBatchWriter {
     pub(crate) fn runtime_terminal_confirmation_count_for_test(&self) -> usize {
         self.runtime_terminal_confirmation_count
             .load(Ordering::Acquire)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn runtime_terminal_diagnostic_stage_for_test(&self, stage: usize) {
-        self.runtime_terminal_diagnostic_stages[stage].fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn runtime_terminal_diagnostic_snapshot_for_test(&self) -> [usize; 10] {
-        std::array::from_fn(|stage| {
-            self.runtime_terminal_diagnostic_stages[stage].load(Ordering::Relaxed)
-        })
     }
 
     #[cfg(test)]
@@ -1674,17 +1657,11 @@ impl SqliteBatchWriter {
             return self.enqueue_terminal(terminal);
         }
         terminal.enqueued_at = Some(Instant::now());
-        #[cfg(test)]
-        self.runtime_terminal_diagnostic_stage_for_test(3);
         let journal = append_terminal_journal(&self.terminal_journal, &terminal);
         let accepted = matches!(
             journal.durability_mode,
             TerminalJournalDurabilityMode::Journal
         ) && journal.sequence.is_some();
-        #[cfg(test)]
-        if accepted {
-            self.runtime_terminal_diagnostic_stage_for_test(4);
-        }
         #[cfg(test)]
         drop(self.runtime_terminal_confirmation_gate.lock().await);
         let confirmed = accepted
@@ -1692,10 +1669,6 @@ impl SqliteBatchWriter {
                 .wait_for_runtime_journal(journal.sequence)
                 .await
                 .is_ok();
-        #[cfg(test)]
-        if confirmed {
-            self.runtime_terminal_diagnostic_stage_for_test(5);
-        }
         if !confirmed {
             self.preserve_unconfirmed_runtime_terminal(&terminal, accepted);
         }
@@ -5035,7 +5008,6 @@ mod tests {
                 buffered_writes: None,
                 auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
                 runtime_terminal_confirmation_count: AtomicUsize::new(0),
-                runtime_terminal_diagnostic_stages: std::array::from_fn(|_| AtomicUsize::new(0)),
                 runtime_terminal_confirmation_gate: Mutex::new(()),
             }),
             write_receiver,
