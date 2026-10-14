@@ -71,6 +71,7 @@ bash .github/scripts/test-live-quality-gates.sh
 
 ## 常见坑
 
+- 当前候选与 pristine baseline 若使用同名 package 和同一 `CARGO_TARGET_DIR`，切回源码目录后仍可能复用另一份源码的测试程序。不能只凭当前工作目录或 `Finished` 判断产物属于候选；要核对实际测试清单、候选新增用例和程序指纹。对照验证优先使用隔离的 target 目录；已出现混用时，先停止无效运行，再用 `cargo clean --package codex-vibe-monitor` 清理该会话中本项目的生成产物并重新编译，保留依赖缓存，不能把陈旧程序的结果计入当前 head。
 - 权限拒绝 fixture 的运行身份必须真的受文件权限约束。root 持有 `CAP_DAC_OVERRIDE` 或 `CAP_DAC_READ_SEARCH` 时，`chmod 000` 仍可读，测试报错不能据此归因生产实现；在会话 VM 内用非特权用户或对测试进程移除这两项 capability，保留原权限断言并重跑。
 - 用相对天数制造不同月度归档时，30 天间隔可能仍落在同一个 31 天月份。应选择至少 60 天间隔并断言不同 `YYYY-MM`，避免缺失旧归档的整月保护逻辑污染“另一个可读月份”的 fixture；不能为修正 fixture 放宽计数、token 或成本断言。
 
