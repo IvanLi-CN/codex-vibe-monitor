@@ -214,12 +214,29 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
     .await;
 
     let request_count = 32;
+    let mut prewarm_timeout_retries = 0;
     for index in 0..request_count {
         let prompt_cache_key = format!("pressure-key-{index}");
-        allocate_proxy_invoke_id_with_active_lease(&state, Some(&prompt_cache_key))
-            .await
-            .expect("prewarm invocation range for pressure request");
+        // Prepare committed ranges before the measured request/write-lock scenario.
+        // Retain the production 100 ms deadline and the existing fixture policy of
+        // at most five attempts for its known scheduling timeout.
+        for attempt in 0..5 {
+            match allocate_proxy_invoke_id_with_active_lease(&state, Some(&prompt_cache_key)).await
+            {
+                Ok(_) => break,
+                Err(error)
+                    if attempt < 4
+                        && error.to_string()
+                            == "invocation range allocation timed out after 100ms" =>
+                {
+                    prewarm_timeout_retries += 1;
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("prewarm invocation range for pressure request: {error}"),
+            }
+        }
     }
+    println!("runtime_pressure_fixture prewarm_timeout_retries={prewarm_timeout_retries}");
     let progress_before = state
         .sqlite_batch_writer
         .accounting_snapshot()

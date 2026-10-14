@@ -1,5 +1,7 @@
 # High-Frequency Runtime Data Plane History
 
+The pressure fixture separates bounded identity preparation from measured request execution. Preparation reuses the existing five-attempt fixture policy only for the production allocator's unchanged 100 ms scheduling timeout and reports its retry count separately; all 32 distinct keys, SQLite-lock confirmation barriers, zero-write assertions and the original two/five-second latency budgets remain unchanged.
+
 The owner approved a finite capacity repair in PR #1110 after the production journal admitted only 127 small starts while its file occupied about 214 KiB. ADR 0038 replaces per-start maximum-frame reservations with metadata-based completion credit and shared invocation-envelope headroom, preserving hard limits and the original pressure acceptance. The same approved batch repairs two pre-existing archive-summary fixtures whose 30-day date gap could fall in one 31-day month; a 60-day gap and an explicit different-month assertion restore their intended scenario without changing production summary logic or weakening result assertions.
 
 PR #1110 将代理请求 attempt 的高频生命周期写入移入有界内存，关键 begin/terminal 经分组同步日志确认并由后台批量物化。主人确认将 sticky、账号健康/冷却、模型能力纳入同一恢复模型，以保持即时选路和零运行态 SQLite 写等待；因此补充控制代际、scoped sticky owner fencing 和加密路由 sidecar，持久状态影响从 patch 调整为 minor。终态事务仅追加 Summary 的紧凑恢复凭据，计算仍由独立消费者完成。回归涵盖旧账号 schema、管理端 ABA、锁下即时 sticky/model 投影和日志重启幂等；32 并发验收持续持有 SQLite 写锁至终态确认。
