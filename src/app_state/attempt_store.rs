@@ -284,6 +284,12 @@ impl RuntimeAttemptStore {
             bounded.upstream_response_body_bytes = snapshot.upstream_response_body_bytes;
             bounded.upstream_response_header_bytes_approx =
                 snapshot.upstream_response_header_bytes_approx;
+            bounded.response_raw_path = snapshot.response_raw_path;
+            bounded.response_raw_codec = snapshot.response_raw_codec;
+            bounded.response_raw_size = snapshot.response_raw_size;
+            bounded.response_raw_truncated = snapshot.response_raw_truncated;
+            bounded.response_raw_truncated_reason = snapshot.response_raw_truncated_reason;
+            bounded.response_content_encoding = snapshot.response_content_encoding;
             snapshot = bounded;
         }
 

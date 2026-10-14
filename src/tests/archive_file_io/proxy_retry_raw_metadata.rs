@@ -39,7 +39,7 @@ async fn retry_attempt_retains_completed_raw_capture_after_runtime_metadata_reje
         .write_admission
         .interactive_proxy
         .admission_count;
-    let attempt = begin_pool_upstream_request_attempt_in_memory(
+    let mut attempt = begin_pool_upstream_request_attempt_in_memory(
         &state,
         &trace,
         None,
@@ -66,7 +66,7 @@ async fn retry_attempt_retains_completed_raw_capture_after_runtime_metadata_reje
         .reject_next_response_capture_for_test();
     persist_pool_attempt_response_capture(
         state.clone(),
-        attempt.clone(),
+        &mut attempt,
         Bytes::from_static(b"synthetic retry response"),
         true,
         Some("identity".to_string()),

@@ -919,79 +919,53 @@ fn resolved_pool_request_compression_algorithm(
 
 pub(crate) async fn persist_pool_attempt_response_capture(
     state: Arc<AppState>,
-    pending: PendingPoolAttemptRecord,
+    pending: &mut PendingPoolAttemptRecord,
     response_body: Bytes,
     response_body_logging_enabled: bool,
     response_content_encoding: Option<String>,
 ) {
-    let capture_key = pool_attempt_response_capture_key(&pending);
-    {
-        let raw_meta = spawn_raw_payload_file_write(
-            state.as_ref(),
-            &capture_key,
-            "response",
-            response_body,
-            response_body_logging_enabled,
-        )
-        .finish()
-        .await;
-        let mut pending = pending;
-        set_pending_pool_upstream_request_attempt_response_capture(
-            &mut pending,
-            &raw_meta,
-            response_content_encoding.as_deref(),
-        );
-        let capture_persisted =
-            match persist_pool_upstream_request_attempt_response_capture_in_memory(
-                state.as_ref(),
-                &pending,
-            )
+    let capture_key = pool_attempt_response_capture_key(pending);
+    let raw_meta = spawn_raw_payload_file_write(
+        state.as_ref(),
+        &capture_key,
+        "response",
+        response_body,
+        response_body_logging_enabled,
+    )
+    .finish()
+    .await;
+    // The terminal handoff must own completed metadata even when this smaller
+    // runtime update cannot acquire capacity. Callers finalize and broadcast next.
+    set_pending_pool_upstream_request_attempt_response_capture(
+        pending,
+        &raw_meta,
+        response_content_encoding.as_deref(),
+    );
+    if let Err(err) =
+        persist_pool_upstream_request_attempt_response_capture_in_memory(state.as_ref(), pending)
             .await
-            {
-                Ok(()) => true,
-                Err(err) => {
-                    warn!(
-                        invoke_id = %pending.invoke_id,
-                        error = %err,
-                        "failed to persist pool attempt response capture"
-                    );
-                    false
-                }
-            };
-        if capture_persisted
-            && let Err(err) =
-                broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id).await
-        {
-            warn!(
-                invoke_id = %pending.invoke_id,
-                error = %err,
-                "failed to broadcast asynchronous pool attempt response capture"
-            );
-        } else if !capture_persisted {
-            let mut fallback_persisted = false;
-            for _ in 0..3 {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-                if persist_pool_upstream_request_attempt_response_capture_fallback(
-                    &state.pool,
-                    &pending,
-                )
+    {
+        warn!(
+            invoke_id = %pending.invoke_id,
+            error = %err,
+            "failed to persist pool attempt response capture"
+        );
+        if pending.attempt_id.is_none() {
+            return;
+        }
+        let mut fallback_persisted = false;
+        for _ in 0..3 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if persist_pool_upstream_request_attempt_response_capture_fallback(&state.pool, pending)
                 .await
                 .is_ok()
-                {
-                    fallback_persisted = true;
-                    break;
-                }
+            {
+                fallback_persisted = true;
+                break;
             }
-            if fallback_persisted {
-                if let Err(err) =
-                    broadcast_pool_upstream_attempts_snapshot(state.as_ref(), &pending.invoke_id)
-                        .await
-                {
-                    warn!(invoke_id = %pending.invoke_id, error = %err, "failed to broadcast fallback pool attempt response capture");
-                }
-            } else {
-                warn!(invoke_id = %pending.invoke_id, "skipping asynchronous pool attempt response capture broadcast because metadata was not persisted");
-            }
+        }
+        if !fallback_persisted {
+            warn!(invoke_id = %pending.invoke_id, "pool attempt response capture fallback did not persist metadata");
         }
     }
 }
@@ -3820,6 +3794,26 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         })
                 });
                 let finished_at = shanghai_now_string();
+                if let Some(response_body) = error_body_bytes.as_ref()
+                    && let Some(pending_attempt_record) = pending_attempt_record.as_mut()
+                {
+                    let response_body_logging_enabled = state
+                        .proxy_model_settings
+                        .read()
+                        .await
+                        .response_body_logging_enabled;
+                    let response_content_encoding = response_headers
+                        .get(header::CONTENT_ENCODING)
+                        .and_then(|value| value.to_str().ok());
+                    persist_pool_attempt_response_capture(
+                        state.clone(),
+                        pending_attempt_record,
+                        response_body.clone(),
+                        response_body_logging_enabled,
+                        response_content_encoding.map(str::to_string),
+                    )
+                    .await;
+                }
                 if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(record_err) = finalize_pool_upstream_request_attempt_in_memory(
                         state.as_ref(),
@@ -3867,32 +3861,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         "failed to record Codex imagegen capability observation"
                     );
                 }
-                let response_capture_scheduled = if let Some(response_body) =
-                    error_body_bytes.as_ref()
-                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                {
-                    let response_body_logging_enabled = state
-                        .proxy_model_settings
-                        .read()
-                        .await
-                        .response_body_logging_enabled;
-                    let response_content_encoding = response_headers
-                        .get(header::CONTENT_ENCODING)
-                        .and_then(|value| value.to_str().ok());
-                    persist_pool_attempt_response_capture(
-                        state.clone(),
-                        pending_attempt_record.clone(),
-                        response_body.clone(),
-                        response_body_logging_enabled,
-                        response_content_encoding.map(str::to_string),
-                    )
-                    .await;
-                    true
-                } else {
-                    false
-                };
-                if !response_capture_scheduled
-                    && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                     && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
                         state.as_ref(),
                         &pending_attempt_record.invoke_id,
@@ -4425,6 +4394,21 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         raw_body,
                     }) => {
                         let finished_at = shanghai_now_string();
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_mut() {
+                            let response_body_logging_enabled = state
+                                .proxy_model_settings
+                                .read()
+                                .await
+                                .response_body_logging_enabled;
+                            persist_pool_attempt_response_capture(
+                                state.clone(),
+                                pending_attempt_record,
+                                raw_body.clone(),
+                                response_body_logging_enabled,
+                                response_content_encoding_for_attempt.clone(),
+                            )
+                            .await;
+                        }
                         if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                             && let Err(record_err) =
                                 finalize_pool_upstream_request_attempt_in_memory(
@@ -4452,27 +4436,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                                 "failed to persist pool retryable response.failed attempt"
                             );
                         }
-                        let response_capture_scheduled =
-                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref() {
-                                let response_body_logging_enabled = state
-                                    .proxy_model_settings
-                                    .read()
-                                    .await
-                                    .response_body_logging_enabled;
-                                persist_pool_attempt_response_capture(
-                                    state.clone(),
-                                    pending_attempt_record.clone(),
-                                    raw_body.clone(),
-                                    response_body_logging_enabled,
-                                    response_content_encoding_for_attempt.clone(),
-                                )
-                                .await;
-                                true
-                            } else {
-                                false
-                            };
-                        if !response_capture_scheduled
-                            && let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                             && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
                                 state.as_ref(),
                                 &pending_attempt_record.invoke_id,

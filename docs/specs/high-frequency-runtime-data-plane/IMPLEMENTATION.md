@@ -1,5 +1,7 @@
 # High-Frequency Runtime Data Plane Implementation
 
+Durable-only account attempt pages and locate retain the existing `occurred_at DESC, id DESC` order, including equal timestamps across a page boundary. When a runtime overlay is present, both operations use the explicit merged order and stable-ID deduplication. Retryable HTTP failures and initial `response.failed` captures update the actual pending attempt before terminal finalization; completed raw metadata remains in the terminal snapshot even when the bounded capture update is rejected. Terminal growth compaction retains the raw path, codec, size, truncation and content encoding within the existing admission bounds, and the final snapshot is broadcast after finalization.
+
 ## Dashboard Hot Topic Coverage
 
 Activity、summary 与 network topic 已有 typed projection/materializer。working-conversations、parallel-work open range 与 open-window timeseries 仍可能进入通用 subscription builder；其迁移、健康判责与完整 Dashboard bundle 性能门禁由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/IMPLEMENTATION.md) 跟踪。在该规范验收前，高频 Dashboard delivery 不视为全部完成。
