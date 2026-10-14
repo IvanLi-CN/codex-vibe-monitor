@@ -357,6 +357,8 @@ The archive cleanup source is now a facade over explicit compression-backlog, de
 
 Validation evidence is the exact 21-test selector, `cargo check --locked --tests`, the source-quality fixture harness, the canonical source-quality runner, the three backend profiles, and `git diff --check`.
 
+The two companion all-time Summary repair fixtures in `parallel_work_stats_and_timeseries.rs` place the pruned archive 500 days before Shanghai today and its existing sibling 440 days before today. Their legacy manifests have no exact coverage bounds and fall back to an entire local month; the 60-day separation keeps those scopes disjoint across calendar boundaries. Only the two pruned-date offsets change; existing-date offsets, SQL, assertions, and production Summary behavior remain unchanged.
+
 ## Inventory Contract
 
 The policy has 16 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
