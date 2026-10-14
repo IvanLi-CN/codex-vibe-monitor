@@ -8,7 +8,7 @@ threads-required = "num-test-threads"
 # This fixture samples process-wide write-admission counters and real proxy
 # latency under an owned SQLite lock. Other tests must not alter either input.
 [[profile.default.overrides]]
-filter = 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
+filter = 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure)'
 threads-required = "num-test-threads"
 
 # This fixture checks partial publication at 150 ms and completion at 3 seconds.

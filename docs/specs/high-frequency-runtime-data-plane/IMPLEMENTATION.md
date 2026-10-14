@@ -8,7 +8,9 @@ Activity、summary 与 network topic 已有 typed projection/materializer。work
 
 ## Typed Runtime Event Bus Boundary
 
-代理运行压力测试把日志 append、分组同步确认、物化准入和 SQLite 提交分别观测。`runtime_terminal_append_does_not_confirm_materializer_admission` 暂停 append 后的生产者并验证确认前后 flush 的区别；代表性 32 请求场景在持续持有 SQLite 写锁期间等待全部生产者确认，随后要求精确 32 条终态业务事实和零未物化积压。测量前为 32 个独立 key 准备已提交的身份范围，准备阶段只对既有 100ms 分配调度超时沿用 fixture 最多五次尝试并单独输出重试计数；生产分配截止时间、请求重试和测量起点不变，压力阶段仍要求 p95 < 2 秒、完整提交 < 5 秒及零运行态 SQL 写入。测试确认计数与暂停 gate 仅在 `cfg(test)` 存在，不改变生产路由或持久化行为。
+代理运行压力测试把日志 append、分组同步确认、物化准入和 SQLite 提交分别观测。`runtime_terminal_append_does_not_confirm_materializer_admission` 暂停 append 后的生产者并验证确认前后 flush 的区别；代表性 32 请求场景使用与服务入口一致的 Tokio 多线程执行器，在持续持有 SQLite 写锁期间等待全部生产者确认，随后要求精确 32 条终态业务事实和零未物化积压。相同场景同时保留单线程功能对照，分别输出 `service_performance` 与 `current_thread_functional`，单线程结果不替代性能门禁。两条测试均独占 nextest 执行槽，避免其他测试改变进程级写准入计数或测量负载。测量前为 32 个独立 key 准备已提交的身份范围，准备阶段只对既有 100ms 分配调度超时沿用 fixture 最多五次尝试并单独输出重试计数；生产分配截止时间、请求重试和测量起点不变，多线程压力阶段仍要求 p95 < 2 秒、完整提交 < 5 秒及零运行态 SQL 写入，单线程对照保留完整性、同步确认和有界排空保护。测试确认计数与暂停 gate 仅在 `cfg(test)` 存在，不改变生产路由或持久化行为。
+
+身份清理取消回归分别证明取得 worker 前的预算耗尽和 native SQLite worker 已持锁时的取消。前者耗尽业务连接池租约并验证 owner 仍可取得、身份行完整；后者使用生产 `LifecycleConnection`、真实文件数据库和有界查询，测试专用 busy callback 确认 native worker 进入并持续阻塞，随后验证取消不能提前释放 owner。SQLite 函数析构回调证明原生连接关闭发生在 owner 再次可取得之前；callback 状态由 SQLite 持有的 Arc 和有界清理保护拥有。两条用例均使用既有 250ms 工作预算，不增加生产 hook、超时或连接池容量。
 
 The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.
 

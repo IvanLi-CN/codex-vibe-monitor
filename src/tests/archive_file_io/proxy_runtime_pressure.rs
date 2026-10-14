@@ -175,8 +175,31 @@ async fn runtime_terminal_append_does_not_confirm_materializer_admission() {
     fs::remove_dir_all(fixture).expect("remove owned confirmation fixture");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure() {
+    proxy_runtime_write_pressure_scenario(true).await;
+}
+
+#[tokio::test]
+async fn proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure() {
+    proxy_runtime_write_pressure_scenario(false).await;
+}
+
+async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
+    if performance_gate {
+        assert!(
+            matches!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ),
+            "representative pressure acceptance must use the service's multi-thread executor"
+        );
+    }
+    let mode = if performance_gate {
+        "service_performance"
+    } else {
+        "current_thread_functional"
+    };
     let (upstream_base, upstream_handle) =
         spawn_pool_delayed_first_chunk_upstream(Duration::from_secs(1)).await;
     let mut config = test_config();
@@ -388,10 +411,12 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         .collect::<Vec<_>>();
     latencies.sort_unstable();
     let p95 = latencies[(latencies.len() * 95).div_ceil(100).saturating_sub(1)];
-    assert!(
-        p95 < Duration::from_secs(2),
-        "proxy request p95 must stay within the pressure budget: {p95:?}"
-    );
+    if performance_gate {
+        assert!(
+            p95 < Duration::from_secs(2),
+            "proxy request p95 must stay within the pressure budget: {p95:?}"
+        );
+    }
     assert_eq!(
         state
             .sqlite_batch_writer
@@ -458,7 +483,7 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
         "complete runtime requests must never enter InteractiveProxy write admission"
     );
     println!(
-        "runtime_pressure requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
+        "runtime_pressure mode={mode} requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
         p95.as_millis(),
         held_lock_journal.pending_records,
         held_lock_journal.pending_materialization_records,
@@ -492,12 +517,14 @@ async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pre
             .pending_materialization_records,
         0
     );
-    assert!(
-        scenario_started.elapsed() < Duration::from_secs(5),
-        "request-start to durable terminal commit upper bound includes journal and materialization delay"
-    );
+    if performance_gate {
+        assert!(
+            scenario_started.elapsed() < Duration::from_secs(5),
+            "request-start to durable terminal commit upper bound includes journal and materialization delay"
+        );
+    }
     println!(
-        "runtime_pressure materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
+        "runtime_pressure mode={mode} materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
         drain_started.elapsed().as_millis(),
         scenario_started.elapsed().as_millis()
     );

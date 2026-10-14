@@ -437,10 +437,7 @@ async fn ownership_runtime_lock_routes_online_and_recovers_process_death_without
     cleanup_temp_test_dir(&directory);
 }
 
-#[tokio::test]
-async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_fence() {
-    use crate::prompt_cache_conversations::invocation_ranges::Owner;
-    let directory = make_temp_test_dir("identity-budget-worker-drain");
+async fn identity_budget_test_pool(directory: &Path) -> SqlitePool {
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect_with(
@@ -454,16 +451,31 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
         )
         .await
         .unwrap();
-    ensure_schema(&pool).await.unwrap();
-    sqlx::query("INSERT INTO prompt_cache_conversations(prompt_cache_key,conversation_id,created_at,updated_at) VALUES('budget-owner','KZYYYY','2020-01-01','2020-01-01')")
+    sqlx::query("CREATE TABLE prompt_cache_conversations (prompt_cache_key TEXT PRIMARY KEY, conversation_id TEXT NOT NULL)")
         .execute(&pool).await.unwrap();
-    let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
-    let manager = cache.lock().await.identity_cache.range_manager.clone();
-    let mut blocker = pool.acquire().await.unwrap();
-    sqlx::query("BEGIN IMMEDIATE")
-        .execute(&mut *blocker)
+    sqlx::query("INSERT INTO prompt_cache_conversations VALUES ('budget-owner','KZYYYY')")
+        .execute(&pool)
         .await
         .unwrap();
+    pool
+}
+
+#[tokio::test]
+async fn ownership_identity_budget_before_worker_acquisition_preserves_available_owner() {
+    use crate::prompt_cache_conversations::invocation_ranges::Owner;
+    let directory = make_temp_test_dir("identity-budget-before-worker");
+    let pool = identity_budget_test_pool(&directory).await;
+    let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let manager = cache.lock().await.identity_cache.range_manager.clone();
+    let mut leases = Vec::new();
+    for _ in 0..4 {
+        leases.push(
+            tokio::time::timeout(Duration::from_secs(2), pool.acquire())
+                .await
+                .expect("acquire all business connections before the budget starts")
+                .unwrap(),
+        );
+    }
     let result = with_identity_cleanup_work_budget(
         Duration::from_millis(250),
         cleanup_invocation_identities(&pool, false, &cache),
@@ -471,9 +483,186 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
     .await;
     assert!(
         result
+            .expect_err("cleanup must exhaust its budget before acquiring a connection")
+            .to_string()
+            .contains("work budget")
+    );
+    assert!(
+        manager
+            .freeze_owner(Owner::Conversation("budget-owner".to_string()), "KZYYYY")
+            .is_some(),
+        "budget expiry before worker acquisition must leave the owner available"
+    );
+    drop(leases);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key='budget-owner'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "KZYYYY"
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&directory);
+}
+
+#[derive(Default)]
+struct IdentityBudgetNativeWorker {
+    entered: tokio::sync::Notify,
+    released: std::sync::Mutex<bool>,
+    wake: std::sync::Condvar,
+    closed: AtomicBool,
+    guard_expired: AtomicBool,
+}
+
+impl IdentityBudgetNativeWorker {
+    fn release(&self) {
+        *self
+            .released
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = true;
+        self.wake.notify_all();
+    }
+}
+
+struct IdentityBudgetWorkerRelease(Arc<IdentityBudgetNativeWorker>);
+
+impl Drop for IdentityBudgetWorkerRelease {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
+
+unsafe extern "C" fn identity_budget_busy_callback(
+    context: *mut std::ffi::c_void,
+    _attempt: std::ffi::c_int,
+) -> std::ffi::c_int {
+    // SQLite owns a strong Arc through the scalar function's destructor below.
+    let worker = unsafe { &*context.cast::<IdentityBudgetNativeWorker>() };
+    worker.entered.notify_one();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut released = worker
+        .released
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    while !*released {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            worker.guard_expired.store(true, Ordering::Release);
+            break;
+        }
+        (released, _) = worker
+            .wake
+            .wait_timeout(released, remaining)
+            .unwrap_or_else(|error| error.into_inner());
+    }
+    0
+}
+
+unsafe extern "C" fn identity_budget_probe_function(
+    context: *mut libsqlite3_sys::sqlite3_context,
+    _argc: std::ffi::c_int,
+    _argv: *mut *mut libsqlite3_sys::sqlite3_value,
+) {
+    unsafe { libsqlite3_sys::sqlite3_result_null(context) };
+}
+
+unsafe extern "C" fn identity_budget_native_close(context: *mut std::ffi::c_void) {
+    // The function stays registered until SQLite closes this dedicated connection.
+    let worker = unsafe { Arc::from_raw(context.cast::<IdentityBudgetNativeWorker>()) };
+    worker.closed.store(true, Ordering::Release);
+}
+
+#[tokio::test]
+async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_fence() {
+    use crate::prompt_cache_conversations::invocation_ranges::{
+        Owner, lifecycle::LifecycleConnection,
+    };
+    let directory = make_temp_test_dir("identity-budget-worker-drain");
+    let pool = identity_budget_test_pool(&directory).await;
+    let cache = Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
+    let manager = cache.lock().await.identity_cache.range_manager.clone();
+    let mut blocker = pool.acquire().await.unwrap();
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    let worker = Arc::new(IdentityBudgetNativeWorker::default());
+    let _release_on_drop = IdentityBudgetWorkerRelease(worker.clone());
+    let mut connection = pool.acquire().await.unwrap();
+    {
+        let mut handle = connection.lock_handle().await.unwrap();
+        let context = Arc::into_raw(worker.clone()).cast_mut().cast();
+        // xDestroy keeps the callback context alive through cancellation and also
+        // proves native SQLite close, rather than only observing a Rust future.
+        assert_eq!(
+            unsafe {
+                libsqlite3_sys::sqlite3_create_function_v2(
+                    handle.as_raw_handle().as_ptr(),
+                    c"identity_budget_probe".as_ptr(),
+                    0,
+                    libsqlite3_sys::SQLITE_UTF8,
+                    context,
+                    Some(identity_budget_probe_function),
+                    None,
+                    None,
+                    Some(identity_budget_native_close),
+                )
+            },
+            libsqlite3_sys::SQLITE_OK
+        );
+        assert_eq!(
+            unsafe {
+                libsqlite3_sys::sqlite3_busy_handler(
+                    handle.as_raw_handle().as_ptr(),
+                    Some(identity_budget_busy_callback),
+                    context,
+                )
+            },
+            libsqlite3_sys::SQLITE_OK
+        );
+    }
+    let fence = manager
+        .freeze_owner(Owner::Conversation("budget-owner".to_string()), "KZYYYY")
+        .expect("acquire lifecycle fence before starting the native operation");
+    let mut scope = LifecycleConnection::new(vec![fence]);
+    scope.connection = Some(connection);
+    let cleanup = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
+        let result = with_identity_cleanup_work_budget(
+            Duration::from_millis(250),
+            crate::maintenance::identity_cleanup_query(
+                sqlx::query("BEGIN IMMEDIATE").execute(scope.connection()),
+            ),
+        )
+        .await;
+        drop(scope);
+        result
+    }));
+    tokio::time::timeout(Duration::from_secs(2), worker.entered.notified())
+        .await
+        .expect("native SQLite worker must enter the busy callback before cancellation");
+    let result = tokio::time::timeout(Duration::from_secs(2), cleanup)
+        .await
+        .expect("work-budget cancellation must complete while the worker is held")
+        .unwrap();
+    assert!(
+        result
             .expect_err("cleanup must time out")
             .to_string()
             .contains("work budget")
+    );
+    assert!(!worker.closed.load(Ordering::Acquire));
+    assert!(
+        !worker.guard_expired.load(Ordering::Acquire),
+        "the native worker must still be held by the test, not its cleanup guard"
     );
     assert!(
         manager
@@ -481,16 +670,16 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
             .is_none(),
         "SQLite worker still owns the lifecycle fence"
     );
-    sqlx::query("ROLLBACK")
-        .execute(&mut *blocker)
-        .await
-        .unwrap();
-    drop(blocker);
+    worker.release();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             if let Some(fence) =
                 manager.freeze_owner(Owner::Conversation("budget-owner".to_string()), "KZYYYY")
             {
+                assert!(
+                    worker.closed.load(Ordering::Acquire),
+                    "native SQLite connection must close before the owner fence is released"
+                );
                 drop(fence);
                 break;
             }
@@ -499,6 +688,11 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
     })
     .await
     .unwrap();
+    sqlx::query("ROLLBACK")
+        .execute(&mut *blocker)
+        .await
+        .unwrap();
+    drop(blocker);
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='budget-owner'"
@@ -507,6 +701,15 @@ async fn ownership_identity_budget_closes_sqlite_worker_before_releasing_owner_f
         .await
         .unwrap(),
         1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT conversation_id FROM prompt_cache_conversations WHERE prompt_cache_key='budget-owner'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        "KZYYYY"
     );
     pool.close().await;
     cleanup_temp_test_dir(&directory);
