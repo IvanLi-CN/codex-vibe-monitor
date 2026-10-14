@@ -138,7 +138,7 @@ VER-RUNTIME-ARCHIVE-01: 覆盖日志加密脱敏、损坏恢复、重启重放�
 
 VER-RUNTIME-STATEFUL-01: 覆盖 SQLite 写锁下的内存路由/模型可见性、Summary descriptor 原子提交和 derived isolation；covers: REQ-RUNTIME-MATERIALIZE-01。
 
-VER-RUNTIME-PRESSURE-01: 在与服务入口一致的 Tokio 多线程执行器上执行 32 并发代表性代理请求叠加 BEGIN IMMEDIATE，持有写锁直至 32 条终态完成真实日志同步及物化准入确认；验证 InteractiveProxy 增量为零、AttemptProgress 增量为零、运行态可见、解锁后精确提交 32 条终态且无物化积压，要求请求 p95 严格小于 2 秒、请求起点到完整提交严格小于 5 秒，并记录日志积压与物化延迟。相同场景的单线程执行器用例作为独立功能对照，保留写入、可见性、确认及完整性断言和有界排空保护，不替代多线程性能验收；covers: REQ-RUNTIME-HEALTH-01。
+VER-RUNTIME-PRESSURE-01: 在与服务入口一致的 Tokio 多线程执行器上执行 32 并发代表性代理请求叠加 BEGIN IMMEDIATE，持有写锁直至 32 条终态完成真实日志同步及物化准入确认；验证 InteractiveProxy 增量为零、AttemptProgress 增量为零、运行态可见、解锁后精确提交 32 条终态且无物化积压，要求请求 p95 严格小于 2 秒、请求起点到完整提交严格小于 5 秒，并记录日志积压与物化延迟。日志年龄指最老未物化事件年龄，严格小于 5 秒；空日志的测量前准备时间不计入积压年龄。相同场景的单线程执行器用例作为独立功能对照，先保留 6 秒空日志准备并验证零积压和零最老事件年龄，再保留写入、可见性、确认及完整性断言和有界排空保护，不替代多线程性能验收；covers: REQ-RUNTIME-HEALTH-01。
 
 - `16 MiB` 与 `64 MiB` file-backed 请求只进行一次语义解析，业务峰值缓冲不超过 `64 KiB`；转发、编码、failover 与 `include_usage` 结果保持一致。
 - 10,000 次 runtime mutation 后健康 live render 的 SQL query count 为 `0`。

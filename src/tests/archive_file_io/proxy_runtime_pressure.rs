@@ -225,6 +225,14 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
     state
         .sqlite_batch_writer
         .set_auto_flush_terminal_for_test(false);
+    if !performance_gate {
+        // Empty fixture preparation is outside the outstanding-event age budget.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let empty_journal = state.sqlite_batch_writer.terminal_journal_stats();
+        assert_eq!(empty_journal.pending_records, 0);
+        assert_eq!(empty_journal.oldest_pending_age_ms, 0);
+        assert!(empty_journal.checkpoint_lag_ms >= 6_000);
+    }
     seed_pool_routing_api_key(&state, "pool-pressure-key").await;
     insert_test_pool_api_key_account_with_options(
         &state,
@@ -455,8 +463,8 @@ async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
     );
     assert!(held_lock_journal.pending_bytes > 0);
     assert!(
-        held_lock_journal.checkpoint_lag_ms < 5_000,
-        "journal age budget"
+        held_lock_journal.oldest_pending_age_ms < 5_000,
+        "oldest pending journal event must stay within the age budget: {held_lock_journal:?}"
     );
     let before_commit: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE source='proxy'")
