@@ -359,6 +359,8 @@ Validation evidence is the exact 21-test selector, `cargo check --locked --tests
 
 The two companion all-time Summary repair fixtures in `parallel_work_stats_and_timeseries.rs` place the pruned archive 500 days before Shanghai today and its existing sibling 440 days before today. Their legacy manifests have no exact coverage bounds and fall back to an entire local month; the 60-day separation keeps those scopes disjoint across calendar boundaries. Only the two pruned-date offsets change; existing-date offsets, SQL, assertions, and production Summary behavior remain unchanged.
 
+The concurrent cold-conversation initialization fixture uses the existing bounded allocation helper, which retries only the exact 100 ms allocation timeout for at most five attempts. The fixture still starts 32 distinct cold owners concurrently and asserts 32 unique IDs; other errors fail immediately. Production allocation deadlines and behavior remain unchanged. Validation includes this exact fixture through the canonical stateful SQLite runner, and its focused result does not replace the three complete backend profiles.
+
 ## Inventory Contract
 
 The policy has 16 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
