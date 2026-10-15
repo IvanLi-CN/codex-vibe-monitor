@@ -1,4 +1,5 @@
 use super::*;
+use crate::observability::contention::RetentionPhase;
 
 pub(crate) async fn prune_old_invocation_details(
     pool: &Pool<Sqlite>,
@@ -139,6 +140,8 @@ pub(crate) async fn prune_old_invocation_details(
             else {
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
+            let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
+            let source_identity_started = Instant::now();
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
                 InvocationArchiveIdentityDatabase::Main,
@@ -166,7 +169,9 @@ pub(crate) async fn prune_old_invocation_details(
                     .context("read task-local invocation source chunk identity")?,
                 );
             }
+            batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
+            drop(source_verify_phase);
             if retention_run_budget_expired() {
                 break;
             }
@@ -190,6 +195,7 @@ pub(crate) async fn prune_old_invocation_details(
                 "{}:{}:{}",
                 descriptor.dataset, descriptor.file_path, descriptor.source_identity_sha256
             );
+            let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_result = match archive_layout_for_dataset(config, spec.dataset) {
                 ArchiveBatchLayout::LegacyMonth => {
                     archive_rows_into_month_batch_at_path(
@@ -231,6 +237,8 @@ pub(crate) async fn prune_old_invocation_details(
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
+            drop(prepare_phase);
+            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
             let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
                 break;
@@ -242,6 +250,7 @@ pub(crate) async fn prune_old_invocation_details(
             if actual_archive_sha256 != archive_outcome.sha256 {
                 bail!("retention task-local archive artifact digest verification failed");
             }
+            drop(file_verify_phase);
             let mut committed_rows = 0;
             for (group, chunk_identity) in
                 group.chunks(RETENTION_WRITE_MAX_ROWS).zip(chunk_identities)
@@ -259,11 +268,15 @@ pub(crate) async fn prune_old_invocation_details(
                         ]
                     })
                     .collect::<Vec<_>>();
+                let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
                 let Some((mut source_connection, admission)) =
                     acquire_retention_write_connection(pool, "invocation_detail_prune").await?
                 else {
+                    drop(admission_wait_phase);
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
                 };
+                drop(admission_wait_phase);
+                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
@@ -273,6 +286,7 @@ pub(crate) async fn prune_old_invocation_details(
                     &archive_outcome.file_path,
                 )
                 .await?;
+                let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
                 if invocation_archive_source_identity_sha256(
                     tx.as_mut(),
                     InvocationArchiveIdentityDatabase::Main,
@@ -283,6 +297,7 @@ pub(crate) async fn prune_old_invocation_details(
                 {
                     bail!("retention task-local detail source changed before conversion");
                 }
+                drop(source_verify_phase);
                 let prompt_cache_keys =
                     load_prompt_cache_keys_for_invocation_ids_tx(tx.as_mut(), &ids).await?;
                 let prompt_cache_key_refs = prompt_cache_keys
@@ -309,7 +324,9 @@ pub(crate) async fn prune_old_invocation_details(
                     }
                 }
                 query.push(")");
+                let delete_phase = batch_observation.phase(RetentionPhase::Delete);
                 query.build().execute(tx.as_mut()).await?;
+                drop(delete_phase);
                 // UPDATE triggers persist the affected keys. Statistics are refreshed by the
                 // materialization owner after this retention transaction commits.
                 if let Some(latest) = group
@@ -330,7 +347,10 @@ pub(crate) async fn prune_old_invocation_details(
                 let raw_reference_check_elapsed =
                     had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                 let commit_started = Instant::now();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
+                drop(commit_phase);
+                drop(write_hold_phase);
                 drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
@@ -351,15 +371,18 @@ pub(crate) async fn prune_old_invocation_details(
                 rows_pruned += group.len();
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), admission.lock_wait());
+                let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
                 drop(admission);
+                drop(cleanup_phase);
             }
             if committed_rows > 0 {
                 archive_batches += 1;
             }
+            batch_observation.complete();
         }
         if retention_run_remaining_budget().is_some() {
             break;
@@ -563,6 +586,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     prompt_cache_keys,
                 ));
             };
+            let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
             let source_identity_query = invocation_archive_source_identity_sha256(
                 &mut source_connection,
@@ -597,11 +621,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
+            drop(source_verify_phase);
             if retention_run_budget_expired() {
                 break;
             }
             let prepare_started = Instant::now();
             let mut snapshot_pages = Vec::new();
+            let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_future = archive_rows_into_task_month_batch(
                 pool,
                 config,
@@ -666,6 +692,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
             archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
+            drop(prepare_phase);
+            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
             let archive_lock =
                 retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
@@ -678,6 +706,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             if actual_archive_sha256 != archive_outcome.sha256 {
                 bail!("retention task-local archive artifact changed before publication");
             }
+            drop(file_verify_phase);
             drop(archive_lock);
             let summary_proof_started = Instant::now();
             let proof_result =
@@ -716,9 +745,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .iter()
                     .map(invocation_archive_candidate_to_hourly_source_record)
                     .collect::<Vec<_>>();
+                let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
                 let Some((mut source_connection, admission)) =
                     acquire_retention_batch_write_connection(pool, "invocation_archive").await?
                 else {
+                    drop(admission_wait_phase);
                     return Ok((
                         rows_archived,
                         archive_batches,
@@ -726,12 +757,16 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prompt_cache_keys,
                     ));
                 };
+                drop(admission_wait_phase);
                 let archive_lock =
                     retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
+                let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
                 if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
                 {
                     bail!("task-local invocation artifact changed while awaiting admission");
                 }
+                drop(file_verify_phase);
+                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 // P2 normally advances this cursor before retention. Rows beyond it would be
@@ -799,6 +834,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     )
                     .await?;
                 }
+                let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
                 if invocation_archive_source_identity_sha256(
                     tx.as_mut(),
                     InvocationArchiveIdentityDatabase::Main,
@@ -809,6 +845,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 {
                     bail!("retention task-local archive source changed before conversion");
                 }
+                drop(source_verify_phase);
                 let ids_json = serde_json::to_string(&ids)?;
                 let archived_prompt_cache_keys = sqlx::query_scalar::<_, String>(&format!(
                     "SELECT DISTINCT {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} AS prompt_cache_key \
@@ -827,7 +864,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 if !archived_prompt_cache_key_refs.is_empty() {
                     mark_prompt_cache_conversation_stats_stale_on_connection(tx.as_mut()).await?;
                 }
+                let delete_phase = batch_observation.phase(RetentionPhase::Delete);
                 delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+                drop(delete_phase);
                 // DELETE triggers persist the affected keys. Statistics are refreshed asynchronously
                 // by the materialization owner after archive publication.
                 prompt_cache_keys.extend(archived_prompt_cache_keys);
@@ -865,7 +904,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 let raw_reference_check_elapsed =
                     had_raw_reference_candidates.then(|| raw_reference_check_started.elapsed());
                 let commit_started = Instant::now();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
+                drop(commit_phase);
+                drop(write_hold_phase);
                 drop(source_connection);
                 workload::record_processed_count(group.len());
                 retention_record_commit_with_reference_check!(
@@ -892,6 +934,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 rows_archived += group.len();
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), admission.lock_wait());
+                let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
@@ -899,12 +942,14 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
                 drop(archive_lock);
                 drop(admission);
+                drop(cleanup_phase);
                 #[cfg(test)]
                 batch_admission::pause_after_first_chunk(committed_rows).await;
             }
             if committed_rows > 0 {
                 archive_batches += 1;
             }
+            batch_observation.complete();
         }
         // Normal task scope is fixed at selection. The next scheduled run reselects live
         // rows; it never resumes this run's file/cursor. Direct fixture helpers may drain.
@@ -1050,6 +1095,7 @@ pub(crate) async fn archive_timestamped_dataset(
             else {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
+            let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
             let source_identity_started = Instant::now();
             let source_identity_query =
                 archive_table_source_identity_sha256(&mut source_connection, spec, "main", &ids);
@@ -1093,6 +1139,8 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
+            drop(source_verify_phase);
+            let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
             let archive_writer_started = Instant::now();
             let archive_future =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids);
@@ -1142,6 +1190,8 @@ pub(crate) async fn archive_timestamped_dataset(
             }
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
+            drop(prepare_phase);
+            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
             let archive_lock =
                 retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
@@ -1154,6 +1204,7 @@ pub(crate) async fn archive_timestamped_dataset(
             if actual_sha256 != archive_outcome.sha256 {
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             }
+            drop(file_verify_phase);
             drop(archive_lock);
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
@@ -1184,17 +1235,23 @@ pub(crate) async fn archive_timestamped_dataset(
                 } else {
                     Vec::new()
                 };
+                let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
                 let Some((mut source_connection, admission)) =
                     acquire_retention_batch_write_connection(pool, "timestamped_archive").await?
                 else {
+                    drop(admission_wait_phase);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
+                drop(admission_wait_phase);
                 let archive_lock =
                     retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
+                let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
                 if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
                 {
                     bail!("task-local timestamped artifact changed while awaiting admission");
                 }
+                drop(file_verify_phase);
+                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
@@ -1214,11 +1271,13 @@ pub(crate) async fn archive_timestamped_dataset(
                     drop(admission);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 }
+                let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
                 if archive_table_source_identity_sha256(tx.as_mut(), spec, "main", &ids).await?
                     != chunk_identity
                 {
                     bail!("timestamped task-local archive source changed before conversion");
                 }
+                drop(source_verify_phase);
                 upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
                 if spec.dataset == "pool_upstream_request_attempts" {
                     let archive_batch_id = load_archive_batch_id_for_file_tx(
@@ -1325,7 +1384,9 @@ pub(crate) async fn archive_timestamped_dataset(
                     )
                     .await?;
                 }
+                let delete_phase = batch_observation.phase(RetentionPhase::Delete);
                 delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
+                drop(delete_phase);
                 mark_retention_archived_hourly_rollup_targets_tx(
                     tx.as_mut(),
                     spec.dataset,
@@ -1353,7 +1414,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     (Vec::new(), None)
                 };
                 let commit_started = Instant::now();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
+                drop(commit_phase);
+                drop(write_hold_phase);
                 drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "timestamped_archive",
@@ -1369,6 +1433,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     candidate_remaining_hint,
                 );
                 batch_observation.committed(group.len(), admission.lock_wait());
+                let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -1385,12 +1450,14 @@ pub(crate) async fn archive_timestamped_dataset(
                     rows_archived += group.len();
                     committed_rows += group.len();
                 }
+                drop(cleanup_phase);
                 #[cfg(test)]
                 batch_admission::pause_after_first_chunk(committed_rows).await;
             }
             if committed_rows > 0 {
                 archive_batches += 1;
             }
+            batch_observation.complete();
         }
         if retention_run_remaining_budget().is_some() {
             break;

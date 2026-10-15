@@ -1,4 +1,6 @@
+use super::observability::{RetentionBatchObservation, RetentionPhaseGuard};
 use super::*;
+use crate::observability::contention::{Outcome, RetentionOperation, RetentionPhase};
 
 const ARCHIVE_BATCH_TARGET_ROWS: usize = 1_000;
 const ARCHIVE_BATCH_MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -39,12 +41,18 @@ tokio::task_local! {
 pub(crate) struct BatchObservation {
     metrics: RetentionBatchMetrics,
     started: Instant,
+    retention: RetentionBatchObservation,
 }
 
 impl BatchObservation {
     pub(crate) fn begin(dataset: &str, month: &str, rows: usize) -> Self {
         Self {
             started: Instant::now(),
+            retention: RetentionBatchObservation::new(match dataset {
+                "codex_invocations" => RetentionOperation::InvocationArchive,
+                "codex_invocation_details" => RetentionOperation::DetailPrune,
+                _ => RetentionOperation::TimestampedArchive,
+            }),
             metrics: RetentionBatchMetrics {
                 dataset: dataset.to_string(),
                 month_key: month.to_string(),
@@ -70,6 +78,7 @@ impl BatchObservation {
     }
     pub(crate) fn committed(&mut self, rows: usize, lock_wait: Duration) {
         self.metrics.committed_rows += rows;
+        self.retention.committed(rows);
         self.metrics.lock_wait_ms = self
             .metrics
             .lock_wait_ms
@@ -84,6 +93,18 @@ impl BatchObservation {
     pub(crate) fn summary_proof_finished(&mut self, elapsed: Duration) {
         self.metrics.summary_proof_ms = Some(elapsed.as_millis() as u64);
     }
+
+    pub(crate) fn phase(&self, phase: RetentionPhase) -> RetentionPhaseGuard {
+        self.retention.phase(phase)
+    }
+
+    pub(crate) fn finish(&mut self, outcome: Outcome) {
+        self.retention.finish(outcome);
+    }
+
+    pub(crate) fn complete(&mut self) {
+        self.finish(Outcome::Success);
+    }
 }
 
 impl Drop for BatchObservation {
@@ -94,6 +115,20 @@ impl Drop for BatchObservation {
             self.metrics.committed_rows < self.metrics.batch_rows && retention_run_budget_expired(),
         );
         self.metrics.elapsed_ms = self.started.elapsed().as_millis() as u64;
+        if !self.retention.has_outcome() {
+            let outcome = if super::retention_run_shutdown_token()
+                .is_some_and(|shutdown| shutdown.is_cancelled())
+            {
+                Outcome::Cancelled
+            } else if super::retention_run_budget_expired()
+                || super::retention_run_defer_reason().is_some()
+            {
+                Outcome::Deferred
+            } else {
+                Outcome::Error
+            };
+            self.retention.finish(outcome);
+        }
         let _ =
             TASK_BATCH_METRICS.try_with(|metrics| metrics.borrow_mut().push(self.metrics.clone()));
     }
