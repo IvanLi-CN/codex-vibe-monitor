@@ -525,6 +525,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
+        proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -2118,6 +2119,35 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert_eq!(resolved.compact_stream_timeout, Duration::from_secs(505));
     assert_eq!(resolved.default_send_timeout, Duration::from_secs(71));
     assert_eq!(resolved.request_read_timeout, Duration::from_secs(181));
+}
+
+#[tokio::test]
+async fn global_model_policy_update_advances_account_routing_generation() {
+    let state = test_state_from_config(test_config(), true).await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Generation Fence", "fence-key").await;
+    let before = sqlx::query_scalar::<_, i64>(
+        "SELECT runtime_routing_generation FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account routing generation before global policy update");
+
+    sqlx::query("UPDATE pool_routing_settings SET available_models_json = ?1 WHERE id = 1")
+        .bind("[\"gpt-fenced\"]")
+        .execute(&state.pool)
+        .await
+        .expect("update global model policy");
+
+    let after = sqlx::query_scalar::<_, i64>(
+        "SELECT runtime_routing_generation FROM pool_upstream_accounts WHERE id = ?1",
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load account routing generation after global policy update");
+    assert_eq!(after, before + 1);
 }
 
 #[tokio::test]

@@ -12,6 +12,8 @@ pub(crate) struct UpstreamAccountRow {
     pub(crate) note: Option<String>,
     pub(crate) status: String,
     pub(crate) enabled: i64,
+    #[sqlx(default)]
+    pub(crate) runtime_routing_generation: i64,
     pub(crate) email: Option<String>,
     #[sqlx(default)]
     pub(crate) verified_email: Option<String>,

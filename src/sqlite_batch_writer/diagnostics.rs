@@ -20,8 +20,9 @@ pub(super) fn append_terminal_journal(
                     d.context
                         .phase(crate::observability::diagnostics::Phase::JournalAppend)
                 });
-                let outcome = journal.append(
+                let outcome = journal.append_with_attempts(
                     &terminal.record,
+                    &terminal.attempts,
                     terminal.raw_capture,
                     terminal.capture_started,
                 );

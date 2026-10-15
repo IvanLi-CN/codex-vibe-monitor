@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -23,6 +23,7 @@ use super::*;
 mod attempt_progress;
 mod diagnostics;
 mod invocation_identity;
+mod terminal_attempts;
 use crate::terminal_journal::{
     TerminalJournal, TerminalJournalAppendOutcome, TerminalJournalDurabilityMode,
     TerminalJournalStats,
@@ -35,6 +36,7 @@ use attempt_progress::{
 };
 use diagnostics::{append_terminal_journal, finish_committed_batch, reference_batch};
 pub(crate) use invocation_identity::TrackedTerminalJournal;
+use terminal_attempts::persist_runtime_attempt_snapshot_tx;
 
 pub(crate) const SQLITE_BATCH_FLUSH_INTERVAL: Duration = Duration::from_millis(20);
 pub(crate) const SQLITE_P2_COALESCE_INTERVAL: Duration = Duration::from_millis(250);
@@ -368,6 +370,7 @@ pub(crate) struct BatchedTerminalInvocationWrite {
     pub(crate) enqueued_at: Option<Instant>,
     pub(crate) diagnostic: Option<Arc<crate::observability::diagnostics::PersistenceTicket>>,
     pub(crate) record: ProxyCaptureRecord,
+    pub(crate) attempts: Vec<RuntimeAttemptSnapshot>,
     pub(crate) capture_started: Option<Instant>,
     pub(crate) raw_capture: bool,
     pub(crate) dashboard_terminal_sequence: Option<u64>,
@@ -397,6 +400,12 @@ impl BatchedTerminalInvocationWrite {
     pub(crate) fn estimated_memory_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
             .saturating_add(self.record.estimated_memory_bytes())
+            .saturating_add(
+                self.attempts
+                    .iter()
+                    .map(RuntimeAttemptSnapshot::estimated_memory_bytes)
+                    .sum::<usize>(),
+            )
             .saturating_add(
                 self.terminal_projection_event_ids
                     .capacity()
@@ -590,6 +599,8 @@ impl PendingBatch {
                             _ => {}
                         }
                         terminal.dashboard_terminal_sequence = preserved_sequence;
+                        terminal.attempts =
+                            merge_terminal_attempts(&existing.attempts, terminal.attempts);
                         terminal
                             .terminal_projection_event_ids
                             .extend(existing.terminal_projection_event_ids.iter().copied());
@@ -986,6 +997,33 @@ impl PendingBatch {
     }
 }
 
+fn merge_terminal_attempts(
+    existing: &[RuntimeAttemptSnapshot],
+    incoming: Vec<RuntimeAttemptSnapshot>,
+) -> Vec<RuntimeAttemptSnapshot> {
+    let mut merged = BTreeMap::new();
+    for attempt in existing.iter().cloned().chain(incoming) {
+        let key = attempt.attempt_public_id.clone();
+        if let Some(previous) = merged.remove(&key) {
+            merged.insert(
+                key,
+                crate::app_state::merge_runtime_attempt_snapshot(&previous, attempt),
+            );
+        } else {
+            merged.insert(key, attempt);
+        }
+    }
+    let mut attempts = merged.into_values().collect::<Vec<_>>();
+    attempts.sort_by_key(|attempt| {
+        (
+            attempt.attempt_index,
+            attempt.distinct_account_index,
+            attempt.same_account_retry_index,
+        )
+    });
+    attempts
+}
+
 #[derive(Debug)]
 pub(crate) struct RetainedBatch {
     batch: PendingBatch,
@@ -1125,6 +1163,10 @@ pub(crate) struct SqliteBatchWriter {
     buffered_writes: Option<Arc<std::sync::Mutex<Vec<SqliteBatchWrite>>>>,
     #[cfg(test)]
     auto_flush_terminal_for_test: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    runtime_terminal_confirmation_count: AtomicUsize,
+    #[cfg(test)]
+    runtime_terminal_confirmation_gate: Mutex<()>,
 }
 
 impl SqliteBatchWriter {
@@ -1137,7 +1179,7 @@ impl SqliteBatchWriter {
         prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
         pricing_catalog: Arc<RwLock<PricingCatalog>>,
         database_path: &Path,
-    ) -> Arc<Self> {
+    ) -> Result<Arc<Self>> {
         let (write_sender, write_receiver) = mpsc::channel(SQLITE_BATCH_CHANNEL_CAPACITY);
         let queued_p1_count = Arc::new(AtomicUsize::new(0));
         let p1_priority_gate = Arc::new(std::sync::Mutex::new(()));
@@ -1151,13 +1193,10 @@ impl SqliteBatchWriter {
         let dashboard_activity_snapshot_cache = Arc::new(std::sync::Mutex::new(None));
         let summary_delta_hub = Arc::new(std::sync::Mutex::new(None));
         let terminal_projection_hub = Arc::new(std::sync::Mutex::new(None));
-        let terminal_journal = match TerminalJournal::open(database_path) {
-            Ok(journal) => Some(journal),
-            Err(err) => {
-                warn!(error = %err, path = %database_path.display(), "terminal journal unavailable; using memory durability fallback");
-                None
-            }
-        };
+        let terminal_journal = Some(
+            TerminalJournal::open(database_path)
+                .context("terminal journal recovery failed; refusing memory durability fallback")?,
+        );
         let replay_writes = terminal_journal
             .as_ref()
             .map(|journal| journal.stats().replay_count)
@@ -1170,13 +1209,10 @@ impl SqliteBatchWriter {
         queued_p1_count.store(replay_writes, Ordering::SeqCst);
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let journal_sync_shutdown = shutdown.child_token();
-        #[cfg(not(test))]
         let journal_sync_handle = Some(tokio::spawn(run_terminal_journal_sync(
             terminal_journal.clone(),
             journal_sync_shutdown.clone(),
         )));
-        #[cfg(test)]
-        let journal_sync_handle = None;
         let cache_for_task = prompt_cache_conversation_cache.clone();
         let handle = tokio::spawn(run_sqlite_batch_writer(
             pool,
@@ -1224,6 +1260,10 @@ impl SqliteBatchWriter {
             buffered_writes: None,
             #[cfg(test)]
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            #[cfg(test)]
+            runtime_terminal_confirmation_count: AtomicUsize::new(0),
+            #[cfg(test)]
+            runtime_terminal_confirmation_gate: Mutex::new(()),
         });
         if replay_writes > 0 {
             warn!(
@@ -1231,7 +1271,7 @@ impl SqliteBatchWriter {
                 "requeued terminal journal records during startup"
             );
         }
-        writer
+        Ok(writer)
     }
 
     #[cfg(test)]
@@ -1273,6 +1313,8 @@ impl SqliteBatchWriter {
             journal_sync_handle: Mutex::new(None),
             buffered_writes: Some(Arc::new(std::sync::Mutex::new(Vec::new()))),
             auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+            runtime_terminal_confirmation_count: AtomicUsize::new(0),
+            runtime_terminal_confirmation_gate: Mutex::new(()),
         })
     }
 
@@ -1280,6 +1322,29 @@ impl SqliteBatchWriter {
     pub(crate) fn set_auto_flush_terminal_for_test(&self, enabled: bool) {
         self.auto_flush_terminal_for_test
             .store(enabled, Ordering::Relaxed);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn runtime_terminal_confirmation_count_for_test(&self) -> usize {
+        self.runtime_terminal_confirmation_count
+            .load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_runtime_journal_for_test(&self) {
+        self.terminal_journal
+            .lock()
+            .expect("test journal lock")
+            .as_mut()
+            .expect("test file journal")
+            .fail_append_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn pause_runtime_terminal_confirmation_for_test(
+        &self,
+    ) -> tokio::sync::MutexGuard<'_, ()> {
+        self.runtime_terminal_confirmation_gate.lock().await
     }
 
     #[cfg(test)]
@@ -1294,6 +1359,10 @@ impl SqliteBatchWriter {
         if let Ok(mut guard) = self.terminal_runtime_store.lock() {
             *guard = Some(runtime_store);
         }
+    }
+
+    pub(crate) fn set_runtime_attempt_store(&self, store: Arc<RuntimeAttemptStore>) {
+        self.terminal_journal.bind_runtime_attempts(store);
     }
 
     pub(crate) fn set_dashboard_activity_snapshot_cache(
@@ -1430,10 +1499,64 @@ impl SqliteBatchWriter {
         let _p1_priority_guard = diagnostics::lock_priority_gate(&self.p1_priority_gate, &terminal);
         let recovery_terminal = terminal.clone();
         let journal = append_terminal_journal(&self.terminal_journal, &terminal);
-        let enqueued = self.enqueue_terminal_write(
-            SqliteBatchWrite::TerminalInvocation(terminal),
+        if matches!(
             journal.durability_mode,
-        );
+            TerminalJournalDurabilityMode::Journal
+        ) && journal.sequence.is_some()
+        {
+            let sync_result = self
+                .terminal_journal
+                .lock()
+                .ok()
+                .and_then(|mut guard| guard.as_mut().map(TerminalJournal::force_sync))
+                .unwrap_or_else(|| Err(anyhow::anyhow!("terminal journal is unavailable")));
+            if let Err(err) = sync_result {
+                warn!(
+                    error = %err,
+                    invoke_id = %terminal.record.invoke_id,
+                    occurred_at = %terminal.record.occurred_at,
+                    "terminal journal durability acknowledgement failed"
+                );
+                let recovery_persisted = self
+                    .terminal_journal
+                    .lock()
+                    .ok()
+                    .and_then(|mut guard| {
+                        guard.as_mut().map(|journal| {
+                            journal.remember_shutdown_recovery(&[&recovery_terminal]);
+                            journal
+                                .quarantine_shutdown_batch(
+                                    &[&recovery_terminal],
+                                    &[],
+                                    "terminal journal sync failed",
+                                )
+                                .is_ok()
+                        })
+                    })
+                    .unwrap_or(false);
+                if !recovery_persisted {
+                    self.dropped_writes.fetch_add(1, Ordering::Relaxed);
+                }
+                return TerminalEnqueueOutcome {
+                    enqueued: false,
+                    durability_mode: journal.durability_mode,
+                    journal_sequence: journal.sequence,
+                    journal_pending_records: journal.pending_records,
+                    journal_pending_bytes: journal.pending_bytes,
+                };
+            }
+        }
+        let enqueued = if matches!(
+            journal.durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        ) {
+            false
+        } else {
+            self.enqueue_terminal_write(
+                SqliteBatchWrite::TerminalInvocation(terminal),
+                journal.durability_mode,
+            )
+        };
         if matches!(
             journal.durability_mode,
             TerminalJournalDurabilityMode::MemoryOverflow
@@ -1498,6 +1621,86 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) async fn wait_for_runtime_journal(&self, sequence: Option<u64>) -> Result<()> {
+        let Some(sequence) = sequence else {
+            return Ok(());
+        };
+        loop {
+            let synced = {
+                let mut guard = self
+                    .terminal_journal
+                    .lock()
+                    .map_err(|_| anyhow!("runtime journal lock poisoned"))?;
+                let journal = guard.as_mut().context("runtime journal unavailable")?;
+                if self.journal_sync_shutdown.is_cancelled() {
+                    journal.force_sync()?;
+                }
+                #[cfg(test)]
+                if self.auto_flush_terminal_for_test() {
+                    journal.force_sync()?;
+                }
+                journal.sequence_is_synced(sequence)?
+            };
+            if synced {
+                return Ok(());
+            }
+            tokio::time::sleep(crate::terminal_journal::TERMINAL_JOURNAL_SYNC_INTERVAL).await;
+        }
+    }
+
+    pub(crate) async fn enqueue_runtime_terminal(
+        &self,
+        mut terminal: BatchedTerminalInvocationWrite,
+    ) -> TerminalEnqueueOutcome {
+        #[cfg(test)]
+        if self.buffered_writes.is_some() {
+            return self.enqueue_terminal(terminal);
+        }
+        terminal.enqueued_at = Some(Instant::now());
+        let journal = append_terminal_journal(&self.terminal_journal, &terminal);
+        let accepted = matches!(
+            journal.durability_mode,
+            TerminalJournalDurabilityMode::Journal
+        ) && journal.sequence.is_some();
+        #[cfg(test)]
+        drop(self.runtime_terminal_confirmation_gate.lock().await);
+        let confirmed = accepted
+            && self
+                .wait_for_runtime_journal(journal.sequence)
+                .await
+                .is_ok();
+        if !confirmed {
+            self.preserve_unconfirmed_runtime_terminal(&terminal, accepted);
+        }
+        let enqueued = if confirmed {
+            self.terminal_journal.pending.register(
+                &terminal.record.invoke_id,
+                &terminal.record.occurred_at,
+                terminal.raw_capture,
+            );
+            self.enqueue_terminal_write(
+                SqliteBatchWrite::TerminalInvocation(terminal),
+                journal.durability_mode,
+            )
+        } else {
+            false
+        };
+        #[cfg(test)]
+        if enqueued {
+            // Append counters include producers still awaiting synchronization; publish only
+            // after both durable confirmation and materializer admission have completed.
+            self.runtime_terminal_confirmation_count
+                .fetch_add(1, Ordering::Release);
+        }
+        TerminalEnqueueOutcome {
+            enqueued,
+            durability_mode: journal.durability_mode,
+            journal_sequence: journal.sequence,
+            journal_pending_records: journal.pending_records,
+            journal_pending_bytes: journal.pending_bytes,
+        }
+    }
+
     fn enqueue_terminal_write(
         &self,
         write: SqliteBatchWrite,
@@ -1523,7 +1726,13 @@ impl SqliteBatchWriter {
                         .and_then(|mut journal| {
                             journal.as_mut().map(|journal| match write {
                                 SqliteBatchWrite::TerminalInvocation(terminal) => {
+                                    let key = (
+                                        terminal.record.invoke_id.clone(),
+                                        terminal.record.occurred_at.clone(),
+                                        terminal.raw_capture,
+                                    );
                                     journal.defer_write(terminal)
+                                        || journal.defer_from_log(&key.0, &key.1, key.2)
                                 }
                                 _ => false,
                             })
@@ -1558,7 +1767,87 @@ impl SqliteBatchWriter {
             .lock()
             .ok()
             .and_then(|journal| journal.as_ref().map(TerminalJournal::stats))
-            .unwrap_or_default()
+            .unwrap_or(TerminalJournalStats {
+                unavailable: true,
+                ..TerminalJournalStats::default()
+            })
+    }
+
+    pub(crate) fn append_runtime_attempt_start(
+        &self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> TerminalJournalAppendOutcome {
+        let _p1_priority_guard = self
+            .p1_priority_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let outcome = self.terminal_journal.lock().ok().and_then(|mut guard| {
+            guard
+                .as_mut()
+                .map(|journal| journal.append_attempt_start(snapshot))
+        });
+        match outcome {
+            Some(outcome) => outcome,
+            None => {
+                #[cfg(test)]
+                {
+                    // Lightweight AppState fixtures use an in-memory writer without a
+                    // file-backed journal. Production writers always open the journal and take
+                    // the fail-closed branch below.
+                    TerminalJournalAppendOutcome {
+                        durability_mode: TerminalJournalDurabilityMode::Journal,
+                        sequence: None,
+                        pending_records: 0,
+                        pending_bytes: 0,
+                    }
+                }
+                #[cfg(not(test))]
+                {
+                    TerminalJournalAppendOutcome {
+                        durability_mode: TerminalJournalDurabilityMode::MemoryOverflow,
+                        sequence: None,
+                        pending_records: 0,
+                        pending_bytes: 0,
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn reserve_runtime_attempt_completion_growth(
+        &self,
+        snapshot: &RuntimeAttemptSnapshot,
+    ) -> bool {
+        let Ok(mut guard) = self.terminal_journal.lock() else {
+            return false;
+        };
+        if let Some(journal) = guard.as_mut() {
+            journal.reserve_attempt_completion_growth(snapshot)
+        } else {
+            // Only lightweight fixtures have no file journal.
+            cfg!(test)
+        }
+    }
+
+    pub(crate) fn acknowledge_runtime_attempt_start(&self, attempt_public_id: &str) -> bool {
+        let acknowledged = self
+            .terminal_journal
+            .lock()
+            .ok()
+            .and_then(|mut guard| {
+                guard
+                    .as_mut()
+                    .map(|journal| journal.acknowledge_attempt_start(attempt_public_id))
+            })
+            .unwrap_or(false);
+        if !acknowledged {
+            return false;
+        }
+        self.terminal_journal
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.as_mut().map(|journal| journal.force_sync().is_ok()))
+            .unwrap_or(false)
     }
 
     pub(crate) fn telemetry_snapshot(&self) -> (usize, usize, u64) {
@@ -1869,6 +2158,7 @@ impl SqliteBatchWriter {
                     &terminal.record.invoke_id,
                     &terminal.record.occurred_at,
                     terminal.raw_capture,
+                    &terminal.attempts,
                 );
             }
             let deferred_writes = deferred.into_writes();
@@ -2850,7 +3140,6 @@ pub(crate) async fn run_sqlite_batch_writer(
     }
 }
 
-#[cfg(not(test))]
 async fn run_terminal_journal_sync(
     terminal_journal: Arc<TrackedTerminalJournal>,
     shutdown: CancellationToken,
@@ -3312,6 +3601,7 @@ pub(crate) async fn flush_pending_batch(
         )
         .await;
         let mut poison_record_count = 0_usize;
+        let mut quarantined_terminal_keys = HashSet::new();
         let p1_result = match initial_result {
             Err(err) if !is_sqlite_lock_error(&err) => {
                 let mut deferred = PendingBatch::default();
@@ -3340,7 +3630,23 @@ pub(crate) async fn flush_pending_batch(
                                 .ok()
                                 .and_then(|mut journal| {
                                     journal.as_mut().map(|journal| {
-                                        journal.quarantine(terminal, &format!("{singleton_err:#}"))
+                                        let result = journal
+                                            .quarantine(terminal, "terminal_materialization_failed")
+                                            .and_then(|()| {
+                                                journal.quarantine_shutdown_batch(
+                                                    &[terminal],
+                                                    &[],
+                                                    "terminal_materialization_failed",
+                                                )
+                                            });
+                                        if result.is_ok()
+                                            && !journal.remember_shutdown_recovery(&[terminal])
+                                        {
+                                            return Err(anyhow!(
+                                                "terminal shutdown recovery capacity exhausted"
+                                            ));
+                                        }
+                                        result
                                     })
                                 })
                                 .unwrap_or_else(|| {
@@ -3351,6 +3657,11 @@ pub(crate) async fn flush_pending_batch(
                                 break;
                             }
                             poison_record_count = poison_record_count.saturating_add(1);
+                            quarantined_terminal_keys.insert((
+                                terminal.record.invoke_id.clone(),
+                                terminal.record.occurred_at.clone(),
+                                terminal.raw_capture,
+                            ));
                             warn!(
                                 invoke_id = %terminal.record.invoke_id,
                                 occurred_at = %terminal.record.occurred_at,
@@ -3400,11 +3711,18 @@ pub(crate) async fn flush_pending_batch(
                     }
                     // Pending namespace protection covers the await above; only
                     // release it after the old in-memory reference is reconciled.
-                    terminal_journal.acknowledge(
-                        &terminal.record.invoke_id,
-                        &terminal.record.occurred_at,
+                    if !quarantined_terminal_keys.contains(&(
+                        terminal.record.invoke_id.clone(),
+                        terminal.record.occurred_at.clone(),
                         terminal.raw_capture,
-                    );
+                    )) {
+                        terminal_journal.acknowledge(
+                            &terminal.record.invoke_id,
+                            &terminal.record.occurred_at,
+                            terminal.raw_capture,
+                            &terminal.attempts,
+                        );
+                    }
                 }
                 batch.merge_p2(deferred);
             }
@@ -3865,6 +4183,16 @@ pub(crate) async fn flush_pending_batch_inner(
                 terminal.record.occurred_at
             )
         })?;
+            for attempt in &terminal.attempts {
+                persist_runtime_attempt_snapshot_tx(terminal_tx.as_mut(), attempt)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "flush terminal proxy attempt {}",
+                            attempt.attempt_public_id
+                        )
+                    })?;
+            }
             let payload_metadata =
                 persisted
                     .as_ref()
@@ -3873,14 +4201,6 @@ pub(crate) async fn flush_pending_batch_inner(
                         upstream_account_id: record.upstream_account_id,
                         request_model: None,
                     });
-            if let Some(prompt_cache_key) = payload_metadata
-                .as_ref()
-                .and_then(|metadata| metadata.prompt_cache_key.as_deref())
-                .map(str::trim)
-                .filter(|key| !key.is_empty())
-            {
-                prompt_cache_keys_touched.insert(prompt_cache_key.to_string());
-            }
             let summary_delta = terminal.dashboard_terminal_sequence.and_then(|sequence| {
                 persisted.as_ref().map(|record| {
                     let mut delta = crate::persisted_dashboard_activity_terminal_delta(record);
@@ -3902,39 +4222,30 @@ pub(crate) async fn flush_pending_batch_inner(
                 summary_delta,
             ));
         }
-        // Persist one compact Summary source descriptor in the same transaction as the terminal
-        // rows.  It is intentionally identity-only: rolling recovery reconstructs the bounded
-        // preview from the source table after a restart instead of duplicating raw payloads.
-        let descriptor_entries = persisted_terminals
-            .iter()
-            .map(
-                |(terminal, invocation_id, occurred_at, payload_metadata, _)| {
-                    SummarySourceChangeEntry {
-                        row_id: *invocation_id,
-                        invoke_id: terminal.record.invoke_id.clone(),
-                        occurred_at: occurred_at.clone(),
-                        upstream_account_id: payload_metadata
-                            .as_ref()
-                            .and_then(|metadata| metadata.upstream_account_id),
-                        current_rank: None,
-                    }
-                },
-            )
-            .collect::<Vec<_>>();
-        if !descriptor_entries.is_empty() {
+        // Persist the compact recovery obligation atomically with its source rows.
+        // Summary computation remains in the independently admitted derived consumer.
+        if !persisted_terminals.is_empty() {
             let source_revision = persisted_terminals
                 .iter()
                 .filter_map(|(terminal, ..)| terminal.dashboard_terminal_sequence)
                 .max()
                 .unwrap_or_default();
-            let descriptor =
-                SummarySourceChangeDescriptor::terminal_batch(source_revision, descriptor_entries)?;
+            let entries = persisted_terminals
+                .iter()
+                .map(|(terminal, invocation_id, occurred_at, metadata, _)| {
+                    SummarySourceChangeEntry {
+                        row_id: *invocation_id,
+                        invoke_id: terminal.record.invoke_id.clone(),
+                        occurred_at: occurred_at.clone(),
+                        upstream_account_id: metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.upstream_account_id),
+                        current_rank: None,
+                    }
+                })
+                .collect();
+            let descriptor = SummarySourceChangeDescriptor::terminal_batch(source_revision, entries)?;
             append_summary_source_change_descriptor_tx(terminal_tx.as_mut(), &descriptor).await?;
-        }
-        if !prompt_cache_keys_touched.is_empty() {
-            // Keep aggregate reads fail-closed and let the durable queue be processed by the
-            // pressure-gated materialization task. A terminal P1 commit must not scan history.
-            mark_prompt_cache_conversation_stats_stale_on_connection(terminal_tx.as_mut()).await?;
         }
         terminal_tx.commit().await?;
         Ok(())
@@ -4696,6 +5007,8 @@ mod tests {
                 journal_sync_handle: Mutex::new(None),
                 buffered_writes: None,
                 auto_flush_terminal_for_test: std::sync::atomic::AtomicBool::new(true),
+                runtime_terminal_confirmation_count: AtomicUsize::new(0),
+                runtime_terminal_confirmation_gate: Mutex::new(()),
             }),
             write_receiver,
         )
@@ -4863,7 +5176,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
@@ -4947,6 +5261,44 @@ mod tests {
         pending
     }
 
+    #[tokio::test]
+    async fn terminal_attempt_snapshot_materialization_is_idempotent() {
+        let pool = test_pool().await;
+        let pending = pending_attempt(&pool, "terminal-attempt-idempotence").await;
+        let snapshot = crate::runtime_attempt_snapshot_from_pending(&pending);
+        sqlx::query("DELETE FROM pool_upstream_request_attempts WHERE attempt_public_id = ?1")
+            .bind(&snapshot.attempt_public_id)
+            .execute(&pool)
+            .await
+            .expect("remove seed attempt row");
+
+        let mut transaction = pool.begin().await.expect("begin materializer transaction");
+        persist_runtime_attempt_snapshot_tx(transaction.as_mut(), &snapshot)
+            .await
+            .expect("materialize first attempt snapshot");
+        let mut terminal = snapshot.clone();
+        terminal.status = "success".to_string();
+        terminal.phase = Some("completed".to_string());
+        persist_runtime_attempt_snapshot_tx(transaction.as_mut(), &terminal)
+            .await
+            .expect("materialize repeated terminal snapshot");
+        transaction
+            .commit()
+            .await
+            .expect("commit materializer transaction");
+
+        let row = sqlx::query_as::<_, (i64, String, String)>(
+            "SELECT COUNT(*), status, phase FROM pool_upstream_request_attempts WHERE attempt_public_id = ?1",
+        )
+        .bind(&snapshot.attempt_public_id)
+        .fetch_one(&pool)
+        .await
+        .expect("load materialized attempt");
+        assert_eq!(row.0, 1);
+        assert_eq!(row.1, "success");
+        assert_eq!(row.2, "completed");
+    }
+
     fn terminal_write_for_coalescing(
         invoke_id: &str,
         dashboard_terminal_sequence: Option<u64>,
@@ -4954,6 +5306,7 @@ mod tests {
         let request_info = RequestCaptureInfo::default();
         BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            attempts: Vec::new(),
             diagnostic: None,
             record: build_running_proxy_capture_record(
                 invoke_id,
@@ -4998,6 +5351,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
@@ -5075,6 +5429,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
@@ -5198,6 +5553,7 @@ mod tests {
         batch.push(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
@@ -5267,6 +5623,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    attempts: Vec::new(),
                     diagnostic: None,
                     capture_started: None,
                     raw_capture: false,
@@ -5502,7 +5859,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
@@ -5557,7 +5915,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
 
         assert!(
             writer.enqueue(SqliteBatchWrite::AttemptProgress(BatchedAttemptProgress {
@@ -5607,7 +5966,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
                 account_id: 999_995,
@@ -5668,7 +6028,8 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::AccountSelectedTouch(
             BatchedAccountSelectedTouch {
                 account_id: 999_993,
@@ -5901,6 +6262,7 @@ mod tests {
             vec![SqliteBatchWrite::TerminalInvocation(
                 BatchedTerminalInvocationWrite {
                     enqueued_at: None,
+                    attempts: Vec::new(),
                     diagnostic: None,
                     capture_started: None,
                     raw_capture: false,
@@ -6007,6 +6369,7 @@ mod tests {
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 capture_started: None,
                 raw_capture: false,
@@ -6111,10 +6474,12 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 record: crate::tests::test_proxy_capture_record(
                     "flush-now-coordinator-p2",
@@ -6190,6 +6555,7 @@ mod tests {
         );
         assert!(journal.defer_write(BatchedTerminalInvocationWrite {
             enqueued_at: None,
+            attempts: Vec::new(),
             diagnostic: None,
             record,
             capture_started: None,
@@ -6268,10 +6634,12 @@ mod tests {
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default())),
             Arc::new(RwLock::new(PricingCatalog::default())),
             &std::env::temp_dir().join(format!("sqlite-batch-writer-{}.db", nanoid::nanoid!())),
-        );
+        )
+        .expect("spawn file-backed writer");
         assert!(writer.enqueue(SqliteBatchWrite::TerminalInvocation(
             BatchedTerminalInvocationWrite {
                 enqueued_at: None,
+                attempts: Vec::new(),
                 diagnostic: None,
                 capture_started: None,
                 raw_capture: false,

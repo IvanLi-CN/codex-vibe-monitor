@@ -976,24 +976,20 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             "ci-pr.yml representative-scale job must download the current run's archive",
         )
         run_step = step_config(representative_job, "Run deterministic representative-scale acceptance", "ci-pr.yml.jobs.backend-tests-representative-scale")
-        run_text = str(run_step.get("run", ""))
-        try:
-            run_args = shlex.split(run_text)
-        except ValueError:
-            run_args = []
+        commands = shell_commands(run_step, "ci-pr.yml.jobs.backend-tests-representative-scale")
+        expected_commands = [
+            [
+                "bash", ".github/scripts/run-backend-tests.sh", "--profile", profile,
+                "--archive-file", "$RUNNER_TEMP/backend-tests.tar.zst", "--test-filter", selector,
+            ]
+            for profile, selector in [
+                ("stateful-sqlite", "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)"),
+                ("archive-file-io", "test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)"),
+            ]
+        ]
         require(
-            run_args
-            == [
-                "bash",
-                ".github/scripts/run-backend-tests.sh",
-                "--profile",
-                "stateful-sqlite",
-                "--archive-file",
-                "$RUNNER_TEMP/backend-tests.tar.zst",
-                "--test-filter",
-                "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)",
-            ],
-            "ci-pr.yml representative-scale selector must replay its exact archived test",
+            commands == expected_commands,
+            "ci-pr.yml representative-scale selectors must replay both exact archived tests in their resource profiles",
         )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")

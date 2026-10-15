@@ -4,7 +4,7 @@ use sqlx::Transaction;
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_KEY: &str = "unsupported_model:gpt-5.5";
 pub(crate) const GPT55_UNSUPPORTED_SYSTEM_TAG_NAME: &str = "不支持 gpt-5.5";
 pub(crate) const UPSTREAM_ACCOUNT_ROW_SELECT_COLUMNS: &str = r#"
-    id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+    id, kind, provider, display_name, group_name, is_mother, note, status, enabled, runtime_routing_generation, email,
     verified_email,
     chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
     encrypted_credentials, has_refresh_token, token_expires_at, last_refreshed_at,
@@ -71,8 +71,18 @@ pub(crate) async fn ensure_protected_system_tag(
     name: &str,
     system_key: &str,
 ) -> Result<()> {
-    let now_iso = format_utc_iso(Utc::now());
     let mut tx = pool.begin().await?;
+    ensure_protected_system_tag_conn(tx.as_mut(), name, system_key).await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+pub(crate) async fn ensure_protected_system_tag_conn(
+    conn: &mut SqliteConnection,
+    name: &str,
+    system_key: &str,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
         UPDATE pool_tags
@@ -89,7 +99,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -106,7 +116,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     sqlx::query(
@@ -121,7 +131,7 @@ pub(crate) async fn ensure_protected_system_tag(
     .bind(name)
     .bind(system_key)
     .bind(&now_iso)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
 
     // Protected system tags are immutable signals. Keep any legacy model list,
@@ -142,9 +152,8 @@ pub(crate) async fn ensure_protected_system_tag(
     )
     .bind(system_key)
     .bind(&now_iso)
-    .execute(&mut *tx)
+    .execute(&mut *conn)
     .await?;
-    tx.commit().await?;
     Ok(())
 }
 

@@ -5,7 +5,7 @@
     "production_candidates": 32,
     "test_helper_candidates": 23,
     "inventory_entries": 34,
-    "suppression_entries": 118
+    "suppression_entries": 125
   },
   "loc_targets": {
     "production": 2500,
@@ -57,7 +57,7 @@
     {
       "path": "src/proxy/failover.rs",
       "role": "production",
-      "line_budget": 4842,
+      "line_budget": 4879,
       "next_module_workstream": "Split proxy failover candidate selection, retry budgets, and terminal outcome recording."
     },
     {
@@ -69,13 +69,13 @@
     {
       "path": "src/proxy/route_selection.rs",
       "role": "production",
-      "line_budget": 3757,
+      "line_budget": 3803,
       "next_module_workstream": "Split proxy route selection, candidate filtering, retry context, and routing diagnostics."
     },
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 7119,
+      "line_budget": 7349,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
@@ -87,7 +87,7 @@
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6341,
+      "line_budget": 6720,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {
@@ -105,7 +105,7 @@
     {
       "path": "src/tests/archive_file_io/raw_payload_retention_and_compression.rs",
       "role": "test_helper",
-      "line_budget": 9751,
+      "line_budget": 9763,
       "next_module_workstream": "Split raw payload retention/compression fixtures by capture, archive, and cleanup scenarios."
     },
     {
@@ -123,7 +123,7 @@
     {
       "path": "src/tests/stateful_sqlite/oauth_route_body_rewrite_and_timeout.rs",
       "role": "test_helper",
-      "line_budget": 3868,
+      "line_budget": 3869,
       "next_module_workstream": "Split OAuth route rewrite/timeout fixtures by request preparation, response, and failure paths."
     },
     {
@@ -195,7 +195,7 @@
     {
       "path": "src/upstream_accounts/tests/stateful_sqlite/maintenance_scheduler_and_schema.rs",
       "role": "test_helper",
-      "line_budget": 7132,
+      "line_budget": 7133,
       "next_module_workstream": "Split upstream maintenance scheduler/schema fixtures by account plans, routing, and persistence."
     },
     {
@@ -218,6 +218,36 @@
     }
   ],
   "suppressions": [
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime adapters preserve the established proxy route outcome contract.\" )]",
+      "reason": "Success adapter retains transport call-site compatibility while reducing outcomes into journal facts; remove after a shared request-context boundary replaces positional fields."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky facts retain causal identity and scope.\" )]",
+      "reason": "Sticky construction keeps generation, owner, model scope and causal identity explicit; remove after these become a dedicated sticky observation context."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime adapters preserve the established proxy route failure contract.\" )]",
+      "reason": "HTTP failure adapter retains the established transport contract; remove after the common failure observation context replaces positional fields."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Temporary route failure reducer carries the existing evidence fields.\" )]",
+      "reason": "Temporary failure reduction preserves the existing cooldown evidence; remove after consolidating these fields into a failure observation context."
+    },
+    {
+      "path": "src/upstream_accounts/routing/runtime_facts/observations.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Established proxy transport outcome contract.\" )]",
+      "reason": "Transport failure adapter preserves existing retry inputs; remove after transport outcomes use the common failure observation context."
+    },
     {
       "path": "src/api/slices/mod.rs",
       "kind": "expect",
@@ -493,6 +523,12 @@
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
       "reason": "Retain this targeted allow for the current argument bundle at src/proxy/usage_persistence.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/proxy/usage_persistence.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Runtime attempt terminal adapter mirrors the established lifecycle contract.\" )]",
+      "reason": "Retain this targeted expect for the runtime attempt terminal adapter at src/proxy/usage_persistence.rs; remove it when the lifecycle boundary is split into smaller adapters."
     },
     {
       "path": "src/runtime.rs",
@@ -781,6 +817,12 @@
       "kind": "expect",
       "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky clear fencing carries the route identity, generation, and causal attempt metadata.\" )]",
       "reason": "Retain this targeted expect for the current argument bundle at src/upstream_accounts/routing/sticky_routes.rs; remove it when the listed boundary split is complete."
+    },
+    {
+      "path": "src/upstream_accounts/routing/sticky_routes.rs",
+      "kind": "expect",
+      "declaration": "#[expect( clippy::too_many_arguments, reason = \"Sticky clear fencing carries route identity, generation, request model, and causal attempt metadata.\" )]",
+      "reason": "Retain this targeted expect for the request-model-aware sticky clear boundary in src/upstream_accounts/routing/sticky_routes.rs; remove it when the listed boundary split is complete."
     },
     {
       "path": "src/upstream_accounts/sync.rs",

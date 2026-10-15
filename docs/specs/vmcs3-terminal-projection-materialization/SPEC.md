@@ -4,18 +4,35 @@
 
 ## 背景
 
+## Context and Scope
+
+本主题覆盖终态 journal、SQLite P1 物化、Summary 来源凭据和独立派生消费者；不覆盖上游服务、公开协议或完整历史归档策略。
+
 Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任务扫描近两天 `codex_invocations` 后重写 rollup。该生产者与 terminal 写入、派生写和 Dashboard 对账共享 SQLite，造成不必要的读写竞争。
+
+## Related ADRs
+
+- [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
+- [ADR 0038: Proxy journal completion capacity](../../adr/0038-proxy-journal-completion-capacity.md)
 
 ## Goals
 
 - 建立 `TerminalProjectionHub`：terminal ingress 在 P1 journal admission 后注册紧凑事件，P1 成功持久化后以单调 `rowId` 确认；Dashboard 与长期统计作为独立消费者使用自己的 cursor。
-- P1 只保证 raw terminal 落库和 journal ACK；任何投影、rollup、repair 都不得延长 P1 锁窗口。
+- P1 保证 raw terminal、最终 attempt 快照和紧凑 Summary 来源变化凭据在同一事务落库后 journal ACK；凭据仅记录恢复义务，任何投影计算、rollup、repair 都不得延长 P1 锁窗口。
 - 长期统计以持久 cursor、持久 rollup 与精确 interval overlay 增量物化。正常 terminal burst 固定 60 秒合并，只 hydrate 新的 terminal row 并 additive upsert 受影响 rollup key；raw 自然日重建仅用于明确 repair，不执行无条件近两天扫描。
 - `running/pending -> terminal` 的正常 finalize 只推进 cursor 和增量桶，不得制造自然日 dirty bucket；但若该行已被更大的 terminal `rowId` 跨越，必须标记其自然日精确 repair，不能静默漏记。价格、模型、账号归属、archive rewrite/restore 等会修正已持久化事实的 mutation 同样标记旧/新受影响自然日。
 - 墙上时间继续由每个维度的规范化区间并集精确计算；不允许用计数或近似采样替代。
 - `/api/stats/long-term/*`、Dashboard HTTP/SSE 的 wire shape 和既有刷新节奏保持不变；`GET /api/system/status` 可新增只读 `projectionHealth`。
 
 ## Requirements
+
+REQ-TERMINAL-P1-01: 终态事实、最终 attempt 快照和 Summary 来源凭据必须在短事务内原子提交，提交前不得 ACK 消费日志。
+
+REQ-TERMINAL-P2-01: Summary、统计、缓存和维护必须使用独立、可暂停、可重试的派生队列，不得延长 P1 事务。
+
+REQ-TERMINAL-RECOVERY-01: 重启、损坏、重复事件和容量边界必须 fail closed 或进入明确可观测的恢复/背压路径。
+
+shutdown terminal 补救恢复文件采用非阻断恢复：末尾不完整帧忽略并告警；其他损坏帧保留原文件副本、隔离并告警；正常帧继续按顺序恢复。打开、读取、隔离或清理失败保留来源并告警，不直接阻止整个服务启动，也不能把未恢复记录标记为已提交。后续追加不得与不完整尾部拼接；新事件仍须获得真实主日志同步确认。
 
 - Hub pending event 同时受 `10,000` 条和 `64 MiB` 限制。触限、未知 ACK 或重启恢复不阻塞 P1；对应消费者必须进入 `dirty_last_good`，由持久 cursor 精确补齐。
 - long-term projection state 至少持久化 consumer cursor、最近 flush 结果、可恢复的脏桶和区间片段。进程重启后可从 `codex_invocations.id > cursor` 恢复，不依赖内存事件仍然存在。
@@ -33,7 +50,9 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 
 ## Runtime Data Plane Boundary
 
-Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 锁冲突时保留完整未提交批次并指数退避；新 terminal 事件不得提前既有重试 deadline。P2 projection materialization 不参与 P1 ACK，也不得在单事务内无界追赶 cursor。
+Terminal journal 的消费 ACK 只能发生在 P1 SQLite 事务提交后；请求侧日志确认发生在分组同步后，允许先于 SQLite 提交。P1 锁冲突时保留完整未提交批次并指数退避；新 terminal 事件不得提前既有重试 deadline。Summary 来源变化凭据与 terminal 事实原子提交，Summary 计算由独立消费者恢复。P2 projection materialization 不参与 P1 ACK，也不得在单事务内无界追赶 cursor。
+
+主日志以实际保留字节加已接受请求的终态额度执行 512 MiB 硬容量准入；终态额度覆盖转义、增长、共享 invocation envelope 和 ACK，不为每个小请求固定占用一个 4 MiB 最大帧。元数据增长先取得额度再发布，终态只释放其确实 ACK 的开始记录额度；实际终态仍受 4 MiB 单帧与总容量检查。额度不足必须进入可观测恢复/背压，不能以仅内存成功确认关键事实。额度由现有日志的未完成开始记录重建，不引入持久格式或 schema 变化。
 
 - `TerminalProjectionHub` 继续拥有 terminal durable cursor；current-state 由 [`RuntimeProjectionHub`](../high-frequency-runtime-data-plane/SPEC.md) 承担，二者不得合并为一个共享可变缓存。
 - Dashboard live render 只消费 Runtime/Terminal Projection 的不可变 snapshot，不得从 Terminal Projection 的订阅回调反向调用 SQLite builder。
@@ -41,6 +60,12 @@ Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 
 - SQLite writer P1 -> P2 派生工作必须通过统一 accounting ownership transfer，不能以裸原子减法跨越队列阶段。
 
 ## Verification
+
+VER-TERMINAL-ATOMIC-01: 覆盖 terminal invocation、attempt 和 Summary descriptor 的单事务原子性；covers: REQ-TERMINAL-P1-01。
+
+VER-TERMINAL-DERIVED-01: 覆盖派生队列受压时终态持续提交并保留可重试积压；covers: REQ-TERMINAL-P2-01。
+
+VER-TERMINAL-REPLAY-01: 覆盖重启、幂等重放、损坏中间帧、硬容量和保留来源；covers: REQ-TERMINAL-RECOVERY-01。
 
 - 空闲期不再存在按 60 秒无条件扫描近两天 raw invocation 的长期统计生产任务。
 - terminal burst 下，每个长期 projection 最多一次固定 60 秒 P2 flush；P1 ACK 和 Dashboard terminal overlay 不依赖该 flush。
@@ -51,10 +76,8 @@ Terminal journal 的 durable ACK 只能发生在 P1 SQLite 事务提交后。P1 
 
 ## Visual Evidence
 
-PR: include
 ![System Status projection health on desktop](./assets/projection-health-desktop.png)
 
-PR: include
 ![System Status projection health on mobile](./assets/projection-health-mobile.png)
 
 ## Memory Attribution

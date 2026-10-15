@@ -1,0 +1,546 @@
+use super::*;
+
+#[tokio::test]
+async fn runtime_terminal_append_and_confirmation_failures_preserve_recovery_fact() {
+    for fail_after_append in [false, true] {
+        let fixture = std::env::temp_dir().join(format!("runtime-failure-{}", nanoid::nanoid!()));
+        fs::create_dir_all(&fixture).expect("create owned recovery fixture");
+        let mut config = test_config();
+        config.database_path = fixture.join("business.sqlite");
+        let mut state = test_state_from_config(config, true).await;
+        let mutable = Arc::get_mut(&mut state).expect("fixture has one state owner");
+        mutable.sqlite_batch_writer = SqliteBatchWriter::spawn(
+            mutable.pool.clone(),
+            mutable.shutdown.clone(),
+            mutable.prompt_cache_conversation_cache.clone(),
+            mutable.pricing_catalog.clone(),
+            &mutable.config.database_path,
+        )
+        .expect("production file journal");
+        let writer = state.sqlite_batch_writer.clone();
+        writer.set_auto_flush_terminal_for_test(false);
+        let pause = writer.pause_runtime_terminal_confirmation_for_test().await;
+        if !fail_after_append {
+            writer.fail_runtime_journal_for_test();
+        }
+        let id = if fail_after_append {
+            "unconfirmed-terminal"
+        } else {
+            "rejected-terminal"
+        };
+        let producer = tokio::spawn({
+            let writer = writer.clone();
+            async move {
+                writer
+                    .enqueue_runtime_terminal(BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        diagnostic: None,
+                        record: test_proxy_capture_record(id, "2026-10-13 12:00:00"),
+                        attempts: Vec::new(),
+                        capture_started: None,
+                        raw_capture: false,
+                        dashboard_terminal_sequence: None,
+                        terminal_projection_event_ids: Vec::new(),
+                        startup_backfill_tasks: Vec::new(),
+                    })
+                    .await
+            }
+        });
+        if fail_after_append {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while writer
+                    .terminal_journal_stats()
+                    .pending_materialization_records
+                    != 1
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("append precedes the confirmation failure");
+            writer.fail_runtime_journal_for_test();
+        }
+        drop(pause);
+        let outcome = tokio::time::timeout(Duration::from_secs(2), producer)
+            .await
+            .expect("failure is bounded")
+            .expect("producer completed");
+        assert!(!outcome.enqueued, "unconfirmed event cannot report success");
+        assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 0);
+        let recovery =
+            crate::terminal_journal::terminal_journal_directory(&state.config.database_path)
+                .join("shutdown-terminal-quarantine.jsonl");
+        let contents = fs::read_to_string(recovery).expect("durable supplemental recovery fact");
+        let line: Value = serde_json::from_str(contents.lines().next().expect("recovery frame"))
+            .expect("complete recovery frame");
+        assert_eq!(line["invoke_id"], id);
+        assert!(
+            line["record"].is_object(),
+            "full safe terminal fact is recoverable"
+        );
+        state.shutdown.cancel();
+        writer.shutdown_and_drain().await;
+        drop(writer);
+        drop(state);
+        fs::remove_dir_all(fixture).expect("remove owned recovery fixture");
+    }
+}
+
+#[tokio::test]
+async fn runtime_terminal_append_does_not_confirm_materializer_admission() {
+    let fixture = std::env::temp_dir().join(format!("runtime-confirmation-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&fixture).expect("create owned confirmation fixture");
+    let mut config = test_config();
+    config.database_path = fixture.join("business.sqlite");
+    let state = test_state_from_config(config, true).await;
+    let writer = SqliteBatchWriter::spawn(
+        state.pool.clone(),
+        state.shutdown.clone(),
+        state.prompt_cache_conversation_cache.clone(),
+        state.pricing_catalog.clone(),
+        &state.config.database_path,
+    )
+    .expect("start file journal and materializer");
+    writer.set_auto_flush_terminal_for_test(false);
+    let pause = writer.pause_runtime_terminal_confirmation_for_test().await;
+    let producer = tokio::spawn({
+        let writer = writer.clone();
+        async move {
+            writer
+                .enqueue_runtime_terminal(
+                    crate::sqlite_batch_writer::BatchedTerminalInvocationWrite {
+                        enqueued_at: None,
+                        record: test_proxy_capture_record(
+                            "confirmation-boundary",
+                            "2026-10-13 00:00:00",
+                        ),
+                        attempts: Vec::new(),
+                        diagnostic: None,
+                        capture_started: None,
+                        raw_capture: false,
+                        dashboard_terminal_sequence: None,
+                        terminal_projection_event_ids: Vec::new(),
+                        startup_backfill_tasks: Vec::new(),
+                    },
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while writer
+            .terminal_journal_stats()
+            .pending_materialization_records
+            != 1
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("producer must append while confirmation is paused");
+    assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 0);
+    writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush admitted work");
+    let before_confirmation: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("query materialized facts before producer confirmation");
+    assert_eq!(before_confirmation, 0);
+    assert!(!producer.is_finished());
+    drop(pause);
+    let outcome = tokio::time::timeout(Duration::from_secs(2), producer)
+        .await
+        .expect("producer confirmation deadline")
+        .expect("producer task completes");
+    assert!(outcome.enqueued);
+    assert_eq!(writer.runtime_terminal_confirmation_count_for_test(), 1);
+    writer
+        .flush_now(&state.pool)
+        .await
+        .expect("flush confirmed terminal");
+    let committed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("query materialized confirmed fact");
+    assert_eq!(committed, 1);
+    assert_eq!(
+        writer
+            .terminal_journal_stats()
+            .pending_materialization_records,
+        0
+    );
+    state.shutdown.cancel();
+    writer.shutdown_and_drain().await;
+    fs::remove_dir_all(fixture).expect("remove owned confirmation fixture");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure() {
+    proxy_runtime_write_pressure_scenario(true).await;
+}
+
+#[tokio::test]
+async fn proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure() {
+    proxy_runtime_write_pressure_scenario(false).await;
+}
+
+async fn proxy_runtime_write_pressure_scenario(performance_gate: bool) {
+    if performance_gate {
+        assert!(
+            matches!(
+                tokio::runtime::Handle::current().runtime_flavor(),
+                tokio::runtime::RuntimeFlavor::MultiThread
+            ),
+            "representative pressure acceptance must use the service's multi-thread executor"
+        );
+    }
+    let mode = if performance_gate {
+        "service_performance"
+    } else {
+        "current_thread_functional"
+    };
+    let (upstream_base, upstream_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_secs(1)).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_secs(5);
+    let fixture = std::env::temp_dir().join(format!("runtime-pressure-{}", nanoid::nanoid!()));
+    fs::create_dir_all(&fixture).expect("create owned pressure fixture");
+    config.database_path = fixture.join("business.sqlite");
+    let mut state = test_state_from_config(config, true).await;
+    let mutable = Arc::get_mut(&mut state).expect("fixture has one state owner");
+    mutable.sqlite_batch_writer = SqliteBatchWriter::spawn(
+        mutable.pool.clone(),
+        mutable.shutdown.clone(),
+        mutable.prompt_cache_conversation_cache.clone(),
+        mutable.pricing_catalog.clone(),
+        &mutable.config.database_path,
+    )
+    .expect("use the production file journal and background materializer");
+    mutable
+        .sqlite_batch_writer
+        .set_terminal_runtime_store(mutable.proxy_runtime_invocations.clone());
+    state
+        .sqlite_batch_writer
+        .set_auto_flush_terminal_for_test(false);
+    if !performance_gate {
+        // Empty fixture preparation is outside the outstanding-event age budget.
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let empty_journal = state.sqlite_batch_writer.terminal_journal_stats();
+        assert_eq!(empty_journal.pending_records, 0);
+        assert_eq!(empty_journal.oldest_pending_age_ms, 0);
+        assert!(empty_journal.checkpoint_lag_ms >= 6_000);
+    }
+    seed_pool_routing_api_key(&state, "pool-pressure-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Pressure Route",
+        "route-pressure",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let request_count = 32;
+    let mut prewarm_timeout_retries = 0;
+    for index in 0..request_count {
+        let prompt_cache_key = format!("pressure-key-{index}");
+        // Prepare committed ranges before the measured request/write-lock scenario.
+        // Retain the production 100 ms deadline and the existing fixture policy of
+        // at most five attempts for its known scheduling timeout.
+        for attempt in 0..5 {
+            match allocate_proxy_invoke_id_with_active_lease(&state, Some(&prompt_cache_key)).await
+            {
+                Ok(_) => break,
+                Err(error)
+                    if attempt < 4
+                        && error.to_string()
+                            == "invocation range allocation timed out after 100ms" =>
+                {
+                    prewarm_timeout_retries += 1;
+                    tokio::task::yield_now().await;
+                }
+                Err(error) => panic!("prewarm invocation range for pressure request: {error}"),
+            }
+        }
+    }
+    println!("runtime_pressure_fixture prewarm_timeout_retries={prewarm_timeout_retries}");
+    let progress_before = state
+        .sqlite_batch_writer
+        .accounting_snapshot()
+        .attempt_progress_enqueued;
+    let coordinator_before =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
+    let mut locked_connection = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire pressure connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *locked_connection)
+        .await
+        .expect("hold SQLite write pressure lock");
+    let scenario_started = Instant::now();
+    let mut requests = Vec::with_capacity(request_count);
+    for index in 0..request_count {
+        let state = state.clone();
+        requests.push(tokio::spawn(async move {
+            let started = Instant::now();
+            let response = proxy_openai_v1_inner(
+                state.clone(),
+                20_000 + index as u64,
+                "/v1/responses".parse().expect("valid uri"),
+                Method::POST,
+                HeaderMap::from_iter([
+                    (
+                        http_header::AUTHORIZATION,
+                        HeaderValue::from_static("Bearer pool-pressure-key"),
+                    ),
+                    (
+                        http_header::CONTENT_TYPE,
+                        HeaderValue::from_static("application/json"),
+                    ),
+                    (
+                        http_header::HeaderName::from_static("x-prompt-cache-key"),
+                        HeaderValue::from_str(&format!("pressure-key-{index}"))
+                            .expect("valid prompt-cache key"),
+                    ),
+                ]),
+                Body::from(Bytes::from_static(
+                    br#"{"model":"gpt-5","input":"pressure"}"#,
+                )),
+                state
+                    .config
+                    .openai_upstream_base_url
+                    .join("v1/responses")
+                    .expect("target URL"),
+                None,
+                true,
+                resolve_proxy_request_timeouts(state.as_ref(), true)
+                    .await
+                    .expect("resolve proxy request timeouts"),
+                None,
+                None,
+                started,
+            )
+            .await
+            .expect("proxy request should complete");
+            let status = response.status();
+            let _ = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("read proxy response body");
+            (status, started.elapsed())
+        }));
+    }
+
+    let attempts_deadline = Instant::now() + Duration::from_secs(2);
+    while state.proxy_runtime_attempts.health_snapshot().records < request_count
+        && Instant::now() < attempts_deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        state.proxy_runtime_attempts.health_snapshot().records,
+        request_count,
+        "all active attempts should be visible in bounded memory before SQLite pressure"
+    );
+    let coordinator_after_admission =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
+    assert_eq!(
+        coordinator_after_admission
+            .write_admission
+            .interactive_proxy
+            .admission_count
+            .saturating_sub(
+                coordinator_before
+                    .write_admission
+                    .interactive_proxy
+                    .admission_count,
+            ),
+        0,
+        "prewarmed request admission should add no SQLite writes for attempt lifecycle"
+    );
+
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .accounting_snapshot()
+            .attempt_progress_enqueued,
+        progress_before,
+        "runtime attempt progress must not enter the SQLite progress queue"
+    );
+    let coordinator_during_pressure =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
+    assert_eq!(
+        coordinator_during_pressure
+            .write_admission
+            .interactive_proxy
+            .admission_count
+            .saturating_sub(
+                coordinator_after_admission
+                    .write_admission
+                    .interactive_proxy
+                    .admission_count,
+            ),
+        0,
+        "active attempt progress must not acquire InteractiveProxy write admission"
+    );
+    assert_eq!(
+        state.proxy_runtime_attempts.health_snapshot().records,
+        request_count,
+        "SQLite pressure must not remove active runtime attempt state"
+    );
+    let results = futures_util::future::join_all(requests)
+        .await
+        .into_iter()
+        .map(|result| result.expect("join proxy pressure request"))
+        .collect::<Vec<_>>();
+    let statuses = results
+        .iter()
+        .map(|(status, _)| *status)
+        .collect::<Vec<_>>();
+    assert!(
+        statuses.iter().all(|status| *status == StatusCode::OK),
+        "representative proxy pressure requests should complete successfully: {statuses:?}"
+    );
+    let mut latencies = results
+        .iter()
+        .map(|(_, elapsed)| *elapsed)
+        .collect::<Vec<_>>();
+    latencies.sort_unstable();
+    let p95 = latencies[(latencies.len() * 95).div_ceil(100).saturating_sub(1)];
+    if performance_gate {
+        assert!(
+            p95 < Duration::from_secs(2),
+            "proxy request p95 must stay within the pressure budget: {p95:?}"
+        );
+    }
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .accounting_snapshot()
+            .attempt_progress_enqueued,
+        progress_before,
+        "terminal materialization must not reintroduce AttemptProgress SQL writes"
+    );
+    // EOF closes the response channel before the capture task finishes journal admission.
+    // Append statistics include unconfirmed producers. Wait for sync and queue admission
+    // before taking the flush barrier, while keeping the SQLite lock held.
+    let journal_deadline = Instant::now() + Duration::from_secs(2);
+    while state
+        .sqlite_batch_writer
+        .runtime_terminal_confirmation_count_for_test()
+        < request_count
+        && Instant::now() < journal_deadline
+    {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .runtime_terminal_confirmation_count_for_test(),
+        request_count,
+        "every producer must confirm durability and materializer admission within two seconds"
+    );
+    let held_lock_journal = state.sqlite_batch_writer.terminal_journal_stats();
+    assert!(
+        !held_lock_journal.unavailable,
+        "file journal must be active"
+    );
+    assert_eq!(
+        held_lock_journal.pending_materialization_records, request_count,
+        "all confirmed terminal events must remain recoverable while the writer is locked: {held_lock_journal:?}"
+    );
+    assert!(held_lock_journal.pending_bytes > 0);
+    assert!(
+        held_lock_journal.oldest_pending_age_ms < 5_000,
+        "oldest pending journal event must stay within the age budget: {held_lock_journal:?}"
+    );
+    let before_commit: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE source='proxy'")
+            .fetch_one(&mut *locked_connection)
+            .await
+            .expect("read held-lock snapshot");
+    assert_eq!(
+        before_commit, 0,
+        "no terminal fact commits through the held write lock"
+    );
+    let coordinator_after_terminal =
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .snapshot()
+            .await;
+    assert_eq!(
+        coordinator_after_terminal
+            .write_admission
+            .interactive_proxy
+            .admission_count,
+        coordinator_before
+            .write_admission
+            .interactive_proxy
+            .admission_count,
+        "complete runtime requests must never enter InteractiveProxy write admission"
+    );
+    println!(
+        "runtime_pressure mode={mode} requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
+        p95.as_millis(),
+        held_lock_journal.pending_records,
+        held_lock_journal.pending_materialization_records,
+        held_lock_journal.pending_bytes
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut *locked_connection)
+        .await
+        .expect("release SQLite write pressure lock");
+    drop(locked_connection);
+    let drain_started = Instant::now();
+    state
+        .sqlite_batch_writer
+        .flush_now(&state.pool)
+        .await
+        .expect("materialize confirmed terminal batch");
+    assert!(
+        drain_started.elapsed() < Duration::from_secs(5),
+        "terminal materialization drain budget"
+    );
+    let committed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE source='proxy'")
+            .fetch_one(&state.pool)
+            .await
+            .expect("read materialized business facts");
+    assert_eq!(committed, request_count as i64);
+    assert_eq!(
+        state
+            .sqlite_batch_writer
+            .terminal_journal_stats()
+            .pending_materialization_records,
+        0
+    );
+    if performance_gate {
+        assert!(
+            scenario_started.elapsed() < Duration::from_secs(5),
+            "request-start to durable terminal commit upper bound includes journal and materialization delay"
+        );
+    }
+    println!(
+        "runtime_pressure mode={mode} materialization_drain_ms={} terminal_commit_latency_upper_bound_ms={} committed={committed}",
+        drain_started.elapsed().as_millis(),
+        scenario_started.elapsed().as_millis()
+    );
+    if let Some(runtime) = state.upstream_accounts.route_facts.lock().await.clone() {
+        runtime.shutdown_and_sync().await;
+    }
+    state.shutdown.cancel();
+    state.sqlite_batch_writer.shutdown_and_drain().await;
+    upstream_handle.abort();
+    fs::remove_dir_all(fixture).expect("remove owned pressure fixture");
+}

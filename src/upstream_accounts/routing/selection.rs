@@ -673,7 +673,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     codex_imagegen_request: bool,
     reservation_key: Option<&str>,
 ) -> Result<PoolAccountResolution> {
-    let routing_runtime = load_pool_routing_runtime_cache(state).await?;
+    let mut routing_runtime = load_pool_routing_runtime_cache(state).await?;
+    overlay_runtime_routing_cache(state, &mut routing_runtime, requested_model).await?;
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
@@ -696,22 +697,20 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     let mut sticky_queue_reservation_conflict: Option<(i64, String)> = None;
     let (sticky_route, sticky_affinity_generation) = if let Some(sticky_key) = sticky_key {
         let (route, generation) =
-            load_sticky_route_with_model_generation(&state.pool, sticky_key, requested_model)
-                .await?;
+            load_runtime_sticky_route(state, sticky_key, requested_model).await?;
         (route, Some(generation))
     } else {
         (None, None)
     };
     let sticky_source_id = sticky_route.as_ref().map(|route| route.account_id);
-    let sticky_model_penalties = load_model_route_penalties(
-        &state.pool,
+    let sticky_model_penalties = load_runtime_model_penalties(
+        state,
         &sticky_source_id.into_iter().collect::<Vec<_>>(),
         requested_model,
     )
     .await?;
     let sticky_source_rule = if let Some(route) = sticky_route.as_ref() {
-        let mut rule =
-            load_effective_routing_rule_for_account(&state.pool, route.account_id).await?;
+        let mut rule = load_runtime_effective_rule(state, route.account_id).await?;
         apply_conversation_routing_override(&mut rule, conversation_override);
         Some(rule)
     } else {
@@ -768,7 +767,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             && !sticky_source_transport_decode_escape
             && sticky_cut_out_blocked_by_policy
             && tried.contains(&route.account_id)
-            && load_upstream_account_row(&state.pool, route.account_id)
+            && load_runtime_route_account(state, route.account_id)
                 .await?
                 .is_some()
         {
@@ -776,7 +775,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         }
         if !sticky_route_is_forced_binding_target
             && !tried.contains(&route.account_id)
-            && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            && let Some(row) = load_runtime_route_account(state, route.account_id).await?
         {
             tried.insert(route.account_id);
             let sticky_route_matches_binding =
@@ -1019,8 +1018,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                                 ));
                                             }
                                             let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                                if runtime_model_requires_expired_probe(
+                                                    state,
                                                     account.account_id,
                                                     requested_model,
                                                 )
@@ -1060,8 +1059,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                             == CacheHitOverflowMode::Queue
                                         {
                                             let reason_code =
-                                                if model_route_requires_expired_cooldown_probe(
-                                                    &state.pool,
+                                                if runtime_model_requires_expired_probe(
+                                                    state,
                                                     account.account_id,
                                                     requested_model,
                                                 )
@@ -1170,7 +1169,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             let message =
                 "sticky conversation cannot cut out of the current account because routing policy forbids it"
                     .to_string();
-            if let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
+            if let Some(row) = load_runtime_route_account(state, route.account_id).await?
                 && let Some(assigned_blocked) = build_assigned_blocked_account(
                     state,
                     &row,
@@ -1191,7 +1190,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
 
     let mut selection_audit_exclusions = Vec::new();
     for account_id in excluded_ids {
-        if let Some(row) = load_upstream_account_row(&state.pool, *account_id).await? {
+        if let Some(row) = load_runtime_route_account(state, *account_id).await? {
             push_routing_selection_audit_exclusion(
                 &mut selection_audit_exclusions,
                 &row,
@@ -1202,7 +1201,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
     if let Some(account_id) = sticky_source_id
         && !excluded_ids.contains(&account_id)
         && tried.contains(&account_id)
-        && let Some(row) = load_upstream_account_row(&state.pool, account_id).await?
+        && let Some(row) = load_runtime_route_account(state, account_id).await?
     {
         push_routing_selection_audit_exclusion(
             &mut selection_audit_exclusions,
@@ -1252,8 +1251,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 candidate.active_sticky_conversations.saturating_sub(1);
         }
     }
-    let model_route_penalties = load_model_route_penalties(
-        &state.pool,
+    let model_route_penalties = load_runtime_model_penalties(
+        state,
         &candidates
             .iter()
             .map(|candidate| candidate.id)
@@ -1261,8 +1260,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         requested_model,
     )
     .await?;
-    let mut candidate_effective_rules = load_effective_routing_rules_for_accounts(
-        &state.pool,
+    let mut candidate_effective_rules = load_runtime_effective_rules(
+        state,
         &candidates
             .iter()
             .map(|candidate| candidate.id)
@@ -1273,7 +1272,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
         apply_conversation_routing_override(rule, conversation_override);
     }
     for candidate in candidates {
-        let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
+        let Some(row) = load_runtime_route_account(state, candidate.id).await? else {
             continue;
         };
         if binding_constraint.is_some_and(|constraint| !constraint.accepts_row(&row)) {
@@ -1638,8 +1637,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                 continue;
             };
             let concurrency_limit =
-                model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
-                    .await?;
+                runtime_model_concurrency_limit(state, account.account_id, requested_model).await?;
             if !pool_routing_model_reservation_is_at_capacity(
                 state,
                 reservation_key.expect("sticky queue conflict requires a reservation key"),
@@ -1652,8 +1650,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             reservation_conflict_count += 1;
             let reason_code = if account.account_id == *sticky_account_id {
                 terminal_reason_code.as_str()
-            } else if model_route_requires_expired_cooldown_probe(
-                &state.pool,
+            } else if runtime_model_requires_expired_probe(
+                state,
                 account.account_id,
                 requested_model,
             )
@@ -1918,7 +1916,7 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
             }
             if let Some(reservation_key) = reservation_key {
                 let concurrency_limit =
-                    model_route_concurrency_limit(&state.pool, account.account_id, requested_model)
+                    runtime_model_concurrency_limit(state, account.account_id, requested_model)
                         .await?;
                 if !try_reserve_pool_routing_account_for_model(
                     state,
@@ -1928,8 +1926,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                     concurrency_limit,
                 ) {
                     reservation_conflict_count += 1;
-                    let reason_code = if model_route_requires_expired_cooldown_probe(
-                        &state.pool,
+                    let reason_code = if runtime_model_requires_expired_probe(
+                        state,
                         account.account_id,
                         requested_model,
                     )
@@ -1958,8 +1956,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                             let Some(remaining_account) = remaining.resolved_account else {
                                 continue;
                             };
-                            let remaining_limit = model_route_concurrency_limit(
-                                &state.pool,
+                            let remaining_limit = runtime_model_concurrency_limit(
+                                state,
                                 remaining_account.account_id,
                                 requested_model,
                             )
@@ -1974,8 +1972,8 @@ pub(crate) async fn resolve_pool_account_for_request_with_route_requirement_inte
                                 continue;
                             }
                             reservation_conflict_count += 1;
-                            let remaining_reason = if model_route_requires_expired_cooldown_probe(
-                                &state.pool,
+                            let remaining_reason = if runtime_model_requires_expired_probe(
+                                state,
                                 remaining_account.account_id,
                                 requested_model,
                             )
@@ -2184,7 +2182,7 @@ async fn reserve_sticky_model_route(
         return Ok(true);
     };
     let concurrency_limit =
-        model_route_concurrency_limit(&state.pool, account.account_id, requested_model).await?;
+        runtime_model_concurrency_limit(state, account.account_id, requested_model).await?;
     Ok(try_reserve_pool_routing_account_for_model(
         state,
         reservation_key,

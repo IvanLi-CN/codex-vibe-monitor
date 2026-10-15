@@ -565,6 +565,50 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_upstream_accounts.temporary_route_failure_streak_started_at")?;
+    if let Err(error) = sqlx::query("ALTER TABLE pool_upstream_accounts ADD COLUMN runtime_routing_generation INTEGER NOT NULL DEFAULT 0")
+        .execute(pool).await
+        && !error.to_string().contains("duplicate column name") {
+        return Err(error).context("ensure durable routing control generation");
+    }
+    // Historical schemas can intentionally omit credential columns. Fence only
+    // columns actually present, including account-local routing policy changes.
+    let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+        "PRAGMA table_info(pool_upstream_accounts)",
+    )
+    .fetch_all(pool)
+    .await?;
+    let controls = columns
+        .iter()
+        .map(|column| column.1.as_str())
+        .filter(|column| {
+            matches!(
+                *column,
+                "enabled"
+                    | "encrypted_credentials"
+                    | "upstream_base_url"
+                    | "group_name"
+                    | "model_mappings_json"
+            ) || column.starts_with("policy_")
+        })
+        .collect::<Vec<_>>();
+    let mut fence_tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query("DROP TRIGGER IF EXISTS pool_upstream_accounts_runtime_control_fence")
+        .execute(&mut *fence_tx)
+        .await?;
+    let predicate = controls
+        .iter()
+        .map(|column| format!("OLD.{column} IS NOT NEW.{column}"))
+        .collect::<Vec<_>>()
+        .join(" OR ");
+    let trigger = format!(
+        "CREATE TRIGGER pool_upstream_accounts_runtime_control_fence AFTER UPDATE OF {} ON pool_upstream_accounts WHEN {predicate} BEGIN UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE id=NEW.id; END",
+        controls.join(",")
+    );
+    sqlx::query(&trigger)
+        .execute(&mut *fence_tx)
+        .await
+        .context("install routing control generation fence")?;
+    fence_tx.commit().await?;
 
     sqlx::query(
         r#"
@@ -752,6 +796,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_events table existence")?;
+    ensure_nullable_text_column(pool, "pool_upstream_account_events", "runtime_event_key").await?;
+    sqlx::query("CREATE UNIQUE INDEX IF NOT EXISTS idx_pool_upstream_account_events_runtime_key ON pool_upstream_account_events(runtime_event_key) WHERE runtime_event_key IS NOT NULL")
+        .execute(pool).await.context("ensure runtime route audit idempotence")?;
     let upstream_account_event_columns: std::collections::HashSet<String> =
         sqlx::query("PRAGMA table_xinfo('pool_upstream_account_events')")
             .fetch_all(pool)
@@ -1952,6 +1999,59 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_upstream_account_capability_axis_split_migrated(pool).await?;
     repair_responses_lite_image_tool_capability_observations(pool).await?;
     ensure_api_key_transit_proxy_bindings_migrated(pool).await?;
+
+    // Effective policies can be inherited. A reversible group/global edit must
+    // still invalidate pre-edit observations, including an A -> B -> A change.
+    for (table, trigger_name, account_filter) in [
+        (
+            "pool_upstream_account_group_notes",
+            "pool_group_runtime_control_fence",
+            "group_name=NEW.group_name",
+        ),
+        (
+            "pool_routing_settings",
+            "pool_defaults_runtime_control_fence",
+            "1=1",
+        ),
+    ] {
+        let columns = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+            &format!("PRAGMA table_info({table})"),
+        )
+        .fetch_all(pool)
+        .await?;
+        let mut controls = columns
+            .iter()
+            .map(|column| column.1.as_str())
+            .filter(|column| {
+                column.starts_with("policy_")
+                    || column.starts_with("default_policy_")
+                    || column.starts_with("cache_hit_")
+            })
+            .collect::<Vec<_>>();
+        if table == "pool_routing_settings" {
+            for column in ["available_models_json", "available_models_mode"] {
+                if columns.iter().any(|candidate| candidate.1 == column)
+                    && !controls.contains(&column)
+                {
+                    controls.push(column);
+                }
+            }
+        }
+        if controls.is_empty() {
+            continue;
+        }
+        let mut fence_tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+        sqlx::query(&format!("DROP TRIGGER IF EXISTS {trigger_name}"))
+            .execute(&mut *fence_tx)
+            .await?;
+        let predicate = controls
+            .iter()
+            .map(|column| format!("OLD.{column} IS NOT NEW.{column}"))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        sqlx::query(&format!("CREATE TRIGGER {trigger_name} AFTER UPDATE OF {} ON {table} WHEN {predicate} BEGIN UPDATE pool_upstream_accounts SET runtime_routing_generation=runtime_routing_generation+1 WHERE {account_filter}; END", controls.join(","))).execute(&mut *fence_tx).await?;
+        fence_tx.commit().await?;
+    }
 
     Ok(())
 }

@@ -536,6 +536,12 @@ async fn runtime_pressure_health_serializes_without_sql() {
     assert!(payload["process"]["unattributedAnonBytes"].is_u64());
     assert!(payload["allocator"]["mallocArenaMax"].is_string());
     assert_eq!(payload["writerAccounting"]["state"], "healthy");
+    assert!(payload["runtimeAttempts"]["records"].is_u64());
+    assert!(payload["runtimeAttempts"]["bytes"].is_u64());
+    assert!(payload["runtimeAttempts"]["rejectedRecords"].is_u64());
+    assert!(payload["terminalJournal"]["pendingMaterializationRecords"].is_u64());
+    assert!(payload["terminalJournal"]["pendingBytes"].is_u64());
+    assert!(payload["terminalJournal"]["oldestPendingAgeMs"].is_u64());
     assert!(payload["databasePressure"]["pressureEvents"].is_u64());
     assert!(payload["databasePressure"]["sqliteBusyEvents"].is_u64());
     assert!(payload["databasePressure"]["sqliteLockedEvents"].is_u64());
@@ -1828,6 +1834,7 @@ async fn test_state_from_config_with_pool_no_available_wait_and_runtime_projecti
         sqlite_batch_writer,
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations,
+        proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -2077,6 +2084,7 @@ pub(crate) fn clone_state_with_upstream_accounts(
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         proxy_runtime_invocations: state.proxy_runtime_invocations.clone(),
+        proxy_runtime_attempts: state.proxy_runtime_attempts.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
@@ -2143,6 +2151,7 @@ fn clone_state_with_retry_delay_overrides(
         sqlite_batch_writer: state.sqlite_batch_writer.clone(),
         pool_account_selection_runtime: state.pool_account_selection_runtime.clone(),
         proxy_runtime_invocations: state.proxy_runtime_invocations.clone(),
+        proxy_runtime_attempts: state.proxy_runtime_attempts.clone(),
         pool: state.pool.clone(),
         oauth_installation_seed: state.oauth_installation_seed,
         hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
@@ -2239,6 +2248,7 @@ pub(crate) async fn test_state_from_existing_pool(
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
+        proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,
@@ -2609,6 +2619,7 @@ pub(crate) async fn reserve_test_pool_routing_account(
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,

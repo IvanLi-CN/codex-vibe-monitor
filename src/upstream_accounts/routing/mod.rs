@@ -8,6 +8,7 @@ mod candidate_loading;
 mod failure_recording;
 mod model_health;
 mod priority_handoff;
+mod runtime_facts;
 #[expect(
     clippy::too_many_arguments,
     reason = "Routing selection adapters preserve established call-site contracts."
@@ -20,6 +21,7 @@ pub(crate) use candidate_loading::*;
 pub(crate) use failure_recording::*;
 pub(crate) use model_health::*;
 pub(crate) use priority_handoff::*;
+pub(crate) use runtime_facts::*;
 pub(crate) use selection::*;
 pub(crate) use settings_runtime::*;
 pub(crate) use sticky_routes::*;

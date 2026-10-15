@@ -26,13 +26,15 @@ pub(super) async fn record_pool_request_prepare_failure_attempt(
     let group_name_snapshot = normalize_pool_attempt_group_name(account.group_name.clone());
     let upstream_route_key = account.upstream_route_key();
     let started_at = format_naive_precise(Utc::now().with_timezone(&Shanghai).naive_local());
-    let mut pending = begin_pool_upstream_request_attempt_with_scope_and_routing_source_and_audit(
-        &state.pool,
+    let Some(mut pending) = begin_pool_upstream_request_attempt_in_memory(
+        state,
         &attempt_trace,
         group_name_snapshot.as_deref(),
         None,
         Some(account.routing_source),
         account.routing_selection_audit.as_ref(),
+        account.routing_control_fingerprint.as_deref(),
+        account.sticky_affinity_generation,
         account.account_id,
         &upstream_route_key,
         attempt_index,
@@ -40,7 +42,14 @@ pub(super) async fn record_pool_request_prepare_failure_attempt(
         same_account_retry_index,
         &started_at,
     )
-    .await;
+    .await
+    else {
+        warn!(
+            invoke_id = %attempt_trace.invoke_id,
+            "pool attempt preparation failure could not be recorded because the runtime journal rejected the start event"
+        );
+        return;
+    };
     if let Err(err) = annotate_pool_upstream_request_attempt_model_mapping(
         &mut pending,
         None,
@@ -49,12 +58,12 @@ pub(super) async fn record_pool_request_prepare_failure_attempt(
         warn!(
             invoke_id = %pending.invoke_id,
             error = %err,
-            "failed to persist pre-send pool model mapping metadata"
+        "failed to record pre-send pool model mapping metadata"
         );
     }
     let finished_at = shanghai_now_string();
-    if let Err(err) = finalize_pool_upstream_request_attempt(
-        &state.pool,
+    if let Err(err) = finalize_pool_upstream_request_attempt_in_memory(
+        state,
         &pending,
         &finished_at,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
@@ -75,7 +84,7 @@ pub(super) async fn record_pool_request_prepare_failure_attempt(
         warn!(
             invoke_id = %pending.invoke_id,
             error = %err,
-            "failed to persist pre-send pool attempt"
+        "failed to record pre-send pool attempt"
         );
     }
     if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await {

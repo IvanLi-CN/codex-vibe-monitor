@@ -112,10 +112,14 @@ Codex Vibe Monitor 是一套面向自部署的 **OpenAI 兼容代理观测工作
 ### 6. SQLite 持久化、保留与归档
 
 - SQLite 作为主存储
+- 代理 attempt 进度保存在有界内存，关键开始/终态和路由事实先获得可恢复日志确认，后台按 20ms / 32 条 / 4MiB 批量物化；正常生命周期不等待 SQLite 写准入
+- 终态 attempt 在 SQLite 提交前继续可查询，统计、缓存与维护使用独立派生消费路径
 - 支持 retention、archive、raw payload 冷压缩
 - `codex_invocations` 已支持不可变日分片归档
 - 后台 rollup、backfill、retention 与账号维护具备 SQLite pressure 背压，锁竞争时优先保护 `/v1/*` 与 OAuth 等前台关键路径
 - 适合单机自部署、低运维复杂度的长期运行场景
+
+主日志以实际字节加终态预留额度执行 512MiB 硬容量准入，额度与实际日志大小在 Grafana 中分别显示；容量不足明确背压并保留恢复义务。停机补救恢复文件的尾部半帧告警后忽略，中间损坏隔离并保留来源，读取或隔离失败告警且不单独阻止服务启动。主日志和加密路由日志保留独立的完整性门禁。回退到不能重放新日志的旧版本前，必须先排空已确认的事件或保留文件进行前向修复；详见[运行数据面规范](docs/specs/high-frequency-runtime-data-plane/SPEC.md)。
 
 ### 7. 完整的开发与验收面
 
@@ -263,25 +267,25 @@ bun run worktree:setup -- --force
 升级须去除 `PERFORMANCE_DATABASE_PATH` / `PERFORMANCE_TELEMETRY_ENABLED`，
 停旧 writer 后按[观测运维合同](ops/observability/README.md)归档旧库。
 
-| 变量                                                   | 作用                                                                                                                                |
-| ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `HTTP_BIND`                                            | 服务监听地址                                                                                                                        |
-| `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                  | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                                            |
-| `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                                     |
-| `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径；未配置时使用主库同目录的 `<主库名>.maintenance.sqlite`                                                    |
-| `OBSERVABILITY_ENABLED`                                | 外部性能观测开关，默认 `true`；关闭不影响业务请求                                                                                   |
-| `METRICS_BIND`                                         | 应用 exporter 地址，默认 `127.0.0.1:9091`；容器私网用 `0.0.0.0:9091`                                                                |
-| `METRICS_TOKEN_FILE`                                   | 两个私网 exporter 的 scrape Token 文件；非 loopback 必须配置                                                                        |
-| `OBSERVABILITY_READ_TOKEN_FILE`                        | 三个 hotpath 只读报告的独立 Token 文件，与 scrape Token 不同                                                                        |
-| `GRAFANA_PUBLIC_URL`                                   | Grafana 公网 HTTPS 基址；未配置时应用显示配置缺失                                                                                   |
-| `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                                 |
-| `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖                  |
-| `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定的首次初始化默认值，默认关闭；仅在数据库中的该设置尚未初始化时生效，之后以设置页全局开关为准                        |
-| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定所需密钥                                                                                              |
-| `ARCHIVE_DIR`                                          | 归档目录                                                                                                                            |
-| `PROXY_RAW_DIR`                                        | 原始 payload 落盘目录                                                                                                               |
-| `XRAY_RUNTIME_DIR`                                     | Xray runtime 状态与配置目录；默认 `.codex/xray-forward`                                                                             |
-| `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`                | 长期统计小时汇总保留天数，默认 400 天，低于 366 天时按 366 天处理；每日汇总永久保留                                                 |
+| 变量                                                   | 作用                                                                                                               |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `HTTP_BIND`                                            | 服务监听地址                                                                                                       |
+| `PUBLIC_METRICS_CORS_ALLOWED_ORIGINS`                  | 公共项目指标 API 的独立 CORS 来源白名单，默认 `https://ivanli.cc,http://127.0.0.1:12620`                           |
+| `DATABASE_PATH`                                        | SQLite 主库路径                                                                                                    |
+| `MAINTENANCE_DATABASE_PATH`                            | 独立维护状态 SQLite 路径；未配置时使用主库同目录的 `<主库名>.maintenance.sqlite`                                   |
+| `OBSERVABILITY_ENABLED`                                | 外部性能观测开关，默认 `true`；关闭不影响业务请求                                                                  |
+| `METRICS_BIND`                                         | 应用 exporter 地址，默认 `127.0.0.1:9091`；容器私网用 `0.0.0.0:9091`                                               |
+| `METRICS_TOKEN_FILE`                                   | 两个私网 exporter 的 scrape Token 文件；非 loopback 必须配置                                                       |
+| `OBSERVABILITY_READ_TOKEN_FILE`                        | 三个 hotpath 只读报告的独立 Token 文件，与 scrape Token 不同                                                       |
+| `GRAFANA_PUBLIC_URL`                                   | Grafana 公网 HTTPS 基址；未配置时应用显示配置缺失                                                                  |
+| `OPENAI_UPSTREAM_BASE_URL`                             | OpenAI 兼容上游地址                                                                                                |
+| `OPENAI_PROXY_IMAGE_HANDSHAKE_TIMEOUT_SECS`            | 图片生成与编辑等待上游首字节的初始化默认值，默认 300 秒；之后可由 root/group/account/conversation timeout 设置覆盖 |
+| `OPENAI_PROXY_ENCRYPTED_SESSION_OWNER_ROUTING_ENABLED` | 加密对话路由绑定的首次初始化默认值，默认关闭；仅在数据库中的该设置尚未初始化时生效，之后以设置页全局开关为准       |
+| `UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET`                  | Account Pool 写入与 OAuth 绑定所需密钥                                                                             |
+| `ARCHIVE_DIR`                                          | 归档目录                                                                                                           |
+| `PROXY_RAW_DIR`                                        | 原始 payload 落盘目录                                                                                              |
+| `XRAY_RUNTIME_DIR`                                     | Xray runtime 状态与配置目录；默认 `.codex/xray-forward`                                                            |
+| `LONG_TERM_STATS_HOURLY_RETENTION_DAYS`                | 长期统计小时汇总保留天数，默认 400 天，低于 366 天时按 366 天处理；每日汇总永久保留                                |
 
 项目存储总体积按 `DATABASE_PATH` 父目录及单独配置的外置项目存储实测文件系统分配字节，并统一去重。`PROXY_RAW_DIR` 用于代理 request/response payload 落盘，`ARCHIVE_DIR` 用于离线归档；两者可以指向独立挂载卷。它们的相对路径以 `DATABASE_PATH` 父目录为基准，配置绝对路径即可外置。默认位于数据目录内时会由数据目录扫描覆盖；外置时完整计入目录内容，包括临时文件和未关联残留。维护库外置时只计数据库文件及 WAL/SHM/journal，不会扩展到父目录中的无关文件。
 

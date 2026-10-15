@@ -3,6 +3,7 @@ use super::*;
 #[derive(Debug)]
 pub(crate) struct TrackedTerminalJournal {
     journal: std::sync::Mutex<Option<TerminalJournal>>,
+    runtime_attempts: std::sync::Mutex<Option<Arc<RuntimeAttemptStore>>>,
     pub(super) pending:
         crate::prompt_cache_conversations::invocation_ranges::lifecycle::PendingIdentityRegistry,
 }
@@ -17,6 +18,7 @@ impl TrackedTerminalJournal {
         }
         Self {
             journal: std::sync::Mutex::new(journal),
+            runtime_attempts: std::sync::Mutex::new(None),
             pending,
         }
     }
@@ -27,7 +29,33 @@ impl TrackedTerminalJournal {
         self.journal.lock()
     }
 
-    pub(super) fn acknowledge(&self, id: &str, occurred_at: &str, raw: bool) {
+    pub(super) fn bind_runtime_attempts(&self, store: Arc<RuntimeAttemptStore>) {
+        let mut binding = self
+            .runtime_attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if binding.is_none() {
+            *binding = Some(store);
+        }
+    }
+
+    pub(super) fn acknowledge(
+        &self,
+        id: &str,
+        occurred_at: &str,
+        raw: bool,
+        attempts: &[RuntimeAttemptSnapshot],
+    ) {
+        // This interface is invoked only after the invocation/attempt transaction
+        // commits. Read ownership can be released even if the journal ACK retries.
+        if let Some(store) = self
+            .runtime_attempts
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+        {
+            store.acknowledge_materialized(attempts);
+        }
         if let Ok(mut guard) = self.lock() {
             if let Some(journal) = guard.as_mut() {
                 journal.acknowledge(id, occurred_at, raw);

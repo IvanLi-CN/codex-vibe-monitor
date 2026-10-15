@@ -343,6 +343,20 @@ describe("fetchSystemStatus retention recovery compatibility", () => {
     });
   });
 
+  it("keeps runtime pressure additions unknown for older backends", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () => new Response(JSON.stringify({ runtimePressureHealth: {} }), { status: 200 }),
+      ),
+    );
+
+    const status = await fetchSystemStatus();
+
+    expect(status.runtimePressureHealth?.runtimeAttempts).toBeUndefined();
+    expect(status.runtimePressureHealth?.terminalJournal).toBeUndefined();
+  });
+
   it("normalizes a missing raw orphan sweep diagnostic to unknown", async () => {
     vi.stubGlobal(
       "fetch",

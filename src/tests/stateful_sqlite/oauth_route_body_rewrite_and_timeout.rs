@@ -577,7 +577,6 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
     tokio::fs::write(&temp_file.path, &body)
         .await
         .expect("write large oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Large Responses OAuth".to_string(),
@@ -589,6 +588,7 @@ async fn pool_route_large_oauth_responses_file_backed_body_rewrites_and_replaces
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1060,7 +1060,6 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
     tokio::fs::write(&temp_file.path, &body)
         .await
         .expect("write oversized oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Responses OAuth".to_string(),
@@ -1072,6 +1071,7 @@ async fn pool_route_oauth_responses_file_backed_body_above_rewrite_limit_stays_p
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1204,7 +1204,6 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
     tokio::fs::write(&temp_file.path, &compressed_body)
         .await
         .expect("write compressed oauth responses body");
-
     let account = PoolResolvedAccount {
         account_id,
         display_name: "Compressed OAuth".to_string(),
@@ -1216,6 +1215,7 @@ async fn pool_route_oauth_responses_compressed_file_backed_body_stays_passthroug
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -1574,7 +1574,6 @@ fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests() {
         upstream_handle.abort();
     });
 }
-
 #[test]
 fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite() {
     let global = Url::parse("https://api.openai.com/").expect("global upstream base url");
@@ -1588,6 +1587,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        routing_control_fingerprint: None,
         sticky_affinity_generation: None,
         routing_selection_audit: None,
         priority_handoff_permit: None,
@@ -2662,6 +2662,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         sqlite_batch_writer: SqliteBatchWriter::spawn_for_test(),
         pool_account_selection_runtime: Arc::new(PoolAccountSelectionRuntime::default()),
         proxy_runtime_invocations: Arc::new(ProxyRuntimeInvocationStore::default()),
+        proxy_runtime_attempts: Arc::new(RuntimeAttemptStore::default()),
         pool,
         oauth_installation_seed: [0_u8; 32],
         http_clients,

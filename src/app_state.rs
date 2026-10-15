@@ -1,8 +1,13 @@
 use super::*;
 
+mod attempt_store;
 mod dashboard;
 mod invocation_store;
 
+pub(crate) use attempt_store::{
+    RuntimeAttemptResponseCapture, RuntimeAttemptSnapshot, RuntimeAttemptStore,
+    RuntimeAttemptStoreHealth, merge_runtime_attempt_snapshot,
+};
 use dashboard::DashboardRuntimeProjection;
 pub(crate) use dashboard::{
     DASHBOARD_RUNTIME_NETWORK_PROJECTION_COALESCE, DASHBOARD_RUNTIME_PROJECTION_COALESCE,
@@ -815,6 +820,7 @@ pub(crate) struct AppState {
     pub(crate) sqlite_batch_writer: Arc<SqliteBatchWriter>,
     pub(crate) pool_account_selection_runtime: Arc<PoolAccountSelectionRuntime>,
     pub(crate) proxy_runtime_invocations: Arc<RuntimeProjectionHub>,
+    pub(crate) proxy_runtime_attempts: Arc<RuntimeAttemptStore>,
     pub(crate) dashboard_network_speed_cache: Arc<DashboardNetworkSpeedCache>,
     pub(crate) oauth_installation_seed: [u8; 32],
     pub(crate) hourly_rollup_sync_lock: Arc<Mutex<()>>,
@@ -853,8 +859,7 @@ pub(crate) struct AppState {
     pub(crate) pool_routing_availability: PoolRoutingAvailabilitySignal,
     pub(crate) pool_routing_runtime_cache: Arc<Mutex<Option<PoolRoutingRuntimeCache>>>,
     #[cfg(test)]
-    pub(crate) pool_routing_test_data_version_connection:
-        Arc<Mutex<Option<sqlx::pool::PoolConnection<Sqlite>>>>,
+    pub(crate) pool_routing_test_data_version_connection: Arc<Mutex<Option<SqliteConnection>>>,
     pub(crate) pool_model_routing_cache_write_lock: Arc<Mutex<()>>,
     pub(crate) pool_live_attempt_ids: Arc<std::sync::Mutex<HashSet<i64>>>,
     pub(crate) pool_group_429_retry_delay_override: Option<Duration>,

@@ -1014,17 +1014,16 @@ pub(crate) async fn invalidate_pool_routing_runtime_cache(state: &AppState) {
 async fn pool_routing_sqlite_data_version(state: &AppState) -> Result<i64> {
     let mut observer = state.pool_routing_test_data_version_connection.lock().await;
     if observer.is_none() {
+        // Keep data_version comparable without reserving a business-pool slot.
         *observer = Some(
-            state
-                .pool
-                .acquire()
+            SqliteConnection::connect_with(state.pool.connect_options().as_ref())
                 .await
-                .context("acquire SQLite routing test observer")?,
+                .context("connect SQLite routing test observer")?,
         );
     }
     sqlx::query_scalar("PRAGMA data_version")
         .fetch_one(
-            &mut **observer
+            observer
                 .as_mut()
                 .expect("routing test observer is initialized"),
         )
@@ -1379,6 +1378,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) standalone_search_capability: CapabilitySupport,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
+    pub(crate) routing_control_fingerprint: Option<String>,
     pub(crate) sticky_affinity_generation: Option<i64>,
     pub(crate) routing_selection_audit: Option<PoolRoutingSelectionAudit>,
     pub(crate) priority_handoff_permit: Option<Arc<PriorityHandoffPermit>>,

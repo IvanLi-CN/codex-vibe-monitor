@@ -191,7 +191,7 @@ datasource UID 固定为 `cvm-prometheus`。仪表盘 JSON、变量、Prometheus
   准入等待 p95 与 RSS；默认 endpoint 是 `responses|chat_completions`。中部比较 TTFT
   p50/p95、CPU、业务 success/error/cancelled 每分钟堆叠柱和四类 coordinator wait。
 - `cvm-proxy` 区分 invocation、upstream attempt、retry、TTFB、TTFT、上游 stream
-  lifetime 与 HTTP body lifetime；endpoint 表和 HTTP route 表同时列结果、分位数与样本数。
+  lifetime 与 HTTP body lifetime；endpoint 表和 HTTP route 表同时列结果、分位数与样本数，并展示代理运行态内存、终态日志积压、物化延迟、拒绝/失败和热路径写准入保护计数。
 - `cvm-sqlite` 分开 coordinator wait/hold、pool acquire、queue wait、batch execute、
   ACK 和 enqueue-to-commit；`queue=all` 只表示总 pending，不与子队列相加。SQL 表最多
   展示 10 个已导出的模板，默认按累计采样耗时排序。

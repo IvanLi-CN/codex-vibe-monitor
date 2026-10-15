@@ -1,5 +1,7 @@
 # High-Frequency Runtime Data Plane Implementation
 
+Durable-only account attempt pages and locate retain the existing `occurred_at DESC, id DESC` order, including equal timestamps across a page boundary. When a runtime overlay is present, both operations use the explicit merged order and stable-ID deduplication. Retryable HTTP failures and initial `response.failed` captures update the actual pending attempt before terminal finalization; completed raw metadata remains in the terminal snapshot even when the bounded capture update is rejected. Terminal growth compaction retains the raw path, codec, size, truncation and content encoding within the existing admission bounds, and the final snapshot is broadcast after finalization.
+
 ## Dashboard Hot Topic Coverage
 
 Activity、summary 与 network topic 已有 typed projection/materializer。working-conversations、parallel-work open range 与 open-window timeseries 仍可能进入通用 subscription builder；其迁移、健康判责与完整 Dashboard bundle 性能门禁由 [`dashboard-hot-topic-projection`](../dashboard-hot-topic-projection/IMPLEMENTATION.md) 跟踪。在该规范验收前，高频 Dashboard delivery 不视为全部完成。
@@ -8,11 +10,19 @@ Activity、summary 与 network topic 已有 typed projection/materializer。work
 
 ## Typed Runtime Event Bus Boundary
 
+代理运行压力测试把日志 append、分组同步确认、物化准入和 SQLite 提交分别观测。`runtime_terminal_append_does_not_confirm_materializer_admission` 暂停 append 后的生产者并验证确认前后 flush 的区别；代表性 32 请求场景使用与服务入口一致的 Tokio 多线程执行器，在持续持有 SQLite 写锁期间等待全部生产者确认，随后要求精确 32 条终态业务事实和零未物化积压。相同场景同时保留单线程功能对照，分别输出 `service_performance` 与 `current_thread_functional`，单线程结果不替代性能门禁。两条测试均独占 nextest 执行槽，避免其他测试改变进程级写准入计数或测量负载。测量前为 32 个独立 key 准备已提交的身份范围，准备阶段只对既有 100ms 分配调度超时沿用 fixture 最多五次尝试并单独输出重试计数；生产分配截止时间、请求重试和测量起点不变，多线程压力阶段仍要求 p95 < 2 秒、完整提交 < 5 秒及零运行态 SQL 写入，单线程对照保留完整性、同步确认和有界排空保护。两条用例按 `oldest_pending_age_ms` 限制最老未物化事件年龄，严格保留 5 秒上限；单线程对照在任何事件写入前等待 6 秒，验证空日志的零记录、零积压年龄与至少 6 秒 checkpoint 年龄，避免把空准备计入积压。测试确认计数与暂停 gate 仅在 `cfg(test)` 存在，不改变生产路由或持久化行为。
+
+身份清理取消回归分别证明取得 worker 前的预算耗尽和 native SQLite worker 已持锁时的取消。前者耗尽业务连接池租约并验证 owner 仍可取得、身份行完整；后者使用生产 `LifecycleConnection`、真实文件数据库和有界查询，测试专用 busy callback 确认 native worker 进入并持续阻塞，随后验证取消不能提前释放 owner。SQLite 函数析构回调证明原生连接关闭发生在 owner 再次可取得之前；callback 状态由 SQLite 持有的 Arc 和有界清理保护拥有。两条用例均使用既有 250ms 工作预算，不增加生产 hook、超时或连接池容量。
+
+`.config/nextest.toml` 为 7 个 stateful SQLite 和 4 个 lightweight 时限回归保留所属 profile 的全部执行槽，覆盖身份冷初始化、热内存与尾部回收准备、账号创建唤醒、终态 attempt 持久化、启动 hydration、事务发布与压力 deadline。stateful 的 6 槽和 lightweight 的 4 槽配置不变；测试内部并发、32 个冷 key、生产超时、重试和原有断言不变。该隔离只减少不同 fixture 的重叠执行，不把定向通过替代完整资源桶验证，也不修改尚未确认原因的 network cursor 用例。
+
 The next delivery boundary is a single typed runtime mutation bus and router. Hot events carry identity, lifecycle, aggregate, and cursor fields only; they do not carry full invocation records, generic JSON values, or mutable topic snapshots. Topic work is selected from active dependency indexes before any materialization. Historical and detail consumers use bounded identity hydration.
 
 Backfill scheduling is event-driven. `startup_backfill_progress` persists each task cursor, `next_run_after`, source-unavailable state, daily probe deadline and wake generation; the supervisor mirrors the recovered per-task deadlines in memory, then sleeps until the earliest deadline or a matching task wake. Archive materialization wakes only archive-activity and historical-rollup work. A source-unavailable probe remains bounded to 100 rows or two seconds, while pressure deferral persists a retry deadline without producing a `system_task_runs` audit row. A no-op pass does not run unrelated rollup maintenance or create a task-run audit row. Health aggregates event-bus lag, projection recovery, and writer pressure using in-memory counters without adding status-page SQL.
 
-`ProxySqliteWriteCoordinator` 是代理热写的统一 admission 面。实现覆盖 terminal P1/P2 actor、attempt 生命周期和 route success/failure 汇聚路径，并通过 `runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、各优先级 waiter 与 legacy bypass 计数。
+`ProxySqliteWriteCoordinator` 是后台终态、路由物化和派生写的统一 admission 面。正常代理 attempt 生命周期与路由结果不获取 `InteractiveProxy`：实时 attempt 存储有界快照，begin/terminal 等待日志分组同步，sticky、健康/冷却和模型能力从已确认的有界路由投影读取。旧数据库行修复保持独立同步路径。`runtimePressureHealth.proxySqliteWriteCoordinator` 暴露 active class、waiter 与 legacy bypass；Prometheus 同时记录 attempt 容量、日志积压/年龄、路由物化延迟、拒绝和重放数量。
+
+代理运行数据的持久化兼容性由 [migration record](assets/proxy-runtime-state-migration.json) 和 [version-impact record](assets/proxy-runtime-version-impact.json) 跟踪。新增状态是加密路由 sidecar、账号控制代际与审计事件幂等键，复用现有 SQLite 表。模型绑定与 fallback sticky 分别比较代际和 owner；管理端账号、组和全局策略更新对未物化旧请求结果进行 fencing。请求确认与 SQLite 消费 ACK 分离，物化失败保留日志，partial append 关闭确认路径，容量拒绝可在积压释放后恢复。
 
 P1 正常 admission 为 20ms，批次上限为 32 条或 4 MiB；失败后按 250ms 到 5s 退避。P2 使用独立 250ms 固定 deadline，pressure defer、background busy 和实际 lock retry 分开调度与计数；hourly replay 每次只执行一个既有有界 chunk，未覆盖 derived work 保留到下一轮。
 
@@ -30,11 +40,24 @@ Prompt Cache window topic 在首个 owner 订阅时建立精确 baseline。后�
 
 ## Module Boundaries
 
+- `src/proxy/raw_capture/finalization.rs` completes pending request and response capture together. A live response writer may hold the same bounded writer slot that a queued request snapshot needs; polling both completions allows response EOF to release that slot while preserving both complete metadata records and payload files. Writer limits, capture admission, storage formats and downstream response semantics remain unchanged.
+
+- `src/terminal_journal/completion_capacity.rs` owns the per-attempt completion ledger and shared invocation-envelope credit. Runtime updates acquire monotonic credit inside store admission before publishing retained metadata. Actual frame bytes and ACKs remain checked against the unchanged disk/replay limits; a separate Prometheus gauge exposes reserved bytes without adding HTTP fields. The ledger rebuilds from existing unmatched begins and does not introduce a new persistent format.
+
+- Supplemental shutdown recovery is isolated in `src/terminal_journal/shutdown_recovery.rs`. It ignores an incomplete tail with a warning, preserves an isolated copy of middle corruption before cleanup, and reports open/read/isolation/cleanup errors without aborting service startup. A retained incomplete tail is delimited before appending a fact or ACK; ACK compaction cannot overwrite an incompletely read or unsuccessfully isolated source. Valid recovery facts retain their source order through replay and compaction, and primary journal ACK serialization or write failures fail closed instead of returning a false confirmation. Runtime terminal append and group-sync confirmation failures both enter this recovery path with an explicit warning.
+- Main-journal and supplemental attempt snapshots redact `compact_support_reason` alongside request summaries, credentials and other raw error text; the safe compact-support status remains available.
+- When the bounded recovery projection rejects a new critical fact because its record or byte cap is full, the source is marked non-clean and later ACKs cannot compact it from the incomplete in-memory view. The durable supplemental file remains the restart source and the rejection remains observable through the existing overflow/rejection health counters and warning path.
+- Final attempt snapshots retain bounded runtime read ownership until materialization acknowledgement. Attempt readers capture runtime state before the SQLite read and deduplicate stable public IDs, preserving visibility during commit and cleanup. Capacity coverage verifies that terminal claiming retains the record count and actual bytes until acknowledgement; completing an attempt can release its unused terminal reservation without evicting the snapshot.
+- Account attempt REST and SSE readers merge the bounded runtime snapshot with SQLite using the same global ordering and pagination, so an accepted attempt remains visible before terminal materialization and does not disappear between pages. The merge order is `occurred_at DESC`, `attempt_index DESC`, then durable ID and public attempt ID as stable tie-breakers, including when runtime and durable records share a timestamp. Attempt-location reads walk this same merged page view, so a runtime-only attempt and its later durable copy resolve to the same page contract.
+- Proxy attempt interruption recovery is owned by `src/proxy/usage_persistence/runtime_recovery.rs`; terminal attempt SQL is isolated in `src/sqlite_batch_writer/terminal_attempts.rs`.
+- Routing observations and encrypted journal recovery live under `src/upstream_accounts/routing/runtime_facts/`; account administration generation fencing remains in `src/upstream_accounts/oauth_sessions_callbacks/account_update.rs`, separate from request observations.
+- Test-only routing-cache observation uses a persistent direct SQLite connection built from the business pool's connect options. It retains `PRAGMA data_version` detection of out-of-band fixture writes without reserving a business-pool lease; production cache behavior, explicit invalidation and generation fencing retain their existing paths.
+- Runtime account state ownership lives in `src/upstream_accounts/core_runtime_types/runtime_state.rs`. Cancellation fixtures assert no live SQL row followed by exactly one interrupted terminal fact; routing replay fixtures stop the worker before releasing its batch gate so confirmed-before-materialized recovery is deterministic.
 - Request ingress and semantic projection: `src/proxy/dispatch.rs`, `src/proxy/stream_gate.rs` and a dedicated semantic projection module.
 - Runtime projection: a dedicated `RuntimeProjectionHub` owned by application state; Dashboard renderers depend on this Hub rather than SQLite.
 - Terminal durability: existing journal, SQLite batch writer and `TerminalProjectionHub`; queue accounting moves behind `PendingQueueAccounting`.
 - Delivery: subscription cache, replay and fan-out share immutable serialized frames.
-- Health: in-memory counters feed `runtimePressureHealth`; System Status only formats those counters.
+- Health: in-memory counters feed `runtimePressureHealth`; System Status only formats those counters, including terminal journal backlog age.
 
 ## Migration Sequence
 

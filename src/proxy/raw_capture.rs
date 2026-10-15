@@ -1,5 +1,8 @@
 use super::*;
 
+mod finalization;
+pub(crate) use finalization::finish_proxy_raw_captures;
+
 pub(crate) fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
     if header.len() < 2 {
         return true;
@@ -1104,6 +1107,60 @@ pub(crate) async fn schedule_proxy_capture_follow_up_worker(
     Ok(())
 }
 
+pub(crate) async fn record_successful_proxy_capture_model_route_cache_observation(
+    state: &AppState,
+    record: &ProxyCaptureRecord,
+) -> Result<()> {
+    if record.status != "success" {
+        return Ok(());
+    }
+    let metadata = terminal_payload_metadata(record.payload.as_deref());
+    let Some(account_id) = metadata.upstream_account_id else {
+        return Ok(());
+    };
+    let model = metadata
+        .request_model
+        .as_deref()
+        .or(record.model.as_deref())
+        .map(str::trim);
+    let key = pool_routing_reservation_key_for_invoke_id(&record.invoke_id);
+    let active_concurrency = {
+        let guard = state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned");
+        let held = key.as_deref().is_some_and(|key| {
+            guard.get(key).is_some_and(|r| {
+                r.account_id == account_id
+                    && r.model.as_deref().is_some_and(|value| {
+                        model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                    })
+            })
+        });
+        guard
+            .values()
+            .filter(|r| {
+                r.account_id == account_id
+                    && r.model.as_deref().is_some_and(|value| {
+                        model.is_some_and(|model| value.eq_ignore_ascii_case(model))
+                    })
+            })
+            .count() as i64
+            + i64::from(!held)
+    };
+    observe_runtime_model_cache(
+        state,
+        account_id,
+        model,
+        record.usage.input_tokens,
+        record.usage.cache_input_tokens,
+        active_concurrency,
+        Some(&record.invoke_id),
+    )
+    .await?;
+    Ok(())
+}
+
 pub(crate) fn schedule_proxy_capture_follow_up_after_terminal_enqueue(
     state: &AppState,
     invoke_id: &str,
@@ -1186,12 +1243,18 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
         );
         return Ok(());
     }
-    super::usage_persistence::observe_successful_proxy_capture_model_route_cache(state, &record)
-        .await;
+    if let Err(error) = record_successful_proxy_capture_model_route_cache_observation(state, &record).await {
+        state.proxy_runtime_invocations.clear_terminal_tombstone(&inserted_record.invoke_id, &inserted_record.occurred_at);
+        return Err(error).context("cache routing observation was not accepted; terminal can be retried");
+    }
     let projection = register_terminal_projection_before_enqueue(state, &inserted_record).await;
     let delta = &projection.dashboard;
     if !delta.duplicate {state.observability.proxy_terminal(&record,inserted_record.endpoint.as_deref());}
     let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&inserted_record);
+    state.sqlite_batch_writer.set_runtime_attempt_store(state.proxy_runtime_attempts.clone());
+    let runtime_attempts = state
+        .proxy_runtime_attempts
+        .claim_for_invocation(&inserted_record.invoke_id, &inserted_record.occurred_at);
     debug!(
         invoke_id = %invoke_id,
         terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -1203,18 +1266,20 @@ pub(crate) async fn persist_and_broadcast_proxy_capture(
     let terminal_enqueue =
         state
             .sqlite_batch_writer
-            .enqueue_terminal(BatchedTerminalInvocationWrite {
+            .enqueue_runtime_terminal(BatchedTerminalInvocationWrite {
                 enqueued_at: None,
                 diagnostic: crate::observability::diagnostics::current().map(|c| c.persistence()),
                 record,
+                attempts: runtime_attempts.clone(),
                 capture_started: Some(capture_started),
                 raw_capture: true,
                 dashboard_terminal_sequence: delta.terminal_sequence,
                 terminal_projection_event_ids: projection.event_id.into_iter().collect(),
                 startup_backfill_tasks,
-            });
+            }).await;
     let terminal_enqueued = terminal_enqueue.enqueued;
     if !terminal_enqueued {
+        state.proxy_runtime_attempts.restore(runtime_attempts);
         rollback_terminal_projection_before_enqueue(state, &inserted_record, &projection).await;
         let terminal_tombstone_cleared = state
             .proxy_runtime_invocations

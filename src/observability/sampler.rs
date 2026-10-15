@@ -62,6 +62,69 @@ fn cpu_ticks() -> Option<(u64, u64, f64)> {
 fn sample_cpu(_: &ObservabilityRuntime) {}
 async fn sample_runtime(state: &AppState) {
     let metrics = &state.observability;
+    let attempts = state.proxy_runtime_attempts.health_snapshot();
+    for (dimension, value) in [("records", attempts.records), ("bytes", attempts.bytes)] {
+        metrics.gauge(
+            "cvm_proxy_runtime_attempt_store",
+            &[("measure", dimension)],
+            value as f64,
+        );
+    }
+    metrics.gauge(
+        "cvm_proxy_runtime_attempt_rejections",
+        &[],
+        attempts.rejected_records as f64,
+    );
+    let terminal_journal = state.sqlite_batch_writer.terminal_journal_stats();
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_pending",
+        &[("journal", "terminal")],
+        terminal_journal.pending_materialization_records as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_bytes",
+        &[("journal", "terminal")],
+        terminal_journal.pending_bytes as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_completion_reserved_bytes",
+        &[],
+        terminal_journal.completion_reserved_bytes as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_age_seconds",
+        &[("journal", "terminal")],
+        terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
+    );
+    if let Some(runtime) = state.upstream_accounts.route_facts.lock().await.clone() {
+        let health = runtime.health_snapshot();
+        for (name, value) in [
+            (
+                "cvm_proxy_runtime_journal_pending",
+                health.pending_events as f64,
+            ),
+            (
+                "cvm_proxy_runtime_journal_bytes",
+                health.pending_bytes as f64,
+            ),
+            (
+                "cvm_proxy_runtime_journal_age_seconds",
+                health.oldest_age_ms as f64 / 1000.0,
+            ),
+            (
+                "cvm_proxy_runtime_materialization_delay_seconds",
+                health.last_materialization_ms as f64 / 1000.0,
+            ),
+            (
+                "cvm_proxy_runtime_journal_rejections",
+                health.rejected as f64,
+            ),
+            ("cvm_proxy_runtime_journal_replayed", health.replayed as f64),
+            ("cvm_proxy_runtime_journal_failed", f64::from(health.failed)),
+        ] {
+            metrics.gauge(name, &[("journal", "routing")], value);
+        }
+    }
     let accounting = state.sqlite_batch_writer.accounting_snapshot();
     metrics.record_gauge("p1.queue_depth", "p1", accounting.pending_depth as f64);
     metrics.record_gauge("p1.queue_bytes", "p1", accounting.pending_bytes as f64);
@@ -83,6 +146,19 @@ async fn sample_runtime(state: &AppState) {
         accounting.p2_deferred_age_ms as f64,
     );
     let coordinator = proxy_sqlite_write_coordinator().snapshot().await;
+    metrics.gauge(
+        "cvm_proxy_runtime_interactive_write_admissions",
+        &[],
+        coordinator
+            .write_admission
+            .interactive_proxy
+            .admission_count as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_runtime_attempt_progress_enqueued",
+        &[],
+        accounting.attempt_progress_enqueued as f64,
+    );
     for (class, count) in [
         ("p1_terminal", coordinator.p1_waiter_count),
         ("interactive_proxy", coordinator.interactive_waiter_count),

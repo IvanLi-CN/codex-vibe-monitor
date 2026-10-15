@@ -71,6 +71,19 @@ class Metrics:
         self.gauge("cvm_process_rss_bytes", wave(840_000_000, 45_000_000, 180))
         self.gauge("cvm_process_rss_anon_bytes", wave(620_000_000, 35_000_000, 210))
         self.gauge("cvm_process_swap_bytes", 0)
+        self.gauge("cvm_proxy_runtime_attempt_store", wave(32, 8, 60), {"measure": "records"})
+        self.gauge("cvm_proxy_runtime_attempt_store", wave(2_800_000, 600_000, 60), {"measure": "bytes"})
+        self.gauge("cvm_proxy_runtime_journal_completion_reserved_bytes", wave(25_000_000, 6_000_000, 60))
+        for journal, scale in (("terminal", 1), ("routing", .5)):
+            self.gauge("cvm_proxy_runtime_journal_pending", wave(12 * scale, 4 * scale, 90), {"journal": journal})
+            self.gauge("cvm_proxy_runtime_journal_bytes", wave(150_000 * scale, 40_000 * scale, 90), {"journal": journal})
+            self.gauge("cvm_proxy_runtime_journal_age_seconds", wave(.12 * scale, .03 * scale, 90), {"journal": journal})
+        self.gauge("cvm_proxy_runtime_materialization_delay_seconds", wave(.025, .015, 70), {"journal": "routing"})
+        self.gauge("cvm_proxy_runtime_journal_replayed", 3, {"journal": "routing"})
+        for name in ("cvm_proxy_runtime_journal_rejections", "cvm_proxy_runtime_journal_failed"):
+            self.gauge(name, 0, {"journal": "routing"})
+        for name in ("cvm_proxy_runtime_attempt_rejections", "cvm_proxy_runtime_interactive_write_admissions", "cvm_proxy_runtime_attempt_progress_enqueued"):
+            self.gauge(name, 0)
         self.gauge("cvm_process_threads", wave(38, 4, 150))
         self.counter("cvm_process_cpu_seconds_total", 0.42, initial=1800)
         self.gauge("cvm_storage_available_bytes", wave(68_000_000_000, 2_000_000_000, 260), {"filesystem": "data"})

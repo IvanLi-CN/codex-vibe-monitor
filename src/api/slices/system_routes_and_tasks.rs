@@ -1,5 +1,6 @@
 use super::*;
 mod raw_payload_inventory;
+use crate::terminal_journal::TerminalJournalStats;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 pub(crate) use raw_payload_inventory::*;
 use serde::{Deserialize, Serialize};
@@ -121,6 +122,8 @@ pub(crate) struct SystemRuntimePressureHealth {
     pub(crate) process: SystemRuntimePressureProcess,
     pub(crate) allocator: SystemRuntimePressureAllocator,
     pub(crate) writer_accounting: PendingQueueAccountingSnapshot,
+    pub(crate) runtime_attempts: RuntimeAttemptStoreHealth,
+    pub(crate) terminal_journal: TerminalJournalStats,
     pub(crate) database_pressure: crate::db_pressure::DbPressureSnapshot,
     pub(crate) proxy_sqlite_write_coordinator:
         crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinatorSnapshot,
@@ -213,6 +216,8 @@ fn runtime_pressure_state(
 pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRuntimePressureHealth {
     let memory = state.memory_diagnostics.runtime_pressure_snapshot();
     let writer_accounting = state.sqlite_batch_writer.accounting_snapshot();
+    let runtime_attempts = state.proxy_runtime_attempts.health_snapshot();
+    let terminal_journal = state.sqlite_batch_writer.terminal_journal_stats();
     let database_pressure = crate::db_pressure::global_db_pressure_gate().snapshot();
     let proxy_sqlite_write_coordinator =
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
@@ -286,6 +291,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || retention_write_health.state == "degraded"
             || retention_recovery.state == "degraded"
             || event_bus.state == "degraded"
+            || state.proxy_runtime_attempts.capacity_exhausted()
+            || terminal_journal.overflowed
             || backfill.state == "degraded",
         projection_deferred
             || cursor_growth
@@ -295,6 +302,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             || retention_write_health.state == "deferred"
             || retention_recovery.state == "deferred"
             || dashboard_hot_topics.state == "deferred"
+            || terminal_journal.pending_materialization_records > 0
+            || terminal_journal.unavailable
             || backfill.state == "deferred",
     )
     .to_string();
@@ -314,6 +323,8 @@ pub(crate) async fn load_runtime_pressure_health(state: &AppState) -> SystemRunt
             malloc_arena_max: memory.malloc_arena_max,
         },
         writer_accounting,
+        runtime_attempts,
+        terminal_journal,
         database_pressure,
         proxy_sqlite_write_coordinator,
         dashboard_projection,

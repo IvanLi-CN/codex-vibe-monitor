@@ -369,6 +369,7 @@ pub(crate) async fn run() -> Result<()> {
             .start_sizing(&pool, shutdown.clone());
         let proxy_runtime_invocations =
             Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
+        let proxy_runtime_attempts = Arc::new(RuntimeAttemptStore::default());
         let dashboard_network_speed_cache =
             Arc::new(DashboardNetworkSpeedCache::new(process_started_at_utc));
         proxy_runtime_invocations
@@ -386,9 +387,10 @@ pub(crate) async fn run() -> Result<()> {
             prompt_cache_conversation_cache.clone(),
             pricing_catalog.clone(),
             &config.database_path,
-        );
+        )?;
         sqlite_batch_writer.bind_observability(observability.clone());
         sqlite_batch_writer.set_terminal_runtime_store(proxy_runtime_invocations.clone());
+        sqlite_batch_writer.set_runtime_attempt_store(proxy_runtime_attempts.clone());
         sqlite_batch_writer
             .set_dashboard_activity_snapshot_cache(dashboard_activity_snapshot_cache.clone());
         sqlite_batch_writer.set_terminal_projection_hub(terminal_projection_hub.clone());
@@ -406,6 +408,7 @@ pub(crate) async fn run() -> Result<()> {
             sqlite_batch_writer,
             pool_account_selection_runtime,
             proxy_runtime_invocations,
+            proxy_runtime_attempts,
             dashboard_network_speed_cache,
             oauth_installation_seed,
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
@@ -467,6 +470,7 @@ pub(crate) async fn run() -> Result<()> {
         // the early routing and dashboard reads before progressing through the remaining startup
         // stages. Summary/System Status hydration itself is intentionally deferred to the final
         // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
+        runtime_route_facts(state.as_ref()).await.context("recover proxy routing facts before readiness")?;
         warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
         warm_dashboard_runtime_projection(state.as_ref()).await;
         if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
@@ -2278,6 +2282,9 @@ pub(crate) async fn drain_runtime_after_shutdown(
         );
     }
     state.sqlite_batch_writer.shutdown_and_drain().await;
+    if let Some(route_facts) = state.upstream_accounts.route_facts.lock().await.clone() {
+        route_facts.shutdown_and_sync().await;
+    }
 
     let broadcast_handles = {
         let mut guard = state.proxy_summary_quota_broadcast_handle.lock().await;

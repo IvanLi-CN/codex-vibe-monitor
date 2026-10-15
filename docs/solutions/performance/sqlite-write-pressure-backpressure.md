@@ -1,3 +1,18 @@
+---
+title: SQLite write pressure and background backpressure
+module: proxy-runtime
+problem_type: performance
+component: persistence
+tags:
+  - sqlite
+  - journal
+  - runtime
+status: active
+related_specs:
+  - docs/specs/high-frequency-runtime-data-plane/SPEC.md
+  - docs/specs/vmcs3-terminal-projection-materialization/SPEC.md
+---
+
 # SQLite 写入压力与后台背压模式
 
 ## Read-side status and terminal projection
@@ -34,9 +49,9 @@
 - 当某个 closed-range owner-facing 窗口本来就只需要 exact 结果时，不要为了“统一实时”把它硬塞进 pure SSE。`previous7d` 这类 comparison summary 若继续长期订阅 `stats.summary.current`，会把 archive fallback 重新钉在高频推送链路上，读压再怎么优化都会被不必要的订阅频率放大。
 - 如果 read-side 仍需要 legacy archive 的新 rollup target，自愈调度也要把“可修复 backlog”和“永久 blocked target”拆开。像 `upstream_account_usage_breakdown_hourly` 这种缺 replay marker 但可结构化回放的 backlog，应在 startup/backfill 中单独优先 drain；不要继续和 `prompt_cache_*` / `sticky_key` 共用一个 `legacy_archive_pending` 信号，否则闭区间读会长期误判成“还有 backlog”，并反复打开 fallback。
 - 对账号卡这类需要 totals、non-success/failure 拆分和 latest latency 的长窗口聚合，已有粗粒度账号 hourly 表仍可能不够。可在原表增加独立版本字段与 coverage target，并按“covered full hours rollup + uncovered contiguous hours exact fallback + boundary exact tail”迁移；新 target 的 live/archive cursor 必须独立，且只有 cursor 追平后才能写 coverage marker，避免默认零值被误当成历史真值。
-- 当并发不能降低且业务成功率高于观测记录完整性时，用进程内短窗口 write controller 承接所有观测记录写：terminal invocation 进入 P1 best-effort 队列，attempt 中间进度、rollup/live progress、account touch、system task finish 等可延迟项进入 P2 并按 key coalesce。记录入队/flush 失败必须报警和计数，但不得让已经完成的业务响应失败。
-- 高频 runtime snapshot 不应默认等同于主事实写。`running` / first-byte / response-ready 这类 UI 新鲜度事件可以先走进程内共享 runtime store + SSE/HTTP overlay；如果服务选择业务优先于记录，terminal success/failure 也可以先进入 P1 write controller，并用 SSE terminal payload + runtime tombstone 支撑短暂最终一致窗口。
-- 路由公平性字段如果不是路由正确性的硬状态，可以拆成“进程内立即生效 + batch 落库”。例如 `last_selected_at` 可先写内存锚点并叠加候选排序，账号 status/cooldown/failure 则继续同步写。
+- 正常代理 attempt 只更新有界内存，开始和终态先获得可恢复日志的同步确认，SQLite 在后台物化；普通进度不得再转成 AttemptProgress SQL 批写。派生统计和维护进入独立低优先级消费路径，关键终态容量不足必须明确背压或保留恢复义务，不能作为 best-effort 丢弃。
+- 高频 runtime snapshot 不等于主事实写。`running` / first-byte / response-ready 先进入共享 runtime store 与 SSE/HTTP overlay；最终 attempt 快照一直保留到 SQLite commit，不能在 terminal enqueue 时移除。读方先捕获内存、再读 SQLite，并按稳定 attempt ID 去重，避免提交与清理并发时的查询缺口。
+- sticky、账号 status/cooldown/failure 与模型能力等影响下一次选路的事实，在可恢复日志确认后通过内存投影立即可见，后台批量落库。控制代际和 owner/scope 比较必须隔离迟到结果，不能恢复同步写库来绕开投影正确性。
 - raw payload 完整保留属于观测合同，不应作为 SQLite 止血手段被截断或丢弃；只能补齐 raw IO / Zstd / metadata 写入证据，并通过调度、窄写或配置化压缩策略减压。
 - 用写侧 watermark 表达 retention 后的不可恢复 detail 边界。读侧周期任务不得为发现这个边界反向扫描 retained invocation 表。
 
@@ -44,13 +59,11 @@
 
 ### 1. 写入分级
 
-- 前台关键写入：OAuth callback、请求路由状态、用户可见设置保存；优先拿连接，失败需返回明确业务错误。
-- 请求收尾写入：invocation 记录、usage、raw metadata；若产品决策是业务优先于记录，应进入 P1 write controller 队列，业务响应不等待 SQLite。入队失败、flush 失败和 dropped 记录必须结构化记录。
-- 请求收尾若已经存在对应 `running/pending` 行，优先原地更新而不是先 `INSERT OR IGNORE` 再走 repair/update；这样可以少一次唯一键冲突写尝试与后续锁竞争。
-- terminal invocation 如果仍被定义为审计/计费强主事实，安全做法是同步“已存在 running row 时窄 `UPDATE`，缺行时 `INSERT OR IGNORE`，冲突后重读并按同一状态守卫更新”。如果当前服务明确选择业务优先于记录，则 terminal invocation 可以降级为 P1 best-effort 队列写，但必须保留完整 terminal record、raw metadata、失败分类和结构化失败证据。
+- 前台关键写入：OAuth callback、用户可见设置保存；优先拿连接，失败需返回明确业务错误。正常代理生命周期与路由结果采用日志确认和内存投影，不竞争此写准入。
+- 请求收尾写入：invocation 记录、usage、raw metadata 与最终 attempt 先进入可靠日志，再由终态物化器提交 SQLite。请求侧日志同步确认与数据库消费 ACK 分开；后者只在事务提交后发生，任何失败都保留可恢复义务并记录结构化证据。
+- 兼容旧数据库行及异常修复时，已经存在对应 `running/pending` 行可原地更新，减少先 `INSERT OR IGNORE` 再 repair/update 的锁竞争。此路径不能作为正常运行生命周期的写库入口。
 - `running` snapshot 如果只是为 UI/SSE 提供进度，应避免每次同步写主表。可在请求 admit 后立即广播 `id=0` 的最小内存 shell record，并让 body parse、attempt start、first-byte、response-ready 等后续快照覆盖补全同一 `invokeId + occurredAt` runtime key；HTTP current-window reconcile 在 DB 结果上 overlay 同一份内存 store。terminal record 入队后 tombstone/remove 内存行，DB terminal 行稍后通过 write controller 最终一致补齐。这样 DB 不需要为每个 first-byte/response-ready 刷新写 `status='running'`，UI 也不会把 body read 或上游路由等待误判成“请求尚未开始”。
-- 对同一 attempt 的 phase、latency、capability/compact-support 等进度字段，优先并入同一条前台更新，而不是拆成 `phase bump -> latency patch -> finalize` 的多段慢写；减少单请求尾部把 SQLite 单写者预算切碎。
-- 对同一 attempt 的中间 phase、latency、capability/compact-support 等进度字段，如果不需要立刻作为业务决策真相源，可进入 250ms 级短窗口缓冲并按 `attempt_id` 只保留最新值；terminal finalize 必须同步一次写全并通过 `status=pending AND finished_at IS NULL` 防止未 flush 进度覆盖终态。
+- 对同一 attempt 的 phase、latency、capability/compact-support 等进度字段，在有界运行态存储中 latest-wins 合并；终态认领阻止迟到进度覆盖。SQLite 只物化最终快照，旧数据库行修复保持独立路径，不能把正常进度重新引入同步或延迟 SQL。
 - Invocation 派生写可以按 `invocation_id` coalesce：hourly rollup/live progress 与 upstream account last activity touch 批量执行。terminal 记录 flush 产生的派生写不应强行复用同一个 SQLite 锁窗口；更稳妥的做法是把派生写放回 pending，在后续 P2 flush 中收敛。
 - `system_task_runs` 的 begin 仍同步记录 running 审计入口；finish 可以进入 batch writer，pressure 下延迟或合并，但 shutdown 需要 drain 或记录未 flush 证据。
 - 后台维护写入：rollup、retention、account maintenance；pressure 下 fail-soft skip。
@@ -140,7 +153,9 @@
 
 ## Proxy hot-write coordination
 
-- SQLite 的单 writer 约束要求代理 terminal、attempt、route/account 状态和派生统计共享同一个 admission 面；只给后台任务加 pressure gate 不能阻止前台 helper 相互争锁。
+- SQLite 的单 writer 约束要求所有后台 terminal/route 物化与派生统计共享写协调器；代理 attempt 和路由观察本身只使用内存与日志，不能拿 InteractiveProxy 写准入。只给维护任务加 gate 不能消除前台 helper 的直接写竞争。
 - P1 batch 必须同时限定条数、估算字节和 admission 时间。锁冲突要保留完整未提交批次并指数退避；固定短 ticker 会把一次外部锁放大为稳定 CPU/日志风暴。
-- 同步 attempt/route 可以保留原返回语义，但应在事务前按优先级等待。P2 只有在 P1 与同步 waiter 为空时运行，并且 cursor replay 必须按 chunk 让出 writer。
+- 终态事务原子写 invocation、最终 attempt 和紧凑 Summary 来源凭据；Summary 计算及其他派生任务在独立队列执行。重放按 chunk 让出 writer，派生压力不能延长终态事务。
 - 健康诊断必须展示 active write class、waiter、retry generation、下一次 retry、batch rows/bytes 与 direct bypass；否则“排队成功”仍可能掩盖未迁移的直写入口。
+- 硬日志容量必须同时计算实际保留字节与已接受请求的终态额度，包括 JSON 转义、元数据增长、共享 invocation envelope 和 ACK。固定按最大帧预留会让小请求在磁盘尚空时触限；去掉预留则让新请求占走旧请求的完成空间。元数据增长先取得额度再进入运行态存储，最终编码仍执行单帧与总容量检查。
+- 容量预留是未落盘的义务，不是实际日志字节；两者应分别观测。逆序完成、重启中断、重试共享额度与重复 ACK 都必须验证，单个小请求成功不足以证明容量和恢复正确性。

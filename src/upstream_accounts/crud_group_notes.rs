@@ -45,6 +45,11 @@ struct UpstreamAccountAttemptFilters {
     sticky_key: Option<String>,
 }
 
+struct MergedAttemptPageOverride {
+    ids: Vec<String>,
+    total: usize,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct ModelRoutingAttemptRow {
     id: i64,
@@ -839,7 +844,19 @@ pub(crate) async fn load_upstream_account_attempt_page_from_query(
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
     let filters = normalize_upstream_account_attempt_filters(params);
-    load_upstream_account_attempt_page(state, account_id, page, page_size, &filters).await
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
+    let runtime_items =
+        load_runtime_upstream_account_attempts(state, account_id, &cutoff, &filters).await?;
+    load_upstream_account_attempt_page_with_runtime_items(
+        state,
+        account_id,
+        page,
+        page_size,
+        &filters,
+        runtime_items,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn locate_upstream_account_attempt(
@@ -849,61 +866,63 @@ pub(crate) async fn locate_upstream_account_attempt(
 ) -> Result<Json<UpstreamAccountAttemptListResponse>, (StatusCode, String)> {
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
     let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
-    let target_occurred_at = sqlx::query_scalar::<_, String>(
-        r#"
-        SELECT occurred_at
-        FROM pool_upstream_request_attempts
-        WHERE attempt_public_id = ?1
-          AND upstream_account_id = ?2
-          AND occurred_at >= ?3
-        "#,
-    )
-    .bind(&params.attempt_id)
-    .bind(account_id)
-    .bind(&cutoff)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(internal_error_tuple)?
-    .ok_or_else(|| {
+    let filters = UpstreamAccountAttemptFilters::default();
+    let runtime_items =
+        load_runtime_upstream_account_attempts(state.as_ref(), account_id, &cutoff, &filters)
+            .await
+            .map_err(internal_error_tuple)?;
+    let target = if let Some(runtime) = runtime_items
+        .iter()
+        .find(|item| item.attempt_id == params.attempt_id)
+    {
         (
-            StatusCode::NOT_FOUND,
-            "upstream account attempt was not found".to_string(),
+            runtime.occurred_at.clone(),
+            runtime.attempt_index,
+            i64::MAX,
+            runtime.attempt_id.clone(),
         )
-    })?;
-    let newer_count = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT COUNT(*)
-        FROM pool_upstream_request_attempts
-        WHERE upstream_account_id = ?1
-          AND occurred_at >= ?2
-          AND (
-                occurred_at > ?3
-                OR (
-                    occurred_at = ?3
-                    AND id > (
-                        SELECT id
-                        FROM pool_upstream_request_attempts
-                        WHERE attempt_public_id = ?4
-                    )
-                )
-              )
-        "#,
+    } else {
+        sqlx::query_as::<_, (String, i64, i64, String)>(
+            "SELECT occurred_at, attempt_index, id, attempt_public_id \
+             FROM pool_upstream_request_attempts \
+             WHERE attempt_public_id = ?1 AND upstream_account_id = ?2 AND occurred_at >= ?3",
+        )
+        .bind(&params.attempt_id)
+        .bind(account_id)
+        .bind(&cutoff)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                "upstream account attempt was not found".to_string(),
+            )
+        })?
+    };
+    let (newer_count, total, merged_page_ids) = load_merged_account_attempt_page_for_target(
+        &state.pool,
+        account_id,
+        &cutoff,
+        &filters,
+        &runtime_items,
+        &target,
+        page_size,
     )
-    .bind(account_id)
-    .bind(&cutoff)
-    .bind(&target_occurred_at)
-    .bind(&params.attempt_id)
-    .fetch_one(&state.pool)
     .await
-    .map_err(internal_error_tuple)?
-    .max(0) as usize;
+    .map_err(internal_error_tuple)?;
     let page = newer_count / page_size + 1;
-    let response = load_upstream_account_attempt_page(
+    let response = load_upstream_account_attempt_page_with_runtime_items(
         state.as_ref(),
         account_id,
         page,
         page_size,
-        &UpstreamAccountAttemptFilters::default(),
+        &filters,
+        runtime_items,
+        Some(MergedAttemptPageOverride {
+            ids: merged_page_ids,
+            total,
+        }),
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -917,10 +936,54 @@ async fn load_upstream_account_attempt_page(
     page_size: usize,
     filters: &UpstreamAccountAttemptFilters,
 ) -> Result<UpstreamAccountAttemptListResponse> {
+    let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
+    let runtime_items =
+        load_runtime_upstream_account_attempts(state, account_id, &cutoff, filters).await?;
+    load_upstream_account_attempt_page_with_runtime_items(
+        state,
+        account_id,
+        page,
+        page_size,
+        filters,
+        runtime_items,
+        None,
+    )
+    .await
+}
+
+async fn load_upstream_account_attempt_page_with_runtime_items(
+    state: &AppState,
+    account_id: i64,
+    page: usize,
+    page_size: usize,
+    filters: &UpstreamAccountAttemptFilters,
+    runtime_items: Vec<ApiPoolUpstreamRequestAttempt>,
+    page_override: Option<MergedAttemptPageOverride>,
+) -> Result<UpstreamAccountAttemptListResponse> {
     let pool = &state.pool;
     let cutoff = shanghai_local_cutoff_string(ACCOUNT_ATTEMPT_RETENTION_DAYS);
-    let total = load_upstream_account_attempt_total(pool, account_id, &cutoff, filters).await?;
-    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    // Keep the runtime snapshot captured by the caller across rank and page materialization.
+    let global_offset = page.saturating_sub(1).saturating_mul(page_size);
+    let (total, merged_page_ids) = if let Some(page_override) = page_override {
+        (page_override.total, Some(page_override.ids))
+    } else if runtime_items.is_empty() {
+        (
+            load_upstream_account_attempt_total(pool, account_id, &cutoff, filters).await?,
+            None,
+        )
+    } else {
+        let (total, ids) = load_merged_account_attempt_page_ids(
+            pool,
+            account_id,
+            &cutoff,
+            filters,
+            &runtime_items,
+            global_offset,
+            page_size,
+        )
+        .await?;
+        (total, Some(ids))
+    };
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         r#"
         SELECT
@@ -997,15 +1060,53 @@ async fn load_upstream_account_attempt_page(
     ));
     push_upstream_account_attempt_scope(&mut query, account_id, &cutoff);
     push_upstream_account_attempt_filters(&mut query, filters, true);
+    if let Some(ids) = &merged_page_ids {
+        query.push(" AND attempts.attempt_public_id IN (");
+        let mut separated = query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+        if ids.is_empty() {
+            separated.push("NULL");
+        }
+        separated.push_unseparated(")");
+    }
     query
         .push(" ORDER BY attempts.occurred_at DESC, attempts.id DESC LIMIT ")
         .push_bind(page_size as i64)
         .push(" OFFSET ")
-        .push_bind(offset as i64);
+        .push_bind(if merged_page_ids.is_some() {
+            0
+        } else {
+            global_offset as i64
+        });
     let mut items = query
         .build_query_as::<ApiPoolUpstreamRequestAttempt>()
         .fetch_all(pool)
         .await?;
+    if let Some(ids) = &merged_page_ids {
+        let runtime_ids = runtime_items
+            .iter()
+            .map(|item| item.attempt_id.as_str())
+            .collect::<std::collections::HashSet<_>>();
+        items.retain(|item| !runtime_ids.contains(item.attempt_id.as_str()));
+        items.extend(
+            runtime_items
+                .into_iter()
+                .filter(|item| ids.contains(&item.attempt_id)),
+        );
+        let positions = ids
+            .iter()
+            .enumerate()
+            .map(|(index, id)| (id.as_str(), index))
+            .collect::<std::collections::HashMap<_, _>>();
+        items.sort_by_key(|item| {
+            positions
+                .get(item.attempt_id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+    }
     sanitize_pool_attempt_timing_fields(&mut items);
     hydrate_pool_attempt_request_compression_fields(&mut items);
     hydrate_upstream_account_attempt_workflow_entries(state, &mut items)
@@ -1021,6 +1122,257 @@ async fn load_upstream_account_attempt_page(
         page,
         page_size,
     })
+}
+
+async fn load_merged_account_attempt_page_ids(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    cutoff: &str,
+    filters: &UpstreamAccountAttemptFilters,
+    runtime_items: &[ApiPoolUpstreamRequestAttempt],
+    offset: usize,
+    page_size: usize,
+) -> Result<(usize, Vec<String>)> {
+    let identities = runtime_items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "attempt_id": item.attempt_id,
+                "occurred_at": item.occurred_at,
+                "attempt_index": item.attempt_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH runtime_attempts AS (SELECT json_extract(value, '$.attempt_id') AS attempt_id, \
+         json_extract(value, '$.occurred_at') AS occurred_at, \
+         json_extract(value, '$.attempt_index') AS attempt_index, \
+         9223372036854775807 AS id FROM json_each(",
+    );
+    query.push_bind(serde_json::to_string(&identities)?).push(
+        ")) , durable_attempts AS (SELECT attempts.attempt_public_id AS attempt_id, \
+         attempts.occurred_at, attempts.attempt_index, attempts.id FROM pool_upstream_request_attempts AS attempts \
+         LEFT JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id \
+         AND inv.occurred_at = attempts.occurred_at",
+    );
+    push_upstream_account_attempt_scope(&mut query, account_id, cutoff);
+    push_upstream_account_attempt_filters(&mut query, filters, true);
+    query.push(
+        " AND attempts.attempt_public_id NOT IN (SELECT attempt_id FROM runtime_attempts)), \
+         combined AS (SELECT * FROM durable_attempts UNION ALL SELECT * FROM runtime_attempts), \
+         page AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC) AS ordinal \
+         FROM combined ORDER BY occurred_at DESC, attempt_index DESC, id DESC, attempt_id DESC LIMIT "
+    ).push_bind(page_size as i64).push(" OFFSET ").push_bind(offset as i64).push(
+        ") SELECT page.attempt_id, (SELECT COUNT(*) FROM combined) AS total \
+         FROM (SELECT 1) LEFT JOIN page ON 1 = 1 ORDER BY page.ordinal"
+    );
+    let rows = query
+        .build_query_as::<(Option<String>, i64)>()
+        .fetch_all(pool)
+        .await?;
+    let total = rows
+        .first()
+        .map_or(0, |(_, total)| (*total).max(0) as usize);
+    Ok((total, rows.into_iter().filter_map(|(id, _)| id).collect()))
+}
+
+async fn load_merged_account_attempt_page_for_target(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    cutoff: &str,
+    filters: &UpstreamAccountAttemptFilters,
+    runtime_items: &[ApiPoolUpstreamRequestAttempt],
+    target: &(String, i64, i64, String),
+    page_size: usize,
+) -> Result<(usize, usize, Vec<String>)> {
+    let identities = runtime_items
+        .iter()
+        .map(|item| {
+            serde_json::json!({
+                "attempt_id": item.attempt_id,
+                "occurred_at": item.occurred_at,
+                "attempt_index": item.attempt_index,
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "WITH runtime_attempts AS (SELECT json_extract(value, '$.attempt_id') AS attempt_id, \
+         json_extract(value, '$.occurred_at') AS occurred_at, \
+         json_extract(value, '$.attempt_index') AS attempt_index, \
+         9223372036854775807 AS id FROM json_each(",
+    );
+    query.push_bind(serde_json::to_string(&identities)?).push(
+        ")) , durable_attempts AS (SELECT attempts.attempt_public_id AS attempt_id, \
+         attempts.occurred_at, attempts.attempt_index, attempts.id \
+         FROM pool_upstream_request_attempts AS attempts \
+         LEFT JOIN codex_invocations AS inv ON inv.invoke_id = attempts.invoke_id \
+         AND inv.occurred_at = attempts.occurred_at",
+    );
+    push_upstream_account_attempt_scope(&mut query, account_id, cutoff);
+    push_upstream_account_attempt_filters(&mut query, filters, true);
+    query.push(
+        " AND attempts.attempt_public_id NOT IN (SELECT attempt_id FROM runtime_attempts)), \
+         combined AS (SELECT * FROM durable_attempts UNION ALL SELECT * FROM runtime_attempts), \
+         target_rank AS (SELECT COUNT(*) AS newer_count FROM combined WHERE occurred_at > ",
+    );
+    query
+        .push_bind(&target.0)
+        .push(" OR occurred_at = ")
+        .push_bind(&target.0);
+    if !runtime_items.is_empty() {
+        query
+            .push(" AND attempt_index > ")
+            .push_bind(target.1)
+            .push(" OR occurred_at = ")
+            .push_bind(&target.0)
+            .push(" AND attempt_index = ")
+            .push_bind(target.1);
+    }
+    query.push(" AND id > ").push_bind(target.2);
+    if !runtime_items.is_empty() {
+        query
+            .push(" OR occurred_at = ")
+            .push_bind(&target.0)
+            .push(" AND attempt_index = ")
+            .push_bind(target.1)
+            .push(" AND id = ")
+            .push_bind(target.2)
+            .push(" AND attempt_id > ")
+            .push_bind(&target.3);
+    }
+    query
+        .push("), ranked AS (SELECT attempt_id, ROW_NUMBER() OVER (ORDER BY occurred_at DESC, ")
+        .push(if runtime_items.is_empty() {
+            "id DESC"
+        } else {
+            "attempt_index DESC, id DESC, attempt_id DESC"
+        })
+        .push(
+            ") AS ordinal FROM combined), totals AS (SELECT COUNT(*) AS total FROM combined), page AS (SELECT ranked.attempt_id FROM ranked CROSS JOIN target_rank WHERE ranked.ordinal > (target_rank.newer_count / ",
+        )
+        .push_bind(page_size as i64)
+        .push(") * ")
+        .push_bind(page_size as i64)
+        .push(" AND ranked.ordinal <= ((target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") + 1) * ")
+        .push_bind(page_size as i64)
+        .push("), page_or_empty AS (SELECT attempt_id, ordinal FROM ranked CROSS JOIN target_rank WHERE ordinal > (target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") * ")
+        .push_bind(page_size as i64)
+        .push(" AND ordinal <= ((target_rank.newer_count / ")
+        .push_bind(page_size as i64)
+        .push(") + 1) * ")
+        .push_bind(page_size as i64)
+        .push(" UNION ALL SELECT NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM page)) SELECT page_or_empty.attempt_id, totals.total, target_rank.newer_count FROM page_or_empty CROSS JOIN totals CROSS JOIN target_rank ORDER BY page_or_empty.ordinal IS NULL, page_or_empty.ordinal");
+    let rows = query
+        .build_query_as::<(Option<String>, i64, i64)>()
+        .fetch_all(pool)
+        .await?;
+    let Some((_, total, newer_count)) = rows.first() else {
+        return Ok((0, 0, Vec::new()));
+    };
+    Ok((
+        (*newer_count).max(0) as usize,
+        (*total).max(0) as usize,
+        rows.into_iter().filter_map(|(id, _, _)| id).collect(),
+    ))
+}
+
+async fn load_runtime_upstream_account_attempts(
+    state: &AppState,
+    account_id: i64,
+    cutoff: &str,
+    filters: &UpstreamAccountAttemptFilters,
+) -> Result<Vec<ApiPoolUpstreamRequestAttempt>> {
+    let mut records = state
+        .proxy_runtime_attempts
+        .list_for_account(account_id)
+        .into_iter()
+        .filter(|snapshot| snapshot.occurred_at.as_str() >= cutoff)
+        .map(crate::api::api_attempt_from_runtime_snapshot)
+        .map(|mut attempt| {
+            if let Some(invocation) = state
+                .proxy_runtime_invocations
+                .record_by_identity(&attempt.invoke_id, &attempt.occurred_at)
+            {
+                attempt.response_model = invocation.response_model;
+                attempt.compaction_request_kind = invocation.compaction_request_kind;
+                attempt.compaction_response_kind = invocation.compaction_response_kind;
+                attempt.image_intent = invocation.image_intent;
+            }
+            attempt
+        })
+        .filter(|attempt| runtime_attempt_matches_filters(attempt, filters))
+        .collect::<Vec<_>>();
+    crate::api::load_pool_attempt_account_names(&state.pool, &mut records)
+        .await
+        .map_err(|error| anyhow!("failed to load runtime attempt account names: {error:?}"))?;
+    crate::api::hydrate_pool_attempt_request_compression_fields(&mut records);
+    crate::api::hydrate_pool_attempt_routing_selection_audits(&mut records);
+    Ok(records)
+}
+
+fn runtime_attempt_matches_filters(
+    attempt: &ApiPoolUpstreamRequestAttempt,
+    filters: &UpstreamAccountAttemptFilters,
+) -> bool {
+    if let Some(model) = filters.model.as_deref() {
+        let model = model.trim().to_ascii_lowercase();
+        if ![
+            attempt.request_model.as_deref(),
+            attempt.upstream_request_model.as_deref(),
+            attempt.response_model.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|candidate| candidate.trim().eq_ignore_ascii_case(&model))
+        {
+            return false;
+        }
+    }
+    if let Some(sticky_key) = filters.sticky_key.as_deref() {
+        let matches = if sticky_key == ACCOUNT_ATTEMPT_STICKY_KEY_UNBOUND {
+            attempt
+                .sticky_key
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        } else {
+            attempt
+                .sticky_key
+                .as_deref()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case(sticky_key.trim()))
+        };
+        if !matches {
+            return false;
+        }
+    }
+    if let Some(attempt_type) = filters.attempt_type.as_deref() {
+        let is_image = attempt.endpoint.starts_with("/v1/images/")
+            || matches!(
+                attempt.image_intent.as_deref(),
+                Some("yes" | "direct_image")
+            );
+        let is_compact = attempt.endpoint == ACCOUNT_ATTEMPT_COMPACT_ENDPOINT
+            || attempt.compaction_request_kind.as_deref() == Some("compact")
+            || attempt.compaction_response_kind.as_deref() == Some("compact");
+        let is_remote_v2 = attempt.endpoint == ACCOUNT_ATTEMPT_RESPONSES_ENDPOINT
+            && (attempt.compaction_response_kind.as_deref() == Some("remote_v2")
+                || (attempt.compaction_request_kind.as_deref() == Some("remote_v2")
+                    && matches!(attempt.status.as_str(), "running" | "pending")));
+        let matches = match attempt_type {
+            ACCOUNT_ATTEMPT_TYPE_IMAGE => is_image,
+            ACCOUNT_ATTEMPT_TYPE_COMPACT => is_compact,
+            ACCOUNT_ATTEMPT_TYPE_REMOTE_V2 => is_remote_v2,
+            ACCOUNT_ATTEMPT_TYPE_NORMAL => !is_image && !is_compact && !is_remote_v2,
+            _ => true,
+        };
+        if !matches {
+            return false;
+        }
+    }
+    true
 }
 
 fn normalize_upstream_account_attempt_filters(

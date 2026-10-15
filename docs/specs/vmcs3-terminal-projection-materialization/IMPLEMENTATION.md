@@ -1,15 +1,25 @@
 # Terminal Projection 中间层与增量物化实现说明
 
+重试失败响应的 raw 文件先完成，并将路径、codec、原始大小、截断标记与原因、content encoding 写入实际 pending attempt，再生成终态快照。即使小型运行态 capture 更新被拒绝，终态交接仍保留完成文件的元数据；存储增长裁剪保留这些字段，继续经过原容量准入、日志确认和短事务物化。纯持久 account 页面与 locate 使用原时间/行 ID 顺序，混合运行态页面使用既有显式合并顺序。
+
+代理流结束后，通过 `finish_proxy_raw_captures` 同时完成请求和响应原始日志，再构造既有终态记录。响应 EOF 释放共享写入槽，使已排队的请求日志可以完成；两份日志的完整元数据进入原有终态链路，真实 journal 确认与后台 SQLite 物化仍各自承担既定持久性边界。
+
 ## 结构
 
 - `src/terminal_projection.rs` 保存紧凑 terminal event key、P1 ACK 水位和每个消费者的可回收 cursor。
 - `src/sqlite_batch_writer.rs` 在 raw terminal P1 成功后通知 Hub；journal ACK 仍在同一 P1 成功边界完成。
+- 终态事务还原子追加 Summary 来源变化凭据，恢复消费者凭持久 descriptor 推进派生读模型；事务内不运行 Summary 计算。代理 begin/terminal 的请求侧确认等待 20ms 分组日志同步，SQLite 消费 ACK 在批量 commit 后推进。
+- 压力验收先等待终态生产者完成日志同步和物化队列准入，再获取 flush 屏障；日志 append 统计不代表生产者确认完成。确定性测试暂停 append 后的生产者，验证提前 flush 不会物化尚未准入的事件，并在确认后验证一次提交。32 请求、两秒确认观察窗口、请求 p95 小于两秒和完整提交小于五秒的验收边界保持不变。
+- `src/sqlite_batch_writer/terminal_attempts.rs` owns idempotent final attempt writes. Runtime cancellation recovery appends one interrupted invocation with its final attempt snapshot; it never inserts a running attempt row. The replay fixture preserves the accepted event while stopping the background worker, then verifies one materialized audit identity after reopen and repeated flush.
+- `src/terminal_journal/completion_capacity.rs` owns volatile completion credit reconstructed from unmatched starts. Admission includes actual retained bytes and deduplicated ACK overhead, retained metadata growth acquires credit before runtime publication, and retries share one invocation envelope. File-backed capacity regression completes or recovers 256 independent attempts while preserving hard disk and memory bounds.
 - `src/long_term_stats.rs` 使用 `long_term_projection_state`、`long_term_projection_intervals` 与 `long_term_projection_dirty_buckets` 将持久 row cursor 变成受 pressure gate 约束的增量 rollup 物化；正常路径只 hydrate 新 terminal row，目标自然日重建只处理修复。invocation 修正、invocation archive 与 attempt archive 的 completed manifest 变更都会在其源事务中入队对应上海自然日；archive 覆盖范围重写同时入队旧、新范围。
 - `src/api/slices/system_routes_and_tasks.rs` 将 Hub 和长期 projection 的内存 health 作为 additive `projectionHealth` 暴露；页面只读展示并可展开细项。
 - `proxy_raw_payload_blobs` 与 `proxy_raw_payload_blob_links` 把已发布 response raw 的物理对象与 invocation/attempt owner 分开。保留流程先解除 owner link，最后一个 link 消失后才允许删除物理文件；新 link 同时驱动 System Status raw 指标的有界增量盘点。
 
 ## 运行边界
 
+- shutdown terminal 补救恢复的末尾半帧告警后忽略，中间坏帧保留隔离副本后清理活动文件。读取或清理失败保留原文件，不阻止服务启动；原文件仍有半帧时，追加事实和 ACK 前补换行。未完整读出或隔离失败的来源禁止 ACK 压缩覆盖。真实主日志确认和 SQLite commit 门禁保持独立。
+- 最终 attempt 快照提交前保留在有界内存读投影，commit 后才释放；查询先捕获内存再读 SQLite，并按稳定 attempt_public_id 去重。
 - terminal ingress 先写 Dashboard 紧凑 delta 并注册 projection event；enqueue 失败会同时撤销这两个 speculative 状态。
 - P1 ACK 后长期统计最多等待一个 60 秒固定窗口，然后按新的 `rowId` hydrate terminal、更新内存 interval 并集，并在同一受限 P2 flow 内提交 rollup 与 durable cursor。正常终态若 cursor 尚未跨越其 `rowId` 走增量；若乱序完成导致 cursor 已跨越该行，write-side trigger 改为标记目标自然日 repair。interval baseline 缺失或其他修正同样标记 repair；repair 读取 live、目标日期相关的 archive rows 与关联 attempt source，使用 last-good backup 把桶替换、cursor 推进与 repair marker 消费收口为原子可见发布。任一 archive source 不可读时保留 last-good，并将该桶延后五分钟，不阻塞其余脏桶。
 - 日期 rebuild 与已有 ready rollup 的 bounded refresh 均使用持久 daily backup 维持 last-good 可见性：cursor/state 提交后，以同一短事务清除该日期 dirty generation 并切换 backup pointer，最后分批清理私有 backup；取消或 pressure defer 保留该 recovery state。首次 materialization 的 incomplete marker 阻止 cursor worker 将部分日汇总提升为 ready，并在重启后驱动专用 refresher 重试。

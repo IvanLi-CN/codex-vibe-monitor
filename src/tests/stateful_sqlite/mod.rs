@@ -109,6 +109,7 @@ pub(crate) async fn hydrate_stats_snapshot_for_test(state: &Arc<AppState>) {
 }
 
 mod account_activity_v2_progress_handler;
+mod durable_attempt_ordering;
 mod gpt6_usage_integrity;
 mod invocation_query_filters_and_schema_migrations;
 mod invocation_ranges;
@@ -138,6 +139,7 @@ mod proxy_backfill_and_cost_repairs;
 mod proxy_broadcast_and_runtime_harness;
 mod proxy_long_wait_allocation_and_index;
 mod proxy_pool_roundtrip_and_retry_servers;
+mod proxy_routing_observer;
 mod record_budget;
 mod representative_scale_acceptance;
 mod request_preparation_and_handshake_failures;

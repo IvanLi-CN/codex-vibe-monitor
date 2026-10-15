@@ -71,6 +71,14 @@ bash .github/scripts/test-live-quality-gates.sh
 
 ## 常见坑
 
+- 性能 fixture 必须显式声明与实际服务入口一致的执行器。单线程功能对照可保留同一负载的零写入、可见性、日志确认和持久完整性断言，但不能代替多线程服务的性能验收；执行器合同变化须先取得设计边界授权，不能用独立通过的对照覆盖原候选的失败记录。
+- 工作预算覆盖准备读取、连接取得和 native SQLite 操作时，超时本身不能证明已进入持锁阶段。分别耗尽连接池验证取得 worker 前的取消，再用真实 SQLite busy callback 确认并持有 native worker，验证取消后 owner 仍不可取得。callback 上下文必须存活到连接关闭，原生析构证明应先于 owner 可取得；有界保护和 drop 清理必须覆盖断言失败路径，不能只用等待时长猜测锁的所有权。
+- 需要跨查询比较 `PRAGMA data_version` 的测试观察器应使用相同数据库配置建立独立持久连接。长期保留业务连接池租约会减少可用连接数，并在持有写锁的压力场景中引入观察成本；回归应实际取得全部业务连接，并验证旁路 fixture 写入仍使缓存刷新。观察器容量缺陷与请求延迟归因分别取证，原压力场景和预算仍须完整通过。
+- 真实时间预算测试要明确区分 fixture 初始化和实测请求区间。身份范围预热可沿用既有 fixture 对特定分配调度超时的最多五次尝试，并单独记录准备重试计数；生产分配 deadline、请求重试、实测起点、独立请求数和持有写锁的观察窗口必须保持原样，不能以准备逻辑掩盖运行态写竞争或放宽性能断言。
+- 当前候选与 pristine baseline 若使用同名 package 和同一 `CARGO_TARGET_DIR`，切回源码目录后仍可能复用另一份源码的测试程序。不能只凭当前工作目录或 `Finished` 判断产物属于候选；要核对实际测试清单、候选新增用例和程序指纹。对照验证优先使用隔离的 target 目录；已出现混用时，先停止无效运行，再用 `cargo clean --package codex-vibe-monitor` 清理该会话中本项目的生成产物并重新编译，保留依赖缓存，不能把陈旧程序的结果计入当前 head。
+- 权限拒绝 fixture 的运行身份必须真的受文件权限约束。root 持有 `CAP_DAC_OVERRIDE` 或 `CAP_DAC_READ_SEARCH` 时，`chmod 000` 仍可读，测试报错不能据此归因生产实现；在会话 VM 内用非特权用户或对测试进程移除这两项 capability，保留原权限断言并重跑。
+- 用相对天数制造不同月度归档时，30 天间隔可能仍落在同一个 31 天月份。应选择至少 60 天间隔并断言不同 `YYYY-MM`，避免缺失旧归档的整月保护逻辑污染“另一个可读月份”的 fixture；不能为修正 fixture 放宽计数、token 或成本断言。
+
 - 不要把首轮编译时间当成慢测试时间；冷编译、热执行、fixture、真实 delay 与线程并发必须分别记录。
 - 不要只报告局部单测变快；PR 要同时报告冷/热两轮每个 required job wall time、三个 profile 完整通过、required runner 总秒数与 top offenders。
 - 不要用 lockfile-only key 缓存整个 `target`，也不要让 Clippy 恢复或写入 legacy `target`；Lint 只可复用 registry/git，nextest target archive 必须保持 source fingerprint 隔离。

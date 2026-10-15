@@ -1,5 +1,13 @@
 # 外部性能观测实现
 
+## 代理运行态健康
+
+重试失败的 raw 元数据更新被有界存储拒绝时，既有 rejection 计数和警告保留；完成的文件元数据由实际 pending attempt 携带到终态快照，不通过请求侧 SQLite fallback 持久化。纯持久 attempt 页面和定位保持原排序，运行态混合页面继续采用同一显式合并顺序。两项回归与零写准入、日志年龄和提交延迟门禁在 GitHub Actions 验证，监控字段与已确认图片保持原样。
+
+代理原始日志收尾同时轮询请求与响应写入完成，使持有共享写入槽的响应 writer 能发送 EOF 并释放槽位。`raw_response_write_elapsed` 仍度量真实响应收尾区间；终态日志年龄与物化延迟继续基于实际日志事件和提交事实，性能结论依赖当前候选在 GitHub Actions 的完整压力验收。
+
+`cvm-proxy` 将运行态数量/保护计数、年龄/物化延迟、内存/日志容量分别放在独立面板，使用 count、seconds 与 bytes 单位。终态预留额度单独导出，不计为已写入日志字节；所有系列不包含请求身份。新增面板拥有独立网格行，后续面板保持相对布局。隔离 synthetic preview 为这些系列提供固定合成数据，当前桌面与窄屏截图已经主人确认；这些图片只验证渲染，不证明生产竞争或性能预算。
+
 ## 请求生命周期与链路覆盖
 
 `src/observability/diagnostics.rs` 在内存中管理独立随机 trace 身份和单调/UTC 基准；最外层 HTTP middleware 在鉴权、路由及 CORS 处理之前建立上下文，body 包装器在 EOF、error 或 Drop 终结一次。显式 task-local scope 与代理自有 spawn 传播上下文，业务 `StageTimings`、SQLite schema 和 terminal journal 格式保留。Responses、Chat Completions、Compact、`/v1/alpha/search`、图像生成/编辑以及其他 `/v1/*` 请求均有入口与响应结束；非适用 TTFT 明确标记，未见有效 delta 的成功文本流不补零。

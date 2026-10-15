@@ -1,8 +1,10 @@
+use super::raw_capture::record_successful_proxy_capture_model_route_cache_observation as record_model_route_observation;
 use super::*;
-
+use crate::terminal_journal::TerminalJournalDurabilityMode;
 mod invocation_identity;
+mod runtime_recovery;
 pub(crate) use invocation_identity::recover_guard_dropped_pool_invocation_orphan_with_prompt_cache_key;
-
+pub(crate) use runtime_recovery::recover_guard_dropped_pool_early_phase_orphan;
 #[cfg(test)]
 fn broadcast_test_record_payload(state: &AppState, record: &ApiInvocation) {
     if state.broadcaster.receiver_count() > 0 {
@@ -11,10 +13,8 @@ fn broadcast_test_record_payload(state: &AppState, record: &ApiInvocation) {
         });
     }
 }
-
 mod terminal_metadata;
 pub(crate) use terminal_metadata::*;
-
 pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -26,7 +26,6 @@ pub(crate) fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
-
 pub(crate) fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -37,7 +36,6 @@ pub(crate) fn payload_text(payload: Option<&str>, key: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
 }
-
 pub(crate) fn payload_i64(payload: Option<&str>, key: &str) -> Option<i64> {
     let payload = payload?;
     let value = serde_json::from_str::<Value>(payload).ok()?;
@@ -678,6 +676,286 @@ pub(crate) async fn begin_pool_upstream_request_attempt(
     .await
 }
 
+pub(crate) async fn begin_pool_upstream_request_attempt_in_memory(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+    group_name_snapshot: Option<&str>,
+    proxy_binding_key_snapshot: Option<&str>,
+    routing_source: Option<PoolRoutingSelectionSource>,
+    routing_selection_audit: Option<&PoolRoutingSelectionAudit>,
+    selected_control_fingerprint: Option<&str>,
+    sticky_affinity_generation: Option<i64>,
+    upstream_account_id: i64,
+    upstream_route_key: &str,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: &str,
+) -> Option<PendingPoolAttemptRecord> {
+    let routing_source_value = routing_source.map(PoolRoutingSelectionSource::as_persisted_str);
+    let routing_selection_audit_json =
+        routing_selection_audit.and_then(|audit| serde_json::to_string(audit).ok());
+    let attempt_public_id = generate_pool_upstream_request_attempt_public_id();
+    let pending = PendingPoolAttemptRecord {
+        attempt_id: None,
+        attempt_public_id: Some(attempt_public_id),
+        invoke_id: trace.invoke_id.clone(),
+        occurred_at: trace.occurred_at.clone(),
+        endpoint: trace.endpoint.clone(),
+        sticky_key: trace.sticky_key.clone(),
+        routing_source: routing_source_value.map(ToOwned::to_owned),
+        routing_selection_audit_json,
+        sticky_affinity_generation,
+        requester_ip: trace.requester_ip.clone(),
+        upstream_base_url_host: trace.upstream_base_url_host.clone(),
+        group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
+        proxy_binding_key_snapshot: proxy_binding_key_snapshot.map(ToOwned::to_owned),
+        request_model: trace.request_model.clone(),
+        upstream_request_model: trace.request_model.clone(),
+        model_mapping_pattern: None,
+        request_summary_json: None,
+        upstream_account_id,
+        upstream_route_key: upstream_route_key.to_string(),
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at: started_at.to_string(),
+        connect_latency_ms: 0.0,
+        first_byte_latency_ms: 0.0,
+        compact_support_status: None,
+        compact_support_reason: None,
+        upstream_request_compression_algorithm: None,
+        upstream_request_compression_mode: None,
+        upstream_request_logical_body_bytes: None,
+        upstream_request_transmitted_body_bytes: None,
+        upstream_request_header_bytes_approx: None,
+        upstream_response_body_bytes: None,
+        upstream_response_header_bytes_approx: None,
+        response_raw_path: None,
+        response_raw_codec: None,
+        response_raw_size: None,
+        response_raw_truncated: false,
+        response_raw_truncated_reason: None,
+        response_content_encoding: None,
+    };
+    let mut runtime_snapshot = runtime_attempt_snapshot_from_pending(&pending);
+    let account = match load_upstream_account_row(&state.pool, upstream_account_id).await {
+        Ok(Some(account)) => account,
+        Ok(None) => return None,
+        Err(error) => {
+            warn!(%error, "cannot fence proxy attempt before admission");
+            return None;
+        }
+    };
+    runtime_snapshot.routing_control_fingerprint = selected_control_fingerprint
+        .map(ToOwned::to_owned)
+        .or_else(|| Some(route_account_control_fingerprint(&account)));
+    if !state
+        .proxy_runtime_attempts
+        .upsert(runtime_snapshot.clone())
+    {
+        warn!(invoke_id = %pending.invoke_id, "bounded attempt capacity exhausted before journal admission");
+        return None;
+    }
+    let journal = state
+        .sqlite_batch_writer
+        .append_runtime_attempt_start(&runtime_snapshot);
+    if !matches!(
+        journal.durability_mode,
+        TerminalJournalDurabilityMode::Journal
+    ) {
+        warn!(
+            invoke_id = %pending.invoke_id,
+            attempt_public_id = %runtime_snapshot.attempt_public_id,
+            "proxy attempt start event was rejected by the terminal journal"
+        );
+        state.proxy_runtime_attempts.reject_unaccepted_start(
+            &pending.invoke_id,
+            &pending.occurred_at,
+            &runtime_snapshot.attempt_public_id,
+        );
+        return None;
+    }
+    if let Err(error) = state
+        .sqlite_batch_writer
+        .wait_for_runtime_journal(journal.sequence)
+        .await
+    {
+        warn!(error = %error, invoke_id = %pending.invoke_id, "attempt start durability confirmation failed");
+        state.proxy_runtime_attempts.reject_unaccepted_start(
+            &pending.invoke_id,
+            &pending.occurred_at,
+            &runtime_snapshot.attempt_public_id,
+        );
+        return None;
+    }
+    if routing_source == Some(PoolRoutingSelectionSource::PriorityHandoff) {
+        remember_priority_handoff_attempt(
+            None,
+            Some(trace.invoke_id.as_str()),
+            upstream_account_id,
+            trace.request_model.as_deref(),
+            pending.routing_selection_audit_json.as_deref(),
+        );
+    }
+    Some(pending)
+}
+
+pub(crate) fn runtime_attempt_snapshot_from_pending(
+    pending: &PendingPoolAttemptRecord,
+) -> RuntimeAttemptSnapshot {
+    RuntimeAttemptSnapshot {
+        routing_control_fingerprint: None,
+        attempt_public_id: pending
+            .attempt_public_id
+            .clone()
+            .unwrap_or_else(|| pool_attempt_response_capture_key(pending)),
+        invoke_id: pending.invoke_id.clone(),
+        occurred_at: pending.occurred_at.clone(),
+        endpoint: pending.endpoint.clone(),
+        sticky_key: pending.sticky_key.clone(),
+        routing_source: pending.routing_source.clone(),
+        routing_selection_audit_json: pending.routing_selection_audit_json.clone(),
+        requester_ip: pending.requester_ip.clone(),
+        upstream_base_url_host: pending.upstream_base_url_host.clone(),
+        group_name_snapshot: pending.group_name_snapshot.clone(),
+        proxy_binding_key_snapshot: pending.proxy_binding_key_snapshot.clone(),
+        request_model: pending.request_model.clone(),
+        upstream_request_model: pending.upstream_request_model.clone(),
+        model_mapping_pattern: pending.model_mapping_pattern.clone(),
+        request_summary_json: pending.request_summary_json.clone(),
+        upstream_account_id: pending.upstream_account_id,
+        upstream_route_key: pending.upstream_route_key.clone(),
+        attempt_index: pending.attempt_index,
+        distinct_account_index: pending.distinct_account_index,
+        same_account_retry_index: pending.same_account_retry_index,
+        started_at: pending.started_at.clone(),
+        finished_at: None,
+        status: POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING.to_string(),
+        phase: Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING.to_string()),
+        http_status: None,
+        downstream_http_status: None,
+        failure_kind: None,
+        error_message: None,
+        downstream_error_message: None,
+        connect_latency_ms: (pending.connect_latency_ms > 0.0)
+            .then_some(pending.connect_latency_ms),
+        first_byte_latency_ms: (pending.first_byte_latency_ms > 0.0)
+            .then_some(pending.first_byte_latency_ms),
+        stream_latency_ms: None,
+        upstream_request_id: None,
+        compact_support_status: pending.compact_support_status.clone(),
+        compact_support_reason: pending.compact_support_reason.clone(),
+        upstream_request_compression_algorithm: pending
+            .upstream_request_compression_algorithm
+            .clone(),
+        upstream_request_compression_mode: pending.upstream_request_compression_mode.clone(),
+        upstream_request_logical_body_bytes: pending.upstream_request_logical_body_bytes,
+        upstream_request_transmitted_body_bytes: pending.upstream_request_transmitted_body_bytes,
+        upstream_request_header_bytes_approx: pending.upstream_request_header_bytes_approx,
+        upstream_response_body_bytes: pending.upstream_response_body_bytes,
+        upstream_response_header_bytes_approx: pending.upstream_response_header_bytes_approx,
+        response_raw_path: pending.response_raw_path.clone(),
+        response_raw_codec: pending.response_raw_codec.clone(),
+        response_raw_size: pending.response_raw_size,
+        response_raw_truncated: pending.response_raw_truncated,
+        response_raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
+        response_content_encoding: pending.response_content_encoding.clone(),
+    }
+}
+
+pub(crate) fn update_runtime_attempt_from_pending(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    upsert_runtime_attempt_with_completion_capacity(
+        state,
+        runtime_attempt_snapshot_from_pending(pending),
+        false,
+    )
+}
+
+fn upsert_runtime_attempt_with_completion_capacity(
+    state: &AppState,
+    snapshot: RuntimeAttemptSnapshot,
+    terminal: bool,
+) -> bool {
+    state
+        .proxy_runtime_attempts
+        .upsert_with_admission(snapshot, terminal, |candidate| {
+            state
+                .sqlite_batch_writer
+                .reserve_runtime_attempt_completion_growth(candidate)
+        })
+}
+
+pub(crate) fn discard_runtime_attempt_for_drop(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> bool {
+    let Some(attempt_public_id) = pending.attempt_public_id.as_deref() else {
+        return false;
+    };
+    let marked = state.proxy_runtime_attempts.mark_interrupted(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        attempt_public_id,
+        &shanghai_now_string(),
+    );
+    let discarded = state.proxy_runtime_attempts.discard_for_attempt(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        attempt_public_id,
+    );
+    marked || discarded
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Runtime attempt terminal adapter mirrors the established lifecycle contract."
+)]
+pub(crate) async fn finalize_pool_upstream_request_attempt_in_memory(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    finished_at: &str,
+    status: &str,
+    http_status: Option<StatusCode>,
+    downstream_http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    downstream_error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> Result<()> {
+    let mut snapshot = runtime_attempt_snapshot_from_pending(pending);
+    snapshot.finished_at = Some(finished_at.to_string());
+    snapshot.status = status.to_string();
+    snapshot.phase = Some(terminal_pool_upstream_request_attempt_phase(status).to_string());
+    snapshot.http_status = http_status.map(|value| i64::from(value.as_u16()));
+    snapshot.downstream_http_status = downstream_http_status.map(|value| i64::from(value.as_u16()));
+    snapshot.failure_kind = failure_kind.map(ToOwned::to_owned);
+    snapshot.error_message = error_message.map(ToOwned::to_owned);
+    snapshot.downstream_error_message = downstream_error_message.map(ToOwned::to_owned);
+    snapshot.connect_latency_ms = connect_latency_ms.or(snapshot.connect_latency_ms);
+    snapshot.first_byte_latency_ms = first_byte_latency_ms.or(snapshot.first_byte_latency_ms);
+    snapshot.stream_latency_ms = stream_latency_ms;
+    snapshot.upstream_request_id = upstream_request_id.map(ToOwned::to_owned);
+    snapshot.compact_support_status = compact_support_status
+        .map(ToOwned::to_owned)
+        .or(snapshot.compact_support_status);
+    snapshot.compact_support_reason = compact_support_reason
+        .map(ToOwned::to_owned)
+        .or(snapshot.compact_support_reason);
+    if !upsert_runtime_attempt_with_completion_capacity(state, snapshot, true) {
+        bail!("proxy runtime attempt store rejected terminal snapshot")
+    }
+    Ok(())
+}
+
 pub(crate) fn annotate_pool_upstream_request_attempt_model_mapping(
     pending: &mut PendingPoolAttemptRecord,
     upstream_request_model: Option<&str>,
@@ -877,6 +1155,7 @@ pub(crate) async fn begin_pool_upstream_request_attempt_with_scope_and_routing_s
         sticky_key: trace.sticky_key.clone(),
         routing_source: routing_source_value.map(ToOwned::to_owned),
         routing_selection_audit_json,
+        sticky_affinity_generation: None,
         requester_ip: trace.requester_ip.clone(),
         upstream_base_url_host: trace.upstream_base_url_host.clone(),
         group_name_snapshot: group_name_snapshot.map(ToOwned::to_owned),
@@ -943,6 +1222,12 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     pool: &Pool<Sqlite>,
     pending: &PendingPoolAttemptRecord,
 ) -> Result<()> {
+    // Runtime attempts are authoritative in memory until their terminal batch is
+    // materialized. A capture update must not turn a rejected in-memory update
+    // into a synchronous SQLite write on the request path.
+    if pending.attempt_id.is_none() {
+        bail!("runtime proxy attempt response capture metadata was not retained");
+    }
     let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
         .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
         .await;
@@ -1038,6 +1323,38 @@ pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_fallb
     .execute(pool)
     .await?;
     Ok(())
+}
+
+pub(crate) async fn persist_pool_upstream_request_attempt_response_capture_in_memory(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+) -> Result<()> {
+    let attempt_public_id = pending
+        .attempt_public_id
+        .clone()
+        .unwrap_or_else(|| pool_attempt_response_capture_key(pending));
+    if state.proxy_runtime_attempts.update_response_capture(
+        &pending.invoke_id,
+        &pending.occurred_at,
+        &attempt_public_id,
+        RuntimeAttemptResponseCapture {
+            raw_path: pending.response_raw_path.clone(),
+            raw_codec: pending.response_raw_codec.clone(),
+            raw_size: pending.response_raw_size,
+            raw_truncated: pending.response_raw_truncated,
+            raw_truncated_reason: pending.response_raw_truncated_reason.clone(),
+            content_encoding: pending.response_content_encoding.clone(),
+        },
+        |candidate| {
+            state
+                .sqlite_batch_writer
+                .reserve_runtime_attempt_completion_growth(candidate)
+        },
+    ) {
+        Ok(())
+    } else {
+        bail!("proxy runtime attempt store rejected response capture metadata")
+    }
 }
 
 pub(crate) async fn persist_pool_upstream_request_attempt_metadata_before_recovery(
@@ -1156,18 +1473,16 @@ pub(crate) async fn advance_pool_upstream_request_attempt_phase(
     pending: &PendingPoolAttemptRecord,
     phase: &str,
 ) -> Result<()> {
-    if pending.attempt_id.is_some() {
-        let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
-            state, pending, phase, None, None, None, None,
+    let phase_enqueued = enqueue_pool_upstream_request_attempt_progress_reliably(
+        state, pending, phase, None, None, None, None,
+    );
+    if !phase_enqueued {
+        warn!(
+            invoke_id = %pending.invoke_id,
+            attempt_id = pending.attempt_id,
+            phase,
+            "failed to retain pool attempt phase progress"
         );
-        if !phase_enqueued {
-            warn!(
-                invoke_id = %pending.invoke_id,
-                attempt_id = pending.attempt_id,
-                phase,
-                "failed to enqueue pool attempt phase progress"
-            );
-        }
     }
     Ok(())
 }
@@ -1216,38 +1531,60 @@ pub(crate) fn enqueue_pool_upstream_request_attempt_progress_reliably(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> bool {
-    let Some(progress) = build_pool_upstream_request_attempt_progress(
+    if pending.attempt_id.is_some() {
+        let Some(progress) = build_pool_upstream_request_attempt_progress(
+            pending,
+            Some(phase),
+            connect_latency_ms,
+            first_byte_latency_ms,
+            compact_support_status,
+            compact_support_reason,
+        ) else {
+            return false;
+        };
+        return state
+            .sqlite_batch_writer
+            .enqueue_attempt_progress_reliably(progress);
+    }
+    update_runtime_attempt_progress(
+        state,
         pending,
         Some(phase),
         connect_latency_ms,
         first_byte_latency_ms,
         compact_support_status,
         compact_support_reason,
-    ) else {
-        return false;
-    };
-    state
-        .sqlite_batch_writer
-        .enqueue_attempt_progress_reliably(progress)
+    )
 }
 
 pub(crate) fn enqueue_pool_upstream_request_attempt_snapshot_reliably(
     state: &AppState,
     pending: &PendingPoolAttemptRecord,
 ) -> bool {
-    let Some(progress) = build_pool_upstream_request_attempt_progress(
+    if pending.attempt_id.is_some() {
+        let Some(progress) = build_pool_upstream_request_attempt_progress(
+            pending,
+            None,
+            (pending.connect_latency_ms > 0.0).then_some(pending.connect_latency_ms),
+            (pending.first_byte_latency_ms > 0.0).then_some(pending.first_byte_latency_ms),
+            pending.compact_support_status.as_deref(),
+            pending.compact_support_reason.as_deref(),
+        ) else {
+            return false;
+        };
+        return state
+            .sqlite_batch_writer
+            .enqueue_attempt_progress_reliably(progress);
+    }
+    update_runtime_attempt_progress(
+        state,
         pending,
         None,
         (pending.connect_latency_ms > 0.0).then_some(pending.connect_latency_ms),
         (pending.first_byte_latency_ms > 0.0).then_some(pending.first_byte_latency_ms),
         pending.compact_support_status.as_deref(),
         pending.compact_support_reason.as_deref(),
-    ) else {
-        return false;
-    };
-    state
-        .sqlite_batch_writer
-        .enqueue_attempt_progress_reliably(progress)
+    )
 }
 
 pub(crate) async fn enqueue_pool_streaming_phase_and_defer_guard(
@@ -1299,19 +1636,74 @@ fn enqueue_pool_upstream_request_attempt_progress_with_phase(
     compact_support_status: Option<&str>,
     compact_support_reason: Option<&str>,
 ) -> bool {
-    let Some(progress) = build_pool_upstream_request_attempt_progress(
+    if pending.attempt_id.is_some() {
+        let Some(progress) = build_pool_upstream_request_attempt_progress(
+            pending,
+            phase,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            compact_support_status,
+            compact_support_reason,
+        ) else {
+            return false;
+        };
+        return state
+            .sqlite_batch_writer
+            .enqueue(SqliteBatchWrite::AttemptProgress(progress));
+    }
+    update_runtime_attempt_progress(
+        state,
         pending,
         phase,
         connect_latency_ms,
         first_byte_latency_ms,
         compact_support_status,
         compact_support_reason,
-    ) else {
-        return false;
-    };
-    state
-        .sqlite_batch_writer
-        .enqueue(SqliteBatchWrite::AttemptProgress(progress))
+    )
+}
+
+fn update_runtime_attempt_progress(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
+) -> bool {
+    let mut snapshot = runtime_attempt_snapshot_from_pending(pending);
+    let attempt_public_id = snapshot.attempt_public_id.clone();
+    let current = state.proxy_runtime_attempts.get(
+        &snapshot.invoke_id,
+        &snapshot.occurred_at,
+        &attempt_public_id,
+    );
+    let terminal_snapshot = current
+        .as_ref()
+        .filter(|current| current.finished_at.is_some());
+    if let Some(phase) = phase
+        && terminal_snapshot.is_none()
+    {
+        snapshot.phase = Some(phase.to_string());
+    }
+    if terminal_snapshot.is_none() {
+        if phase.is_none()
+            && let Some(current) = current.as_ref()
+        {
+            snapshot.phase = current.phase.clone();
+        }
+        snapshot.connect_latency_ms = connect_latency_ms.or(snapshot.connect_latency_ms);
+        snapshot.first_byte_latency_ms = first_byte_latency_ms.or(snapshot.first_byte_latency_ms);
+        snapshot.compact_support_status = compact_support_status
+            .map(ToOwned::to_owned)
+            .or(snapshot.compact_support_status);
+        snapshot.compact_support_reason = compact_support_reason
+            .map(ToOwned::to_owned)
+            .or(snapshot.compact_support_reason);
+    } else if let Some(current) = current {
+        snapshot = current;
+    }
+    upsert_runtime_attempt_with_completion_capacity(state, snapshot, false)
 }
 
 fn build_pool_upstream_request_attempt_progress(
@@ -2127,148 +2519,6 @@ pub(crate) async fn clean_up_recovered_pool_routes(
     }
 }
 
-pub(crate) async fn recover_guard_dropped_pool_early_phase_orphan(
-    state: &AppState,
-    pending_attempt_record: PendingPoolAttemptRecord,
-    first_byte_observed: bool,
-    terminal_outcome_observed: bool,
-) -> Result<()> {
-    state.sqlite_batch_writer.flush_now(&state.pool).await?;
-    persist_pool_upstream_request_attempt_metadata_before_recovery(
-        &state.pool,
-        &pending_attempt_record,
-    )
-    .await?;
-
-    if first_byte_observed && terminal_outcome_observed {
-        info!(
-            invoke_id = %pending_attempt_record.invoke_id,
-            attempt_id = pending_attempt_record.attempt_id,
-            first_byte_latency_ms = pending_attempt_record.first_byte_latency_ms,
-            recovery_trigger = "drop_guard",
-            "skipping guard-based orphan recovery because a terminal post-first-byte outcome was already observed"
-        );
-        return Ok(());
-    }
-    if first_byte_observed {
-        info!(
-            invoke_id = %pending_attempt_record.invoke_id,
-            attempt_id = pending_attempt_record.attempt_id,
-            first_byte_latency_ms = pending_attempt_record.first_byte_latency_ms,
-            recovery_trigger = "drop_guard",
-            "recovering post-first-byte orphan because the stream task ended before any terminal outcome was observed"
-        );
-    }
-
-    let (recovered_attempts, recovered_invocations) = {
-        let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
-            .await;
-        let dashboard_reconcile_gate = state.sqlite_batch_writer.dashboard_reconcile_gate();
-        let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
-        let mut tx = crate::observability::diagnostics::wait(
-            crate::observability::diagnostics::Resource::DbPool,
-            state.pool.begin(),
-        )
-        .await?;
-        let recovered_attempts = match pending_attempt_record.attempt_id {
-            Some(attempt_id) => {
-                recover_pool_upstream_request_attempts_with_scope_tx(
-                    tx.as_mut(),
-                    PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id },
-                )
-                .await?
-            }
-            None => Vec::new(),
-        };
-
-        let recovered_invocations =
-            if pending_attempt_record.attempt_id.is_none() || !recovered_attempts.is_empty() {
-                let selector = InvocationRecoverySelector::from(&pending_attempt_record);
-                recover_proxy_invocations_with_scope_tx(
-                    tx.as_mut(),
-                    ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-                )
-                .await?
-            } else {
-                Vec::new()
-            };
-        tx.commit().await?;
-        (recovered_attempts, recovered_invocations)
-    };
-
-    let should_clean_up_route = pending_attempt_record.attempt_id.is_none()
-        || !recovered_attempts.is_empty()
-        || !recovered_invocations.is_empty();
-    let record_route_failure = (pending_attempt_record.attempt_id.is_none()
-        || !recovered_attempts.is_empty())
-        && should_record_route_failure_after_attempt_recovery(
-            state,
-            &pending_attempt_record.invoke_id,
-            &pending_attempt_record.occurred_at,
-            !recovered_invocations.is_empty(),
-        )
-        .await;
-
-    if recovered_invocations.is_empty() {
-        terminalize_proxy_runtime_snapshot_by_key(
-            state,
-            &pending_attempt_record.invoke_id,
-            &pending_attempt_record.occurred_at,
-            "drop_guard",
-        );
-        schedule_dashboard_activity_live_snapshot(state);
-    } else {
-        remove_proxy_runtime_snapshot_by_key(
-            state,
-            &pending_attempt_record.invoke_id,
-            &pending_attempt_record.occurred_at,
-            "drop_guard",
-        );
-        schedule_dashboard_activity_live_snapshot(state);
-    }
-
-    if should_clean_up_route {
-        clean_up_pool_route_after_orphan_recovery(
-            state,
-            &pending_attempt_record.invoke_id,
-            pending_attempt_record.sticky_key.as_deref(),
-            Some(pending_attempt_record.upstream_account_id),
-            "drop_guard",
-            record_route_failure,
-        )
-        .await;
-    }
-
-    if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
-        return Ok(());
-    }
-
-    if !recovered_attempts.is_empty()
-        && let Err(err) =
-            broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id)
-                .await
-    {
-        warn!(
-            invoke_id = %pending_attempt_record.invoke_id,
-            error = %err,
-            "failed to broadcast guard-recovered pool attempt snapshot"
-        );
-    }
-    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await?;
-
-    info!(
-        invoke_id = %pending_attempt_record.invoke_id,
-        attempt_id = pending_attempt_record.attempt_id,
-        recovered_attempts = recovered_attempts.len(),
-        recovered_invocations = recovered_invocations.len(),
-        recovery_trigger = "drop_guard",
-        "recovered pool early-phase orphan after request future dropped"
-    );
-
-    Ok(())
-}
-
 pub(crate) async fn recover_guard_dropped_pool_invocation_orphan(
     state: &AppState,
     selector: InvocationRecoverySelector,
@@ -2427,7 +2677,13 @@ pub(crate) async fn broadcast_pool_upstream_attempts_snapshot(
         .subscription_hub
         .has_external_broadcaster_receiver(state.broadcaster.receiver_count());
     if has_account_attempt_topic || has_external_broadcaster_receiver {
-        let attempts = match query_pool_attempt_records_from_live(&state.pool, invoke_id).await {
+        let attempts = match query_pool_attempt_records_from_live_with_runtime(
+            &state.pool,
+            &state.proxy_runtime_attempts,
+            invoke_id,
+        )
+        .await
+        {
             Ok(attempts) => attempts,
             Err(err) => {
                 // A failed source query cannot identify the affected account. Preserve the
@@ -4056,7 +4312,15 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 );
                 return Ok(());
             }
-            observe_successful_proxy_capture_model_route_cache(state, &record).await;
+            if let Err(error) = record_model_route_observation(state, &record).await {
+                state.proxy_runtime_invocations.clear_terminal_tombstone(
+                    &persisted_record.invoke_id,
+                    &persisted_record.occurred_at,
+                );
+                return Err(error).context(
+                    "cache routing observation was not accepted; terminal can be retried",
+                );
+            }
             let projection =
                 register_terminal_projection_before_enqueue(state, &persisted_record).await;
             let delta = &projection.dashboard;
@@ -4066,6 +4330,12 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                     .proxy_terminal(&record, persisted_record.endpoint.as_deref());
             }
             let startup_backfill_tasks = startup_backfill_tasks_for_terminal(&persisted_record);
+            state
+                .sqlite_batch_writer
+                .set_runtime_attempt_store(state.proxy_runtime_attempts.clone());
+            let runtime_attempts = state
+                .proxy_runtime_attempts
+                .claim_for_invocation(&persisted_record.invoke_id, &persisted_record.occurred_at);
             debug!(
                 invoke_id = %invoke_id,
                 terminal_delta_applied_selection_count = delta.applied_selection_count,
@@ -4074,22 +4344,24 @@ pub(crate) async fn persist_and_broadcast_proxy_capture_terminal_record(
                 response_source = "memory",
                 "registered terminal record in dashboard activity read model before sqlite enqueue"
             );
-            let terminal_enqueue =
-                state
-                    .sqlite_batch_writer
-                    .enqueue_terminal(BatchedTerminalInvocationWrite {
-                        enqueued_at: None,
-                        diagnostic: crate::observability::diagnostics::current()
-                            .map(|c| c.persistence()),
-                        record,
-                        capture_started: None,
-                        raw_capture: false,
-                        dashboard_terminal_sequence: delta.terminal_sequence,
-                        terminal_projection_event_ids: projection.event_id.into_iter().collect(),
-                        startup_backfill_tasks,
-                    });
+            let terminal_enqueue = state
+                .sqlite_batch_writer
+                .enqueue_runtime_terminal(BatchedTerminalInvocationWrite {
+                    enqueued_at: None,
+                    diagnostic: crate::observability::diagnostics::current()
+                        .map(|c| c.persistence()),
+                    record: record.clone(),
+                    attempts: runtime_attempts.clone(),
+                    capture_started: None,
+                    raw_capture: false,
+                    dashboard_terminal_sequence: delta.terminal_sequence,
+                    terminal_projection_event_ids: projection.event_id.into_iter().collect(),
+                    startup_backfill_tasks,
+                })
+                .await;
             let terminal_enqueued = terminal_enqueue.enqueued;
             if !terminal_enqueued {
+                state.proxy_runtime_attempts.restore(runtime_attempts);
                 rollback_terminal_projection_before_enqueue(state, &persisted_record, &projection)
                     .await;
                 let terminal_tombstone_cleared =

@@ -495,7 +495,7 @@ pub(crate) fn unpack_sticky_affinity_token(token: i64) -> (i64, i64) {
     )
 }
 
-async fn load_sticky_model_route_executor<'e, E>(
+pub(super) async fn load_sticky_model_route_executor<'e, E>(
     executor: E,
     sticky_key: &str,
     model_key: &str,
@@ -1085,6 +1085,37 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
     prompt_cache_key: Option<&str>,
     now_iso: &str,
 ) -> Result<bool> {
+    delete_sticky_route_if_matches_with_cause_and_request_model(
+        pool,
+        sticky_key,
+        account_id,
+        expected_generation,
+        cause_attempt_id,
+        cause_http_status,
+        cause_reason_code,
+        prompt_cache_key,
+        None,
+        now_iso,
+    )
+    .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Sticky clear fencing carries route identity, generation, request model, and causal attempt metadata."
+)]
+pub(crate) async fn delete_sticky_route_if_matches_with_cause_and_request_model(
+    pool: &Pool<Sqlite>,
+    sticky_key: &str,
+    account_id: i64,
+    expected_generation: Option<i64>,
+    cause_attempt_id: Option<i64>,
+    cause_http_status: Option<i64>,
+    cause_reason_code: Option<&str>,
+    prompt_cache_key: Option<&str>,
+    request_model: Option<&str>,
+    now_iso: &str,
+) -> Result<bool> {
     let mut conn = pool.acquire().await?;
     sqlx::query("BEGIN IMMEDIATE")
         .execute(conn.as_mut())
@@ -1099,7 +1130,7 @@ pub(crate) async fn delete_sticky_route_if_matches_with_cause(
             .await?
             .flatten()
         } else {
-            None
+            request_model.map(ToOwned::to_owned)
         };
         let model_key = normalize_sticky_model_key(request_model.as_deref());
         let current_epoch =

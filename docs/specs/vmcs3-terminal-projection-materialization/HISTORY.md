@@ -1,7 +1,14 @@
 # Terminal Projection 中间层与增量物化演进记录
 
+PR #1110 的有限审查修复将两处重试失败 capture 移到终态快照构造前，并更新实际 pending 记录，避免完成文件只存在于随后丢弃的副本中。终态物化回归覆盖有界 capture 拒绝后的完整 raw 元数据和零请求侧 SQLite 写准入；分页与 locate 的纯持久排序同时恢复兼容。日志格式、schema、硬容量与既有压力预算保持不变。
+
+PR #1110 的有限原始日志收尾修复以真实单槽回归证明旧顺序可能阻止终态生产者继续。收尾同时轮询请求与响应写入，在保留两份完整日志后进入原有终态确认和物化流程；原有 32 请求、确认屏障、零生命周期 SQL 与延迟断言保持不变。
+
 ## 关键决策
 
+- ADR 0038 细化主日志终态容量预留，避免小请求在实际磁盘仅约 214 KiB 时被固定 4 MiB 额度限制到 127 个并发。保留 512 MiB 硬上限、关键终态恢复义务及原写锁压力验收，不更改 journal 格式、SQLite schema 或派生任务边界。
+
+- PR #1110 的 shutdown terminal 补救恢复采用主人明确要求的隔离与告警策略，尾部半帧忽略，不因旧补救文件直接阻止服务启动；ADR 0037 取代 ADR 0035 的无条件启动失败规则。终态 attempt 提交前保持有界读投影，提交 ACK 才释放，避免异步物化期间查询缺口。
 - P2 pressure defer 与 SQLite retry 分离：派生写使用 250ms 固定合并并按 gate eligibility 唤醒，只有实际执行失败才推进 retry/backoff。
 
 - P1 journal 是 raw terminal durability 边界，不把投影完成当作 journal 回收条件。
