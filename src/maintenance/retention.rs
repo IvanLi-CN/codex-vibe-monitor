@@ -8473,7 +8473,7 @@ pub(crate) fn spawn_retention_backlog_observer(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut ticker = interval(RETENTION_BACKLOG_OBSERVER_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
