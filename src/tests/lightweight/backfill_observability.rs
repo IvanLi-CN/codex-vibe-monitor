@@ -122,6 +122,37 @@ async fn disabled_backfill_observability_does_not_register_series() {
     assert!(runtime.render().is_empty());
 }
 
+#[tokio::test]
+async fn coverage_wake_without_maintenance_pool_does_not_confirm_attempt() {
+    let runtime = ObservabilityRuntime::new(true);
+    let task = StartupBackfillTask::AccountActivityV2Coverage;
+    clear_startup_backfill_task_scheduler_for_test(task);
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        STARTUP_BACKFILL_SCHEDULER.record_notification(task, WakeDecision::New);
+        assert_eq!(
+            wake_startup_backfill_coverage_repair_inner(None, "maintenance_store_unavailable")
+                .await
+                .expect("scheduler-only coverage wake"),
+            0
+        );
+    })
+    .await;
+
+    let text = runtime.render();
+    assert!(text.lines().any(|line| {
+        line.starts_with("cvm_backfill_wake_notifications_total{")
+            && line.contains(&format!("task=\"{}\"", task.name()))
+            && line.contains("reason=\"new\"")
+            && line.ends_with(" 1")
+    }));
+    assert!(!text.lines().any(|line| {
+        line.starts_with("cvm_backfill_wake_attempts_total{")
+            && line.contains(&format!("task=\"{}\"", task.name()))
+    }));
+    clear_startup_backfill_task_scheduler_for_test(task);
+}
+
 #[test]
 fn source_unavailable_result_retains_pending_backfill_state() {
     let scheduler = StartupBackfillScheduler::default();
@@ -137,4 +168,52 @@ fn source_unavailable_result_retains_pending_backfill_state() {
             .expect("pending state lock")
             .contains_key(&task)
     );
+}
+
+#[tokio::test]
+async fn wake_pending_state_survives_confirmation_until_task_completion() {
+    let runtime = ObservabilityRuntime::new(true);
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        scheduler.record_notification(task, WakeDecision::New);
+        scheduler.wake(task);
+        record_scheduler_wake_confirmation(task);
+        assert!(
+            scheduler
+                .pending_since
+                .lock()
+                .expect("pending state lock")
+                .contains_key(&task)
+        );
+
+        scheduler.record_task_result_with_actionable(task, false, false, true, false);
+        assert!(
+            scheduler
+                .pending_since
+                .lock()
+                .expect("pending state lock")
+                .contains_key(&task)
+        );
+
+        scheduler.record_task_result_with_actionable(task, false, false, false, false);
+        assert!(
+            !scheduler
+                .pending_since
+                .lock()
+                .expect("pending state lock")
+                .contains_key(&task)
+        );
+    })
+    .await;
+
+    let task_name = task.name();
+    let text = runtime.render();
+    assert!(text.contains(&format!(
+        "cvm_backfill_wake_pending_tasks{{task=\"{task_name}\"}} 0"
+    )));
+    assert!(text.contains(&format!(
+        "cvm_backfill_wake_oldest_timestamp_seconds{{task=\"{task_name}\"}} 0"
+    )));
 }

@@ -62,3 +62,40 @@ async fn maintenance_store_writes_record_results_duration_and_cancellation() {
         )
     );
 }
+
+#[tokio::test]
+async fn cached_prompt_cache_control_initialization_does_not_record_store_write() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect maintenance store test pool");
+    let store = MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    let task_name = "prompt_cache_conversations_materialization";
+    let runtime = ObservabilityRuntime::new(true);
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        store
+            .initialize_prompt_cache_materialization_control(task_key, task_name)
+            .await
+            .expect("initialize prompt-cache control");
+        store
+            .initialize_prompt_cache_materialization_control(task_key, task_name)
+            .await
+            .expect("read cached prompt-cache control");
+    })
+    .await;
+
+    let text = runtime.render();
+    assert!(text.contains(
+        "cvm_maintenance_store_writes_total{operation=\"control\",outcome=\"committed\"} 1"
+    ));
+    assert!(
+        text.contains(
+            "cvm_maintenance_store_write_duration_seconds_count{operation=\"control\"} 1"
+        )
+    );
+}

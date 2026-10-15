@@ -2580,6 +2580,9 @@ impl MaintenanceStore {
         task_key: &str,
         task_name: &str,
     ) -> Result<PromptCacheMaterializationControlSnapshot> {
+        if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
+            return Ok(snapshot);
+        }
         observe_store_write(
             StoreOperation::Control,
             self.initialize_prompt_cache_materialization_control_inner(task_key, task_name),
@@ -2592,9 +2595,6 @@ impl MaintenanceStore {
         task_key: &str,
         task_name: &str,
     ) -> Result<PromptCacheMaterializationControlSnapshot> {
-        if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
-            return Ok(snapshot);
-        }
         let mut transaction = self.pool.begin().await?;
         let enabled =
             sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")

@@ -86,6 +86,8 @@ struct StartupBackfillScheduler {
     notify: Notify,
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
+    // This is an unresolved wake obligation, not a business-backlog gauge. It survives
+    // scheduler confirmation and actionable work until completion or an explicit clear.
     pending_since: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
@@ -1798,17 +1800,17 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     let task = StartupBackfillTask::AccountActivityV2Coverage;
     STARTUP_BACKFILL_SCHEDULER
         .record_notification(task, startup_backfill_wake_decision(wake_reason));
-    wake_startup_backfill_coverage_repair_inner(pool, wake_reason).await
+    wake_startup_backfill_coverage_repair_inner(startup_backfill_progress_pool(pool), wake_reason)
+        .await
 }
 
 async fn wake_startup_backfill_coverage_repair_inner(
-    pool: &Pool<Sqlite>,
+    pool: Option<&Pool<Sqlite>>,
     wake_reason: &'static str,
 ) -> Result<u64> {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
-    let Some(pool) = startup_backfill_progress_pool(pool) else {
+    let Some(pool) = pool else {
         STARTUP_BACKFILL_SCHEDULER.wake(task);
-        record_scheduler_wake_confirmation(task);
         return Ok(0);
     };
     let task_name = task.name();
