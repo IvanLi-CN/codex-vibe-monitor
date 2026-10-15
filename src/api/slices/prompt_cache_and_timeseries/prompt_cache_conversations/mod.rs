@@ -1,7 +1,5 @@
 use super::*;
-use crate::observability::contention::{
-    PerformanceGauge, StatsProjection, StatsQuery, current_performance, observe_query,
-};
+use crate::observability::contention::{StatsQuery, observe_query};
 use std::future::Future;
 
 mod aggregate_queries;

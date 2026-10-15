@@ -144,3 +144,26 @@ async fn statistics_observation_preserves_cancellation_and_disabled_isolation() 
     assert_eq!(SummaryReason::ALL.len(), 6);
     assert_eq!(QueryOutcome::ALL.len(), 3);
 }
+
+#[tokio::test]
+async fn prompt_cache_health_reads_do_not_publish_last_good_timestamp() {
+    let runtime = ObservabilityRuntime::new(true);
+    let hub = SubscriptionHub::new();
+
+    with_performance(runtime.clone(), async {
+        let _ = hub.prompt_cache_projection_health().await;
+        let first_read = runtime.render();
+        let _ = hub.prompt_cache_projection_health().await;
+        let second_read = runtime.render();
+
+        assert!(!first_read.lines().any(|line| {
+            line.starts_with("cvm_stats_projection_last_good_timestamp_seconds{")
+                && line.contains("query=\"prompt_cache\"")
+        }));
+        assert!(!second_read.lines().any(|line| {
+            line.starts_with("cvm_stats_projection_last_good_timestamp_seconds{")
+                && line.contains("query=\"prompt_cache\"")
+        }));
+    })
+    .await;
+}
