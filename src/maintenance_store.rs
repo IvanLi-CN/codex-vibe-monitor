@@ -1,3 +1,6 @@
+use crate::observability::contention::{
+    PerformanceCounter, PerformanceHistogram, StoreOperation, WakeOutcome, current_performance,
+};
 use crate::{AppConfig, OnceCell, Result, Utc, anyhow, format_utc_iso_millis};
 use chrono::{Datelike, Duration as ChronoDuration, Timelike};
 use serde::Serialize;
@@ -11,7 +14,7 @@ use std::{
     str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
     sync::{Arc, Mutex, OnceLock},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -29,6 +32,32 @@ const OWNERSHIP_INITIALIZATION_MARKER: &str = "retention_maintenance_ownership_v
 const LEGACY_BACKFILL_ENABLEMENT_MARKER: &str = "managed_task_legacy_enablement_v1";
 const PROMPT_CACHE_CONTROL_ORIGIN_MARKER: &str = "prompt_cache_materialization_control_origin_v1";
 const TASK_DISABLED_UNTIL_DAYS: i64 = 3650;
+type LegacyTaskRunRow = (
+    i64,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<i64>,
+);
+type LegacyBackfillProgressRow = (
+    String,
+    i64,
+    Option<String>,
+    i64,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    i64,
+);
 const DEFAULT_ENABLED_TASKS: &[&str] = &[
     "retention_archive",
     "invocation_identity_cleanup",
@@ -49,6 +78,60 @@ const DEFAULT_ENABLED_TASKS: &[&str] = &[
 ];
 static LAST_TASK_HISTORY_CLEANUP_MS: AtomicI64 = AtomicI64::new(0);
 static ACTIVE_TASK_EXECUTIONS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+pub(crate) async fn observe_store_write<T>(
+    operation: StoreOperation,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) else {
+        return future.await;
+    };
+    let mut observation = StoreWriteObservation {
+        metrics,
+        operation,
+        started: Instant::now(),
+        outcome: WakeOutcome::Cancelled,
+    };
+    let result = future.await;
+    observation.outcome = result
+        .as_ref()
+        .map(|_| WakeOutcome::Committed)
+        .unwrap_or_else(|error| store_write_outcome(error));
+    result
+}
+
+struct StoreWriteObservation {
+    metrics: Arc<crate::observability::ObservabilityRuntime>,
+    operation: StoreOperation,
+    started: Instant,
+    outcome: WakeOutcome,
+}
+
+impl Drop for StoreWriteObservation {
+    fn drop(&mut self) {
+        self.metrics.count_performance(
+            PerformanceCounter::StoreWrite(self.operation, self.outcome),
+            1,
+        );
+        self.metrics.observe_performance(
+            PerformanceHistogram::StoreWrite(self.operation),
+            self.started.elapsed(),
+        );
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/stateful_sqlite/backfill_observability.rs"]
+mod backfill_observability;
+
+pub(crate) fn store_write_outcome(error: &anyhow::Error) -> WakeOutcome {
+    match crate::db_pressure::classify_db_pressure_error(error) {
+        Some(crate::db_pressure::DbPressureErrorClass::SqliteBusy)
+        | Some(crate::db_pressure::DbPressureErrorClass::PoolAcquireTimeout) => WakeOutcome::Busy,
+        Some(crate::db_pressure::DbPressureErrorClass::SqliteLocked) => WakeOutcome::Locked,
+        None => WakeOutcome::Error,
+    }
+}
 
 pub(crate) fn is_retention_maintenance_task(key: &str) -> bool {
     matches!(
@@ -2497,6 +2580,18 @@ impl MaintenanceStore {
         task_key: &str,
         task_name: &str,
     ) -> Result<PromptCacheMaterializationControlSnapshot> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.initialize_prompt_cache_materialization_control_inner(task_key, task_name),
+        )
+        .await
+    }
+
+    async fn initialize_prompt_cache_materialization_control_inner(
+        &self,
+        task_key: &str,
+        task_name: &str,
+    ) -> Result<PromptCacheMaterializationControlSnapshot> {
         if let Some(snapshot) = self.prompt_cache_materialization_control.snapshot() {
             return Ok(snapshot);
         }
@@ -2587,6 +2682,19 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn update_prompt_cache_materialization_control(
+        &self,
+        task_key: &str,
+        task_name: &str,
+        enabled: bool,
+    ) -> Result<Option<PromptCacheMaterializationControlUpdate>> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.update_prompt_cache_materialization_control_inner(task_key, task_name, enabled),
+        )
+        .await
+    }
+
+    async fn update_prompt_cache_materialization_control_inner(
         &self,
         task_key: &str,
         task_name: &str,
@@ -2710,6 +2818,14 @@ impl MaintenanceStore {
         session_id: &str,
         started_at: &str,
     ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Progress,
+            self.start_timeline_session_inner(session_id, started_at),
+        )
+        .await
+    }
+
+    async fn start_timeline_session_inner(&self, session_id: &str, started_at: &str) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("INSERT OR IGNORE INTO maintenance_metadata(key,value,updated_at) VALUES('task_timeline_revision','0',?)")
             .bind(started_at)
@@ -2805,6 +2921,27 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn write_timeline_batch(
+        &self,
+        session_id: &str,
+        events: &[crate::task_timeline::TimelineEvent],
+        dropped_events: u64,
+        observed_at: &str,
+        heartbeat: bool,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Progress,
+            self.write_timeline_batch_inner(
+                session_id,
+                events,
+                dropped_events,
+                observed_at,
+                heartbeat,
+            ),
+        )
+        .await
+    }
+
+    async fn write_timeline_batch_inner(
         &self,
         session_id: &str,
         events: &[crate::task_timeline::TimelineEvent],
@@ -3001,6 +3138,14 @@ impl MaintenanceStore {
         session_id: &str,
         ended_at: &str,
     ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Cleanup,
+            self.finish_timeline_session_inner(session_id, ended_at),
+        )
+        .await
+    }
+
+    async fn finish_timeline_session_inner(&self, session_id: &str, ended_at: &str) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         sqlx::query("UPDATE task_timeline_segments SET status='interrupted' WHERE session_id=? AND status IN ('running','waiting')")
             .bind(session_id).execute(&mut *transaction).await?;
@@ -3120,6 +3265,10 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
+        observe_store_write(StoreOperation::Run, self.claim_requested_run_inner()).await
+    }
+
+    async fn claim_requested_run_inner(&self) -> Result<Option<(i64, String, String, String)>> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
         sqlx::query(
@@ -3161,6 +3310,10 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
+        observe_store_write(StoreOperation::Run, self.recover_incomplete_runs_inner()).await
+    }
+
+    async fn recover_incomplete_runs_inner(&self) -> Result<u64> {
         let finished_at = format_utc_iso_millis(Utc::now());
         let result = sqlx::query(
             "UPDATE managed_task_runs
@@ -3197,6 +3350,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn request_run_with_mode(&self, task_key: &str, dry_run: bool) -> Result<i64> {
+        observe_store_write(
+            StoreOperation::Run,
+            self.request_run_with_mode_inner(task_key, dry_run),
+        )
+        .await
+    }
+
+    async fn request_run_with_mode_inner(&self, task_key: &str, dry_run: bool) -> Result<i64> {
         let task_key = canonical_managed_task_key(task_key);
         let exists: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM managed_tasks WHERE task_key=?")
@@ -3237,16 +3398,28 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn migrate_legacy_state(&self, main_pool: &Pool<Sqlite>) -> Result<()> {
-        let legacy_runs = sqlx::query_as::<_, (i64, String, String, String, Option<String>, Option<String>, String, Option<String>, Option<i64>)>(
+        let legacy_runs = sqlx::query_as::<_, LegacyTaskRunRow>(
             "SELECT id, task_kind, trigger_kind, status, summary, detail, started_at, finished_at, duration_ms FROM system_task_runs ORDER BY id",
         )
         .fetch_all(main_pool)
         .await?;
-        let progress = sqlx::query_as::<_, (String, i64, Option<String>, i64, Option<String>, Option<String>, i64, i64, String, Option<String>, Option<String>, i64, i64)>(
+        let progress = sqlx::query_as::<_, LegacyBackfillProgressRow>(
             "SELECT task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,last_finished_at,last_scanned,last_updated,last_status,suspension_reason,next_probe_at,wake_generation,enabled FROM startup_backfill_progress",
         )
         .fetch_all(main_pool)
         .await?;
+        observe_store_write(
+            StoreOperation::Run,
+            self.migrate_legacy_state_inner(legacy_runs, progress),
+        )
+        .await
+    }
+
+    async fn migrate_legacy_state_inner(
+        &self,
+        legacy_runs: Vec<LegacyTaskRunRow>,
+        progress: Vec<LegacyBackfillProgressRow>,
+    ) -> Result<()> {
         let mut transaction = self.pool.begin().await?;
         for (
             id,
@@ -3379,6 +3552,14 @@ impl MaintenanceStore {
         seconds: i64,
         reason: &str,
     ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.schedule_owned_work_inner(key, seconds, reason),
+        )
+        .await
+    }
+
+    async fn schedule_owned_work_inner(&self, key: &str, seconds: i64, reason: &str) -> Result<()> {
         let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
         sqlx::query("UPDATE managed_tasks SET next_catchup_at=?,catchup_reason=? WHERE task_key=? AND enabled!=0")
             .bind(at).bind(reason).bind(key).execute(&self.pool).await?;
@@ -3391,6 +3572,19 @@ impl MaintenanceStore {
         seconds: i64,
         reason: &str,
     ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.record_owned_retry_delay_inner(key, seconds, reason),
+        )
+        .await
+    }
+
+    async fn record_owned_retry_delay_inner(
+        &self,
+        key: &str,
+        seconds: i64,
+        reason: &str,
+    ) -> Result<()> {
         let at = format_utc_iso_millis(Utc::now() + ChronoDuration::seconds(seconds.max(1)));
         sqlx::query("INSERT INTO maintenance_owner_retry_state(task_key,next_eligible_at,reason) VALUES(?,?,?) ON CONFLICT(task_key) DO UPDATE SET next_eligible_at=excluded.next_eligible_at,reason=excluded.reason")
             .bind(key).bind(at).bind(reason).execute(&self.pool).await?;
@@ -3398,6 +3592,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn record_owned_retry(&self, key: &str, pressure: bool) -> Result<i64> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.record_owned_retry_inner(key, pressure),
+        )
+        .await
+    }
+
+    async fn record_owned_retry_inner(&self, key: &str, pressure: bool) -> Result<i64> {
         let mut tx = self.pool.begin().await?;
         let count: Option<i64> = sqlx::query_scalar(
             "SELECT failure_count FROM maintenance_owner_retry_state WHERE task_key=?",
@@ -3426,6 +3628,10 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn clear_owned_retry(&self, key: &str) -> Result<()> {
+        observe_store_write(StoreOperation::Control, self.clear_owned_retry_inner(key)).await
+    }
+
+    async fn clear_owned_retry_inner(&self, key: &str) -> Result<()> {
         sqlx::query("DELETE FROM maintenance_owner_retry_state WHERE task_key=?")
             .bind(key)
             .execute(&self.pool)
@@ -3434,6 +3640,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn apply_initial_task_defaults(&self) -> Result<bool> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.apply_initial_task_defaults_inner(),
+        )
+        .await
+    }
+
+    async fn apply_initial_task_defaults_inner(&self) -> Result<bool> {
         let mut transaction = self.pool.begin().await?;
         let now = format_utc_iso_millis(Utc::now());
         let mut changed = false;
@@ -3597,6 +3811,10 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
+        observe_store_write(StoreOperation::Wake, self.enqueue_due_runs_inner()).await
+    }
+
+    async fn enqueue_due_runs_inner(&self) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
         let mut transaction = self.pool.begin().await?;
@@ -3702,6 +3920,14 @@ impl MaintenanceStore {
         {
             return Ok(());
         }
+        observe_store_write(
+            StoreOperation::Cleanup,
+            self.cleanup_expired_history_if_due_inner(),
+        )
+        .await
+    }
+
+    async fn cleanup_expired_history_if_due_inner(&self) -> Result<()> {
         let now = Utc::now();
         let error_cutoff =
             format_utc_iso_millis(now - ChronoDuration::days(TASK_ERROR_RETENTION_DAYS));
@@ -3735,6 +3961,20 @@ impl MaintenanceStore {
         trigger_kind: &str,
         summary: Option<&str>,
     ) -> Result<i64> {
+        observe_store_write(
+            StoreOperation::Run,
+            self.begin_run_inner(task_key, started_at, trigger_kind, summary),
+        )
+        .await
+    }
+
+    async fn begin_run_inner(
+        &self,
+        task_key: &str,
+        started_at: &str,
+        trigger_kind: &str,
+        summary: Option<&str>,
+    ) -> Result<i64> {
         let result = sqlx::query_scalar("INSERT INTO managed_task_runs (task_key,trigger_kind,started_at,status,summary) VALUES (?,?,?,?,?) RETURNING id")
             .bind(task_key)
             .bind(trigger_kind)
@@ -3757,6 +3997,38 @@ impl MaintenanceStore {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn publish_progress(
+        &self,
+        task_key: &str,
+        total: Option<i64>,
+        completed: Option<i64>,
+        phase: Option<&str>,
+        checkpoint: Option<&str>,
+        unit: Option<&str>,
+        source_scope: Option<&str>,
+        wait_reason: Option<&str>,
+        next_retry_at: Option<&str>,
+        stages: Option<&[TaskStage]>,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Progress,
+            self.publish_progress_inner(
+                task_key,
+                total,
+                completed,
+                phase,
+                checkpoint,
+                unit,
+                source_scope,
+                wait_reason,
+                next_retry_at,
+                stages,
+            ),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn publish_progress_inner(
         &self,
         task_key: &str,
         total: Option<i64>,
@@ -3825,6 +4097,36 @@ impl MaintenanceStore {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn finish_run_with_observation(
+        &self,
+        id: i64,
+        status: &str,
+        finished_at: &str,
+        duration_ms: i64,
+        summary: Option<&str>,
+        detail: Option<&str>,
+        completion: Option<&str>,
+        core_completion: Option<&str>,
+        details: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Run,
+            self.finish_run_with_observation_inner(
+                id,
+                status,
+                finished_at,
+                duration_ms,
+                summary,
+                detail,
+                completion,
+                core_completion,
+                details,
+            ),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_run_with_observation_inner(
         &self,
         id: i64,
         status: &str,
@@ -3932,6 +4234,27 @@ impl MaintenanceStore {
         wait_reason: Option<&str>,
         now: &str,
     ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.update_retention_catchup_from_summary_inner(
+                completion,
+                backlog_total,
+                completed,
+                wait_reason,
+                now,
+            ),
+        )
+        .await
+    }
+
+    async fn update_retention_catchup_from_summary_inner(
+        &self,
+        completion: Option<&str>,
+        backlog_total: Option<i64>,
+        completed: usize,
+        wait_reason: Option<&str>,
+        now: &str,
+    ) -> Result<()> {
         let completed = completed.min(i64::MAX as usize) as i64;
         // Missing observation is not an empty backlog. Requalify after the consumed claim
         // with the same reason-specific backoff, retaining uncertainty in the displayed total.
@@ -3981,6 +4304,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn sync_retention_progress_schedule(&self) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Progress,
+            self.sync_retention_progress_schedule_inner(),
+        )
+        .await
+    }
+
+    async fn sync_retention_progress_schedule_inner(&self) -> Result<()> {
         sqlx::query(
             "INSERT INTO managed_task_progress(
                  task_key,updated_at,freshness,next_inspection_at,next_catchup_at,catchup_state
@@ -4005,6 +4336,17 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn record_retention_backlog_observation(
+        &self,
+        observation: RetentionBacklogObservation,
+    ) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Progress,
+            self.record_retention_backlog_observation_inner(observation),
+        )
+        .await
+    }
+
+    async fn record_retention_backlog_observation_inner(
         &self,
         observation: RetentionBacklogObservation,
     ) -> Result<()> {
@@ -4431,6 +4773,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn set_enabled(&self, task_key: &str, enabled: bool) -> Result<bool> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.set_enabled_inner(task_key, enabled),
+        )
+        .await
+    }
+
+    async fn set_enabled_inner(&self, task_key: &str, enabled: bool) -> Result<bool> {
         let Some((interval_secs, cron_expr, is_manual)) =
             sqlx::query_as::<_, (Option<i64>, Option<String>, bool)>(
                 "SELECT interval_secs,cron_expr,is_manual FROM managed_tasks WHERE task_key=?",
@@ -4484,6 +4834,19 @@ impl MaintenanceStore {
         interval_secs: Option<i64>,
         cron_expr: Option<&str>,
     ) -> Result<bool> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.set_schedule_inner(task_key, interval_secs, cron_expr),
+        )
+        .await
+    }
+
+    async fn set_schedule_inner(
+        &self,
+        task_key: &str,
+        interval_secs: Option<i64>,
+        cron_expr: Option<&str>,
+    ) -> Result<bool> {
         Self::validate_schedule(interval_secs, cron_expr).await?;
         let Some(enabled) = sqlx::query_scalar::<_, bool>(
             "SELECT enabled FROM managed_tasks WHERE task_key=? AND is_manual=0",
@@ -4508,6 +4871,20 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn update_control(
+        &self,
+        task_key: &str,
+        enabled: Option<bool>,
+        interval_secs: Option<Option<i64>>,
+        cron_expr: Option<Option<&str>>,
+    ) -> Result<bool> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.update_control_inner(task_key, enabled, interval_secs, cron_expr),
+        )
+        .await
+    }
+
+    async fn update_control_inner(
         &self,
         task_key: &str,
         enabled: Option<bool>,
@@ -4618,6 +4995,14 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn restore_control_state(&self, task: &ManagedTask) -> Result<()> {
+        observe_store_write(
+            StoreOperation::Control,
+            self.restore_control_state_inner(task),
+        )
+        .await
+    }
+
+    async fn restore_control_state_inner(&self, task: &ManagedTask) -> Result<()> {
         sqlx::query(
             "UPDATE managed_tasks
              SET enabled=?,interval_secs=?,cron_expr=?,next_trigger_at=?,

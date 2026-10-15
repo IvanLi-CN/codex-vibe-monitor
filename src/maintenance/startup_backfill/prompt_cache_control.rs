@@ -17,6 +17,24 @@ pub(super) async fn save_prompt_cache_materialization_progress(
     update: StartupBackfillProgressUpdate<'_>,
     expected_wake_generation: u64,
 ) -> Result<()> {
+    crate::maintenance_store::observe_store_write(
+        crate::observability::contention::StoreOperation::Progress,
+        save_prompt_cache_materialization_progress_inner(
+            pool,
+            task_name,
+            update,
+            expected_wake_generation,
+        ),
+    )
+    .await
+}
+
+async fn save_prompt_cache_materialization_progress_inner(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    update: StartupBackfillProgressUpdate<'_>,
+    expected_wake_generation: u64,
+) -> Result<()> {
     sqlx::query(
         r#"
         INSERT INTO startup_backfill_progress (
@@ -168,6 +186,7 @@ pub(super) async fn persist_prompt_cache_materialization_defer(
         failed: false,
         deferred: true,
         completed: true,
+        retains_pending: false,
         next_due: retry_at,
     })
 }
@@ -220,6 +239,16 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     scheduler: &StartupBackfillScheduler,
 ) -> Result<u64> {
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let decision = if store
+        .prompt_cache_materialization_control
+        .snapshot()
+        .is_some_and(|snapshot| !snapshot.enabled)
+    {
+        WakeDecision::Disabled
+    } else {
+        super::startup_backfill_wake_decision(wake_reason)
+    };
+    scheduler.record_notification(task, decision);
     let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
         return Ok(0);
     };
@@ -237,53 +266,12 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     else {
         return Ok(0);
     };
-    let task_name = task.name();
-    let mut transaction = store.pool.begin().await?;
-    let progress = sqlx::query_as::<_, (bool, Option<String>)>(
-        "SELECT enabled,next_run_after FROM startup_backfill_progress WHERE task_name=?",
-    )
-    .bind(task_name)
-    .fetch_optional(&mut *transaction)
+    let changed = super::observe_wake_attempt(task, async {
+        let changed =
+            wake_prompt_cache_materialization_write(store, task.name(), scheduler).await?;
+        Ok((changed, changed > 0))
+    })
     .await?;
-    let Some((progress_enabled, next_run_after)) = progress else {
-        transaction.commit().await?;
-        return Ok(0);
-    };
-    if !progress_enabled {
-        transaction.commit().await?;
-        return Ok(0);
-    }
-    if scheduler.has_pending_wake(task) {
-        transaction.commit().await?;
-        return Ok(0);
-    }
-    if let Some(next_run_after) = next_run_after.as_deref()
-        && parse_to_utc_datetime(next_run_after).is_some_and(|deadline| deadline > Utc::now())
-    {
-        let deadline = parse_to_utc_datetime(next_run_after).expect("validated retry deadline");
-        if scheduler.has_future_pressure_deadline(task, Utc::now()) {
-            transaction.commit().await?;
-            scheduler.record_next_due(task, deadline);
-            return Ok(0);
-        }
-    }
-    let changed = sqlx::query(
-        "UPDATE startup_backfill_progress
-         SET next_run_after=NULL, suspension_reason=NULL, next_probe_at=NULL,
-             last_status=?, wake_generation=wake_generation + 1
-         WHERE task_name=? AND enabled != 0
-           AND EXISTS (
-               SELECT 1 FROM managed_tasks
-               WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'
-                 AND enabled=1
-           )",
-    )
-    .bind(STARTUP_BACKFILL_STATUS_IDLE)
-    .bind(task_name)
-    .execute(&mut *transaction)
-    .await?
-    .rows_affected();
-    transaction.commit().await?;
     if changed > 0
         && store
             .prompt_cache_materialization_control
@@ -299,6 +287,70 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     } else {
         Ok(0)
     }
+}
+
+async fn wake_prompt_cache_materialization_write(
+    store: &crate::maintenance_store::MaintenanceStore,
+    task_name: &str,
+    scheduler: &StartupBackfillScheduler,
+) -> Result<u64> {
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let changed = crate::maintenance_store::observe_store_write(
+        crate::observability::contention::StoreOperation::Wake,
+        async {
+            let mut transaction = store.pool.begin().await?;
+            let progress = sqlx::query_as::<_, (bool, Option<String>)>(
+                "SELECT enabled,next_run_after FROM startup_backfill_progress WHERE task_name=?",
+            )
+            .bind(task_name)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            let Some((progress_enabled, next_run_after)) = progress else {
+                transaction.commit().await?;
+                return Ok(0);
+            };
+            if !progress_enabled {
+                transaction.commit().await?;
+                return Ok(0);
+            }
+            if scheduler.has_pending_wake(task) {
+                transaction.commit().await?;
+                return Ok(0);
+            }
+            if let Some(next_run_after) = next_run_after.as_deref()
+                && parse_to_utc_datetime(next_run_after)
+                    .is_some_and(|deadline| deadline > Utc::now())
+            {
+                let deadline =
+                    parse_to_utc_datetime(next_run_after).expect("validated retry deadline");
+                if scheduler.has_future_pressure_deadline(task, Utc::now()) {
+                    transaction.commit().await?;
+                    scheduler.record_next_due(task, deadline);
+                    return Ok(0);
+                }
+            }
+            let changed = sqlx::query(
+                "UPDATE startup_backfill_progress
+                 SET next_run_after=NULL, suspension_reason=NULL, next_probe_at=NULL,
+                     last_status=?, wake_generation=wake_generation + 1
+                 WHERE task_name=? AND enabled != 0
+                   AND EXISTS (
+                       SELECT 1 FROM managed_tasks
+                       WHERE task_key='startup_backfill.prompt_cache_conversations_materialization'
+                         AND enabled=1
+                   )",
+            )
+            .bind(STARTUP_BACKFILL_STATUS_IDLE)
+            .bind(task_name)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            transaction.commit().await?;
+            Ok(changed)
+        },
+    )
+    .await?;
+    Ok(changed)
 }
 
 #[cfg(test)]
@@ -426,6 +478,7 @@ pub(super) fn prompt_cache_stale_result_outcome() -> StartupBackfillTaskRunOutco
         failed: false,
         deferred: false,
         completed: false,
+        retains_pending: false,
         next_due: Utc::now()
             + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
     }
@@ -439,8 +492,11 @@ pub(super) fn apply_prompt_cache_control_schedule(
 ) {
     control.with_current_generation(snapshot.generation, || {
         if snapshot.enabled {
+            scheduler.record_notification(task, WakeDecision::New);
             scheduler.wake(task);
+            super::record_scheduler_wake_confirmation(task);
         } else {
+            scheduler.record_notification(task, WakeDecision::Disabled);
             scheduler.clear_pending(task);
         }
     });
@@ -453,6 +509,18 @@ pub(super) fn coordinator_for_prompt_cache_run()
 }
 
 pub(super) async fn mark_prompt_cache_materialization_running(
+    pool: &Pool<Sqlite>,
+    task_name: &str,
+    cursor_id: i64,
+) -> Result<()> {
+    crate::maintenance_store::observe_store_write(
+        crate::observability::contention::StoreOperation::Progress,
+        mark_prompt_cache_materialization_running_inner(pool, task_name, cursor_id),
+    )
+    .await
+}
+
+async fn mark_prompt_cache_materialization_running_inner(
     pool: &Pool<Sqlite>,
     task_name: &str,
     cursor_id: i64,

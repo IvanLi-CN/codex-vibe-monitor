@@ -115,6 +115,7 @@ where
             failed: false,
             deferred: false,
             completed: false,
+            retains_pending: false,
             next_due: startup_backfill_progress_due(&progress),
         });
     }
@@ -202,6 +203,7 @@ where
                 failed: true,
                 deferred: false,
                 completed: true,
+                retains_pending: false,
                 next_due,
             });
         }
@@ -234,6 +236,7 @@ where
                 failed: false,
                 deferred: false,
                 completed: true,
+                retains_pending: false,
                 next_due,
             })
         }
@@ -260,6 +263,7 @@ where
                 failed: false,
                 deferred: true,
                 completed: true,
+                retains_pending: false,
                 next_due,
             })
         }
@@ -317,6 +321,7 @@ where
                 failed: false,
                 deferred: false,
                 completed: true,
+                retains_pending: false,
                 next_due,
             })
         }
