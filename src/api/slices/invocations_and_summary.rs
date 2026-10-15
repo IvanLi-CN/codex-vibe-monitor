@@ -1,4 +1,5 @@
 use super::*;
+use crate::observability::contention::{StatsQuery, observe_query};
 use crate::runtime_mutation_bus::{RuntimeMutation, SequencedRuntimeMutation};
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
@@ -36,7 +37,16 @@ mod invocation_timeline;
 mod invocation_workflow_detail;
 #[cfg(test)]
 mod model_performance_duration_override_tests;
+#[cfg(test)]
+#[path = "../../tests/lightweight/statistics_observability.rs"]
+mod statistics_observability;
+mod summary_observability;
 mod summary_projection_lifecycle;
+
+pub(crate) use summary_observability::{
+    fetch_summary, record_summary_projection_publication_metrics,
+    summary_projection_pending_source_gaps,
+};
 
 pub(crate) use invocation_workflow_detail::{
     INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD, INVOCATION_COST_AUDIT_REASON_MODEL_MISSING,
@@ -20911,11 +20921,14 @@ fn summary_projection_live_source_row_bytes_sql(text_columns: &[&str]) -> String
 async fn load_summary_projection_live_high_watermark(
     pool: &Pool<Sqlite>,
 ) -> Result<i64, anyhow::Error> {
-    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
-        .fetch_one(pool)
-        .await
-        .map(|high_watermark| high_watermark.unwrap_or_default())
-        .context("summary projection live high-watermark hydration failed")
+    observe_query(
+        StatsQuery::Summary,
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(pool),
+    )
+    .await
+    .map(|high_watermark| high_watermark.unwrap_or_default())
+    .context("summary projection live high-watermark hydration failed")
 }
 
 fn pack_summary_projection_live_candidates(
@@ -30264,7 +30277,7 @@ pub(crate) fn summary_delta_affects_selection(
     }
 }
 
-pub(crate) async fn fetch_summary(
+async fn fetch_summary_inner(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SummaryQuery>,
 ) -> Result<Json<StatsResponse>, ApiError> {

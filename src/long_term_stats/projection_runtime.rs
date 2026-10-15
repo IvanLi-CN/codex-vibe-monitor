@@ -1,5 +1,7 @@
 use super::*;
-use crate::observability::contention::spawn_performance;
+use crate::observability::contention::{
+    PendingKind, PerformanceGauge, StatsProjection, current_performance, spawn_performance,
+};
 
 pub(super) const LONG_TERM_PROJECTION_CONSUMER: &str = "long_term_v1";
 pub(super) const LONG_TERM_PROJECTION_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
@@ -1867,6 +1869,25 @@ pub(super) async fn flush_long_term_projection_inner(
     } else {
         None
     };
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        metrics.set_performance(
+            PerformanceGauge::ProjectionPending(
+                StatsProjection::LongTerm,
+                PendingKind::DirtyBuckets,
+            ),
+            dirty_bucket_count as f64,
+        );
+        metrics.set_performance(
+            PerformanceGauge::ProjectionPending(StatsProjection::LongTerm, PendingKind::Rows),
+            projection_health.pending_event_count as f64,
+        );
+        if dirty_bucket_count == 0 && deferred_repair_count == 0 {
+            metrics.set_performance(
+                PerformanceGauge::ProjectionLastGood(StatsProjection::LongTerm),
+                Utc::now().timestamp() as f64,
+            );
+        }
+    }
     let interval_bytes = runtime
         .interval_index
         .iter()

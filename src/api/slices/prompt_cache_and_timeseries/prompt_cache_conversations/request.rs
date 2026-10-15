@@ -362,10 +362,9 @@ where
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    let (max_id,) = query
-        .build_query_as::<(Option<i64>,)>()
-        .fetch_one(executor)
-        .await?;
+    let (max_id,) =
+        observe_prompt_cache_query(query.build_query_as::<(Option<i64>,)>().fetch_one(executor))
+            .await?;
     Ok(max_id)
 }
 

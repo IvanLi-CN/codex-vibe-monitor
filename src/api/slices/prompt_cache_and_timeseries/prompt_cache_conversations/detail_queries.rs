@@ -36,11 +36,13 @@ where
     }
     query.push(") ORDER BY c.prompt_cache_key ASC");
 
-    query
-        .build_query_as::<PromptCacheConversationStatisticsRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationStatisticsRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_statistics_keys_with_invisible_invocations<
@@ -85,13 +87,13 @@ where
         Some(&snapshot_filter),
     );
 
-    Ok(query
-        .build_query_as::<(String,)>()
-        .fetch_all(executor)
-        .await?
-        .into_iter()
-        .map(|(key,)| key)
-        .collect())
+    Ok(
+        observe_prompt_cache_query(query.build_query_as::<(String,)>().fetch_all(executor))
+            .await?
+            .into_iter()
+            .map(|(key,)| key)
+            .collect(),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -150,10 +152,12 @@ where
         }
     }
     query.push(") ORDER BY live.prompt_cache_key, inv.id");
-    let rows = query
-        .build_query_as::<(String, String, String, Option<String>)>()
-        .fetch_all(executor)
-        .await?;
+    let rows = observe_prompt_cache_query(
+        query
+            .build_query_as::<(String, String, String, Option<String>)>()
+            .fetch_all(executor),
+    )
+    .await?;
     Ok(rows
         .into_iter()
         .map(
@@ -234,11 +238,13 @@ where
 
     query.push(" ORDER BY prompt_cache_key ASC, occurred_at ASC, id ASC");
 
-    query
-        .build_query_as::<PromptCacheConversationEventRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationEventRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_recent_invocations<'e, E>(
@@ -384,11 +390,13 @@ where
 
     query.push(") ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
-    query
-        .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries_at_snapshot<'e, E>(
@@ -523,11 +531,13 @@ where
           GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name \
           ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC");
 
-    query
-        .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
@@ -562,14 +572,16 @@ pub(crate) async fn query_prompt_cache_conversation_upstream_account_summaries(
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    query
+    observe_prompt_cache_query(
+        query
         .push(
             " GROUP BY prompt_cache_key, upstream_account_key, upstream_account_id, upstream_account_name \
               ORDER BY prompt_cache_key ASC, last_activity_at DESC, upstream_account_name DESC, upstream_account_id DESC",
         )
         .build_query_as::<PromptCacheConversationUpstreamAccountSummaryRow>()
-        .fetch_all(pool)
-        .await
+        .fetch_all(pool),
+    )
+    .await
         .map_err(Into::into)
 }
 
@@ -610,11 +622,13 @@ where
         .push_bind(PROMPT_CACHE_BINDING_KIND_UPSTREAM_ACCOUNT)
         .push(") ORDER BY binding.prompt_cache_key ASC");
 
-    query
-        .build_query_as::<PromptCacheConversationManualBindingSummaryRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationManualBindingSummaryRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries(
@@ -645,11 +659,13 @@ pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries(
 
     query.push(")");
 
-    query
-        .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
+            .fetch_all(pool),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_encrypted_owner_summaries_at_snapshot<'e, E>(
@@ -741,9 +757,11 @@ where
          ORDER BY ranked.prompt_cache_key ASC",
     );
 
-    query
-        .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationEncryptedOwnerSummaryRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }

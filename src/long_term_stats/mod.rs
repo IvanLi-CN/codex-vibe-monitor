@@ -66,4 +66,7 @@ mod intervals;
 pub(crate) use intervals::*;
 
 #[cfg(test)]
+#[path = "../tests/stateful_sqlite/statistics_observability.rs"]
+mod statistics_observability;
+#[cfg(test)]
 mod tests;
