@@ -1,6 +1,6 @@
 use super::*;
 use crate::observability::contention::{
-    PendingKind, PerformanceGauge, StatsProjection, current_performance,
+    PendingKind, PerformanceGauge, StatsProjection, current_performance, spawn_performance,
 };
 
 pub(super) const LONG_TERM_PROJECTION_CONSUMER: &str = "long_term_v1";
@@ -530,12 +530,13 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     let backfill_handle = spawn_long_term_stats_backfill(
+        state.observability.clone(),
         state.pool.clone(),
         state.config.long_term_stats_hourly_retention_days,
         cancel.clone(),
     );
-    tokio::spawn(async move {
-        let supervisor_handle = tokio::spawn(async move {
+    spawn_performance(state.observability.clone(), async move {
+        let supervisor_handle = spawn_performance(state.observability.clone(), async move {
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let mut pressure_eligibility_generation = pressure_gate.eligibility_generation();
             let mut pressure_retry_pending = false;

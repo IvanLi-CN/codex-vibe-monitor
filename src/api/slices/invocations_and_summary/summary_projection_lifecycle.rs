@@ -754,7 +754,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
     state: Arc<AppState>,
     startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
 ) {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
             return;
         }

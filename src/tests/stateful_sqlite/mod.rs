@@ -123,6 +123,7 @@ mod observability_retirement;
 )]
 mod parallel_work_stats_and_timeseries;
 mod pricing_catalog_and_models_passthrough;
+mod projection_observability;
 #[expect(
     clippy::too_many_arguments,
     reason = "Test insertion helpers mirror persisted prompt-cache fields."

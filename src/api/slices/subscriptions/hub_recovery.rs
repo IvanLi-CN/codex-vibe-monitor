@@ -220,7 +220,7 @@ impl SubscriptionHub {
         if recovery_scheduled {
             let hub = state.subscription_hub.clone();
             let recovery_state = state.clone();
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 hub.run_runtime_topic_recovery(recovery_state).await;
             });
         }
@@ -361,7 +361,7 @@ impl SubscriptionHub {
         };
         if recovery_scheduled {
             let hub = state.subscription_hub.clone();
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 hub.run_runtime_topic_recovery(state).await;
             });
         }
@@ -1159,7 +1159,7 @@ impl SubscriptionHub {
             CONVERSATION_OVERVIEW_TOPIC_REFRESH_DEBOUNCE
         };
         let hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             let mut delay = delay;
             loop {
                 tokio::time::sleep(delay).await;
@@ -1365,7 +1365,7 @@ impl SubscriptionHub {
         };
 
         let hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             let mut delay = UPSTREAM_ACCOUNT_ATTEMPTS_TOPIC_REFRESH_DEBOUNCE;
             loop {
                 tokio::time::sleep(delay).await;
@@ -1549,7 +1549,7 @@ impl SubscriptionHub {
                 ParallelWorkSchedule::None => {}
                 ParallelWorkSchedule::Materialize(scheduled_at) => {
                     let hub = state.subscription_hub.clone();
-                    tokio::spawn(async move {
+                    spawn_performance(state.observability.clone(), async move {
                         let deadline = scheduled_at + PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE;
                         tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
                         if Instant::now().saturating_duration_since(deadline)
@@ -1566,7 +1566,7 @@ impl SubscriptionHub {
                     // in-memory hot materializer. Recovery health reports that state directly;
                     // this background rebaseline delay is therefore not a hot cadence miss.
                     let hub = state.subscription_hub.clone();
-                    tokio::spawn(async move {
+                    spawn_performance(state.observability.clone(), async move {
                         tokio::time::sleep(PARALLEL_WORK_TOPIC_MATERIALIZATION_DEBOUNCE).await;
                         let result = hub
                             .refresh_topic_if_active(state.clone(), topic.clone(), true)
@@ -1631,7 +1631,7 @@ impl SubscriptionHub {
         };
         if recovery_scheduled {
             let hub = state.subscription_hub.clone();
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 hub.run_runtime_topic_recovery(state).await;
             });
         }
@@ -1821,7 +1821,7 @@ impl SubscriptionHub {
             let hub = state.subscription_hub.clone();
             let state = state.clone();
             let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
                 if Instant::now().saturating_duration_since(deadline)
                     > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE

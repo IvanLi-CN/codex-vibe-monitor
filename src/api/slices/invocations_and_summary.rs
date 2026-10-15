@@ -16439,7 +16439,7 @@ async fn summary_snapshot_cadence_trigger(state: &AppState) -> Option<SummarySna
 }
 
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut receiver = state.broadcaster.subscribe();
         let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
