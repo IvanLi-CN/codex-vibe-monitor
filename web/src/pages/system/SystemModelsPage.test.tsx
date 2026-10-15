@@ -396,7 +396,7 @@ describe("SystemModelsPage", () => {
 
   it("leaves local prices untouched when preview fails and allows retry", async () => {
     apiMocks.previewModelsDevPriceSync
-      .mockRejectedValueOnce(new Error("models.dev retrieval failed"))
+      .mockRejectedValueOnce(new Error("LiteLLM price catalog retrieval failed"))
       .mockResolvedValueOnce(makePreview());
 
     renderPage();
@@ -405,8 +405,8 @@ describe("SystemModelsPage", () => {
     await flushEffects();
 
     const alert = document.body.querySelector('[role="alert"]');
-    expect(alert?.textContent).toContain("无法获取 models.dev 目录。");
-    expect(alert?.textContent).not.toContain("models.dev retrieval failed");
+    expect(alert?.textContent).toContain("无法获取 LiteLLM 价目表。");
+    expect(alert?.textContent).not.toContain("LiteLLM price catalog retrieval failed");
     expect(alert?.querySelector("button")?.textContent).toContain("重试");
     expect(apiMocks.applyModelsDevPriceSync).not.toHaveBeenCalled();
     expect(apiMocks.updatePricingSettings).not.toHaveBeenCalled();
@@ -816,7 +816,7 @@ describe("SystemModelsPage", () => {
         cacheReadPer1m: null,
         cacheWritePer1m: null,
         reasoningPer1m: null,
-        source: "models.dev",
+        source: "litellm",
       },
       {
         model: "shared-model",
@@ -826,7 +826,7 @@ describe("SystemModelsPage", () => {
         cacheReadPer1m: null,
         cacheWritePer1m: null,
         reasoningPer1m: null,
-        source: "models.dev",
+        source: "litellm",
       },
     ]);
   });
@@ -906,7 +906,7 @@ describe("SystemModelsPage", () => {
         cacheReadPer1m: null,
         cacheWritePer1m: null,
         reasoningPer1m: null,
-        source: "models.dev",
+        source: "litellm",
       },
       {
         model: "shared-model",
@@ -916,7 +916,7 @@ describe("SystemModelsPage", () => {
         cacheReadPer1m: null,
         cacheWritePer1m: null,
         reasoningPer1m: null,
-        source: "models.dev",
+        source: "litellm",
       },
     ]);
   });

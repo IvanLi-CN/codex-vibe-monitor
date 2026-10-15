@@ -3,7 +3,7 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Add a persistent model candidate directory and migrate existing static preset candidates and priced model IDs once, preserving current enabled preset membership.",
-    "release_unit_description": "Persistent model management, dynamic proxy model listing, and reviewed models.dev price synchronization.",
+    "release_unit_description": "Persistent model management, dynamic proxy model listing, and reviewed LiteLLM price synchronization.",
     "version_impact": "minor"
   },
   "durable_state": {
@@ -11,7 +11,7 @@
     "storage_implementation": "SQLite managed_models catalog, proxy_model_settings.enabled_preset_models_json, and pricing_settings_models.",
     "source_compatibility_range": {
       "from_program_versions": "Supported repository versions using static PROXY_PRESET_MODEL_IDS and pricing_settings_models before the managed model catalog exists.",
-      "to_program_version": "Candidate release implementing model management and models.dev price synchronization.",
+      "to_program_version": "Candidate release implementing model management and LiteLLM price synchronization.",
       "direct_major_skips_supported": false
     }
   },
@@ -20,7 +20,7 @@
     "ddl_structural_changes": [
       {
         "id": "ddl-001",
-        "description": "Create the managed_models table, a durable suppression table for user-deleted IDs, and a schema migration marker table idempotently; existing proxy and pricing tables remain readable.",
+        "description": "Create the managed_models table, a durable suppression table for user-deleted IDs, a schema migration marker, and the model-keyed pricing_model_quotes table idempotently; existing proxy and pricing tables remain readable.",
         "order": 1,
         "observable": true,
         "pauseable": true
@@ -37,7 +37,7 @@
       },
       {
         "id": "dml-002",
-        "description": "On explicit sync apply, upsert only selected model IDs and selected supported token prices, mark imported prices as models.dev, and leave preset membership unchanged. On delete, remove the model directory row, price row, and preset member atomically.",
+        "description": "On explicit sync apply, upsert only selected model IDs, selected legacy token projections, and complete LiteLLM quote rows, then leave preset membership unchanged. On delete, remove the model directory row, price row, quote row, and preset member atomically.",
         "order": 3,
         "depends_on": ["dml-001"],
         "observable": true,

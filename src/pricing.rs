@@ -89,6 +89,18 @@ pub(crate) async fn ensure_managed_model_catalog(pool: &Pool<Sqlite>) -> Result<
 pub(crate) async fn ensure_pricing_settings_catalog_migrations(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pricing_model_quotes (
+            model TEXT PRIMARY KEY,
+            quotes_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pricing_model_quotes table existence")?;
+    sqlx::query(
+        r#"
         UPDATE pricing_settings_models
         SET cache_read_per_1m = cache_input_per_1m
         WHERE cache_read_per_1m IS NULL
@@ -106,7 +118,7 @@ pub(crate) async fn ensure_pricing_settings_catalog_migrations(pool: &Pool<Sqlit
 
 pub(crate) async fn load_managed_model_ids(pool: &Pool<Sqlite>) -> Result<Vec<String>> {
     sqlx::query_scalar::<_, String>(
-        "SELECT model FROM managed_models UNION SELECT model FROM pricing_settings_models ORDER BY model",
+        "SELECT model FROM managed_models UNION SELECT model FROM pricing_settings_models UNION SELECT model FROM pricing_model_quotes ORDER BY model",
     )
         .fetch_all(pool)
         .await
@@ -116,11 +128,12 @@ pub(crate) async fn load_managed_model_ids(pool: &Pool<Sqlite>) -> Result<Vec<St
 pub(crate) async fn upsert_synced_model_prices(
     pool: &Pool<Sqlite>,
     entries: &[PricingEntry],
+    quotes: &[PricingQuote],
 ) -> Result<PricingCatalog> {
     let mut tx = pool
         .begin()
         .await
-        .context("failed to begin models.dev price apply transaction")?;
+        .context("failed to begin LiteLLM price apply transaction")?;
     for entry in entries {
         sqlx::query("DELETE FROM managed_model_suppressions WHERE model = ?1")
             .bind(&entry.model)
@@ -133,7 +146,7 @@ pub(crate) async fn upsert_synced_model_prices(
                 model, input_per_1m, output_per_1m, cache_input_per_1m,
                 cache_read_per_1m, cache_write_per_1m, reasoning_per_1m, source, updated_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, 'models.dev', datetime('now'))
+            VALUES (?1, ?2, ?3, ?4, ?4, ?5, ?6, 'litellm', datetime('now'))
             ON CONFLICT(model) DO UPDATE SET
                 input_per_1m = excluded.input_per_1m,
                 output_per_1m = excluded.output_per_1m,
@@ -141,7 +154,7 @@ pub(crate) async fn upsert_synced_model_prices(
                 cache_read_per_1m = excluded.cache_read_per_1m,
                 cache_write_per_1m = excluded.cache_write_per_1m,
                 reasoning_per_1m = excluded.reasoning_per_1m,
-                source = 'models.dev',
+                source = 'litellm',
                 updated_at = datetime('now')
             "#,
         )
@@ -153,13 +166,14 @@ pub(crate) async fn upsert_synced_model_prices(
         .bind(entry.reasoning_per_1m)
         .execute(&mut *tx)
         .await
-        .with_context(|| format!("failed to apply models.dev price for {}", entry.model))?;
+        .with_context(|| format!("failed to apply LiteLLM price for {}", entry.model))?;
         sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
             .bind(&entry.model)
             .execute(&mut *tx)
             .await
             .with_context(|| format!("failed to add managed model {}", entry.model))?;
     }
+    upsert_quote_rows_in_transaction(&mut tx, quotes, false).await?;
     sqlx::query("UPDATE pricing_settings_meta SET updated_at = datetime('now') WHERE id = 1")
         .execute(&mut *tx)
         .await
@@ -167,8 +181,102 @@ pub(crate) async fn upsert_synced_model_prices(
     let next = load_pricing_catalog_from_connection(&mut tx).await?;
     tx.commit()
         .await
-        .context("failed to commit models.dev price apply transaction")?;
+        .context("failed to commit LiteLLM price apply transaction")?;
     Ok(next)
+}
+
+async fn upsert_quote_rows_in_transaction(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+    quotes: &[PricingQuote],
+    replace_all: bool,
+) -> Result<()> {
+    if replace_all {
+        sqlx::query("DELETE FROM pricing_model_quotes")
+            .execute(&mut **tx)
+            .await
+            .context("failed to clear pricing_model_quotes rows")?;
+    }
+    let mut grouped = HashMap::<String, Vec<PricingQuote>>::new();
+    for quote in quotes {
+        grouped
+            .entry(quote.model.clone())
+            .or_default()
+            .push(quote.clone());
+    }
+    for (model, model_quotes) in grouped {
+        sqlx::query("DELETE FROM managed_model_suppressions WHERE model = ?1")
+            .bind(&model)
+            .execute(&mut **tx)
+            .await
+            .with_context(|| format!("failed to restore quoted model {model}"))?;
+        let mut merged_quotes = if replace_all {
+            Vec::new()
+        } else {
+            sqlx::query_scalar::<_, String>(
+                "SELECT quotes_json FROM pricing_model_quotes WHERE model = ?1",
+            )
+            .bind(&model)
+            .fetch_optional(&mut **tx)
+            .await
+            .with_context(|| format!("failed to load existing pricing quotes for {model}"))?
+            .map(|serialized| {
+                serde_json::from_str::<Vec<PricingQuote>>(&serialized).with_context(|| {
+                    format!("failed to decode existing pricing quotes for {model}")
+                })
+            })
+            .transpose()?
+            .unwrap_or_default()
+        };
+        for quote in model_quotes {
+            if let Some(existing) = merged_quotes
+                .iter_mut()
+                .find(|existing| existing.provider_id == quote.provider_id)
+            {
+                *existing = quote;
+            } else {
+                merged_quotes.push(quote);
+            }
+        }
+        merged_quotes.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
+        let serialized = serde_json::to_string(&merged_quotes)
+            .with_context(|| format!("failed to serialize pricing quote for {model}"))?;
+        sqlx::query(
+            r#"
+            INSERT INTO pricing_model_quotes (model, quotes_json, updated_at)
+            VALUES (?1, ?2, datetime('now'))
+            ON CONFLICT(model) DO UPDATE SET
+                quotes_json = excluded.quotes_json,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(&model)
+        .bind(serialized)
+        .execute(&mut **tx)
+        .await
+        .with_context(|| format!("failed to save pricing quote for {model}"))?;
+        sqlx::query("INSERT OR IGNORE INTO managed_models (model) VALUES (?1)")
+            .bind(&model)
+            .execute(&mut **tx)
+            .await
+            .with_context(|| format!("failed to add quoted model {model}"))?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn load_pricing_quotes(pool: &Pool<Sqlite>) -> Result<Vec<PricingQuote>> {
+    let rows = sqlx::query_as::<_, (String, String)>(
+        "SELECT model, quotes_json FROM pricing_model_quotes ORDER BY model",
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to load pricing_model_quotes rows")?;
+    let mut quotes = Vec::new();
+    for (model, serialized) in rows {
+        let decoded = serde_json::from_str::<Vec<PricingQuote>>(&serialized)
+            .with_context(|| format!("failed to decode pricing quote for {model}"))?;
+        quotes.extend(decoded);
+    }
+    Ok(quotes)
 }
 
 pub(crate) async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
@@ -1084,6 +1192,14 @@ pub(crate) async fn save_pricing_catalog(
     pool: &Pool<Sqlite>,
     catalog: &PricingCatalog,
 ) -> Result<()> {
+    save_pricing_catalog_with_quotes(pool, catalog, None).await
+}
+
+pub(crate) async fn save_pricing_catalog_with_quotes(
+    pool: &Pool<Sqlite>,
+    catalog: &PricingCatalog,
+    quotes: Option<&[PricingQuote]>,
+) -> Result<()> {
     let mut tx = pool
         .begin()
         .await
@@ -1140,6 +1256,10 @@ pub(crate) async fn save_pricing_catalog(
     .execute(&mut *tx)
     .await
     .context("failed to add priced models to managed model catalog")?;
+
+    if let Some(quotes) = quotes {
+        upsert_quote_rows_in_transaction(&mut tx, quotes, true).await?;
+    }
 
     sqlx::query(
         r#"

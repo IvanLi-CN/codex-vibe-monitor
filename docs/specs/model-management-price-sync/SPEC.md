@@ -5,20 +5,22 @@
 ## Context and Scope
 
 - Context: 模型预置名单与成本估算价格分散维护，更新报价需要人工逐项查找。
-- In scope: 系统模型页、持久模型目录、预置成员开关、本地价格编辑与删除、按需从 models.dev 获取并人工选择价格，以及服务实例共享的同步选择与模型发现记忆。
+- In scope: 系统模型页、持久模型目录、预置成员开关、本地价格编辑与删除、按需从 LiteLLM 获取并人工选择价格，以及服务实例共享的同步选择与模型发现记忆。
 - Out of scope: 自动价格验证、计费真值、定时同步、供应商实时可用性探测、供应商专属运行时路由，以及估算器不支持的价格维度。
 
 ## Terms and Interfaces
 
 - `model ID`: 代理请求、价格目录和模型候选共用的稳定键；一个 ID 只对应一个有效本地价格。
 - `managed model`: 本地持久模型目录中可由用户设置代理预置状态的模型。
-- `price candidate`: models.dev 按供应商提供、尚未应用到本地价格目录的报价。
+- `price candidate`: LiteLLM 按供应商提供、尚未应用到本地价格目录的报价。
 - `system sync memory`: 服务实例共同维护的模型勾选、供应商筛选及曾出现的模型记录；它不是浏览器本地偏好，也不是已应用价格。
 - `quote selection memory`: 按模型 ID 与供应商 ID 共同区分的同步勾选意愿；它与本次价格是否有变化独立。
 - `applicable sync changes`: 当前供应商与状态范围中，已勾选且有明确、可导入报价，会新增或改变本地价格的模型集合。
 - `first-discovered catalog model`: 初始基线建立后，在完整价格同步候选目录中首次出现的模型 ID；与本地是否有价格、市场发布日期及供应商数量无关。
 - `unviewed new model`: 首次发现但其模型行尚未实际进入审阅可视区域的模型。
-- `deprecated quote`: models.dev 在供应商模型条目上明确标记为 `status=deprecated` 的报价；状态缺失或未知不代表实时可用或已下架。
+- `deprecated quote`: LiteLLM 在供应商模型条目上明确标记为 `status=deprecated` 的报价；状态缺失或未知不代表实时可用或已下架。
+- `quote rate`: 报价中的一个原始数值及其来源键、单位、模态、处理档位和上下文阈值；零是有效值，缺失不补零。
+- `quote version`: LiteLLM 原始响应正文的 SHA-256 摘要，随获取时间保存，用于审计当前报价快照。
 - Interface: `/system/models` 页面；`/api/settings`、`/api/settings/proxy`、`/api/settings/pricing` 与模型目录同步、应用和删除 API；代理公开的 `GET /v1/models`。
 
 ## Requirements
@@ -43,7 +45,7 @@
 
 ### REQ-MODEL-MGMT-004
 
-- The system MUST fetch models.dev only after a user opens synchronization preview; fetch and parse failures MUST leave local state unchanged and allow retry. The retry action MUST be inside the shared Alert component that presents the corresponding error.
+- The system MUST fetch LiteLLM only after a user opens synchronization preview; fetch and parse failures MUST leave local state unchanged and allow retry. The retry action MUST be inside the shared Alert component that presents the corresponding error.
 - Inputs: a user-triggered preview request.
 - Outputs: retrieval state and provider/model price candidates, or a retryable error.
 
@@ -63,22 +65,40 @@
 
 ### REQ-MODEL-MGMT-007
 
-- Synchronization MUST import only input, output, cache-read, cache-write, and reasoning token prices; other priced dimensions MUST be identified as unsupported and skipped.
-- Inputs: models.dev model cost fields.
-- Outputs: only supported token prices become local estimates; unsupported dimensions remain visible in preview metadata.
+- Synchronization MUST preserve every numeric LiteLLM rate and its source metadata in the quote record. Only a complete generic token input/output pair and supported cache/reasoning token rates MAY update the legacy estimator projection; unsupported or quote-only dimensions MUST NOT be converted into placeholder prices.
+- Inputs: LiteLLM model cost fields.
+- Outputs: complete rates remain visible and durable; only valid legacy projection fields become local estimates.
 
 ### REQ-MODEL-MGMT-008
 
 - The preview MUST leave every candidate without a remembered selection unchecked, including locally unpriced models, newly discovered models, newly encountered provider quotes, and changed prices of any source. When a remembered selection exists, the preview MUST restore both selected and explicitly deselected choices; the selection MUST NOT bypass provider conflict resolution or import eligibility. No price is written until the user applies the selected candidates.
 - Selection memory MUST be keyed by exact model ID and provider ID together. Switching quote providers MUST restore that provider's own selection or the unchecked default, without copying another provider's choice. Price changes or equality with the current local price MUST NOT erase a saved selection; a resolved importable candidate within scope MUST allow the user to change its remembered selection even when its price currently matches locally.
 - Inputs: provider-scoped candidates, remembered explicit selections, and the current local price source/value.
-- Outputs: restored explicit choices or an unchecked default; only selected candidates are applied and imported prices use source `models.dev`.
+- Outputs: restored explicit choices or an unchecked default; only selected candidates are applied and imported prices use source `LiteLLM`.
 
 ### REQ-MODEL-MGMT-009
 
 - Synchronization MUST change prices and model-directory membership only; it MUST NOT enable proxy presets.
 - Inputs: selected price candidates.
 - Outputs: new managed models have preset state off; existing preset state remains unchanged.
+
+### REQ-MODEL-MGMT-020
+
+- The adapter MUST GET exactly `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` only after the user opens the synchronization preview. It MUST enforce the existing request timeout and 32 MiB response limit, compute a SHA-256 response version, and advance the catalog baseline only after successful retrieval and normalization.
+- Inputs: the anonymous LiteLLM raw JSON response body.
+- Outputs: source URL, response version, retrieval time, providers, candidates, and complete normalized quotes; failed retrieval or parsing leaves the previous baseline and local state unchanged.
+
+### REQ-MODEL-MGMT-021
+
+- Each persisted quote MUST include model ID, provider identity, source, source version, retrieval time, optional source URL, and all normalized rates. Rates MUST retain the source key, original numeric value and unit, normalized display value and unit, modality, processing tier, and threshold when supplied. The UI MUST distinguish missing values from zero, show standard token rates expanded, and allow other dimensions to be inspected without losing them.
+- Inputs: a normalized LiteLLM model entry.
+- Outputs: one or more durable quote records keyed by model ID, with no upstream model or price data maintained by the project.
+
+### REQ-MODEL-MGMT-022
+
+- `quotes` MUST be optional on settings update and sync apply requests. Existing `entries`, five legacy fields, and `importable` semantics MUST remain readable. Omitting `quotes` MUST preserve existing quote rows; providing quotes MUST merge or replace only the explicitly supplied quote set according to the endpoint contract. Applying or deleting a model MUST update its quote rows and legacy projection atomically, and an interrupted write MUST leave no partial quote state.
+- Inputs: legacy settings payloads, complete quote payloads, and model deletion requests.
+- Outputs: backward-compatible settings responses with an additive `quotes` collection and restart-safe local quote storage.
 
 ### REQ-MODEL-MGMT-010
 
@@ -122,7 +142,7 @@
 
 ### REQ-MODEL-MGMT-016
 
-- The normalized preview MUST preserve models.dev lifecycle status for each provider quote. Each new review MUST hide quotes explicitly marked `status=deprecated` by default and provide a show-deprecated switch. Missing, unknown, alpha, and beta statuses MUST remain included; the system MUST NOT infer deprecation from model names, release dates, local price presence, or a different provider's status for the same model ID. When deprecated quotes are shown, their source-reported status MUST be identifiable.
+- The normalized preview MUST preserve LiteLLM lifecycle status for each provider quote. Each new review MUST hide quotes explicitly marked `status=deprecated` by default and provide a show-deprecated switch. Missing, unknown, alpha, and beta statuses MUST remain included; the system MUST NOT infer deprecation from model names, release dates, local price presence, or a different provider's status for the same model ID. When deprecated quotes are shown, their source-reported status MUST be identifiable.
 - Deprecation filtering MUST operate on provider quotes before model-ID grouping and MUST exclude hidden deprecated quotes from the current price-apply scope. Hiding a quote MUST NOT erase its saved selections, discovery history, local price, or preset state, and MUST NOT silently substitute a different provider quote. Complete-catalog discovery tracking remains independent of this display/apply filter.
 - Inputs: provider-scoped model statuses, the show-deprecated switch, and saved selections.
 - Outputs: a default review/apply scope excluding explicitly deprecated quotes, with an explicit way to include and inspect them.
@@ -157,9 +177,15 @@
 
 ### VER-MODEL-MGMT-002
 
-- Method: models.dev parser and synchronization API tests with catalog fixtures and failure cases.
+- Method: LiteLLM parser and synchronization API tests with catalog fixtures, SHA-256 versions, complete rate dimensions, and failure cases.
 - covers: `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-007`, `REQ-MODEL-MGMT-008`, `REQ-MODEL-MGMT-010`
-- Pass condition: provider conflicts require an explicit choice; unsupported dimensions are excluded; preview failures write nothing and expose retry inside the corresponding shared Alert; apply writes exactly selected values.
+- Pass condition: provider conflicts require an explicit choice; all source rates survive normalization; legacy projection excludes unsupported dimensions without placeholders; preview failures write nothing and expose retry inside the corresponding shared Alert; apply writes exactly selected values and quote rows.
+
+### VER-MODEL-MGMT-014
+
+- Method: settings compatibility and stateful SQLite quote-table fixtures, including old requests with omitted `quotes`, quote-only models, explicit deletion, and interrupted transaction recovery.
+- covers: `REQ-MODEL-MGMT-020`, `REQ-MODEL-MGMT-021`, `REQ-MODEL-MGMT-022`
+- Pass condition: old clients keep working, omitted quotes are preserved, complete multi-modal rates reload after restart, quote-only models do not get fake legacy prices, and failed writes leave the prior quote set intact.
 
 ### VER-MODEL-MGMT-003
 
@@ -294,6 +320,36 @@
   evidence_note: verifies the responsive model list in the dark theme
   image:
   ![模型页手机深色](./assets/models-page-mobile-dark.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: page
+  requested_viewport: 2320x1363
+  viewport_strategy: ui-demo-default
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: `/system/models?demoTheme=dark`
+  state: LiteLLM quote catalog desktop dark
+  evidence_note: verifies the LiteLLM-backed OpenAI image 2.5 models, five preserved text/image rates, readable per-million-token units, and the expanded quote details
+  image:
+  ![LiteLLM 图像模型桌面深色](./assets/models-page-litellm-desktop-dark.png)
+
+- source_type: ui_demo
+  target_program: mock-only
+  capture_scope: page
+  requested_viewport: 393x852
+  viewport_strategy: ui-demo-source
+  margin_policy: trim_only
+  evidence_surface: page
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: `/system/models?demoTheme=dark&demoViewport=mobile393`
+  state: LiteLLM quote catalog mobile dark
+  evidence_note: verifies the source-managed 393px responsive model list, expanded image 2.5 quote details, and preserved five-rate layout
+  image:
+  ![LiteLLM 图像模型手机深色](./assets/models-page-litellm-mobile-dark.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -447,7 +503,7 @@
 
 ## References
 
-- [models.dev API documentation](https://github.com/anomalyco/models.dev/blob/dev/README.md#api)
-- [models.dev provider-model lifecycle schema](https://github.com/anomalyco/models.dev/blob/dev/packages/core/src/schema.ts)
+- [LiteLLM raw price catalog](https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json)
+- [LiteLLM repository](https://github.com/BerriAI/litellm)
 - `./IMPLEMENTATION.md`
 - `./HISTORY.md`

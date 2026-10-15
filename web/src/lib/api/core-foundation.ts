@@ -1653,9 +1653,35 @@ export interface PricingEntry {
   source: string;
 }
 
+export interface PricingRate {
+  key: string;
+  sourceValue: number;
+  sourceUnit: string;
+  value: number;
+  unit: string;
+  dimension: string | null;
+  modality: string | null;
+  tier: string | null;
+  threshold: number | null;
+}
+
+export interface PricingQuote {
+  model: string;
+  providerId: string;
+  providerName: string;
+  source: string;
+  sourceVersion: string;
+  fetchedAt: string;
+  status?: string | null;
+  deprecationDate?: string | null;
+  sourceUrl: string | null;
+  rates: PricingRate[];
+}
+
 export interface PricingSettings {
   catalogVersion: string;
   entries: PricingEntry[];
+  quotes?: PricingQuote[];
 }
 
 export interface ModelsDevSyncProvider {
@@ -1671,6 +1697,7 @@ export interface ModelsDevPriceCandidate {
   providerName: string;
   docUrl: string | null;
   status: string | null;
+  deprecationDate?: string | null;
   inputPer1m: number | null;
   outputPer1m: number | null;
   cacheReadPer1m: number | null;
@@ -1714,10 +1741,13 @@ export interface ModelsDevSyncMemoryPatch {
 
 export interface ModelsDevSyncPreview {
   fetchedAt: string;
+  sourceUrl?: string;
+  sourceVersion?: string;
   providerCount: number;
   candidateCount: number;
   providers: ModelsDevSyncProvider[];
   candidates: ModelsDevPriceCandidate[];
+  quotes?: PricingQuote[];
   syncState: ModelsDevSyncMemoryState;
 }
 
@@ -3458,12 +3488,73 @@ function normalizePricingSettings(raw: unknown): PricingSettings {
     .map(normalizePricingEntry)
     .filter((entry): entry is PricingEntry => entry != null)
     .sort((a, b) => a.model.localeCompare(b.model));
+  const quotesRaw = Array.isArray(payload.quotes) ? payload.quotes : [];
+  const quotes = quotesRaw.flatMap((item): PricingQuote[] => {
+    const value = (item ?? {}) as Record<string, unknown>;
+    const model = typeof value.model === "string" ? value.model.trim() : "";
+    const providerId = typeof value.providerId === "string" ? value.providerId.trim() : "";
+    const providerName = typeof value.providerName === "string" ? value.providerName.trim() : "";
+    const source = typeof value.source === "string" ? value.source.trim() : "";
+    const sourceVersion = typeof value.sourceVersion === "string" ? value.sourceVersion.trim() : "";
+    const fetchedAt = typeof value.fetchedAt === "string" ? value.fetchedAt.trim() : "";
+    if (!model || !providerId || !providerName || !source || !sourceVersion || !fetchedAt) {
+      return [];
+    }
+    const ratesRaw = Array.isArray(value.rates) ? value.rates : [];
+    const rates = ratesRaw.flatMap((rate): PricingRate[] => {
+      const payload = (rate ?? {}) as Record<string, unknown>;
+      const key = typeof payload.key === "string" ? payload.key.trim() : "";
+      const sourceUnit = typeof payload.sourceUnit === "string" ? payload.sourceUnit.trim() : "";
+      const unit = typeof payload.unit === "string" ? payload.unit.trim() : "";
+      const sourceValue = normalizeFiniteNumber(payload.sourceValue);
+      const normalizedValue = normalizeFiniteNumber(payload.value);
+      if (
+        !key ||
+        !sourceUnit ||
+        !unit ||
+        sourceValue === undefined ||
+        normalizedValue === undefined
+      ) {
+        return [];
+      }
+      return [
+        {
+          key,
+          sourceValue,
+          sourceUnit,
+          value: normalizedValue,
+          unit,
+          dimension: typeof payload.dimension === "string" ? payload.dimension : null,
+          modality: typeof payload.modality === "string" ? payload.modality : null,
+          tier: typeof payload.tier === "string" ? payload.tier : null,
+          threshold: normalizeFiniteNumber(payload.threshold) ?? null,
+        },
+      ];
+    });
+    if (!rates.length) return [];
+    return [
+      {
+        model,
+        providerId,
+        providerName,
+        source,
+        sourceVersion,
+        fetchedAt,
+        status: typeof value.status === "string" ? value.status.trim() || null : null,
+        deprecationDate:
+          typeof value.deprecationDate === "string" ? value.deprecationDate.trim() || null : null,
+        sourceUrl: typeof value.sourceUrl === "string" ? value.sourceUrl : null,
+        rates,
+      },
+    ];
+  });
   return {
     catalogVersion:
       typeof payload.catalogVersion === "string" && payload.catalogVersion.trim()
         ? payload.catalogVersion.trim()
         : "custom",
     entries,
+    quotes,
   };
 }
 
@@ -3502,6 +3593,7 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
         providerName,
         docUrl: typeof value.docUrl === "string" ? value.docUrl : null,
         status: typeof value.status === "string" ? value.status : null,
+        deprecationDate: typeof value.deprecationDate === "string" ? value.deprecationDate : null,
         inputPer1m: normalizeFiniteNumber(value.inputPer1m) ?? null,
         outputPer1m: normalizeFiniteNumber(value.outputPer1m) ?? null,
         cacheReadPer1m: normalizeFiniteNumber(value.cacheReadPer1m) ?? null,
@@ -3516,10 +3608,13 @@ function normalizeModelsDevSyncPreview(raw: unknown): ModelsDevSyncPreview {
   });
   return {
     fetchedAt: typeof payload.fetchedAt === "string" ? payload.fetchedAt : "",
+    sourceUrl: typeof payload.sourceUrl === "string" ? payload.sourceUrl : "",
+    sourceVersion: typeof payload.sourceVersion === "string" ? payload.sourceVersion : "",
     providerCount: normalizeFiniteNumber(payload.providerCount) ?? providers.length,
     candidateCount: normalizeFiniteNumber(payload.candidateCount) ?? candidates.length,
     providers,
     candidates,
+    quotes: normalizePricingSettings({ quotes: payload.quotes }).quotes ?? [],
     syncState: normalizeModelsDevSyncMemoryState(payload.syncState),
   };
 }
@@ -6602,10 +6697,13 @@ export async function updateModelsDevSyncMemory(
   return normalizeModelsDevSyncMemoryState(response);
 }
 
-export async function applyModelsDevPriceSync(entries: PricingEntry[]): Promise<PricingSettings> {
+export async function applyModelsDevPriceSync(
+  entries: PricingEntry[],
+  quotes: PricingQuote[] = [],
+): Promise<PricingSettings> {
   const response = await fetchJson<unknown>("/api/settings/models/sync/apply", {
     method: "POST",
-    body: JSON.stringify({ entries }),
+    body: JSON.stringify({ entries, quotes }),
   });
   return normalizePricingSettings(response);
 }

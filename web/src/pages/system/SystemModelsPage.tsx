@@ -20,6 +20,8 @@ import {
   deleteManagedModel,
   fetchSettings,
   type PricingEntry,
+  type PricingQuote,
+  type PricingRate,
   type SettingsPayload,
   updateManagedModelPreset,
   updatePricingSettings,
@@ -51,6 +53,31 @@ function priceText(value: number | null | undefined): string {
   }).format(value);
 }
 
+function rateUnitLabel(unit: string, t: ReturnType<typeof useTranslation>["t"]): string {
+  const labels: Record<string, string> = {
+    usd_per_1m_tokens: t("system.models.rateUnitUsdPerMillionTokens"),
+    usd_per_token: t("system.models.rateUnitUsdPerToken"),
+    usd_per_second: t("system.models.rateUnitUsdPerSecond"),
+    usd_per_minute: t("system.models.rateUnitUsdPerMinute"),
+    usd_per_character: t("system.models.rateUnitUsdPerCharacter"),
+    usd_per_image: t("system.models.rateUnitUsdPerImage"),
+    usd: t("system.models.rateUnitUsd"),
+  };
+  return labels[unit] ?? unit.replaceAll("_", " ");
+}
+
+function rateMeta(rate: PricingRate, t: ReturnType<typeof useTranslation>["t"]): string {
+  const parts = [
+    rate.dimension ? `${t("system.models.rateDimension")}: ${rate.dimension}` : null,
+    rate.modality ? `${t("system.models.rateModality")}: ${rate.modality}` : null,
+    rate.tier ? `${t("system.models.rateTier")}: ${rate.tier}` : null,
+    rate.threshold != null
+      ? `${t("system.models.rateThreshold")}: ${new Intl.NumberFormat().format(rate.threshold)}`
+      : null,
+  ];
+  return parts.filter((part): part is string => part != null).join(" · ");
+}
+
 function optionalNumber(value: string): number | null | undefined {
   const normalized = value.trim();
   if (!normalized) return null;
@@ -67,6 +94,46 @@ function localPriceFields(entry: PricingEntry | undefined) {
     cacheWritePer1m: entry?.cacheWritePer1m ?? null,
     reasoningPer1m: entry?.reasoningPer1m ?? null,
   };
+}
+
+function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
+  const { t } = useTranslation();
+  if (!quotes.length) return null;
+  return (
+    <details className="mt-2 text-xs">
+      <summary className="cursor-pointer text-base-content/70">
+        {t("system.models.quoteCount", {
+          count: quotes.reduce((total, quote) => total + quote.rates.length, 0),
+        })}
+      </summary>
+      <div className="mt-2 grid gap-2 border-l border-base-300/70 pl-3 text-[11px] text-base-content/65">
+        {quotes.map((quote) => (
+          <div key={`${quote.model}:${quote.providerId}:${quote.sourceVersion}`}>
+            <div className="font-medium text-base-content/75">
+              {quote.providerName} ({quote.providerId})
+              {quote.status ? ` · ${t("system.models.rateStatus")}: ${quote.status}` : ""}
+              {quote.deprecationDate
+                ? ` · ${t("system.models.deprecationDate")}: ${quote.deprecationDate}`
+                : ""}
+            </div>
+            {quote.rates.map((rate) => (
+              <div key={rate.key} className="flex justify-between gap-2">
+                <span className="min-w-0 truncate" title={rate.key}>
+                  <span>{rate.key}</span>
+                  {rateMeta(rate, t) ? (
+                    <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
+                  ) : null}
+                </span>
+                <span className="shrink-0 tabular-nums">
+                  {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
+                </span>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
@@ -143,9 +210,17 @@ export default function SystemModelsPage() {
       new Set([
         ...(settings?.proxy.models ?? []),
         ...(settings?.pricing.entries.map((entry) => entry.model) ?? []),
+        ...(settings?.pricing.quotes?.map((quote) => quote.model) ?? []),
       ]),
     ).sort((a, b) => a.localeCompare(b));
-  }, [settings?.pricing.entries, settings?.proxy.models]);
+  }, [settings?.pricing.entries, settings?.pricing.quotes, settings?.proxy.models]);
+  const quotesByModel = useMemo(() => {
+    const grouped = new Map<string, PricingQuote[]>();
+    for (const quote of settings?.pricing.quotes ?? []) {
+      grouped.set(quote.model, [...(grouped.get(quote.model) ?? []), quote]);
+    }
+    return grouped;
+  }, [settings?.pricing.quotes]);
   const enabledModels = useMemo(
     () => new Set(settings?.proxy.enabledModels ?? []),
     [settings?.proxy.enabledModels],
@@ -185,6 +260,7 @@ export default function SystemModelsPage() {
       await updatePricingSettings({
         catalogVersion: settings.pricing.catalogVersion,
         entries: entries.sort((a, b) => a.model.localeCompare(b.model)),
+        ...(settings.pricing.quotes?.length ? { quotes: settings.pricing.quotes } : {}),
       });
       await reloadSettings();
       setEditorOpen(false);
@@ -216,6 +292,7 @@ export default function SystemModelsPage() {
               pricing: {
                 ...current.pricing,
                 entries: current.pricing.entries.filter((entry) => entry.model !== model),
+                quotes: (current.pricing.quotes ?? []).filter((quote) => quote.model !== model),
               },
             }
           : current,
@@ -255,7 +332,11 @@ export default function SystemModelsPage() {
               proxy: {
                 ...current.proxy,
                 models: Array.from(
-                  new Set([...current.proxy.models, ...entries.map((entry) => entry.model)]),
+                  new Set([
+                    ...current.proxy.models,
+                    ...entries.map((entry) => entry.model),
+                    ...(pricing.quotes ?? []).map((quote) => quote.model),
+                  ]),
                 ).sort((a, b) => a.localeCompare(b)),
               },
             }
@@ -399,6 +480,7 @@ export default function SystemModelsPage() {
                               {price.source}
                             </Chip>
                           ) : null}
+                          <QuoteDetails quotes={quotesByModel.get(model) ?? []} />
                         </td>
                         {PRICE_FIELDS.map(([field]) => (
                           <td key={field} className="py-3 pr-3 align-middle tabular-nums">
@@ -465,6 +547,7 @@ export default function SystemModelsPage() {
                             {price.source}
                           </Chip>
                         ) : null}
+                        <QuoteDetails quotes={quotesByModel.get(model) ?? []} />
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button
@@ -580,6 +663,7 @@ export default function SystemModelsPage() {
                 );
               })}
             </div>
+            <QuoteDetails quotes={quotesByModel.get(editorDraft.model.trim()) ?? []} />
             {editorError ? (
               <Alert variant="error" role="alert" className="mt-4">
                 {editorError}
@@ -631,6 +715,7 @@ export default function SystemModelsPage() {
         onOpenChange={setSyncOpen}
         returnFocusRef={syncTriggerRef}
         pricesByModel={pricesByModel}
+        quotesByModel={quotesByModel}
         onPricesApplied={handleSyncPricesApplied}
       />
     </div>

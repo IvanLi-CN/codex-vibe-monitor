@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::net::TcpListener;
 
 #[tokio::test]
-async fn models_dev_http_client_does_not_follow_redirects() {
+async fn price_catalog_http_client_does_not_follow_redirects() {
     let redirected_requests = Arc::new(AtomicUsize::new(0));
     let target_hits = Arc::clone(&redirected_requests);
     let target_app = Router::new().route(
@@ -53,7 +53,7 @@ async fn models_dev_http_client_does_not_follow_redirects() {
 
     let client = HttpClients::build(&test_config())
         .expect("build HTTP clients")
-        .models_dev;
+        .price_catalog;
     let response = client
         .get(format!("http://{redirect_addr}/"))
         .send()

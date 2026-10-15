@@ -5176,6 +5176,112 @@ export async function handleDemoRequest(request: Request) {
 
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
+  if (pathname === "/api/settings/models/sync/state" && request.method === "GET")
+    return json({
+      catalogBaselineInitialized: false,
+      providerSelectionInitialized: false,
+      providerSelections: [],
+      modelSelections: [],
+      quoteProviderChoices: [],
+      unviewedModelIds: [],
+    });
+  if (pathname === "/api/settings/models/sync/state" && request.method === "PATCH")
+    return json({
+      catalogBaselineInitialized: true,
+      providerSelectionInitialized: true,
+      providerSelections: [{ providerId: "openai", selected: true }],
+      modelSelections: [],
+      quoteProviderChoices: [],
+      unviewedModelIds: [],
+    });
+  if (pathname === "/api/settings/models/sync/preview" && request.method === "POST") {
+    const pricing = (demoModel.snapshot.settings as { pricing: { quotes: unknown[] } }).pricing;
+    const quotes = pricing.quotes;
+    return json({
+      fetchedAt: "2026-10-15T00:00:00Z",
+      sourceUrl:
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      sourceVersion: "sha256:demo-openai-image-25",
+      providerCount: 1,
+      candidateCount: 2,
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+        },
+      ],
+      candidates: [
+        {
+          model: "gpt-image-2.5-flare",
+          name: "gpt-image-2.5-flare",
+          providerId: "openai",
+          providerName: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+          status: null,
+          deprecationDate: null,
+          inputPer1m: 5,
+          outputPer1m: 30,
+          cacheReadPer1m: 1.25,
+          cacheWritePer1m: null,
+          reasoningPer1m: null,
+          unsupportedDimensions: [
+            "cache_read_input_image_token_cost",
+            "input_cost_per_image_token",
+            "output_cost_per_image_token",
+          ],
+          importable: true,
+        },
+        {
+          model: "gpt-image-2.5-sunburst",
+          name: "gpt-image-2.5-sunburst",
+          providerId: "openai",
+          providerName: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+          status: null,
+          deprecationDate: null,
+          inputPer1m: 5,
+          outputPer1m: 30,
+          cacheReadPer1m: 1.25,
+          cacheWritePer1m: null,
+          reasoningPer1m: null,
+          unsupportedDimensions: [
+            "cache_read_input_image_token_cost",
+            "input_cost_per_image_token",
+            "output_cost_per_image_token",
+          ],
+          importable: true,
+        },
+      ],
+      quotes,
+      syncState: {
+        catalogBaselineInitialized: false,
+        providerSelectionInitialized: false,
+        providerSelections: [],
+        modelSelections: [],
+        quoteProviderChoices: [],
+        unviewedModelIds: [],
+      },
+    });
+  }
+  if (pathname === "/api/settings/models/sync/apply" && request.method === "POST") {
+    const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const currentPricing = (demoModel.snapshot.settings as { pricing: Record<string, unknown> })
+      .pricing;
+    const entries = Array.isArray(payload.entries) ? payload.entries : [];
+    const quotes = Array.isArray(payload.quotes) ? payload.quotes : [];
+    const nextPricing = {
+      ...currentPricing,
+      catalogVersion: "litellm",
+      entries: [
+        ...(Array.isArray(currentPricing.entries) ? currentPricing.entries : []),
+        ...entries,
+      ],
+      quotes: [...(Array.isArray(currentPricing.quotes) ? currentPricing.quotes : []), ...quotes],
+    };
+    demoModel.updateSettings("/api/settings/pricing", nextPricing);
+    return json(nextPricing);
+  }
   if (pathname === "/api/settings/external-api-keys" && request.method === "GET")
     return json({ items: demoModel.snapshot.externalApiKeys });
   if (pathname === "/api/settings/external-api-keys" && request.method === "POST")

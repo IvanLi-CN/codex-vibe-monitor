@@ -4,15 +4,15 @@
 
 ## Current Status
 
-- Implementation: 原模型管理能力与价格审核改进均已实现；模型目录获取、选择记忆保存和价格应用失败均通过共享 Alert 展示本地化错误，重试操作放在对应 Alert 内且不暴露原始传输错误。
+- Implementation: 原模型管理能力与价格审核改进均已实现；LiteLLM 单一来源、SHA-256 报价版本、完整多维费率、独立报价持久化、兼容 `entries` 请求和事务应用均已接入。
 - Lifecycle: active
-- Catalog note: models.dev is fetched only on explicit preview; local estimates remain user-reviewed.
-- Delivery: 主人已确认与锁定基线比较后的视觉候选；桌面、手机、短屏及零结果证据已更新为正式 Spec 资产。PR #1064 已创建，当前 PR head 的 CI 收敛与 Tier 3 正式审查待完成。
+- Catalog note: LiteLLM is fetched only on explicit preview; local estimates remain user-reviewed.
+- Delivery: 本次实现从 `origin/main` 的 `th/litellm-price-catalog` 分支交付；视觉和正式审查证据在交付门禁阶段刷新。
 
 ## Implementation Coverage
 
 - `REQ-MODEL-MGMT-019`: `src/proxy/request_entry.rs` serves local presets for exact `GET /v1/models` requests without recognized credentials before upstream URL construction, invocation allocation, or inference admission. A failed credential lookup also falls back to the public local catalog; valid pool route keys retain the existing dispatch behavior. Router regressions in `src/tests/stateful_sqlite/pricing_catalog_and_models_passthrough/public_models.rs` cover credential variants, legacy settings, empty catalogs, unavailable SQLite, and authentication on adjacent paths and inference endpoints.
-- `REQ-MODEL-MGMT-001` through `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-007`, `REQ-MODEL-MGMT-009`, and `REQ-MODEL-MGMT-010`: existing persistent union catalog, preset updates, deletion suppression, on-demand models.dev parsing, normalized supported prices, selected apply, and source links remain in `src/pricing.rs`, `src/schema.rs`, `src/app_state.rs`, `src/api/slices/model_management.rs`, and `web/src/pages/system/SystemModelsPage.tsx`.
+- `REQ-MODEL-MGMT-001` through `REQ-MODEL-MGMT-004`, `REQ-MODEL-MGMT-007`, `REQ-MODEL-MGMT-009`, and `REQ-MODEL-MGMT-010`: existing persistent union catalog, preset updates, deletion suppression, on-demand LiteLLM parsing, normalized supported prices, selected apply, and source links remain in `src/pricing.rs`, `src/schema.rs`, `src/app_state.rs`, `src/api/slices/model_management.rs`, and `web/src/pages/system/SystemModelsPage.tsx`.
 - `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-006`, `REQ-MODEL-MGMT-008`, and `REQ-MODEL-MGMT-011`: `src/models_dev_sync_memory.rs` stores service-shared sparse provider selections, exact `(model ID, provider ID)` checkbox choices (including false), and explicit quote-provider choices. `GET/PATCH /api/settings/models/sync/state` exposes the state; the Web client restores it and queues optimistic changes for immediate serialized persistence with retry after failures. A failed viewed acknowledgment remains unviewed in a later review until a save succeeds or the server reports it viewed.
 - `REQ-MODEL-MGMT-012`: successful complete catalog previews establish a first-seen baseline and record subsequent exact model IDs; `ModelsDevSyncDialog.tsx` acknowledges discovery only after a row intersects its scroll viewport. The badge remains for the current review and clears on a later successful review after acknowledgment.
 - `REQ-MODEL-MGMT-013`: the review compares normalized input, output, cache-read, cache-write, and reasoning prices while distinguishing zero from missing; changed prices have text and color cues, and missing local price is distinct from new-model discovery.
@@ -21,17 +21,20 @@
 - `REQ-MODEL-MGMT-016`: the catalog parser preserves optional lifecycle status; explicitly deprecated quotes are hidden by default and excluded from apply until shown. Missing or other statuses remain visible.
 - `REQ-MODEL-MGMT-017`: unchanged quotes remain editable preferences but do not create writes. Apply counts show changed selected quotes, including those hidden by model search; the request contains only actual price changes.
 - `REQ-MODEL-MGMT-018`: price-application failures use localized text, keep raw transport details out of the shared Alert, and offer an in-Alert retry for the current applicable selection.
+- `REQ-MODEL-MGMT-020` through `REQ-MODEL-MGMT-022`: `src/api/slices/model_management.rs` reads the LiteLLM raw JSON, records a SHA-256 response version, normalizes complete rates into `PricingQuote`, and writes additive `pricing_model_quotes` rows. `quotes` is optional on settings and apply requests; omitted quotes preserve existing rows, while apply and delete update quote rows with the legacy projection atomically.
 - `web/src/features/system/models-dev-sync/selection.ts` contains pure selection and apply-range calculation; `web/src/features/system/models-dev-sync/ModelsDevSyncDialog.tsx` owns the review interaction. Preview requests are aborted and generation-guarded when a review closes or is replaced; the preview overlays local memory patches persisted after that request began, so a delayed snapshot cannot replace a newer saved choice. Failed viewed acknowledgments do not clear the new-model indicator from the next review. Closing is blocked while a price apply is in flight, including the footer cancel action, and unmounted dialogs ignore late apply results. Preview-fetch, memory-save, and price-apply failures keep their retry buttons inside the shared Alert. `web/src/lib/api/`, `web/src/i18n/translations.ts`, and the system workspace stories/tests provide the typed API, localization, and regression surfaces.
 - Existing apply and delete transactions still read the resulting price catalog before commit. A failed catalog read rolls back database changes and keeps the in-memory catalog and HTTP result consistent.
 
 ## Coverage / Rollout Summary
 
-- Five additive SQLite tables are created idempotently during schema setup. They do not infer checkbox choices from existing prices or proxy presets and do not rewrite existing prices, presets, or historical invocation costs.
+- Six additive SQLite tables are created idempotently during schema setup: five sync-memory tables and `pricing_model_quotes`. They do not infer checkbox choices from existing prices or proxy presets and do not rewrite existing prices, presets, or historical invocation costs.
 - The first successfully normalized complete catalog establishes the exact model-ID baseline and current provider selection set in a transaction. Later complete catalogs add newly discovered IDs without deleting absent history; retrieval or parsing failures do not advance discovery.
 - Sparse user patches are serialized transactions. Independent keys coexist, same-key successful writes resolve by commit order, and viewed acknowledgments advance only existing discovery records.
 - Earlier binaries ignore the additive sync-memory tables. Forward recovery can repeat table creation and catalog initialization without removing recorded selections or existing model/pricing data.
 
 ## Verification
+
+- Live acceptance: the LiteLLM raw catalog was fetched anonymously from `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` at delivery time (`2,861,391` bytes, SHA-256 `e81298776d384afec9998741f82d3b6b1de62e1526a16fcf91bd37eb1efde97e`); both OpenAI GPT Image 2.5 entries were present with text input/cache at `$5/$1.25` and image input/cache/output at `$8/$2/$30` per million tokens, matching the [OpenAI pricing page](https://developers.openai.com/api/docs/pricing).
 
 - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`: rerun after the concurrency regression update; 1,384 passed, 1,609 skipped on codex-testbox. The updated case races provider deselection with viewed acknowledgment, races true/false writes to one model/provider key, and verifies the persisted result.
 - `cargo test sync_memory -- --nocapture`: 4 passed after changing the GET path to use a read transaction. `cargo test models_dev_catalog_maps_supported_prices_and_reports_other_dimensions -- --nocapture`: 1 passed.
@@ -44,11 +47,7 @@
 
 ## Remaining Delivery Gates
 
-- Final Spec drift and contract checks, fresh current-head required CI, formal Tier 3 review, and merge.
-
-## Related Changes
-
-- [PR #1064](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1064) is open for convergence.
+- Current PR publication, current-head CI and read-only review readiness, and the Step 5C release decision card. Merge remains outside this implementation turn and requires the owner's confirmation of the decision card and predicted version.
 
 ## References
 

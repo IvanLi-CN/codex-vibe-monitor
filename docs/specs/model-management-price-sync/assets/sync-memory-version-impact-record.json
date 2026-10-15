@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add system-shared and durable models.dev provider/model selection memory, exact quote-provider choices, and first-discovery/view state.",
+    "description": "Add system-shared and durable LiteLLM provider/model selection memory, exact quote-provider choices, and first-discovery/view state.",
     "release_unit_description": "System Models page sync-memory API, additive SQLite state, and reviewed price synchronization.",
     "affected_contracts": ["public-api", "persistent-state"]
   },

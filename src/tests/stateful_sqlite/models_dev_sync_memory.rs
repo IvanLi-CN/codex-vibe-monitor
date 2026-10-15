@@ -24,6 +24,7 @@ fn candidate(model: &str, provider_id: &str) -> ModelsDevPriceCandidate {
         provider_name: provider_id.to_string(),
         doc_url: None,
         status: None,
+        deprecation_date: None,
         input_per_1m: Some(1.0),
         output_per_1m: Some(2.0),
         cache_read_per_1m: None,

@@ -3,12 +3,14 @@ use axum::extract::{Json, State};
 use axum::http::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use tracing::warn;
 
-const MODELS_DEV_API_URL: &str = "https://models.dev/api.json";
-const MODELS_DEV_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+const LITELLM_PRICE_CATALOG_URL: &str =
+    "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
+const LITELLM_MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +29,7 @@ pub(crate) struct ModelsDevPriceCandidate {
     pub(crate) provider_name: String,
     pub(crate) doc_url: Option<String>,
     pub(crate) status: Option<String>,
+    pub(crate) deprecation_date: Option<String>,
     pub(crate) input_per_1m: Option<f64>,
     pub(crate) output_per_1m: Option<f64>,
     pub(crate) cache_read_per_1m: Option<f64>,
@@ -40,10 +43,13 @@ pub(crate) struct ModelsDevPriceCandidate {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ModelsDevSyncPreview {
     pub(crate) fetched_at: String,
+    pub(crate) source_url: String,
+    pub(crate) source_version: String,
     pub(crate) provider_count: usize,
     pub(crate) candidate_count: usize,
     pub(crate) providers: Vec<ModelsDevSyncProvider>,
     pub(crate) candidates: Vec<ModelsDevPriceCandidate>,
+    pub(crate) quotes: Vec<PricingQuote>,
     pub(crate) sync_state: crate::models_dev_sync_memory::ModelsDevSyncMemoryState,
 }
 
@@ -94,6 +100,8 @@ pub(crate) async fn patch_models_sync_state(
 pub(crate) struct ModelsDevSyncApplyRequest {
     #[serde(default)]
     pub(crate) entries: Vec<PricingEntry>,
+    #[serde(default)]
+    pub(crate) quotes: Vec<PricingQuote>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -122,59 +130,60 @@ pub(crate) async fn post_models_sync_preview(
 
     let response = state
         .http_clients
-        .models_dev
-        .get(MODELS_DEV_API_URL)
+        .price_catalog
+        .get(LITELLM_PRICE_CATALOG_URL)
         .send()
         .await
         .map_err(|err| {
             (
                 StatusCode::BAD_GATEWAY,
-                format!("models.dev retrieval failed: {err}"),
+                format!("LiteLLM price catalog retrieval failed: {err}"),
             )
         })?;
     if !response.status().is_success() {
         return Err((
             StatusCode::BAD_GATEWAY,
-            format!("models.dev returned HTTP {}", response.status()),
+            format!("LiteLLM price catalog returned HTTP {}", response.status()),
         ));
     }
     let content_length = response.content_length();
-    if content_length.is_some_and(|length| length > MODELS_DEV_MAX_RESPONSE_BYTES as u64) {
+    if content_length.is_some_and(|length| length > LITELLM_MAX_RESPONSE_BYTES as u64) {
         return Err((
             StatusCode::BAD_GATEWAY,
-            "models.dev response exceeds the 32 MiB limit".to_string(),
+            "LiteLLM price catalog response exceeds the 32 MiB limit".to_string(),
         ));
     }
     let mut body = Vec::with_capacity(
         content_length
             .unwrap_or_default()
-            .min(MODELS_DEV_MAX_RESPONSE_BYTES as u64) as usize,
+            .min(LITELLM_MAX_RESPONSE_BYTES as u64) as usize,
     );
     let mut response = response;
     while let Some(chunk) = response.chunk().await.map_err(|err| {
         (
             StatusCode::BAD_GATEWAY,
-            format!("models.dev response read failed: {err}"),
+            format!("LiteLLM price catalog response read failed: {err}"),
         )
     })? {
-        if !append_limited_response_chunk(&mut body, &chunk, MODELS_DEV_MAX_RESPONSE_BYTES) {
+        if !append_limited_response_chunk(&mut body, &chunk, LITELLM_MAX_RESPONSE_BYTES) {
             return Err((
                 StatusCode::BAD_GATEWAY,
-                "models.dev response exceeds the 32 MiB limit".to_string(),
+                "LiteLLM price catalog response exceeds the 32 MiB limit".to_string(),
             ));
         }
     }
     let payload: Value = serde_json::from_slice(&body).map_err(|err| {
         (
             StatusCode::BAD_GATEWAY,
-            format!("models.dev response JSON is invalid: {err}"),
+            format!("LiteLLM price catalog response JSON is invalid: {err}"),
         )
     })?;
-    let mut preview = parse_models_dev_catalog(&payload).map_err(|err| {
-        warn!(error = %err, "failed to normalize models.dev catalog");
+    let source_version = format!("sha256:{:x}", Sha256::digest(&body));
+    let mut preview = parse_litellm_catalog(&payload, &source_version).map_err(|err| {
+        warn!(error = %err, "failed to normalize LiteLLM price catalog");
         (
             StatusCode::BAD_GATEWAY,
-            "models.dev catalog format is invalid".to_string(),
+            "LiteLLM price catalog format is invalid".to_string(),
         )
     })?;
     preview.sync_state = crate::models_dev_sync_memory::record_catalog_success(
@@ -209,19 +218,26 @@ pub(crate) async fn post_models_sync_apply(
             "cross-origin settings writes are forbidden".to_string(),
         ));
     }
-    if payload.entries.is_empty() {
+    let ModelsDevSyncApplyRequest { entries, quotes } = payload;
+    if entries.is_empty() && quotes.is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "select at least one model price".to_string(),
         ));
     }
-    let mut normalized = PricingSettingsUpdateRequest {
-        catalog_version: "models.dev".to_string(),
-        entries: payload.entries,
+    let (mut normalized, mut normalized_quotes) = PricingSettingsUpdateRequest {
+        catalog_version: "litellm".to_string(),
+        entries,
+        quotes: Some(quotes),
     }
-    .normalized()?;
+    .normalized_with_quotes()?;
     for pricing in normalized.models.values_mut() {
-        pricing.source = "models.dev".to_string();
+        pricing.source = "litellm".to_string();
+    }
+    if let Some(quotes) = normalized_quotes.as_mut() {
+        for quote in quotes {
+            quote.source = "litellm".to_string();
+        }
     }
     let entries = normalized
         .models
@@ -234,14 +250,18 @@ pub(crate) async fn post_models_sync_apply(
             cache_read_per_1m: pricing.effective_cache_read_per_1m(),
             cache_write_per_1m: pricing.cache_write_per_1m,
             reasoning_per_1m: pricing.reasoning_per_1m,
-            source: "models.dev".to_string(),
+            source: "litellm".to_string(),
         })
         .collect::<Vec<_>>();
 
     let _update_guard = state.pricing_settings_update_lock.lock().await;
-    let next = upsert_synced_model_prices(&state.pool, &entries)
-        .await
-        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let next = upsert_synced_model_prices(
+        &state.pool,
+        &entries,
+        normalized_quotes.as_deref().unwrap_or_default(),
+    )
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     {
         let mut guard = state.pricing_catalog.write().await;
         *guard = next.clone();
@@ -250,13 +270,18 @@ pub(crate) async fn post_models_sync_apply(
         &state.pool,
         &[StartupBackfillTask::ProxyCost],
         Some(&next),
-        "models_dev_pricing_sync",
+        "litellm_pricing_sync",
     )
     .await
     {
-        warn!(error = %err, "failed to wake ProxyCost backfill after models.dev price sync");
+        warn!(error = %err, "failed to wake ProxyCost backfill after LiteLLM price sync");
     }
-    Ok(Json(PricingSettingsResponse::from_catalog(&next)))
+    let quotes = load_pricing_quotes(&state.pool)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(
+        PricingSettingsResponse::from_catalog(&next).with_quotes(quotes),
+    ))
 }
 
 pub(crate) async fn put_managed_model_preset(
@@ -334,6 +359,12 @@ pub(crate) async fn delete_managed_model(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
         .rows_affected();
+    let quote_deleted = sqlx::query("DELETE FROM pricing_model_quotes WHERE model = ?1")
+        .bind(&model)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?
+        .rows_affected();
     let model_deleted = sqlx::query("DELETE FROM managed_models WHERE model = ?1")
         .bind(&model)
         .execute(&mut *tx)
@@ -344,7 +375,7 @@ pub(crate) async fn delete_managed_model(
         .enabled_preset_models
         .iter()
         .any(|candidate| candidate == &model);
-    if price_deleted == 0 && model_deleted == 0 && !was_enabled {
+    if price_deleted == 0 && quote_deleted == 0 && model_deleted == 0 && !was_enabled {
         return Err((StatusCode::NOT_FOUND, "model was not found".to_string()));
     }
     sqlx::query("INSERT OR IGNORE INTO managed_model_suppressions (model) VALUES (?1)")
@@ -461,6 +492,7 @@ fn parse_models_dev_catalog(payload: &Value) -> Result<ModelsDevSyncPreview, Str
                     .get("status")
                     .and_then(Value::as_str)
                     .map(str::to_string),
+                deprecation_date: None,
                 input_per_1m,
                 output_per_1m,
                 cache_read_per_1m,
@@ -488,12 +520,233 @@ fn parse_models_dev_catalog(payload: &Value) -> Result<ModelsDevSyncPreview, Str
     let candidate_count = candidates.len();
     Ok(ModelsDevSyncPreview {
         fetched_at: chrono::Utc::now().to_rfc3339(),
+        source_url: "legacy".to_string(),
+        source_version: "legacy".to_string(),
         provider_count: providers.len(),
         candidate_count,
         providers,
         candidates,
+        quotes: Vec::new(),
         sync_state: crate::models_dev_sync_memory::ModelsDevSyncMemoryState::default(),
     })
+}
+
+fn parse_litellm_catalog(
+    payload: &Value,
+    source_version: &str,
+) -> Result<ModelsDevSyncPreview, String> {
+    let model_map = payload
+        .as_object()
+        .ok_or_else(|| "LiteLLM catalog must be an object".to_string())?;
+    let fetched_at = chrono::Utc::now().to_rfc3339();
+    let mut provider_ids = BTreeSet::new();
+    let mut candidates = Vec::new();
+    let mut quotes = Vec::new();
+
+    for (model_id, model_value) in model_map {
+        let Some(model) = model_value.as_object() else {
+            return Err(format!("model {model_id} must be an object"));
+        };
+        let Some(provider_id) = model.get("litellm_provider").and_then(Value::as_str) else {
+            continue;
+        };
+        let provider_id = provider_id.trim();
+        if provider_id.is_empty() {
+            continue;
+        }
+        let rates = model
+            .iter()
+            .filter_map(|(key, value)| {
+                let value = value.as_f64()?;
+                if !value.is_finite() || value < 0.0 || !key.contains("cost") {
+                    return None;
+                }
+                Some(litellm_rate(key, value))
+            })
+            .collect::<Vec<_>>();
+        if rates.is_empty() {
+            continue;
+        }
+        let source_url = model
+            .get("source")
+            .and_then(Value::as_str)
+            .and_then(valid_http_url)
+            .map(str::to_string);
+        let status = model
+            .get("status")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let deprecation_date = model
+            .get("deprecation_date")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let quote = PricingQuote {
+            model: model_id.clone(),
+            provider_id: provider_id.to_string(),
+            provider_name: provider_id.to_string(),
+            source: "litellm".to_string(),
+            source_version: source_version.to_string(),
+            fetched_at: fetched_at.clone(),
+            status: status.clone(),
+            deprecation_date: deprecation_date.clone(),
+            source_url: source_url.clone(),
+            rates: rates.clone(),
+        };
+        let input_per_1m = select_litellm_token_rate(&rates, "input", false)
+            .or_else(|| select_litellm_token_rate(&rates, "input", true));
+        let output_per_1m = select_litellm_token_rate(&rates, "output", false)
+            .or_else(|| select_litellm_token_rate(&rates, "output", true));
+        let cache_read_per_1m = select_litellm_token_rate(&rates, "cacheRead", false);
+        let cache_write_per_1m = select_litellm_token_rate(&rates, "cacheWrite", false);
+        let reasoning_per_1m = select_litellm_token_rate(&rates, "reasoning", false);
+        let unsupported_dimensions = rates
+            .iter()
+            .filter(|rate| {
+                !(rate.unit == "usd_per_1m_tokens"
+                    && rate.tier.is_none()
+                    && rate
+                        .modality
+                        .as_deref()
+                        .is_none_or(|modality| modality == "text"))
+            })
+            .map(|rate| rate.key.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        provider_ids.insert(provider_id.to_string());
+        candidates.push(ModelsDevPriceCandidate {
+            model: model_id.clone(),
+            name: model
+                .get("display_name")
+                .or_else(|| model.get("model_name"))
+                .or_else(|| model.get("name"))
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string(),
+            provider_id: provider_id.to_string(),
+            provider_name: provider_id.to_string(),
+            doc_url: source_url,
+            status,
+            deprecation_date,
+            input_per_1m,
+            output_per_1m,
+            cache_read_per_1m,
+            cache_write_per_1m,
+            reasoning_per_1m,
+            unsupported_dimensions,
+            importable: input_per_1m.is_some() && output_per_1m.is_some(),
+        });
+        quotes.push(quote);
+    }
+
+    let providers = provider_ids
+        .into_iter()
+        .map(|id| ModelsDevSyncProvider {
+            id: id.clone(),
+            name: id,
+            doc_url: None,
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|a, b| {
+        a.provider_name
+            .cmp(&b.provider_name)
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    quotes.sort_by(|a, b| {
+        a.provider_id
+            .cmp(&b.provider_id)
+            .then_with(|| a.model.cmp(&b.model))
+    });
+    Ok(ModelsDevSyncPreview {
+        fetched_at,
+        source_url: LITELLM_PRICE_CATALOG_URL.to_string(),
+        source_version: source_version.to_string(),
+        provider_count: providers.len(),
+        candidate_count: candidates.len(),
+        providers,
+        candidates,
+        quotes,
+        sync_state: crate::models_dev_sync_memory::ModelsDevSyncMemoryState::default(),
+    })
+}
+
+fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
+    let source_unit = if key.contains("per_image_token") || key.contains("image_token_cost") {
+        "usd_per_image_token"
+    } else if key.contains("per_token") || key.contains("token_cost") {
+        "usd_per_token"
+    } else if key.contains("per_second") {
+        "usd_per_second"
+    } else if key.contains("per_minute") {
+        "usd_per_minute"
+    } else if key.contains("per_character") {
+        "usd_per_character"
+    } else if key.contains("per_image") {
+        "usd_per_image"
+    } else {
+        "usd"
+    };
+    let token_unit = matches!(source_unit, "usd_per_token" | "usd_per_image_token");
+    let (value, unit) = if token_unit {
+        (source_value * 1_000_000.0, "usd_per_1m_tokens")
+    } else {
+        (source_value, source_unit)
+    };
+    let dimension = if key.contains("cache_read") {
+        Some("cacheRead")
+    } else if key.contains("cache_creation") || key.contains("cache_write") {
+        Some("cacheWrite")
+    } else if key.starts_with("input") {
+        Some("input")
+    } else if key.starts_with("output") {
+        Some("output")
+    } else if key.starts_with("reasoning") {
+        Some("reasoning")
+    } else {
+        None
+    };
+    let modality = if key.contains("image") {
+        Some("image")
+    } else if key.contains("audio") {
+        Some("audio")
+    } else if key.contains("video") {
+        Some("video")
+    } else if token_unit {
+        Some("text")
+    } else {
+        None
+    };
+    let tier = ["batches", "batch", "flex", "priority", "standard"]
+        .iter()
+        .find(|tier| key.contains(**tier))
+        .map(|tier| (*tier).to_string());
+    let threshold = key.split('_').find_map(|part| {
+        let number = part.strip_suffix('k')?;
+        number.parse::<f64>().ok().map(|value| value * 1_000.0)
+    });
+    PricingRate {
+        key: key.to_string(),
+        source_value,
+        source_unit: source_unit.to_string(),
+        value,
+        unit: unit.to_string(),
+        dimension: dimension.map(str::to_string),
+        modality: modality.map(str::to_string),
+        tier,
+        threshold,
+    }
+}
+
+fn select_litellm_token_rate(rates: &[PricingRate], dimension: &str, image: bool) -> Option<f64> {
+    rates
+        .iter()
+        .find(|rate| {
+            rate.dimension.as_deref() == Some(dimension)
+                && rate.unit == "usd_per_1m_tokens"
+                && rate.tier.is_none()
+                && (rate.modality.as_deref() == Some(if image { "image" } else { "text" }))
+        })
+        .map(|rate| rate.value)
 }
 
 fn model_cost(
@@ -557,6 +810,70 @@ mod tests {
         assert_eq!(candidate.reasoning_per_1m, Some(3.0));
         assert_eq!(candidate.unsupported_dimensions, ["batch", "input_audio"]);
         assert!(candidate.importable);
+    }
+
+    #[test]
+    fn litellm_catalog_preserves_openai_image_25_modal_rates() {
+        let parsed = parse_litellm_catalog(
+            &json!({
+                "gpt-image-2.5-flare": {
+                    "litellm_provider": "openai",
+                    "source": "https://developers.openai.com/api/docs/pricing",
+                    "input_cost_per_token": 0.000005,
+                    "cache_read_input_token_cost": 0.00000125,
+                    "cache_read_input_image_token_cost": 0.000002,
+                    "input_cost_per_image_token": 0.000008,
+                    "output_cost_per_image_token": 0.00003
+                },
+                "gpt-image-2.5-sunburst": {
+                    "litellm_provider": "openai",
+                    "input_cost_per_token": 0.000005,
+                    "cache_read_input_token_cost": 0.00000125,
+                "cache_read_input_image_token_cost": 0.000002,
+                    "input_cost_per_image_token": 0.000008,
+                    "output_cost_per_image_token": 0.00003
+                }
+            }),
+            "sha256:test",
+        )
+        .expect("LiteLLM fixture should parse");
+
+        assert_eq!(parsed.candidates.len(), 2);
+        assert_eq!(parsed.providers[0].id, "openai");
+        for quote in &parsed.quotes {
+            assert_eq!(quote.source, "litellm");
+            assert!(
+                quote
+                    .rates
+                    .iter()
+                    .any(|rate| { rate.key == "input_cost_per_token" && rate.value == 5.0 })
+            );
+            assert!(
+                quote.rates.iter().any(|rate| {
+                    rate.key == "cache_read_input_token_cost" && rate.value == 1.25
+                })
+            );
+            assert!(quote.rates.iter().any(|rate| {
+                rate.key == "cache_read_input_image_token_cost" && rate.value == 2.0
+            }));
+            assert!(
+                quote
+                    .rates
+                    .iter()
+                    .any(|rate| { rate.key == "input_cost_per_image_token" && rate.value == 8.0 })
+            );
+            assert!(
+                quote.rates.iter().any(|rate| {
+                    rate.key == "output_cost_per_image_token" && rate.value == 30.0
+                })
+            );
+        }
+        assert!(
+            parsed
+                .candidates
+                .iter()
+                .all(|candidate| candidate.importable)
+        );
     }
 
     #[test]

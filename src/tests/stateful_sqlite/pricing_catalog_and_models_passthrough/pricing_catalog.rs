@@ -33,6 +33,7 @@ async fn pricing_settings_api_keeps_empty_catalog_after_reload() {
         HeaderMap::new(),
         Json(PricingSettingsUpdateRequest {
             catalog_version: "custom-empty".to_string(),
+            quotes: None,
             entries: vec![],
         }),
     )
@@ -67,6 +68,7 @@ async fn pricing_settings_api_rejects_invalid_payload() {
         HeaderMap::new(),
         Json(PricingSettingsUpdateRequest {
             catalog_version: "   ".to_string(),
+            quotes: None,
             entries: vec![],
         }),
     )
@@ -88,6 +90,7 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
         HeaderMap::new(),
         Json(PricingSettingsUpdateRequest {
             catalog_version: "custom-legacy-cache".to_string(),
+            quotes: None,
             entries: vec![PricingEntry {
                 model: "gpt-legacy".to_string(),
                 input_per_1m: 9.0,
@@ -118,6 +121,83 @@ async fn pricing_settings_api_mirrors_legacy_cache_input_into_cache_read_respons
     assert_eq!(model.cache_input_per_1m, Some(0.9));
     assert_eq!(model.cache_read_per_1m, Some(0.9));
     assert_eq!(model.cache_write_per_1m, None);
+}
+
+#[tokio::test]
+async fn pricing_settings_api_preserves_quotes_when_legacy_request_omits_quotes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let quote = PricingQuote {
+        model: "gpt-quote-preserved".to_string(),
+        provider_id: "openai".to_string(),
+        provider_name: "OpenAI".to_string(),
+        source: "custom".to_string(),
+        source_version: "manual-v1".to_string(),
+        fetched_at: "2026-10-15T00:00:00Z".to_string(),
+        status: None,
+        deprecation_date: None,
+        source_url: None,
+        rates: vec![PricingRate {
+            key: "input_cost_per_image_token".to_string(),
+            source_value: 0.000008,
+            source_unit: "usd_per_image_token".to_string(),
+            value: 8.0,
+            unit: "usd_per_1m_tokens".to_string(),
+            dimension: Some("input".to_string()),
+            modality: Some("image".to_string()),
+            tier: None,
+            threshold: None,
+        }],
+    };
+
+    let Json(first) = put_pricing_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(PricingSettingsUpdateRequest {
+            catalog_version: "manual-v1".to_string(),
+            entries: vec![PricingEntry {
+                model: "gpt-quote-preserved".to_string(),
+                input_per_1m: 5.0,
+                output_per_1m: 30.0,
+                cache_input_per_1m: Some(1.25),
+                cache_read_per_1m: Some(1.25),
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            }],
+            quotes: Some(vec![quote.clone()]),
+        }),
+    )
+    .await
+    .expect("initial quote save should succeed");
+    assert_eq!(first.quotes.len(), 1);
+
+    let Json(second) = put_pricing_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(PricingSettingsUpdateRequest {
+            catalog_version: "manual-v2".to_string(),
+            entries: vec![PricingEntry {
+                model: "gpt-quote-preserved".to_string(),
+                input_per_1m: 6.0,
+                output_per_1m: 31.0,
+                cache_input_per_1m: Some(1.5),
+                cache_read_per_1m: Some(1.5),
+                cache_write_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            }],
+            quotes: None,
+        }),
+    )
+    .await
+    .expect("legacy request without quotes should succeed");
+    assert_eq!(second.catalog_version, "manual-v2");
+    assert_eq!(second.entries[0].input_per_1m, 6.0);
+    assert_eq!(second.quotes, vec![quote]);
+    assert_eq!(load_pricing_quotes(&state.pool).await.unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -1150,8 +1230,9 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
             cache_read_per_1m: Some(0.3),
             cache_write_per_1m: Some(0.4),
             reasoning_per_1m: None,
-            source: "models.dev".to_string(),
+            source: "litellm".to_string(),
         }],
+        &[],
     )
     .await
     .expect("rediscover model from source");
@@ -1174,7 +1255,7 @@ async fn managed_model_catalog_migrates_preserves_deletions_and_allows_rediscove
 }
 
 #[tokio::test]
-async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
+async fn litellm_apply_updates_only_selected_prices_and_marks_the_source() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -1196,6 +1277,28 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
         State(state.clone()),
         HeaderMap::new(),
         Json(ModelsDevSyncApplyRequest {
+            quotes: vec![PricingQuote {
+                model: "selected-model".to_string(),
+                provider_id: "openai".to_string(),
+                provider_name: "OpenAI".to_string(),
+                source: "litellm".to_string(),
+                source_version: "sha256:test".to_string(),
+                fetched_at: "2026-10-15T00:00:00Z".to_string(),
+                status: None,
+                deprecation_date: None,
+                source_url: Some("https://developers.openai.com/api/docs/pricing".to_string()),
+                rates: vec![PricingRate {
+                    key: "input_cost_per_image_token".to_string(),
+                    source_value: 0.000008,
+                    source_unit: "usd_per_image_token".to_string(),
+                    value: 8.0,
+                    unit: "usd_per_1m_tokens".to_string(),
+                    dimension: Some("input".to_string()),
+                    modality: Some("image".to_string()),
+                    tier: None,
+                    threshold: None,
+                }],
+            }],
             entries: vec![PricingEntry {
                 model: "selected-model".to_string(),
                 input_per_1m: 1.5,
@@ -1209,7 +1312,7 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
         }),
     )
     .await
-    .expect("apply selected models.dev prices");
+    .expect("apply selected LiteLLM prices");
 
     let selected = applied
         .entries
@@ -1218,7 +1321,9 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
         .expect("selected model price returned");
     assert_eq!(selected.input_per_1m, 1.5);
     assert_eq!(selected.output_per_1m, 2.5);
-    assert_eq!(selected.source, "models.dev");
+    assert_eq!(selected.source, "litellm");
+    assert_eq!(applied.quotes.len(), 1);
+    assert_eq!(applied.quotes[0].rates[0].value, 8.0);
     let unselected = applied
         .entries
         .iter()
@@ -1240,6 +1345,46 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
             .input_per_1m,
         30.0
     );
+
+    let Json(merged) = post_models_sync_apply(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ModelsDevSyncApplyRequest {
+            entries: vec![],
+            quotes: vec![PricingQuote {
+                model: "selected-model".to_string(),
+                provider_id: "azure".to_string(),
+                provider_name: "Azure".to_string(),
+                source: "litellm".to_string(),
+                source_version: "sha256:other".to_string(),
+                fetched_at: "2026-10-15T00:00:00Z".to_string(),
+                status: None,
+                deprecation_date: None,
+                source_url: None,
+                rates: vec![PricingRate {
+                    key: "input_cost_per_token".to_string(),
+                    source_value: 0.000005,
+                    source_unit: "usd_per_token".to_string(),
+                    value: 5.0,
+                    unit: "usd_per_1m_tokens".to_string(),
+                    dimension: Some("input".to_string()),
+                    modality: Some("text".to_string()),
+                    tier: None,
+                    threshold: None,
+                }],
+            }],
+        }),
+    )
+    .await
+    .expect("merge another provider quote");
+    assert_eq!(
+        merged
+            .quotes
+            .iter()
+            .filter(|quote| quote.model == "selected-model")
+            .count(),
+        2
+    );
     assert!(
         !state
             .proxy_model_settings
@@ -1248,6 +1393,92 @@ async fn models_dev_apply_updates_only_selected_prices_and_marks_the_source() {
             .enabled_preset_models
             .iter()
             .any(|model| model == "selected-model")
+    );
+}
+
+#[tokio::test]
+async fn quote_only_apply_restores_a_deleted_model_without_legacy_price() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let model = "quote-only-model";
+    sqlx::query("INSERT INTO managed_models (model) VALUES (?1)")
+        .bind(model)
+        .execute(&state.pool)
+        .await
+        .expect("seed quote-only model");
+
+    let _ = delete_managed_model(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ManagedModelDeleteRequest {
+            model: model.to_string(),
+        }),
+    )
+    .await
+    .expect("delete quote-only model");
+
+    let _ = post_models_sync_apply(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ModelsDevSyncApplyRequest {
+            entries: vec![],
+            quotes: vec![PricingQuote {
+                model: model.to_string(),
+                provider_id: "openai".to_string(),
+                provider_name: "OpenAI".to_string(),
+                source: "litellm".to_string(),
+                source_version: "sha256:test".to_string(),
+                fetched_at: "2026-10-15T00:00:00Z".to_string(),
+                status: None,
+                deprecation_date: None,
+                source_url: Some("https://developers.openai.com/api/docs/pricing".to_string()),
+                rates: vec![PricingRate {
+                    key: "input_cost_per_image_token".to_string(),
+                    source_value: 0.000008,
+                    source_unit: "usd_per_image_token".to_string(),
+                    value: 8.0,
+                    unit: "usd_per_1m_tokens".to_string(),
+                    dimension: Some("input".to_string()),
+                    modality: Some("image".to_string()),
+                    tier: None,
+                    threshold: None,
+                }],
+            }],
+        }),
+    )
+    .await
+    .expect("apply quote-only model");
+
+    let suppression_count = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM managed_model_suppressions WHERE model = ?1",
+    )
+    .bind(model)
+    .fetch_one(&state.pool)
+    .await
+    .expect("read model suppression");
+    assert_eq!(suppression_count, 0);
+    assert!(
+        load_managed_model_ids(&state.pool)
+            .await
+            .expect("load quote-only managed model")
+            .iter()
+            .any(|candidate| candidate == model)
+    );
+    assert!(
+        load_pricing_quotes(&state.pool)
+            .await
+            .expect("load quote-only pricing quote")
+            .iter()
+            .any(|quote| quote.model == model)
+    );
+    assert!(
+        !load_pricing_catalog(&state.pool)
+            .await
+            .expect("load legacy catalog")
+            .models
+            .contains_key(model)
     );
 }
 
@@ -1284,6 +1515,7 @@ async fn model_price_sync_and_delete_roll_back_if_catalog_snapshot_fails() {
         State(state.clone()),
         HeaderMap::new(),
         Json(ModelsDevSyncApplyRequest {
+            quotes: vec![],
             entries: vec![PricingEntry {
                 model: "sync-target".to_string(),
                 input_per_1m: 1.5,
@@ -1292,7 +1524,7 @@ async fn model_price_sync_and_delete_roll_back_if_catalog_snapshot_fails() {
                 cache_read_per_1m: None,
                 cache_write_per_1m: None,
                 reasoning_per_1m: None,
-                source: "models.dev".to_string(),
+                source: "litellm".to_string(),
             }],
         }),
     )

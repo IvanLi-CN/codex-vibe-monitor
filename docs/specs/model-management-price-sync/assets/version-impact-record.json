@@ -2,8 +2,8 @@
   "schema_version": 1,
   "kind": "version-impact-record",
   "change": {
-    "description": "Add persistent model management, dynamic /v1/models presets, and user-reviewed models.dev price synchronization.",
-    "release_unit_description": "System Models page, managed model catalog migration, dynamic proxy models, and manual price synchronization.",
+    "description": "Add persistent model management, dynamic /v1/models presets, and user-reviewed LiteLLM multi-dimensional price synchronization.",
+    "release_unit_description": "System Models page, managed model catalog migration, dynamic proxy models, legacy price projections, and complete quote persistence.",
     "affected_contracts": ["public-api", "persistent-state"]
   },
   "classification": {
@@ -23,7 +23,7 @@
         "detected": false,
         "description": "Implementation and local validation match the approved contract; no compatibility scope drift was found."
       },
-      "reasoning": "Public API impact remains patch because management routes and additional /v1/models IDs are additive. Persistent state is minor because earlier same-Major writers do not preserve dynamic enabled IDs; the release unit takes the higher persistent-state impact.",
+      "reasoning": "Public API impact remains patch because the existing entries contract is retained and quotes are additive. Persistent state is minor because the quote table and dynamic model catalog add durable capabilities; the release unit takes the higher persistent-state impact.",
       "reassessed_at": "2026-09-30T08:55:43Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
