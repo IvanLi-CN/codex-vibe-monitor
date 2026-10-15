@@ -67,29 +67,35 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         "application readiness reached"
     );
 
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         // Spawn the independent system-status worker before taking the Summary priority
         // reservation. A busy database gate must never delay the readiness-side status cache.
-        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state.clone()));
+        let system_status_handle = crate::observability::contention::spawn_performance(
+            state.observability.clone(),
+            hydrate_system_status_at_startup(state.clone()),
+        );
         let summary_startup_priority =
             crate::db_pressure::global_db_pressure_gate().reserve_priority_background();
         let summary_state = state.clone();
-        let summary_handle = tokio::spawn(async move {
-            let startup_priority = hydrate_summary_at_startup(
-                summary_state.clone(),
-                summary_deadline,
-                summary_start_delay,
-                summary_startup_priority,
-            )
-            .await;
-            if let Some(startup_priority) = startup_priority {
-                spawn_summary_snapshot_maintenance(summary_state.clone());
-                spawn_summary_coverage_recovery_maintenance(summary_state, startup_priority);
-                true
-            } else {
-                false
-            }
-        });
+        let summary_handle = crate::observability::contention::spawn_performance(
+            summary_state.observability.clone(),
+            async move {
+                let startup_priority = hydrate_summary_at_startup(
+                    summary_state.clone(),
+                    summary_deadline,
+                    summary_start_delay,
+                    summary_startup_priority,
+                )
+                .await;
+                if let Some(startup_priority) = startup_priority {
+                    spawn_summary_snapshot_maintenance(summary_state.clone());
+                    spawn_summary_coverage_recovery_maintenance(summary_state, startup_priority);
+                    true
+                } else {
+                    false
+                }
+            },
+        );
         let (summary_result, system_status_result) =
             tokio::join!(summary_handle, system_status_handle);
 
@@ -1152,7 +1158,7 @@ where
 }
 
 fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let Some(store) = crate::maintenance_store::global().cloned() else {
             return;
         };
@@ -1643,16 +1649,19 @@ async fn run_managed_task_once_with_observation(
             .bind(json!({"ownershipVersion": 1,"ownerScope": task_key,"dryRun": options.dry_run,"manual": options.manual}).to_string())
             .bind(run_id).execute(&store.pool).await?;
     }
-    let mut execution = with_maintenance_execution_options(
-        options,
-        crate::with_managed_task_observation(
-            observation.clone(),
-            Box::pin(run_managed_task_once_with_scoped_observation(
-                state,
-                task_key,
-                run_id,
-                observation,
-            )),
+    let mut execution = crate::observability::contention::with_performance(
+        state.observability.clone(),
+        with_maintenance_execution_options(
+            options,
+            crate::with_managed_task_observation(
+                observation.clone(),
+                Box::pin(run_managed_task_once_with_scoped_observation(
+                    state,
+                    task_key,
+                    run_id,
+                    observation,
+                )),
+            ),
         ),
     )
     .await?;
@@ -2338,7 +2347,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         if crate::maintenance_store::legacy_worker_should_skip("startup_hourly_rollup_bootstrap")
             .await
         {
@@ -2989,7 +2998,7 @@ pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let startup_known_subscription_keys = {
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
@@ -3170,7 +3179,7 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut ticker = interval(POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {

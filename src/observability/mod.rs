@@ -404,6 +404,9 @@ impl MetricsSink {
     pub(crate) fn get(&self) -> Option<&ObservabilityRuntime> {
         self.0.get().map(Arc::as_ref)
     }
+    pub(crate) fn runtime(&self) -> Option<Arc<ObservabilityRuntime>> {
+        self.0.get().cloned()
+    }
 }
 
 pub(crate) async fn performance_retired() -> Response {

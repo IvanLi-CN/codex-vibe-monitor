@@ -2,7 +2,7 @@
   "annotations": {
     "list": []
   },
-  "description": "从 coordinator 准入、池获取、队列、批次执行、ACK 到 enqueue-to-commit 定位 SQLite 竞争；阶段可能重叠。",
+  "description": "归档、补算和统计性能：真实工作量、延迟、积压、采集质量与同口径历史比较。",
   "editable": false,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -55,13 +55,1828 @@
   "liveNow": false,
   "panels": [
     {
+      "id": 199,
+      "type": "text",
+      "title": "维护竞争与前后效果｜同口径观测",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "按归档、补算、统计模块同时检查 **成功工作量、延迟、积压与采集质量**。缺测为 Unknown；失败不能当作成功加速；阶段可能重叠，不能求和。\n\n成功 p95 至少 100、p99 至少 1000 个同窗样本。`compare_offset` 用于相同长度的历史窗口；以固定 UTC 起止记录版本、重启、任务开关与负载。生产基线至少 2 小时、覆盖归档和补算活动，**不阻塞修复开发**。\n\n新增应用指标使用 classic Histogram；下方既有 hotpath SQL 排名使用 native Histogram，两类查询保持各自语义。"
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "归档维护：处理量、占用与未完成工作",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 201,
+      "title": "归档阶段 p95 与样本门槛",
+      "type": "timeseries",
+      "description": "每条阶段 p95 至少 100 个样本；样本不足保持 Unknown，见同窗样本。write_hold 包含 source_verify/delete/commit，阶段有重叠，禁止相加。",
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,operation,phase) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__range]))) and on(operation,phase) (sum by(operation,phase) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__range])) >= 100)",
+          "legendFormat": "{{phase}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "calcs": []
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 202,
+      "title": "归档同窗阶段样本",
+      "type": "table",
+      "description": "所选窗口真实事件数；p95 <100、p99 <1000 为低样本。未知观测不是零。",
+      "gridPos": {
+        "x": 12,
+        "y": 6,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(operation,phase) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__range]))",
+          "legendFormat": "{{operation}} / {{phase}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "operation": true
+            },
+            "renameByName": {
+              "Value": "样本 N"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 203,
+      "title": "写许可超预算次数（所选窗口）",
+      "type": "table",
+      "description": "count 减对应累计桶；三个阈值互相包含，不能相加。",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "label_replace((sum by(operation) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) - sum by(operation) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\",le=\"0.25\"}[$__range]))), \"phase\", \">250ms\", \"\", \"\") or label_replace((sum by(operation) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) - sum by(operation) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\",le=~\"1([.]0)?\"}[$__range]))), \"phase\", \">1s\", \"\", \"\") or label_replace((sum by(operation) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) - sum by(operation) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\",le=~\"10([.]0)?\"}[$__range]))), \"phase\", \">10s\", \"\", \"\")",
+          "legendFormat": "{{operation}} / {{phase}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "operation": true
+            },
+            "indexByName": {
+              "phase": 0,
+              "Value": 1
+            },
+            "renameByName": {
+              "phase": "超过预算",
+              "Value": "次数"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 204,
+      "title": "提交成功行 / 秒",
+      "type": "timeseries",
+      "description": "仅在成功提交后计行。两条是不同处理口径，不相加；吞吐下降或停止时不因延迟下降宣称优化。",
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(operation) (rate(cvm_maintenance_processed_rows_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}} / processed",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "sum by(operation) (rate(cvm_maintenance_archived_rows_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}} / archived",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 205,
+      "title": "归档积压记录数",
+      "type": "timeseries",
+      "description": "来自既有清单；缺测 Unknown。展示任务活动与真实剩余工作，不能以暂停冒充优化。",
+      "gridPos": {
+        "x": 0,
+        "y": 22,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(operation) (cvm_retention_backlog_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"})",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 206,
+      "title": "归档最老积压年龄",
+      "type": "timeseries",
+      "description": "时间戳为原始最老记录时间；确认空积压时为零，未取得清单时 Unknown。",
+      "gridPos": {
+        "x": 8,
+        "y": 22,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max by(operation) ((clamp_min(time() - cvm_retention_backlog_oldest_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}, 0) and cvm_retention_backlog_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"} > 0) or (cvm_retention_backlog_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"} == 0))",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 207,
+      "title": "归档批次结果 / 秒",
+      "type": "timeseries",
+      "description": "成功、延后、取消、错误分别显示。",
+      "gridPos": {
+        "x": 16,
+        "y": 22,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(operation,outcome) (rate(cvm_retention_batches_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__rate_interval]))",
+          "legendFormat": "{{operation}} / {{outcome}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 210,
+      "type": "row",
+      "title": "后台补算：通知、实际尝试与维护数据库",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 211,
+      "title": "通知 / 秒",
+      "type": "timeseries",
+      "description": "通知不等于数据库尝试。重复通知不重置最老未确认义务的年龄。",
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(task,reason) (rate(cvm_backfill_wake_notifications_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{task}} / {{reason}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 212,
+      "title": "实际唤醒尝试 / 秒",
+      "type": "timeseries",
+      "description": "committed/noop/busy/locked/error/cancelled；仅计算实际进入确认操作的尝试。",
+      "gridPos": {
+        "x": 12,
+        "y": 31,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(task,outcome) (rate(cvm_backfill_wake_attempts_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval]))",
+          "legendFormat": "{{task}} / {{outcome}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 213,
+      "title": "待确认义务（任务实例）",
+      "type": "timeseries",
+      "description": "按任务/实例的有界义务状态；重启后由持久脏状态重建。不是序列号差。",
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cvm_backfill_wake_pending_tasks{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "legendFormat": "{{task}} / {{instance}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 214,
+      "title": "最老未确认义务年龄",
+      "type": "timeseries",
+      "description": "新通知不刷新 first outstanding 时间。确认清空后为零，尚未观测保持 Unknown。",
+      "gridPos": {
+        "x": 8,
+        "y": 39,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(clamp_min(time() - cvm_backfill_wake_oldest_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, 0) and cvm_backfill_wake_pending_tasks{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} > 0) or (cvm_backfill_wake_pending_tasks{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 0)",
+          "legendFormat": "{{task}} / {{instance}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 215,
+      "title": "距离下次尝试",
+      "type": "timeseries",
+      "description": "独立下一次调度时间。该字段只观察当前调度，观测版不更改重试行为。",
+      "gridPos": {
+        "x": 16,
+        "y": 39,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_min(cvm_backfill_wake_next_due_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} - time(), 0)",
+          "legendFormat": "{{task}} / {{instance}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 216,
+      "title": "维护库写入结果（所选窗口）",
+      "type": "table",
+      "description": "独立维护库 committed/noop/busy/locked/error，不能与上方主库 SQLITE 错误混算。",
+      "gridPos": {
+        "x": 0,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(operation,outcome) (increase(cvm_maintenance_store_writes_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "legendFormat": "{{operation}} / {{outcome}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "所选窗口数量"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 217,
+      "title": "维护库写入 p95 与样本门槛",
+      "type": "timeseries",
+      "description": "真实维护库操作耗时，含失败操作；至少 100 样本才显示 p95。结果看左侧，避免把快速 BUSY 当作成功改善。",
+      "gridPos": {
+        "x": 12,
+        "y": 47,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by(le,operation) (increase(cvm_maintenance_store_write_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))) and on(operation) (sum by(operation) (increase(cvm_maintenance_store_write_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) >= 100)",
+          "legendFormat": "{{operation}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 220,
+      "type": "row",
+      "title": "统计看板：成功延迟、失败原因与覆盖证明",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 55,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 221,
+      "title": "Summary 结果 / 原因（所选窗口）",
+      "type": "table",
+      "description": "success、degraded、unavailable 独立计数；保留 dataQuality 原合同，不将快速失败解释成加速。",
+      "gridPos": {
+        "x": 0,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(outcome,reason) (increase(cvm_summary_responses_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "legendFormat": "{{outcome}} / {{reason}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "所选窗口数量"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 222,
+      "title": "Summary 成功响应 p95 / p99",
+      "type": "timeseries",
+      "description": "成功样本不足 100/1000 时各分位数保持 Unknown。降级与不可用从成功分布排除。",
+      "gridPos": {
+        "x": 12,
+        "y": 56,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by(le) (increase(cvm_summary_response_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range]))) and (sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= 100)",
+          "legendFormat": "成功 p95（N≥100）",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.99, sum by(le) (increase(cvm_summary_response_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range]))) and (sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= 1000)",
+          "legendFormat": "成功 p99（N≥1000）",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 223,
+      "title": "Summary 同窗样本 / 低样本检查",
+      "type": "table",
+      "description": "成功 p95 至少 100、p99 至少 1000；不足时明确视为低样本，不能作稳定性能结论。",
+      "gridPos": {
+        "x": 0,
+        "y": 64,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(outcome) (increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "legendFormat": "{{outcome}} / N",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "样本 N"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 224,
+      "title": "固定关键 SQL 成功 p95",
+      "type": "timeseries",
+      "description": "不占用动态 hotpath SQL 名额；成功查询至少 100 个同窗样本。",
+      "gridPos": {
+        "x": 8,
+        "y": 64,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by(le,query) (increase(cvm_stats_query_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range]))) and on(query) (sum by(query) (increase(cvm_stats_query_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= 100)",
+          "legendFormat": "{{query}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 225,
+      "title": "固定关键 SQL 同窗样本 / 结果",
+      "type": "table",
+      "description": "固定 summary、prompt_cache_statistics、long_term_overlap；query 成功和失败分开计量。",
+      "gridPos": {
+        "x": 16,
+        "y": 64,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by(query,outcome) (increase(cvm_stats_queries_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+          "legendFormat": "{{query}} / {{outcome}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "所选窗口数量"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 226,
+      "title": "投影实际待处理量 / 覆盖缺口",
+      "type": "timeseries",
+      "description": "只展示实际已知脏桶、源缺口或记录数；不同 phase 的单位不能相加；不以 generation/sequence 差冒充条数。",
+      "gridPos": {
+        "x": 0,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "cvm_stats_projection_pending_items{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "legendFormat": "{{query}} / {{phase}} / {{instance}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 227,
+      "title": "投影最后有效发布时间距今",
+      "type": "timeseries",
+      "description": "最近增量与历史覆盖独立显示；从未发布证明保持 Unknown。",
+      "gridPos": {
+        "x": 12,
+        "y": 72,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "clamp_min(time() - cvm_stats_projection_last_good_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}, 0)",
+          "legendFormat": "{{query}} / {{instance}}",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 230,
+      "type": "row",
+      "title": "效果比较：归一化成本与采集质量",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 80,
+        "w": 24,
+        "h": 1
+      },
+      "panels": []
+    },
+    {
+      "id": 231,
+      "title": "每千完成代理请求的归档写许可秒",
+      "type": "timeseries",
+      "description": "同一 UTC 窗口，以实际完成代理请求为分母；无完成请求保持 Unknown。负载不同须分层报告。 历史由 compare_offset 选择；固定 UTC 起止并标记版本、重启和任务配置，负载不匹配不能宣称因果效果。",
+      "gridPos": {
+        "x": 0,
+        "y": 81,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1000 * sum by(operation) (increase(cvm_retention_phase_duration_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) / scalar(sum(increase(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) > 0)",
+          "legendFormat": "{{operation}} / 当前",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "1000 * sum by(operation) (increase(cvm_retention_phase_duration_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range] offset $compare_offset)) / scalar(sum(increase(cvm_proxy_invocations_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range] offset $compare_offset)) > 0)",
+          "legendFormat": "{{operation}} / 历史 $compare_offset",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 232,
+      "title": "每千提交行的归档写许可秒",
+      "type": "timeseries",
+      "description": "以实际提交 processed 行数为分母；无提交行保持 Unknown。与吞吐、积压一起判断。 历史由 compare_offset 选择；固定 UTC 起止并标记版本、重启和任务配置，负载不匹配不能宣称因果效果。",
+      "gridPos": {
+        "x": 8,
+        "y": 81,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "1000 * sum by(operation) (increase(cvm_retention_phase_duration_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) / on(operation) (sum by(operation) (increase(cvm_maintenance_processed_rows_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__range])) > 0)",
+          "legendFormat": "{{operation}} / 当前",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "1000 * sum by(operation) (increase(cvm_retention_phase_duration_seconds_sum{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range] offset $compare_offset)) / on(operation) (sum by(operation) (increase(cvm_maintenance_processed_rows_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\"}[$__range] offset $compare_offset)) > 0)",
+          "legendFormat": "{{operation}} / 历史 $compare_offset",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 233,
+      "title": "抓取可用性（窗口最小值）",
+      "type": "table",
+      "description": "任何抓取失败为 0；没有目标时 Unknown。版本、UTC 窗口、查询版本和任务配置需在比较记录中固定。",
+      "gridPos": {
+        "x": 16,
+        "y": 81,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min_over_time(up{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])",
+          "legendFormat": "{{job}} / {{instance}}",
+          "range": false,
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "renameByName": {
+              "Value": "所选窗口数量"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 234,
+      "title": "历史比较：成功 Summary p95",
+      "type": "timeseries",
+      "description": "当前和历史使用相同算法、所选窗口、成功结果和各自 N≥100 门槛；缺测/低样本不作结论。核对两边请求负载与版本。",
+      "gridPos": {
+        "x": 0,
+        "y": 95,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by(le) (increase(cvm_summary_response_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range]))) and (sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= 100)",
+          "legendFormat": "当前成功 p95",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by(le) (increase(cvm_summary_response_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range] offset $compare_offset))) and (sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range] offset $compare_offset)) >= 100)",
+          "legendFormat": "历史 $compare_offset 成功 p95",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 235,
+      "title": "历史比较：归档写许可 p95",
+      "type": "timeseries",
+      "description": "仅 write_hold，分位数与样本门槛使用同一个窗口；阶段互相重叠不可相加。工作量与积压必须一并评估。",
+      "gridPos": {
+        "x": 8,
+        "y": 95,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le,operation,phase) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range]))) and on(operation,phase) (sum by(operation,phase) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range])) >= 100)",
+          "legendFormat": "{{operation}} / 当前",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.95, sum by (le,operation,phase) (increase(cvm_retention_phase_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range] offset $compare_offset))) and on(operation,phase) (sum by(operation,phase) (increase(cvm_retention_phase_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",operation=~\"$operation\",phase=\"write_hold\"}[$__range] offset $compare_offset)) >= 100)",
+          "legendFormat": "{{operation}} / 历史 $compare_offset",
+          "range": true,
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 236,
+      "title": "成功 Summary 同窗样本门槛",
+      "type": "stat",
+      "description": "成功 p95 至少 100、p99 至少 1000；不足时明确视为低样本，不能作稳定性能结论。",
+      "gridPos": {
+        "x": 16,
+        "y": 95,
+        "w": 8,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= bool 100) + (sum(increase(cvm_summary_response_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",outcome=\"success\"}[$__range])) >= bool 1000)",
+          "instant": true,
+          "range": false,
+          "legendFormat": "成功样本门槛",
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "spanNulls": false,
+            "showPoints": "never",
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "低样本：p95 / p99",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "p99 低样本；p95 可用",
+                  "color": "yellow"
+                },
+                "2": {
+                  "text": "p95 / p99 样本充足",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      }
+    },
+    {
       "id": 1,
       "type": "stat",
       "title": "准入等待 p95",
       "description": "四类 coordinator wait 合并后计算 p95；不代表完整请求耗时。",
       "gridPos": {
         "x": 0,
-        "y": 0,
+        "y": 104,
         "w": 6,
         "h": 4
       },
@@ -115,7 +1930,7 @@
       "description": "queue=all 是总 pending；不能与 p1/p2 子队列相加。",
       "gridPos": {
         "x": 6,
-        "y": 0,
+        "y": 104,
         "w": 6,
         "h": 4
       },
@@ -169,7 +1984,7 @@
       "description": "真实 SQLite busy/locked 事件；pressure defer 和 lock retry 单独看。",
       "gridPos": {
         "x": 12,
-        "y": 0,
+        "y": 104,
         "w": 6,
         "h": 4
       },
@@ -223,7 +2038,7 @@
       "description": "连接池获取失败次数；pool acquire wait 是另一条 Histogram。",
       "gridPos": {
         "x": 18,
-        "y": 0,
+        "y": 104,
         "w": 6,
         "h": 4
       },
@@ -277,7 +2092,7 @@
       "description": "四类准入等待按 class 分线；展示名来自固定 class 白名单。",
       "gridPos": {
         "x": 0,
-        "y": 4,
+        "y": 108,
         "w": 12,
         "h": 8
       },
@@ -338,7 +2153,7 @@
       "description": "持有 coordinator 的时间与等待时间分开，不能相加为一个总 p95。",
       "gridPos": {
         "x": 12,
-        "y": 4,
+        "y": 108,
         "w": 12,
         "h": 8
       },
@@ -399,7 +2214,7 @@
       "description": "pool acquire、queue wait、batch execute、ACK、enqueue-to-commit 可能重叠；这里只做横向比较，禁止堆叠或相加。",
       "gridPos": {
         "x": 0,
-        "y": 12,
+        "y": 116,
         "w": 24,
         "h": 8
       },
@@ -489,7 +2304,7 @@
       "description": "all 是总量，p1/p2 是各自真实 accounting；不要把三条线求和。",
       "gridPos": {
         "x": 0,
-        "y": 20,
+        "y": 124,
         "w": 12,
         "h": 8
       },
@@ -568,7 +2383,7 @@
       "description": "各 class 当前 waiter 数，与 pending queue 是不同观测面。",
       "gridPos": {
         "x": 12,
-        "y": 20,
+        "y": 124,
         "w": 12,
         "h": 8
       },
@@ -629,7 +2444,7 @@
       "description": "只覆盖已导出的规范化模板，最多 10 项；完整模板不挤在图例。表格查询整个所选窗口，可按次数或 p95 调整排序。函数/SQL 时序使用 hotpath native Histogram。",
       "gridPos": {
         "x": 0,
-        "y": 28,
+        "y": 132,
         "w": 24,
         "h": 10
       },
@@ -723,7 +2538,7 @@
       "description": "busy/locked 是 SQLite 锁错误；pool timeout、background skip 不混入此图。",
       "gridPos": {
         "x": 0,
-        "y": 38,
+        "y": 142,
         "w": 6,
         "h": 8
       },
@@ -784,7 +2599,7 @@
       "description": "retry family 按 class/reason 展示；lock retry 与 pressure defer 分开。",
       "gridPos": {
         "x": 6,
-        "y": 38,
+        "y": 142,
         "w": 6,
         "h": 8
       },
@@ -845,7 +2660,7 @@
       "description": "压力保护让行，不是 SQLite 锁错误。",
       "gridPos": {
         "x": 12,
-        "y": 38,
+        "y": 142,
         "w": 6,
         "h": 8
       },
@@ -906,7 +2721,7 @@
       "description": "主库 WAL metadata 的当前值；文件采样缺测不补成零。",
       "gridPos": {
         "x": 18,
-        "y": 38,
+        "y": 142,
         "w": 6,
         "h": 8
       },
@@ -967,7 +2782,7 @@
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 150,
         "w": 24,
         "h": 1
       },
@@ -1071,6 +2886,60 @@
           "text": "业务 endpoint",
           "value": "$__all"
         }
+      },
+      {
+        "name": "compare_offset",
+        "type": "custom",
+        "label": "历史窗口偏移",
+        "query": "1d,7d",
+        "current": {
+          "text": "1d",
+          "value": "1d"
+        },
+        "options": [
+          {
+            "text": "1d",
+            "value": "1d",
+            "selected": true
+          },
+          {
+            "text": "7d",
+            "value": "7d",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false
+      },
+      {
+        "name": "operation",
+        "type": "custom",
+        "label": "归档操作",
+        "query": "invocation_archive,timestamped_archive,detail_prune",
+        "current": {
+          "text": "invocation_archive",
+          "value": "invocation_archive"
+        },
+        "options": [
+          {
+            "text": "invocation_archive",
+            "value": "invocation_archive",
+            "selected": true
+          },
+          {
+            "text": "timestamped_archive",
+            "value": "timestamped_archive",
+            "selected": false
+          },
+          {
+            "text": "detail_prune",
+            "value": "detail_prune",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": true,
+        "allValue": ".*"
       }
     ]
   },
@@ -1081,5 +2950,5 @@
   "timezone": "utc",
   "title": "CVM · 数据库竞争",
   "uid": "cvm-sqlite",
-  "version": 1
+  "version": 2
 }

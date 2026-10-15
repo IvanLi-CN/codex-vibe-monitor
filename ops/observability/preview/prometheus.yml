@@ -21,6 +21,9 @@ scrape_configs:
         action: keep
 
   - job_name: cvm-hotpath
+    # Match production native PromQL while the fixture stays plain-text and inspectable.
+    convert_classic_histograms_to_nhcb: true
+    always_scrape_classic_histograms: true
     sample_limit: 1000
     label_limit: 12
     label_value_length_limit: 512
@@ -33,5 +36,35 @@ scrape_configs:
           instance: fixture
     metric_relabel_configs:
       - source_labels: [__name__]
-        regex: hotpath_(uptime_seconds|function_calls_total|function_duration_seconds|sql_queries_total|sql_duration_seconds|server_requests_total|server_responses_total|server_duration_seconds|mutex_acquisitions_total|mutex_wait_seconds|mutex_acquire_seconds|rwlock_acquisitions_total|rwlock_wait_seconds|rwlock_acquire_seconds)
+        regex: hotpath_(uptime_seconds|function_calls_total|function_duration_seconds|sql_queries_total|sql_duration_seconds|server_requests_total|server_responses_total|server_duration_seconds|mutex_acquisitions_total|mutex_wait_seconds|mutex_acquire_seconds|rwlock_acquisitions_total|rwlock_wait_seconds|rwlock_acquire_seconds)(_bucket|_sum|_count)?
         action: keep
+
+  - job_name: cvm-preview-failures
+    metrics_path: /metrics/failures
+    sample_limit: 4000
+    static_configs:
+      - targets: [fixture:9091]
+        labels:
+          service: codex-vibe-monitor
+          environment: synthetic-preview
+          instance: failures
+
+  - job_name: cvm-preview-low-samples
+    metrics_path: /metrics/low-samples
+    sample_limit: 4000
+    static_configs:
+      - targets: [fixture:9091]
+        labels:
+          service: codex-vibe-monitor
+          environment: synthetic-preview
+          instance: low-samples
+
+  - job_name: cvm-preview-missing
+    metrics_path: /metrics/missing
+    sample_limit: 4000
+    static_configs:
+      - targets: [fixture:9091]
+        labels:
+          service: codex-vibe-monitor
+          environment: synthetic-preview
+          instance: missing
