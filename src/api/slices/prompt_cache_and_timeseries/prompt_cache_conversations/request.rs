@@ -24,6 +24,25 @@ pub(crate) async fn fetch_prompt_cache_conversations(
     } else {
         build_prompt_cache_conversations_response_for_request(state.as_ref(), request).await?
     };
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        let health = state
+            .subscription_hub
+            .prompt_cache_projection_health()
+            .await;
+        metrics.set_performance(
+            PerformanceGauge::ProjectionPending(
+                StatsProjection::PromptCache,
+                crate::observability::contention::PendingKind::Rows,
+            ),
+            health.dirty_key_count as f64,
+        );
+        if health.dirty_key_count == 0 && health.recovery_state == "healthy" {
+            metrics.set_performance(
+                PerformanceGauge::ProjectionLastGood(StatsProjection::PromptCache),
+                Utc::now().timestamp() as f64,
+            );
+        }
+    }
     Ok(Json(response))
 }
 
@@ -362,10 +381,9 @@ where
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
 
-    let (max_id,) = query
-        .build_query_as::<(Option<i64>,)>()
-        .fetch_one(executor)
-        .await?;
+    let (max_id,) =
+        observe_prompt_cache_query(query.build_query_as::<(Option<i64>,)>().fetch_one(executor))
+            .await?;
     Ok(max_id)
 }
 

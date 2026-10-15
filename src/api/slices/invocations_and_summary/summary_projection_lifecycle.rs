@@ -1708,6 +1708,15 @@ async fn refresh_summary_snapshots_with_deadline(
         }
         Err(error) => return Err(error),
     };
+    let projection_kind = if matches!(
+        mode,
+        SummaryProjectionBuildMode::HistoricalLiveCoverage | SummaryProjectionBuildMode::AllTime
+    ) {
+        crate::observability::contention::StatsProjection::SummaryHistorical
+    } else {
+        crate::observability::contention::StatsProjection::SummaryRecent
+    };
+    let pending_source_gaps = summary_projection_pending_source_gaps(&projection, projection_kind);
     info!(
         ?mode,
         stage = "generation_fence_snapshot",
@@ -1730,6 +1739,7 @@ async fn refresh_summary_snapshots_with_deadline(
             );
             return Ok(());
         }
+        record_summary_projection_publication_metrics(projection_kind, pending_source_gaps);
         let generation_fence = state
             .subscription_hub
             .summary_projection()
@@ -1808,6 +1818,7 @@ async fn refresh_summary_snapshots_with_deadline(
             .await;
     }
     publication_transaction.commit().await?;
+    record_summary_projection_publication_metrics(projection_kind, pending_source_gaps);
     debug!(
         ?mode,
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,

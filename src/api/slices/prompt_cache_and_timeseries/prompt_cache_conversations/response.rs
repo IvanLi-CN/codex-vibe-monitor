@@ -236,10 +236,12 @@ async fn transient_runtime_prompt_cache_overlay_records_on_connection(
                 .push(")");
         }
         query.push(")");
-        for (invoke_id, occurred_at) in query
-            .build_query_as::<(String, String)>()
-            .fetch_all(&mut *connection)
-            .await?
+        for (invoke_id, occurred_at) in observe_prompt_cache_query(
+            query
+                .build_query_as::<(String, String)>()
+                .fetch_all(&mut *connection),
+        )
+        .await?
         {
             persisted_terminal_identities.insert(format!("{invoke_id}\0{occurred_at}"));
         }
@@ -947,9 +949,11 @@ async fn build_prompt_cache_conversations_response_with_recent_limit_on_connecti
     connection: &mut SqliteConnection,
 ) -> Result<PromptCacheConversationsResponse> {
     // BEGIN is deferred in SQLite: establish the read snapshot before copying runtime state.
-    sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-        .fetch_one(&mut *connection)
-        .await?;
+    observe_prompt_cache_query(
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&mut *connection),
+    )
+    .await?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_end = Utc::now();
     let range_start = range_end - selection.activity_window_duration();
