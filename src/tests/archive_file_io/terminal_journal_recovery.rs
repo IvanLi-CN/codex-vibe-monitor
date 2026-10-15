@@ -313,3 +313,30 @@ fn unknown_version_preserves_entire_source_before_any_isolation() {
         source
     );
 }
+
+#[test]
+fn future_version_with_changed_envelope_preserves_entire_source() {
+    for future in [
+        serde_json::json!({"event_version": 256}),
+        serde_json::json!({"event_version": 256, "checksum": false, "acknowledged_sequence": "future"}),
+        serde_json::json!({"event_version": 1, "attempt_start": {"event_version": 256}}),
+        serde_json::json!({"event_version": 1, "attempt_start": {"event_version": 256}, "checksum": null}),
+    ] {
+        let fixture = Fixture::new();
+        let mut source = b"damaged frame before future envelope\n".to_vec();
+        source.extend(serde_json::to_vec(&future).expect("encode future envelope"));
+        source.push(b'\n');
+        fs::write(&fixture.segment, &source).expect("install changed future envelope");
+        let error = TerminalJournal::open(&fixture.database)
+            .expect_err("version recognition must precede current-format field parsing");
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported terminal journal event version")
+        );
+        assert_eq!(
+            fs::read(&fixture.segment).expect("source preserved"),
+            source
+        );
+    }
+}

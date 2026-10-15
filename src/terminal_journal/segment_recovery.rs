@@ -13,14 +13,22 @@ struct RawJournalLine<'a> {
 }
 
 fn verified_frame(raw: &[u8]) -> std::result::Result<JournalLine, &'static str> {
-    let line: RawJournalLine<'_> = serde_json::from_slice(raw).map_err(|_| "invalid_json")?;
-    let version = line
+    #[derive(Deserialize)]
+    struct VersionProbe<'a> {
+        event_version: Option<u64>,
+        #[serde(borrow)]
+        attempt_start: Option<&'a RawValue>,
+    }
+    // Future versions may change required fields or their types. Recognize the
+    // version before interpreting the envelope as the current wire format.
+    let probe: VersionProbe<'_> = serde_json::from_slice(raw).map_err(|_| "invalid_json")?;
+    let version = probe
         .event_version
         .unwrap_or(TERMINAL_JOURNAL_EVENT_VERSION.into());
     if version != u64::from(TERMINAL_JOURNAL_EVENT_VERSION) {
         return Err("unsupported_version");
     }
-    if let Some(start) = line.attempt_start {
+    if let Some(start) = probe.attempt_start {
         #[derive(Deserialize)]
         struct StartVersion {
             event_version: Option<u64>,
@@ -35,6 +43,7 @@ fn verified_frame(raw: &[u8]) -> std::result::Result<JournalLine, &'static str> 
             return Err("unsupported_version");
         }
     }
+    let line: RawJournalLine<'_> = serde_json::from_slice(raw).map_err(|_| "invalid_json")?;
     let encoded = serde_json::to_vec(&(
         version,
         line.entry,
