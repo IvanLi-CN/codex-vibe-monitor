@@ -192,7 +192,7 @@ fn version_one_float_terminal_and_attempt_survive_restart() {
     record.timings.t_total_ms = 42.125;
     let mut journal = TerminalJournal::open(&fixture.database).expect("open writer");
     journal.append_attempt_start(&attempt);
-    journal.append_with_attempts(&record, &[attempt.clone()], false, None);
+    journal.append_with_attempts(&record, std::slice::from_ref(&attempt), false, None);
     journal.force_sync().expect("sync begin and terminal");
     drop(journal);
     let source = fs::read(&fixture.segment).expect("read version-one frames");
