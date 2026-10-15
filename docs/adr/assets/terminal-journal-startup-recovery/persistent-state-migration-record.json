@@ -36,7 +36,10 @@
   },
   "validation": {
     "patch": {
-      "evidence_status": "pending-current-candidate-ci",
+      "evidence_status": "passed",
+      "validated_code_sha": "f6693eb402f607f45584ac12a4249609b70c9111",
+      "evidence": ["https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38677983649", "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38678026724"],
+      "evidence_scope": "The listed code revision passed all automatic CI, including archive/file-I/O recovery and representative pressure. Documentation-only successors retain that compatibility result when the implementation and tests are unchanged; current PR-head required checks remain a separate delivery gate.",
       "required_test_evidence": ["Fixed legacy float fixture with independent checksum", "Version-one float restart and ACK", "Same format emitted for supported 4.6 readers", "Middle damage isolation with valid suffix replay", "Incomplete tail followed by append and restart", "ACK sequence watermark", "Interrupted cleanup re-entry", "Live append and group-sync failure fences"]
     }
   }

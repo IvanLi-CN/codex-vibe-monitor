@@ -13,7 +13,7 @@
   },
   "compatibility_evidence": {
     "public_api": {"change": "none", "impact": "patch", "supported_consumer_range": "Existing Major 4 HTTP/SSE clients", "evidence": ["No HTTP/SSE surface changed"]},
-    "persistent_state": {"applicable": true, "impact": "patch", "state_description": "Unchanged legacy and version-one checksummed terminal JSONL", "source_program_compatibility_range": "4.5.x and 4.6.0", "evidence": ["persistent-state-migration-record.json", "Current-candidate CI pending"]}
+    "persistent_state": {"applicable": true, "impact": "patch", "state_description": "Unchanged legacy and version-one checksummed terminal JSONL", "source_program_compatibility_range": "4.5.x and 4.6.0", "evidence": ["persistent-state-migration-record.json", "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38678026724"], "validated_code_sha": "f6693eb402f607f45584ac12a4249609b70c9111"}
   },
-  "release_unit": {"member_change_records": ["version-impact-record.json"], "maximum_verified_impact": "pending", "calculation_evidence": ["Planned max(public_api=patch,persistent_state=patch)=patch; verify against current-candidate CI"]}
+  "release_unit": {"member_change_records": ["version-impact-record.json"], "maximum_verified_impact": "patch", "calculation_evidence": ["max(public_api=patch,persistent_state=patch)=patch; implementation f6693eb402f607f45584ac12a4249609b70c9111 passed automatic CI, and this successor only records its evidence. Current PR-head required checks remain a separate delivery gate."]}
 }
