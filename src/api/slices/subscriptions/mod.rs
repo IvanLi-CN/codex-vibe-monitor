@@ -1,5 +1,6 @@
 use super::*;
 use crate::db_pressure::{DbPressureDenyReason, DbPressureGate};
+use crate::observability::contention::spawn_performance;
 use axum::http::header;
 use serde::Serialize;
 use serde::de::DeserializeOwned;

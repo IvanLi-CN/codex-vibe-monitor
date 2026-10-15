@@ -230,7 +230,8 @@ pub(crate) async fn run() -> Result<()> {
         .await
         .context("failed to open sqlite database")?;
     let mut maintenance_pool = None;
-    let outcome = async {
+    let observability = ObservabilityRuntime::new(config.observability.enabled);
+    let outcome = crate::observability::contention::with_performance(observability.clone(), async {
         log_startup_phase("db_connect", db_connect_started_at);
 
         let schema_started_at = Instant::now();
@@ -358,7 +359,6 @@ pub(crate) async fn run() -> Result<()> {
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
         let shutdown = CancellationToken::new();
         let process_started_at_utc = Utc::now();
-        let observability = ObservabilityRuntime::new(config.observability.enabled);
         observability
             .initialize_traces(config.observability.traces.clone())
             .await;
@@ -501,7 +501,7 @@ pub(crate) async fn run() -> Result<()> {
             },
         )
         .await
-    }
+    })
     .await;
     // The process lifetime lock also covers SQL workers left by startup failures or shutdown.
     pool.close().await;

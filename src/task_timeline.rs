@@ -382,14 +382,12 @@ pub(crate) async fn start_recorder(store: Arc<MaintenanceStore>) {
     if let Ok(mut cancel) = recorder_cancel().lock() {
         *cancel = Some(shutdown.clone());
     }
-    let handle = tokio::spawn(run_recorder(
-        store,
-        session_id,
-        rx,
-        dropped,
-        dropped_interval,
-        shutdown,
-    ));
+    let recorder = run_recorder(store, session_id, rx, dropped, dropped_interval, shutdown);
+    let handle = if let Some(metrics) = crate::observability::contention::current_performance() {
+        crate::observability::contention::spawn_performance(metrics, recorder)
+    } else {
+        tokio::spawn(recorder)
+    };
     if let Ok(mut slot) = recorder_handle().lock() {
         *slot = Some(handle);
     }
