@@ -12,6 +12,7 @@ import urllib.request
 
 SOURCE = Path(__file__).resolve().parent.parent
 DASHBOARD = SOURCE / "ops/observability/grafana/dashboards/cvm-sqlite.json"
+PROXY_DASHBOARD = SOURCE / "ops/observability/grafana/dashboards/cvm-proxy.json"
 
 
 def substitute(expression, instance="fixture"):
@@ -98,10 +99,25 @@ def validate(base):
     assert classic_values and classic_values.keys() == native_values.keys()
     for key in classic_values:
         assert math.isclose(classic_values[key], native_values[key], rel_tol=1e-6)
+
+    proxy_stored = json.loads(PROXY_DASHBOARD.read_text())
+    proxy_live = fetch(base + "/api/dashboards/uid/cvm-proxy")["dashboard"]
+    proxy_actual = {panel["id"]: panel for panel in proxy_live["panels"]}
+    proxy_checked = 0
+    for panel in proxy_stored["panels"]:
+        if panel["id"] not in (112, 113, 114):
+            continue
+        assert proxy_actual[panel["id"]]["targets"] == panel["targets"], panel["id"]
+        for target in panel["targets"]:
+            result = evaluate(base, substitute(target["expr"]))
+            assert result and all(math.isfinite(value) and value >= 0 for value in values(result)), panel["title"]
+            proxy_checked += 1
     return {"dashboard_uid": live["uid"], "grafana_database_revision": live["version"],
             "dashboard_source_version": stored["version"],
             "dashboard_source_sha256": hashlib.sha256(DASHBOARD.read_bytes()).hexdigest(),
-            "queries_checked": checked, "scenarios": ["normal", "failures", "low-samples", "missing"],
+            "queries_checked": checked, "proxy_queries_checked": proxy_checked,
+            "proxy_dashboard_source_sha256": hashlib.sha256(PROXY_DASHBOARD.read_bytes()).hexdigest(),
+            "scenarios": ["normal", "failures", "low-samples", "missing"],
             "native_classic_agree": True, "history_without_samples": "unknown"}
 
 
