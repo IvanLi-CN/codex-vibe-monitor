@@ -2,6 +2,7 @@ use super::*;
 
 mod archive_identity;
 pub(super) mod batch_plan;
+mod observability;
 mod task_batches;
 use archive_identity::invocation_archive_source_identity_matches;
 pub(crate) use archive_identity::{
@@ -23,6 +24,7 @@ pub(crate) use batch_plan::{
     RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
 };
 use batch_plan::{archive_batch_can_start, archive_candidate_limit, select_archive_batch};
+pub(crate) use observability::record_backlog_observation;
 #[cfg(test)]
 pub(crate) use task_batches::archive_old_invocations;
 use task_batches::archive_old_invocations_with_source_max;
@@ -744,6 +746,13 @@ pub(crate) fn retention_run_remaining_budget() -> Option<Duration> {
 
 pub(super) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
+}
+
+pub(super) fn retention_run_defer_reason() -> Option<String> {
+    RETENTION_RUN_DEFER_REASON
+        .try_with(|reason| reason.borrow().clone())
+        .ok()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -8431,6 +8440,13 @@ async fn observe_retention_backlog_once(state: &AppState) -> Result<()> {
         }
     };
     drop(connection);
+    record_backlog_observation(
+        snapshot.invocation_count,
+        snapshot
+            .oldest_occurred_at
+            .as_deref()
+            .and_then(crate::stats::parse_to_utc_datetime),
+    );
     store
         .record_retention_backlog_observation(
             crate::maintenance_store::RetentionBacklogObservation {
@@ -10715,6 +10731,10 @@ pub(crate) struct ArchiveExpiryBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) coverage_end_at: String,
 }
+
+#[cfg(test)]
+#[path = "../tests/lightweight/retention_observability.rs"]
+mod retention_observability;
 
 #[cfg(test)]
 mod retention_summary_tests {
