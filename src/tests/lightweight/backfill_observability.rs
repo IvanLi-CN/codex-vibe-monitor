@@ -7,16 +7,16 @@ async fn backfill_notifications_preserve_oldest_pending_state_in_prometheus() {
     let task = StartupBackfillTask::ProxyUsage;
 
     crate::observability::contention::with_performance(runtime.clone(), async {
-        scheduler.record_notification(task, WakeDecision::New);
-        let first_pending = scheduler
+        let _ = scheduler.record_notification(task, WakeDecision::New);
+        let first_pending_since = scheduler
             .pending_since
             .lock()
             .expect("pending state lock")
             .get(&task)
-            .copied()
+            .map(|observation| observation.since)
             .expect("first pending timestamp");
         tokio::time::sleep(Duration::from_millis(2)).await;
-        scheduler.record_notification(task, WakeDecision::New);
+        let _ = scheduler.record_notification(task, WakeDecision::New);
         scheduler.wake(task);
 
         assert_eq!(
@@ -25,8 +25,8 @@ async fn backfill_notifications_preserve_oldest_pending_state_in_prometheus() {
                 .lock()
                 .expect("pending state lock")
                 .get(&task)
-                .copied(),
-            Some(first_pending)
+                .map(|observation| observation.since),
+            Some(first_pending_since)
         );
     })
     .await;
@@ -111,7 +111,7 @@ async fn disabled_backfill_observability_does_not_register_series() {
     let task = StartupBackfillTask::ProxyUsage;
 
     crate::observability::contention::with_performance(runtime.clone(), async {
-        scheduler.record_notification(task, WakeDecision::New);
+        let _ = scheduler.record_notification(task, WakeDecision::New);
         scheduler.wake(task);
         observe_wake_attempt(task, async { Ok::<((), bool), anyhow::Error>(((), true)) })
             .await
@@ -129,12 +129,25 @@ async fn coverage_wake_without_maintenance_pool_does_not_confirm_attempt() {
     clear_startup_backfill_task_scheduler_for_test(task);
 
     crate::observability::contention::with_performance(runtime.clone(), async {
-        STARTUP_BACKFILL_SCHEDULER.record_notification(task, WakeDecision::New);
+        let ticket = STARTUP_BACKFILL_SCHEDULER
+            .record_notification(task, WakeDecision::New)
+            .expect("new coverage notification ticket");
         assert_eq!(
-            wake_startup_backfill_coverage_repair_inner(None, "maintenance_store_unavailable")
-                .await
-                .expect("scheduler-only coverage wake"),
+            wake_startup_backfill_coverage_repair_inner(
+                None,
+                "maintenance_store_unavailable",
+                Some(ticket),
+            )
+            .await
+            .expect("scheduler-only coverage wake"),
             0
+        );
+        assert!(
+            STARTUP_BACKFILL_SCHEDULER
+                .pending_since
+                .lock()
+                .expect("pending state lock")
+                .contains_key(&task)
         );
     })
     .await;
@@ -154,15 +167,16 @@ async fn coverage_wake_without_maintenance_pool_does_not_confirm_attempt() {
 }
 
 #[test]
-fn source_unavailable_result_retains_pending_backfill_state() {
+fn business_task_results_do_not_create_pending_wake_state() {
     let scheduler = StartupBackfillScheduler::default();
     let task = StartupBackfillTask::ProxyUsage;
 
-    scheduler.record_notification(task, WakeDecision::New);
-    scheduler.record_task_result_with_actionable(task, false, false, false, true);
+    scheduler.record_task_result_with_actionable(task, false, false, true);
+    scheduler.record_task_result_with_actionable(task, false, true, false);
+    scheduler.record_task_result_with_actionable(task, true, false, false);
 
     assert!(
-        scheduler
+        !scheduler
             .pending_since
             .lock()
             .expect("pending state lock")
@@ -171,33 +185,20 @@ fn source_unavailable_result_retains_pending_backfill_state() {
 }
 
 #[tokio::test]
-async fn wake_pending_state_survives_confirmation_until_task_completion() {
+async fn durable_wake_confirmation_clears_current_observation() {
     let runtime = ObservabilityRuntime::new(true);
     let scheduler = StartupBackfillScheduler::default();
     let task = StartupBackfillTask::ProxyUsage;
 
     crate::observability::contention::with_performance(runtime.clone(), async {
-        scheduler.record_notification(task, WakeDecision::New);
-        scheduler.wake(task);
-        record_scheduler_wake_confirmation(task);
-        assert!(
-            scheduler
-                .pending_since
-                .lock()
-                .expect("pending state lock")
-                .contains_key(&task)
-        );
-
-        scheduler.record_task_result_with_actionable(task, false, false, true, false);
-        assert!(
-            scheduler
-                .pending_since
-                .lock()
-                .expect("pending state lock")
-                .contains_key(&task)
-        );
-
-        scheduler.record_task_result_with_actionable(task, false, false, false, false);
+        let ticket = scheduler
+            .record_notification(task, WakeDecision::New)
+            .expect("new wake notification ticket");
+        observe_wake_attempt(task, async { Ok::<((), bool), anyhow::Error>(((), true)) })
+            .await
+            .expect("durable wake attempt");
+        confirm_scheduler_wake_observation(&scheduler, ticket);
+        scheduler.record_task_result_with_actionable(task, false, false, true);
         assert!(
             !scheduler
                 .pending_since
@@ -216,4 +217,101 @@ async fn wake_pending_state_survives_confirmation_until_task_completion() {
     assert!(text.contains(&format!(
         "cvm_backfill_wake_oldest_timestamp_seconds{{task=\"{task_name}\"}} 0"
     )));
+    assert!(text.lines().any(|line| {
+        line.starts_with("cvm_backfill_wake_attempts_total{")
+            && line.contains(&format!("task=\"{task_name}\""))
+            && line.contains("outcome=\"committed\"")
+            && line.ends_with(" 1")
+    }));
+}
+
+#[tokio::test]
+async fn durable_wake_failure_retains_current_observation() {
+    let runtime = ObservabilityRuntime::new(true);
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        let _ticket = scheduler
+            .record_notification(task, WakeDecision::New)
+            .expect("new wake notification ticket");
+        assert!(
+            observe_wake_attempt(task, async {
+                Err::<((), bool), _>(anyhow::anyhow!("durable wake failure"))
+            })
+            .await
+            .is_err()
+        );
+        assert!(
+            scheduler
+                .pending_since
+                .lock()
+                .expect("pending state lock")
+                .contains_key(&task)
+        );
+    })
+    .await;
+
+    let task_name = task.name();
+    let text = runtime.render();
+    assert!(text.contains(&format!(
+        "cvm_backfill_wake_pending_tasks{{task=\"{task_name}\"}} 1"
+    )));
+    assert!(text.lines().any(|line| {
+        line.starts_with("cvm_backfill_wake_attempts_total{")
+            && line.contains(&format!("task=\"{task_name}\""))
+            && line.contains("outcome=\"error\"")
+            && line.ends_with(" 1")
+    }));
+}
+
+#[test]
+fn stale_wake_confirmation_does_not_clear_new_notification() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+
+    let old_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("old wake notification ticket");
+    let first_pending_since = scheduler
+        .pending_since
+        .lock()
+        .expect("pending state lock")
+        .get(&task)
+        .map(|observation| observation.since)
+        .expect("first pending timestamp");
+    let new_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("new wake notification ticket");
+
+    assert_ne!(old_ticket, new_ticket);
+    assert_eq!(
+        scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .get(&task)
+            .map(|observation| observation.since),
+        Some(first_pending_since)
+    );
+
+    confirm_scheduler_wake_observation(&scheduler, old_ticket);
+    assert_eq!(
+        scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .get(&task)
+            .map(|observation| observation.ticket),
+        Some(new_ticket)
+    );
+
+    confirm_scheduler_wake_observation(&scheduler, new_ticket);
+    assert!(
+        !scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
 }

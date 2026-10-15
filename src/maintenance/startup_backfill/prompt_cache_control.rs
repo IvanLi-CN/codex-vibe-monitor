@@ -186,7 +186,6 @@ pub(super) async fn persist_prompt_cache_materialization_defer(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     })
 }
@@ -248,7 +247,7 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
     } else {
         super::startup_backfill_wake_decision(wake_reason)
     };
-    scheduler.record_notification(task, decision);
+    let ticket = scheduler.record_notification(task, decision);
     let Some(snapshot) = store.prompt_cache_materialization_control.snapshot() else {
         return Ok(0);
     };
@@ -272,6 +271,11 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
         Ok((changed, changed > 0))
     })
     .await?;
+    if changed > 0
+        && let Some(ticket) = ticket
+    {
+        super::confirm_scheduler_wake_observation(scheduler, ticket);
+    }
     if changed > 0
         && store
             .prompt_cache_materialization_control
@@ -478,7 +482,6 @@ pub(super) fn prompt_cache_stale_result_outcome() -> StartupBackfillTaskRunOutco
         failed: false,
         deferred: false,
         completed: false,
-        retains_pending: false,
         next_due: Utc::now()
             + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
     }
@@ -492,11 +495,13 @@ pub(super) fn apply_prompt_cache_control_schedule(
 ) {
     control.with_current_generation(snapshot.generation, || {
         if snapshot.enabled {
-            scheduler.record_notification(task, WakeDecision::New);
+            let ticket = scheduler
+                .record_notification(task, WakeDecision::New)
+                .expect("enabled prompt-cache control wake must create an observation ticket");
             scheduler.wake(task);
-            super::record_scheduler_wake_confirmation(task);
+            super::record_scheduler_wake_confirmation(scheduler, ticket);
         } else {
-            scheduler.record_notification(task, WakeDecision::Disabled);
+            let _ = scheduler.record_notification(task, WakeDecision::Disabled);
             scheduler.clear_pending(task);
         }
     });

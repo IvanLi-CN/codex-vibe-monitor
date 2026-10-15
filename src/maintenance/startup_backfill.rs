@@ -83,12 +83,12 @@ pub(crate) enum StartupBackfillTask {
 #[derive(Debug, Default)]
 struct StartupBackfillScheduler {
     wake_generation: AtomicU64,
+    observation_generation: AtomicU64,
     notify: Notify,
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
-    // This is an unresolved wake obligation, not a business-backlog gauge. It survives
-    // scheduler confirmation and actionable work until completion or an explicit clear.
-    pending_since: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
+    // Observation-only obligations awaiting confirmation of the durable wake/control write.
+    pending_since: std::sync::Mutex<HashMap<StartupBackfillTask, WakeObservation>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
@@ -97,6 +97,18 @@ struct StartupBackfillScheduler {
     noop_suppressed_count: AtomicU64,
     pressure_defer_count: AtomicU64,
     failure_count: AtomicU64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct WakeObservationTicket {
+    task: StartupBackfillTask,
+    generation: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WakeObservation {
+    ticket: WakeObservationTicket,
+    since: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -116,7 +128,11 @@ pub(crate) struct StartupBackfillHealthSnapshot {
 }
 
 impl StartupBackfillScheduler {
-    fn record_notification(&self, task: StartupBackfillTask, decision: WakeDecision) {
+    fn record_notification(
+        &self,
+        task: StartupBackfillTask,
+        decision: WakeDecision,
+    ) -> Option<WakeObservationTicket> {
         let decision = if matches!(decision, WakeDecision::New)
             && self
                 .pending_since
@@ -131,13 +147,29 @@ impl StartupBackfillScheduler {
         if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
             metrics.count_performance(PerformanceCounter::WakeNotification(task, decision), 1);
         }
-        if !matches!(decision, WakeDecision::Disabled) {
-            let observed_at = Utc::now();
-            if let Ok(mut pending_since) = self.pending_since.lock() {
-                pending_since.entry(task).or_insert(observed_at);
-            }
+        if matches!(decision, WakeDecision::Disabled) {
+            self.clear_observation(task);
+            self.publish_performance(task);
+            return None;
+        }
+
+        let ticket = WakeObservationTicket {
+            task,
+            generation: self
+                .observation_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1),
+        };
+        let observed_at = Utc::now();
+        if let Ok(mut pending_since) = self.pending_since.lock() {
+            let since = pending_since
+                .get(&task)
+                .map(|observation| observation.since)
+                .unwrap_or(observed_at);
+            pending_since.insert(task, WakeObservation { ticket, since });
         }
         self.publish_performance(task);
+        Some(ticket)
     }
 
     fn wake(&self, task: StartupBackfillTask) {
@@ -147,9 +179,6 @@ impl StartupBackfillScheduler {
         }
         if let Ok(mut next_due) = self.next_due.lock() {
             next_due.insert(task, observed_at);
-        }
-        if let Ok(mut pending_since) = self.pending_since.lock() {
-            pending_since.entry(task).or_insert(observed_at);
         }
         self.wake_count.fetch_add(1, Ordering::Relaxed);
         self.wake_generation.fetch_add(1, Ordering::AcqRel);
@@ -220,11 +249,26 @@ impl StartupBackfillScheduler {
         if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
             tasks.remove(&task);
         }
+        self.clear_observation(task);
+        self.publish_performance(task);
+        self.notify.notify_waiters();
+    }
+
+    fn clear_observation(&self, task: StartupBackfillTask) {
         if let Ok(mut pending_since) = self.pending_since.lock() {
             pending_since.remove(&task);
         }
-        self.publish_performance(task);
-        self.notify.notify_waiters();
+    }
+
+    fn confirm_observation(&self, ticket: WakeObservationTicket) {
+        if let Ok(mut pending_since) = self.pending_since.lock()
+            && pending_since
+                .get(&ticket.task)
+                .is_some_and(|observation| observation.ticket == ticket)
+        {
+            pending_since.remove(&ticket.task);
+        }
+        self.publish_performance(ticket.task);
     }
 
     fn mark_pressure_deferred(&self, task: StartupBackfillTask) {
@@ -288,7 +332,7 @@ impl StartupBackfillScheduler {
     }
 
     fn record_task_result(&self, task: StartupBackfillTask, failed: bool, deferred: bool) {
-        self.record_task_result_with_actionable(task, failed, deferred, false, false);
+        self.record_task_result_with_actionable(task, failed, deferred, false);
     }
 
     fn record_task_result_with_actionable(
@@ -296,13 +340,9 @@ impl StartupBackfillScheduler {
         task: StartupBackfillTask,
         failed: bool,
         deferred: bool,
-        actionable: bool,
-        retains_pending: bool,
+        _actionable: bool,
     ) {
         if failed {
-            if let Ok(mut pending_since) = self.pending_since.lock() {
-                pending_since.entry(task).or_insert_with(Utc::now);
-            }
             self.failure_count.fetch_add(1, Ordering::Relaxed);
             if let Ok(mut tasks) = self.failed_tasks.lock() {
                 tasks.insert(task);
@@ -318,9 +358,6 @@ impl StartupBackfillScheduler {
         }
 
         if deferred {
-            if let Ok(mut pending_since) = self.pending_since.lock() {
-                pending_since.entry(task).or_insert_with(Utc::now);
-            }
             let pressure_deferred = self
                 .pressure_deferred_tasks
                 .lock()
@@ -356,13 +393,6 @@ impl StartupBackfillScheduler {
         }
         if let Ok(mut tasks) = self.failed_tasks.lock() {
             tasks.remove(&task);
-        }
-        if let Ok(mut pending_since) = self.pending_since.lock() {
-            if actionable || retains_pending {
-                pending_since.entry(task).or_insert_with(Utc::now);
-            } else {
-                pending_since.remove(&task);
-            }
         }
         self.publish_performance(task);
     }
@@ -456,7 +486,7 @@ impl StartupBackfillScheduler {
             .pending_since
             .lock()
             .ok()
-            .and_then(|pending| pending.get(&task).copied());
+            .and_then(|pending| pending.get(&task).map(|observation| observation.since));
         let next_due = self.next_due_for(task);
         metrics.set_performance(
             PerformanceGauge::Wake(task, WakeState::Pending),
@@ -531,13 +561,24 @@ impl Drop for WakeAttemptObservation {
     }
 }
 
-fn record_scheduler_wake_confirmation(task: StartupBackfillTask) {
+fn confirm_scheduler_wake_observation(
+    scheduler: &StartupBackfillScheduler,
+    ticket: WakeObservationTicket,
+) {
+    scheduler.confirm_observation(ticket);
+}
+
+fn record_scheduler_wake_confirmation(
+    scheduler: &StartupBackfillScheduler,
+    ticket: WakeObservationTicket,
+) {
     if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
         metrics.count_performance(
-            PerformanceCounter::WakeAttempt(task, WakeOutcome::Committed),
+            PerformanceCounter::WakeAttempt(ticket.task, WakeOutcome::Committed),
             1,
         );
     }
+    confirm_scheduler_wake_observation(scheduler, ticket);
 }
 
 pub(super) fn requeue_startup_backfill_tasks(
@@ -576,7 +617,6 @@ pub(crate) fn record_startup_backfill_task_outcome_for_test(
         outcome.failed,
         outcome.deferred,
         outcome.actionable,
-        outcome.retains_pending,
     );
 }
 
@@ -605,7 +645,6 @@ pub(crate) struct StartupBackfillTaskRunOutcome {
     failed: bool,
     deferred: bool,
     completed: bool,
-    retains_pending: bool,
     next_due: DateTime<Utc>,
 }
 
@@ -720,7 +759,6 @@ fn startup_backfill_pressure_defer_outcome_at(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     }
 }
@@ -747,7 +785,6 @@ fn startup_backfill_coordinator_defer_outcome(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     }
 }
@@ -774,7 +811,6 @@ fn startup_backfill_coordinator_defer_outcome_at(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     }
 }
@@ -881,7 +917,6 @@ async fn persist_startup_backfill_archive_lock_defer(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     })
 }
@@ -914,7 +949,6 @@ fn startup_backfill_pressure_error_defer_outcome(
         failed: false,
         deferred: true,
         completed: true,
-        retains_pending: false,
         next_due: retry_at,
     }
 }
@@ -1323,11 +1357,13 @@ pub(crate) async fn set_startup_backfill_progress_enabled(
     }
 
     if enabled {
-        STARTUP_BACKFILL_SCHEDULER.record_notification(task, WakeDecision::New);
+        let ticket = STARTUP_BACKFILL_SCHEDULER
+            .record_notification(task, WakeDecision::New)
+            .expect("enabled startup backfill control wake must create an observation ticket");
         STARTUP_BACKFILL_SCHEDULER.wake(task);
-        record_scheduler_wake_confirmation(task);
+        record_scheduler_wake_confirmation(&STARTUP_BACKFILL_SCHEDULER, ticket);
     } else {
-        STARTUP_BACKFILL_SCHEDULER.record_notification(task, WakeDecision::Disabled);
+        let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(task, WakeDecision::Disabled);
         STARTUP_BACKFILL_SCHEDULER.clear_next_due(task);
     }
     load_startup_backfill_progress(pool, task_name).await
@@ -1531,7 +1567,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
             StartupBackfillTask::ProxyCost => {
                 let Some(catalog) = pricing_catalog else {
                     proxy_cost_catalog_missing = true;
-                    STARTUP_BACKFILL_SCHEDULER.record_notification(*task, decision);
+                    let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(*task, decision);
                     continue;
                 };
                 startup_backfill_task_progress_key_for_catalog(*task, catalog)
@@ -1541,7 +1577,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         let Some(managed_suffix) =
             crate::maintenance_store::managed_startup_backfill_suffix(task.name())
         else {
-            STARTUP_BACKFILL_SCHEDULER.record_notification(*task, decision);
+            let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(*task, decision);
             continue;
         };
         let managed_task_key = format!("startup_backfill.{managed_suffix}");
@@ -1564,7 +1600,7 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
             None
         };
         let task_disabled = managed_tasks_present && !managed_enabled.unwrap_or(false);
-        STARTUP_BACKFILL_SCHEDULER.record_notification(
+        let ticket = STARTUP_BACKFILL_SCHEDULER.record_notification(
             *task,
             if task_disabled {
                 WakeDecision::Disabled
@@ -1627,6 +1663,10 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         .await?;
         woken += rows_affected;
         if rows_affected > 0 {
+            confirm_scheduler_wake_observation(
+                &STARTUP_BACKFILL_SCHEDULER,
+                ticket.expect("enabled startup backfill wake must have an observation ticket"),
+            );
             STARTUP_BACKFILL_SCHEDULER.wake(*task);
         } else {
             STARTUP_BACKFILL_SCHEDULER.clear_pending(*task);
@@ -1798,15 +1838,20 @@ pub(crate) async fn wake_startup_backfill_coverage_repair(
     wake_reason: &'static str,
 ) -> Result<u64> {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
-    STARTUP_BACKFILL_SCHEDULER
+    let ticket = STARTUP_BACKFILL_SCHEDULER
         .record_notification(task, startup_backfill_wake_decision(wake_reason));
-    wake_startup_backfill_coverage_repair_inner(startup_backfill_progress_pool(pool), wake_reason)
-        .await
+    wake_startup_backfill_coverage_repair_inner(
+        startup_backfill_progress_pool(pool),
+        wake_reason,
+        ticket,
+    )
+    .await
 }
 
 async fn wake_startup_backfill_coverage_repair_inner(
     pool: Option<&Pool<Sqlite>>,
     wake_reason: &'static str,
+    ticket: Option<WakeObservationTicket>,
 ) -> Result<u64> {
     let task = StartupBackfillTask::AccountActivityV2Coverage;
     let Some(pool) = pool else {
@@ -1876,6 +1921,9 @@ async fn wake_startup_backfill_coverage_repair_inner(
     })
     .await?;
 
+    if let Some(ticket) = ticket {
+        confirm_scheduler_wake_observation(&STARTUP_BACKFILL_SCHEDULER, ticket);
+    }
     let progress = load_startup_backfill_progress(pool, task_name).await?;
     STARTUP_BACKFILL_SCHEDULER.wake(task);
     info!(
@@ -2064,7 +2112,6 @@ async fn run_startup_backfill_maintenance_pass_with_gate_inner(
                         outcome.failed,
                         outcome.deferred,
                         outcome.actionable,
-                        outcome.retains_pending,
                     );
                 }
             }
@@ -2325,7 +2372,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 failed: false,
                 deferred: false,
                 completed: true,
-                retains_pending: false,
                 next_due: Utc::now() + ChronoDuration::days(1),
             },
             None,
@@ -2351,7 +2397,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     failed: false,
                     deferred: true,
                     completed: true,
-                    retains_pending: false,
                     next_due: retry_at,
                 },
                 None,
@@ -2371,7 +2416,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     failed: false,
                     deferred: true,
                     completed: true,
-                    retains_pending: false,
                     next_due: retry_at,
                 },
                 None,
@@ -2389,7 +2433,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     failed: false,
                     deferred: false,
                     completed: true,
-                    retains_pending: false,
                     next_due: Utc::now() + ChronoDuration::days(3650),
                 },
                 None,
@@ -2425,7 +2468,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 failed: false,
                 deferred: false,
                 completed: false,
-                retains_pending: false,
                 next_due: Utc::now()
                     + ChronoDuration::seconds(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS as i64),
             },
@@ -2510,7 +2552,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                 failed: false,
                 deferred: false,
                 completed: false,
-                retains_pending: false,
                 next_due: startup_backfill_progress_due(&progress),
             },
             None,
@@ -2706,7 +2747,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                             failed: false,
                             deferred: false,
                             completed: true,
-                            retains_pending: false,
                             next_due: Utc::now() + ChronoDuration::days(3650),
                         },
                         None,
@@ -2736,7 +2776,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                             failed: false,
                             deferred: true,
                             completed: true,
-                            retains_pending: false,
                             next_due: retry_at,
                         },
                         None,
@@ -2836,7 +2875,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     failed: false,
                     deferred: false,
                     completed: true,
-                    retains_pending: run.source_unavailable,
                     next_due: parse_to_utc_datetime(&next_run_after).unwrap_or_else(Utc::now),
                 },
                 (task == StartupBackfillTask::ProxyCost).then_some(detail),
@@ -2918,7 +2956,6 @@ async fn run_startup_backfill_task_if_due_outcome_with_store(
                     failed: true,
                     deferred: false,
                     completed: true,
-                    retains_pending: false,
                     next_due,
                 },
                 None,
