@@ -43,8 +43,8 @@ mod statistics_observability;
 mod summary_observability;
 mod summary_projection_lifecycle;
 
-use summary_observability::{
-    SummaryResponseObservation, record_summary_projection_publication_metrics,
+pub(crate) use summary_observability::{
+    fetch_summary, record_summary_projection_publication_metrics,
     summary_projection_pending_source_gaps,
 };
 
@@ -30275,16 +30275,6 @@ pub(crate) fn summary_delta_affects_selection(
                 })
         }
     }
-}
-
-pub(crate) async fn fetch_summary(
-    State(state): State<Arc<AppState>>,
-    Query(params): Query<SummaryQuery>,
-) -> Result<Json<StatsResponse>, ApiError> {
-    let mut observation = SummaryResponseObservation::new();
-    let result = fetch_summary_inner(State(state), Query(params)).await;
-    observation.finish(&result);
-    result
 }
 
 async fn fetch_summary_inner(

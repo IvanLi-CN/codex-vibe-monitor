@@ -1,3 +1,4 @@
+use super::summary_observability::SummaryResponseObservation;
 use super::*;
 use crate::observability::ObservabilityRuntime;
 use crate::observability::contention::{

@@ -7,7 +7,17 @@ use axum::Json;
 use std::sync::Arc;
 use std::time::Instant;
 
-pub(super) fn summary_projection_pending_source_gaps(
+pub(crate) async fn fetch_summary(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<SummaryQuery>,
+) -> Result<Json<StatsResponse>, ApiError> {
+    let mut observation = SummaryResponseObservation::new();
+    let result = super::fetch_summary_inner(State(state), Query(params)).await;
+    observation.finish(&result);
+    result
+}
+
+pub(crate) fn summary_projection_pending_source_gaps(
     projection: &SummaryProjection,
     kind: StatsProjection,
 ) -> usize {
@@ -50,7 +60,7 @@ pub(super) fn summary_projection_pending_source_gaps(
     }
 }
 
-pub(super) fn record_summary_projection_publication_metrics(
+pub(crate) fn record_summary_projection_publication_metrics(
     projection_kind: StatsProjection,
     pending_source_gaps: usize,
 ) {
