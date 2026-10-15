@@ -12,8 +12,8 @@ Dashboard 已有受限的实时累计态，但长期统计仍可能由定时任�
 
 ## Related ADRs
 
-- [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
 - [ADR 0038: Proxy journal completion capacity](../../adr/0038-proxy-journal-completion-capacity.md)
+- [ADR 0039: Terminal journal startup recovery](../../adr/0039-terminal-journal-startup-recovery.md)
 
 ## Goals
 
@@ -33,6 +33,8 @@ REQ-TERMINAL-P2-01: Summary、统计、缓存和维护必须使用独立、可�
 REQ-TERMINAL-RECOVERY-01: 重启、损坏、重复事件和容量边界必须 fail closed 或进入明确可观测的恢复/背压路径。
 
 shutdown terminal 补救恢复文件采用非阻断恢复：末尾不完整帧忽略并告警；其他损坏帧保留原文件副本、隔离并告警；正常帧继续按顺序恢复。打开、读取、隔离或清理失败保留来源并告警，不直接阻止整个服务启动，也不能把未恢复记录标记为已提交。后续追加不得与不完整尾部拼接；新事件仍须获得真实主日志同步确认。
+
+主终态日志按原始 JSON 值校验 legacy/version-one 帧后再解码，保留浮点精度。历史坏帧和尾部残片采用告警恢复：完整原件先同步保留，清理后的有效帧和 ACK 再经同步及原子替换发布，正常后缀继续重放。有效 ACK 保留序号水位并抑制虚假的开始中断恢复。未知版本或无法建立可靠主日志仍保留来源并报告错误；新事件 append/group-sync 失败不可降级为仅内存确认。
 
 - Hub pending event 同时受 `10,000` 条和 `64 MiB` 限制。触限、未知 ACK 或重启恢复不阻塞 P1；对应消费者必须进入 `dirty_last_good`，由持久 cursor 精确补齐。
 - long-term projection state 至少持久化 consumer cursor、最近 flush 结果、可恢复的脏桶和区间片段。进程重启后可从 `codex_invocations.id > cursor` 恢复，不依赖内存事件仍然存在。

@@ -12,8 +12,10 @@ use sha2::{Digest, Sha256};
 use tracing::warn;
 
 mod completion_capacity;
+mod segment_recovery;
 mod shutdown_recovery;
 use completion_capacity::CompletionCapacity;
+use segment_recovery::load_segment;
 use shutdown_recovery::{
     compact_shutdown_terminal_recovery, load_shutdown_terminal_recovery,
     open_shutdown_recovery_append,
@@ -187,15 +189,6 @@ struct JournalLine {
     #[serde(default)]
     acknowledged_sequence: Option<u64>,
     checksum: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacyJournalTerminalRecord {
-    sequence: u64,
-    raw_capture: bool,
-    #[serde(default)]
-    capture_elapsed_ms: Option<u64>,
-    record: ProxyCaptureRecord,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -806,7 +799,9 @@ impl TerminalJournal {
         }
         for (first_sequence, entries, attempt_starts) in loaded_segments {
             for start in attempt_starts {
-                if !terminal_attempt_public_ids.contains(&start.snapshot.attempt_public_id) {
+                if !acknowledged_sequences.contains(&start.sequence)
+                    && !terminal_attempt_public_ids.contains(&start.snapshot.attempt_public_id)
+                {
                     pending_attempt_starts
                         .insert(start.snapshot.attempt_public_id.clone(), start.sequence);
                     unmatched_attempt_starts.push(start.snapshot);
@@ -2205,129 +2200,6 @@ fn open_append_file(path: &Path) -> Result<File> {
         .with_context(|| format!("failed to open terminal journal segment {}", path.display()))
 }
 
-fn load_segment(path: &Path) -> Result<LoadedJournalSegment> {
-    let raw = fs::read(path)
-        .with_context(|| format!("failed to read terminal journal segment {}", path.display()))?;
-    let mut entries = Vec::new();
-    let mut attempt_starts = Vec::new();
-    let mut acknowledged = HashSet::new();
-    let mut valid_frames = Vec::with_capacity(raw.len());
-    for (line_number, raw_line) in raw.split_inclusive(|byte| *byte == b'\n').enumerate() {
-        if !raw_line.ends_with(b"\n") {
-            anyhow::bail!(
-                "incomplete terminal journal frame in {} at line {}; segment preserved",
-                path.display(),
-                line_number + 1
-            );
-        }
-        let line = std::str::from_utf8(&raw_line[..raw_line.len() - 1]).with_context(|| {
-            format!(
-                "invalid terminal journal UTF-8 in {} at line {}; segment preserved",
-                path.display(),
-                line_number + 1
-            )
-        })?;
-        if line.trim().is_empty() {
-            valid_frames.extend_from_slice(raw_line);
-            continue;
-        }
-        let line = serde_json::from_str::<JournalLine>(line).with_context(|| {
-            format!(
-                "corrupt terminal journal frame in {} at line {}; segment preserved",
-                path.display(),
-                line_number + 1
-            )
-        })?;
-        if line.event_version != TERMINAL_JOURNAL_EVENT_VERSION {
-            anyhow::bail!(
-                "unsupported terminal journal event version {} in {} at line {}; segment preserved",
-                line.event_version,
-                path.display(),
-                line_number + 1
-            );
-        }
-        if let Some(start) = line.attempt_start.as_ref()
-            && start.event_version != TERMINAL_JOURNAL_EVENT_VERSION
-        {
-            anyhow::bail!(
-                "unsupported attempt-start event version {}; segment preserved",
-                start.event_version
-            );
-        }
-        let checksum_matches = journal_line_checksum(
-            line.event_version,
-            line.entry.as_ref(),
-            line.attempt_start.as_ref(),
-            line.acknowledged_sequence,
-        )? == line.checksum
-            || (line.attempt_start.is_none()
-                && legacy_journal_line_checksum(line.entry.as_ref(), line.acknowledged_sequence)?
-                    == line.checksum);
-        if !checksum_matches {
-            anyhow::bail!(
-                "terminal journal checksum mismatch in {} at line {}; segment preserved",
-                path.display(),
-                line_number + 1
-            );
-        }
-        match (line.entry, line.attempt_start, line.acknowledged_sequence) {
-            (Some(entry), None, None) => entries.push(JournalEntryMetadata {
-                sequence: entry.sequence,
-                invoke_id: entry.record.invoke_id,
-                occurred_at: entry.record.occurred_at,
-                raw_capture: entry.raw_capture,
-                attempt_public_ids: entry
-                    .attempts
-                    .into_iter()
-                    .map(|attempt| attempt.attempt_public_id)
-                    .collect(),
-            }),
-            (None, Some(start), None) => attempt_starts.push(JournalAttemptStartMetadata {
-                sequence: start.sequence,
-                snapshot: start.attempt,
-            }),
-            (None, None, Some(sequence)) => {
-                acknowledged.insert(sequence);
-            }
-            _ => {
-                anyhow::bail!(
-                    "invalid terminal journal event shape in {} at line {}; segment preserved",
-                    path.display(),
-                    line_number + 1
-                );
-            }
-        }
-        valid_frames.extend_from_slice(raw_line);
-    }
-    let first_sequence = terminal_journal_segment_start(path)?;
-    let last_sequence = entries
-        .last()
-        .map(|entry| entry.sequence)
-        .into_iter()
-        .chain(attempt_starts.last().map(|entry| entry.sequence))
-        .max()
-        .unwrap_or(first_sequence.saturating_sub(1));
-    let sequences = entries
-        .iter()
-        .map(|entry| entry.sequence)
-        .chain(attempt_starts.iter().map(|entry| entry.sequence))
-        .collect::<HashSet<_>>();
-    Ok(LoadedJournalSegment {
-        segment: JournalSegment {
-            path: path.to_path_buf(),
-            first_sequence,
-            last_sequence,
-            bytes: valid_frames.len() as u64,
-            sequences,
-            acknowledged: HashSet::new(),
-            current: false,
-        },
-        entries,
-        attempt_starts,
-        acknowledgement_sequences: acknowledged,
-    })
-}
-
 fn terminal_journal_segment_start(path: &Path) -> Result<u64> {
     path.file_stem()
         .and_then(|name| name.to_str())
@@ -2396,21 +2268,6 @@ fn journal_line_checksum(
 ) -> Result<String> {
     let encoded = serde_json::to_vec(&(event_version, entry, attempt_start, acknowledged_sequence))
         .context("failed to checksum terminal journal event")?;
-    Ok(format!("{:x}", Sha256::digest(encoded)))
-}
-
-fn legacy_journal_line_checksum(
-    entry: Option<&JournalTerminalRecord>,
-    acknowledged_sequence: Option<u64>,
-) -> Result<String> {
-    let legacy_entry = entry.map(|entry| LegacyJournalTerminalRecord {
-        sequence: entry.sequence,
-        raw_capture: entry.raw_capture,
-        capture_elapsed_ms: entry.capture_elapsed_ms,
-        record: entry.record.clone(),
-    });
-    let encoded = serde_json::to_vec(&(legacy_entry, acknowledged_sequence))
-        .context("failed to checksum legacy terminal journal event")?;
     Ok(format!("{:x}", Sha256::digest(encoded)))
 }
 
@@ -2996,80 +2853,6 @@ mod tests {
         assert_eq!(second_batch.len(), 2);
         reopened.queue_replay_for_dispatch(2);
         assert_eq!(reopened.deferred_write_count(), 1);
-
-        fs::remove_dir_all(root).expect("remove journal test directory");
-    }
-
-    #[test]
-    fn damaged_middle_frame_fails_closed_without_rewriting_accepted_facts() {
-        let root = std::env::temp_dir().join(format!(
-            "terminal-journal-middle-frame-{}",
-            nanoid::nanoid!()
-        ));
-        fs::create_dir_all(&root).expect("create journal fixture");
-        let database_path = root.join("monitor.db");
-        let first = crate::tests::test_proxy_capture_record("middle-1", "2026-07-29T00:00:00Z");
-        let second = crate::tests::test_proxy_capture_record("middle-2", "2026-07-29T00:01:00Z");
-        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
-        journal.append(&first, false, None);
-        journal.append(&second, false, None);
-        journal.force_sync().expect("sync both accepted events");
-        let path = journal
-            .segments
-            .values()
-            .find(|segment| segment.current)
-            .expect("current segment")
-            .path
-            .clone();
-        drop(journal);
-        let original = fs::read(&path).expect("read synced events");
-        let split = original
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .expect("first frame")
-            + 1;
-        let mut damaged = original[..split].to_vec();
-        damaged.extend_from_slice(b"\xff damaged frame\n");
-        damaged.extend_from_slice(&original[split..]);
-        fs::write(&path, &damaged).expect("inject bounded middle-frame corruption");
-        assert!(TerminalJournal::open(&database_path).is_err());
-        assert_eq!(fs::read(&path).expect("original retained"), damaged);
-        fs::remove_dir_all(root).expect("remove owned fixture");
-    }
-
-    #[test]
-    fn incomplete_tail_fails_closed_without_rewriting_accepted_facts() {
-        let root =
-            std::env::temp_dir().join(format!("terminal-journal-corrupt-{}", nanoid::nanoid!()));
-        fs::create_dir_all(&root).expect("create journal test directory");
-        let database_path = root.join("monitor.db");
-        let first =
-            crate::tests::test_proxy_capture_record("journal-corrupt-1", "2026-07-29T00:00:00Z");
-
-        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
-        journal.append(&first, false, None);
-        journal.force_sync().expect("sync journal");
-        let segment_path = journal
-            .segments
-            .values()
-            .find(|segment| segment.current)
-            .expect("current segment")
-            .path
-            .clone();
-        drop(journal);
-        fs::OpenOptions::new()
-            .append(true)
-            .open(&segment_path)
-            .expect("open journal for corruption")
-            .write_all(b"{torn")
-            .expect("append corrupt tail");
-
-        let original = fs::read(&segment_path).expect("read damaged fixture");
-        assert!(TerminalJournal::open(&database_path).is_err());
-        assert_eq!(
-            fs::read(&segment_path).expect("original retained"),
-            original
-        );
 
         fs::remove_dir_all(root).expect("remove journal test directory");
     }

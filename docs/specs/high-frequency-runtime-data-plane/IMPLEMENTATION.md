@@ -1,5 +1,11 @@
 # High-Frequency Runtime Data Plane Implementation
 
+## Terminal Journal Startup Recovery
+
+Main terminal segments verify original JSON values before business decoding, recognize both legacy and version-one checksums, and retain float round-trip precision. Version probing precedes current-envelope decoding, so an unsupported version with changed required fields preserves the entire active source. Historical complete bad frames are isolated and an incomplete tail is ignored, each with a warning; a synced evidence copy and atomically published cleaned segment preserve valid suffix records and ACKs. Verified ACK watermarks prevent sequence reuse, and a verified begin ACK prevents recovery from inventing an interruption after a damaged terminal is isolated. New acceptance still requires the existing append and group-sync fences. The emitted frame format and SQLite schema are unchanged.
+
+Synthetic compatibility, middle-damage, tail-append, ACK-watermark and interrupted-cleanup regressions live in `src/tests/archive_file_io/terminal_journal_recovery.rs`. Current-candidate execution is restricted to GitHub CI; no local or production test workload is used.
+
 Durable-only account attempt pages and locate retain the existing `occurred_at DESC, id DESC` order, including equal timestamps across a page boundary. When a runtime overlay is present, both operations use the explicit merged order and stable-ID deduplication. Retryable HTTP failures and initial `response.failed` captures update the actual pending attempt before terminal finalization; completed raw metadata remains in the terminal snapshot even when the bounded capture update is rejected. Terminal growth compaction retains the raw path, codec, size, truncation and content encoding within the existing admission bounds, and the final snapshot is broadcast after finalization.
 
 ## Dashboard Hot Topic Coverage
