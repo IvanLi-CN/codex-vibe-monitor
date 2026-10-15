@@ -874,14 +874,19 @@
       "type": "row",
       "title": "代理运行态与日志健康",
       "collapsed": false,
-      "gridPos": { "x": 0, "y": 39, "w": 24, "h": 1 },
+      "gridPos": {
+        "x": 0,
+        "y": 39,
+        "w": 24,
+        "h": 1
+      },
       "panels": []
     },
     {
       "id": 112,
       "type": "timeseries",
       "title": "代理运行态数量与保护计数",
-      "description": "运行态记录、终态积压、拒绝/失败与热路径写准入保护计数；非零拒绝或失败表示需要处理。",
+      "description": "运行中 attempt、已确认追踪终态、日志恢复记录分别展示；恢复记录可能等待 ACK，不能视为尚未提交的业务事实。累计 Gauge 直接显示，不使用 rate/increase。",
       "gridPos": {
         "x": 0,
         "y": 40,
@@ -899,7 +904,7 @@
           "instant": false,
           "range": true,
           "format": "time_series",
-          "legendFormat": "{{journal}} 未物化事件"
+          "legendFormat": "{{journal}} 日志待确认记录"
         },
         {
           "refId": "B",
@@ -956,6 +961,14 @@
           "range": true,
           "format": "time_series",
           "legendFormat": "{{journal}} 重放"
+        },
+        {
+          "refId": "I",
+          "expr": "cvm_proxy_confirmed_terminal_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "已确认追踪终态：尚未提交"
         }
       ],
       "fieldConfig": {
@@ -983,8 +996,8 @@
     {
       "id": 113,
       "type": "timeseries",
-      "title": "代理运行态年龄与物化延迟",
-      "description": "终态日志最老积压年龄与最近物化延迟；补充恢复文件问题会保留 warning，但不会阻止服务启动。",
+      "title": "终态追踪年龄、日志占用与路由批次耗时",
+      "description": "已确认终态年龄只统计身份追踪中的未提交终态，提交后即清零；恢复年龄从本进程首次观察起算。日志连续未排空时间可能包含运行中的开始事件，不能当作终态年龄。routing 最近值是路由批次耗时，不是终态 enqueue→commit。",
       "gridPos": {
         "x": 8,
         "y": 40,
@@ -1002,7 +1015,7 @@
           "instant": false,
           "range": true,
           "format": "time_series",
-          "legendFormat": "{{journal}} 最老年龄"
+          "legendFormat": "{{journal}} 日志连续未排空"
         },
         {
           "refId": "B",
@@ -1010,7 +1023,15 @@
           "instant": false,
           "range": true,
           "format": "time_series",
-          "legendFormat": "{{journal}} 最近物化延迟"
+          "legendFormat": "{{journal}} 最近路由物化批次耗时"
+        },
+        {
+          "refId": "C",
+          "expr": "cvm_proxy_confirmed_terminal_oldest_observed_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "已确认追踪终态：最老观察年龄"
         }
       ],
       "fieldConfig": {
@@ -1040,32 +1061,62 @@
       "type": "timeseries",
       "title": "代理运行态内存与日志容量",
       "description": "内存占用、实际日志字节与已接受请求的终态预留额度分别计量；预留额度不是磁盘占用。",
-      "gridPos": { "x": 16, "y": 40, "w": 8, "h": 6 },
-      "datasource": { "type": "prometheus", "uid": "cvm-prometheus" },
+      "gridPos": {
+        "x": 16,
+        "y": 40,
+        "w": 8,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "cvm-prometheus"
+      },
       "targets": [
         {
           "refId": "A",
           "expr": "cvm_proxy_runtime_attempt_store{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\",measure=\"bytes\"}",
-          "instant": false, "range": true, "format": "time_series", "legendFormat": "运行态内存"
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "运行态内存"
         },
         {
           "refId": "B",
           "expr": "cvm_proxy_runtime_journal_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "instant": false, "range": true, "format": "time_series", "legendFormat": "{{journal}} 日志字节"
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "{{journal}} 日志字节"
         },
         {
           "refId": "C",
           "expr": "cvm_proxy_runtime_journal_completion_reserved_bytes{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
-          "instant": false, "range": true, "format": "time_series", "legendFormat": "终态预留额度"
+          "instant": false,
+          "range": true,
+          "format": "time_series",
+          "legendFormat": "终态预留额度"
         }
       ],
       "fieldConfig": {
-        "defaults": { "unit": "bytes", "noValue": "Unknown", "color": { "mode": "palette-classic" } },
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Unknown",
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
         "overrides": []
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       }
     },
     {
@@ -2203,5 +2254,5 @@
   "timezone": "utc",
   "title": "CVM · 请求与代理",
   "uid": "cvm-proxy",
-  "version": 1
+  "version": 2
 }

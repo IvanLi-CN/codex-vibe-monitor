@@ -1762,6 +1762,10 @@ impl SqliteBatchWriter {
         }
     }
 
+    pub(crate) fn terminal_materialization_snapshot(&self) -> (usize, Duration) {
+        self.terminal_journal.pending.materialization_snapshot()
+    }
+
     pub(crate) fn terminal_journal_stats(&self) -> TerminalJournalStats {
         self.terminal_journal
             .lock()
@@ -3289,7 +3293,7 @@ async fn flush_pending_batch_accounted(
         );
     }
     let flush_started = Instant::now();
-    let result = flush_pending_batch(
+    let flush = flush_pending_batch(
         accounting,
         pool,
         pricing_catalog,
@@ -3302,8 +3306,12 @@ async fn flush_pending_batch_accounted(
         terminal_projection_hub,
         dashboard_reconcile_gate,
         terminal_journal,
-    )
-    .await;
+    );
+    let result = if let Some(metrics) = accounting.observability.runtime() {
+        crate::observability::contention::with_performance(metrics, flush).await
+    } else {
+        flush.await
+    };
     accounting.record_write_batch(
         submitted_depth,
         submitted_bytes,

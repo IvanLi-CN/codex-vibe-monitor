@@ -59,6 +59,15 @@ async fn performance_metrics_scope_is_instance_local_and_not_implicitly_spawned(
                 .await
                 .unwrap()
         );
+        let explicit = second.clone();
+        assert!(
+            spawn_performance(second.clone(), async move {
+                Arc::ptr_eq(&current_performance().unwrap(), &explicit)
+            })
+            .await
+            .unwrap()
+        );
+        assert!(Arc::ptr_eq(&current_performance().unwrap(), &first));
     })
     .await;
     assert!(current_performance().is_none());
