@@ -2559,6 +2559,31 @@ pub(crate) async fn legacy_worker_should_skip(task_key: &str) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+struct PublishProgressObservationContext<'a> {
+    task_key: &'a str,
+    total: Option<i64>,
+    completed: Option<i64>,
+    phase: Option<&'a str>,
+    checkpoint: Option<&'a str>,
+    unit: Option<&'a str>,
+    source_scope: Option<&'a str>,
+    wait_reason: Option<&'a str>,
+    next_retry_at: Option<&'a str>,
+    stages: Option<&'a [TaskStage]>,
+}
+
+struct FinishRunObservationContext<'a> {
+    id: i64,
+    status: &'a str,
+    finished_at: &'a str,
+    duration_ms: i64,
+    summary: Option<&'a str>,
+    detail: Option<&'a str>,
+    completion: Option<&'a str>,
+    core_completion: Option<&'a str>,
+    details: Option<&'a serde_json::Value>,
+}
+
 impl MaintenanceStore {
     pub(crate) fn from_pool(pool: Pool<Sqlite>) -> Self {
         Self {
@@ -4011,7 +4036,7 @@ impl MaintenanceStore {
     ) -> Result<()> {
         observe_store_write(
             StoreOperation::Progress,
-            self.publish_progress_inner(
+            self.publish_progress_inner(PublishProgressObservationContext {
                 task_key,
                 total,
                 completed,
@@ -4022,25 +4047,27 @@ impl MaintenanceStore {
                 wait_reason,
                 next_retry_at,
                 stages,
-            ),
+            }),
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn publish_progress_inner(
         &self,
-        task_key: &str,
-        total: Option<i64>,
-        completed: Option<i64>,
-        phase: Option<&str>,
-        checkpoint: Option<&str>,
-        unit: Option<&str>,
-        source_scope: Option<&str>,
-        wait_reason: Option<&str>,
-        next_retry_at: Option<&str>,
-        stages: Option<&[TaskStage]>,
+        context: PublishProgressObservationContext<'_>,
     ) -> Result<()> {
+        let PublishProgressObservationContext {
+            task_key,
+            total,
+            completed,
+            phase,
+            checkpoint,
+            unit,
+            source_scope,
+            wait_reason,
+            next_retry_at,
+            stages,
+        } = context;
         let now = format_utc_iso_millis(Utc::now());
         let stages = stages.map(serde_json::to_string).transpose()?;
         sqlx::query(
@@ -4110,7 +4137,7 @@ impl MaintenanceStore {
     ) -> Result<()> {
         observe_store_write(
             StoreOperation::Run,
-            self.finish_run_with_observation_inner(
+            self.finish_run_with_observation_inner(FinishRunObservationContext {
                 id,
                 status,
                 finished_at,
@@ -4120,24 +4147,26 @@ impl MaintenanceStore {
                 completion,
                 core_completion,
                 details,
-            ),
+            }),
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn finish_run_with_observation_inner(
         &self,
-        id: i64,
-        status: &str,
-        finished_at: &str,
-        duration_ms: i64,
-        summary: Option<&str>,
-        detail: Option<&str>,
-        completion: Option<&str>,
-        core_completion: Option<&str>,
-        details: Option<&serde_json::Value>,
+        context: FinishRunObservationContext<'_>,
     ) -> Result<()> {
+        let FinishRunObservationContext {
+            id,
+            status,
+            finished_at,
+            duration_ms,
+            summary,
+            detail,
+            completion,
+            core_completion,
+            details,
+        } = context;
         let sanitized = detail.map(sanitize_task_detail);
         let details = details.map(serde_json::to_string).transpose()?;
         let task_key: Option<String> =
