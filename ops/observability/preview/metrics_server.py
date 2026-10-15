@@ -26,10 +26,11 @@ def wave(base, amplitude, period):
 
 
 class Metrics:
-    def __init__(self):
+    def __init__(self, scenario="normal"):
         self.lines = []
         self.types = set()
         self.elapsed = max(0.0, time.time() - START)
+        self.scenario = scenario
 
     def header(self, name, metric_type):
         if name not in self.types:
@@ -47,11 +48,11 @@ class Metrics:
         self.header(name, "counter")
         self.sample(name, initial + rate * self.elapsed, labels)
 
-    def histogram(self, name, rate, scale, labels=None, initial=0.0):
+    def histogram(self, name, rate, scale, labels=None, initial=0.0, buckets=None):
         self.header(name, "histogram")
         labels = labels or {}
         total = initial + rate * self.elapsed
-        buckets = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
+        buckets = buckets or (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0)
         for upper in buckets:
             fraction = -math.expm1(-upper / scale)
             self.sample(name + "_bucket", total * fraction, {**labels, "le": upper})
@@ -67,13 +68,17 @@ class Metrics:
         return "\n".join(self.lines) + "\n"
 
     def app_metrics(self):
-        self.gauge("cvm_preview_fixture_info", 1, {"source": "synthetic-preview", "purpose": "grafana-dashboard-preview", "fixture_version": "1"})
+        self.gauge("cvm_preview_fixture_info", 1, {"source": "synthetic-preview", "purpose": "grafana-dashboard-preview", "fixture_version": "2"})
+        self.contention_metrics()
         self.gauge("cvm_process_rss_bytes", wave(840_000_000, 45_000_000, 180))
         self.gauge("cvm_process_rss_anon_bytes", wave(620_000_000, 35_000_000, 210))
         self.gauge("cvm_process_swap_bytes", 0)
         self.gauge("cvm_proxy_runtime_attempt_store", wave(32, 8, 60), {"measure": "records"})
         self.gauge("cvm_proxy_runtime_attempt_store", wave(2_800_000, 600_000, 60), {"measure": "bytes"})
         self.gauge("cvm_proxy_runtime_journal_completion_reserved_bytes", wave(25_000_000, 6_000_000, 60))
+        self.gauge("cvm_proxy_confirmed_terminal_pending_records", wave(9, 2, 90))
+        self.gauge("cvm_proxy_confirmed_terminal_oldest_observed_age_seconds", wave(.12, .03, 90))
+        self.gauge("cvm_proxy_runtime_journal_failed", 0, {"journal": "terminal"})
         for journal, scale in (("terminal", 1), ("routing", .5)):
             self.gauge("cvm_proxy_runtime_journal_pending", wave(12 * scale, 4 * scale, 90), {"journal": journal})
             self.gauge("cvm_proxy_runtime_journal_bytes", wave(150_000 * scale, 40_000 * scale, 90), {"journal": journal})
@@ -196,6 +201,50 @@ class Metrics:
                 self.counter("cvm_browser_unsupported_total", 0.004, labels, initial=1)
                 self.counter("cvm_browser_visibility_hidden_total", 0.03, labels, initial=2)
 
+    def contention_metrics(self):
+        if self.scenario == "missing":
+            return
+        now = time.time()
+        low = self.scenario == "low-samples"
+        failing = self.scenario == "failures"
+        rate = .02 if low else 12.0
+        buckets = (.00001, .00005, .0001, .0005, .001, .005, .01, .025, .05, .1, .2, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300)
+        for operation in ("invocation_archive", "timestamped_archive", "detail_prune"):
+            labels = {"operation": operation}
+            for phase, seconds in (("prepare", .12), ("file_verify", .8), ("admission_wait", .08),
+                                   ("write_hold", .07), ("source_verify", .02), ("delete", .035),
+                                   ("commit", .015), ("cleanup", .03)):
+                self.histogram("cvm_retention_phase_duration_seconds", rate, seconds * (80 if failing else 1), {**labels, "phase": phase}, buckets=buckets)
+            self.counter("cvm_retention_batches_total", rate, {**labels, "outcome": "error" if failing else "success"})
+            self.counter("cvm_maintenance_processed_rows_total", rate * (1 if failing else 32), labels)
+            self.counter("cvm_maintenance_archived_rows_total", rate * (0 if failing else 24), labels)
+            self.gauge("cvm_retention_backlog_records", 6400 if failing else 64, labels)
+            self.gauge("cvm_retention_backlog_oldest_timestamp_seconds", now - (2400 if failing else 45), labels)
+        for task in ("prompt_cache_conversations_materialization", "historical_rollups"):
+            labels = {"task": task}
+            self.counter("cvm_backfill_wake_notifications_total", 18 * rate, {**labels, "reason": "merged"})
+            self.counter("cvm_backfill_wake_notifications_total", rate, {**labels, "reason": "new"})
+            self.counter("cvm_backfill_wake_attempts_total", rate, {**labels, "outcome": "busy" if failing else "committed"})
+            self.gauge("cvm_backfill_wake_pending_tasks", 1 if failing else 0, labels)
+            self.gauge("cvm_backfill_wake_oldest_timestamp_seconds", START - 180 if failing else 0, labels)
+            self.gauge("cvm_backfill_wake_next_due_timestamp_seconds", now + 5 if failing else 0, labels)
+        for operation in ("wake", "progress", "control", "run", "cleanup"):
+            labels = {"operation": operation}
+            self.counter("cvm_maintenance_store_writes_total", rate, {**labels, "outcome": "locked" if failing else "committed"})
+            self.histogram("cvm_maintenance_store_write_duration_seconds", rate, 5 if failing else .01, labels, buckets=buckets)
+        for outcome, reason, fraction in (("success", "none", .2 if failing else 1),
+                                          ("degraded", "historical_coverage", .3 if failing else .02),
+                                          ("unavailable", "source_gap", 1 if failing else 0)):
+            self.counter("cvm_summary_responses_total", rate * fraction, {"outcome": outcome, "reason": reason})
+            self.histogram("cvm_summary_response_duration_seconds", rate * fraction, .08 if outcome == "success" else .002, {"outcome": outcome}, buckets=buckets)
+        for query, scale in (("summary", .12), ("prompt_cache_statistics", .2), ("long_term_overlap", .3)):
+            labels = {"query": query, "outcome": "error" if failing else "success"}
+            self.counter("cvm_stats_queries_total", rate, labels)
+            self.histogram("cvm_stats_query_duration_seconds", rate, scale * (60 if failing else 1), labels, buckets=buckets)
+        for projection in ("summary_recent", "summary_historical", "prompt_cache", "long_term"):
+            self.gauge("cvm_stats_projection_last_good_timestamp_seconds", now - (900 if failing else 8), {"query": projection})
+            self.gauge("cvm_stats_projection_pending_items", 350 if failing else 2, {"query": projection, "phase": "dirty_buckets"})
+
     def hotpath_metrics(self):
         for function, rate, scale in (
             ("proxy::route", 6.1, 0.004),
@@ -217,8 +266,10 @@ class Metrics:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        if self.path == "/metrics":
-            payload = Metrics().render(self.server.server_port).encode("utf-8")
+        scenarios = {"/metrics": "normal", "/metrics/failures": "failures",
+                     "/metrics/low-samples": "low-samples", "/metrics/missing": "missing"}
+        if self.path in scenarios:
+            payload = Metrics(scenarios[self.path]).render(self.server.server_port).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(payload)))

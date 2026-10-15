@@ -76,6 +76,19 @@ async fn sample_runtime(state: &AppState) {
         attempts.rejected_records as f64,
     );
     let terminal_journal = state.sqlite_batch_writer.terminal_journal_stats();
+    let (pending_terminals, oldest_terminal_age) = state
+        .sqlite_batch_writer
+        .terminal_materialization_snapshot();
+    metrics.gauge(
+        "cvm_proxy_confirmed_terminal_pending_records",
+        &[],
+        pending_terminals as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_confirmed_terminal_oldest_observed_age_seconds",
+        &[],
+        oldest_terminal_age.as_secs_f64(),
+    );
     metrics.gauge(
         "cvm_proxy_runtime_journal_pending",
         &[("journal", "terminal")],
@@ -85,6 +98,11 @@ async fn sample_runtime(state: &AppState) {
         "cvm_proxy_runtime_journal_bytes",
         &[("journal", "terminal")],
         terminal_journal.pending_bytes as f64,
+    );
+    metrics.gauge(
+        "cvm_proxy_runtime_journal_failed",
+        &[("journal", "terminal")],
+        f64::from(terminal_journal.unavailable || terminal_journal.overflowed),
     );
     metrics.gauge(
         "cvm_proxy_runtime_journal_completion_reserved_bytes",

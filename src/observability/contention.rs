@@ -22,6 +22,17 @@ pub(crate) fn current_performance() -> Option<Arc<ObservabilityRuntime>> {
     PERFORMANCE_RUNTIME.try_with(Arc::clone).ok()
 }
 
+pub(crate) fn spawn_performance<F>(
+    metrics: Arc<ObservabilityRuntime>,
+    future: F,
+) -> JoinHandle<F::Output>
+where
+    F: Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(with_performance(metrics, future))
+}
+
 /// Observe one fixed SQL execution, including cancellation, without its text or parameters.
 pub(crate) async fn observe_query<T, E>(
     query: StatsQuery,
