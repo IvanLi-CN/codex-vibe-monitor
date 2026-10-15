@@ -294,7 +294,11 @@ pub(crate) async fn observability_http_middleware(
     {
         context.ttft_applicable(false);
     }
-    let response = super::diagnostics::scope(lifetime.diagnostic.clone(), next.run(request)).await;
+    let response = super::contention::with_performance(
+        metrics.clone(),
+        super::diagnostics::scope(lifetime.diagnostic.clone(), next.run(request)),
+    )
+    .await;
     let class = match response.status().as_u16() / 100 {
         1 => "1xx",
         2 => "2xx",

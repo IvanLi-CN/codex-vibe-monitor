@@ -39,6 +39,8 @@
 - REQ-022: 共享 Tempo 接入使用独立 CVM tenant，摄入与查询凭据分离，认证入口覆盖 tenant header，拒绝伪造权限并关闭跨租户查询；原始接口不暴露公网。隔离 fixture 保留 24 小时，WAL/blocks/工作目录同处 512 MiB tmpfs、1 CPU/2 GiB、512 KiB/s/1 MiB burst、128 KiB/trace、查询并发 2/超时 5 秒；这些不构成正式容量或存储建议。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
 - REQ-023: Grafana 原生统计及案例页提供正常随机候选、慢响应（≥30 秒）、高本地等待（≥250 ms）、重试、错误/取消五类，每类最多 3 条可展开的完整案例；案例查询只接受 `cvm.export_completeness=detailed`，摘要记录继续用于总体统计但不进入案例列表。随机候选为独立 TraceID 哈希 1/16 标记，不限制采集。手动刷新，时间及 service/environment/instance/endpoint 筛选跳转，原生瀑布图展示选定 trace；缺测、截断、未完整、导出丢失及超过 24 小时窗口明确说明。 covers: [案例合同](../../design/request-lifecycle-observability.md)
 
+- REQ-024: 归档、补算和统计的固定事件接口、提交工作量、独立维护库结果、成功响应延迟、真实覆盖缺口与长尾桶遵循 [竞争观测合同](CONTENTION-METRICS.md)。指标先上线，后续修复复用同一口径；生产基线积累不阻塞修复开发或 PR 就绪。新增 Histogram 按实际桶数消耗现有系列预算，抓取不得新增 SQL 或文件扫描。
+
 ## API Contract
 
 - `GET /api/system/observability`: 保留本地能力、状态、Grafana public URL、固定 dashboard UID 与变量；增加 `tracing` 的本地 enabled/state、datasourceUid=`cvm-tempo` 与 caseDashboardUid=`cvm-proxy-cases`，不查询 Tempo 决定健康，不含凭据与外部历史。
