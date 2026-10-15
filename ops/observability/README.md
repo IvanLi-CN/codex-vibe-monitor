@@ -8,6 +8,8 @@
 
 需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
+维护竞争的上线前后固定 UTC 窗口、查询集、处理量与采集质量要求见[维护竞争前后比较](contention-comparison.md)。观测版本上线后，修复开发与自然基线采集并行；基线充分性只约束修复上线。
+
 ## 应用配置
 
 ```dotenv
