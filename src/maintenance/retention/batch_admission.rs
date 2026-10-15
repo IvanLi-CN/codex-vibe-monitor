@@ -1,6 +1,9 @@
 use super::*;
 
 #[cfg(test)]
+use tokio::sync::Notify;
+
+#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,

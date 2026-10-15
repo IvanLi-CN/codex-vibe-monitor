@@ -80,7 +80,7 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, Notify, OnceCell, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
+    sync::{Mutex, OnceCell, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
