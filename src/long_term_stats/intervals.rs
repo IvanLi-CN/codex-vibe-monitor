@@ -1,4 +1,7 @@
 use super::*;
+use crate::observability::contention::{
+    PerformanceGauge, StatsProjection, StatsQuery, current_performance, observe_query,
+};
 
 pub(super) fn projection_interval_key(
     bucket_kind: &'static str,
@@ -709,6 +712,12 @@ pub(super) async fn apply_long_term_projection_incremental_with_runtime_and_cont
     .execute(&mut *tx)
     .await?;
     control.commit(tx, permit).await?;
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        metrics.set_performance(
+            PerformanceGauge::ProjectionLastGood(StatsProjection::LongTerm),
+            Utc::now().timestamp() as f64,
+        );
+    }
     let mut runtime = runtime.lock().await;
     runtime.interval_index = interval_index;
     runtime.loaded_interval_dates = loaded_dates;
@@ -728,12 +737,15 @@ pub(super) async fn load_long_term_rollups(
         long_term_projection_active_daily_cte(),
     );
     let _ = range;
-    Ok(sqlx::query_as::<_, LongTermRollupRow>(&sql)
-        .bind(dimension)
-        .bind(start_date)
-        .bind(end_date)
-        .fetch_all(pool)
-        .await?)
+    Ok(observe_query(
+        StatsQuery::LongTermOverlap,
+        sqlx::query_as::<_, LongTermRollupRow>(&sql)
+            .bind(dimension)
+            .bind(start_date)
+            .bind(end_date)
+            .fetch_all(pool),
+    )
+    .await?)
 }
 
 pub(super) async fn load_long_term_daily_rows(
@@ -758,7 +770,7 @@ pub(super) async fn load_long_term_daily_rows(
     if let Some(series_key) = series_key {
         query = query.bind(series_key);
     }
-    Ok(query.fetch_all(pool).await?)
+    Ok(observe_query(StatsQuery::LongTermOverlap, query.fetch_all(pool)).await?)
 }
 
 pub(crate) async fn load_public_blog_token_activity_90d(
@@ -1019,11 +1031,14 @@ pub(crate) async fn fetch_long_term_series(
 }
 
 pub(super) async fn load_long_term_state(pool: &Pool<Sqlite>) -> Result<LongTermStateRow> {
-    Ok(sqlx::query_as::<_, LongTermStateRow>(
-        "SELECT status, statistics_start_date, integrity_source_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
+    Ok(observe_query(
+        StatsQuery::LongTermOverlap,
+        sqlx::query_as::<_, LongTermStateRow>(
+            "SELECT status, statistics_start_date, integrity_source_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
+        )
+        .bind(LONG_TERM_STATE_ID)
+        .fetch_one(pool),
     )
-    .bind(LONG_TERM_STATE_ID)
-    .fetch_one(pool)
     .await?)
 }
 
