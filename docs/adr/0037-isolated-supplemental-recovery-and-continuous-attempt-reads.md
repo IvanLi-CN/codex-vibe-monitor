@@ -1,10 +1,12 @@
 ---
-status: accepted
+status: superseded
 ---
 
 # ADR 0037: Isolated supplemental recovery and continuous attempt reads
 
 Supersedes [ADR 0035](0035-proxy-runtime-memory-and-terminal-materialization.md).
+
+Superseded by [ADR 0039](0039-terminal-journal-startup-recovery.md).
 
 ## Context
 

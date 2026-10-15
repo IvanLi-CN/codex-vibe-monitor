@@ -15,8 +15,8 @@
 ## Related ADRs
 
 - [ADR 0014: Account effective routing rule control-plane projection](../../adr/0014-account-effective-routing-rule-control-plane-projection.md)
-- [ADR 0037: Isolated supplemental recovery and continuous attempt reads](../../adr/0037-isolated-supplemental-recovery-and-continuous-attempt-reads.md)
 - [ADR 0038: Proxy journal completion capacity](../../adr/0038-proxy-journal-completion-capacity.md)
+- [ADR 0039: Terminal journal startup recovery](../../adr/0039-terminal-journal-startup-recovery.md)
 
 ## Goals
 
@@ -80,6 +80,8 @@ SQLite 后台终态物化与路由物化经过统一写协调器，采用有界�
 
 shutdown terminal 补救恢复文件的末尾不完整帧忽略并记录 warning，其他损坏帧隔离并记录 warning，正常帧保持重放及 ACK 顺序。清理活动文件前必须保留中间损坏文件的原始副本；打开、读取、隔离或清理失败均告警并保留来源，不因该历史补救文件单独阻止服务启动。保留原文件时，后续追加必须隔开不完整尾部，避免吞掉新记录。主日志及路由日志仍保持真实同步确认和校验门禁，不能降级为仅内存成功。
 
+主终态日志先对写入时覆盖的原始 JSON 值验证校验和，再解码业务记录，兼容既有 legacy 和 version-one 帧并保持浮点往返精度。历史末尾不完整帧忽略并告警；完整坏帧隔离并告警，后续有效事件及 ACK 按源顺序保留。替换活动 segment 前必须同步保留完整原件，再同步清理后的临时文件、原子发布并同步目录；恢复中断后可安全重入。序列分配包含有效 ACK 的最大序号，不能因移除坏帧而让历史 ACK 确认新事件。未知版本保留来源并报告兼容性错误；主日志读取、原件保留或可靠发布失败仍不得接受仅内存成功的新事件。
+
 正常转发前必须完成 begin 日志的分组同步确认；terminal 同样以日志同步为请求侧确认，SQLite commit 后才推进消费检查点。attempt 内存至少限制记录数、字节数和存活时间，并预留已接受请求的终态空间。路由投影限制为 4096 条/16 MiB，恢复 sidecar 限制为 64 MiB、单帧 128 KiB，物化采用 20ms/32 条/4 MiB 边界。partial append 或无法可靠重建的恢复必须 fail closed 并保留来源；普通容量拒绝可在积压释放后恢复。控制端账号、组和全局策略变化必须推进持久代际，包括值恢复原样的 ABA 更新；sticky 清理必须验证 owner 和 exact-model/fallback 范围。退出前先排空 HTTP 请求，再关闭路由日志准入、同步并 join 工作任务。
 
 - SQLite 是 terminal durable source、projection warm restore、closed-range exact query 与 drift reconcile 的事实源，不是 Dashboard current-state 的请求内查询依赖。
@@ -135,6 +137,8 @@ VER-RUNTIME-UNIT-01: 覆盖 bounded latest-wins、terminal reserve 和 capacity 
 VER-RUNTIME-CAPACITY-01: 覆盖 256 个独立 attempt 的逆序终态及重启、最坏 JSON 转义、最大 ACK、重试 envelope 去重、元数据发布前的拒绝和积压释放后的恢复；covers: REQ-RUNTIME-CAPACITY-01。
 
 VER-RUNTIME-ARCHIVE-01: 覆盖日志加密脱敏、损坏恢复、重启重放、幂等物化和 sticky/control ABA；covers: REQ-RUNTIME-JOURNAL-01 REQ-RUNTIME-FENCE-01。
+
+VER-RUNTIME-JOURNAL-COMPAT-01: 覆盖含高精度浮点的固定 legacy 帧、version-one 重放及 ACK、完整坏帧后的有效事件、末尾残片清理后的追加与重启、有效 ACK 序号防重用，以及故障发布遗留文件的恢复重入；covers: REQ-RUNTIME-JOURNAL-01。
 
 VER-RUNTIME-STATEFUL-01: 覆盖 SQLite 写锁下的内存路由/模型可见性、Summary descriptor 原子提交和 derived isolation；covers: REQ-RUNTIME-MATERIALIZE-01。
 

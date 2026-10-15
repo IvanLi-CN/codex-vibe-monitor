@@ -8,6 +8,7 @@ mod runtime_attempt_cancellation;
 mod runtime_attempt_visibility;
 mod runtime_journal_capacity;
 mod shutdown_terminal_recovery;
+mod terminal_journal_recovery;
 
 pub(crate) use super::*;
 
