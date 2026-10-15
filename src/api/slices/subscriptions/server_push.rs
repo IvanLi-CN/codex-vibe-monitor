@@ -1326,7 +1326,7 @@ pub(crate) fn spawn_subscription_broadcast_listener(state: Arc<AppState>) {
     let mut receiver = state.broadcaster.subscribe();
     hub.mark_internal_broadcast_listener_started();
     let listener_state = state.clone();
-    tokio::spawn(async move {
+    spawn_performance(state.observability.clone(), async move {
         loop {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
@@ -1357,7 +1357,7 @@ pub(crate) fn spawn_runtime_mutation_router(state: Arc<AppState>) {
     }
     let shutdown = state.shutdown.clone();
     let mut receiver = bus.subscribe();
-    tokio::spawn(async move {
+    spawn_performance(state.observability.clone(), async move {
         let mut last_sequence = 0_u64;
         loop {
             let first = tokio::select! {
@@ -1420,7 +1420,7 @@ pub(crate) fn schedule_managed_task_topic_refresh_retry(
     topic: SubscriptionTopic,
     delay: Duration,
 ) {
-    tokio::spawn(async move {
+    spawn_performance(state.observability.clone(), async move {
         tokio::time::sleep(delay).await;
         if !hub.mark_managed_task_topic_dirty(&topic).await {
             return;

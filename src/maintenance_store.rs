@@ -96,7 +96,7 @@ pub(crate) async fn observe_store_write<T>(
     observation.outcome = result
         .as_ref()
         .map(|_| WakeOutcome::Committed)
-        .unwrap_or_else(|error| store_write_outcome(error));
+        .unwrap_or_else(store_write_outcome);
     result
 }
 

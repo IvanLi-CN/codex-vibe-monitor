@@ -3830,7 +3830,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         if cancel.is_cancelled() {
             info!("startup backfill maintenance skipped because shutdown is already in progress");
             return;
