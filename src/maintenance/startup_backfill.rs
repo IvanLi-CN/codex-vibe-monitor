@@ -1165,14 +1165,13 @@ pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
         })
         .await?;
         woken += rows_affected;
+        // A completed no-op settles only this observation. It must not discard
+        // queued business work or a retry deadline established by another wake.
+        if let Some(ticket) = ticket {
+            confirm_scheduler_wake_observation(&STARTUP_BACKFILL_SCHEDULER, ticket);
+        }
         if rows_affected > 0 {
-            confirm_scheduler_wake_observation(
-                &STARTUP_BACKFILL_SCHEDULER,
-                ticket.expect("enabled startup backfill wake must have an observation ticket"),
-            );
             STARTUP_BACKFILL_SCHEDULER.wake(*task);
-        } else {
-            STARTUP_BACKFILL_SCHEDULER.clear_pending(*task);
         }
     }
     if !tasks.is_empty() {

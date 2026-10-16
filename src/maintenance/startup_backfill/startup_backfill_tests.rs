@@ -1,7 +1,7 @@
 use super::*;
 use sqlx::SqlitePool;
 
-async fn control_test_pool() -> SqlitePool {
+pub(super) async fn control_test_pool() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:")
         .await
         .expect("connect startup backfill test pool");

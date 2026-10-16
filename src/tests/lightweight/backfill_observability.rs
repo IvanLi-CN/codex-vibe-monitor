@@ -123,6 +123,77 @@ async fn disabled_backfill_observability_does_not_register_series() {
 }
 
 #[tokio::test]
+async fn noop_wake_preserves_business_schedule_with_observation_enabled_or_disabled() {
+    let task = StartupBackfillTask::ProxyUsage;
+    for (enabled, wake_reason) in [
+        (false, "noop_observation_regression"),
+        (true, "noop_observation_regression"),
+        (false, "operator_disabled"),
+        (true, "operator_disabled"),
+    ] {
+        let pool = startup_backfill_tests::control_test_pool().await;
+        sqlx::query(
+            "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.proxy_usage',1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("enable managed task");
+        sqlx::query("INSERT INTO startup_backfill_progress (task_name,enabled) VALUES (?,0)")
+            .bind(task.name())
+            .execute(&pool)
+            .await
+            .expect("retain independently disabled progress row");
+
+        clear_startup_backfill_task_scheduler_for_test(task);
+        STARTUP_BACKFILL_SCHEDULER.wake(task);
+        let retry_at = Utc::now() + ChronoDuration::hours(1);
+        STARTUP_BACKFILL_SCHEDULER.defer_for_pressure(task, retry_at);
+        let before = STARTUP_BACKFILL_SCHEDULER.health_snapshot();
+        let runtime = ObservabilityRuntime::new(enabled);
+
+        let woken = crate::observability::contention::with_performance(runtime.clone(), async {
+            wake_startup_backfill_tasks(&pool, &[task], wake_reason).await
+        })
+        .await
+        .expect("complete no-op wake");
+
+        assert_eq!(woken, 0);
+        assert_eq!(STARTUP_BACKFILL_SCHEDULER.health_snapshot(), before);
+        assert!(STARTUP_BACKFILL_SCHEDULER.has_pending_wake(task));
+        assert!(STARTUP_BACKFILL_SCHEDULER.has_future_pressure_deadline(task, Utc::now()));
+        assert_eq!(
+            STARTUP_BACKFILL_SCHEDULER
+                .next_due
+                .lock()
+                .expect("retry schedule lock")
+                .get(&task),
+            Some(&retry_at)
+        );
+        assert!(
+            !STARTUP_BACKFILL_SCHEDULER
+                .pending_since
+                .lock()
+                .expect("observation lock")
+                .contains_key(&task)
+        );
+        if enabled {
+            let text = runtime.render();
+            assert!(text.lines().any(|line| {
+                line.starts_with("cvm_backfill_wake_attempts_total{")
+                    && line.contains("task=\"proxy_usage\"")
+                    && line.contains("outcome=\"noop\"")
+                    && line.ends_with(" 1")
+            }));
+            assert!(text.contains("cvm_backfill_wake_pending_tasks{task=\"proxy_usage\"} 0"));
+        } else {
+            assert!(runtime.render().is_empty());
+        }
+        clear_startup_backfill_task_scheduler_for_test(task);
+        pool.close().await;
+    }
+}
+
+#[tokio::test]
 async fn coverage_wake_without_maintenance_pool_does_not_confirm_attempt() {
     let runtime = ObservabilityRuntime::new(true);
     let task = StartupBackfillTask::AccountActivityV2Coverage;
