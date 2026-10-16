@@ -18,6 +18,7 @@ use wake_confirmation::confirm_startup_backfill_wake_obligations;
 #[cfg(test)]
 pub(crate) use wake_confirmation::{
     StartupBackfillWakeConfirmation, confirm_startup_backfill_wake_obligation,
+    confirm_startup_backfill_wake_obligations_for_test,
 };
 mod prompt_cache_control;
 mod task_identity;
