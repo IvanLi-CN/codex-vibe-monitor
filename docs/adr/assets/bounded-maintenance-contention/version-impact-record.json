@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "status": "implementation-in-progress-validation-pending",
+  "change": {
+    "description": "Reduce maintenance contention while preserving public HTTP/SSE fields and durable fact/proof semantics; add an explicit bounded maintenance CLI.",
+    "release_unit_description": "Parent repair PR #1125, including sibling retention and backfill repairs.",
+    "affected_contracts": ["public-api","persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch","minor","major"],
+    "planned": {"impact":"minor","reasoning":"The maintenance CLI is a compatible capability addition. Existing clients and queries remain valid, and optimizer indexes do not change row encoding.","assessed_at":"2026-10-16T17:54:03Z","evidence":["docs/adr/0040-bounded-maintenance-contention.md","docs/design/maintenance-contention-boundaries.md"]},
+    "current": {"impact":"minor","scope_drift":{"detected":false,"description":"Within the approved two-parent, five-child plan."},"reasoning":"Explicit optional indexes and CLI retain the old query path and runtime ownership protocol; candidate verification remains pending.","reassessed_at":"2026-10-16T17:54:03Z","evidence":["src/maintenance/performance_indexes.rs","src/config.rs"]},
+    "verified": null
+  },
+  "compatibility_evidence": {
+    "public_api": {"change":"compatible CLI addition; HTTP/SSE unchanged","supported_consumer_range":"Existing same-Major clients; final compatibility verification pending.","evidence":[]},
+    "persistent_state": {"applicable":true,"state_description":"Existing main/maintenance rows and proof/checkpoint state plus two optional indexes.","source_program_compatibility_range":"v4.7.0 observability baseline and supported same-Major states; verification pending.","evidence":["docs/adr/assets/bounded-maintenance-contention/persistent-state-migration-record.json"]}
+  },
+  "release_unit": {
+    "member_change_records": ["bounded-maintenance-contention"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": []
+  }
+}

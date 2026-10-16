@@ -2,9 +2,9 @@ use super::*;
 use sqlx::Executor;
 
 fn invocation_prompt_cache_key_expr_sql(alias: &str) -> String {
-    format!(
-        "CASE WHEN json_valid({alias}.payload) THEN TRIM(CAST(json_extract({alias}.payload, '$.promptCacheKey') AS TEXT)) END"
-    )
+    // Query and optional expression index share one normalization contract. Aliases are
+    // fixed internal identifiers; qualification changes neither JSON path nor collation.
+    INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL.replace("payload", &format!("{alias}.payload"))
 }
 
 pub(crate) async fn query_prompt_cache_conversation_statistics<'e, E>(

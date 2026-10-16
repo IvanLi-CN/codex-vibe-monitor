@@ -209,31 +209,134 @@ async fn legacy_interval_migration_seeks_by_invocation_id() {
     ensure_long_term_stats_schema(&pool)
         .await
         .expect("long-term schema");
-    let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
-        r#"
-            EXPLAIN QUERY PLAN
-            SELECT legacy.invocation_row_id,
-                   MAX(CASE WHEN legacy.dimension = 'model' THEN legacy.series_key END),
-                   MAX(CASE WHEN legacy.dimension = 'upstream' THEN legacy.series_key END),
-                   MIN(legacy.interval_start_ms),
-                   MAX(legacy.interval_end_ms)
-            FROM long_term_projection_intervals legacy
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM long_term_projection_interval_state state
-                WHERE state.invocation_row_id = legacy.invocation_row_id
-            )
-            GROUP BY legacy.invocation_row_id
-            ORDER BY legacy.invocation_row_id ASC
-            LIMIT 512
-            "#,
-    )
+    let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&format!(
+        "EXPLAIN QUERY PLAN {LEGACY_INTERVAL_PAGE_END_SQL}"
+    ))
+    .bind(512_i64)
+    .bind(512_i64)
     .fetch_all(&pool)
     .await
     .expect("legacy migration query plan");
     assert!(plan.iter().any(|(_, _, _, detail)| {
-        detail.contains("idx_long_term_projection_intervals_invocation")
+        detail.contains("SEARCH")
+            && detail.contains("idx_long_term_projection_intervals_invocation")
+            && detail.contains("invocation_row_id>?")
     }));
+}
+
+#[tokio::test]
+async fn legacy_interval_checkpoint_advances_past_invalid_page_without_losing_sources() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_long_term_projection_schema(&pool).await.unwrap();
+    sqlx::query(
+        "WITH RECURSIVE ids(id) AS (SELECT 1 UNION ALL SELECT id+1 FROM ids WHERE id<513)
+         INSERT INTO long_term_projection_intervals(bucket_kind,bucket_date,bucket_key,dimension,series_key,invocation_row_id,interval_start_ms,interval_end_ms)
+         SELECT 'daily','2026-07-26','2026-07-26','overall','overall',id,10,CASE WHEN id<=512 THEN 10 ELSE 20 END FROM ids",
+    ).execute(&pool).await.unwrap();
+    let shutdown = CancellationToken::new();
+    let gate = crate::db_pressure::DbPressureGate::new(1, Duration::ZERO);
+    let commits = AtomicUsize::new(0);
+    let first_owner = LongTermProjectionWriteControl::stopping_after(&shutdown, &gate, &commits, 1);
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &first_owner)
+            .await
+            .unwrap()
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT cursor_row_id FROM long_term_projection_state WHERE consumer='legacy_interval_migration_v1'")
+        .fetch_one(&pool).await.unwrap(), 512);
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &first_owner)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_interval_state")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        0
+    );
+    let resumed = LongTermProjectionWriteControl::unrestricted();
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &resumed)
+            .await
+            .unwrap()
+    );
+    let canonical: (i64, i64, i64) = sqlx::query_as("SELECT invocation_row_id,interval_start_ms,interval_end_ms FROM long_term_projection_interval_state")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(canonical, (513, 10, 20));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM long_term_projection_intervals WHERE invocation_row_id<=512"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        512,
+        "invalid authority is retained, never silently deleted"
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn legacy_interval_checkpoint_revisits_late_earlier_ids_after_bounded_cleanup() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_long_term_projection_schema(&pool).await.unwrap();
+    let insert = "INSERT INTO long_term_projection_intervals(bucket_kind,bucket_date,bucket_key,dimension,series_key,invocation_row_id,interval_start_ms,interval_end_ms) VALUES('daily','2026-07-26','2026-07-26','model','model:preserved',?,10,20)";
+    sqlx::query(insert)
+        .bind(100_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let control = LongTermProjectionWriteControl::unrestricted();
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &control)
+            .await
+            .unwrap()
+    );
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &control)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !migrate_long_term_projection_legacy_interval_state(&pool, &control)
+            .await
+            .unwrap()
+    );
+    // Simulate a supported earlier writer or forward repair restoring an older source ID.
+    sqlx::query(insert)
+        .bind(50_i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &control)
+            .await
+            .unwrap(),
+        "bounded rewind is durable"
+    );
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT cursor_row_id FROM long_term_projection_state WHERE consumer='legacy_interval_migration_v1'")
+        .fetch_one(&pool).await.unwrap(), 49);
+    assert!(
+        migrate_long_term_projection_legacy_interval_state(&pool, &control)
+            .await
+            .unwrap()
+    );
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT invocation_row_id FROM long_term_projection_interval_state ORDER BY invocation_row_id")
+        .fetch_all(&pool).await.unwrap();
+    assert_eq!(ids, vec![50, 100]);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM long_term_projection_interval_state WHERE model_series_key='model:preserved'")
+        .fetch_one(&pool).await.unwrap(), 2);
+    pool.close().await;
 }
 
 #[tokio::test]
