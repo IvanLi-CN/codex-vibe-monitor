@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Exclude /v1/* API navigations from the PWA document fallback so browser model discovery remains JSON.",
+    "release_unit_description": "PWA service worker API navigation boundary.",
+    "affected_contracts": [
+      "public-api"
+    ]
+  },
+  "classification": {
+    "allowed_impacts": [
+      "patch",
+      "minor",
+      "major"
+    ],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "The change restores the existing API response for browser navigation requests without changing the endpoint shape, authentication behavior, or persistent state.",
+      "assessed_at": "2026-10-16T04:43:29Z",
+      "evidence": [
+        "PWA service worker API navigation boundary in docs/specs/m9p2w-installable-pwa-runtime/SPEC.md"
+      ]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "Only the service worker navigation denylist, its PWA test server fixture, and the corresponding browser regression changed."
+      },
+      "reasoning": "The service worker now lets /v1/* reach the network while preserving the existing application shell fallback for document routes. No response schema or durable state format changes.",
+      "reassessed_at": "2026-10-16T04:43:29Z",
+      "evidence": [
+        "The new Playwright regression receives application/json and pwa-test-model from /v1/models."
+      ]
+    },
+    "verified": {
+      "impact": "patch",
+      "reasoning": "Existing PWA behavior remains intact and API model discovery no longer receives the HTML shell. This is a compatible browser-runtime correction with no persistent-state impact.",
+      "verified_at": "2026-10-16T04:43:29Z",
+      "evidence": [
+        "The complete PWA Playwright suite passed 8/8, including the new /v1/models navigation regression.",
+        "Web unit tests passed 1896 tests with 6 skipped; typecheck, build, lint, and PWA asset checks passed."
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing browser and OpenAI-compatible HTTP consumers on the current major line.",
+      "evidence": [
+        "The endpoint continues to return the existing JSON model-list payload; only the browser Service Worker interception is removed."
+      ]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "No persistent state or serialized format changes.",
+      "source_program_compatibility_range": "Not applicable.",
+      "evidence": [
+        "The change only updates a service worker route predicate and test fixtures."
+      ]
+    }
+  },
+  "release_unit": {
+    "member_change_records": [
+      "pwa-api-navigation"
+    ],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": [
+      "The release unit is a compatible service worker routing correction with no state migration."
+    ]
+  }
+}
