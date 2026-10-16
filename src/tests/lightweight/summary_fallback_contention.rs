@@ -6,6 +6,15 @@ use std::cell::Cell;
 
 #[tokio::test]
 async fn summary_projection_bootstrap_fallback_reopens_only_for_coverage_changes() {
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(false).await;
+}
+
+#[tokio::test]
+async fn summary_projection_bootstrap_fallback_recovers_compacted_live_tail() {
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(true).await;
+}
+
+async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(compact: bool) {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -91,6 +100,21 @@ async fn summary_projection_bootstrap_fallback_reopens_only_for_coverage_changes
         )],
     )
     .await;
+    if compact {
+        let cursor = crate::summary_source_change::summary_source_change_cursor(&state.pool)
+            .await
+            .expect("load committed source descriptor cursor");
+        assert!(cursor > 0, "terminal writer must persist its descriptor");
+        assert!(
+            crate::summary_source_change::compact_summary_source_change_journal(
+                &state.pool,
+                cursor,
+                cursor + 1,
+            )
+            .await
+            .expect("compact committed descriptors with a durable proof")
+        );
+    }
     let (changed_result, changed_hydrations) =
         SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
             .scope(Cell::new(0), async {
