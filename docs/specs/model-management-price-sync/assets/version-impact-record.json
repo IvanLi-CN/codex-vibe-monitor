@@ -24,7 +24,7 @@
         "description": "Implementation and local validation match the approved contract; no compatibility scope drift was found."
       },
       "reasoning": "Public API impact remains patch because the existing entries contract is retained and quotes are additive. Persistent state is minor because the quote table and dynamic model catalog add durable capabilities; the release unit takes the higher persistent-state impact.",
-      "reassessed_at": "2026-10-16T03:36:54Z",
+      "reassessed_at": "2026-10-16T04:16:14Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
@@ -33,9 +33,9 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The stateful SQLite profile verifies migration, deletion suppression after restart, explicit rediscovery with presets disabled, and unchanged historical costs. Public API impact remains patch for additive routes and model IDs; persistent state is minor because earlier same-Major writers do not preserve dynamic enabled IDs.",
-      "verified_at": "2026-10-16T03:36:54Z",
+      "verified_at": "2026-10-16T04:16:14Z",
       "evidence": [
-        "candidate_sha=49ca7605f2973149403ba5007102bee0dd71c9c3",
+        "candidate_sha=69f5fa15be0d90ca6a934ceb437f328fd5ef928a",
         "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json: official_ids_missing_from_litellm=[]",
         "cargo test pricing quote parser and transaction selectors: passed",
         "cargo check --locked --all-targets --all-features: passed",

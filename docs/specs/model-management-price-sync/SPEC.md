@@ -65,7 +65,7 @@
 
 ### REQ-MODEL-MGMT-007
 
-- Synchronization MUST preserve every numeric LiteLLM rate and its source metadata in the quote record. Only a complete generic token input/output pair and supported cache/reasoning token rates MAY update the legacy estimator projection; unsupported or quote-only dimensions MUST NOT be converted into placeholder prices.
+- Synchronization MUST preserve every numeric LiteLLM rate and its source metadata in the quote record, including distinct non-token units such as per-message and per-text-message rates. Only a complete generic token input/output pair and supported cache/reasoning token rates MAY update the legacy estimator projection; unsupported or quote-only dimensions MUST NOT be converted into placeholder prices.
 - Inputs: LiteLLM model cost fields.
 - Outputs: complete rates remain visible and durable; only valid legacy projection fields become local estimates.
 
