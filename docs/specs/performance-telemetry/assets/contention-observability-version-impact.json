@@ -22,10 +22,15 @@
       "evidence": ["src/observability/contention.rs", "src/observability/limits.rs"]
     },
     "verified": {
-      "impact": null,
-      "reasoning": "Current integrated candidate validation, controlled overhead and Grafana evidence are pending.",
-      "verified_at": null,
-      "evidence": []
+      "impact": "minor",
+      "reasoning": "The integrated module changes add fixed metric families and dashboard capabilities without changing HTTP/SSE fields, business SQL, indexes, scheduling, retry policy or durable formats. Module CI and source inspection support compatible API impact; this classification does not certify the separately required integrated performance or delivery gates.",
+      "verified_at": "2026-10-16T02:04:00Z",
+      "evidence": [
+        "docs/specs/performance-telemetry/CONTENTION-METRICS.md",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38757311280",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38767791790",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38837177580"
+      ]
     }
   },
   "compatibility_evidence": {
@@ -43,7 +48,7 @@
   },
   "release_unit": {
     "member_change_records": ["contention-observability"],
-    "maximum_verified_impact": null,
-    "calculation_evidence": []
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": ["classification.verified: the single contention-observability release member has compatible additive API impact and no persistent-state change."]
   }
 }
