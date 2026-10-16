@@ -1062,6 +1062,20 @@ pub(crate) async fn wake_startup_backfill_tasks(
 const MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES: usize = 512;
 const MAX_WAKE_OBLIGATION_CATALOG_MODELS: usize = 16_384;
 
+fn reject_startup_backfill_notification(
+    task: StartupBackfillTask,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if STARTUP_BACKFILL_SCHEDULER.wake_notification_rejection_should_warn(task, Utc::now()) {
+        warn!(
+            task = task.log_label(),
+            error = %error,
+            "startup backfill wake notification rejected"
+        );
+    }
+    error
+}
+
 pub(crate) fn notify_startup_backfill_tasks(
     pool: &Pool<Sqlite>,
     tasks: &[StartupBackfillTask],
@@ -1072,33 +1086,48 @@ pub(crate) fn notify_startup_backfill_tasks(
     // callers can use one fixed notification boundary without giving this path database access.
     let _ = pool;
     if tasks.contains(&StartupBackfillTask::ProxyCost) && pricing_catalog.is_none() {
-        return Err(anyhow!(
-            "startup backfill proxy cost notification requires the runtime pricing catalog"
+        return Err(reject_startup_backfill_notification(
+            StartupBackfillTask::ProxyCost,
+            anyhow!(
+                "startup backfill proxy cost notification requires the runtime pricing catalog"
+            ),
         ));
     }
     let proxy_cost_progress_key = if tasks.contains(&StartupBackfillTask::ProxyCost) {
         let Some(catalog) = pricing_catalog else {
-            return Err(anyhow!(
-                "startup backfill proxy cost notification requires the runtime pricing catalog"
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost notification requires the runtime pricing catalog"
+                ),
             ));
         };
         let max_version_bytes = MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES
             .saturating_sub(StartupBackfillTask::ProxyCost.name().len() + 2 + 16);
         if catalog.version.len() > max_version_bytes {
-            return Err(anyhow!(
-                "startup backfill proxy cost catalog version exceeds the bounded notification key"
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost catalog version exceeds the bounded notification key"
+                ),
             ));
         }
         if catalog.models.len() > MAX_WAKE_OBLIGATION_CATALOG_MODELS {
-            return Err(anyhow!(
-                "startup backfill proxy cost catalog exceeds the bounded notification model count"
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost catalog exceeds the bounded notification model count"
+                ),
             ));
         }
         let progress_key =
             startup_backfill_task_progress_key_for_catalog(StartupBackfillTask::ProxyCost, catalog);
         if progress_key.len() > MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES {
-            return Err(anyhow!(
-                "startup backfill proxy cost progress identity exceeds the bounded notification key"
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost progress identity exceeds the bounded notification key"
+                ),
             ));
         }
         Some(progress_key)
@@ -1142,8 +1171,11 @@ pub(crate) fn notify_startup_backfill_tasks(
             );
             continue;
         }
-        let _ = STARTUP_BACKFILL_SCHEDULER
-            .record_and_accept_wake_obligation(obligation_key, decision)?;
+        if let Err(error) =
+            STARTUP_BACKFILL_SCHEDULER.record_and_accept_wake_obligation(obligation_key, decision)
+        {
+            return Err(reject_startup_backfill_notification(task, error));
+        }
     }
     Ok(())
 }

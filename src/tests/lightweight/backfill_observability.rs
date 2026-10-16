@@ -939,7 +939,7 @@ async fn wake_obligation_confirmation_preserves_failed_deadline() {
 }
 
 #[tokio::test]
-async fn replaced_claimed_wake_obligation_does_not_write_stale_progress() {
+async fn claimed_wake_obligation_queues_replacement_until_current_attempt_finishes() {
     let pool = startup_backfill_tests::control_test_pool().await;
     let task = StartupBackfillTask::ProxyUsage;
     sqlx::query(
@@ -996,9 +996,23 @@ async fn replaced_claimed_wake_obligation_does_not_write_stale_progress() {
             &scheduler,
         )
         .await
-        .expect("fence replaced wake obligation"),
-        StartupBackfillWakeConfirmation::Obsolete
+        .expect("confirm current wake obligation before promotion"),
+        StartupBackfillWakeConfirmation::Confirmed { .. }
     ));
+    let old_observation = scheduler
+        .complete_wake_obligation(old_attempt.ticket)
+        .expect("complete current wake obligation");
+    scheduler.confirm_observation(old_observation);
+    let replacement_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim queued replacement wake obligation");
+    assert_eq!(
+        replacement_attempt.key.progress_key.as_deref(),
+        Some("proxy_usage:new-catalog")
+    );
+    scheduler.release_wake_obligation_claims(&[replacement_attempt], Utc::now());
     assert_eq!(
         sqlx::query_scalar::<_, i64>(
             "SELECT wake_generation FROM startup_backfill_progress WHERE task_name=?",
@@ -1007,7 +1021,7 @@ async fn replaced_claimed_wake_obligation_does_not_write_stale_progress() {
         .fetch_one(&pool)
         .await
         .expect("read stale progress row"),
-        0
+        1
     );
     pool.close().await;
 }

@@ -32,7 +32,7 @@ pub(super) struct WakeObligationTicket {
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct WakeObligationAttempt {
+pub(crate) struct WakeObligationAttempt {
     pub(super) ticket: WakeObligationTicket,
     pub(super) key: WakeObligationKey,
     pub(super) attempt: u32,
@@ -50,7 +50,6 @@ struct WakeObligation {
     key: WakeObligationKey,
     next_due: DateTime<Utc>,
     attempt: u32,
-    last_warning_at: Option<DateTime<Utc>>,
     observation_ticket: WakeObservationTicket,
     ticket: WakeObligationTicket,
     in_flight: bool,
@@ -86,7 +85,7 @@ fn latest_observation_ticket(
 }
 
 #[derive(Debug, Default)]
-pub(super) struct StartupBackfillScheduler {
+pub(crate) struct StartupBackfillScheduler {
     wake_generation: AtomicU64,
     observation_generation: AtomicU64,
     obligation_generation: AtomicU64,
@@ -97,6 +96,7 @@ pub(super) struct StartupBackfillScheduler {
     // Observation-only obligations awaiting confirmation of the durable wake/control write.
     pub(super) pending_since: std::sync::Mutex<HashMap<StartupBackfillTask, WakeObservation>>,
     wake_obligations: std::sync::Mutex<HashMap<StartupBackfillTask, WakeObligation>>,
+    wake_warning_at: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
@@ -144,6 +144,28 @@ impl StartupBackfillScheduler {
                 .fetch_add(1, Ordering::Relaxed)
                 .wrapping_add(1),
         }
+    }
+
+    fn take_wake_warning_budget(&self, task: StartupBackfillTask, now: DateTime<Utc>) -> bool {
+        let Ok(mut warning_at) = self.wake_warning_at.lock() else {
+            return false;
+        };
+        let should_warn = warning_at.is_empty()
+            || warning_at.get(&task).is_none_or(|last| {
+                now - *last >= chrono::Duration::seconds(WAKE_WARNING_INTERVAL_SECS)
+            });
+        if should_warn {
+            warning_at.insert(task, now);
+        }
+        should_warn
+    }
+
+    pub(super) fn wake_notification_rejection_should_warn(
+        &self,
+        task: StartupBackfillTask,
+        now: DateTime<Utc>,
+    ) -> bool {
+        self.take_wake_warning_budget(task, now)
     }
 
     fn promote_queued_wake_obligation(
@@ -348,7 +370,6 @@ impl StartupBackfillScheduler {
                         key,
                         next_due: observed_at,
                         attempt: 0,
-                        last_warning_at: None,
                         observation_ticket,
                         ticket,
                         in_flight: false,
@@ -428,12 +449,7 @@ impl StartupBackfillScheduler {
             let jitter_ms = rand::thread_rng().gen_range(0..=jitter_max_ms);
             let next_due = now + chrono::Duration::milliseconds(base_delay_ms + jitter_ms);
             obligation.next_due = next_due;
-            let should_warn = obligation.last_warning_at.is_none_or(|last| {
-                now - last >= chrono::Duration::seconds(WAKE_WARNING_INTERVAL_SECS)
-            });
-            if should_warn {
-                obligation.last_warning_at = Some(now);
-            }
+            let should_warn = self.take_wake_warning_budget(ticket.task, now);
             WakeObligationFailure {
                 next_due,
                 should_warn,

@@ -211,7 +211,7 @@ async fn confirm_startup_backfill_wake_obligations_with_pool(
             result = confirm_startup_backfill_wake_obligation(
                 pool,
                 cancel,
-                &attempt,
+                attempt,
                 &STARTUP_BACKFILL_SCHEDULER,
             ) => result,
         };
