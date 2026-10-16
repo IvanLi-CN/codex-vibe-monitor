@@ -360,10 +360,15 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
     scheduler: &StartupBackfillScheduler,
+    prompt_cache_control: Option<&crate::maintenance_store::PromptCacheMaterializationControl>,
 ) -> Result<(super::StartupBackfillWakeConfirmation, bool)> {
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
     let task_name = task.name();
     let managed_task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    let prompt_cache_control = prompt_cache_control.or_else(|| {
+        crate::maintenance_store::global()
+            .map(|store| store.prompt_cache_materialization_control.as_ref())
+    });
     if !scheduler.is_current_wake_obligation(attempt.ticket) {
         return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
     }
@@ -377,11 +382,10 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         ));
     }
     let control_guard = if let Some(expected_generation) = attempt.key.control_generation {
-        let Some(store) = crate::maintenance_store::global() else {
+        let Some(prompt_cache_control) = prompt_cache_control else {
             return Ok((super::StartupBackfillWakeConfirmation::Retry, false));
         };
-        let Some(guard) = store
-            .prompt_cache_materialization_control
+        let Some(guard) = prompt_cache_control
             .lock_current_generation(expected_generation)
             .await
         else {
@@ -467,9 +471,8 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         ));
     }
     if let Some(expected_generation) = attempt.key.control_generation
-        && let Some(store) = crate::maintenance_store::global()
-        && store
-            .prompt_cache_materialization_control
+        && let Some(prompt_cache_control) = prompt_cache_control
+        && prompt_cache_control
             .snapshot()
             .is_none_or(|snapshot| !snapshot.enabled || snapshot.generation != expected_generation)
     {

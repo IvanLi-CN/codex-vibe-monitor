@@ -54,6 +54,8 @@ struct WakeObligation {
     observation_ticket: WakeObservationTicket,
     ticket: WakeObligationTicket,
     in_flight: bool,
+    queued_key: Option<WakeObligationKey>,
+    queued_observation_ticket: Option<WakeObservationTicket>,
 }
 
 fn stale_prompt_control_generation(
@@ -134,6 +136,35 @@ pub(crate) struct StartupBackfillHealthSnapshot {
 }
 
 impl StartupBackfillScheduler {
+    fn next_obligation_ticket(&self, task: StartupBackfillTask) -> WakeObligationTicket {
+        WakeObligationTicket {
+            task,
+            generation: self
+                .obligation_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1),
+        }
+    }
+
+    fn promote_queued_wake_obligation(
+        &self,
+        obligation: &mut WakeObligation,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(key) = obligation.queued_key.take() else {
+            return false;
+        };
+        obligation.key = key;
+        obligation.observation_ticket = obligation
+            .queued_observation_ticket
+            .take()
+            .unwrap_or(obligation.observation_ticket);
+        obligation.ticket = self.next_obligation_ticket(obligation.key.task);
+        obligation.in_flight = false;
+        obligation.next_due = now;
+        true
+    }
+
     pub(super) fn record_notification(
         &self,
         task: StartupBackfillTask,
@@ -212,6 +243,23 @@ impl StartupBackfillScheduler {
         let Ok(_guard) = self.notification_lock.lock() else {
             return;
         };
+        let incoming = WakeObligationKey {
+            task,
+            control_generation,
+            progress_key: None,
+        };
+        if self
+            .wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations.get(&task).is_some_and(|existing| {
+                    stale_prompt_control_generation(&existing.key, &incoming)
+                })
+            })
+            .unwrap_or(true)
+        {
+            return;
+        }
         let _ = self.record_notification_locked(task, decision);
         self.cancel_wake_obligation_locked(task, control_generation);
     }
@@ -270,27 +318,30 @@ impl StartupBackfillScheduler {
             } else if let Some(existing) = obligations.get_mut(&key.task)
                 && existing.key.control_generation == key.control_generation
             {
-                let ticket = WakeObligationTicket {
-                    task: key.task,
-                    generation: self
-                        .obligation_generation
-                        .fetch_add(1, Ordering::Relaxed)
-                        .wrapping_add(1),
-                };
-                existing.key = key;
-                existing.observation_ticket =
-                    latest_observation_ticket(existing.observation_ticket, observation_ticket);
-                existing.ticket = ticket;
-                existing.in_flight = false;
-                (ticket, existing.next_due <= observed_at)
+                if existing.in_flight {
+                    if existing.queued_key.as_ref() == Some(&key) {
+                        existing.queued_observation_ticket = Some(
+                            existing
+                                .queued_observation_ticket
+                                .map(|queued| latest_observation_ticket(queued, observation_ticket))
+                                .unwrap_or(observation_ticket),
+                        );
+                    } else {
+                        existing.queued_key = Some(key);
+                        existing.queued_observation_ticket = Some(observation_ticket);
+                    }
+                    (existing.ticket, false)
+                } else {
+                    let ticket = self.next_obligation_ticket(key.task);
+                    existing.key = key;
+                    existing.observation_ticket =
+                        latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                    existing.ticket = ticket;
+                    existing.in_flight = false;
+                    (ticket, existing.next_due <= observed_at)
+                }
             } else {
-                let ticket = WakeObligationTicket {
-                    task: key.task,
-                    generation: self
-                        .obligation_generation
-                        .fetch_add(1, Ordering::Relaxed)
-                        .wrapping_add(1),
-                };
+                let ticket = self.next_obligation_ticket(key.task);
                 obligations.insert(
                     key.task,
                     WakeObligation {
@@ -301,6 +352,8 @@ impl StartupBackfillScheduler {
                         observation_ticket,
                         ticket,
                         in_flight: false,
+                        queued_key: None,
+                        queued_observation_ticket: None,
                     },
                 );
                 (ticket, true)
@@ -342,12 +395,17 @@ impl StartupBackfillScheduler {
         ticket: WakeObligationTicket,
     ) -> Option<WakeObservationTicket> {
         let mut obligations = self.wake_obligations.lock().ok()?;
-        let current = obligations.get(&ticket.task)?;
+        let current = obligations.get_mut(&ticket.task)?;
         if current.ticket != ticket {
             return None;
         }
         let observation_ticket = current.observation_ticket;
-        obligations.remove(&ticket.task);
+        if self.promote_queued_wake_obligation(current, Utc::now()) {
+            drop(obligations);
+            self.signal();
+        } else {
+            obligations.remove(&ticket.task);
+        }
         Some(observation_ticket)
     }
 
@@ -362,6 +420,7 @@ impl StartupBackfillScheduler {
             if obligation.ticket != ticket {
                 return None;
             }
+            self.promote_queued_wake_obligation(obligation, now);
             obligation.in_flight = false;
             let base_delay_ms =
                 WAKE_RETRY_BASE_DELAYS_MS[obligation.attempt.saturating_sub(1).min(4) as usize];
@@ -449,6 +508,7 @@ impl StartupBackfillScheduler {
                 if obligation.ticket != ticket {
                     return None;
                 }
+                self.promote_queued_wake_obligation(obligation, next_due);
                 obligation.in_flight = false;
                 if next_due > obligation.next_due {
                     obligation.next_due = next_due;
@@ -467,6 +527,7 @@ impl StartupBackfillScheduler {
             && let Some(obligation) = obligations.get_mut(&ticket.task)
             && obligation.ticket == ticket
         {
+            self.promote_queued_wake_obligation(obligation, now);
             obligation.in_flight = false;
             if obligation.next_due > now {
                 obligation.next_due = now;
@@ -477,6 +538,35 @@ impl StartupBackfillScheduler {
         };
         if released {
             self.publish_performance(ticket.task);
+        }
+    }
+
+    pub(super) fn release_wake_obligation_claims(
+        &self,
+        attempts: &[WakeObligationAttempt],
+        now: DateTime<Utc>,
+    ) {
+        let released_tasks = if let Ok(mut obligations) = self.wake_obligations.lock() {
+            attempts
+                .iter()
+                .filter_map(|attempt| {
+                    let obligation = obligations.get_mut(&attempt.ticket.task)?;
+                    if obligation.ticket != attempt.ticket {
+                        return None;
+                    }
+                    self.promote_queued_wake_obligation(obligation, now);
+                    obligation.in_flight = false;
+                    if obligation.next_due > now {
+                        obligation.next_due = now;
+                    }
+                    Some(attempt.ticket.task)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for task in released_tasks {
+            self.publish_performance(task);
         }
     }
 

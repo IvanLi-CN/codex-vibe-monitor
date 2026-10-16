@@ -27,6 +27,9 @@ pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Po
     wake_confirmation::confirm_startup_backfill_wake_obligations_for_test(pool).await;
 }
 
+#[cfg(test)]
+pub(crate) use wake_confirmation::confirm_startup_backfill_wake_obligation_for_test;
+
 mod prompt_cache_control;
 mod task_identity;
 #[cfg(test)]

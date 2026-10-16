@@ -218,6 +218,69 @@ fn stale_prompt_control_generation_does_not_replace_or_cancel_newer_obligation()
 }
 
 #[test]
+fn stale_disable_does_not_clear_newer_wake_observation() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record current wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(3),
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept current wake obligation");
+
+    scheduler.record_and_cancel_wake_obligation(task, WakeDecision::Disabled, Some(2));
+
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+    assert!(
+        scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
+}
+
+#[test]
+fn releasing_claimed_wake_batch_allows_every_obligation_to_retry() {
+    let scheduler = StartupBackfillScheduler::default();
+    let tasks = [
+        StartupBackfillTask::ProxyUsage,
+        StartupBackfillTask::ProxyCost,
+    ];
+    for task in tasks {
+        let observation_ticket = scheduler
+            .record_notification(task, WakeDecision::New)
+            .expect("record wake notification");
+        scheduler
+            .accept_wake_obligation(
+                WakeObligationKey {
+                    task,
+                    control_generation: None,
+                    progress_key: None,
+                },
+                observation_ticket,
+            )
+            .expect("accept wake obligation");
+    }
+    let attempts = scheduler.claim_due_wake_obligations(Utc::now());
+    assert_eq!(attempts.len(), tasks.len());
+
+    scheduler.release_wake_obligation_claims(&attempts, Utc::now());
+
+    assert_eq!(
+        scheduler.claim_due_wake_obligations(Utc::now()).len(),
+        tasks.len()
+    );
+}
+
+#[test]
 fn out_of_order_obligation_acceptance_keeps_latest_observation_ticket() {
     let scheduler = StartupBackfillScheduler::default();
     let task = StartupBackfillTask::ProxyUsage;
@@ -301,6 +364,59 @@ fn catalog_identity_change_preserves_wake_backoff() {
 
     assert_eq!(scheduler.next_wake_obligation_due(), Some(failure.next_due));
     assert!(scheduler.claim_due_wake_obligations(Utc::now()).is_empty());
+}
+
+#[test]
+fn in_flight_catalog_replacement_waits_for_current_attempt() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyCost;
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record first catalog notification");
+    let first_ticket = scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v1".to_owned()),
+            },
+            first_observation,
+        )
+        .expect("accept first catalog notification");
+    let first_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim first catalog notification");
+
+    let second_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record replacement catalog notification");
+    let queued_ticket = scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v2".to_owned()),
+            },
+            second_observation,
+        )
+        .expect("queue replacement catalog notification");
+    assert_eq!(queued_ticket, first_ticket);
+
+    let completed_observation = scheduler
+        .complete_wake_obligation(first_attempt.ticket)
+        .expect("complete first catalog notification");
+    scheduler.confirm_observation(completed_observation);
+    let second_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim queued catalog notification");
+    assert_eq!(
+        second_attempt.key.progress_key.as_deref(),
+        Some("catalog-v2")
+    );
 }
 
 #[tokio::test]
@@ -974,6 +1090,9 @@ async fn wake_obligation_confirmation_supports_legacy_pool_without_controls() {
 async fn prompt_cache_wake_obligation_uses_the_same_conditional_confirmation() {
     let pool = startup_backfill_tests::control_test_pool().await;
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let prompt_cache_control =
+        crate::maintenance_store::PromptCacheMaterializationControl::default();
+    let control_generation = prompt_cache_control.initialize(true).generation;
     sqlx::query(
         "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.prompt_cache_conversations_materialization',1)",
     )
@@ -994,7 +1113,7 @@ async fn prompt_cache_wake_obligation_uses_the_same_conditional_confirmation() {
         .accept_wake_obligation(
             WakeObligationKey {
                 task,
-                control_generation: None,
+                control_generation: Some(control_generation),
                 progress_key: None,
             },
             observation_ticket,
@@ -1007,11 +1126,12 @@ async fn prompt_cache_wake_obligation_uses_the_same_conditional_confirmation() {
         .expect("claim prompt-cache wake obligation");
 
     assert!(matches!(
-        confirm_startup_backfill_wake_obligation(
+        confirm_startup_backfill_wake_obligation_for_test(
             &pool,
             &tokio_util::sync::CancellationToken::new(),
             &attempt,
             &scheduler,
+            &prompt_cache_control,
         )
         .await
         .expect("confirm prompt-cache wake obligation"),

@@ -196,8 +196,10 @@ async fn confirm_startup_backfill_wake_obligations_with_pool(
     cancel: &CancellationToken,
 ) {
     let attempts = STARTUP_BACKFILL_SCHEDULER.claim_due_wake_obligations(Utc::now());
-    for attempt in attempts {
+    for (index, attempt) in attempts.iter().enumerate() {
         if cancel.is_cancelled() {
+            STARTUP_BACKFILL_SCHEDULER
+                .release_wake_obligation_claims(&attempts[index..], Utc::now());
             break;
         }
         if !STARTUP_BACKFILL_SCHEDULER.is_current_wake_obligation(attempt.ticket) {
@@ -277,7 +279,8 @@ async fn confirm_startup_backfill_wake_obligations_with_pool(
                 }
             }
             StartupBackfillWakeConfirmation::Cancelled => {
-                STARTUP_BACKFILL_SCHEDULER.release_wake_obligation(attempt.ticket, Utc::now());
+                STARTUP_BACKFILL_SCHEDULER
+                    .release_wake_obligation_claims(&attempts[index..], Utc::now());
                 break;
             }
         }
@@ -295,9 +298,45 @@ pub(super) async fn confirm_startup_backfill_wake_obligation(
     attempt: &WakeObligationAttempt,
     scheduler: &StartupBackfillScheduler,
 ) -> Result<StartupBackfillWakeConfirmation> {
+    confirm_startup_backfill_wake_obligation_with_control(pool, cancel, attempt, scheduler, None)
+        .await
+}
+
+#[cfg(test)]
+pub(crate) async fn confirm_startup_backfill_wake_obligation_for_test(
+    pool: &Pool<Sqlite>,
+    cancel: &CancellationToken,
+    attempt: &WakeObligationAttempt,
+    scheduler: &StartupBackfillScheduler,
+    prompt_cache_control: &crate::maintenance_store::PromptCacheMaterializationControl,
+) -> Result<StartupBackfillWakeConfirmation> {
+    confirm_startup_backfill_wake_obligation_with_control(
+        pool,
+        cancel,
+        attempt,
+        scheduler,
+        Some(prompt_cache_control),
+    )
+    .await
+}
+
+async fn confirm_startup_backfill_wake_obligation_with_control(
+    pool: &Pool<Sqlite>,
+    cancel: &CancellationToken,
+    attempt: &WakeObligationAttempt,
+    scheduler: &StartupBackfillScheduler,
+    prompt_cache_control: Option<&crate::maintenance_store::PromptCacheMaterializationControl>,
+) -> Result<StartupBackfillWakeConfirmation> {
     let task = attempt.key.task;
     let confirmation = observe_wake_attempt(task, async {
-        confirm_startup_backfill_wake_obligation_inner(pool, cancel, attempt, scheduler).await
+        confirm_startup_backfill_wake_obligation_inner(
+            pool,
+            cancel,
+            attempt,
+            scheduler,
+            prompt_cache_control,
+        )
+        .await
     })
     .await?;
     Ok(confirmation)
@@ -308,6 +347,7 @@ async fn confirm_startup_backfill_wake_obligation_inner(
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
     scheduler: &StartupBackfillScheduler,
+    prompt_cache_control: Option<&crate::maintenance_store::PromptCacheMaterializationControl>,
 ) -> Result<(StartupBackfillWakeConfirmation, bool)> {
     if cancel.is_cancelled() {
         return Ok((StartupBackfillWakeConfirmation::Cancelled, false));
@@ -316,7 +356,14 @@ async fn confirm_startup_backfill_wake_obligation_inner(
         return Ok((StartupBackfillWakeConfirmation::Obsolete, false));
     }
     if attempt.key.task == StartupBackfillTask::PromptCacheConversationsMaterialization {
-        return confirm_prompt_cache_materialization_wake(pool, cancel, attempt, scheduler).await;
+        return confirm_prompt_cache_materialization_wake(
+            pool,
+            cancel,
+            attempt,
+            scheduler,
+            prompt_cache_control,
+        )
+        .await;
     }
 
     let task = attempt.key.task;
