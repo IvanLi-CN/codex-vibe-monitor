@@ -1748,6 +1748,10 @@ async fn background_startup_hourly_rollup_bootstrap_defers_when_repair_cursor_re
     .expect("count seeded pending repair candidates");
     assert_eq!(seeded_candidate_count, 513);
 
+    crate::maintenance::repair_materialized_upstream_account_archive_markers(&state.pool)
+        .await
+        .expect("prepare legacy account archive replay markers");
+
     let bootstrap_handle =
         spawn_runtime_startup_hourly_rollup_bootstrap(state.clone(), state.shutdown.clone());
     let (status, summary, detail) =

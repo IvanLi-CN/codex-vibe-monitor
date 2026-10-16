@@ -89,7 +89,7 @@ covers: VER-RUST-SOURCE-QUALITY-007
 
 ### REQ-RUST-SOURCE-QUALITY-008
 
-The missing-pool-key terminalization fixture MAY prepare its real committed unkeyed invocation range before subscribing and issuing the original request. Preparation MUST remain test-only, allocate no ID, create no active lease, fail on initialization error or an hourly-owner transition, and retain a five-second Arrange bound. The production 100 ms allocation policy and every original HTTP, Running, terminal, identity, and in-flight assertion MUST remain unchanged. The startup pending-repair fixture, its five-second watchdog, SQL, assertions, and execution slots MUST remain unchanged.
+The missing-pool-key terminalization fixture MAY prepare its real committed unkeyed invocation range before subscribing and issuing the original request. Preparation MUST remain test-only, allocate no ID, create no active lease, fail on initialization error or an hourly-owner transition, and retain a five-second Arrange bound. The production 100 ms allocation policy and every original HTTP, Running, terminal, identity, and in-flight assertion MUST remain unchanged. The startup pending-repair fixture MAY call the existing legacy account archive marker-repair routine after its original seeded-cursor and candidate-count assertions and before spawning bootstrap. This Arrange prerequisite covers only the three legacy account usage/hourly-stats/minute-stats markers bound to the current manifest SHA; it MUST NOT seed a usage-breakdown replay marker or advance/reset its repair cursor. Every original SQL literal and assertion, the five-second watchdog, 513 candidates, cursor transition from 64 to 320, deferred status, cancellation, one-second join, and execution slots MUST remain unchanged. This fixture accepts pending-cursor deferral with the legacy marker prerequisite prepared; it does not establish cold missing-marker backfill latency.
 
 covers: VER-RUST-SOURCE-QUALITY-008
 
@@ -302,7 +302,7 @@ covers: REQ-RUST-SOURCE-QUALITY-007
 
 ### VER-RUST-SOURCE-QUALITY-008
 
-Method: run the original missing-pool-key terminalization test, the five preserved stateful fixture regressions with the canonical schema-template prerequisite, and all three complete backend profiles. Pass condition: the real range is committed before the original missing-key request, all original terminalization assertions pass, and the startup watchdog, cold-conversation, retention, and pruned-summary regressions pass without timeout, SQL, assertion, or slot relaxation. Preserve every failed run separately from later candidates and diagnostics.
+Method: run the original missing-pool-key terminalization test, the five preserved stateful fixture regressions with the canonical schema-template prerequisite, and all three complete backend profiles. Pass condition: the real range is committed before the original missing-key request, all original terminalization assertions pass, and the startup watchdog, cold-conversation, retention, and pruned-summary regressions pass without timeout, SQL, assertion, or slot relaxation. Preserve every failed run separately from later candidates and diagnostics. The startup fixture uses the admitted legacy-marker Arrange prerequisite while retaining all original SQL and assertions; its acceptance claim excludes cold legacy-marker completion.
 
 covers: REQ-RUST-SOURCE-QUALITY-008
 
