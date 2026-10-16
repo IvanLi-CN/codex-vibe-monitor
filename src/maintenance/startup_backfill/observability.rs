@@ -72,12 +72,24 @@ fn stale_prompt_control_generation(
     }
 }
 
+fn latest_observation_ticket(
+    current: WakeObservationTicket,
+    incoming: WakeObservationTicket,
+) -> WakeObservationTicket {
+    if incoming.generation >= current.generation {
+        incoming
+    } else {
+        current
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct StartupBackfillScheduler {
     wake_generation: AtomicU64,
     observation_generation: AtomicU64,
     obligation_generation: AtomicU64,
     notify: Notify,
+    notification_lock: std::sync::Mutex<()>,
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pub(super) next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     // Observation-only obligations awaiting confirmation of the durable wake/control write.
@@ -127,6 +139,15 @@ impl StartupBackfillScheduler {
         task: StartupBackfillTask,
         decision: WakeDecision,
     ) -> Option<WakeObservationTicket> {
+        let _guard = self.notification_lock.lock().ok()?;
+        self.record_notification_locked(task, decision)
+    }
+
+    fn record_notification_locked(
+        &self,
+        task: StartupBackfillTask,
+        decision: WakeDecision,
+    ) -> Option<WakeObservationTicket> {
         let decision = if matches!(decision, WakeDecision::New)
             && self
                 .pending_since
@@ -166,6 +187,35 @@ impl StartupBackfillScheduler {
         Some(ticket)
     }
 
+    pub(super) fn record_and_accept_wake_obligation(
+        &self,
+        key: WakeObligationKey,
+        decision: WakeDecision,
+    ) -> crate::Result<Option<WakeObligationTicket>> {
+        let _guard = self
+            .notification_lock
+            .lock()
+            .map_err(|_| anyhow!("startup backfill notification lock poisoned"))?;
+        let Some(observation_ticket) = self.record_notification_locked(key.task, decision) else {
+            return Ok(None);
+        };
+        self.accept_wake_obligation(key, observation_ticket)
+            .map(Some)
+    }
+
+    pub(super) fn record_and_cancel_wake_obligation(
+        &self,
+        task: StartupBackfillTask,
+        decision: WakeDecision,
+        control_generation: Option<u64>,
+    ) {
+        let Ok(_guard) = self.notification_lock.lock() else {
+            return;
+        };
+        let _ = self.record_notification_locked(task, decision);
+        self.cancel_wake_obligation_locked(task, control_generation);
+    }
+
     pub(super) fn wake(&self, task: StartupBackfillTask) {
         let observed_at = Utc::now();
         if let Ok(mut tasks) = self.woken_tasks.lock() {
@@ -182,9 +232,18 @@ impl StartupBackfillScheduler {
     pub(super) fn accept_wake_obligation(
         &self,
         key: WakeObligationKey,
-        observation_ticket: WakeObservationTicket,
+        incoming_observation_ticket: WakeObservationTicket,
     ) -> crate::Result<WakeObligationTicket> {
         let observed_at = Utc::now();
+        let observation_ticket = self
+            .pending_since
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&key.task).map(|observation| observation.ticket))
+            .map(|pending_ticket| {
+                latest_observation_ticket(incoming_observation_ticket, pending_ticket)
+            })
+            .unwrap_or(incoming_observation_ticket);
         let (ticket, should_signal) = {
             let mut obligations = self
                 .wake_obligations
@@ -193,7 +252,8 @@ impl StartupBackfillScheduler {
             if let Some(existing) = obligations.get_mut(&key.task)
                 && existing.key == key
             {
-                existing.observation_ticket = observation_ticket;
+                existing.observation_ticket =
+                    latest_observation_ticket(existing.observation_ticket, observation_ticket);
                 (
                     existing.ticket,
                     !existing.in_flight && existing.next_due <= observed_at,
@@ -201,11 +261,28 @@ impl StartupBackfillScheduler {
             } else if let Some(existing) = obligations.get_mut(&key.task)
                 && stale_prompt_control_generation(&existing.key, &key)
             {
-                existing.observation_ticket = observation_ticket;
+                existing.observation_ticket =
+                    latest_observation_ticket(existing.observation_ticket, observation_ticket);
                 (
                     existing.ticket,
                     !existing.in_flight && existing.next_due <= observed_at,
                 )
+            } else if let Some(existing) = obligations.get_mut(&key.task)
+                && existing.key.control_generation == key.control_generation
+            {
+                let ticket = WakeObligationTicket {
+                    task: key.task,
+                    generation: self
+                        .obligation_generation
+                        .fetch_add(1, Ordering::Relaxed)
+                        .wrapping_add(1),
+                };
+                existing.key = key;
+                existing.observation_ticket =
+                    latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                existing.ticket = ticket;
+                existing.in_flight = false;
+                (ticket, existing.next_due <= observed_at)
             } else {
                 let ticket = WakeObligationTicket {
                     task: key.task,
@@ -324,6 +401,17 @@ impl StartupBackfillScheduler {
         task: StartupBackfillTask,
         control_generation: Option<u64>,
     ) {
+        let Ok(_guard) = self.notification_lock.lock() else {
+            return;
+        };
+        self.cancel_wake_obligation_locked(task, control_generation);
+    }
+
+    fn cancel_wake_obligation_locked(
+        &self,
+        task: StartupBackfillTask,
+        control_generation: Option<u64>,
+    ) {
         let should_clear = if let Ok(mut obligations) = self.wake_obligations.lock() {
             let incoming = WakeObligationKey {
                 task,
@@ -344,6 +432,51 @@ impl StartupBackfillScheduler {
         };
         if should_clear {
             self.clear_observation(task);
+        }
+    }
+
+    pub(super) fn defer_wake_obligation(
+        &self,
+        ticket: WakeObligationTicket,
+        next_due: DateTime<Utc>,
+    ) -> bool {
+        let deferred = self
+            .wake_obligations
+            .lock()
+            .ok()
+            .and_then(|mut obligations| {
+                let obligation = obligations.get_mut(&ticket.task)?;
+                if obligation.ticket != ticket {
+                    return None;
+                }
+                obligation.in_flight = false;
+                if next_due > obligation.next_due {
+                    obligation.next_due = next_due;
+                }
+                Some(())
+            })
+            .is_some();
+        if deferred {
+            self.publish_performance(ticket.task);
+        }
+        deferred
+    }
+
+    pub(super) fn release_wake_obligation(&self, ticket: WakeObligationTicket, now: DateTime<Utc>) {
+        let released = if let Ok(mut obligations) = self.wake_obligations.lock()
+            && let Some(obligation) = obligations.get_mut(&ticket.task)
+            && obligation.ticket == ticket
+        {
+            obligation.in_flight = false;
+            if obligation.next_due > now {
+                obligation.next_due = now;
+            }
+            true
+        } else {
+            false
+        };
+        if released {
+            self.publish_performance(ticket.task);
         }
     }
 

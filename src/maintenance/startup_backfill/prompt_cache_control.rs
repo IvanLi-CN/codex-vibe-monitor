@@ -360,51 +360,51 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
     scheduler: &StartupBackfillScheduler,
-) -> Result<super::StartupBackfillWakeConfirmation> {
+) -> Result<(super::StartupBackfillWakeConfirmation, bool)> {
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
     let task_name = task.name();
     let managed_task_key = "startup_backfill.prompt_cache_conversations_materialization";
     if !scheduler.is_current_wake_obligation(attempt.ticket) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
     }
     if let Some(next_due) = scheduler
         .next_due_for(task)
         .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
     {
-        return Ok(super::StartupBackfillWakeConfirmation::Confirmed {
-            wake_task: false,
-            next_due: Some(next_due),
-        });
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Deferred { next_due },
+            false,
+        ));
     }
     let control_guard = if let Some(expected_generation) = attempt.key.control_generation {
         let Some(store) = crate::maintenance_store::global() else {
-            return Ok(super::StartupBackfillWakeConfirmation::Retry);
+            return Ok((super::StartupBackfillWakeConfirmation::Retry, false));
         };
         let Some(guard) = store
             .prompt_cache_materialization_control
             .lock_current_generation(expected_generation)
             .await
         else {
-            return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+            return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
         };
         Some(guard)
     } else {
         None
     };
     if cancel.is_cancelled() {
-        return Ok(super::StartupBackfillWakeConfirmation::Cancelled);
+        return Ok((super::StartupBackfillWakeConfirmation::Cancelled, false));
     }
     if !scheduler.is_current_wake_obligation(attempt.ticket) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
     }
     if let Some(next_due) = scheduler
         .next_due_for(task)
         .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
     {
-        return Ok(super::StartupBackfillWakeConfirmation::Confirmed {
-            wake_task: false,
-            next_due: Some(next_due),
-        });
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Deferred { next_due },
+            false,
+        ));
     }
 
     let managed_tasks_present = sqlx::query_scalar::<_, i64>(
@@ -422,7 +422,7 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         None
     };
     if managed_enabled == Some(false) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
     }
     let progress = sqlx::query_as::<_, (bool, i64, Option<String>, String)>(
         "SELECT enabled,wake_generation,next_run_after,last_status
@@ -432,10 +432,10 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     .fetch_optional(pool)
     .await?;
     if progress.as_ref().is_some_and(|progress| !progress.0) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
     }
     if cancel.is_cancelled() {
-        return Ok(super::StartupBackfillWakeConfirmation::Cancelled);
+        return Ok((super::StartupBackfillWakeConfirmation::Cancelled, false));
     }
 
     let expected_generation = progress.as_ref().map(|progress| progress.1);
@@ -455,10 +455,16 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     )
     .await?;
     if !scheduler.is_current_wake_obligation(attempt.ticket) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
     }
     if cancel.is_cancelled() {
-        return Ok(super::StartupBackfillWakeConfirmation::Cancelled);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Cancelled,
+            rows_affected > 0,
+        ));
     }
     if let Some(expected_generation) = attempt.key.control_generation
         && let Some(store) = crate::maintenance_store::global()
@@ -467,7 +473,10 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
             .snapshot()
             .is_none_or(|snapshot| !snapshot.enabled || snapshot.generation != expected_generation)
     {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
     }
     if rows_affected == 0 {
         let managed_enabled_after = if managed_tasks_present {
@@ -478,11 +487,14 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         } else {
             None
         };
-        return Ok(if managed_enabled_after == Some(false) {
-            super::StartupBackfillWakeConfirmation::Obsolete
-        } else {
-            super::StartupBackfillWakeConfirmation::Retry
-        });
+        return Ok((
+            if managed_enabled_after == Some(false) {
+                super::StartupBackfillWakeConfirmation::Obsolete
+            } else {
+                super::StartupBackfillWakeConfirmation::Retry
+            },
+            rows_affected > 0,
+        ));
     }
     let progress_after = sqlx::query_as::<_, (bool, i64, Option<String>)>(
         "SELECT enabled,wake_generation,next_run_after
@@ -492,15 +504,24 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     .fetch_optional(pool)
     .await?;
     let Some((enabled_after, generation_after, next_run_after)) = progress_after else {
-        return Ok(super::StartupBackfillWakeConfirmation::Retry);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Retry,
+            rows_affected > 0,
+        ));
     };
     if !enabled_after {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
     }
     if expected_generation
         .is_some_and(|generation| generation_after != generation.saturating_add(1))
     {
-        return Ok(super::StartupBackfillWakeConfirmation::Retry);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Retry,
+            rows_affected > 0,
+        ));
     }
     let managed_enabled_after = if managed_tasks_present {
         sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
@@ -511,17 +532,23 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         None
     };
     if managed_enabled_after == Some(false) {
-        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
     }
     let next_due = next_run_after
         .as_deref()
         .and_then(super::parse_to_utc_datetime)
         .filter(|deadline| *deadline > super::Utc::now());
     drop(control_guard);
-    Ok(super::StartupBackfillWakeConfirmation::Confirmed {
-        wake_task: next_due.is_none(),
-        next_due,
-    })
+    Ok((
+        super::StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: next_due.is_none(),
+            next_due,
+        },
+        rows_affected > 0,
+    ))
 }
 
 #[cfg(test)]

@@ -137,6 +137,43 @@ fn unavailable_wake_store_reschedules_due_obligations() {
 }
 
 #[test]
+fn wake_obligation_retries_follow_bounded_backoff_and_warning_limit() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept wake obligation");
+
+    let base_delays_ms = [250_i64, 500, 1_000, 2_000, 5_000];
+    let mut now = Utc::now();
+    for (index, base_delay_ms) in base_delays_ms.into_iter().enumerate() {
+        let attempt = scheduler
+            .claim_due_wake_obligations(now)
+            .into_iter()
+            .next()
+            .expect("claim due wake obligation");
+        let failure = scheduler
+            .fail_wake_obligation(attempt.ticket, now)
+            .expect("schedule bounded wake retry");
+        let delay_ms = (failure.next_due - now).num_milliseconds();
+        assert!((base_delay_ms..=base_delay_ms * 6 / 5).contains(&delay_ms));
+        assert_eq!(failure.should_warn, index == 0);
+        now = failure.next_due;
+    }
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+}
+
+#[test]
 fn stale_prompt_control_generation_does_not_replace_or_cancel_newer_obligation() {
     let scheduler = StartupBackfillScheduler::default();
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
@@ -180,6 +217,92 @@ fn stale_prompt_control_generation_does_not_replace_or_cancel_newer_obligation()
     assert_eq!(scheduler.pending_wake_obligation_count(), 0);
 }
 
+#[test]
+fn out_of_order_obligation_acceptance_keeps_latest_observation_ticket() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+    let key = WakeObligationKey {
+        task,
+        control_generation: None,
+        progress_key: None,
+    };
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record first wake notification");
+    let second_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record second wake notification");
+
+    scheduler
+        .accept_wake_obligation(key.clone(), second_observation)
+        .expect("accept second wake notification");
+    scheduler
+        .accept_wake_obligation(key, first_observation)
+        .expect("accept first wake notification after second");
+
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim accepted wake notification");
+    let observation = scheduler
+        .complete_wake_obligation(attempt.ticket)
+        .expect("complete accepted wake obligation");
+    assert_eq!(observation, second_observation);
+    scheduler.confirm_observation(observation);
+    assert!(
+        !scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
+}
+
+#[test]
+fn catalog_identity_change_preserves_wake_backoff() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyCost;
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record first catalog notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v1".to_owned()),
+            },
+            first_observation,
+        )
+        .expect("accept first catalog notification");
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim first catalog notification");
+    let failure = scheduler
+        .fail_wake_obligation(attempt.ticket, Utc::now())
+        .expect("schedule catalog retry");
+
+    let second_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record replacement catalog notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v2".to_owned()),
+            },
+            second_observation,
+        )
+        .expect("accept replacement catalog notification");
+
+    assert_eq!(scheduler.next_wake_obligation_due(), Some(failure.next_due));
+    assert!(scheduler.claim_due_wake_obligations(Utc::now()).is_empty());
+}
+
 #[tokio::test]
 async fn prompt_cache_obligation_respects_pressure_retry_deadline() {
     let store = startup_backfill_tests::prompt_cache_materialization_test_store().await;
@@ -215,11 +338,11 @@ async fn prompt_cache_obligation_respects_pressure_retry_deadline() {
         )
         .await
         .expect("confirm pressure-deferred wake obligation"),
-        StartupBackfillWakeConfirmation::Confirmed {
-            wake_task: false,
-            next_due: Some(_),
-        }
+        StartupBackfillWakeConfirmation::Deferred { next_due: _ }
     ));
+    assert!(scheduler.defer_wake_obligation(attempt.ticket, retry_at));
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+    assert!(scheduler.claim_due_wake_obligations(Utc::now()).is_empty());
     assert_eq!(
         load_startup_backfill_progress_from_pool(&store.pool, task.name())
             .await

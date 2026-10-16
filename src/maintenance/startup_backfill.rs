@@ -1132,17 +1132,15 @@ pub(crate) fn notify_startup_backfill_tasks(
             } else {
                 decision
             };
-            let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision);
-            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task, control_generation);
+            STARTUP_BACKFILL_SCHEDULER.record_and_cancel_wake_obligation(
+                task,
+                decision,
+                control_generation,
+            );
             continue;
         }
-        let Some(observation_ticket) =
-            STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision)
-        else {
-            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task, control_generation);
-            continue;
-        };
-        STARTUP_BACKFILL_SCHEDULER.accept_wake_obligation(obligation_key, observation_ticket)?;
+        let _ = STARTUP_BACKFILL_SCHEDULER
+            .record_and_accept_wake_obligation(obligation_key, decision)?;
     }
     Ok(())
 }
