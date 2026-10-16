@@ -23,7 +23,7 @@ async fn flush_obligation_batch(
 
 #[tokio::test]
 async fn rejected_backfill_notification_preserves_committed_terminal_and_retry_obligation() {
-    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+    let pool = Pool::<Sqlite>::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect isolated obligation fixture");
     ensure_schema(&pool).await.expect("prepare current schema");
