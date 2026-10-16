@@ -258,13 +258,16 @@ fn end_of_complete_minutes_epoch(value: DateTime<Utc>) -> i64 {
     value.timestamp().div_euclid(60) * 60
 }
 
-async fn parallel_work_hourly_coverage_is_complete(
-    pool: &Pool<Sqlite>,
+async fn parallel_work_hourly_coverage_is_complete<'e, E>(
+    pool: E,
     start_epoch: i64,
     end_epoch: i64,
     source_scope: InvocationSourceScope,
     field: &str,
-) -> Result<bool> {
+) -> Result<bool>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     if start_epoch >= end_epoch {
         return Ok(true);
     }
@@ -287,13 +290,16 @@ async fn parallel_work_hourly_coverage_is_complete(
     Ok(count == expected_hour_count)
 }
 
-async fn query_parallel_work_minute_rollup_key_sets(
-    pool: &Pool<Sqlite>,
+async fn query_parallel_work_minute_rollup_key_sets<'e, E>(
+    pool: E,
     start_epoch: i64,
     end_epoch: i64,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> Result<BTreeMap<i64, HashSet<String>>> {
+) -> Result<BTreeMap<i64, HashSet<String>>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let table = if upstream_account_id.is_some() {
         "parallel_work_upstream_account_minute_key_rollup"
     } else {
@@ -329,8 +335,8 @@ async fn query_parallel_work_minute_rollup_key_sets(
     Ok(bucket_keys)
 }
 
-async fn query_parallel_work_hourly_scalar_stats(
-    pool: &Pool<Sqlite>,
+async fn query_parallel_work_hourly_scalar_stats_on_connection(
+    connection: &mut SqliteConnection,
     start_epoch: i64,
     end_epoch: i64,
     source_scope: InvocationSourceScope,
@@ -357,7 +363,7 @@ async fn query_parallel_work_hourly_scalar_stats(
         .bind(end_epoch)
         .bind(source_scope)
         .bind(upstream_account_id)
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
     } else {
         sqlx::query_as::<_, ScalarSums>(
@@ -372,7 +378,7 @@ async fn query_parallel_work_hourly_scalar_stats(
         .bind(start_epoch)
         .bind(end_epoch)
         .bind(source_scope)
-        .fetch_one(pool)
+        .fetch_one(&mut *connection)
         .await?
     };
     Ok(ParallelWorkActiveMinuteStats {
@@ -383,6 +389,26 @@ async fn query_parallel_work_hourly_scalar_stats(
 
 pub(crate) async fn query_parallel_work_active_minute_stats(
     pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+    upstream_account_id: Option<i64>,
+    raw_detail_start_epoch: Option<i64>,
+) -> Result<ParallelWorkActiveMinuteStats> {
+    let mut connection = pool.acquire().await?;
+    query_parallel_work_active_minute_stats_on_connection(
+        &mut connection,
+        range_start,
+        range_end,
+        source_scope,
+        upstream_account_id,
+        raw_detail_start_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn query_parallel_work_active_minute_stats_on_connection(
+    connection: &mut SqliteConnection,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     source_scope: InvocationSourceScope,
@@ -406,7 +432,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
         if complete_start_epoch.rem_euclid(3_600) != 0
             || scalar_end_epoch.rem_euclid(3_600) != 0
             || !parallel_work_hourly_coverage_is_complete(
-                pool,
+                &mut *connection,
                 complete_start_epoch,
                 scalar_end_epoch,
                 source_scope,
@@ -417,8 +443,8 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
             return Ok(ParallelWorkActiveMinuteStats::unavailable());
         }
         result = result.combine(
-            query_parallel_work_hourly_scalar_stats(
-                pool,
+            query_parallel_work_hourly_scalar_stats_on_connection(
+                &mut *connection,
                 complete_start_epoch,
                 scalar_end_epoch,
                 source_scope,
@@ -434,7 +460,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
         let coverage_start_epoch = minute_start_epoch.div_euclid(3_600) * 3_600;
         let coverage_end_epoch = (minute_end_epoch.saturating_add(3_599)).div_euclid(3_600) * 3_600;
         let minute_coverage_complete = parallel_work_hourly_coverage_is_complete(
-            pool,
+            &mut *connection,
             coverage_start_epoch,
             coverage_end_epoch,
             source_scope,
@@ -444,7 +470,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
         let minute_stats = if minute_coverage_complete {
             ParallelWorkActiveMinuteStats::from_key_sets(
                 query_parallel_work_minute_rollup_key_sets(
-                    pool,
+                    &mut *connection,
                     minute_start_epoch,
                     minute_end_epoch,
                     source_scope,
@@ -463,7 +489,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
                 .ok_or_else(|| anyhow!("invalid parallel-work minute end"))?;
             ParallelWorkActiveMinuteStats::from_key_sets(
                 query_parallel_work_exact_key_sets(
-                    pool,
+                    &mut *connection,
                     minute_start,
                     minute_end,
                     60,
@@ -489,7 +515,7 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
             .ok_or_else(|| anyhow!("invalid parallel-work raw-tail start"))?;
         result = result.combine(ParallelWorkActiveMinuteStats::from_key_sets(
             query_parallel_work_exact_key_sets(
-                pool,
+                &mut *connection,
                 raw_tail_start,
                 complete_end,
                 60,
@@ -505,8 +531,8 @@ pub(crate) async fn query_parallel_work_active_minute_stats(
     Ok(result)
 }
 
-pub(crate) async fn query_parallel_work_exact_key_sets(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_parallel_work_exact_key_sets<'e, E>(
+    pool: E,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     bucket_seconds: i64,
@@ -515,7 +541,10 @@ pub(crate) async fn query_parallel_work_exact_key_sets(
     upstream_account_id: Option<i64>,
     start_after_id: Option<i64>,
     snapshot_id: Option<i64>,
-) -> Result<BTreeMap<i64, HashSet<String>>> {
+) -> Result<BTreeMap<i64, HashSet<String>>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::new("SELECT occurred_at, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
@@ -569,15 +598,18 @@ pub(crate) async fn query_parallel_work_exact_key_sets(
     Ok(bucket_keys)
 }
 
-pub(crate) async fn query_parallel_work_bucket_key_sets_from_hourly_rollups(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_parallel_work_bucket_key_sets_from_hourly_rollups<'e, E>(
+    pool: E,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> Result<BTreeMap<i64, HashSet<String>>> {
+) -> Result<BTreeMap<i64, HashSet<String>>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut query = if upstream_account_id.is_some() {
         QueryBuilder::new(
             "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_upstream_account_hourly \

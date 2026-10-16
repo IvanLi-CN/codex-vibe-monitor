@@ -9,7 +9,7 @@ async fn ranges_fixture() -> SqlitePool {
 const FIXTURE_ALLOCATION_TIMEOUT: &str = "invocation range allocation timed out after 100ms";
 const FIXTURE_ALLOCATION_MAX_ATTEMPTS: usize = 5;
 
-async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
+pub(super) async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
     mut allocate: F,
 ) -> anyhow::Result<String>
 where

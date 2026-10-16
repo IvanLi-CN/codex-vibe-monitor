@@ -901,7 +901,51 @@ impl SubscriptionHub {
                 sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                     .fetch_one(&mut *observer)
                     .await?;
-            let payload = topic.build_cached_payload(state.clone()).await?;
+            let payload = match topic {
+                SubscriptionTopic::ParallelWorkCurrent {
+                    range,
+                    time_zone,
+                    bucket,
+                    upstream_account_id,
+                } if range != "yesterday" => {
+                    // This observer already guards the baseline. Reusing its row boundary
+                    // avoids retaining a second observer inside the generic topic builder.
+                    let query = ParallelWorkStatsQuery {
+                        range: range.clone(),
+                        bucket: bucket.clone(),
+                        time_zone: Some(time_zone.clone()),
+                        upstream_account_id: *upstream_account_id,
+                    };
+                    if state.proxy_runtime_invocations.mode() == RuntimeProjectionMode::Auto {
+                        let base = build_dashboard_parallel_work_materializer_state_at_baseline_on_connection(
+                            &state,
+                            query,
+                            baseline_row_id,
+                            &mut observer,
+                        )
+                        .await?;
+                        BuiltSubscriptionTopicPayload::Dashboard(
+                            DashboardTopicMaterializer::ParallelWork {
+                                base: Arc::new(StdMutex::new(base)),
+                            },
+                        )
+                    } else {
+                        // Preserve build_cached_payload's non-Auto JSON route and its
+                        // runtime-overlay boundary, while reusing the held connection.
+                        let baseline = load_parallel_work_projection_baseline_at_on_connection(
+                            &state,
+                            query,
+                            Utc::now(),
+                            &mut observer,
+                        )
+                        .await?;
+                        BuiltSubscriptionTopicPayload::Json(serde_json::to_value(
+                            baseline.response,
+                        )?)
+                    }
+                }
+                _ => topic.build_cached_payload(state.clone()).await?,
+            };
             let candidate_identities = {
                 let guard = self.state.lock().await;
                 let topic_key = topic.cache_key()?;

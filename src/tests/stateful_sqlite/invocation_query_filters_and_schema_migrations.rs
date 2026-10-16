@@ -1653,9 +1653,11 @@ async fn prompt_cache_conversation_retention_preserves_active_and_live_identitie
     .await;
     let active_key = "active-retention-key";
     let live_key = "live-retention-key";
-    allocate_proxy_invoke_id(&state, Some(active_key))
-        .await
-        .expect("allocate active prompt-cache identity");
+    super::invocation_ranges::allocate_fixture_with_bounded_timeout_retry(|| {
+        allocate_proxy_invoke_id(&state, Some(active_key))
+    })
+    .await
+    .expect("allocate active prompt-cache identity");
     sqlx::query(
         "UPDATE prompt_cache_conversations SET created_at = '2020-01-01T00:00:00.000Z', updated_at = '2020-01-01T00:00:00.000Z' WHERE prompt_cache_key = ?1",
     )

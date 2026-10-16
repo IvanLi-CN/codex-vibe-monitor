@@ -81,6 +81,18 @@ the fixtures.
 
 covers: VER-RUST-SOURCE-QUALITY-006
 
+### REQ-RUST-SOURCE-QUALITY-007
+
+The admitted parallel-work baseline repair MUST reuse one borrowed SQLite connection across the complete cold load while retaining the existing row fence, data-version checks, SQL, pool capacity, acquisition deadline, retries, and public response shape. Auto mode MUST retain its typed materializer and buffered runtime replay; Legacy mode MUST retain its database JSON payload and runtime replay boundary. A builder holding its observer MUST NOT acquire another connection from the same pool.
+
+covers: VER-RUST-SOURCE-QUALITY-007
+
+### REQ-RUST-SOURCE-QUALITY-008
+
+The missing-pool-key terminalization fixture MAY prepare its real committed unkeyed invocation range before subscribing and issuing the original request. Preparation MUST remain test-only, allocate no ID, create no active lease, fail on initialization error or an hourly-owner transition, and retain a five-second Arrange bound. The production 100 ms allocation policy and every original HTTP, Running, terminal, identity, and in-flight assertion MUST remain unchanged. The startup pending-repair fixture, its five-second watchdog, SQL, assertions, and execution slots MUST remain unchanged.
+
+covers: VER-RUST-SOURCE-QUALITY-008
+
 ## Policy Shape
 
 The checked-in policy contains `schema_version`, baseline counts and commit,
@@ -221,7 +233,7 @@ The obsolete `src/long_term_stats.rs` entry is removed from the explicit policy 
 
 ## Archive Cleanup Extraction
 
-The archive cleanup facade now delegates to explicit compression-backlog, deletion, historical-rollup, legacy-mirror, storage, Summary Snapshot, and test modules under `src/maintenance/archive/cleanup/`. The production coordinator, archive-file identity implementation, and `prune_archive_batches` orchestration remain in `cleanup.rs`; the 21 existing cleanup tests remain under the same `archive_cleanup::tests` module path. After rustfmt, every extracted production file is below the 2,500-line target and the test helper is below the 3,000-line target, so the obsolete `src/maintenance/archive/cleanup.rs` inventory entry is removed. Names, SQL, timing, file-identity checks, deletion transaction boundaries, proof state, test names, and resource classification remain unchanged; the current policy is 33 entries with 16 production and 17 test/helper candidates and 118 suppression entries.
+The archive cleanup facade now delegates to explicit compression-backlog, deletion, historical-rollup, legacy-mirror, storage, Summary Snapshot, and test modules under `src/maintenance/archive/cleanup/`. The production coordinator, archive-file identity implementation, and `prune_archive_batches` orchestration remain in `cleanup.rs`; the 21 existing cleanup tests remain under the same `archive_cleanup::tests` module path. After rustfmt, every extracted production file is below the 2,500-line target and the test helper is below the 3,000-line target, so the obsolete `src/maintenance/archive/cleanup.rs` inventory entry is removed. Names, SQL, timing, file-identity checks, deletion transaction boundaries, proof state, test names, and resource classification remain unchanged; the current policy is 33 entries with 16 production and 17 test/helper candidates and 125 suppression entries.
 
 ## Later Module Rollout
 
@@ -282,8 +294,19 @@ outcomes.
 
 covers: REQ-RUST-SOURCE-QUALITY-006
 
-No UI evidence or empirical runtime acceptance is applicable; all checks are
-deterministic repository-local checks.
+### VER-RUST-SOURCE-QUALITY-007
+
+Method: run the Auto and Legacy one-connection baseline regressions through the canonical lightweight backend runner, retaining the persisted-conversation and caller-level buffered-runtime assertions, together with the original unknown-account reconcile test and complete backend profiles. Pass condition: six real concurrent builders complete with one connection and preserve their mode-specific payload and replay boundaries; original assertions and all three backend profiles pass. Old-source RED and temporary-candidate observations remain diagnosis evidence and do not replace formal validation.
+
+covers: REQ-RUST-SOURCE-QUALITY-007
+
+### VER-RUST-SOURCE-QUALITY-008
+
+Method: run the original missing-pool-key terminalization test, the five preserved stateful fixture regressions with the canonical schema-template prerequisite, and all three complete backend profiles. Pass condition: the real range is committed before the original missing-key request, all original terminalization assertions pass, and the startup watchdog, cold-conversation, retention, and pruned-summary regressions pass without timeout, SQL, assertion, or slot relaxation. Preserve every failed run separately from later candidates and diagnostics.
+
+covers: REQ-RUST-SOURCE-QUALITY-008
+
+No owner-visible UI changes are part of this contract. Backend runtime regressions require the canonical tests above; temporary stress samples are supporting diagnosis rather than a separate performance acceptance claim.
 
 ## Related ADRs
 
