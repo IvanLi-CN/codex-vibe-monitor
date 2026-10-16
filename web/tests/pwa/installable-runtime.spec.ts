@@ -586,6 +586,7 @@ test("serves revalidated PWA metadata and immutable content-hashed install icons
 });
 
 test("keeps API model discovery outside the document navigation fallback", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
   const response = await page.goto("/v1/models");
 
   expect(response?.status()).toBe(200);
