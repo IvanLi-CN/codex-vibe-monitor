@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-16T06:12:36Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "ff92b8951cb29f239e26bd69de7cdd25cbef3408",
+  "pr_number": 1123,
+  "pr_title": "fix(ci): align trace fixture with application endpoint contract",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "",
+  "target_sha": "b48c6c10bc97195afd894f1f10850fd5b1ee7723",
+  "type_label": "type:skip"
+}
