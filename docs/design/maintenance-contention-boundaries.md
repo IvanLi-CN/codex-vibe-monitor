@@ -1,0 +1,35 @@
+# Maintenance contention boundaries
+
+This contract covers retention, backfill wake confirmation, statistics recovery and explicit index preparation. The [contention metric contract](../specs/performance-telemetry/CONTENTION-METRICS.md) remains unchanged so an observed baseline and a repaired service can be compared without redefining success, completed work or backlog. The governing decision is [ADR 0040](../adr/0040-bounded-maintenance-contention.md).
+
+## Retention
+
+Archive file preparation, file-lock acquisition and full artifact verification precede SQLite write admission. The verified file fence lasts through commit. A wait for resource eligibility releases the file fence and database connection, then reacquires and revalidates the file before admission; it never waits while holding the SQLite write permit. Transactions retain source identity checks, archive publication and Summary proof, precise rollup/repair marking, raw-link ownership checks and deletion. Native SQLite completion or rollback is awaited before release. Raw-file cleanup and inventory wake work follow permit release.
+
+File batches and source transactions are distinct. Existing task-local monthly files remain; write chunks consume the existing adaptive feedback with a 200ms target, 250ms warning, at most 64 rows and 1MiB. An individually oversized or slow row is retained losslessly, reported and followed by a yield. Fixed slicing must not ignore feedback. Report committed rows, throughput and backlog beside permit duration; partial commits remain counted after a later failure.
+
+## Backfill and terminal integration
+
+The producer interface is `notify_startup_backfill_tasks(pool: &Pool<Sqlite>, tasks: &[StartupBackfillTask], pricing_catalog: Option<&PricingCatalog>, wake_reason: &'static str) -> Result<()>`. It is synchronous and performs no SQL or file IO. It accepts a bounded obligation or returns an explicit error; it never reports a dropped notification as accepted. Catalog-dependent tasks retain the validated progress-key identity needed for later confirmation without retaining unbounded catalogs. Existing async wake APIs remain compatible for control/manual callers. The scheduler's existing managed background owner drives confirmation and restart recovery.
+
+The terminal writer calls this producer after its transaction has committed and its terminal admission has been released. An accepted notification must not be returned as another immediately retryable SQLite batch. Admission failure retains the existing deferred obligation; it does not roll back a committed terminal or wait on the maintenance database. Parent-owned writer integration consumes this interface; scheduling and maintenance-store internals own its implementation.
+
+Obligations merge by task key and control generation, preserving the oldest outstanding notification. Durable dirty/progress state reconstructs obligations after restart. Confirmation uses short conditional writes with no read-transaction upgrade. Disable/cancel/generation checks apply before and after commit; stale completion cannot clear a newer obligation. A failed task retries after 250ms, 500ms, 1s, 2s, then 5s maximum base delay, with 0–20% positive jitter. New notifications and unrelated completions cannot reset `next_due`. A continuously locked maintenance database allows at most 16 actual attempts per task/generation over 60 seconds. Warnings report a state change, capped at once per task per minute; all attempts remain counted. Successful confirmation clears only the covered obligation and its age.
+
+## Statistics
+
+Prompt-cache statistics retain `last_invocation_id = MAX(i.id)` over currently live invocations. Both the aliased query and the expression index use the exact normalized `CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END` expression. No additional aggregate field becomes a competing source of truth.
+
+Long-term queries reuse existing interval range indexes and preserve every requested date. Legacy migration and repair advance bounded, durable pages instead of repeatedly scanning an already covered prefix. Recent Summary delta reconciliation and historical coverage advance separately under existing generation and coverage proof. Summary HTTP/SSE reads only published memory; permitted degraded proofs retain `dataQuality`, and true identity/range gaps remain unavailable.
+
+## Index preparation
+
+`maintenance prepare-performance-indexes --dry-run --budget-ms <ms>` defaults to 2000ms. The only target definitions are `idx_proxy_raw_payload_blob_links_owner` on `proxy_raw_payload_blob_links(owner_kind, owner_id)` and `idx_codex_invocations_prompt_cache_key_id` on `codex_invocations(<normalized prompt-cache-key expression>, id DESC)`. Names and definitions are verified together; a conflicting definition is reported without dropping or replacing it. Neither index is added to automatic startup DDL. Correct queries work before, during and after preparation and never require `INDEXED BY` on a missing index.
+
+The CLI reuses `MaintenanceRuntimeLock::route`: an active service owns online execution; offline execution holds the existing exclusive runtime proof. Each DDL is an independent, idempotent operation within the supplied total budget. Stop before the next operation when the budget is exhausted. A native progress handler and bounded lock wait enforce interruption of active work; rollback and worker drain finish before releasing admission or runtime ownership. An expired operation warns and retains the old query path, without extending its budget or blocking startup. Already committed indexes remain for re-entry. DDL structure, current-data work and historical backfill are recorded separately. No production index build is authorized merely by deploying the binary.
+
+## Verification boundary
+
+Relevant named regressions and the shared lightweight, stateful-sqlite and archive-file-io profiles run in GitHub CI. Heavy execution and all pressure tests are forbidden on the developer machine and Agent VM; necessary controlled competition acceptance runs only in GitHub CI, retaining the existing 32 requests, p95 <2s, full commit <5s and zero lifecycle SQL writes. Each test stage has a shared 15-minute ceiling. Tests preserve exact data/proof oracles, cancellation and lock ownership rather than asserting only implementation shape. No production synthetic requests or upstream comparisons are permitted.
+
+Natural production baseline collection proceeds while repairs are implemented, tested and reviewed. At least two hours with retention and backfill activity, fixed UTC windows, version/query/dashboard identities and collection quality are required before repair deployment, not before development or readiness. A latency reduction with stopped work, growing backlog or missing samples is not accepted as an improvement. The observability release's 5% overhead budget remains unverified; it is not reinterpreted as passed by the repair work.

@@ -15,6 +15,7 @@
 - [ADR 0012: Historical Summary Coverage Recovery Supervisor](../../adr/0012-historical-summary-coverage-supervisor.md)
 - [ADR 0014: Durable Summary coverage recovery](../../adr/0014-durable-summary-coverage-recovery.md)
 - [ADR 0035: Summary Source Journal degraded read path](../../adr/0035-summary-source-journal-degraded-read-path.md)
+- [ADR 0040: Bounded maintenance contention](../../adr/0040-bounded-maintenance-contention.md)
 
 ## Context and Scope
 
@@ -108,6 +109,11 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 ### REQ-RMPR-005 — Promotion and observation boundary
 
 - Checkpoint promotion MUST produce GitHub artifacts only. Any post-deployment observation requires explicit owner confirmation and MUST remain read-only, with no automated deployment, restart, rollback, or server mutation.
+
+### REQ-RMPR-006 — Bounded wake obligations and optional indexes
+
+- Backfill notifications MUST merge into bounded task/control-generation obligations; terminal commits do not wait for maintenance-database confirmation. Durable dirty/progress facts reconstruct valid work after restart. Failed confirmation retains original age and an independent next-due time; repeated notifications and unrelated completions cannot reset backoff. The base delays are 250ms, 500ms, 1s, 2s and capped 5s with 0–20% positive jitter. Confirmation uses short conditional transactions with control checks before and after commit. Persistent BUSY for 60s permits at most 16 actual attempts per task/generation; warning output is capped at one per task/minute while metrics count every attempt.
+- The explicit `maintenance prepare-performance-indexes` CLI MUST reuse online service ownership or offline exclusive proof, honor `--dry-run` and a default 2000ms total `--budget-ms`, and prepare only the raw-link owner and normalized prompt-cache-key/id indexes. Installation is absent from startup; interruption rolls back the active operation and drains native SQLite work before releasing ownership. An absent or unprepared index retains a correct query path. DDL, current-data manipulation and historical recovery remain separate. Detailed interfaces and unchanged exact-query semantics are defined in [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md).
 
 ### MUST
 
@@ -264,6 +270,12 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Method: repository workflow and documentation checks plus release/observation procedure review.
 - covers: `REQ-RMPR-005`
 - Pass condition: validation produces a reviewable GitHub artifact and no automated deployment or mutable production observation is performed.
+
+### VER-RMPR-006 — Wake confirmation and index recovery
+
+- covers: `REQ-RMPR-001`, `REQ-RMPR-003`, `REQ-RMPR-004`, `REQ-RMPR-006`
+- Method: GitHub CI fixtures hold the independent maintenance database BUSY for 60s under duplicate notifications, disable/cancel/restart and generation changes; compare exact statistics across index preparation, interruption and re-entry. Keep index preparation measurements separate from steady-state competition.
+- Pass: at most 16 attempts per task/generation and one warning per task/minute; accepted valid obligations recover and confirm, terminal commits remain independent, old generations cannot clear newer work; MAX uses the exact target expression index, historical ranges remain complete, Summary request SQL/file IO stays zero. Interrupted DDL leaves the service usable and re-entry idempotent. The existing 32-request p95 <2s/full commit <5s/zero lifecycle SQL contract remains; all test stages finish within 15 minutes and no local/Agent VM pressure test is permitted.
 
 ## Detailed Acceptance Criteria
 

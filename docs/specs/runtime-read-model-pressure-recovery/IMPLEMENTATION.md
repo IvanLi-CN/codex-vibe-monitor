@@ -2,6 +2,10 @@
 
 > Canonical spec: `./SPEC.md`.
 
+## Maintenance contention boundaries
+
+REQ-RMPR-006 / VER-RMPR-006 bind the producer, bounded confirmation, optional-index CLI and exact-query interfaces in [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). Existing terminal post-commit work still awaits wake confirmation and can retry a failed wake through the deferred writer batch. That baseline is to be replaced without weakening durable dirty/progress recovery. The new CLI, current-candidate compatibility, cancellation and controlled CI evidence are not yet verified.
+
 ## Current Status
 
 - `SummaryDeltaJournal` retains compact terminal deltas only after the SQLite

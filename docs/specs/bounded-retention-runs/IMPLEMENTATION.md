@@ -1,5 +1,9 @@
 # Retention：实现映射与验证
 
+## Write-admission isolation
+
+REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The baseline still performs an admitted archive rehash and post-commit file cleanup, and task-local fixed 64-row slicing does not consume all adaptive feedback. File-fence ordering, native-worker drain, adaptive chunks and current-candidate CI evidence remain to be implemented and verified; existing release evidence does not prove these changes.
+
 ## Current Status
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。
