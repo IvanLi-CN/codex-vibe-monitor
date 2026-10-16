@@ -198,12 +198,15 @@ pub(super) async fn load_long_term_projection_interval_index(
         .filter_map(|(_, date)| long_term_day_epoch_bounds(*date).map(|(_, end)| end * 1_000))
         .max()
         .context("invalid long-term projection interval date range")?;
-    let canonical_rows = sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
-        "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+    let canonical_rows = observe_query(
+        StatsQuery::LongTermOverlap,
+        sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
+            "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+        )
+        .bind(last_end_ms)
+        .bind(first_start_ms)
+        .fetch_all(pool),
     )
-    .bind(last_end_ms)
-    .bind(first_start_ms)
-    .fetch_all(pool)
     .await?;
     let mut builder = QueryBuilder::<Sqlite>::new(
         "SELECT invocation_row_id, bucket_kind, bucket_date, bucket_key, dimension, series_key, interval_start_ms, interval_end_ms FROM long_term_projection_intervals legacy WHERE bucket_date IN (",
@@ -737,15 +740,12 @@ pub(super) async fn load_long_term_rollups(
         long_term_projection_active_daily_cte(),
     );
     let _ = range;
-    Ok(observe_query(
-        StatsQuery::LongTermOverlap,
-        sqlx::query_as::<_, LongTermRollupRow>(&sql)
-            .bind(dimension)
-            .bind(start_date)
-            .bind(end_date)
-            .fetch_all(pool),
-    )
-    .await?)
+    Ok(sqlx::query_as::<_, LongTermRollupRow>(&sql)
+        .bind(dimension)
+        .bind(start_date)
+        .bind(end_date)
+        .fetch_all(pool)
+        .await?)
 }
 
 pub(super) async fn load_long_term_daily_rows(
@@ -770,7 +770,7 @@ pub(super) async fn load_long_term_daily_rows(
     if let Some(series_key) = series_key {
         query = query.bind(series_key);
     }
-    Ok(observe_query(StatsQuery::LongTermOverlap, query.fetch_all(pool)).await?)
+    Ok(query.fetch_all(pool).await?)
 }
 
 pub(crate) async fn load_public_blog_token_activity_90d(
@@ -1031,14 +1031,11 @@ pub(crate) async fn fetch_long_term_series(
 }
 
 pub(super) async fn load_long_term_state(pool: &Pool<Sqlite>) -> Result<LongTermStateRow> {
-    Ok(observe_query(
-        StatsQuery::LongTermOverlap,
-        sqlx::query_as::<_, LongTermStateRow>(
-            "SELECT status, statistics_start_date, integrity_source_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
-        )
-        .bind(LONG_TERM_STATE_ID)
-        .fetch_one(pool),
+    Ok(sqlx::query_as::<_, LongTermStateRow>(
+        "SELECT status, statistics_start_date, integrity_source_start_date, processed_rows, total_rows, last_error FROM long_term_stats_state WHERE id = ?1",
     )
+    .bind(LONG_TERM_STATE_ID)
+    .fetch_one(pool)
     .await?)
 }
 

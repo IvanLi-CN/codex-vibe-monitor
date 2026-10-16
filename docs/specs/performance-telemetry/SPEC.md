@@ -68,6 +68,7 @@
 
 - VER-010: 定向生命周期回归覆盖前置拒绝、两次 attempt、EOF/error/cancel 仅结束一次及晚到 commit；等待统计验证嵌套区间并集、分母、固定标签及有界丢弃，导出白名单与初始化失败隔离通过回归。 covers: REQ-017, REQ-018, REQ-019, REQ-020, REQ-021
 - VER-011: 既有隔离验收实际摄入 Tempo、按类别搜索及 TraceID 获取晚到持久化，验证独立权限与伪造 tenant 被覆盖；当前 provision 的桌面及 393×852 Grafana 案例和瀑布图提供视觉证据。 covers: REQ-022, REQ-023
+- VER-012: 固定模块事件与缓存句柄覆盖真实成功、失败、取消、重复通知和确认，提交行数只在事务成功后累计，缺测不伪造零。固定统计查询只计量对应 SQL：`long_term_overlap` 来自规范区间表的重叠查询，状态和日汇总读取不混入；真实 SQLite 查询的结果与错误保持不变。固定标签组合和实际 Histogram 桶数遵守现有系列预算，抓取不增加 SQL 或文件扫描。 covers: REQ-003, REQ-004, REQ-006, REQ-024
 
 ## Related ADRs
 

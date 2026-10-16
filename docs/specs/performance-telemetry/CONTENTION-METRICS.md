@@ -10,6 +10,8 @@ Code without an `AppState` parameter obtains the scoped instance with `current_p
 
 `observe_query(StatsQuery, future)` wraps one existing SQL execution future and preserves its exact result. It records success/error or a cancelled lower-bound duration on Drop, using the current instance scope. It must not wrap an entire projection containing file IO or add a query of its own.
 
+`long_term_overlap` measures the canonical interval-state SELECT with `interval_start_ms < end` and `interval_end_ms > start` in `load_long_term_projection_interval_index`. Status reads and daily/rollup queries do not share this identity, so their cheap executions cannot dilute the overlap latency distribution. Empty or invalid date sets do not execute or count that SQL.
+
 | Module               | Event or state                                                          | Meaning                                                                                                                                                      |
 | -------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Retention            | `RetentionBatch(operation, outcome)`                                    | One actual finished/deferred/error/cancelled batch, never a proposed batch                                                                                   |
