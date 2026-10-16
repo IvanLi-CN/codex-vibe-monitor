@@ -282,7 +282,7 @@ pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Po
     confirm_startup_backfill_wake_obligations_with_pool(pool, &CancellationToken::new()).await;
 }
 
-pub(crate) async fn confirm_startup_backfill_wake_obligation(
+pub(super) async fn confirm_startup_backfill_wake_obligation(
     pool: &Pool<Sqlite>,
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
