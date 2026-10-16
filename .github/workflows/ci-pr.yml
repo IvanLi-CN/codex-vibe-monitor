@@ -628,7 +628,7 @@ jobs:
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -663,7 +663,7 @@ jobs:
     if: always()
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -698,7 +698,7 @@ jobs:
     if: always()
     name: Backend Tests (Stateful SQLite shard 2/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -753,7 +753,7 @@ jobs:
     needs: backend-test-archive
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -792,7 +792,7 @@ jobs:
     if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
