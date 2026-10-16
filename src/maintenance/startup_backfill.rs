@@ -15,6 +15,10 @@ use observability::{
     record_scheduler_wake_confirmation,
 };
 use wake_confirmation::confirm_startup_backfill_wake_obligations;
+#[cfg(test)]
+pub(crate) use wake_confirmation::{
+    StartupBackfillWakeConfirmation, confirm_startup_backfill_wake_obligation,
+};
 mod prompt_cache_control;
 mod task_identity;
 #[cfg(test)]
