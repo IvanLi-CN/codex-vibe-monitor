@@ -310,7 +310,7 @@ jobs:
   frontend-tests:
     name: Front-end Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -337,7 +337,7 @@ jobs:
   storybook-accessibility-tests:
     name: Storybook Accessibility Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -424,7 +424,7 @@ jobs:
   records-overlay-e2e-producer:
     name: PR E2E Test Producer
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -533,7 +533,7 @@ jobs:
     needs: records-overlay-e2e-producer
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify E2E test producer
         env:
@@ -783,6 +783,8 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Run deterministic representative-scale acceptance
+        env:
+          NEXTEST_SUCCESS_OUTPUT: immediate
         run: |
           bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
           bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
