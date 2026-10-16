@@ -100,6 +100,12 @@
 - Inputs: legacy settings payloads, complete quote payloads, and model deletion requests.
 - Outputs: backward-compatible settings responses with an additive `quotes` collection and restart-safe local quote storage.
 
+### REQ-MODEL-MGMT-023
+
+- The model page MUST identify a model that has complete quote records but no legacy generic projection as `Detailed quote only`; it MUST show an explanatory hint instead of five misleading empty dashes. Desktop quote details MUST span the model table and mobile quote details MUST stack with wrapped rate keys and separate values. Standard rates remain expanded, while other dimensions remain inspectable without truncation. Models with a legacy projection continue to show the five compatibility fields.
+- Inputs: local legacy price projections and complete quote records.
+- Outputs: an unambiguous model row that separates compatibility pricing from the full multi-dimensional quote.
+
 ### REQ-MODEL-MGMT-010
 
 - The preview MUST use an exact official pricing-page URL only when the source supplies one; otherwise it MUST label the provider's supplied documentation URL as `供应商文档` and MUST NOT infer a pricing URL.
@@ -186,6 +192,12 @@
 - Method: settings compatibility and stateful SQLite quote-table fixtures, including old requests with omitted `quotes`, quote-only models, explicit deletion, and interrupted transaction recovery.
 - covers: `REQ-MODEL-MGMT-020`, `REQ-MODEL-MGMT-021`, `REQ-MODEL-MGMT-022`
 - Pass condition: old clients keep working, omitted quotes are preserved, complete multi-modal rates reload after restart, quote-only models do not get fake legacy prices, and failed writes leave the prior quote set intact.
+
+### VER-MODEL-MGMT-015
+
+- Method: deterministic mock-only `/system/models` desktop and 393px mobile scenarios containing legacy-priced models and the two GPT Image 2.5 quote-only models.
+- covers: `REQ-MODEL-MGMT-001`, `REQ-MODEL-MGMT-021`, `REQ-MODEL-MGMT-023`
+- Pass condition: legacy rows retain the five compatibility columns; quote-only rows show a clear quote-only label and hint, render all five OpenAI image/text rates without truncation, span the desktop table width, and stack readable key/metadata/value rows on mobile.
 
 ### VER-MODEL-MGMT-003
 

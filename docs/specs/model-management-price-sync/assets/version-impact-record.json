@@ -35,7 +35,7 @@
       "reasoning": "The stateful SQLite profile verifies migration, deletion suppression after restart, explicit rediscovery with presets disabled, and unchanged historical costs. Public API impact remains patch for additive routes and model IDs; persistent state is minor because earlier same-Major writers do not preserve dynamic enabled IDs.",
       "verified_at": "2026-10-16T04:16:14Z",
       "evidence": [
-        "candidate_sha=69f5fa15be0d90ca6a934ceb437f328fd5ef928a",
+        "candidate_sha=62121e6eb261ba40a7c0a655bdf47eedf5387bc0",
         "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json: official_ids_missing_from_litellm=[]",
         "cargo test pricing quote parser and transaction selectors: passed",
         "cargo check --locked --all-targets --all-features: passed",

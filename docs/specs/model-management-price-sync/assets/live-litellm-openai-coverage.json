@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "kind": "live-litellm-openai-coverage",
-  "candidate_sha": "69f5fa15be0d90ca6a934ceb437f328fd5ef928a",
+  "candidate_sha": "62121e6eb261ba40a7c0a655bdf47eedf5387bc0",
   "checked_at": "2026-10-16T03:36:54Z",
   "source": {
     "url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",

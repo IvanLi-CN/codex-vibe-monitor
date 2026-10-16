@@ -38,7 +38,7 @@
       "reasoning": "The additive sync-state API, transactional persistence, restart behavior, and unchanged existing model/pricing state are verified by the scoped compatibility evidence.",
       "verified_at": "2026-10-16T04:16:14Z",
       "evidence": [
-        "candidate_sha=69f5fa15be0d90ca6a934ceb437f328fd5ef928a",
+        "candidate_sha=62121e6eb261ba40a7c0a655bdf47eedf5387bc0",
         "docs/specs/model-management-price-sync/IMPLEMENTATION.md",
         "src/tests/stateful_sqlite/models_dev_sync_memory.rs",
         "web/src/pages/system/SystemModelsPage.test.tsx",
