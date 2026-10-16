@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum StartupBackfillWakeConfirmation {
+pub(crate) enum StartupBackfillWakeConfirmation {
     Confirmed {
         wake_task: bool,
         next_due: Option<DateTime<Utc>>,
@@ -11,7 +11,7 @@ pub(super) enum StartupBackfillWakeConfirmation {
     Cancelled,
 }
 
-pub(super) struct WakeProgressWriteContext<'a> {
+pub(crate) struct WakeProgressWriteContext<'a> {
     pub(super) task_name: &'a str,
     pub(super) managed_task_key: &'a str,
     pub(super) managed_tasks_present: bool,
@@ -21,7 +21,7 @@ pub(super) struct WakeProgressWriteContext<'a> {
     pub(super) scheduler: &'a StartupBackfillScheduler,
 }
 
-pub(super) async fn confirm_startup_backfill_progress_write(
+pub(crate) async fn confirm_startup_backfill_progress_write(
     pool: &Pool<Sqlite>,
     task: StartupBackfillTask,
     context: WakeProgressWriteContext<'_>,
@@ -282,7 +282,7 @@ pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Po
     confirm_startup_backfill_wake_obligations_with_pool(pool, &CancellationToken::new()).await;
 }
 
-pub(super) async fn confirm_startup_backfill_wake_obligation(
+pub(crate) async fn confirm_startup_backfill_wake_obligation(
     pool: &Pool<Sqlite>,
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
