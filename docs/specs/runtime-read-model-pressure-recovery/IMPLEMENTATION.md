@@ -8,6 +8,8 @@ REQ-RMPR-006 / VER-RMPR-006 bind the producer, bounded confirmation, optional-in
 
 The parent implementation adds explicit ownership-aware `prepare-performance-indexes`, per-index result reporting, a shared total budget, and native interruption/rollback/close before admission release. It shares the normalized prompt-cache key expression with the live-row MAX query and adds reference/plan regressions without changing the returned fact. Legacy long-term interval migration advances an independent consumer cursor atomically with each canonical page using existing indexes, retaining invalid sources and revisiting valid late earlier IDs. These source changes and their resource-bucket regressions remain pending current-head CI and formal review. Summary retains its independent rolling and historical owners: a published Bootstrap fallback routes live-only changes through bounded tail reconciliation and reopens cold hydration only for changed historical coverage. No request-side SQL fallback is added.
 
+The fallback regression commits its new live record through the actual terminal batch writer, including the atomic source descriptor. A direct SQL insert without that descriptor is an unproven source change and cannot serve as an exact terminal fixture. The regression retains independent assertions for exact recent counts, an unavailable historical selection, zero repeated cold hydration for live changes, and one bounded retry after historical coverage changes. Its source remains in the lightweight resource bucket and retains exclusive timing slots.
+
 ## Current Status
 
 - `SummaryDeltaJournal` retains compact terminal deltas only after the SQLite
