@@ -443,13 +443,15 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     let rows_affected = super::confirm_startup_backfill_progress_write(
         pool,
         task,
-        task_name,
-        managed_task_key,
-        managed_tasks_present,
-        expected_generation,
-        &now,
-        attempt.ticket,
-        scheduler,
+        super::WakeProgressWriteContext {
+            task_name,
+            managed_task_key,
+            managed_tasks_present,
+            expected_generation,
+            now: &now,
+            ticket: attempt.ticket,
+            scheduler,
+        },
     )
     .await?;
     if !scheduler.is_current_wake_obligation(attempt.ticket) {

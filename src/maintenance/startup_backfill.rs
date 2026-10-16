@@ -1303,17 +1303,30 @@ enum StartupBackfillWakeConfirmation {
     Cancelled,
 }
 
+struct WakeProgressWriteContext<'a> {
+    task_name: &'a str,
+    managed_task_key: &'a str,
+    managed_tasks_present: bool,
+    expected_generation: Option<i64>,
+    now: &'a str,
+    ticket: WakeObligationTicket,
+    scheduler: &'a StartupBackfillScheduler,
+}
+
 async fn confirm_startup_backfill_progress_write(
     pool: &Pool<Sqlite>,
     task: StartupBackfillTask,
-    task_name: &str,
-    managed_task_key: &str,
-    managed_tasks_present: bool,
-    expected_generation: Option<i64>,
-    now: &str,
-    ticket: WakeObligationTicket,
-    scheduler: &StartupBackfillScheduler,
+    context: WakeProgressWriteContext<'_>,
 ) -> Result<u64> {
+    let WakeProgressWriteContext {
+        task_name,
+        managed_task_key,
+        managed_tasks_present,
+        expected_generation,
+        now,
+        ticket,
+        scheduler,
+    } = context;
     let managed_guard = if managed_tasks_present {
         "AND EXISTS(SELECT 1 FROM managed_tasks WHERE task_key=? AND enabled!=0)"
     } else {
@@ -1624,18 +1637,21 @@ async fn confirm_startup_backfill_wake_obligation(
     }
     let expected_generation = progress.as_ref().map(|progress| progress.1);
     let now = format_utc_iso(Utc::now());
+    let managed_task_key_ref = managed_task_key
+        .as_deref()
+        .ok_or_else(|| anyhow!("unknown startup backfill task"))?;
     let rows_affected = confirm_startup_backfill_progress_write(
         pool,
         task,
-        task_name,
-        managed_task_key
-            .as_deref()
-            .ok_or_else(|| anyhow!("unknown startup backfill task"))?,
-        managed_tasks_present,
-        expected_generation,
-        &now,
-        attempt.ticket,
-        scheduler,
+        WakeProgressWriteContext {
+            task_name,
+            managed_task_key: managed_task_key_ref,
+            managed_tasks_present,
+            expected_generation,
+            now: &now,
+            ticket: attempt.ticket,
+            scheduler,
+        },
     )
     .await?;
     if !scheduler.is_current_wake_obligation(attempt.ticket) {
