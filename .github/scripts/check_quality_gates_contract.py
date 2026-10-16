@@ -126,6 +126,17 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require_job_and_steps_fail_closed(job=image_job, where="ci-pr.yml.jobs.observability-performance-image")
     for name, job in [("observability-performance", performance_job), ("observability-performance-image", image_job)]:
         require(job.get("runs-on") == RUNNER_X64, f"{name} must use the fixed GitHub-hosted runner")
+    image_build = uses_step_config(
+        image_job,
+        "Build exact production image",
+        "docker/build-push-action@v7",
+        "ci-observability-performance.yml.jobs.observability-performance-image",
+    )
+    image_build_with = require_mapping(image_build.get("with"), "observability performance image build")
+    require(
+        "cache-to" not in image_build_with,
+        "pull_request_target performance builds must not export to the read-only Actions cache",
+    )
     image_upload = uses_step_config(
         image_job,
         "Upload performance candidate image",
