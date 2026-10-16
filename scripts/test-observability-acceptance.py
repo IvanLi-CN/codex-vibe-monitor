@@ -484,6 +484,19 @@ class CertificateTests(unittest.TestCase):
 
 
 class BoundedAcceptanceTests(unittest.TestCase):
+    def test_concurrent_load_subprocess_shares_deadline_before_executor_shutdown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = Run.__new__(Run)
+            run.root, run.execution_deadline_utc = Path(directory), 940
+            run.compose = Mock(return_value='{"completed": 200}')
+            with patch.object(acceptance.time, "time", return_value=930):
+                self.assertEqual(run.client("load", "--seconds", "40")["completed"], 200)
+            self.assertEqual(run.compose.call_args.kwargs["timeout"], 5)
+            with patch.object(acceptance.time, "time", return_value=935):
+                with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
+                    run.client("load", "--seconds", "40")
+            self.assertEqual(run.compose.call_count, 1)
+
     def test_setup_time_is_charged_to_one_finite_deadline(self):
         with patch.dict(os.environ, {"OBSERVABILITY_TEST_STARTED_UTC": "100"}), \
              patch.object(execution_deadline.time, "time", return_value=190), \

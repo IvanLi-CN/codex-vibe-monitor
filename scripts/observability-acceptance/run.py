@@ -14,7 +14,7 @@ import subprocess
 import sys
 import time
 from environment import AdmissionBudget, PAIR_ADMISSION_SECONDS, actions_context, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
-from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline
+from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline, EXECUTION_SECONDS
 
 FIXTURE_INTERNAL_INGEST_TOKEN = "cvm-fixture-internal-ingest"
 FIXTURE_METRICS_TOKEN = "cvm-fixture-metrics-token"
@@ -72,6 +72,8 @@ class Run:
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
+        self.execution_started_utc=float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))
+        self.execution_deadline_utc=self.execution_started_utc+EXECUTION_SECONDS
         (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.pair_index is not None else None,"warmupSeconds":60 if self.pair_index is not None else None,"pairIndex":self.pair_index,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g","executionStartedUTCSeconds":float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))},indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
@@ -87,8 +89,13 @@ class Run:
     def compose(self,*args,**kwargs):
         return execute(["docker","compose","-p",self.project,"-f",str(self.compose_file),*args],**kwargs)
     def client(self,*args):
+        # SIGALRM interrupts only the main thread. A CPU sampler's concurrent
+        # load must also stop by the same deadline before executor shutdown.
+        remaining=self.execution_deadline_utc-time.time()-5
+        if remaining<=0:
+            raise AcceptanceDeadlineExceeded("acceptance client deadline exhausted")
         with (self.root/"client.log").open("a") as log:
-            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=600,stderr=log)
+            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=min(600,remaining),stderr=log)
         return json.loads(result)
     def checkpoint(self,name,operation):
         try:
