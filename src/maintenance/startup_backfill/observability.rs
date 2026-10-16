@@ -2,7 +2,9 @@ use super::StartupBackfillTask;
 use crate::observability::contention::{
     PerformanceCounter, PerformanceGauge, WakeDecision, WakeOutcome, WakeState, current_performance,
 };
+use anyhow::anyhow;
 use chrono::{DateTime, Utc};
+use rand::Rng;
 use serde::Serialize;
 use std::{
     collections::{HashMap, HashSet},
@@ -13,15 +15,88 @@ use std::{
 };
 use tokio::sync::Notify;
 
+const WAKE_RETRY_BASE_DELAYS_MS: [i64; 5] = [250, 500, 1_000, 2_000, 5_000];
+const WAKE_WARNING_INTERVAL_SECS: i64 = 60;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct WakeObligationKey {
+    pub(super) task: StartupBackfillTask,
+    pub(super) control_generation: Option<u64>,
+    pub(super) progress_key: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WakeObligationTicket {
+    task: StartupBackfillTask,
+    generation: u64,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct WakeObligationAttempt {
+    pub(super) ticket: WakeObligationTicket,
+    pub(super) key: WakeObligationKey,
+    pub(super) attempt: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct WakeObligationFailure {
+    pub(super) next_due: DateTime<Utc>,
+    pub(super) should_warn: bool,
+    pub(super) attempt: u32,
+}
+
+#[derive(Clone, Debug)]
+struct WakeObligation {
+    key: WakeObligationKey,
+    next_due: DateTime<Utc>,
+    attempt: u32,
+    observation_ticket: WakeObservationTicket,
+    ticket: WakeObligationTicket,
+    in_flight: bool,
+    queued_key: Option<WakeObligationKey>,
+    queued_observation_ticket: Option<WakeObservationTicket>,
+}
+
+fn stale_prompt_control_generation(
+    existing: &WakeObligationKey,
+    incoming: &WakeObligationKey,
+) -> bool {
+    if existing.task != StartupBackfillTask::PromptCacheConversationsMaterialization
+        || incoming.task != existing.task
+    {
+        return false;
+    }
+    match (existing.control_generation, incoming.control_generation) {
+        (Some(existing), Some(incoming)) => incoming < existing,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
+fn latest_observation_ticket(
+    current: WakeObservationTicket,
+    incoming: WakeObservationTicket,
+) -> WakeObservationTicket {
+    if incoming.generation >= current.generation {
+        incoming
+    } else {
+        current
+    }
+}
+
 #[derive(Debug, Default)]
-pub(super) struct StartupBackfillScheduler {
+pub(crate) struct StartupBackfillScheduler {
     wake_generation: AtomicU64,
     observation_generation: AtomicU64,
+    obligation_generation: AtomicU64,
     notify: Notify,
+    notification_lock: std::sync::Mutex<()>,
     woken_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pub(super) next_due: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     // Observation-only obligations awaiting confirmation of the durable wake/control write.
     pub(super) pending_since: std::sync::Mutex<HashMap<StartupBackfillTask, WakeObservation>>,
+    wake_obligations: std::sync::Mutex<HashMap<StartupBackfillTask, WakeObligation>>,
+    wake_warning_at: std::sync::Mutex<HashMap<StartupBackfillTask, DateTime<Utc>>>,
     deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     pressure_deferred_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
     failed_tasks: std::sync::Mutex<HashSet<StartupBackfillTask>>,
@@ -61,7 +136,67 @@ pub(crate) struct StartupBackfillHealthSnapshot {
 }
 
 impl StartupBackfillScheduler {
+    fn next_obligation_ticket(&self, task: StartupBackfillTask) -> WakeObligationTicket {
+        WakeObligationTicket {
+            task,
+            generation: self
+                .obligation_generation
+                .fetch_add(1, Ordering::Relaxed)
+                .wrapping_add(1),
+        }
+    }
+
+    fn take_wake_warning_budget(&self, task: StartupBackfillTask, now: DateTime<Utc>) -> bool {
+        let Ok(mut warning_at) = self.wake_warning_at.lock() else {
+            return false;
+        };
+        let should_warn = warning_at.is_empty()
+            || warning_at.get(&task).is_none_or(|last| {
+                now - *last >= chrono::Duration::seconds(WAKE_WARNING_INTERVAL_SECS)
+            });
+        if should_warn {
+            warning_at.insert(task, now);
+        }
+        should_warn
+    }
+
+    pub(super) fn wake_notification_rejection_should_warn(
+        &self,
+        task: StartupBackfillTask,
+        now: DateTime<Utc>,
+    ) -> bool {
+        self.take_wake_warning_budget(task, now)
+    }
+
+    fn promote_queued_wake_obligation(
+        &self,
+        obligation: &mut WakeObligation,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let Some(key) = obligation.queued_key.take() else {
+            return false;
+        };
+        obligation.key = key;
+        obligation.observation_ticket = obligation
+            .queued_observation_ticket
+            .take()
+            .unwrap_or(obligation.observation_ticket);
+        obligation.ticket = self.next_obligation_ticket(obligation.key.task);
+        obligation.in_flight = false;
+        obligation.next_due = now;
+        true
+    }
+
     pub(super) fn record_notification(
+        &self,
+        task: StartupBackfillTask,
+        decision: WakeDecision,
+    ) -> Option<WakeObservationTicket> {
+        let _guard = self.notification_lock.lock().ok()?;
+        self.record_notification_locked(task, decision)
+    }
+
+    fn record_notification_locked(
         &self,
         task: StartupBackfillTask,
         decision: WakeDecision,
@@ -105,6 +240,52 @@ impl StartupBackfillScheduler {
         Some(ticket)
     }
 
+    pub(super) fn record_and_accept_wake_obligation(
+        &self,
+        key: WakeObligationKey,
+        decision: WakeDecision,
+    ) -> crate::Result<Option<WakeObligationTicket>> {
+        let _guard = self
+            .notification_lock
+            .lock()
+            .map_err(|_| anyhow!("startup backfill notification lock poisoned"))?;
+        let Some(observation_ticket) = self.record_notification_locked(key.task, decision) else {
+            return Ok(None);
+        };
+        self.accept_wake_obligation(key, observation_ticket)
+            .map(Some)
+    }
+
+    pub(super) fn record_and_cancel_wake_obligation(
+        &self,
+        task: StartupBackfillTask,
+        decision: WakeDecision,
+        control_generation: Option<u64>,
+    ) {
+        let Ok(_guard) = self.notification_lock.lock() else {
+            return;
+        };
+        let incoming = WakeObligationKey {
+            task,
+            control_generation,
+            progress_key: None,
+        };
+        if self
+            .wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations.get(&task).is_some_and(|existing| {
+                    stale_prompt_control_generation(&existing.key, &incoming)
+                })
+            })
+            .unwrap_or(true)
+        {
+            return;
+        }
+        let _ = self.record_notification_locked(task, decision);
+        self.cancel_wake_obligation_locked(task, control_generation);
+    }
+
     pub(super) fn wake(&self, task: StartupBackfillTask) {
         let observed_at = Utc::now();
         if let Ok(mut tasks) = self.woken_tasks.lock() {
@@ -114,9 +295,362 @@ impl StartupBackfillScheduler {
             next_due.insert(task, observed_at);
         }
         self.wake_count.fetch_add(1, Ordering::Relaxed);
+        self.signal();
+        self.publish_performance(task);
+    }
+
+    pub(super) fn accept_wake_obligation(
+        &self,
+        key: WakeObligationKey,
+        incoming_observation_ticket: WakeObservationTicket,
+    ) -> crate::Result<WakeObligationTicket> {
+        let observed_at = Utc::now();
+        let observation_ticket = self
+            .pending_since
+            .lock()
+            .ok()
+            .and_then(|pending| pending.get(&key.task).map(|observation| observation.ticket))
+            .map(|pending_ticket| {
+                latest_observation_ticket(incoming_observation_ticket, pending_ticket)
+            })
+            .unwrap_or(incoming_observation_ticket);
+        let (ticket, should_signal) = {
+            let mut obligations = self
+                .wake_obligations
+                .lock()
+                .map_err(|_| anyhow!("startup backfill wake obligation lock poisoned"))?;
+            if let Some(existing) = obligations.get_mut(&key.task)
+                && existing.key == key
+            {
+                if existing.in_flight {
+                    existing.queued_key = Some(key);
+                    existing.queued_observation_ticket = Some(
+                        existing
+                            .queued_observation_ticket
+                            .map(|queued| latest_observation_ticket(queued, observation_ticket))
+                            .unwrap_or(observation_ticket),
+                    );
+                    (existing.ticket, false)
+                } else {
+                    existing.observation_ticket =
+                        latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                    (existing.ticket, existing.next_due <= observed_at)
+                }
+            } else if let Some(existing) = obligations.get_mut(&key.task)
+                && stale_prompt_control_generation(&existing.key, &key)
+            {
+                if existing.in_flight {
+                    if existing.queued_key.is_none() {
+                        existing.queued_key = Some(existing.key.clone());
+                    }
+                    existing.queued_observation_ticket = Some(
+                        existing
+                            .queued_observation_ticket
+                            .map(|queued| latest_observation_ticket(queued, observation_ticket))
+                            .unwrap_or(observation_ticket),
+                    );
+                    (existing.ticket, false)
+                } else {
+                    existing.observation_ticket =
+                        latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                    (existing.ticket, existing.next_due <= observed_at)
+                }
+            } else if let Some(existing) = obligations.get_mut(&key.task)
+                && existing.key.control_generation == key.control_generation
+            {
+                if existing.in_flight {
+                    if existing.queued_key.as_ref() == Some(&key) {
+                        existing.queued_observation_ticket = Some(
+                            existing
+                                .queued_observation_ticket
+                                .map(|queued| latest_observation_ticket(queued, observation_ticket))
+                                .unwrap_or(observation_ticket),
+                        );
+                    } else {
+                        existing.queued_key = Some(key);
+                        existing.queued_observation_ticket = Some(observation_ticket);
+                    }
+                    (existing.ticket, false)
+                } else {
+                    let ticket = self.next_obligation_ticket(key.task);
+                    existing.key = key;
+                    existing.observation_ticket =
+                        latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                    existing.ticket = ticket;
+                    existing.in_flight = false;
+                    (ticket, existing.next_due <= observed_at)
+                }
+            } else {
+                let ticket = self.next_obligation_ticket(key.task);
+                obligations.insert(
+                    key.task,
+                    WakeObligation {
+                        key,
+                        next_due: observed_at,
+                        attempt: 0,
+                        observation_ticket,
+                        ticket,
+                        in_flight: false,
+                        queued_key: None,
+                        queued_observation_ticket: None,
+                    },
+                );
+                (ticket, true)
+            }
+        };
+        if should_signal {
+            self.signal();
+        }
+        Ok(ticket)
+    }
+
+    pub(super) fn claim_due_wake_obligations(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Vec<WakeObligationAttempt> {
+        let Ok(mut obligations) = self.wake_obligations.lock() else {
+            return Vec::new();
+        };
+        StartupBackfillTask::ordered_tasks()
+            .iter()
+            .filter_map(|task| {
+                let obligation = obligations.get_mut(task)?;
+                if obligation.in_flight || obligation.next_due > now {
+                    return None;
+                }
+                obligation.in_flight = true;
+                obligation.attempt = obligation.attempt.saturating_add(1);
+                Some(WakeObligationAttempt {
+                    ticket: obligation.ticket,
+                    key: obligation.key.clone(),
+                    attempt: obligation.attempt,
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn complete_wake_obligation(
+        &self,
+        ticket: WakeObligationTicket,
+    ) -> Option<WakeObservationTicket> {
+        let mut obligations = self.wake_obligations.lock().ok()?;
+        let current = obligations.get_mut(&ticket.task)?;
+        if current.ticket != ticket {
+            return None;
+        }
+        let observation_ticket = current.observation_ticket;
+        if self.promote_queued_wake_obligation(current, Utc::now()) {
+            drop(obligations);
+            self.signal();
+        } else {
+            obligations.remove(&ticket.task);
+        }
+        Some(observation_ticket)
+    }
+
+    pub(super) fn fail_wake_obligation(
+        &self,
+        ticket: WakeObligationTicket,
+        now: DateTime<Utc>,
+    ) -> Option<WakeObligationFailure> {
+        let failure = {
+            let mut obligations = self.wake_obligations.lock().ok()?;
+            let obligation = obligations.get_mut(&ticket.task)?;
+            if obligation.ticket != ticket {
+                return None;
+            }
+            self.promote_queued_wake_obligation(obligation, now);
+            obligation.in_flight = false;
+            let base_delay_ms =
+                WAKE_RETRY_BASE_DELAYS_MS[obligation.attempt.saturating_sub(1).min(4) as usize];
+            let jitter_max_ms = base_delay_ms / 5;
+            let jitter_ms = rand::thread_rng().gen_range(0..=jitter_max_ms);
+            let next_due = now + chrono::Duration::milliseconds(base_delay_ms + jitter_ms);
+            obligation.next_due = next_due;
+            let should_warn = self.take_wake_warning_budget(ticket.task, now);
+            WakeObligationFailure {
+                next_due,
+                should_warn,
+                attempt: obligation.attempt,
+            }
+        };
+        self.publish_performance(ticket.task);
+        Some(failure)
+    }
+
+    pub(super) fn is_stale_wake_obligation_key(&self, key: &WakeObligationKey) -> bool {
+        self.wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations
+                    .get(&key.task)
+                    .is_some_and(|existing| stale_prompt_control_generation(&existing.key, key))
+            })
+            .unwrap_or(true)
+    }
+
+    pub(super) fn cancel_wake_obligation(
+        &self,
+        task: StartupBackfillTask,
+        control_generation: Option<u64>,
+    ) {
+        let Ok(_guard) = self.notification_lock.lock() else {
+            return;
+        };
+        self.cancel_wake_obligation_locked(task, control_generation);
+    }
+
+    fn cancel_wake_obligation_locked(
+        &self,
+        task: StartupBackfillTask,
+        control_generation: Option<u64>,
+    ) {
+        let should_clear = if let Ok(mut obligations) = self.wake_obligations.lock() {
+            let incoming = WakeObligationKey {
+                task,
+                control_generation,
+                progress_key: None,
+            };
+            if obligations
+                .get(&task)
+                .is_some_and(|existing| stale_prompt_control_generation(&existing.key, &incoming))
+            {
+                false
+            } else {
+                obligations.remove(&task);
+                true
+            }
+        } else {
+            false
+        };
+        if should_clear {
+            self.clear_observation(task);
+        }
+    }
+
+    pub(super) fn defer_wake_obligation(
+        &self,
+        ticket: WakeObligationTicket,
+        next_due: DateTime<Utc>,
+    ) -> bool {
+        let deferred = self
+            .wake_obligations
+            .lock()
+            .ok()
+            .and_then(|mut obligations| {
+                let obligation = obligations.get_mut(&ticket.task)?;
+                if obligation.ticket != ticket {
+                    return None;
+                }
+                self.promote_queued_wake_obligation(obligation, next_due);
+                obligation.in_flight = false;
+                if next_due > obligation.next_due {
+                    obligation.next_due = next_due;
+                }
+                Some(())
+            })
+            .is_some();
+        if deferred {
+            self.publish_performance(ticket.task);
+        }
+        deferred
+    }
+
+    pub(super) fn release_wake_obligation(&self, ticket: WakeObligationTicket, now: DateTime<Utc>) {
+        let released = if let Ok(mut obligations) = self.wake_obligations.lock()
+            && let Some(obligation) = obligations.get_mut(&ticket.task)
+            && obligation.ticket == ticket
+        {
+            self.promote_queued_wake_obligation(obligation, now);
+            obligation.in_flight = false;
+            if obligation.next_due > now {
+                obligation.next_due = now;
+            }
+            true
+        } else {
+            false
+        };
+        if released {
+            self.publish_performance(ticket.task);
+        }
+    }
+
+    pub(super) fn release_wake_obligation_claims(
+        &self,
+        attempts: &[WakeObligationAttempt],
+        now: DateTime<Utc>,
+    ) {
+        let released_tasks = if let Ok(mut obligations) = self.wake_obligations.lock() {
+            attempts
+                .iter()
+                .filter_map(|attempt| {
+                    let obligation = obligations.get_mut(&attempt.ticket.task)?;
+                    if obligation.ticket != attempt.ticket {
+                        return None;
+                    }
+                    self.promote_queued_wake_obligation(obligation, now);
+                    obligation.in_flight = false;
+                    if obligation.next_due > now {
+                        obligation.next_due = now;
+                    }
+                    Some(attempt.ticket.task)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for task in released_tasks {
+            self.publish_performance(task);
+        }
+    }
+
+    pub(super) fn is_current_wake_obligation(&self, ticket: WakeObligationTicket) -> bool {
+        self.wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations
+                    .get(&ticket.task)
+                    .is_some_and(|obligation| obligation.ticket == ticket && obligation.in_flight)
+            })
+            .unwrap_or(false)
+    }
+
+    pub(super) fn defer_due_wake_obligations(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Vec<WakeObligationFailure> {
+        self.claim_due_wake_obligations(now)
+            .into_iter()
+            .filter_map(|attempt| self.fail_wake_obligation(attempt.ticket, now))
+            .collect()
+    }
+
+    pub(super) fn pending_wake_obligation_count(&self) -> usize {
+        self.wake_obligations
+            .lock()
+            .map(|obligations| obligations.len())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn next_wake_obligation_due(&self) -> Option<DateTime<Utc>> {
+        self.wake_obligations.lock().ok().and_then(|obligations| {
+            obligations
+                .values()
+                .map(|obligation| obligation.next_due)
+                .min()
+        })
+    }
+
+    fn next_wake_obligation_due_for(&self, task: StartupBackfillTask) -> Option<DateTime<Utc>> {
+        self.wake_obligations
+            .lock()
+            .ok()
+            .and_then(|obligations| obligations.get(&task).map(|obligation| obligation.next_due))
+    }
+
+    fn signal(&self) {
         self.wake_generation.fetch_add(1, Ordering::AcqRel);
         self.notify.notify_waiters();
-        self.publish_performance(task);
     }
 
     pub(super) fn generation(&self) -> u64 {
@@ -181,6 +715,9 @@ impl StartupBackfillScheduler {
         }
         if let Ok(mut tasks) = self.pressure_deferred_tasks.lock() {
             tasks.remove(&task);
+        }
+        if let Ok(mut obligations) = self.wake_obligations.lock() {
+            obligations.remove(&task);
         }
         self.clear_observation(task);
         self.publish_performance(task);
@@ -440,7 +977,11 @@ impl StartupBackfillScheduler {
             .lock()
             .ok()
             .and_then(|pending| pending.get(&task).map(|observation| observation.since));
-        let next_due = self.next_due_for(task);
+        let next_due = self
+            .next_due_for(task)
+            .into_iter()
+            .chain(self.next_wake_obligation_due_for(task))
+            .min();
         metrics.set_performance(
             PerformanceGauge::Wake(task, WakeState::Pending),
             if pending_since.is_some() { 1.0 } else { 0.0 },
