@@ -198,6 +198,7 @@
 - Method: deterministic mock-only `/system/models` desktop and 393px mobile scenarios containing legacy-priced models and the two GPT Image 2.5 quote-only models.
 - covers: `REQ-MODEL-MGMT-001`, `REQ-MODEL-MGMT-021`, `REQ-MODEL-MGMT-023`
 - Pass condition: legacy rows retain the five compatibility columns; quote-only rows show a clear quote-only label and hint, render all five OpenAI image/text rates without truncation, span the desktop table width, and stack readable key/metadata/value rows on mobile.
+- Evidence binding: runtime layout candidate `62121e6eb261ba40a7c0a655bdf47eedf5387bc0`; current PR head `1893d0296d0cf97a2e1e376bb96efd683b392b10` extends the deterministic fixture to assert both GPT Image 2.5 model IDs.
 
 ### VER-MODEL-MGMT-003
 
