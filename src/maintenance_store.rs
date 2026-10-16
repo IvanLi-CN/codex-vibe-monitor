@@ -1113,6 +1113,13 @@ pub(crate) struct TimelineCoverage {
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
+        "prepare_performance_indexes",
+        "性能索引准备",
+        "在明确预算内逐个准备可选索引，不随服务启动自动执行",
+        "manual",
+        true,
+    ),
+    (
         "invocation_identity_cleanup",
         "调用身份清理",
         "释放无引用的对话身份与已结束小时前缀",

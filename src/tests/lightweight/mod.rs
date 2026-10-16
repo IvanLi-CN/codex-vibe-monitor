@@ -7,6 +7,7 @@ mod forward_proxy_config_and_storage;
 mod invocation_timeline_maintenance;
 mod models_dev_http_client;
 mod observability_lifecycles;
+mod performance_index_cli;
 mod prompt_cache_attribution;
 mod response_payload_content_encodings;
 mod retention_archive_size;

@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "status": "implementation-in-progress-validation-pending",
+  "migration": {
+    "description": "Prepare two optional contention indexes explicitly and resume existing bounded maintenance state without replacing durable business facts.",
+    "release_unit_description": "Parent repair PR #1125 and its retention/backfill children.",
+    "version_impact": "minor"
+  },
+  "durable_state": {
+    "description": "Existing business, archive proof, Summary generation/coverage, managed task and projection progress rows; an independent legacy_interval_migration_v1 consumer cursor in the existing projection-state table; two optional optimizer indexes.",
+    "storage_implementation": "Existing main and maintenance SQLite databases. No new table or column is introduced by index preparation.",
+    "source_compatibility_range": {
+      "from_program_versions": "v4.7.0 at 8375e0d83cecb50a22d93bb815aa5cff91d67a05 and its supported same-Major input states; current candidate compatibility evidence is pending.",
+      "to_program_version": "Current head of parent PR #1125; release version is not selected by this record.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [
+      {"id":"ddl-raw-owner","description":"Explicit idempotent idx_proxy_raw_payload_blob_links_owner(owner_kind, owner_id), verified by name and definition; never automatic startup DDL.","order":1,"observable":true,"pauseable":true},
+      {"id":"ddl-session-max","description":"Explicit idempotent idx_codex_invocations_prompt_cache_key_id using the exact existing normalized JSON expression and id DESC; never automatic startup DDL.","order":2,"observable":true,"pauseable":true}
+    ],
+    "dml_changes": [
+      {"id":"dml-maintenance","description":"Existing managed-task requests retain dryRun and budgetMs. Retention source proof/delete and backfill confirmation continue to use existing transactional state; independent of optional-index availability.","order":3,"depends_on":[],"observable":true,"pauseable":true}
+    ],
+    "historical_data_backfill_or_transformation": [
+      {"id":"historical-recovery","description":"Existing dirty/checkpoint/generation owners resume bounded historical work independently of DDL. Legacy interval pages atomically advance their independent consumer cursor with canonical interval state, retain invalid sources, and rewind for earlier restored IDs. Historical coverage is not fabricated by creating an index.","order":4,"depends_on":[],"observable":true,"pauseable":true}
+    ]
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["ddl-raw-owner","ddl-session-max","dml-maintenance","historical-recovery"],
+    "progress_signals": ["Per-index present/created/would_create/conflict/budget/cancel/SQLite-busy result and elapsed time", "Unchanged module work, backlog, age, result and permit-duration metrics"],
+    "pause_points": ["Between independently committed indexes", "After native rollback/close before releasing ownership", "Existing bounded maintenance checkpoints"]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate",
+    "faulty_release_recovery": "forward-repair-by-a-new-program-version",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "status": "pending-current-candidate-ci-and-review",
+    "required_test_evidence": ["Supported pre-index schema and unchanged correct query fallback", "Partial preparation, definition conflict, cancellation with native worker ownership, lock-budget stop and idempotent re-entry", "Retention/backfill obligation recovery and statistics reference equality", "Current candidate CI and Tier 4 review"]
+  }
+}
