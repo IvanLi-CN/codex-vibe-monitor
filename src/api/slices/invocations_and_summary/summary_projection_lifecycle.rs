@@ -115,13 +115,19 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
             // bounded cold-start budget. Keep the local unavailable range in place until a
             // durable source fence changes; do not re-enter boundary/archive hydration.
             let _ = renew_summary_projection_freshness_if_generation_matches(state).await?;
+        } else if fallback_fence.coverage_sources_match(current_fence) {
+            // New terminals do not repair the historical authority which made Bootstrap
+            // fall back. Reconcile only their bounded tail, preserving the published gap;
+            // otherwise every active request stream can reopen the 30-second cold builder.
+            refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
+                .await?;
         } else {
             state
                 .subscription_hub
                 .clear_summary_bootstrap_fallback_fence()
                 .await;
-            // A new live/manifest/coverage fence is a new admission identity. Give Bootstrap
-            // exactly one chance to replace the fallback before the supervisor catches up.
+            // A changed manifest or coverage proof is a new historical admission identity.
+            // Give Bootstrap one chance to replace the fallback before the supervisor catches up.
             hydrate_summary_snapshots(state).await?;
         }
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {

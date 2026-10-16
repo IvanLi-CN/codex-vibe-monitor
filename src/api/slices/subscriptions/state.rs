@@ -54,7 +54,7 @@ pub(crate) struct SubscriptionHubState {
     pub(crate) summary_live_tail_readiness: SummaryLiveTailReadiness,
     // A cold Bootstrap fallback records the durable source fence which made its historical
     // admission unavailable. This is process-local retry suppression; coverage recovery still
-    // owns the durable proof and a changed fence reopens Bootstrap admission.
+    // owns the durable proof. Changed coverage reopens Bootstrap; live changes use the tail.
     pub(crate) summary_bootstrap_fallback_fence: Option<SummaryProjectionGenerationFence>,
     // All-time coverage can lag independently of rolling coverage. Keep its replay budget
     // separate so an all-time archive gap cannot make healthy rolling topics unavailable.
