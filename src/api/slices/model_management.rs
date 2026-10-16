@@ -551,7 +551,8 @@ fn parse_litellm_catalog(
             continue;
         };
         let provider_id = provider_id.trim();
-        if provider_id.is_empty() {
+        if provider_id.is_empty() || model_id == "sample_spec" || provider_id.starts_with("one of ")
+        {
             continue;
         }
         let rates = model
@@ -592,13 +593,11 @@ fn parse_litellm_catalog(
             source_url: source_url.clone(),
             rates: rates.clone(),
         };
-        let input_per_1m = select_litellm_token_rate(&rates, "input", false)
-            .or_else(|| select_litellm_token_rate(&rates, "input", true));
-        let output_per_1m = select_litellm_token_rate(&rates, "output", false)
-            .or_else(|| select_litellm_token_rate(&rates, "output", true));
-        let cache_read_per_1m = select_litellm_token_rate(&rates, "cacheRead", false);
-        let cache_write_per_1m = select_litellm_token_rate(&rates, "cacheWrite", false);
-        let reasoning_per_1m = select_litellm_token_rate(&rates, "reasoning", false);
+        let input_per_1m = select_litellm_token_rate(&rates, "input", "text");
+        let output_per_1m = select_litellm_token_rate(&rates, "output", "text");
+        let cache_read_per_1m = select_litellm_token_rate(&rates, "cacheRead", "text");
+        let cache_write_per_1m = select_litellm_token_rate(&rates, "cacheWrite", "text");
+        let reasoning_per_1m = select_litellm_token_rate(&rates, "reasoning", "text");
         let unsupported_dimensions = rates
             .iter()
             .filter(|rate| {
@@ -673,6 +672,12 @@ fn parse_litellm_catalog(
 fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
     let source_unit = if key.contains("per_image_token") || key.contains("image_token_cost") {
         "usd_per_image_token"
+    } else if key.contains("per_audio_token") || key.contains("audio_token_cost") {
+        "usd_per_audio_token"
+    } else if key.contains("per_video_token") || key.contains("video_token_cost") {
+        "usd_per_video_token"
+    } else if key.contains("per_reasoning_token") || key.contains("reasoning_token_cost") {
+        "usd_per_reasoning_token"
     } else if key.contains("per_token") || key.contains("token_cost") {
         "usd_per_token"
     } else if key.contains("per_second") {
@@ -681,18 +686,48 @@ fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
         "usd_per_minute"
     } else if key.contains("per_character") {
         "usd_per_character"
+    } else if key.contains("per_1k_tokens") {
+        "usd_per_1k_tokens"
+    } else if key.contains("per_1k_calls") {
+        "usd_per_1k_calls"
+    } else if key.contains("per_gb_per_day") {
+        "usd_per_gb_per_day"
+    } else if key.contains("per_gb") {
+        "usd_per_gb"
+    } else if key.contains("per_page") {
+        "usd_per_page"
+    } else if key.contains("per_pixel") {
+        "usd_per_pixel"
+    } else if key.contains("per_query") {
+        "usd_per_query"
+    } else if key.contains("per_request") {
+        "usd_per_request"
+    } else if key.contains("per_session") {
+        "usd_per_session"
+    } else if key.contains("per_message") {
+        "usd_per_message"
+    } else if key.contains("per_credit") {
+        "usd_per_credit"
+    } else if key.contains("per_day") {
+        "usd_per_day"
+    } else if key.contains("per_unit") {
+        "usd_per_unit"
     } else if key.contains("per_image") {
         "usd_per_image"
     } else {
         "usd"
     };
-    let token_unit = matches!(source_unit, "usd_per_token" | "usd_per_image_token");
-    let (value, unit) = if token_unit {
+    let token_unit = source_unit.ends_with("_token") || source_unit == "usd_per_1k_tokens";
+    let (value, unit) = if source_unit == "usd_per_1k_tokens" {
+        (source_value * 1_000.0, "usd_per_1m_tokens")
+    } else if token_unit {
         (source_value * 1_000_000.0, "usd_per_1m_tokens")
     } else {
         (source_value, source_unit)
     };
-    let dimension = if key.contains("cache_read") {
+    let dimension = if key.contains("reasoning") {
+        Some("reasoning")
+    } else if key.contains("cache_read") {
         Some("cacheRead")
     } else if key.contains("cache_creation") || key.contains("cache_write") {
         Some("cacheWrite")
@@ -716,14 +751,24 @@ fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
     } else {
         None
     };
-    let tier = ["batches", "batch", "flex", "priority", "standard"]
-        .iter()
-        .find(|tier| key.contains(**tier))
-        .map(|tier| (*tier).to_string());
-    let threshold = key.split('_').find_map(|part| {
-        let number = part.strip_suffix('k')?;
-        number.parse::<f64>().ok().map(|value| value * 1_000.0)
-    });
+    let tier = [
+        "batches",
+        "batch",
+        "flex",
+        "priority",
+        "standard",
+        "decisions",
+        "ultrafast",
+        "balanced",
+        "cache_hit",
+        "above_1hr",
+        "above_15s_interval",
+        "above_8s_interval",
+    ]
+    .iter()
+    .find(|tier| key.contains(**tier))
+    .map(|tier| (*tier).to_string());
+    let threshold = litellm_context_threshold(key);
     PricingRate {
         key: key.to_string(),
         source_value,
@@ -737,14 +782,31 @@ fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
     }
 }
 
-fn select_litellm_token_rate(rates: &[PricingRate], dimension: &str, image: bool) -> Option<f64> {
+fn litellm_context_threshold(key: &str) -> Option<f64> {
+    let parts = key.split('_').collect::<Vec<_>>();
+    parts.windows(3).find_map(|window| {
+        if window[0] != "above" || !window[2].starts_with("token") {
+            return None;
+        }
+        let number = window[1]
+            .strip_suffix('k')
+            .or_else(|| window[1].strip_suffix('K'))?;
+        number.parse::<f64>().ok().map(|value| value * 1_000.0)
+    })
+}
+
+fn select_litellm_token_rate(
+    rates: &[PricingRate],
+    dimension: &str,
+    modality: &str,
+) -> Option<f64> {
     rates
         .iter()
         .find(|rate| {
             rate.dimension.as_deref() == Some(dimension)
                 && rate.unit == "usd_per_1m_tokens"
                 && rate.tier.is_none()
-                && (rate.modality.as_deref() == Some(if image { "image" } else { "text" }))
+                && rate.modality.as_deref() == Some(modality)
         })
         .map(|rate| rate.value)
 }
@@ -868,12 +930,91 @@ mod tests {
                 })
             );
         }
-        assert!(
-            parsed
-                .candidates
-                .iter()
-                .all(|candidate| candidate.importable)
-        );
+        assert!(parsed.candidates.iter().all(|candidate| {
+            candidate.input_per_1m == Some(5.0)
+                && candidate.output_per_1m.is_none()
+                && !candidate.importable
+        }));
+    }
+
+    #[test]
+    fn litellm_catalog_normalizes_non_text_units_tiers_and_skips_sample_spec() {
+        let parsed = parse_litellm_catalog(
+            &json!({
+                "sample_spec": {
+                    "litellm_provider": "one of https://docs.litellm.ai/docs/providers",
+                    "input_cost_per_token": 0.0,
+                    "output_cost_per_token": 0.0
+                },
+                "multimodal-model": {
+                    "litellm_provider": "provider",
+                    "input_cost_per_audio_token": 0.000003,
+                    "output_cost_per_video_token": 0.000004,
+                    "output_cost_per_reasoning_token": 0.000005,
+                    "input_cost_per_1k_tokens": 0.002,
+                    "input_cost_per_token_above_272k_tokens_decisions": 0.000001,
+                    "output_cost_per_image_0.5K": 0.01,
+                    "file_search_cost_per_1k_calls": 0.002,
+                    "vector_store_cost_per_gb_per_day": 0.03
+                }
+            }),
+            "sha256:test",
+        )
+        .expect("LiteLLM fixture should parse");
+
+        assert_eq!(parsed.candidates.len(), 1);
+        assert_eq!(parsed.candidates[0].model, "multimodal-model");
+        assert!(!parsed.candidates[0].importable);
+        let quote = &parsed.quotes[0];
+        let audio = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "input_cost_per_audio_token")
+            .expect("audio rate");
+        assert_eq!(audio.value, 3.0);
+        assert_eq!(audio.unit, "usd_per_1m_tokens");
+        assert_eq!(audio.modality.as_deref(), Some("audio"));
+        let per_thousand = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "input_cost_per_1k_tokens")
+            .expect("per-thousand token rate");
+        assert_eq!(per_thousand.value, 2.0);
+        assert_eq!(per_thousand.threshold, None);
+        let reasoning = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "output_cost_per_reasoning_token")
+            .expect("reasoning rate");
+        assert_eq!(reasoning.value, 5.0);
+        assert_eq!(reasoning.dimension.as_deref(), Some("reasoning"));
+        let tiered = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "input_cost_per_token_above_272k_tokens_decisions")
+            .expect("tiered rate");
+        assert_eq!(tiered.value, 1.0);
+        assert_eq!(tiered.tier.as_deref(), Some("decisions"));
+        assert_eq!(tiered.threshold, Some(272_000.0));
+        let resolution_rate = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "output_cost_per_image_0.5K")
+            .expect("image resolution rate");
+        assert_eq!(resolution_rate.unit, "usd_per_image");
+        assert_eq!(resolution_rate.threshold, None);
+        let calls_rate = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "file_search_cost_per_1k_calls")
+            .expect("call rate");
+        assert_eq!(calls_rate.unit, "usd_per_1k_calls");
+        let storage_rate = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "vector_store_cost_per_gb_per_day")
+            .expect("storage rate");
+        assert_eq!(storage_rate.unit, "usd_per_gb_per_day");
     }
 
     #[test]

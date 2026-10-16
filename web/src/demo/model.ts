@@ -12,6 +12,14 @@ type DemoState = {
   revision: number;
   actions: DemoAction[];
   settings: Record<string, unknown>;
+  modelSyncState: {
+    catalogBaselineInitialized: boolean;
+    providerSelectionInitialized: boolean;
+    providerSelections: unknown[];
+    modelSelections: unknown[];
+    quoteProviderChoices: unknown[];
+    unviewedModelIds: unknown[];
+  };
   externalApiKeys: Array<Record<string, unknown>>;
   accounts: Array<Record<string, unknown>>;
 };
@@ -771,6 +779,14 @@ function createState(scene: DemoScene): DemoState {
     revision: 0,
     actions: [],
     settings: createSettings(),
+    modelSyncState: {
+      catalogBaselineInitialized: false,
+      providerSelectionInitialized: false,
+      providerSelections: [],
+      modelSelections: [],
+      quoteProviderChoices: [],
+      unviewedModelIds: [],
+    },
     externalApiKeys: [
       {
         id: 41,
@@ -899,6 +915,33 @@ class DemoModel {
     if (pathname === "/api/settings/forward-proxy") return clone(settings.forwardProxy);
     if (pathname === "/api/settings/pricing") return clone(settings.pricing);
     return clone(settings);
+  }
+
+  updateModelSyncState(payload: unknown) {
+    const nextPayload = safePayload(payload);
+    const update =
+      typeof nextPayload === "object" && nextPayload !== null
+        ? (nextPayload as Record<string, unknown>)
+        : {};
+    const arrayFields = [
+      "providerSelections",
+      "modelSelections",
+      "quoteProviderChoices",
+      "unviewedModelIds",
+    ] as const;
+    const nextState = { ...this.#state.modelSyncState };
+    for (const field of arrayFields) {
+      if (Array.isArray(update[field])) nextState[field] = update[field];
+    }
+    if (typeof update.catalogBaselineInitialized === "boolean") {
+      nextState.catalogBaselineInitialized = update.catalogBaselineInitialized;
+    }
+    if (typeof update.providerSelectionInitialized === "boolean") {
+      nextState.providerSelectionInitialized = update.providerSelectionInitialized;
+    }
+    this.#state = { ...this.#state, modelSyncState: nextState };
+    this.record("模拟保存模型同步选择");
+    return clone(this.#state.modelSyncState);
   }
 
   createAccount() {

@@ -5177,23 +5177,10 @@ export async function handleDemoRequest(request: Request) {
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
   if (pathname === "/api/settings/models/sync/state" && request.method === "GET")
-    return json({
-      catalogBaselineInitialized: false,
-      providerSelectionInitialized: false,
-      providerSelections: [],
-      modelSelections: [],
-      quoteProviderChoices: [],
-      unviewedModelIds: [],
-    });
-  if (pathname === "/api/settings/models/sync/state" && request.method === "PATCH")
-    return json({
-      catalogBaselineInitialized: true,
-      providerSelectionInitialized: true,
-      providerSelections: [{ providerId: "openai", selected: true }],
-      modelSelections: [],
-      quoteProviderChoices: [],
-      unviewedModelIds: [],
-    });
+    return json(demoModel.snapshot.modelSyncState);
+  if (pathname === "/api/settings/models/sync/state" && request.method === "PATCH") {
+    return json(demoModel.updateModelSyncState(await request.json().catch(() => ({}))));
+  }
   if (pathname === "/api/settings/models/sync/preview" && request.method === "POST") {
     const pricing = (demoModel.snapshot.settings as { pricing: { quotes: unknown[] } }).pricing;
     const quotes = pricing.quotes;
@@ -5221,7 +5208,7 @@ export async function handleDemoRequest(request: Request) {
           status: null,
           deprecationDate: null,
           inputPer1m: 5,
-          outputPer1m: 30,
+          outputPer1m: null,
           cacheReadPer1m: 1.25,
           cacheWritePer1m: null,
           reasoningPer1m: null,
@@ -5230,7 +5217,7 @@ export async function handleDemoRequest(request: Request) {
             "input_cost_per_image_token",
             "output_cost_per_image_token",
           ],
-          importable: true,
+          importable: false,
         },
         {
           model: "gpt-image-2.5-sunburst",
@@ -5241,7 +5228,7 @@ export async function handleDemoRequest(request: Request) {
           status: null,
           deprecationDate: null,
           inputPer1m: 5,
-          outputPer1m: 30,
+          outputPer1m: null,
           cacheReadPer1m: 1.25,
           cacheWritePer1m: null,
           reasoningPer1m: null,
@@ -5250,7 +5237,7 @@ export async function handleDemoRequest(request: Request) {
             "input_cost_per_image_token",
             "output_cost_per_image_token",
           ],
-          importable: true,
+          importable: false,
         },
       ],
       quotes,
@@ -5268,16 +5255,29 @@ export async function handleDemoRequest(request: Request) {
     const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
     const currentPricing = (demoModel.snapshot.settings as { pricing: Record<string, unknown> })
       .pricing;
-    const entries = Array.isArray(payload.entries) ? payload.entries : [];
-    const quotes = Array.isArray(payload.quotes) ? payload.quotes : [];
+    const entries = (Array.isArray(payload.entries) ? payload.entries : []) as Array<
+      Record<string, unknown>
+    >;
+    const quotes = (Array.isArray(payload.quotes) ? payload.quotes : []) as Array<
+      Record<string, unknown>
+    >;
+    const existingEntries = Array.isArray(currentPricing.entries) ? currentPricing.entries : [];
+    const existingQuotes = Array.isArray(currentPricing.quotes) ? currentPricing.quotes : [];
     const nextPricing = {
       ...currentPricing,
       catalogVersion: "litellm",
       entries: [
-        ...(Array.isArray(currentPricing.entries) ? currentPricing.entries : []),
+        ...existingEntries.filter(
+          (entry) => !entries.some((candidate) => candidate && candidate.model === entry.model),
+        ),
         ...entries,
       ],
-      quotes: [...(Array.isArray(currentPricing.quotes) ? currentPricing.quotes : []), ...quotes],
+      quotes: [
+        ...existingQuotes.filter(
+          (quote) => !quotes.some((candidate) => candidate && candidate.model === quote.model),
+        ),
+        ...quotes,
+      ],
     };
     demoModel.updateSettings("/api/settings/pricing", nextPricing);
     return json(nextPricing);

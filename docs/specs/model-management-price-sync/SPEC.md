@@ -74,7 +74,7 @@
 - The preview MUST leave every candidate without a remembered selection unchecked, including locally unpriced models, newly discovered models, newly encountered provider quotes, and changed prices of any source. When a remembered selection exists, the preview MUST restore both selected and explicitly deselected choices; the selection MUST NOT bypass provider conflict resolution or import eligibility. No price is written until the user applies the selected candidates.
 - Selection memory MUST be keyed by exact model ID and provider ID together. Switching quote providers MUST restore that provider's own selection or the unchecked default, without copying another provider's choice. Price changes or equality with the current local price MUST NOT erase a saved selection; a resolved importable candidate within scope MUST allow the user to change its remembered selection even when its price currently matches locally.
 - Inputs: provider-scoped candidates, remembered explicit selections, and the current local price source/value.
-- Outputs: restored explicit choices or an unchecked default; only selected candidates are applied and imported prices use source `LiteLLM`.
+- Outputs: restored explicit choices or an unchecked default; only selected candidates are applied and imported legacy projections use the internal source value `litellm` (displayed as LiteLLM).
 
 ### REQ-MODEL-MGMT-009
 

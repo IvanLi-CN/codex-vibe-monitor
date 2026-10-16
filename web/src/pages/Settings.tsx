@@ -246,7 +246,7 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
     value: {
       catalogVersion,
       entries,
-      quotes: draft.quotes.length ? draft.quotes : undefined,
+      quotes: draft.quotes,
     },
   };
 }
@@ -945,9 +945,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   const handleRemovePricingEntry = useCallback((index: number) => {
     setPricingDraft((current) => {
       if (!current) return current;
+      const removedModel = current.entries[index]?.model;
       return {
         ...current,
         entries: current.entries.filter((_, candidateIndex) => candidateIndex !== index),
+        quotes: removedModel
+          ? current.quotes.filter((quote) => quote.model !== removedModel)
+          : current.quotes,
       };
     });
   }, []);

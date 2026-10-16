@@ -39,6 +39,7 @@ import {
   modelProviderKey,
   PRICE_FIELDS,
   priceDifferenceFields,
+  quoteContentEqual,
   quoteForCandidate,
   quoteProviderChoicesByModel,
   resolveModelCandidate,
@@ -101,6 +102,7 @@ interface ModelCandidateRowProps {
   local: PricingEntry | undefined;
   candidate: ModelCandidateGroup["candidates"][number] | undefined;
   quote: PricingQuote | undefined;
+  existingQuote: PricingQuote | undefined;
   rememberedProviderUnavailable: boolean;
   selected: boolean;
   isNew: boolean;
@@ -117,6 +119,7 @@ function ModelCandidateRow({
   local,
   candidate,
   quote,
+  existingQuote,
   rememberedProviderUnavailable,
   selected,
   isNew,
@@ -132,6 +135,32 @@ function ModelCandidateRow({
     () => (candidate ? priceDifferenceFields(local, candidate) : new Set()),
     [candidate, local],
   );
+  const quoteChanged = Boolean(
+    quote && (!existingQuote || !quoteContentEqual(existingQuote, quote)),
+  );
+  const changedRateKeys = useMemo(() => {
+    if (!quote) return new Set<string>();
+    if (!existingQuote) return new Set(quote.rates.map((rate) => rate.key));
+    const existingRates = new Map(existingQuote.rates.map((rate) => [rate.key, rate]));
+    return new Set(
+      quote.rates
+        .filter((rate) => {
+          const previous = existingRates.get(rate.key);
+          return (
+            !previous ||
+            previous.sourceValue !== rate.sourceValue ||
+            previous.sourceUnit !== rate.sourceUnit ||
+            previous.value !== rate.value ||
+            previous.unit !== rate.unit ||
+            previous.dimension !== rate.dimension ||
+            previous.modality !== rate.modality ||
+            previous.tier !== rate.tier ||
+            previous.threshold !== rate.threshold
+          );
+        })
+        .map((rate) => rate.key),
+    );
+  }, [existingQuote, quote]);
   useEffect(() => {
     if (
       !isNew ||
@@ -174,9 +203,10 @@ function ModelCandidateRow({
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/65">
           {!local ? <span>{t("system.models.locallyUnpriced")}</span> : null}
           {local?.source === "custom" ? <span>{t("system.models.manualPrice")}</span> : null}
-          {candidate && modelPricesEqual(local, candidate) && local ? (
+          {candidate && modelPricesEqual(local, candidate) && local && !quoteChanged ? (
             <span>{t("system.models.noPriceChange")}</span>
           ) : null}
+          {quoteChanged ? <span>{t("system.models.rateChanged")}</span> : null}
           {candidate?.status ? (
             <span className="text-base-content/55">
               {t("system.models.sourceStatus", { status: candidate.status })}
@@ -274,21 +304,39 @@ function ModelCandidateRow({
                   : null}
               </div>
             ) : null}
-            <div className="grid gap-1">
-              {quote.rates.map((rate) => (
-                <div key={rate.key} className="flex min-w-0 justify-between gap-2">
-                  <span className="min-w-0 truncate" title={rate.key}>
-                    <span>{rate.key}</span>
-                    {rateMeta(rate, t) ? (
-                      <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
-                    ) : null}
-                  </span>
-                  <span className="shrink-0 tabular-nums">
-                    {formatPrice(rate.value)} {rateUnitLabel(rate.unit, t)}
-                  </span>
+            {[
+              quote.rates.filter((rate) => rate.tier == null && rate.threshold == null),
+              quote.rates.filter((rate) => rate.tier != null || rate.threshold != null),
+            ].map((rates, index) =>
+              rates.length === 0 ? null : index === 0 ? (
+                <div key="standard" className="grid gap-1">
+                  {rates.map((rate) => (
+                    <RateRow
+                      key={rate.key}
+                      rate={rate}
+                      changed={changedRateKeys.has(rate.key)}
+                      t={t}
+                    />
+                  ))}
                 </div>
-              ))}
-            </div>
+              ) : (
+                <details key="other" className="mt-2">
+                  <summary className="cursor-pointer text-base-content/55">
+                    {t("system.models.otherRates", { count: rates.length })}
+                  </summary>
+                  <div className="mt-1 grid gap-1">
+                    {rates.map((rate) => (
+                      <RateRow
+                        key={rate.key}
+                        rate={rate}
+                        changed={changedRateKeys.has(rate.key)}
+                        t={t}
+                      />
+                    ))}
+                  </div>
+                </details>
+              ),
+            )}
           </div>
         ) : null}
         {candidate && !candidate.importable && !quote ? (
@@ -310,6 +358,29 @@ function ModelCandidateRow({
         />
       </label>
     </article>
+  );
+}
+
+function RateRow({ rate, changed, t }: { rate: PricingRate; changed: boolean; t: Translate }) {
+  return (
+    <div className="flex min-w-0 justify-between gap-2">
+      <span className="min-w-0 truncate" title={rate.key}>
+        <span>{rate.key}</span>
+        {rateMeta(rate, t) ? (
+          <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
+        ) : null}
+      </span>
+      <span
+        className={
+          changed
+            ? "shrink-0 rounded-sm border border-warning/40 bg-warning/10 px-1 font-semibold text-warning tabular-nums"
+            : "shrink-0 tabular-nums"
+        }
+      >
+        {formatPrice(rate.value)} {rateUnitLabel(rate.unit, t)}
+        {changed ? ` · ${t("system.models.rateChanged")}` : ""}
+      </span>
+    </div>
   );
 }
 
@@ -694,7 +765,10 @@ export function ModelsDevSyncDialog({
     (value: boolean | "invert") => {
       const changes = visibleGroups.flatMap((group) => {
         const candidate = resolveModelCandidate(group, quoteChoices[group.model]);
-        return candidate?.importable
+        const quote = candidate
+          ? quoteForCandidate(syncPreview?.quotes ?? [], group.model, candidate.providerId)
+          : undefined;
+        return candidate && (candidate.importable || quote)
           ? [{ model: group.model, providerId: candidate.providerId }]
           : [];
       });
@@ -707,7 +781,7 @@ export function ModelsDevSyncDialog({
       }));
       queueMemoryPatch({ modelSelections });
     },
-    [queueMemoryPatch, quoteChoices, selectionByKey, visibleGroups],
+    [queueMemoryPatch, quoteChoices, selectionByKey, syncPreview?.quotes, visibleGroups],
   );
 
   const applySelected = useCallback(async () => {
@@ -985,6 +1059,13 @@ export function ModelsDevSyncDialog({
                             group={group}
                             local={local}
                             candidate={candidate}
+                            existingQuote={
+                              candidate
+                                ? quotesByModel
+                                    .get(group.model)
+                                    ?.find((item) => item.providerId === candidate.providerId)
+                                : undefined
+                            }
                             quote={
                               candidate
                                 ? quoteForCandidate(

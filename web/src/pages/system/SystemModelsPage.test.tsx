@@ -9,6 +9,7 @@ import type {
   ModelsDevSyncMemoryPatch,
   ModelsDevSyncMemoryState,
   ModelsDevSyncPreview,
+  PricingQuote,
   SettingsPayload,
 } from "../../lib/api";
 import SystemModelsPage from "./SystemModelsPage";
@@ -39,6 +40,77 @@ vi.mock("../../lib/api", async () => {
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+function makeImageQuote(output = 30): PricingQuote {
+  return {
+    model: "gpt-image-2.5-flare",
+    providerId: "provider-a",
+    providerName: "Provider A",
+    source: "litellm",
+    sourceVersion: "sha256:image-25",
+    fetchedAt: "2026-10-15T00:00:00Z",
+    status: null,
+    deprecationDate: null,
+    sourceUrl: "https://provider-a.example/docs",
+    rates: [
+      {
+        key: "input_cost_per_token",
+        sourceValue: 0.000005,
+        sourceUnit: "usd_per_token",
+        value: 5,
+        unit: "usd_per_1m_tokens",
+        dimension: "input",
+        modality: "text",
+        tier: null,
+        threshold: null,
+      },
+      {
+        key: "cache_read_input_token_cost",
+        sourceValue: 0.00000125,
+        sourceUnit: "usd_per_token",
+        value: 1.25,
+        unit: "usd_per_1m_tokens",
+        dimension: "cacheRead",
+        modality: "text",
+        tier: null,
+        threshold: null,
+      },
+      {
+        key: "cache_read_input_image_token_cost",
+        sourceValue: 0.000002,
+        sourceUnit: "usd_per_image_token",
+        value: 2,
+        unit: "usd_per_1m_tokens",
+        dimension: "cacheRead",
+        modality: "image",
+        tier: null,
+        threshold: null,
+      },
+      {
+        key: "input_cost_per_image_token",
+        sourceValue: 0.000008,
+        sourceUnit: "usd_per_image_token",
+        value: 8,
+        unit: "usd_per_1m_tokens",
+        dimension: "input",
+        modality: "image",
+        tier: null,
+        threshold: null,
+      },
+      {
+        key: "output_cost_per_image_token",
+        sourceValue: output / 1_000_000,
+        sourceUnit: "usd_per_image_token",
+        value: output,
+        unit: "usd_per_1m_tokens",
+        dimension: "output",
+        modality: "image",
+        tier: null,
+        threshold: null,
+      },
+    ],
+  };
+}
 
 beforeAll(() => {
   if (typeof globalThis.PointerEvent === "undefined") {
@@ -94,7 +166,7 @@ function makeSettings(): SettingsPayload {
       responseBodyLoggingEnabled: false,
       encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: true,
-      models: ["preset-without-price", "shared-model"],
+      models: ["preset-without-price", "shared-model", "gpt-image-2.5-flare"],
       enabledModels: ["shared-model"],
     },
     forwardProxy: { message: "" },
@@ -122,6 +194,7 @@ function makeSettings(): SettingsPayload {
           source: "custom",
         },
       ],
+      quotes: [makeImageQuote(29)],
     },
   };
 }
@@ -178,7 +251,7 @@ function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
   return {
     fetchedAt: "2026-09-30T00:00:00Z",
     providerCount: 2,
-    candidateCount: 4,
+    candidateCount: 5,
     providers: [
       {
         id: "provider-a",
@@ -193,6 +266,25 @@ function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
     ],
     syncState,
     candidates: [
+      {
+        model: "gpt-image-2.5-flare",
+        name: "GPT Image 2.5 Flare",
+        providerId: "provider-a",
+        providerName: "Provider A",
+        docUrl: "https://provider-a.example/docs",
+        status: null,
+        inputPer1m: 5,
+        outputPer1m: null,
+        cacheReadPer1m: 1.25,
+        cacheWritePer1m: null,
+        reasoningPer1m: null,
+        unsupportedDimensions: [
+          "cache_read_input_image_token_cost",
+          "input_cost_per_image_token",
+          "output_cost_per_image_token",
+        ],
+        importable: false,
+      },
       {
         model: "new-model",
         name: "New Model",
@@ -254,6 +346,7 @@ function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
         importable: true,
       },
     ],
+    quotes: [makeImageQuote(30)],
   };
 }
 
@@ -347,9 +440,10 @@ describe("SystemModelsPage", () => {
         return storedSyncMemory;
       },
     );
-    apiMocks.applyModelsDevPriceSync.mockImplementation(async (entries) => ({
+    apiMocks.applyModelsDevPriceSync.mockImplementation(async (entries, quotes = []) => ({
       catalogVersion: "test",
       entries,
+      quotes,
     }));
     apiMocks.updatePricingSettings.mockResolvedValue(makeSettings().pricing);
     apiMocks.updateManagedModelPreset.mockResolvedValue(makeSettings().proxy);
@@ -715,6 +809,52 @@ describe("SystemModelsPage", () => {
             source: "custom",
           }),
         ]),
+      }),
+    );
+  });
+
+  it("shows and applies a quote-only multimodal model without a legacy projection", async () => {
+    renderPage();
+    await flushEffects();
+    expect(host?.textContent).toContain("gpt-image-2.5-flare");
+    expect(host?.textContent).toContain("output_cost_per_image_token");
+
+    clickButton("全部同步");
+    await flushEffects();
+    const checkbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 gpt-image-2.5-flare 的价格"]',
+    );
+    expect(checkbox?.disabled).toBe(false);
+    act(() => checkbox?.click());
+    await flushEffects();
+    clickButton("同步所选");
+    await flushEffects();
+
+    expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
+      [],
+      [expect.objectContaining({ model: "gpt-image-2.5-flare" })],
+    );
+  });
+
+  it("edits a quote-only rate and marks the quote custom", async () => {
+    renderPage();
+    await flushEffects();
+    clickModelAction("gpt-image-2.5-flare", "编辑价格");
+    setLabeledInput("output_cost_per_image_token · Provider A (美元 / 百万 token)", "31");
+    clickButton("保存价格");
+    await flushEffects();
+
+    expect(apiMocks.updatePricingSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quotes: [
+          expect.objectContaining({
+            model: "gpt-image-2.5-flare",
+            source: "custom",
+            rates: expect.arrayContaining([
+              expect.objectContaining({ key: "output_cost_per_image_token", value: 31 }),
+            ]),
+          }),
+        ],
       }),
     );
   });

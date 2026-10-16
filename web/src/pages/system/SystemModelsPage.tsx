@@ -34,6 +34,7 @@ type PriceDraft = {
   cacheRead: string;
   cacheWrite: string;
   reasoning: string;
+  rates: Record<string, string>;
 };
 
 const PRICE_FIELDS = [
@@ -63,7 +64,11 @@ function rateUnitLabel(unit: string, t: ReturnType<typeof useTranslation>["t"]):
     usd_per_image: t("system.models.rateUnitUsdPerImage"),
     usd: t("system.models.rateUnitUsd"),
   };
-  return labels[unit] ?? unit.replaceAll("_", " ");
+  if (labels[unit]) return labels[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `$ / ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
 }
 
 function rateMeta(rate: PricingRate, t: ReturnType<typeof useTranslation>["t"]): string {
@@ -99,13 +104,30 @@ function localPriceFields(entry: PricingEntry | undefined) {
 function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
   const { t } = useTranslation();
   if (!quotes.length) return null;
+  const renderRates = (rates: PricingRate[]) => (
+    <div className="grid gap-1">
+      {rates.map((rate) => (
+        <div key={rate.key} className="flex justify-between gap-2">
+          <span className="min-w-0 truncate" title={rate.key}>
+            <span>{rate.key}</span>
+            {rateMeta(rate, t) ? (
+              <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
+            ) : null}
+          </span>
+          <span className="shrink-0 tabular-nums">
+            {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
   return (
-    <details className="mt-2 text-xs">
-      <summary className="cursor-pointer text-base-content/70">
+    <div className="mt-2 text-xs">
+      <div className="text-base-content/70">
         {t("system.models.quoteCount", {
           count: quotes.reduce((total, quote) => total + quote.rates.length, 0),
         })}
-      </summary>
+      </div>
       <div className="mt-2 grid gap-2 border-l border-base-300/70 pl-3 text-[11px] text-base-content/65">
         {quotes.map((quote) => (
           <div key={`${quote.model}:${quote.providerId}:${quote.sourceVersion}`}>
@@ -116,27 +138,34 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
                 ? ` · ${t("system.models.deprecationDate")}: ${quote.deprecationDate}`
                 : ""}
             </div>
-            {quote.rates.map((rate) => (
-              <div key={rate.key} className="flex justify-between gap-2">
-                <span className="min-w-0 truncate" title={rate.key}>
-                  <span>{rate.key}</span>
-                  {rateMeta(rate, t) ? (
-                    <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
-                  ) : null}
-                </span>
-                <span className="shrink-0 tabular-nums">
-                  {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
-                </span>
-              </div>
-            ))}
+            {renderRates(quote.rates.filter((rate) => rate.tier == null && rate.threshold == null))}
+            {quote.rates.some((rate) => rate.tier != null || rate.threshold != null) ? (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-base-content/55">
+                  {t("system.models.otherRates", {
+                    count: quote.rates.filter((rate) => rate.tier != null || rate.threshold != null)
+                      .length,
+                  })}
+                </summary>
+                <div className="mt-1">
+                  {renderRates(
+                    quote.rates.filter((rate) => rate.tier != null || rate.threshold != null),
+                  )}
+                </div>
+              </details>
+            ) : null}
           </div>
         ))}
       </div>
-    </details>
+    </div>
   );
 }
 
-function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
+function formatDraft(
+  entry?: PricingEntry,
+  model = "",
+  quotes: readonly PricingQuote[] = [],
+): PriceDraft {
   return {
     model: entry?.model ?? model,
     input: entry ? String(entry.inputPer1m) : "",
@@ -147,6 +176,11 @@ function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
         : String(entry.cacheReadPer1m ?? entry.cacheInputPer1m),
     cacheWrite: entry?.cacheWritePer1m == null ? "" : String(entry.cacheWritePer1m),
     reasoning: entry?.reasoningPer1m == null ? "" : String(entry.reasoningPer1m),
+    rates: Object.fromEntries(
+      quotes.flatMap((quote) =>
+        quote.rates.map((rate) => [`${quote.providerId}:${rate.key}`, String(rate.value)]),
+      ),
+    ),
   };
 }
 
@@ -234,7 +268,14 @@ export default function SystemModelsPage() {
     const cacheRead = optionalNumber(editorDraft.cacheRead);
     const cacheWrite = optionalNumber(editorDraft.cacheWrite);
     const reasoning = optionalNumber(editorDraft.reasoning);
-    if (!model || model.length > 128 || input == null || output == null) {
+    const existingEntry = settings.pricing.entries.find((entry) => entry.model === model);
+    const existingQuotes = (settings.pricing.quotes ?? []).filter((quote) => quote.model === model);
+    const hasLegacyProjection = input != null && output != null;
+    if (
+      !model ||
+      model.length > 128 ||
+      (!hasLegacyProjection && (existingEntry !== undefined || existingQuotes.length === 0))
+    ) {
       setEditorError(t("system.models.editor.required"));
       return;
     }
@@ -242,25 +283,59 @@ export default function SystemModelsPage() {
       setEditorError(t("system.models.editor.invalidPrice"));
       return;
     }
-    const entry: PricingEntry = {
-      model,
-      inputPer1m: input,
-      outputPer1m: output,
-      cacheInputPer1m: cacheRead ?? null,
-      cacheReadPer1m: cacheRead ?? null,
-      cacheWritePer1m: cacheWrite ?? null,
-      reasoningPer1m: reasoning ?? null,
+    const customQuotes = existingQuotes.map((quote) => ({
+      ...quote,
       source: "custom",
-    };
+      sourceVersion: "manual",
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: null,
+      rates: quote.rates.map((rate) => {
+        const draftKey = `${quote.providerId}:${rate.key}`;
+        const value = optionalNumber(editorDraft.rates[draftKey] ?? String(rate.value));
+        return {
+          ...rate,
+          sourceValue: value ?? rate.value,
+          sourceUnit: rate.unit,
+          value: value ?? rate.value,
+        };
+      }),
+    }));
+    if (
+      customQuotes.some((quote) =>
+        quote.rates.some(
+          (rate) =>
+            optionalNumber(editorDraft.rates[`${quote.providerId}:${rate.key}`]) === undefined,
+        ),
+      )
+    ) {
+      setEditorError(t("system.models.editor.invalidPrice"));
+      return;
+    }
+    const entry: PricingEntry | null = hasLegacyProjection
+      ? {
+          model,
+          inputPer1m: input!,
+          outputPer1m: output!,
+          cacheInputPer1m: cacheRead ?? null,
+          cacheReadPer1m: cacheRead ?? null,
+          cacheWritePer1m: cacheWrite ?? null,
+          reasoningPer1m: reasoning ?? null,
+          source: "custom",
+        }
+      : null;
     const entries = settings.pricing.entries.filter((current) => current.model !== model);
-    entries.push(entry);
+    if (entry) entries.push(entry);
+    const quotes = [
+      ...(settings.pricing.quotes ?? []).filter((quote) => quote.model !== model),
+      ...customQuotes,
+    ];
     setSavingPrice(true);
     setEditorError(null);
     try {
       await updatePricingSettings({
         catalogVersion: settings.pricing.catalogVersion,
         entries: entries.sort((a, b) => a.model.localeCompare(b.model)),
-        ...(settings.pricing.quotes?.length ? { quotes: settings.pricing.quotes } : {}),
+        quotes,
       });
       await reloadSettings();
       setEditorOpen(false);
@@ -350,11 +425,11 @@ export default function SystemModelsPage() {
     (model?: string) => {
       const entry = model ? pricesByModel.get(model) : undefined;
       setEditorIsNew(!model);
-      setEditorDraft(formatDraft(entry, model));
+      setEditorDraft(formatDraft(entry, model, model ? (quotesByModel.get(model) ?? []) : []));
       setEditorError(null);
       setEditorOpen(true);
     },
-    [pricesByModel],
+    [pricesByModel, quotesByModel],
   );
 
   if (loading) {
@@ -662,6 +737,36 @@ export default function SystemModelsPage() {
                   </label>
                 );
               })}
+              {!editorIsNew
+                ? (quotesByModel.get(editorDraft.model.trim()) ?? []).flatMap((quote) =>
+                    quote.rates.map((rate) => {
+                      const draftKey = `${quote.providerId}:${rate.key}`;
+                      return (
+                        <label key={draftKey} className="space-y-1.5 sm:col-span-2">
+                          <span className="text-sm font-medium">
+                            {rate.key} · {quote.providerName} ({rateUnitLabel(rate.unit, t)})
+                          </span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={editorDraft.rates[draftKey] ?? String(rate.value)}
+                            onChange={(event) =>
+                              setEditorDraft((draft) => ({
+                                ...draft,
+                                rates: {
+                                  ...draft.rates,
+                                  [draftKey]: event.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                      );
+                    }),
+                  )
+                : null}
             </div>
             <QuoteDetails quotes={quotesByModel.get(editorDraft.model.trim()) ?? []} />
             {editorError ? (

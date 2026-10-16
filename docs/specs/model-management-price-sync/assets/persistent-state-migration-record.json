@@ -7,8 +7,8 @@
     "version_impact": "minor"
   },
   "durable_state": {
-    "description": "Managed model IDs, enabled preset model IDs, local pricing rows, and historical invocation costs.",
-    "storage_implementation": "SQLite managed_models catalog, proxy_model_settings.enabled_preset_models_json, and pricing_settings_models.",
+    "description": "Managed model IDs, enabled preset model IDs, local pricing rows, complete reviewed quote rows, and historical invocation costs.",
+    "storage_implementation": "SQLite managed_models catalog, proxy_model_settings.enabled_preset_models_json, pricing_settings_models, and pricing_model_quotes (model-keyed serialized quote records).",
     "source_compatibility_range": {
       "from_program_versions": "Supported repository versions using static PROXY_PRESET_MODEL_IDS and pricing_settings_models before the managed model catalog exists.",
       "to_program_version": "Candidate release implementing model management and LiteLLM price synchronization.",
@@ -84,7 +84,8 @@
         "A migrated and subsequently deleted static candidate remains absent after restart.",
         "Explicitly re-adding a deleted model creates it with preset membership disabled.",
         "Delete and price synchronization leave historical non-null invocation costs unchanged.",
-        "The stateful-sqlite profile validates the migration and model lifecycle behavior."
+        "The stateful-sqlite profile validates the migration and model lifecycle behavior.",
+        "Quote rows recover across restart; omitted quotes preserve existing detail rows; interrupted quote/catalog writes leave no partial state; explicit quote-only deletion removes the complete quote."
       ]
     },
     "major": {"required_test_evidence": []}

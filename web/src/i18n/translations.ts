@@ -216,6 +216,7 @@ const baseTranslations = {
     "system.models.newModelAccessible": "Newly discovered model",
     "system.models.locallyUnpriced": "No local price",
     "system.models.priceChanged": "changed",
+    "system.models.rateChanged": "rate changed",
     "system.models.rememberedProviderUnavailable":
       "The saved provider is unavailable in this filter. Choose a quote to continue.",
     "system.models.sourceStatus": "Source status: {{status}}",
@@ -239,6 +240,7 @@ const baseTranslations = {
     "system.models.sourceLabel": "Source: LiteLLM",
     "system.models.quoteCount": "{{count}} detailed rates",
     "system.models.detailedRates": "Detailed LiteLLM rates",
+    "system.models.otherRates": "Other tiers and dimensions ({{count}})",
     "system.models.rateDimension": "dimension",
     "system.models.rateModality": "modality",
     "system.models.rateTier": "tier",
@@ -3839,6 +3841,7 @@ const baseTranslations = {
     "system.models.newModelAccessible": "新发现的模型",
     "system.models.locallyUnpriced": "本地尚无价格",
     "system.models.priceChanged": "有变化",
+    "system.models.rateChanged": "费率有变化",
     "system.models.rememberedProviderUnavailable":
       "已记忆的供应商在当前筛选中不可用。请选择报价后继续。",
     "system.models.sourceStatus": "来源状态：{{status}}",
@@ -3862,6 +3865,7 @@ const baseTranslations = {
     "system.models.sourceLabel": "来源：LiteLLM",
     "system.models.quoteCount": "{{count}} 条明细费率",
     "system.models.detailedRates": "LiteLLM 明细费率",
+    "system.models.otherRates": "其他档位和维度（{{count}}）",
     "system.models.rateDimension": "维度",
     "system.models.rateModality": "模态",
     "system.models.rateTier": "档位",
