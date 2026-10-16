@@ -55,6 +55,58 @@ async fn backfill_notifications_preserve_oldest_pending_state_in_prometheus() {
 }
 
 #[tokio::test]
+async fn backfill_wake_retry_deadline_is_published_in_prometheus() {
+    let runtime = ObservabilityRuntime::new(true);
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+
+    let expected_next_due =
+        crate::observability::contention::with_performance(runtime.clone(), async {
+            let observation_ticket = scheduler
+                .record_notification(task, WakeDecision::New)
+                .expect("record wake notification");
+            scheduler
+                .accept_wake_obligation(
+                    WakeObligationKey {
+                        task,
+                        control_generation: None,
+                        progress_key: None,
+                    },
+                    observation_ticket,
+                )
+                .expect("accept wake obligation");
+            let attempt = scheduler
+                .claim_due_wake_obligations(Utc::now())
+                .into_iter()
+                .next()
+                .expect("claim wake obligation");
+            scheduler
+                .fail_wake_obligation(attempt.ticket, Utc::now())
+                .expect("schedule wake retry")
+                .next_due
+                .timestamp_millis() as f64
+                / 1_000.0
+        })
+        .await;
+
+    let text = runtime.render();
+    let line = text
+        .lines()
+        .find(|line| {
+            line.starts_with("cvm_backfill_wake_next_due_timestamp_seconds{")
+                && line.contains(&format!("task=\"{}\"", task.name()))
+        })
+        .expect("retry deadline metric");
+    let actual_next_due = line
+        .split_whitespace()
+        .last()
+        .expect("metric value")
+        .parse::<f64>()
+        .expect("numeric metric value");
+    assert_eq!(actual_next_due, expected_next_due);
+}
+
+#[tokio::test]
 async fn backfill_wake_attempts_record_outcomes_and_cancellation() {
     let runtime = ObservabilityRuntime::new(true);
     let task = StartupBackfillTask::ProxyUsage;

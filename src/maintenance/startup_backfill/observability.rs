@@ -255,29 +255,33 @@ impl StartupBackfillScheduler {
         ticket: WakeObligationTicket,
         now: DateTime<Utc>,
     ) -> Option<WakeObligationFailure> {
-        let mut obligations = self.wake_obligations.lock().ok()?;
-        let obligation = obligations.get_mut(&ticket.task)?;
-        if obligation.ticket != ticket {
-            return None;
-        }
-        obligation.in_flight = false;
-        let base_delay_ms =
-            WAKE_RETRY_BASE_DELAYS_MS[obligation.attempt.saturating_sub(1).min(4) as usize];
-        let jitter_max_ms = base_delay_ms / 5;
-        let jitter_ms = rand::thread_rng().gen_range(0..=jitter_max_ms);
-        let next_due = now + chrono::Duration::milliseconds(base_delay_ms + jitter_ms);
-        obligation.next_due = next_due;
-        let should_warn = obligation
-            .last_warning_at
-            .is_none_or(|last| now - last >= chrono::Duration::seconds(WAKE_WARNING_INTERVAL_SECS));
-        if should_warn {
-            obligation.last_warning_at = Some(now);
-        }
-        Some(WakeObligationFailure {
-            next_due,
-            should_warn,
-            attempt: obligation.attempt,
-        })
+        let failure = {
+            let mut obligations = self.wake_obligations.lock().ok()?;
+            let obligation = obligations.get_mut(&ticket.task)?;
+            if obligation.ticket != ticket {
+                return None;
+            }
+            obligation.in_flight = false;
+            let base_delay_ms =
+                WAKE_RETRY_BASE_DELAYS_MS[obligation.attempt.saturating_sub(1).min(4) as usize];
+            let jitter_max_ms = base_delay_ms / 5;
+            let jitter_ms = rand::thread_rng().gen_range(0..=jitter_max_ms);
+            let next_due = now + chrono::Duration::milliseconds(base_delay_ms + jitter_ms);
+            obligation.next_due = next_due;
+            let should_warn = obligation.last_warning_at.is_none_or(|last| {
+                now - last >= chrono::Duration::seconds(WAKE_WARNING_INTERVAL_SECS)
+            });
+            if should_warn {
+                obligation.last_warning_at = Some(now);
+            }
+            WakeObligationFailure {
+                next_due,
+                should_warn,
+                attempt: obligation.attempt,
+            }
+        };
+        self.publish_performance(ticket.task);
+        Some(failure)
     }
 
     pub(super) fn cancel_wake_obligation(&self, task: StartupBackfillTask) {
@@ -301,6 +305,13 @@ impl StartupBackfillScheduler {
                 .map(|obligation| obligation.next_due)
                 .min()
         })
+    }
+
+    fn next_wake_obligation_due_for(&self, task: StartupBackfillTask) -> Option<DateTime<Utc>> {
+        self.wake_obligations
+            .lock()
+            .ok()
+            .and_then(|obligations| obligations.get(&task).map(|obligation| obligation.next_due))
     }
 
     fn signal(&self) {
@@ -632,7 +643,11 @@ impl StartupBackfillScheduler {
             .lock()
             .ok()
             .and_then(|pending| pending.get(&task).map(|observation| observation.since));
-        let next_due = self.next_due_for(task);
+        let next_due = self
+            .next_due_for(task)
+            .into_iter()
+            .chain(self.next_wake_obligation_due_for(task))
+            .min();
         metrics.set_performance(
             PerformanceGauge::Wake(task, WakeState::Pending),
             if pending_since.is_some() { 1.0 } else { 0.0 },
