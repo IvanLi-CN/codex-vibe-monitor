@@ -15,12 +15,13 @@ permissions:
 jobs:
   observability-performance-image:
     name: Observability Performance Image
-    # This build is intentionally opt-in because its paired measurement can exceed one hour.
+    # Build once; test jobs consume this immutable image without compiling.
     if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 15
     outputs:
       candidate: ${{ steps.identity.outputs.candidate }}
+      test-started: ${{ steps.test-clock.outputs.started }}
     steps:
       - name: Checkout performance candidate
         uses: actions/checkout@v7
@@ -77,15 +78,29 @@ jobs:
           overwrite: true
           retention-days: 1
 
+      - name: Release shared test clock
+        id: test-clock
+        run: echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
+
   observability-performance:
-    name: Observability Performance Budget
+    name: Observability Acceptance (${{ matrix.lane }})
     needs: observability-performance-image
     # Add the run:observability-performance label to launch the one-shot hosted measurement.
     if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance'
     # A fresh VM measures the prebuilt image; no compiler or parallel suite shares it.
     runs-on: ubuntu-24.04
-    timeout-minutes: 100
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        lane: [runtime, pair-0, pair-1, pair-2]
     steps:
+      - name: Start test wall clock
+        env:
+          TEST_STARTED: ${{ needs.observability-performance-image.outputs.test-started }}
+        run: echo "OBSERVABILITY_TEST_STARTED_UTC=$TEST_STARTED" >> "$GITHUB_ENV"
+
       - name: Checkout trusted acceptance harness
         uses: actions/checkout@v7
         with:
@@ -126,6 +141,7 @@ jobs:
           PY
 
       - name: Prepare pinned CPU sampler
+        if: matrix.lane == 'runtime'
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/observability-tools"
@@ -149,28 +165,31 @@ jobs:
             --agent "actions-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --candidate "$CANDIDATE" --image "$OBSERVABILITY_IMAGE" \
             --samply "$RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" \
-            --environment github-actions --suite full --seconds 300 --rate 5
+            --environment github-actions --suite "${{ matrix.lane }}" --seconds 60 --rate 5
 
-      - name: Classify performance acceptance
+      - name: Record part outcome
         if: always()
         env:
           ACCEPTANCE_OUTCOME: ${{ steps.acceptance.outcome }}
         run: |
-          python3 trusted/scripts/observability-acceptance/classify.py \
-            --root "$RUNNER_TEMP/observability-acceptance" \
-            --step-outcome "$ACCEPTANCE_OUTCOME"
+          python3 - <<'PY'
+          import json,os,pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-acceptance'
+          root.mkdir(exist_ok=True)
+          (root/'part-outcome.json').write_text(json.dumps({'outcome':os.environ['ACCEPTANCE_OUTCOME']}))
+          PY
 
       - name: Upload performance acceptance evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: observability-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          name: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.lane }}
           # Whitelist synthetic evidence; exclude token files, Compose secrets and databases.
           path: |
-            ${{ runner.temp }}/observability-acceptance/empirical-card.json
+            ${{ runner.temp }}/observability-acceptance/runtime-card.json
+            ${{ runner.temp }}/observability-acceptance/part-outcome.json
             ${{ runner.temp }}/observability-acceptance/scenarios.json
             ${{ runner.temp }}/observability-acceptance/ab-samples.json
-            ${{ runner.temp }}/observability-acceptance/ab-summary.json
             ${{ runner.temp }}/observability-acceptance/run-config.json
             ${{ runner.temp }}/observability-acceptance/image-identity.json
             ${{ runner.temp }}/observability-acceptance/runner-context.json
@@ -183,13 +202,75 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+  observability-performance-result:
+    name: Observability Performance Budget
+    needs: [observability-performance-image, observability-performance]
+    if: always() && needs.observability-performance-image.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Checkout trusted acceptance harness
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: trusted
+          persist-credentials: false
+
+      - name: Checkout candidate identity
+        uses: actions/checkout@v7
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ needs.observability-performance-image.outputs.candidate }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Download isolated acceptance parts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: observability-part-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: ${{ runner.temp }}/observability-parts
+
+      - name: Verify and aggregate all parts
+        id: aggregate
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python3 trusted/scripts/observability-acceptance/aggregate.py \
+            --source "$PWD/trusted" --candidate-source "$PWD/candidate" \
+            --run "$RUNNER_TEMP/observability-acceptance" --parts "$RUNNER_TEMP/observability-parts" \
+            --candidate "$CANDIDATE"
+
+      - name: Classify performance acceptance
+        if: always()
+        env:
+          ACCEPTANCE_OUTCOME: ${{ steps.aggregate.outcome }}
+        run: |
+          python3 trusted/scripts/observability-acceptance/classify.py \
+            --root "$RUNNER_TEMP/observability-acceptance" --step-outcome "$ACCEPTANCE_OUTCOME"
+
+      - name: Upload aggregated acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: observability-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/observability-acceptance/empirical-card.json
+            ${{ runner.temp }}/observability-acceptance/scenarios.json
+            ${{ runner.temp }}/observability-acceptance/ab-samples.json
+            ${{ runner.temp }}/observability-acceptance/ab-summary.json
+          if-no-files-found: error
+          retention-days: 14
+
   observability-diagnostics:
     name: Observability CPU Diagnosis
     needs: observability-performance-image
     # Explicit opt-in experiment; never a budget certificate and never a default PR job.
     if: github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'run:observability-performance' && (github.event.pull_request.number == 1071 || github.event.pull_request.number == 1079)
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 15
     steps:
       - name: Checkout trusted acceptance harness
         uses: actions/checkout@v7

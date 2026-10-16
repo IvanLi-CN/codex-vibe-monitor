@@ -19,6 +19,8 @@ import environment
 from run import Run
 import run as acceptance
 from classify import ClassificationError, classify_result
+import aggregate as aggregation
+import deadline as execution_deadline
 spec = importlib.util.spec_from_file_location("performance_gate_contract", SOURCE / ".github/scripts/check_quality_gates_contract.py")
 contract = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = contract
@@ -214,6 +216,26 @@ class ResourceAdmissionTests(unittest.TestCase):
                 environment.quiet_admission(self.root, timeout=300, window=self.window, budget=budget)
         self.assertFalse((self.root / "measurement-windows.json").exists())
 
+    def test_each_isolated_triplet_allows_observed_pressure_decay_within_budget(self):
+        # The hosted evidence needed up to 140s: five busy readings followed
+        # by the same three quiet readings required by the acceptance gate.
+        readings = [psi(cpu=3)] * 5 + [psi()] * 3
+        elapsed = []
+        with self.fake_clock(), patch.object(environment.time, "sleep", side_effect=self.sleep), \
+             patch.object(environment, "pressure", side_effect=readings * 9):
+            for index in range(3):
+                budget = environment.AdmissionBudget(environment.PAIR_ADMISSION_SECONDS)
+                for mode in ("off", "metrics", "full"):
+                    window = {"windowId": f"{index}-{mode}", "pairIndex": index, "enabled": mode}
+                    elapsed.append(environment.quiet_admission(self.root, timeout=300, window=window, budget=budget))
+                self.assertEqual(budget.remaining_seconds, 30)
+        self.assertEqual(elapsed, [140] * 9)
+        self.assertEqual(sum(elapsed), 1260)
+        rows = [json.loads(row) for row in (self.root / "environment-admission.jsonl").read_text().splitlines()]
+        self.assertEqual(len(rows), 72)
+        self.assertEqual([row["consecutive"] for row in rows[-3:]], [1, 2, 3])
+        self.assertFalse((self.root / "measurement-windows.json").exists())
+
     def test_collector_fault_is_unavailable_and_raw_failure_is_preserved(self):
         with patch.object(environment, "pressure", side_effect=OSError("synthetic collector fault")):
             with self.assertRaisesRegex(OSError, "invalid"):
@@ -276,19 +298,24 @@ class ResourceAdmissionTests(unittest.TestCase):
         path = self.root / "ab-samples.json"
         path.write_text(json.dumps(samples))
         environment.verify_measurement_evidence(self.root)
+        windows_path = self.root / "measurement-windows.json"
+        valid_windows = windows_path.read_text()
+        over_budget = json.loads(valid_windows)
+        for window in over_budget:
+            window["admissionWaitSeconds"] = 151
+        windows_path.write_text(json.dumps(over_budget))
+        with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
+        windows_path.write_text(valid_windows)
         for key, value in [("enabled", False), ("searchableTrace", False), ("exportedSpans", 0), ("failedSpans", 1), ("droppedSpans", 1)]:
             changed = copy.deepcopy(samples); changed["full"][1]["traceEvidence"][key] = value
             path.write_text(json.dumps(changed))
             with self.assertRaises(OSError): environment.verify_measurement_evidence(self.root)
 
     def test_raw_measurement_evidence_must_exist_even_with_successful_scenarios(self):
-        run = object.__new__(Run)
-        run.root = self.root; run.source = SOURCE; run.args = SimpleNamespace(candidate="a" * 40)
-        run.context = {"evidenceLocator": "https://github.com/owner/repo/actions/runs/123/attempts/2"}
-        run.suite = "full"
-        run.results = {name: {"status": "passed"} for name in ["https-auth-query", "tempo-cases-tenant", "monitoring-fault-isolation", "original-process-cpu", "default-observability-ab"]}
-        self.assertFalse(run.finish())
-        self.assertEqual(json.loads((self.root / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
+        (self.root / "scenarios.json").write_text(json.dumps({"default-observability-ab": {"status": "passed"}}))
+        with self.assertRaises(OSError):
+            environment.verify_measurement_evidence(self.root, pair_index=0)
+        self.assertFalse((self.root / "empirical-card.json").exists())
 
     def test_six_window_certificate_rechecks_raw_pressure_and_completeness(self):
         samples = {"false": [], "true": []}
@@ -374,15 +401,15 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(context["evidenceLocator"], "https://github.com/owner/repo/actions/runs/123/attempts/2")
         self.assertEqual(context["candidate"], self.sha)
 
-    def test_full_suite_rejects_testbox_before_creating_state(self):
-        args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="full")
+    def test_paired_suite_rejects_testbox_before_creating_state(self):
+        args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="shared-testbox", suite="pair-0")
         with self.assertRaisesRegex(ValueError, "GitHub Actions"):
             Run(args)
         self.assertFalse((self.root / "run").exists())
 
-    def test_full_suite_requires_an_immutable_prebuilt_image(self):
+    def test_paired_suite_requires_an_immutable_prebuilt_image(self):
         for image in [None, "example:latest"]:
-            args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="github-actions", suite="full", candidate=self.sha, image=image)
+            args = SimpleNamespace(source=str(SOURCE), run=str(self.root / "run"), environment="github-actions", suite="pair-0", candidate=self.sha, image=image)
             with patch.object(acceptance, "actions_context", return_value={"candidate":self.sha}):
                 with self.assertRaisesRegex(ValueError, "prebuilt image ID"):
                     Run(args)
@@ -448,12 +475,155 @@ class CertificateTests(unittest.TestCase):
             self.assertTrue(run.finish())
             self.assertTrue((run.root / "runtime-card.json").exists())
             self.assertFalse((run.root / "empirical-card.json").exists())
-            run.suite = "full"
-            run.context = {"evidenceLocator": "https://github.com/owner/repo/actions/runs/123/attempts/2"}
-            self.assertFalse(run.finish())
-            card = json.loads((run.root / "empirical-card.json").read_text())
-            self.assertEqual(card["empirical_evidence_status"], "failed")
+            run.suite, run.pair_index = "pair-0", 0
+            run.results = {"default-observability-ab": {"status": "passed"}}
+            self.assertTrue(run.finish())
+            card = json.loads((run.root / "runtime-card.json").read_text())
+            self.assertFalse((run.root / "empirical-card.json").exists())
             self.assertEqual(len(card), 7)
+
+
+class BoundedAcceptanceTests(unittest.TestCase):
+    def test_setup_time_is_charged_to_one_finite_deadline(self):
+        with patch.dict(os.environ, {"OBSERVABILITY_TEST_STARTED_UTC": "100"}), \
+             patch.object(execution_deadline.time, "time", return_value=190), \
+             patch.object(execution_deadline.signal, "signal", return_value="previous"), \
+             patch.object(execution_deadline.signal, "setitimer") as timer:
+            with execution_deadline.ExecutionDeadline() as deadline:
+                self.assertEqual(deadline.remaining, 750)
+            self.assertEqual(timer.call_args_list[0].args[1], 750)
+            self.assertEqual(timer.call_args_list[-1].args[1], 0)
+
+    def test_late_queued_job_cannot_start_load_or_extend_deadline(self):
+        with patch.dict(os.environ, {"OBSERVABILITY_TEST_STARTED_UTC": "100"}), \
+             patch.object(execution_deadline.time, "time", return_value=941), \
+             patch.object(execution_deadline.signal, "setitimer") as timer:
+            with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
+                with execution_deadline.ExecutionDeadline():
+                    self.fail("expired job must not execute")
+            timer.assert_not_called()
+
+    def test_deadline_interrupt_is_not_swallowed_by_scenario_wrapper(self):
+        run = Run.__new__(Run)
+        run.results = {}
+        with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
+            run.checkpoint("deadline", execution_deadline.ExecutionDeadline().expired)
+
+
+class AggregationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.parts, self.output = self.root / "parts", self.root / "result"
+        self.parts.mkdir()
+        self.candidate = "a" * 40
+        self.context = {"candidate": self.candidate, "runnerEnvironment": "github-hosted", "runId": "123", "attempt": "1",
+                        "evidenceLocator": "https://github.com/test/repo/actions/runs/123/attempts/1",
+                        "cpuModel": ["synthetic CPU"], "cpuCount": 4, "cpuAffinity": [0, 1, 2, 3],
+                        "runnerImage": "ubuntu24", "runnerImageVersion": "fixed", "kernel": "fixed"}
+        self.card = acceptance.certificate(SOURCE, self.candidate, self.context, "passed", "partial only")
+        for lane in aggregation.LANES:
+            part = self.part(lane)
+            part.mkdir()
+            context = {**self.context, "runnerIdentity": lane}
+            config = {"candidate": self.candidate, "suite": lane, "executionStartedUTCSeconds": 100,
+                      "executionFinishedUTCSeconds": 850, "pairIndex": None if lane == "runtime" else int(lane[-1]),
+                      "windowSeconds": 60, "warmupSeconds": 60, "requestRate": 5,
+                      "appCpuQuota": 1, "appCpuSet": "0", "auxiliaryCpuSet": "runner-default"}
+            scenarios = {name: {"status": "passed"} for name in aggregation.RUNTIME_SCENARIOS} if lane == "runtime" else {"default-observability-ab": {"status": "passed"}}
+            for name, value in [("runtime-card.json", self.card), ("runner-context.json", context), ("run-config.json", config),
+                                ("scenarios.json", scenarios), ("part-outcome.json", {"outcome": "success"}),
+                                ("image-identity.json", {"Id": "sha256:" + "b" * 64, "Config": {"Labels": {"org.opencontainers.image.revision": self.candidate}}})]:
+                (part / name).write_text(json.dumps(value))
+            if lane != "runtime":
+                self.seed_windows(part, int(lane[-1]))
+
+    def part(self, lane):
+        return self.parts / ("observability-part-123-1-" + lane)
+
+    def seed_windows(self, part, pair):
+        windows, rows, admissions, samples = [], [], [], {}
+        for index, mode in enumerate(("off", "metrics", "full")):
+            start = 200 + index * 180
+            identity = {"windowId": f"{pair}-{mode}", "pairIndex": pair, "enabled": mode}
+            window = {**identity, "status": "passed", "reasonCodes": [], "pressureLimits": environment.PRESSURE_LIMITS,
+                      "admissionWaitSeconds": 40, "startedMonotonicSeconds": start, "endedMonotonicSeconds": start + 60,
+                      "startedUTCSeconds": start, "endedUTCSeconds": start + 60,
+                      "maximumGapSeconds": 10, "sampleCount": 7, "pressureExceededSamples": 0}
+            windows.append(window)
+            for elapsed in range(0, 61, 10):
+                rows.append({**identity, "phase": "measurement", "eligible": True, "hostPressure": psi(),
+                             "monotonicSeconds": start + elapsed, "utcSeconds": start + elapsed})
+            for consecutive in range(1, 4):
+                admissions.append({**identity, "phase": "admission", "consecutive": consecutive, "eligible": True,
+                                   "hostPressure": psi(), "monotonicSeconds": start - 60 + consecutive * 20})
+            samples[mode] = [{**identity, "offered": 300, "completed": 300, "durationSeconds": 60, "cpuCores": .2,
+                              "cpuSecondsPerRequest": .04, "p95Seconds": .08,
+                              "traceEvidence": {"enabled": True, "searchableTrace": True, "exportedSpans": 100,
+                                                "failedSpans": 0, "droppedSpans": 0}}]
+        (part / "measurement-windows.json").write_text(json.dumps(windows))
+        (part / "ab-samples.json").write_text(json.dumps(samples))
+        for name, values in [("resource-observer.jsonl", rows), ("environment-admission.jsonl", admissions)]:
+            (part / name).write_text("".join(json.dumps(row) + "\n" for row in values))
+
+    def aggregate(self):
+        with patch.object(aggregation, "actions_context", return_value=self.context), \
+             patch.object(aggregation.time, "time", return_value=860):
+            return aggregation.aggregate(SOURCE, SOURCE, self.output, self.parts, self.candidate)
+
+    def change(self, lane, name, mutate):
+        path = self.part(lane) / name
+        data = json.loads(path.read_text())
+        mutate(data)
+        path.write_text(json.dumps(data))
+
+    def test_complete_nine_windows_can_issue_only_one_full_certificate(self):
+        self.assertTrue(self.aggregate())
+        card = json.loads((self.output / "empirical-card.json").read_text())
+        self.assertEqual(len(card), 7)
+        self.assertEqual(card["empirical_evidence_status"], "passed")
+        self.assertEqual({key: len(rows) for key, rows in json.loads((self.output / "ab-samples.json").read_text()).items()},
+                         {"off": 3, "metrics": 3, "full": 3})
+
+    def test_missing_part_cannot_reuse_an_earlier_pass(self):
+        self.assertTrue(self.aggregate())
+        (self.part("pair-2") / "measurement-windows.json").unlink()
+        self.assertFalse(self.aggregate())
+        self.assertEqual(json.loads((self.output / "empirical-card.json").read_text())["empirical_evidence_status"], "unavailable")
+
+    def test_wrong_contract_or_candidate_is_rejected(self):
+        self.change("pair-1", "runtime-card.json", lambda row: row.update(acceptance_contract_digest="wrong"))
+        self.assertFalse(self.aggregate())
+
+    def test_different_image_or_hardware_is_rejected(self):
+        self.change("pair-1", "image-identity.json", lambda row: row.update(Id="sha256:" + "c" * 64))
+        self.assertFalse(self.aggregate())
+
+    def test_hardware_or_runner_reuse_cannot_be_hidden_by_good_cv(self):
+        self.change("pair-2", "runner-context.json", lambda row: row.update(cpuModel=["different CPU"]))
+        self.assertFalse(self.aggregate())
+
+    def test_restarted_clock_or_exceeded_budget_cannot_pass(self):
+        self.change("pair-2", "run-config.json", lambda row: row.update(executionStartedUTCSeconds=110))
+        self.assertFalse(self.aggregate())
+
+    def test_cleanup_failure_after_partial_card_cannot_pass(self):
+        self.change("pair-2", "part-outcome.json", lambda row: row.update(outcome="failure"))
+        self.assertFalse(self.aggregate())
+
+    def test_loss_or_missing_requests_cannot_pass(self):
+        self.change("pair-2", "ab-samples.json", lambda row: row["full"][0].update(completed=299))
+        self.assertFalse(self.aggregate())
+
+    def test_fixed_rate_last_response_may_finish_before_nominal_boundary(self):
+        self.change("pair-2", "ab-samples.json", lambda row: row["full"][0].update(durationSeconds=59.88))
+        self.assertTrue(self.aggregate())
+
+    def test_expired_shared_phase_cannot_pass_with_complete_samples(self):
+        with patch.object(aggregation, "actions_context", return_value=self.context), \
+             patch.object(aggregation.time, "time", return_value=1001):
+            self.assertFalse(aggregation.aggregate(SOURCE, SOURCE, self.output, self.parts, self.candidate))
 
 
 class WorkflowGateTests(unittest.TestCase):
@@ -496,7 +666,7 @@ class WorkflowGateTests(unittest.TestCase):
 
     def test_resource_unavailability_requires_the_classifier(self):
         workflow = copy.deepcopy(self.workflow)
-        steps = workflow["jobs"]["observability-performance"]["steps"]
+        steps = workflow["jobs"]["observability-performance-result"]["steps"]
         steps[:] = [step for step in steps if step["name"] != "Classify performance acceptance"]
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
@@ -507,7 +677,7 @@ class WorkflowGateTests(unittest.TestCase):
         acceptance["continue-on-error"] = False
         with self.assertRaises(contract.ContractError): self.verify(workflow)
         acceptance["continue-on-error"] = True
-        classifier = next(step for step in steps if step["name"] == "Classify performance acceptance")
+        classifier = next(step for step in workflow["jobs"]["observability-performance-result"]["steps"] if step["name"] == "Classify performance acceptance")
         classifier["if"] = "success()"
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
@@ -521,10 +691,27 @@ class WorkflowGateTests(unittest.TestCase):
                 upload["with"]["path"] = upload["with"]["path"].replace("${{ runner.temp }}/observability-acceptance/measurement-windows.json", "")
             with self.assertRaises(contract.ContractError): self.verify(workflow)
 
-    def test_shortened_windows_are_rejected(self):
+    def test_unbounded_or_changed_windows_are_rejected(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(x for x in workflow["jobs"]["observability-performance"]["steps"] if x["name"] == "Run candidate-bound runtime and performance acceptance")
-        step["run"] = step["run"].replace("--seconds 300", "--seconds 60")
+        step["run"] = step["run"].replace("--seconds 60", "--seconds 300")
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_time_limit_and_parallel_isolation_cannot_be_removed(self):
+        for job in ("observability-performance", "observability-performance-image", "observability-diagnostics"):
+            workflow = copy.deepcopy(self.workflow)
+            workflow["jobs"][job]["timeout-minutes"] = 16
+            if job == "observability-diagnostics":
+                with self.assertRaises(contract.ContractError): contract.require_observability_diagnostic_contract(workflow)
+            else:
+                with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance"]["strategy"]["max-parallel"] = 1
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_each_job_cannot_restart_its_wall_clock(self):
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = 'echo "OBSERVABILITY_TEST_STARTED_UTC=$(date +%s)" >> "$GITHUB_ENV"'
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
 
