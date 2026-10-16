@@ -222,6 +222,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
     BeforeHistoricalLiveCoverage,
+    BeforeLiveTailPublication,
     BeforeProjectionPublication,
 }
 

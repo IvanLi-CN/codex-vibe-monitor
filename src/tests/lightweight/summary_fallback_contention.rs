@@ -4,17 +4,34 @@ use crate::sqlite_batch_writer::{
 };
 use std::cell::Cell;
 
+#[derive(Clone, Copy)]
+enum TailRecoveryFixture {
+    Descriptors,
+    Compacted,
+    ConcurrentTerminal,
+}
+
 #[tokio::test]
 async fn summary_projection_bootstrap_fallback_reopens_only_for_coverage_changes() {
-    assert_bootstrap_fallback_reopens_only_for_coverage_changes(false).await;
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(TailRecoveryFixture::Descriptors)
+        .await;
 }
 
 #[tokio::test]
 async fn summary_projection_bootstrap_fallback_recovers_compacted_live_tail() {
-    assert_bootstrap_fallback_reopens_only_for_coverage_changes(true).await;
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(TailRecoveryFixture::Compacted)
+        .await;
 }
 
-async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(compact: bool) {
+#[tokio::test]
+async fn summary_projection_live_tail_does_not_checkpoint_beyond_reconstructed_source() {
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(
+        TailRecoveryFixture::ConcurrentTerminal,
+    )
+    .await;
+}
+
+async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: TailRecoveryFixture) {
     let state = crate::tests::test_state_with_openai_base(
         url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -74,10 +91,118 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(compact: bo
 
     // A normal terminal commits its source descriptor in the same transaction. A raw SQL
     // INSERT deliberately lacks that proof and must remain unavailable during tail recovery.
-    let mut record = crate::tests::test_proxy_capture_record(
-        "summary-bootstrap-fence-new",
-        &db_occurred_at_lower_bound(Utc::now()),
+    commit_fixture_terminal(state.as_ref(), "summary-bootstrap-fence-new").await;
+    if matches!(fixture, TailRecoveryFixture::Compacted) {
+        let cursor = crate::summary_source_change::summary_source_change_cursor(&state.pool)
+            .await
+            .expect("load committed source descriptor cursor");
+        assert!(cursor > 0, "terminal writer must persist its descriptor");
+        assert!(
+            crate::summary_source_change::compact_summary_source_change_journal(
+                &state.pool,
+                cursor,
+                cursor + 1,
+            )
+            .await
+            .expect("compact committed descriptors with a durable proof")
+        );
+    }
+    let mut concurrent_hydrations = 0;
+    if matches!(fixture, TailRecoveryFixture::ConcurrentTerminal) {
+        let interleave = install_summary_projection_test_interleave_at(
+            SummaryProjectionTestInterleaveStage::BeforeLiveTailPublication,
+        );
+        let refresh_state = state.clone();
+        let mut refresh =
+            tokio::spawn(async move { refresh_with_hydration_count(refresh_state.as_ref()).await });
+        tokio::select! {
+            _ = interleave.wait_for_writer() => {}
+            result = &mut refresh => {
+                clear_summary_projection_test_interleave();
+                result.expect("join tail reconstruction").0.expect("tail reconstruction");
+                panic!("tail reconstruction must pause before publication");
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                clear_summary_projection_test_interleave();
+                refresh.abort();
+                panic!("tail reconstruction did not reach publication within its budget");
+            }
+        }
+        commit_fixture_terminal(state.as_ref(), "summary-bootstrap-fence-concurrent").await;
+        interleave.resume_build();
+        let (result, hydrations) = refresh.await.expect("join stale target refresh");
+        result.expect("defer stale target without losing its obligation");
+        concurrent_hydrations = hydrations;
+        clear_summary_projection_test_interleave();
+        let checkpoint = load_summary_live_tail_reconciliation_checkpoint(&state.pool)
+            .await
+            .expect("read deferred reconciliation checkpoint")
+            .expect("reconstruction created a checkpoint");
+        assert_eq!(checkpoint.next_source_cursor, 0);
+        assert_ne!(checkpoint.state, "ready");
+    }
+    let (changed_result, changed_hydrations) = refresh_with_hydration_count(state.as_ref()).await;
+    changed_result.expect("changed source fence refresh");
+    assert_eq!(
+        changed_hydrations + concurrent_hydrations,
+        0,
+        "a live terminal must use bounded reconciliation while historical proof is unchanged"
     );
+    let Json(recent) = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("1d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await
+    .expect("new live terminal remains exact beside a historical fallback gap");
+    let expected_count = if matches!(fixture, TailRecoveryFixture::ConcurrentTerminal) {
+        2
+    } else {
+        1
+    };
+    assert_eq!(recent.total_count, expected_count);
+    assert_eq!(recent.total_tokens, expected_count * 19);
+    let historical = fetch_summary(
+        State(state.clone()),
+        Query(SummaryQuery {
+            window: Some("7d".to_string()),
+            limit: None,
+            time_zone: Some("UTC".to_string()),
+            upstream_account_id: None,
+        }),
+    )
+    .await;
+    assert!(matches!(historical, Err(ApiError::Unavailable(_))));
+
+    sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
+        .execute(&state.pool)
+        .await
+        .expect("advance historical authority independently of live terminals");
+    let (coverage_result, coverage_hydrations) = refresh_with_hydration_count(state.as_ref()).await;
+    coverage_result.expect("changed coverage fence refresh");
+    assert_eq!(coverage_hydrations, 1);
+    state.pool.close().await;
+}
+
+async fn refresh_with_hydration_count(state: &AppState) -> (Result<()>, usize) {
+    SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+        .scope(Cell::new(0), async {
+            let result = refresh_summary_snapshots(state).await;
+            let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
+                .try_with(Cell::get)
+                .expect("boundary hydration counter scope");
+            (result, calls)
+        })
+        .await
+}
+
+async fn commit_fixture_terminal(state: &AppState, invoke_id: &str) {
+    let mut record =
+        crate::tests::test_proxy_capture_record(invoke_id, &db_occurred_at_lower_bound(Utc::now()));
     record.payload = Some("{}".to_string());
     record.usage.input_tokens = Some(16);
     record.usage.cache_input_tokens = Some(0);
@@ -100,76 +225,4 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(compact: bo
         )],
     )
     .await;
-    if compact {
-        let cursor = crate::summary_source_change::summary_source_change_cursor(&state.pool)
-            .await
-            .expect("load committed source descriptor cursor");
-        assert!(cursor > 0, "terminal writer must persist its descriptor");
-        assert!(
-            crate::summary_source_change::compact_summary_source_change_journal(
-                &state.pool,
-                cursor,
-                cursor + 1,
-            )
-            .await
-            .expect("compact committed descriptors with a durable proof")
-        );
-    }
-    let (changed_result, changed_hydrations) =
-        SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-            .scope(Cell::new(0), async {
-                let result = refresh_summary_snapshots(state.as_ref()).await;
-                let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                    .try_with(Cell::get)
-                    .expect("boundary hydration counter scope");
-                (result, calls)
-            })
-            .await;
-    changed_result.expect("changed source fence refresh");
-    assert_eq!(
-        changed_hydrations, 0,
-        "a live terminal must use bounded reconciliation while historical proof is unchanged"
-    );
-    let Json(recent) = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("1d".to_string()),
-            limit: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await
-    .expect("new live terminal remains exact beside a historical fallback gap");
-    assert_eq!(recent.total_count, 1);
-    assert_eq!(recent.total_tokens, 19);
-    let historical = fetch_summary(
-        State(state.clone()),
-        Query(SummaryQuery {
-            window: Some("7d".to_string()),
-            limit: None,
-            time_zone: Some("UTC".to_string()),
-            upstream_account_id: None,
-        }),
-    )
-    .await;
-    assert!(matches!(historical, Err(ApiError::Unavailable(_))));
-
-    sqlx::query("UPDATE summary_coverage_revision SET revision = revision + 1 WHERE id = 1")
-        .execute(&state.pool)
-        .await
-        .expect("advance historical authority independently of live terminals");
-    let (coverage_result, coverage_hydrations) =
-        SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-            .scope(Cell::new(0), async {
-                let result = refresh_summary_snapshots(state.as_ref()).await;
-                let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                    .try_with(Cell::get)
-                    .expect("boundary hydration counter scope");
-                (result, calls)
-            })
-            .await;
-    coverage_result.expect("changed coverage fence refresh");
-    assert_eq!(coverage_hydrations, 1);
-    state.pool.close().await;
 }
