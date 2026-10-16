@@ -818,6 +818,8 @@ describe("SystemModelsPage", () => {
     await flushEffects();
     expect(host?.textContent).toContain("gpt-image-2.5-flare");
     expect(host?.textContent).toContain("output_cost_per_image_token");
+    expect(host?.textContent).toContain("仅明细报价");
+    expect(host?.textContent).toContain("没有完整的通用 token 兼容价");
 
     clickButton("全部同步");
     await flushEffects();

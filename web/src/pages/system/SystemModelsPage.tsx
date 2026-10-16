@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
@@ -106,32 +106,45 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
   if (!quotes.length) return null;
   const renderRates = (rates: PricingRate[]) => (
     <div className="grid gap-1">
-      {rates.map((rate) => (
-        <div key={rate.key} className="flex justify-between gap-2">
-          <span className="min-w-0 truncate" title={rate.key}>
-            <span>{rate.key}</span>
-            {rateMeta(rate, t) ? (
-              <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
-            ) : null}
-          </span>
-          <span className="shrink-0 tabular-nums">
-            {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
-          </span>
-        </div>
-      ))}
+      {rates.map((rate) => {
+        const metadata = rateMeta(rate, t);
+        return (
+          <div
+            key={`${rate.key}:${rate.unit}:${rate.value}`}
+            className="grid gap-x-4 gap-y-0.5 border-b border-base-300/45 py-1 last:border-0 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-center"
+          >
+            <div className="min-w-0">
+              <div className="break-words font-mono text-[10px] leading-4 text-base-content/80">
+                {rate.key}
+              </div>
+              {metadata ? (
+                <div className="break-words text-[10px] leading-4 text-base-content/50">
+                  {metadata}
+                </div>
+              ) : null}
+            </div>
+            <span className="shrink-0 whitespace-nowrap tabular-nums text-base-content/80">
+              {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
   return (
-    <div className="mt-2 text-xs">
-      <div className="text-base-content/70">
-        {t("system.models.quoteCount", {
-          count: quotes.reduce((total, quote) => total + quote.rates.length, 0),
-        })}
+    <div className="text-xs">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-base-300/60 pb-2">
+        <span className="font-medium text-base-content/80">{t("system.models.detailedRates")}</span>
+        <span className="text-[11px] text-base-content/55">
+          {t("system.models.quoteCount", {
+            count: quotes.reduce((total, quote) => total + quote.rates.length, 0),
+          })}
+        </span>
       </div>
-      <div className="mt-2 grid gap-2 border-l border-base-300/70 pl-3 text-[11px] text-base-content/65">
+      <div className="mt-2 grid gap-3 text-[11px] text-base-content/65">
         {quotes.map((quote) => (
-          <div key={`${quote.model}:${quote.providerId}:${quote.sourceVersion}`}>
-            <div className="font-medium text-base-content/75">
+          <section key={`${quote.model}:${quote.providerId}:${quote.sourceVersion}`}>
+            <div className="font-medium text-base-content/80">
               {quote.providerName} ({quote.providerId})
               {quote.status ? ` · ${t("system.models.rateStatus")}: ${quote.status}` : ""}
               {quote.deprecationDate
@@ -154,7 +167,7 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
                 </div>
               </details>
             ) : null}
-          </div>
+          </section>
         ))}
       </div>
     </div>
@@ -545,62 +558,91 @@ export default function SystemModelsPage() {
                   {managedModels.map((model) => {
                     const price = pricesByModel.get(model);
                     const priceFields = localPriceFields(price);
+                    const quotes = quotesByModel.get(model) ?? [];
                     const isBusy = busyModel === model;
                     return (
-                      <tr key={model} className="hover:bg-base-200/35">
-                        <td className="py-3 pr-4 align-middle">
-                          <div className="break-all font-mono text-[13px]">{model}</div>
-                          {price ? (
-                            <Chip size="compact" tone="secondary" className="mt-1.5">
-                              {price.source}
-                            </Chip>
-                          ) : null}
-                          <QuoteDetails quotes={quotesByModel.get(model) ?? []} />
-                        </td>
-                        {PRICE_FIELDS.map(([field]) => (
-                          <td key={field} className="py-3 pr-3 align-middle tabular-nums">
-                            {priceText(priceFields[field])}
+                      <Fragment key={model}>
+                        <tr className="hover:bg-base-200/35">
+                          <td className="py-3 pr-4 align-middle">
+                            <div className="break-all font-mono text-[13px]">{model}</div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              {price ? (
+                                <Chip size="compact" tone="secondary">
+                                  {price.source}
+                                </Chip>
+                              ) : quotes.length ? (
+                                <Chip size="compact" tone="info">
+                                  {t("system.models.quoteOnly")}
+                                </Chip>
+                              ) : null}
+                            </div>
                           </td>
-                        ))}
-                        <td className="py-3 pr-3 align-middle">
-                          <Switch
-                            checked={enabledModels.has(model)}
-                            disabled={isBusy}
-                            aria-label={t("system.models.presetFor", { model })}
-                            onCheckedChange={(checked) => void handlePresetChange(model, checked)}
-                          />
-                        </td>
-                        <td className="py-3 text-right align-middle">
-                          <div className="inline-flex gap-1">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={t("system.models.editPrice")}
-                              title={t("system.models.editPrice")}
+                          {price ? (
+                            PRICE_FIELDS.map(([field]) => (
+                              <td key={field} className="py-3 pr-3 align-middle tabular-nums">
+                                {priceText(priceFields[field])}
+                              </td>
+                            ))
+                          ) : quotes.length ? (
+                            <td colSpan={5} className="py-3 pr-3 align-middle">
+                              <div className="text-xs text-base-content/70">
+                                {t("system.models.quoteOnlyHint")}
+                              </div>
+                            </td>
+                          ) : (
+                            PRICE_FIELDS.map(([field]) => (
+                              <td key={field} className="py-3 pr-3 align-middle tabular-nums">
+                                {priceText(priceFields[field])}
+                              </td>
+                            ))
+                          )}
+                          <td className="py-3 pr-3 align-middle">
+                            <Switch
+                              checked={enabledModels.has(model)}
                               disabled={isBusy}
-                              onClick={() => openPriceEditor(model)}
-                            >
-                              <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={t("system.models.delete")}
-                              title={t("system.models.delete")}
-                              disabled={isBusy}
-                              onClick={() => setDeleteTarget(model)}
-                            >
-                              <AppIcon
-                                name="trash-can-outline"
-                                className="h-4 w-4 text-error"
-                                aria-hidden
-                              />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
+                              aria-label={t("system.models.presetFor", { model })}
+                              onCheckedChange={(checked) => void handlePresetChange(model, checked)}
+                            />
+                          </td>
+                          <td className="py-3 text-right align-middle">
+                            <div className="inline-flex gap-1">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={t("system.models.editPrice")}
+                                title={t("system.models.editPrice")}
+                                disabled={isBusy}
+                                onClick={() => openPriceEditor(model)}
+                              >
+                                <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={t("system.models.delete")}
+                                title={t("system.models.delete")}
+                                disabled={isBusy}
+                                onClick={() => setDeleteTarget(model)}
+                              >
+                                <AppIcon
+                                  name="trash-can-outline"
+                                  className="h-4 w-4 text-error"
+                                  aria-hidden
+                                />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                        {quotes.length ? (
+                          <tr className="bg-base-200/15">
+                            <td colSpan={8} className="px-4 py-3">
+                              <QuoteDetails quotes={quotes} />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -611,6 +653,7 @@ export default function SystemModelsPage() {
               {managedModels.map((model) => {
                 const price = pricesByModel.get(model);
                 const priceFields = localPriceFields(price);
+                const quotes = quotesByModel.get(model) ?? [];
                 const isBusy = busyModel === model;
                 return (
                   <article key={model} className="py-4 first:pt-3 last:pb-2">
@@ -621,8 +664,16 @@ export default function SystemModelsPage() {
                           <Chip size="compact" tone="secondary" className="mt-1.5">
                             {price.source}
                           </Chip>
+                        ) : quotes.length ? (
+                          <Chip size="compact" tone="info" className="mt-1.5">
+                            {t("system.models.quoteOnly")}
+                          </Chip>
                         ) : null}
-                        <QuoteDetails quotes={quotesByModel.get(model) ?? []} />
+                        {quotes.length ? (
+                          <div className="mt-3">
+                            <QuoteDetails quotes={quotes} />
+                          </div>
+                        ) : null}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
                         <Button
@@ -653,16 +704,24 @@ export default function SystemModelsPage() {
                         </Button>
                       </div>
                     </div>
-                    <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                      {PRICE_FIELDS.map(([field, label]) => (
-                        <div key={field} className="flex min-w-0 justify-between gap-2">
-                          <dt className="truncate text-base-content/65">
-                            {t(`settings.pricing.columns.${label}`)}
-                          </dt>
-                          <dd className="shrink-0 tabular-nums">{priceText(priceFields[field])}</dd>
-                        </div>
-                      ))}
-                    </dl>
+                    {price ? (
+                      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        {PRICE_FIELDS.map(([field, label]) => (
+                          <div key={field} className="flex min-w-0 justify-between gap-2">
+                            <dt className="truncate text-base-content/65">
+                              {t(`settings.pricing.columns.${label}`)}
+                            </dt>
+                            <dd className="shrink-0 tabular-nums">
+                              {priceText(priceFields[field])}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : quotes.length ? (
+                      <div className="mt-3 text-xs text-base-content/65">
+                        {t("system.models.quoteOnlyHint")}
+                      </div>
+                    ) : null}
                     <div className="mt-3 flex items-center justify-between border-t border-base-300/60 pt-3">
                       <span className="text-xs text-base-content/70">
                         {t("system.models.preset")}
