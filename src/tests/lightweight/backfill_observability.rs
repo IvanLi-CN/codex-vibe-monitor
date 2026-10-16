@@ -125,6 +125,7 @@ async fn disabled_backfill_observability_does_not_register_series() {
 #[tokio::test]
 async fn noop_wake_preserves_business_schedule_with_observation_enabled_or_disabled() {
     let task = StartupBackfillTask::ProxyUsage;
+    let task_name = task.name();
     for (enabled, wake_reason) in [
         (false, "noop_observation_regression"),
         (true, "noop_observation_regression"),
@@ -180,11 +181,13 @@ async fn noop_wake_preserves_business_schedule_with_observation_enabled_or_disab
             let text = runtime.render();
             assert!(text.lines().any(|line| {
                 line.starts_with("cvm_backfill_wake_attempts_total{")
-                    && line.contains("task=\"proxy_usage\"")
+                    && line.contains(&format!("task=\"{task_name}\""))
                     && line.contains("outcome=\"noop\"")
                     && line.ends_with(" 1")
             }));
-            assert!(text.contains("cvm_backfill_wake_pending_tasks{task=\"proxy_usage\"} 0"));
+            assert!(text.contains(&format!(
+                "cvm_backfill_wake_pending_tasks{{task=\"{task_name}\"}} 0"
+            )));
         } else {
             assert!(runtime.render().is_empty());
         }
