@@ -385,7 +385,7 @@ pub(crate) async fn prune_old_invocation_details(
                     return Err(error);
                 }
                 let transaction_result: Result<RetentionBatchCommit> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut *source_connection);
+                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
                             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
                             mark_archive_batch_historical_rollups_materialized_tx(
                                 tx.as_mut(),
@@ -950,7 +950,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
                 let transaction_result: Result<RetentionBatchCommit> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut *source_connection);
+                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
                     // P2 normally advances this cursor before retention. Rows beyond it would be
                     // deleted before the regular replay can observe them, so materialize just those
                     // rows in this same archive transaction before claiming the archive is covered.
@@ -1487,7 +1487,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     return Err(error);
                 }
                 let transaction_result: Result<Option<RetentionBatchCommit>> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut *source_connection);
+                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
             )
