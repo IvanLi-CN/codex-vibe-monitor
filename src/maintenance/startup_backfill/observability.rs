@@ -339,12 +339,22 @@ impl StartupBackfillScheduler {
             } else if let Some(existing) = obligations.get_mut(&key.task)
                 && stale_prompt_control_generation(&existing.key, &key)
             {
-                existing.observation_ticket =
-                    latest_observation_ticket(existing.observation_ticket, observation_ticket);
-                (
-                    existing.ticket,
-                    !existing.in_flight && existing.next_due <= observed_at,
-                )
+                if existing.in_flight {
+                    if existing.queued_key.is_none() {
+                        existing.queued_key = Some(existing.key.clone());
+                    }
+                    existing.queued_observation_ticket = Some(
+                        existing
+                            .queued_observation_ticket
+                            .map(|queued| latest_observation_ticket(queued, observation_ticket))
+                            .unwrap_or(observation_ticket),
+                    );
+                    (existing.ticket, false)
+                } else {
+                    existing.observation_ticket =
+                        latest_observation_ticket(existing.observation_ticket, observation_ticket);
+                    (existing.ticket, existing.next_due <= observed_at)
+                }
             } else if let Some(existing) = obligations.get_mut(&key.task)
                 && existing.key.control_generation == key.control_generation
             {

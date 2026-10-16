@@ -510,6 +510,89 @@ fn in_flight_catalog_replacement_keeps_latest_observation_ticket_queued() {
     );
 }
 
+#[test]
+fn stale_prompt_generation_keeps_latest_observation_ticket_queued() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record current prompt-cache notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(3),
+                progress_key: None,
+            },
+            first_observation,
+        )
+        .expect("accept current prompt-cache notification");
+    let first_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim current prompt-cache notification");
+
+    let second_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record newer prompt-cache notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(3),
+                progress_key: None,
+            },
+            second_observation,
+        )
+        .expect("queue newer prompt-cache notification");
+    let stale_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record stale prompt-cache notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(1),
+                progress_key: None,
+            },
+            stale_observation,
+        )
+        .expect("queue stale prompt-cache notification");
+
+    let completed_observation = scheduler
+        .complete_wake_obligation(first_attempt.ticket)
+        .expect("complete current prompt-cache notification");
+    assert_eq!(completed_observation, first_observation);
+    scheduler.confirm_observation(completed_observation);
+    assert!(
+        scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
+
+    let second_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim queued prompt-cache notification");
+    assert_eq!(second_attempt.key.control_generation, Some(3));
+    let completed_observation = scheduler
+        .complete_wake_obligation(second_attempt.ticket)
+        .expect("complete queued prompt-cache notification");
+    assert_eq!(completed_observation, stale_observation);
+    scheduler.confirm_observation(completed_observation);
+    assert!(
+        !scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
+}
+
 #[tokio::test]
 async fn prompt_cache_obligation_respects_pressure_retry_deadline() {
     let store = startup_backfill_tests::prompt_cache_materialization_test_store().await;
