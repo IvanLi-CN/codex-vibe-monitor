@@ -2,6 +2,7 @@
 """Regression checks for performance evidence admission and certificate scope."""
 import importlib.util
 import copy
+import io
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,8 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.parse import urlsplit
 
 SOURCE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(SOURCE / "scripts/observability-acceptance"))
@@ -32,10 +34,87 @@ class ContainerMountTests(unittest.TestCase):
     def test_candidate_does_not_receive_shared_tempo_ingest_credential(self):
         source = (SOURCE / "scripts/observability-acceptance/run.py").read_text()
         self.assertIn("tempo-runtime-token", source)
-        self.assertIn("/internal/v1/traces", source)
         self.assertIn("FIXTURE_METRICS_TOKEN", source)
         self.assertIn("FIXTURE_READ_TOKEN", source)
         self.assertNotIn('self.private/"tempo-ingest-token")+":/run/secrets/tempo-ingest-token:ro"', source)
+
+    def test_generated_runtime_endpoint_uses_application_contract_without_shared_credentials(self):
+        with tempfile.TemporaryDirectory() as directory:
+            private = Path(directory)
+            run = Run.__new__(Run)
+            run.source, run.private, run.data = SOURCE, private, private / "data"
+            run.project, run.image, run.cpu_layout = "fixture-contract", "synthetic-image", None
+            run.compose_file = private / "compose.json"
+            (private / "tempo-query-token").write_text("runner-only-query-fixture")
+            (private / "tls.crt").write_text("synthetic-certificate")
+            with patch.object(acceptance, "create_entry_certificate"), patch.object(
+                acceptance, "execute", return_value=json.dumps({"services": {}, "networks": {}})
+            ):
+                run.configure()
+            app = run.definition["services"]["app"]
+            endpoint = urlsplit(app["environment"]["OBSERVABILITY_OTLP_TRACES_ENDPOINT"])
+            self.assertEqual((endpoint.scheme, endpoint.path, endpoint.query, endpoint.fragment),
+                             ("https", "/v1/traces", "", ""))
+            self.assertIsNone(endpoint.username)
+            self.assertTrue(all("tempo-ingest-token" not in mount and "tempo-query-token" not in mount
+                                for mount in app["volumes"]))
+            self.assertFalse(any(mount.startswith(str(private) + ":") for mount in app["volumes"]))
+            self.assertIn(str(private / "tempo-runtime-token") + ":/run/secrets/tempo-runtime-token:ro",
+                          app["volumes"])
+
+    def fixture_namespace(self):
+        namespace = {}
+        with patch.object(sys, "argv", ["fixture.py", "unsupported-fixture-command"]):
+            with self.assertRaisesRegex(SystemExit, "unknown fixture mode"):
+                self.execute_mounted("fixture.py", namespace=namespace)
+        return namespace
+
+    def trace_ingest_request(self, namespace, token, path="/v1/traces"):
+        handler = namespace["HttpsEntry"].__new__(namespace["HttpsEntry"])
+        handler.path = path
+        handler.headers = {"Content-Length": "2", "Content-Type": "application/json"}
+        if token is not None:
+            handler.headers["Authorization"] = "Bearer " + token
+        handler.rfile, handler.connection = io.BytesIO(b"{}"), Mock()
+        handler.deny, handler.tempo = Mock(), Mock()
+        return handler
+
+    def test_standard_ingest_route_accepts_runtime_fixture_token_without_reading_shared_secret(self):
+        namespace = self.fixture_namespace()
+        handler = self.trace_ingest_request(namespace, namespace["INTERNAL_INGEST_TOKEN"])
+        with patch.object(Path, "read_text", side_effect=AssertionError("shared credential read")):
+            handler.do_POST()
+        handler.deny.assert_not_called()
+        handler.tempo.assert_called_once_with("POST", 4318, "/v1/traces", b"{}", "application/json")
+
+    def test_standard_ingest_route_preserves_other_credential_and_query_boundaries(self):
+        namespace = self.fixture_namespace()
+        for token, accepted in [(None, False), ("invalid", False),
+                                ("runner-query-fixture", False), ("runner-ingest-fixture", True)]:
+            with self.subTest(token=token):
+                handler = self.trace_ingest_request(namespace, token)
+                with patch.object(Path, "read_text", return_value="runner-ingest-fixture"):
+                    handler.do_POST()
+                if accepted:
+                    handler.deny.assert_not_called()
+                    handler.tempo.assert_called_once()
+                else:
+                    handler.deny.assert_called_once_with(401)
+                    handler.tempo.assert_not_called()
+        handler = self.trace_ingest_request(namespace, namespace["INTERNAL_INGEST_TOKEN"])
+        handler.path = "/tempo/api/search"
+        with patch.object(Path, "read_text", return_value="runner-query-fixture"):
+            handler.do_GET()
+        handler.deny.assert_called_once_with(401)
+        handler.tempo.assert_not_called()
+
+    def test_fixture_only_accepts_standard_trace_ingest_path(self):
+        namespace = self.fixture_namespace()
+        handler = self.trace_ingest_request(namespace, namespace["INTERNAL_INGEST_TOKEN"],
+                                            path="/internal/v1/traces")
+        handler.do_POST()
+        handler.deny.assert_called_once_with(405)
+        handler.tempo.assert_not_called()
 
     def test_https_entry_certificate_is_a_server_leaf_and_covers_its_hostname(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -48,9 +127,11 @@ class ContainerMountTests(unittest.TestCase):
             result = acceptance.execute(["openssl", "verify", "-CAfile", str(private / "tls.crt"), "-purpose", "sslserver", "-verify_hostname", "entry", str(private / "tls.crt")])
             self.assertTrue(result.endswith(": OK"))
 
-    def execute_mounted(self, name):
+    def execute_mounted(self, name, *, namespace=None):
         script = SOURCE / "scripts/observability-acceptance" / name
-        namespace = {"__name__": "mounted_fixture", "__file__": "/work/" + name}
+        if namespace is None:
+            namespace = {}
+        namespace.update({"__name__": "mounted_fixture", "__file__": "/work/" + name})
         with patch.object(sys, "path", [str(SOURCE / "ops/observability"), *sys.path]):
             exec(compile(script.read_text(), str(script), "exec"), namespace)
         return namespace
