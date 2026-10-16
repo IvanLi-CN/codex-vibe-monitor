@@ -1,6 +1,21 @@
 use super::*;
 use crate::observability::contention::RetentionPhase;
 
+fn take_retention_batch<T>(
+    pending: &mut Vec<T>,
+    config: &AppConfig,
+    operation: &'static str,
+    estimated_bytes: impl Fn(&T) -> usize,
+) -> Vec<T> {
+    let candidate_count = pending
+        .len()
+        .min(retention_micro_batch_limit(config, operation));
+    let indices = (0..candidate_count).collect::<Vec<_>>();
+    let selected = take_retention_micro_batch(indices, |index| estimated_bytes(&pending[*index]));
+    let count = selected.len();
+    pending.drain(..count).collect()
+}
+
 pub(crate) async fn prune_old_invocation_details(
     pool: &Pool<Sqlite>,
     config: &AppConfig,
@@ -157,18 +172,6 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                     .context("read task-local invocation source identity")?
             };
-            let mut chunk_identities = Vec::new();
-            for chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
-                chunk_identities.push(
-                    invocation_archive_source_identity_sha256(
-                        &mut source_connection,
-                        InvocationArchiveIdentityDatabase::Main,
-                        chunk,
-                    )
-                    .await
-                    .context("read task-local invocation source chunk identity")?,
-                );
-            }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
             drop(source_verify_phase);
@@ -239,7 +242,8 @@ pub(crate) async fn prune_old_invocation_details(
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
             let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-            let _archive_lock = retention_archive_file_lock(Path::new(&archive_outcome.file_path))?;
+            let archive_lock =
+                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
             if retention_run_budget_expired() {
                 break;
             }
@@ -251,10 +255,16 @@ pub(crate) async fn prune_old_invocation_details(
                 bail!("retention task-local archive artifact digest verification failed");
             }
             drop(file_verify_phase);
+            drop(archive_lock);
             let mut committed_rows = 0;
-            for (group, chunk_identity) in
-                group.chunks(RETENTION_WRITE_MAX_ROWS).zip(chunk_identities)
-            {
+            let mut pending_group = group;
+            while !pending_group.is_empty() {
+                let group = take_retention_batch(
+                    &mut pending_group,
+                    config,
+                    "invocation_detail_prune",
+                    |candidate| candidate.estimated_write_bytes.max(1) as usize,
+                );
                 let ids = group
                     .iter()
                     .map(|candidate| candidate.id)
@@ -268,9 +278,29 @@ pub(crate) async fn prune_old_invocation_details(
                         ]
                     })
                     .collect::<Vec<_>>();
+                let Some(mut identity_connection) =
+                    acquire_retention_pool_connection(pool, "invocation_detail_identity").await?
+                else {
+                    return Ok((rows_pruned, archive_batches, raw_files_removed));
+                };
+                let chunk_identity = invocation_archive_source_identity_sha256(
+                    &mut identity_connection,
+                    InvocationArchiveIdentityDatabase::Main,
+                    &ids,
+                )
+                .await
+                .context("read task-local invocation source chunk identity")?;
+                identity_connection.return_to_pool().await;
+                drop(identity_connection);
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission)) =
-                    acquire_retention_write_connection(pool, "invocation_detail_prune").await?
+                let Some((mut source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence(
+                        pool,
+                        "invocation_detail_prune",
+                        Path::new(&archive_outcome.file_path),
+                        &archive_outcome.sha256,
+                    )
+                    .await?
                 else {
                     drop(admission_wait_phase);
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
@@ -351,8 +381,10 @@ pub(crate) async fn prune_old_invocation_details(
                 tx.commit().await?;
                 drop(commit_phase);
                 drop(transaction_phase);
+                source_connection.return_to_pool().await;
                 drop(source_connection);
-                retention_record_commit_with_reference_check!(
+                drop(archive_lock);
+                let breached = retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
                     admission.admission_mode(),
                     group.len(),
@@ -372,12 +404,15 @@ pub(crate) async fn prune_old_invocation_details(
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), admission.lock_wait());
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
+                drop(admission);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
-                drop(admission);
                 drop(cleanup_phase);
+                if breached {
+                    tokio::task::yield_now().await;
+                }
             }
             if committed_rows > 0 {
                 archive_batches += 1;
@@ -607,18 +642,6 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await
                     .context("read task-local source identity")?
             };
-            let mut chunk_identities = Vec::new();
-            for ids_chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
-                chunk_identities.push(
-                    invocation_archive_source_identity_sha256(
-                        &mut source_connection,
-                        InvocationArchiveIdentityDatabase::Main,
-                        ids_chunk,
-                    )
-                    .await
-                    .context("read task-local invocation source chunk identity")?,
-                );
-            }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
             drop(source_verify_phase);
@@ -723,11 +746,20 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 ));
             };
             let mut committed_rows = 0;
-            for (chunk_index, (group, chunk_identity)) in group
-                .chunks(RETENTION_WRITE_MAX_ROWS)
-                .zip(chunk_identities)
-                .enumerate()
-            {
+            let mut chunk_index = 0usize;
+            let mut pending_group = group;
+            while !pending_group.is_empty() {
+                let group = take_retention_batch(
+                    &mut pending_group,
+                    config,
+                    "invocation_archive",
+                    |candidate| {
+                        candidate
+                            .payload
+                            .as_deref()
+                            .map_or(256, |payload| payload.len())
+                    },
+                );
                 let ids = group
                     .iter()
                     .map(|candidate| candidate.id)
@@ -745,9 +777,34 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .iter()
                     .map(invocation_archive_candidate_to_hourly_source_record)
                     .collect::<Vec<_>>();
+                let Some(mut identity_connection) =
+                    acquire_retention_pool_connection(pool, "invocation_archive_identity").await?
+                else {
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
+                };
+                let chunk_identity = invocation_archive_source_identity_sha256(
+                    &mut identity_connection,
+                    InvocationArchiveIdentityDatabase::Main,
+                    &ids,
+                )
+                .await
+                .context("read task-local invocation source chunk identity")?;
+                identity_connection.return_to_pool().await;
+                drop(identity_connection);
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission)) =
-                    acquire_retention_batch_write_connection(pool, "invocation_archive").await?
+                let Some((mut source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence(
+                        pool,
+                        "invocation_archive",
+                        Path::new(&archive_outcome.file_path),
+                        &archive_outcome.sha256,
+                    )
+                    .await?
                 else {
                     drop(admission_wait_phase);
                     return Ok((
@@ -758,14 +815,6 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     ));
                 };
                 drop(admission_wait_phase);
-                let archive_lock =
-                    retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
-                let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-                if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
-                {
-                    bail!("task-local invocation artifact changed while awaiting admission");
-                }
-                drop(file_verify_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
@@ -822,7 +871,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         .await?;
                     }
                 }
-                upsert_invocation_rollups(tx.as_mut(), group).await?;
+                upsert_invocation_rollups(tx.as_mut(), &group).await?;
                 // The file fence is released between chunks. Recheck pages and manifest in
                 // the source transaction after any admission wait or concurrent rewrite.
                 store_verified_summary_archive_snapshot_tx(tx.as_mut(), &proof).await?;
@@ -908,9 +957,11 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 tx.commit().await?;
                 drop(commit_phase);
                 drop(transaction_phase);
+                source_connection.return_to_pool().await;
                 drop(source_connection);
+                drop(archive_lock);
                 workload::record_processed_count(group.len());
-                retention_record_commit_with_reference_check!(
+                let breached = retention_record_commit_with_reference_check!(
                     "invocation_archive",
                     admission.admission_mode(),
                     group.len(),
@@ -935,16 +986,19 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), admission.lock_wait());
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
+                drop(admission);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
                 retention_recovery_record_progress();
                 raw_files_removed += delete_proxy_raw_paths(&raw_paths, raw_path_fallback_root)?;
-                drop(archive_lock);
-                drop(admission);
                 drop(cleanup_phase);
+                if breached {
+                    tokio::task::yield_now().await;
+                }
                 #[cfg(test)]
                 batch_admission::pause_after_first_chunk(committed_rows).await;
+                chunk_index += 1;
             }
             if committed_rows > 0 {
                 archive_batches += 1;
@@ -1111,32 +1165,6 @@ pub(crate) async fn archive_timestamped_dataset(
             } else {
                 source_identity_query.await?
             };
-            let mut chunk_identities = Vec::new();
-            let mut source_identity_timed_out = false;
-            for chunk in ids.chunks(RETENTION_WRITE_MAX_ROWS) {
-                let chunk_identity_query = archive_table_source_identity_sha256(
-                    &mut source_connection,
-                    spec,
-                    "main",
-                    chunk,
-                );
-                let chunk_identity = if let Some(remaining) = retention_run_remaining_budget() {
-                    match tokio::time::timeout(remaining, chunk_identity_query).await {
-                        Ok(result) => result?,
-                        Err(_) => {
-                            source_identity_timed_out = true;
-                            break;
-                        }
-                    }
-                } else {
-                    chunk_identity_query.await?
-                };
-                chunk_identities.push(chunk_identity);
-            }
-            if source_identity_timed_out {
-                batch_observation.source_identity_finished(source_identity_started.elapsed());
-                break;
-            }
             batch_observation.source_identity_finished(source_identity_started.elapsed());
             drop(source_connection);
             drop(source_verify_phase);
@@ -1208,9 +1236,14 @@ pub(crate) async fn archive_timestamped_dataset(
             drop(archive_lock);
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
-            for (group, chunk_identity) in
-                group.chunks(RETENTION_WRITE_MAX_ROWS).zip(chunk_identities)
-            {
+            let mut pending_group = group;
+            while !pending_group.is_empty() {
+                let group = take_retention_batch(
+                    &mut pending_group,
+                    config,
+                    "timestamped_archive",
+                    |candidate| row_sizes.get(&candidate.id).copied().unwrap_or(512),
+                );
                 let ids = group
                     .iter()
                     .map(|candidate| candidate.id)
@@ -1235,22 +1268,34 @@ pub(crate) async fn archive_timestamped_dataset(
                 } else {
                     Vec::new()
                 };
+                let Some(mut identity_connection) =
+                    acquire_retention_pool_connection(pool, "timestamped_archive_identity").await?
+                else {
+                    return Ok((rows_archived, archive_batches, raw_files_removed));
+                };
+                let chunk_identity = archive_table_source_identity_sha256(
+                    &mut identity_connection,
+                    spec,
+                    "main",
+                    &ids,
+                )
+                .await?;
+                identity_connection.return_to_pool().await;
+                drop(identity_connection);
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission)) =
-                    acquire_retention_batch_write_connection(pool, "timestamped_archive").await?
+                let Some((mut source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence(
+                        pool,
+                        "timestamped_archive",
+                        Path::new(&archive_outcome.file_path),
+                        &archive_outcome.sha256,
+                    )
+                    .await?
                 else {
                     drop(admission_wait_phase);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 drop(admission_wait_phase);
-                let archive_lock =
-                    retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
-                let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-                if sha256_hex_file(Path::new(&archive_outcome.file_path))? != archive_outcome.sha256
-                {
-                    bail!("task-local timestamped artifact changed while awaiting admission");
-                }
-                drop(file_verify_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
@@ -1269,6 +1314,9 @@ pub(crate) async fn archive_timestamped_dataset(
                 {
                     tx.rollback().await?;
                     drop(transaction_phase);
+                    source_connection.return_to_pool().await;
+                    drop(source_connection);
+                    drop(archive_lock);
                     drop(admission);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 }
@@ -1419,8 +1467,10 @@ pub(crate) async fn archive_timestamped_dataset(
                 tx.commit().await?;
                 drop(commit_phase);
                 drop(transaction_phase);
+                source_connection.return_to_pool().await;
                 drop(source_connection);
-                retention_record_commit_with_reference_check!(
+                drop(archive_lock);
+                let breached = retention_record_commit_with_reference_check!(
                     "timestamped_archive",
                     admission.admission_mode(),
                     group.len(),
@@ -1435,6 +1485,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 );
                 batch_observation.committed(group.len(), admission.lock_wait());
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
+                drop(admission);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -1443,15 +1494,14 @@ pub(crate) async fn archive_timestamped_dataset(
                     committed_rows += group.len();
                     raw_files_removed +=
                         delete_proxy_raw_paths(&raw_paths, config.database_path.parent())?;
-                    drop(archive_lock);
-                    drop(admission);
                 } else {
-                    drop(archive_lock);
-                    drop(admission);
                     rows_archived += group.len();
                     committed_rows += group.len();
                 }
                 drop(cleanup_phase);
+                if breached {
+                    tokio::task::yield_now().await;
+                }
                 #[cfg(test)]
                 batch_admission::pause_after_first_chunk(committed_rows).await;
             }

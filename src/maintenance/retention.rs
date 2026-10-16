@@ -1167,7 +1167,7 @@ macro_rules! retention_record_commit {
 
 pub(crate) use retention_record_commit;
 
-pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
+pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> bool {
     let RetentionWriteCommit {
         operation,
         admission_mode,
@@ -1229,6 +1229,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             "retention write micro-batch committed"
         );
     }
+    breached
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1443,6 +1444,27 @@ pub(crate) async fn acquire_retention_write_connection(
     operation: &'static str,
 ) -> Result<Option<(sqlx::pool::PoolConnection<Sqlite>, RetentionWriteAdmission)>> {
     batch_admission::acquire_write_connection(pool, operation, false).await
+}
+
+pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: &str,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+> {
+    batch_admission::acquire_write_connection_with_archive_fence(
+        pool,
+        operation,
+        archive_path,
+        expected_sha256,
+    )
+    .await
 }
 
 pub(super) async fn acquire_retention_write_admission(

@@ -32,6 +32,177 @@ pub(crate) async fn acquire_retention_batch_write_connection(
     acquire_write_connection(pool, operation, true).await
 }
 
+pub(crate) async fn acquire_write_connection_with_archive_fence(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: &str,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+> {
+    #[cfg(test)]
+    let test_gate = RETENTION_TEST_DB_PRESSURE_GATE.try_with(Arc::clone).ok();
+    #[cfg(not(test))]
+    let test_gate: Option<Arc<crate::db_pressure::DbPressureGate>> = None;
+    let gate = test_gate
+        .as_deref()
+        .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+
+    loop {
+        // Confirm pool readiness before taking the archive fence. This readiness notification is
+        // also the synchronization point used by the admission tests to inject competition.
+        let Some(mut connection) = acquire_retention_pool_connection(pool, operation).await? else {
+            return Ok(None);
+        };
+        let release = connection.return_to_pool();
+        let release = async {
+            if let Some(remaining) = retention_run_remaining_budget() {
+                tokio::time::timeout(remaining, release).await.is_ok()
+            } else {
+                release.await;
+                true
+            }
+        };
+        let returned = if let Some(shutdown) = retention_run_shutdown_token() {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    retention_record_defer(operation, "shutdown");
+                    return Ok(None);
+                }
+                returned = release => returned,
+            }
+        } else {
+            release.await
+        };
+        drop(connection);
+        if !returned {
+            retention_record_defer(operation, "retention_work_budget");
+            return Ok(None);
+        }
+        #[cfg(test)]
+        let _ = RETENTION_TEST_WRITE_CONNECTION_POOL_READY.try_with(|ready| ready.notify_one());
+
+        // A known pressure denial is handled without taking the file fence. The background-busy
+        // path waits through the normal admission loop, which keeps the fence out of the wait.
+        if let Some(reason) = gate.background_deny_reason()
+            && !matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            )
+        {
+            retention_record_defer(operation, reason);
+            return Ok(None);
+        }
+        if let Some(reason) = gate.background_deny_reason()
+            && matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            )
+        {
+            let Some(admission) = acquire_write_admission(operation, true).await else {
+                return Ok(None);
+            };
+            drop(admission);
+            continue;
+        }
+        if retention_run_budget_expired()
+            || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        {
+            retention_record_defer(
+                operation,
+                if retention_run_budget_expired() {
+                    "retention_work_budget"
+                } else {
+                    "shutdown"
+                },
+            );
+            return Ok(None);
+        }
+
+        // The fence is held only while the digest and non-blocking admission probe run. If either
+        // resource is unavailable, release the fence before waiting for the other resource.
+        let archive_lock = retention_archive_file_try_lock(archive_path)?;
+        if sha256_hex_file(archive_path)? != expected_sha256 {
+            bail!("archive artifact changed while awaiting retention admission");
+        }
+        if let Some(mut admission) = try_acquire_write_admission(operation, gate).await {
+            if retention_run_budget_expired()
+                || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+            {
+                admission.write_permit.revoke_fairness_admission();
+                drop(admission);
+                drop(archive_lock);
+                retention_record_defer(
+                    operation,
+                    if retention_run_budget_expired() {
+                        "retention_work_budget"
+                    } else {
+                        "shutdown"
+                    },
+                );
+                return Ok(None);
+            }
+            if let Some(connection) = pool.try_acquire() {
+                return Ok(Some((connection, admission, archive_lock)));
+            }
+            drop(admission);
+            drop(archive_lock);
+            continue;
+        }
+        drop(archive_lock);
+
+        let Some(admission) = acquire_write_admission(operation, true).await else {
+            return Ok(None);
+        };
+        drop(admission);
+    }
+}
+
+async fn try_acquire_write_admission(
+    operation: &'static str,
+    gate: &crate::db_pressure::DbPressureGate,
+) -> Option<RetentionWriteAdmission> {
+    if retention_run_budget_expired() {
+        return None;
+    }
+    let coordinator = retention_write_coordinator_handle();
+    let mut write_permit = coordinator.try_acquire(
+        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+    )?;
+    if retention_run_budget_expired() {
+        drop(write_permit);
+        return None;
+    }
+    match gate.try_begin_background(operation) {
+        Ok(pressure_permit) => {
+            let coordinator_snapshot = coordinator.snapshot().await;
+            crate::task_runtime_observation::mark_managed_maintenance_work_started();
+            Some(RetentionWriteAdmission {
+                write_permit,
+                _pressure_permit: pressure_permit,
+                p1_waiter_count: coordinator_snapshot.p1_waiter_count,
+                _write_hold_observation: observability::observe_write_admission(operation),
+            })
+        }
+        Err(reason) => {
+            write_permit.revoke_fairness_admission();
+            if matches!(
+                reason,
+                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+            ) {
+                write_permit.suppress_background_eligibility_wakeup();
+            }
+            drop(write_permit);
+            None
+        }
+    }
+}
+
 pub(super) async fn acquire_write_connection(
     pool: &Pool<Sqlite>,
     operation: &'static str,

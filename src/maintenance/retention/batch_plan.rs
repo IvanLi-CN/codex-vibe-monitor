@@ -386,8 +386,15 @@ pub(super) async fn prepare_summary_proof(
     outcome: &ArchiveBatchOutcome,
     pages: Vec<TaskArchiveSnapshotPage>,
 ) -> Result<Option<VerifiedSummaryArchiveSnapshot>> {
-    let Some((mut connection, admission)) =
-        acquire_retention_batch_write_connection(pool, "archive_snapshot_manifest").await?
+    let archive_path = Path::new(&outcome.file_path);
+    let Some((mut connection, admission, archive_lock)) =
+        acquire_retention_batch_write_connection_with_archive_fence(
+            pool,
+            "archive_snapshot_manifest",
+            archive_path,
+            &outcome.sha256,
+        )
+        .await?
     else {
         return Ok(None);
     };
@@ -401,11 +408,19 @@ pub(super) async fn prepare_summary_proof(
     )
     .await?;
     transaction.commit().await?;
+    connection.return_to_pool().await;
     drop(connection);
+    drop(archive_lock);
     drop(admission);
     for (index, page) in pages.into_iter().enumerate() {
-        let Some((mut connection, admission)) =
-            acquire_retention_batch_write_connection(pool, "archive_snapshot_page").await?
+        let Some((mut connection, admission, archive_lock)) =
+            acquire_retention_batch_write_connection_with_archive_fence(
+                pool,
+                "archive_snapshot_page",
+                archive_path,
+                &outcome.sha256,
+            )
+            .await?
         else {
             return Ok(None);
         };
@@ -433,14 +448,20 @@ pub(super) async fn prepare_summary_proof(
         )
         .await?;
         transaction.commit().await?;
+        connection.return_to_pool().await;
         drop(connection);
+        drop(archive_lock);
         drop(admission);
     }
     // Pages are not deletion authority until the complete semantic proof is checked. Reads
     // and decompression of the month happen with no main-database writer permit held.
-    Ok(Some(
-        prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?,
-    ))
+    let archive_lock = retention_archive_file_try_lock(archive_path)?;
+    if sha256_hex_file(archive_path)? != outcome.sha256 {
+        bail!("summary archive artifact changed before semantic proof");
+    }
+    let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;
+    drop(archive_lock);
+    Ok(Some(proof))
 }
 
 #[cfg(test)]
