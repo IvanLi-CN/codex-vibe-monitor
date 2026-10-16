@@ -252,11 +252,30 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
+function makePreview(syncState = makeSyncMemory(), includeSunburst = false): ModelsDevSyncPreview {
+  const flareCandidate = {
+    model: "gpt-image-2.5-flare",
+    name: "GPT Image 2.5 Flare",
+    providerId: "provider-a",
+    providerName: "Provider A",
+    docUrl: "https://provider-a.example/docs",
+    status: null,
+    inputPer1m: 5,
+    outputPer1m: null,
+    cacheReadPer1m: 1.25,
+    cacheWritePer1m: null,
+    reasoningPer1m: null,
+    unsupportedDimensions: [
+      "cache_read_input_image_token_cost",
+      "input_cost_per_image_token",
+      "output_cost_per_image_token",
+    ],
+    importable: false,
+  };
   return {
     fetchedAt: "2026-09-30T00:00:00Z",
     providerCount: 2,
-    candidateCount: 5,
+    candidateCount: 5 + (includeSunburst ? 1 : 0),
     providers: [
       {
         id: "provider-a",
@@ -271,25 +290,10 @@ function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
     ],
     syncState,
     candidates: [
-      {
-        model: "gpt-image-2.5-flare",
-        name: "GPT Image 2.5 Flare",
-        providerId: "provider-a",
-        providerName: "Provider A",
-        docUrl: "https://provider-a.example/docs",
-        status: null,
-        inputPer1m: 5,
-        outputPer1m: null,
-        cacheReadPer1m: 1.25,
-        cacheWritePer1m: null,
-        reasoningPer1m: null,
-        unsupportedDimensions: [
-          "cache_read_input_image_token_cost",
-          "input_cost_per_image_token",
-          "output_cost_per_image_token",
-        ],
-        importable: false,
-      },
+      flareCandidate,
+      ...(includeSunburst
+        ? [{ ...flareCandidate, model: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst" }]
+        : []),
       {
         model: "new-model",
         name: "New Model",
@@ -351,7 +355,10 @@ function makePreview(syncState = makeSyncMemory()): ModelsDevSyncPreview {
         importable: true,
       },
     ],
-    quotes: [makeImageQuote(30)],
+    quotes: [
+      makeImageQuote(30),
+      ...(includeSunburst ? [makeImageQuote(31, "gpt-image-2.5-sunburst")] : []),
+    ],
   };
 }
 
@@ -819,6 +826,7 @@ describe("SystemModelsPage", () => {
   });
 
   it("shows and applies a quote-only multimodal model without a legacy projection", async () => {
+    apiMocks.previewModelsDevPriceSync.mockResolvedValueOnce(makePreview(storedSyncMemory, true));
     renderPage();
     await flushEffects();
     expect(host?.textContent).toContain("gpt-image-2.5-flare");
@@ -832,15 +840,28 @@ describe("SystemModelsPage", () => {
     const checkbox = document.body.querySelector<HTMLInputElement>(
       'input[aria-label="同步 gpt-image-2.5-flare 的价格"]',
     );
+    const sunburstCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 gpt-image-2.5-sunburst 的价格"]',
+    );
     expect(checkbox?.disabled).toBe(false);
+    expect(sunburstCheckbox?.disabled).toBe(false);
     act(() => checkbox?.click());
     await flushEffects();
+    const currentSunburstCheckbox = document.body.querySelector<HTMLInputElement>(
+      'input[aria-label="同步 gpt-image-2.5-sunburst 的价格"]',
+    );
+    act(() => currentSunburstCheckbox?.click());
+    await flushEffects();
+    expect(currentSunburstCheckbox?.checked).toBe(true);
     clickButton("同步所选");
     await flushEffects();
 
     expect(apiMocks.applyModelsDevPriceSync).toHaveBeenCalledWith(
       [],
-      [expect.objectContaining({ model: "gpt-image-2.5-flare" })],
+      expect.arrayContaining([
+        expect.objectContaining({ model: "gpt-image-2.5-flare" }),
+        expect.objectContaining({ model: "gpt-image-2.5-sunburst" }),
+      ]),
     );
   });
 
