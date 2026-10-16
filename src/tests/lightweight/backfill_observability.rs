@@ -452,3 +452,207 @@ fn stale_wake_confirmation_does_not_clear_new_notification() {
             .contains_key(&task)
     );
 }
+
+#[tokio::test]
+async fn wake_obligation_confirmation_preserves_failed_deadline() {
+    let pool = startup_backfill_tests::control_test_pool().await;
+    let task = StartupBackfillTask::ProxyUsage;
+    let task_key = "startup_backfill.proxy_usage";
+    let retry_at = Utc::now() + ChronoDuration::hours(1);
+    let retry_after = format_utc_iso(retry_at);
+    sqlx::query("INSERT INTO managed_tasks (task_key,enabled) VALUES (?,1)")
+        .bind(task_key)
+        .execute(&pool)
+        .await
+        .expect("insert enabled task control");
+    sqlx::query(
+        "INSERT INTO startup_backfill_progress (task_name,next_run_after,last_status,enabled) VALUES (?,?,?,1)",
+    )
+    .bind(task.name())
+    .bind(&retry_after)
+    .bind(STARTUP_BACKFILL_STATUS_FAILED)
+    .execute(&pool)
+    .await
+    .expect("insert failed progress");
+
+    let scheduler = StartupBackfillScheduler::default();
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept wake obligation");
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim wake obligation");
+
+    let confirmation = confirm_startup_backfill_wake_obligation(
+        &pool,
+        &tokio_util::sync::CancellationToken::new(),
+        &attempt,
+    )
+    .await
+    .expect("confirm wake obligation");
+    assert!(matches!(
+        confirmation,
+        StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: false,
+            next_due: Some(_),
+        }
+    ));
+    let stored = sqlx::query_as::<_, (i64, String, Option<String>)>(
+        "SELECT wake_generation,last_status,next_run_after FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task.name())
+    .fetch_one(&pool)
+    .await
+    .expect("read confirmed progress");
+    assert_eq!(stored.0, 1);
+    assert_eq!(stored.1, STARTUP_BACKFILL_STATUS_FAILED);
+    assert_eq!(stored.2.as_deref(), Some(retry_after.as_str()));
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn wake_obligation_confirmation_supports_legacy_pool_without_controls() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect legacy wake pool");
+    sqlx::query(
+        "CREATE TABLE startup_backfill_progress (
+            task_name TEXT PRIMARY KEY,
+            cursor_id INTEGER NOT NULL DEFAULT 0,
+            next_run_after TEXT,
+            zero_update_streak INTEGER NOT NULL DEFAULT 0,
+            last_started_at TEXT,
+            last_finished_at TEXT,
+            last_scanned INTEGER NOT NULL DEFAULT 0,
+            last_updated INTEGER NOT NULL DEFAULT 0,
+            last_status TEXT NOT NULL DEFAULT 'idle',
+            suspension_reason TEXT,
+            next_probe_at TEXT,
+            wake_generation INTEGER NOT NULL DEFAULT 0,
+            enabled INTEGER NOT NULL DEFAULT 1
+        )",
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy progress table");
+
+    let task = StartupBackfillTask::ReasoningEffort;
+    let scheduler = StartupBackfillScheduler::default();
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record legacy wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept legacy wake obligation");
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim legacy wake obligation");
+
+    assert!(matches!(
+        confirm_startup_backfill_wake_obligation(
+            &pool,
+            &tokio_util::sync::CancellationToken::new(),
+            &attempt,
+        )
+        .await
+        .expect("confirm legacy wake obligation"),
+        StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: true,
+            next_due: None,
+        }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT wake_generation FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(task.name())
+        .fetch_one(&pool)
+        .await
+        .expect("read legacy wake generation"),
+        1
+    );
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn prompt_cache_wake_obligation_uses_the_same_conditional_confirmation() {
+    let pool = startup_backfill_tests::control_test_pool().await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    sqlx::query(
+        "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.prompt_cache_conversations_materialization',1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert prompt-cache task control");
+    sqlx::query("INSERT INTO startup_backfill_progress (task_name,enabled) VALUES (?,1)")
+        .bind(task.name())
+        .execute(&pool)
+        .await
+        .expect("insert prompt-cache progress");
+
+    let scheduler = StartupBackfillScheduler::default();
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record prompt-cache wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept prompt-cache wake obligation");
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim prompt-cache wake obligation");
+
+    assert!(matches!(
+        confirm_startup_backfill_wake_obligation(
+            &pool,
+            &tokio_util::sync::CancellationToken::new(),
+            &attempt,
+        )
+        .await
+        .expect("confirm prompt-cache wake obligation"),
+        StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: true,
+            next_due: None,
+        }
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT wake_generation FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(task.name())
+        .fetch_one(&pool)
+        .await
+        .expect("read prompt-cache wake generation"),
+        1
+    );
+    pool.close().await;
+}

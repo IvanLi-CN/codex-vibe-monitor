@@ -9,8 +9,8 @@ use coverage_repair::run_startup_backfill_coverage_repair_if_due;
 pub(crate) use coverage_repair::run_startup_backfill_coverage_repair_if_due_with_repair;
 pub(crate) use observability::StartupBackfillHealthSnapshot;
 use observability::{
-    StartupBackfillScheduler, WakeObservationTicket, confirm_scheduler_wake_observation,
-    observe_wake_attempt, record_scheduler_wake_confirmation,
+    StartupBackfillScheduler, WakeObligationAttempt, WakeObligationKey, WakeObservationTicket,
+    confirm_scheduler_wake_observation, observe_wake_attempt, record_scheduler_wake_confirmation,
 };
 mod prompt_cache_control;
 mod task_identity;
@@ -33,9 +33,10 @@ use prompt_cache_control::{
     requeue_legacy_startup_backfill_tasks, wake_prompt_cache_materialization_with_scheduler,
 };
 use prompt_cache_control::{
-    coordinator_for_prompt_cache_run, legacy_startup_backfill_tasks,
-    persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
-    prompt_cache_stale_result_outcome, run_background_startup_backfill_pass_with_root_state,
+    confirm_prompt_cache_materialization_wake, coordinator_for_prompt_cache_run,
+    legacy_startup_backfill_tasks, persist_prompt_cache_materialization_defer,
+    prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
+    run_background_startup_backfill_pass_with_root_state,
     save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
@@ -1040,6 +1041,99 @@ pub(crate) async fn wake_startup_backfill_tasks(
     wake_startup_backfill_tasks_with_pricing_catalog(pool, tasks, None, wake_reason).await
 }
 
+const MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES: usize = 512;
+const MAX_WAKE_OBLIGATION_CATALOG_MODELS: usize = 16_384;
+
+pub(crate) fn notify_startup_backfill_tasks(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    pricing_catalog: Option<&PricingCatalog>,
+    wake_reason: &'static str,
+) -> Result<()> {
+    // The producer is intentionally memory-only. The pool remains in the signature so terminal
+    // callers can use one fixed notification boundary without giving this path database access.
+    let _ = pool;
+    if tasks.contains(&StartupBackfillTask::ProxyCost) && pricing_catalog.is_none() {
+        return Err(anyhow!(
+            "startup backfill proxy cost notification requires the runtime pricing catalog"
+        ));
+    }
+    let proxy_cost_progress_key = if tasks.contains(&StartupBackfillTask::ProxyCost) {
+        let Some(catalog) = pricing_catalog else {
+            return Err(anyhow!(
+                "startup backfill proxy cost notification requires the runtime pricing catalog"
+            ));
+        };
+        let max_version_bytes = MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES
+            .saturating_sub(StartupBackfillTask::ProxyCost.name().len() + 2 + 16);
+        if catalog.version.len() > max_version_bytes {
+            return Err(anyhow!(
+                "startup backfill proxy cost catalog version exceeds the bounded notification key"
+            ));
+        }
+        if catalog.models.len() > MAX_WAKE_OBLIGATION_CATALOG_MODELS {
+            return Err(anyhow!(
+                "startup backfill proxy cost catalog exceeds the bounded notification model count"
+            ));
+        }
+        let progress_key =
+            startup_backfill_task_progress_key_for_catalog(StartupBackfillTask::ProxyCost, catalog);
+        if progress_key.len() > MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES {
+            return Err(anyhow!(
+                "startup backfill proxy cost progress identity exceeds the bounded notification key"
+            ));
+        }
+        Some(progress_key)
+    } else {
+        None
+    };
+
+    let decision = startup_backfill_wake_decision(wake_reason);
+    for task in tasks.iter().copied() {
+        let control_snapshot = (task
+            == StartupBackfillTask::PromptCacheConversationsMaterialization)
+            .then(|| {
+                crate::maintenance_store::global()
+                    .and_then(|store| store.prompt_cache_materialization_control.snapshot())
+            })
+            .flatten();
+        if matches!(decision, WakeDecision::Disabled)
+            || control_snapshot.is_some_and(|snapshot| !snapshot.enabled)
+        {
+            let decision = if control_snapshot.is_some_and(|snapshot| !snapshot.enabled) {
+                WakeDecision::Disabled
+            } else {
+                decision
+            };
+            let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision);
+            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task);
+            continue;
+        }
+        let Some(observation_ticket) =
+            STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision)
+        else {
+            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task);
+            continue;
+        };
+        let progress_key = (task == StartupBackfillTask::ProxyCost)
+            .then(|| proxy_cost_progress_key.clone())
+            .flatten();
+        let control_generation = (task
+            == StartupBackfillTask::PromptCacheConversationsMaterialization)
+            .then(|| control_snapshot.map(|snapshot| snapshot.generation))
+            .flatten();
+        STARTUP_BACKFILL_SCHEDULER.accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation,
+                progress_key,
+            },
+            observation_ticket,
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
     pool: &Pool<Sqlite>,
     tasks: &[StartupBackfillTask],
@@ -1197,6 +1291,376 @@ fn startup_backfill_wake_decision(wake_reason: &str) -> WakeDecision {
         reason if reason.contains("stale") || reason.contains("retry") => WakeDecision::Stale,
         _ => WakeDecision::New,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupBackfillWakeConfirmation {
+    Confirmed {
+        wake_task: bool,
+        next_due: Option<DateTime<Utc>>,
+    },
+    Retry,
+    Obsolete,
+    Cancelled,
+}
+
+async fn confirm_startup_backfill_progress_write(
+    pool: &Pool<Sqlite>,
+    task: StartupBackfillTask,
+    task_name: &str,
+    managed_task_key: &str,
+    managed_tasks_present: bool,
+    expected_generation: Option<i64>,
+    now: &str,
+) -> Result<u64> {
+    let managed_guard = if managed_tasks_present {
+        "AND EXISTS(SELECT 1 FROM managed_tasks WHERE task_key=? AND enabled!=0)"
+    } else {
+        ""
+    };
+    let result = observe_wake_attempt(task, async {
+        let result = crate::maintenance_store::observe_store_write(
+            crate::observability::contention::StoreOperation::Wake,
+            async {
+                let result = if let Some(expected_generation) = expected_generation {
+                    let query_sql = format!(
+                        r#"UPDATE startup_backfill_progress
+                           SET next_run_after=CASE
+                                   WHEN last_status='failed'
+                                        AND next_run_after IS NOT NULL
+                                        AND next_run_after > ?
+                                       THEN next_run_after
+                                   ELSE NULL
+                               END,
+                               last_status=CASE
+                                   WHEN last_status='failed'
+                                        AND next_run_after IS NOT NULL
+                                        AND next_run_after > ?
+                                       THEN last_status
+                                   ELSE ?
+                               END,
+                               suspension_reason=CASE
+                                   WHEN last_status='failed'
+                                        AND next_run_after IS NOT NULL
+                                        AND next_run_after > ?
+                                       THEN suspension_reason
+                                   ELSE NULL
+                               END,
+                               next_probe_at=CASE
+                                   WHEN last_status='failed'
+                                        AND next_run_after IS NOT NULL
+                                        AND next_run_after > ?
+                                       THEN next_probe_at
+                                   ELSE NULL
+                               END,
+                               wake_generation=wake_generation + 1
+                           WHERE task_name=?
+                             AND enabled!=0
+                             AND wake_generation=?
+                             {managed_guard}"#,
+                        managed_guard = managed_guard,
+                    );
+                    let mut query = sqlx::query(&query_sql)
+                        .bind(now)
+                        .bind(now)
+                        .bind(STARTUP_BACKFILL_STATUS_IDLE)
+                        .bind(now)
+                        .bind(now)
+                        .bind(task_name)
+                        .bind(expected_generation);
+                    if managed_tasks_present {
+                        query = query.bind(managed_task_key);
+                    }
+                    query.execute(pool).await?
+                } else {
+                    let insert_guard = if managed_tasks_present {
+                        "WHERE EXISTS(SELECT 1 FROM managed_tasks WHERE task_key=? AND enabled!=0)"
+                    } else {
+                        "WHERE 1=1"
+                    };
+                    let query_sql = format!(
+                        r#"INSERT INTO startup_backfill_progress (
+                                task_name,cursor_id,next_run_after,zero_update_streak,last_started_at,
+                                last_finished_at,last_scanned,last_updated,last_status,suspension_reason,
+                                next_probe_at,wake_generation,enabled
+                            )
+                            SELECT ?,0,NULL,0,NULL,NULL,0,0,?,NULL,NULL,1,1
+                            {insert_guard}
+                            ON CONFLICT(task_name) DO UPDATE SET
+                                next_run_after=CASE
+                                    WHEN startup_backfill_progress.last_status='failed'
+                                         AND startup_backfill_progress.next_run_after IS NOT NULL
+                                         AND startup_backfill_progress.next_run_after > ?
+                                        THEN startup_backfill_progress.next_run_after
+                                    ELSE NULL
+                                END,
+                                last_status=CASE
+                                    WHEN startup_backfill_progress.last_status='failed'
+                                         AND startup_backfill_progress.next_run_after IS NOT NULL
+                                         AND startup_backfill_progress.next_run_after > ?
+                                        THEN startup_backfill_progress.last_status
+                                    ELSE ?
+                                END,
+                                suspension_reason=CASE
+                                    WHEN startup_backfill_progress.last_status='failed'
+                                         AND startup_backfill_progress.next_run_after IS NOT NULL
+                                         AND startup_backfill_progress.next_run_after > ?
+                                        THEN startup_backfill_progress.suspension_reason
+                                    ELSE NULL
+                                END,
+                                next_probe_at=CASE
+                                    WHEN startup_backfill_progress.last_status='failed'
+                                         AND startup_backfill_progress.next_run_after IS NOT NULL
+                                         AND startup_backfill_progress.next_run_after > ?
+                                        THEN startup_backfill_progress.next_probe_at
+                                    ELSE NULL
+                                END,
+                                wake_generation=startup_backfill_progress.wake_generation + 1
+                            WHERE startup_backfill_progress.enabled!=0
+                              {managed_guard}"#,
+                        insert_guard = insert_guard,
+                        managed_guard = managed_guard,
+                    );
+                    let mut query = sqlx::query(&query_sql)
+                        .bind(task_name)
+                        .bind(STARTUP_BACKFILL_STATUS_IDLE);
+                    if managed_tasks_present {
+                        query = query.bind(managed_task_key);
+                    }
+                    query = query
+                        .bind(now)
+                        .bind(now)
+                        .bind(STARTUP_BACKFILL_STATUS_IDLE)
+                        .bind(now)
+                        .bind(now);
+                    if managed_tasks_present {
+                        query = query.bind(managed_task_key);
+                    }
+                    query.execute(pool).await?
+                };
+                Ok::<_, anyhow::Error>(result)
+            },
+        )
+        .await?;
+        let rows_affected = result.rows_affected();
+        Ok::<(u64, bool), anyhow::Error>((rows_affected, rows_affected > 0))
+    })
+    .await?;
+    Ok(result)
+}
+
+async fn confirm_startup_backfill_wake_obligations(cancel: &CancellationToken) {
+    let Some(store) = crate::maintenance_store::global() else {
+        return;
+    };
+    confirm_startup_backfill_wake_obligations_with_pool(&store.pool, cancel).await;
+}
+
+async fn confirm_startup_backfill_wake_obligations_with_pool(
+    pool: &Pool<Sqlite>,
+    cancel: &CancellationToken,
+) {
+    let attempts = STARTUP_BACKFILL_SCHEDULER.claim_due_wake_obligations(Utc::now());
+    for attempt in attempts {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let confirmation =
+            match confirm_startup_backfill_wake_obligation(pool, cancel, &attempt).await {
+                Ok(confirmation) => confirmation,
+                Err(error) => {
+                    if let Some(failure) =
+                        STARTUP_BACKFILL_SCHEDULER.fail_wake_obligation(attempt.ticket, Utc::now())
+                        && failure.should_warn
+                    {
+                        warn!(
+                            task = attempt.key.task.log_label(),
+                            attempt = failure.attempt,
+                            next_due = %failure.next_due,
+                            error = %error,
+                            "startup backfill wake confirmation failed"
+                        );
+                    }
+                    continue;
+                }
+            };
+        match confirmation {
+            StartupBackfillWakeConfirmation::Confirmed {
+                wake_task,
+                next_due,
+            } => {
+                if let Some(observation_ticket) =
+                    STARTUP_BACKFILL_SCHEDULER.complete_wake_obligation(attempt.ticket)
+                {
+                    confirm_scheduler_wake_observation(
+                        &STARTUP_BACKFILL_SCHEDULER,
+                        observation_ticket,
+                    );
+                    if let Some(next_due) = next_due {
+                        STARTUP_BACKFILL_SCHEDULER.record_next_due(attempt.key.task, next_due);
+                    } else if wake_task {
+                        STARTUP_BACKFILL_SCHEDULER.wake(attempt.key.task);
+                    }
+                }
+            }
+            StartupBackfillWakeConfirmation::Retry => {
+                if let Some(failure) =
+                    STARTUP_BACKFILL_SCHEDULER.fail_wake_obligation(attempt.ticket, Utc::now())
+                    && failure.should_warn
+                {
+                    warn!(
+                        task = attempt.key.task.log_label(),
+                        attempt = failure.attempt,
+                        next_due = %failure.next_due,
+                        "startup backfill wake confirmation will retry"
+                    );
+                }
+            }
+            StartupBackfillWakeConfirmation::Obsolete => {
+                if let Some(observation_ticket) =
+                    STARTUP_BACKFILL_SCHEDULER.complete_wake_obligation(attempt.ticket)
+                {
+                    confirm_scheduler_wake_observation(
+                        &STARTUP_BACKFILL_SCHEDULER,
+                        observation_ticket,
+                    );
+                }
+            }
+            StartupBackfillWakeConfirmation::Cancelled => break,
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Pool<Sqlite>) {
+    confirm_startup_backfill_wake_obligations_with_pool(pool, &CancellationToken::new()).await;
+}
+
+async fn confirm_startup_backfill_wake_obligation(
+    pool: &Pool<Sqlite>,
+    cancel: &CancellationToken,
+    attempt: &WakeObligationAttempt,
+) -> Result<StartupBackfillWakeConfirmation> {
+    if cancel.is_cancelled() {
+        return Ok(StartupBackfillWakeConfirmation::Cancelled);
+    }
+    if attempt.key.task == StartupBackfillTask::PromptCacheConversationsMaterialization {
+        return confirm_prompt_cache_materialization_wake(pool, cancel, attempt).await;
+    }
+
+    let task = attempt.key.task;
+    let task_name = attempt
+        .key
+        .progress_key
+        .as_deref()
+        .unwrap_or_else(|| task.name());
+    let managed_task_key = crate::maintenance_store::managed_startup_backfill_suffix(task.name())
+        .map(|suffix| format!("startup_backfill.{suffix}"));
+    let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let managed_enabled = if managed_tasks_present {
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(
+                managed_task_key
+                    .as_deref()
+                    .ok_or_else(|| anyhow!("unknown startup backfill task"))?,
+            )
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
+    if managed_enabled == Some(false) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    let progress = sqlx::query_as::<_, (bool, i64, Option<String>, String)>(
+        "SELECT enabled,wake_generation,next_run_after,last_status
+         FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task_name)
+    .fetch_optional(pool)
+    .await?;
+    if progress.as_ref().is_some_and(|progress| !progress.0) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if cancel.is_cancelled() {
+        return Ok(StartupBackfillWakeConfirmation::Cancelled);
+    }
+    let expected_generation = progress.as_ref().map(|progress| progress.1);
+    let now = format_utc_iso(Utc::now());
+    let rows_affected = confirm_startup_backfill_progress_write(
+        pool,
+        task,
+        task_name,
+        managed_task_key
+            .as_deref()
+            .ok_or_else(|| anyhow!("unknown startup backfill task"))?,
+        managed_tasks_present,
+        expected_generation,
+        &now,
+    )
+    .await?;
+    if cancel.is_cancelled() {
+        return Ok(StartupBackfillWakeConfirmation::Cancelled);
+    }
+    let managed_enabled_after = if managed_tasks_present {
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(managed_task_key.as_deref().unwrap_or_default())
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
+    if managed_enabled_after == Some(false) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if rows_affected == 0 {
+        return Ok(StartupBackfillWakeConfirmation::Retry);
+    }
+    let progress_after = sqlx::query_as::<_, (bool, i64, Option<String>)>(
+        "SELECT enabled,wake_generation,next_run_after
+         FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task_name)
+    .fetch_optional(pool)
+    .await?;
+    let Some((enabled_after, generation_after, next_run_after)) = progress_after else {
+        return Ok(StartupBackfillWakeConfirmation::Retry);
+    };
+    if !enabled_after {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if managed_enabled_after == Some(false) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if expected_generation
+        .is_some_and(|generation| generation_after != generation.saturating_add(1))
+    {
+        return Ok(StartupBackfillWakeConfirmation::Retry);
+    }
+    let managed_enabled_after = if managed_tasks_present {
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(managed_task_key.as_deref().unwrap_or_default())
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
+    if managed_enabled_after == Some(false) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
+    let next_due = next_run_after
+        .as_deref()
+        .and_then(parse_to_utc_datetime)
+        .filter(|deadline| *deadline > Utc::now());
+    Ok(StartupBackfillWakeConfirmation::Confirmed {
+        wake_task: next_due.is_none(),
+        next_due,
+    })
 }
 
 #[derive(Debug, Default)]
@@ -3376,9 +3840,19 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         }
 
         loop {
+            if STARTUP_BACKFILL_SCHEDULER
+                .next_wake_obligation_due()
+                .is_some_and(|deadline| deadline <= Utc::now())
+            {
+                confirm_startup_backfill_wake_obligations(&cancel).await;
+            }
             let gate = crate::db_pressure::global_db_pressure_gate();
             let observed_pressure_eligibility = gate.eligibility_generation();
-            let next_due = STARTUP_BACKFILL_SCHEDULER.next_due();
+            let next_due = STARTUP_BACKFILL_SCHEDULER
+                .next_due()
+                .into_iter()
+                .chain(STARTUP_BACKFILL_SCHEDULER.next_wake_obligation_due())
+                .min();
             let mut wait_for = startup_backfill_wait_duration(next_due);
             if let Some(retry_at) = startup_prep_retry_at {
                 wait_for = wait_for.min(retry_at.saturating_duration_since(Instant::now()));
@@ -3391,6 +3865,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 }
                 _ = STARTUP_BACKFILL_SCHEDULER.wait_for_wake(observed_generation) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
+                    confirm_startup_backfill_wake_obligations(&cancel).await;
                     let tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
                     if !tasks.is_empty() {
                         run_background_startup_backfill_pass_with_gate(
@@ -3407,7 +3882,17 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
-                    STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
+                    confirm_startup_backfill_wake_obligations(&cancel).await;
+                    let woken_tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
+                    if !woken_tasks.is_empty() {
+                        run_background_startup_backfill_pass_with_gate(
+                            state.clone(),
+                            &cancel,
+                            Some(&woken_tasks),
+                            crate::db_pressure::global_db_pressure_gate(),
+                        )
+                        .await;
+                    }
                     if startup_prep_pending
                         && startup_prep_retry_at.is_none_or(|retry_at| retry_at <= Instant::now())
                     {
