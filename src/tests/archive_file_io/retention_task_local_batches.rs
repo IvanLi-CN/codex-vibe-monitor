@@ -454,15 +454,11 @@ async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing
         .expect("close manifest replacement writer");
     probe.resume.notify_one();
 
-    let error = tokio::time::timeout(Duration::from_secs(5), &mut work)
+    let summary = tokio::time::timeout(Duration::from_secs(5), &mut work)
         .await
-        .expect("stale manifest page staging completes")
-        .expect_err("stale manifest must abort page staging");
-    assert!(
-        error
-            .to_string()
-            .contains("summary archive manifest changed before page staging")
-    );
+        .expect("stale manifest page staging completes");
+    assert_eq!(summary.completion(), "failed");
+    assert!(summary.fatal_error.is_some());
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot")
             .fetch_one(&pool)
