@@ -13,7 +13,8 @@ import shutil
 import subprocess
 import sys
 import time
-from environment import AdmissionBudget, actions_context, comparison_report, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
+from environment import AdmissionBudget, PAIR_ADMISSION_SECONDS, actions_context, measurement_cpu_layout, observe_resources, quiet_admission, select_measurement_cpu, verify_measurement_evidence
+from deadline import AcceptanceDeadlineExceeded, ExecutionDeadline, EXECUTION_SECONDS
 
 FIXTURE_INTERNAL_INGEST_TOKEN = "cvm-fixture-internal-ingest"
 FIXTURE_METRICS_TOKEN = "cvm-fixture-metrics-token"
@@ -25,6 +26,9 @@ def digest(paths):
     result=hashlib.sha256()
     for path in paths: result.update(path.read_bytes())
     return result.hexdigest()
+
+def certificate(source,candidate,context,status,rationale):
+    return {"empirical_acceptance":"required","empirical_acceptance_rationale":rationale,"empirical_evidence_status":status,"empirical_candidate_sha":candidate,"acceptance_contract_digest":digest([source/"docs/specs/performance-telemetry/SPEC.md",source/"docs/specs/performance-telemetry/METRICS.md",source/"docs/design/performance-observability.md",source/"docs/design/performance-observability-metrics.md",source/"docs/adr/0025-external-performance-observability.md",source/"docs/adr/0033-external-request-diagnostic-traces.md",source/"docs/adr/0034-shared-tempo-request-tracing.md",source/"docs/design/request-lifecycle-observability.md"]),"scenario_set_digest":digest(sorted((source/"scripts/observability-acceptance").glob("*.py"))+[source/"ops/observability/tempo_access.py",source/"ops/observability/tempo.yml",source/"ops/observability/compose.yml",source/"ops/observability/grafana/provisioning/datasources/tempo.yml"]),"evidence_locator":context["evidenceLocator"] if context else "runtime-only"}
 
 def measurement_services(enabled):
     if enabled not in {"off", "metrics", "full"}:
@@ -46,16 +50,19 @@ class Run:
         self.args=args; self.source=Path(args.source).resolve(); self.candidate_source=Path(getattr(args,"candidate_source",args.source)).resolve(); self.root=Path(args.run).resolve()
         self.environment=getattr(args,"environment","shared-testbox")
         self.suite=getattr(args,"suite","runtime")
+        if self.suite not in {"runtime","pair-0","pair-1","pair-2"}:
+            raise ValueError("full acceptance is issued only by the all-parts verifier")
+        self.pair_index=int(self.suite[-1]) if self.suite.startswith("pair-") else None
         self.context=actions_context(self.candidate_source,self.root,args.candidate) if self.environment=="github-actions" else None
-        if self.suite=="full" and self.context is None:
+        if self.pair_index is not None and self.context is None:
             raise ValueError("full performance acceptance must run in GitHub Actions")
-        if self.suite=="full" and not re.fullmatch(r"sha256:[a-f0-9]{64}",args.image or ""):
+        if self.pair_index is not None and not re.fullmatch(r"sha256:[a-f0-9]{64}",args.image or ""):
             raise ValueError("performance acceptance requires an immutable prebuilt image ID")
         if (self.context is None and not self.root.is_relative_to(Path("/srv/codex/agents")/args.agent)) or self.root==self.source or self.source.is_relative_to(self.root) or self.root.is_relative_to(self.source):
             raise ValueError("acceptance run must be inside the exact Agent Directory")
         if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*",args.agent) or not re.fullmatch(r"[a-f0-9]{40}",args.candidate):
             raise ValueError("invalid agent or candidate identity")
-        if self.suite=="full":
+        if self.pair_index is not None:
             selected_cpu=select_measurement_cpu(self.context["cpuAffinity"])
             self.context["measurementCpu"]=selected_cpu
             self.cpu_layout=measurement_cpu_layout(self.context["cpuAffinity"], selected=selected_cpu)
@@ -65,7 +72,9 @@ class Run:
         self.compose_file=self.root/"compose.json";self.results={}
         self.image=args.image or self.project+":candidate"
         self.root.mkdir(parents=True,exist_ok=True)
-        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.suite=="full" else None,"warmupSeconds":60 if self.suite=="full" else None,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g"},indent=2)+"\n")
+        self.execution_started_utc=float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))
+        self.execution_deadline_utc=self.execution_started_utc+EXECUTION_SECONDS
+        (self.root/"run-config.json").write_text(json.dumps({"candidate":args.candidate,"requestRate":args.rate,"windowSeconds":args.seconds if self.pair_index is not None else None,"warmupSeconds":60 if self.pair_index is not None else None,"pairIndex":self.pair_index,"environment":self.environment,"suite":self.suite,"appCpuQuota":1 if self.cpu_layout else 2,"appCpuSet":self.cpu_layout["app"] if self.cpu_layout else None,"auxiliaryCpuSet":self.cpu_layout["auxiliary"] if self.cpu_layout else None,"appMemoryLimit":"1g","executionStartedUTCSeconds":float(os.environ.get("OBSERVABILITY_TEST_STARTED_UTC",time.time()))},indent=2)+"\n")
         if self.context: (self.root/"runner-context.json").write_text(json.dumps(self.context,indent=2)+"\n")
         self.private=self.root/"private";self.private.mkdir(mode=0o700)
         for name in ["grafana-admin-password","tempo-ingest-token","tempo-query-token"]:
@@ -80,12 +89,19 @@ class Run:
     def compose(self,*args,**kwargs):
         return execute(["docker","compose","-p",self.project,"-f",str(self.compose_file),*args],**kwargs)
     def client(self,*args):
+        # SIGALRM interrupts only the main thread. A CPU sampler's concurrent
+        # load must also stop by the same deadline before executor shutdown.
+        remaining=self.execution_deadline_utc-time.time()-5
+        if remaining<=0:
+            raise AcceptanceDeadlineExceeded("acceptance client deadline exhausted")
         with (self.root/"client.log").open("a") as log:
-            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=600,stderr=log)
+            result=self.compose("exec","-T","client","python","/work/client.py",*args,timeout=min(600,remaining),stderr=log)
         return json.loads(result)
     def checkpoint(self,name,operation):
         try:
             self.results[name]={"status":"passed","result":operation()}
+        except AcceptanceDeadlineExceeded:
+            raise
         except Exception as error:
             self.results[name]={"status":"unavailable" if isinstance(error,(OSError,subprocess.TimeoutExpired)) else "failed","error":str(error)}
             print(name+" error: "+str(error), flush=True)
@@ -142,6 +158,14 @@ class Run:
         raise TimeoutError("application readiness timeout")
     def start(self):
         # Pull before any measured window, including the client image used by exec.
+        if self.pair_index is not None:
+            self.compose("pull","prometheus","tempo","mock-upstream","entry","client",timeout=180)
+            # Seed with observation disabled; runtime scenarios have their own runner.
+            self.definition["services"]["app"]["environment"].update(OBSERVABILITY_ENABLED="false",OBSERVABILITY_TRACES_ENABLED="false")
+            self.compose_file.write_text(json.dumps(self.definition,indent=2))
+            self.compose("up","-d","app","mock-upstream","client",timeout=90);self.wait_app()
+            self.client("seed")
+            return
         self.compose("pull","prometheus","grafana","tempo","mock-upstream","entry","client",timeout=600)
         self.compose("up","-d",timeout=180);self.wait_app()
         self.client("seed")
@@ -207,16 +231,18 @@ class Run:
         if self.environment!="github-actions":
             raise ValueError("performance acceptance must run in GitHub Actions")
         actions_context(self.candidate_source,self.root,self.args.candidate)
-        quiet_admission(self.root)
+        # Each measured window performs strict post-warmup admission. A second
+        # initial quiet wait would only charge the same idle boundary twice.
         return self.overhead_windows()
     def overhead_windows(self):
         # Stop before snapshotting, then use the same seeded state and offered load every round.
         self.compose("stop","app")
         baseline=self.root/"baseline-data";shutil.copytree(self.data,baseline)
         samples={"off":[],"metrics":[],"full":[]}
-        admission_budget=AdmissionBudget()
-        for index in range(3):
-            for enabled in (["off","metrics","full"] if index%2==0 else ["full","metrics","off"]):
+        admission_budget=AdmissionBudget(PAIR_ADMISSION_SECONDS)
+        for index in [self.pair_index]:
+            # Rotate positions so no mode always receives the cold/last window.
+            for enabled in (("off","metrics","full"),("metrics","full","off"),("full","off","metrics"))[index]:
                 directory=self.root/f"ab-{index}-{enabled}";shutil.copytree(baseline,directory);directory.chmod(0o770)
                 # The cap-free app uses the host's group for its synthetic state.
                 for path in directory.rglob("*"):
@@ -236,7 +262,7 @@ class Run:
                 # Observe two complete 30s resource-sampler cycles before timing.
                 self.client("load","--seconds","60","--rate",str(self.args.rate))
                 window={"windowId":f"{index}-{enabled}","pairIndex":index,"enabled":enabled}
-                window["admissionWaitSeconds"]=quiet_admission(self.root,timeout=300,window=window,budget=admission_budget)
+                window["admissionWaitSeconds"]=quiet_admission(self.root,timeout=180,window=window,budget=admission_budget)
                 with observe_resources(self.root,window):
                     before=self.cpu_usec()
                     result=self.client("load","--seconds",str(self.args.seconds),"--rate",str(self.args.rate))
@@ -252,58 +278,56 @@ class Run:
                 assert result["cpuCores"]<1.5,"saturated load cannot establish observability overhead"
                 assert result["durationSeconds"]<=self.args.seconds*1.05,"request backlog cannot establish non-saturated overhead"
                 self.compose("stop","app")
-        report=comparison_report(samples)
-        (self.root/"ab-summary.json").write_text(json.dumps(report,indent=2)+"\n")
-        print("ab-summary: "+json.dumps(report,sort_keys=True,separators=(",",":")),flush=True)
-        if not all(metric[mode]["stable"] for metric in report["metrics"].values() for mode in ["off","metrics","full"]):
-            raise OSError("unstable measurement windows")
-        assert all(metric["withinBudget"] for metric in report["metrics"].values()),"5% observability budget exceeded"
-        return report
+        verify_measurement_evidence(self.root,pair_index=self.pair_index)
+        return {"pairIndex":self.pair_index,"windows":3}
     def finish(self):
+        config_path=self.root/"run-config.json"
+        if config_path.exists():
+            config=json.loads(config_path.read_text());config["executionFinishedUTCSeconds"]=time.time()
+            config_path.write_text(json.dumps(config,indent=2)+"\n")
         expected={"https-auth-query","tempo-cases-tenant","monitoring-fault-isolation","original-process-cpu"}
-        if self.suite=="full": expected.add("default-observability-ab")
+        if getattr(self,"pair_index",None) is not None: expected={"default-observability-ab"}
         success=all(row["status"]=="passed" for row in self.results.values()) and set(self.results)==expected
-        if success and self.suite=="full":
-            try:
-                verify_measurement_evidence(self.root)
-            except OSError:
-                self.results["default-observability-ab"]={"status":"unavailable","error":"measurement environment evidence is incomplete or invalid"}
-                (self.root/"scenarios.json").write_text(json.dumps(self.results,indent=2)+"\n")
-                success=False
         status="passed" if success else "unavailable" if any(row["status"]=="unavailable" for row in self.results.values()) else "failed"
-        card={"empirical_acceptance":"required","empirical_acceptance_rationale":"GitHub-hosted exact-image runtime and default CPU/request plus p95 overhead acceptance." if self.suite=="full" else "Runtime integration only; this card does not certify the performance budget.","empirical_evidence_status":status,"empirical_candidate_sha":self.args.candidate,"acceptance_contract_digest":digest([self.source/"docs/specs/performance-telemetry/SPEC.md",self.source/"docs/specs/performance-telemetry/METRICS.md",self.source/"docs/design/performance-observability.md",self.source/"docs/design/performance-observability-metrics.md",self.source/"docs/adr/0025-external-performance-observability.md",self.source/"docs/adr/0033-external-request-diagnostic-traces.md",self.source/"docs/adr/0034-shared-tempo-request-tracing.md",self.source/"docs/design/request-lifecycle-observability.md"]),"scenario_set_digest":digest(sorted((self.source/"scripts/observability-acceptance").glob("*.py"))+[self.source/"ops/observability/tempo_access.py",self.source/"ops/observability/tempo.yml",self.source/"ops/observability/compose.yml",self.source/"ops/observability/grafana/provisioning/datasources/tempo.yml"]),"evidence_locator":self.context["evidenceLocator"] if self.context else str(self.root)}
-        (self.root/("empirical-card.json" if self.suite=="full" else "runtime-card.json")).write_text(json.dumps(card,indent=2)+"\n")
+        card=certificate(self.source,self.args.candidate,self.context,status,"Runtime/paired partial evidence only; this card does not certify the performance budget.")
+        (self.root/"runtime-card.json").write_text(json.dumps(card,indent=2)+"\n")
         return success
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     for name in ["source","run","agent","candidate","samply"]: parser.add_argument("--"+name,required=True)
     parser.add_argument("--candidate-source")
-    parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=300);parser.add_argument("--rate",type=int,default=5)
+    parser.add_argument("--image");parser.add_argument("--seconds",type=int,default=60);parser.add_argument("--rate",type=int,default=5)
     parser.add_argument("--environment",choices=["shared-testbox","github-actions"],default="shared-testbox")
-    parser.add_argument("--suite",choices=["runtime","full"],default="runtime")
+    parser.add_argument("--suite",choices=["runtime","pair-0","pair-1","pair-2"],default="runtime")
     args=parser.parse_args()
     if args.seconds<60 or not 1<=args.rate<=100: parser.error("use at least 60-second windows and a fixed 1..100 request/s rate")
-    if args.suite=="full" and (args.environment!="github-actions" or args.seconds<300): parser.error("full acceptance requires GitHub Actions and at least 300-second windows")
+    if args.suite!="runtime" and (args.environment!="github-actions" or args.seconds!=60 or args.rate!=5): parser.error("paired acceptance requires Actions, 60-second windows and 5 request/s")
     run=Run(args)
     try:
-        run.build();run.configure();run.start()
-        run.checkpoint("https-auth-query",lambda:run.client("functional"))
-        run.checkpoint("tempo-cases-tenant",lambda:run.client("trace_cases"))
-        run.checkpoint("monitoring-fault-isolation",run.isolation)
-        run.checkpoint("original-process-cpu",run.cpu)
-        if args.suite=="full": run.checkpoint("default-observability-ab",run.overhead)
-        return 0 if run.finish() else 1
+        with ExecutionDeadline():
+            run.build();run.configure();run.start()
+            if run.pair_index is None:
+                run.checkpoint("https-auth-query",lambda:run.client("functional"))
+                run.checkpoint("tempo-cases-tenant",lambda:run.client("trace_cases"))
+                run.checkpoint("monitoring-fault-isolation",run.isolation)
+                run.checkpoint("original-process-cpu",run.cpu)
+            else:
+                run.checkpoint("default-observability-ab",run.overhead)
+            return 0 if run.finish() else 1
     except Exception as error:
-        run.results["setup"]={"status":"unavailable","error":str(error)}
+        scenario="default-observability-ab" if run.pair_index is not None else "setup"
+        run.results[scenario]={"status":"unavailable","error":str(error)}
         (run.root/"scenarios.json").write_text(json.dumps(run.results,indent=2)+"\n")
         run.finish()
         print("setup: unavailable",flush=True)
         return 1
     finally:
         if run.compose_file.exists():
-            with (run.root/"compose.log").open("w") as log:
-                subprocess.run(["docker","compose","-p",run.project,"-f",str(run.compose_file),"logs","--no-color"],stdout=log,stderr=subprocess.STDOUT,timeout=30)
-            run.compose("down","--remove-orphans",timeout=60)
+            try:
+                with (run.root/"compose.log").open("w") as log:
+                    subprocess.run(["docker","compose","-p",run.project,"-f",str(run.compose_file),"logs","--no-color"],stdout=log,stderr=subprocess.STDOUT,timeout=10)
+            finally:
+                run.compose("down","--remove-orphans",timeout=30)
 
 if __name__=="__main__": sys.exit(main())

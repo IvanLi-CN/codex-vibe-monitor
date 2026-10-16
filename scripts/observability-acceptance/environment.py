@@ -33,6 +33,7 @@ def actions_context(source, run, candidate):
         "runId": run_id,
         "attempt": attempt,
         "runnerEnvironment": "github-hosted",
+        "runnerIdentity": platform.node(),
         "runnerImage": os.environ.get("ImageOS"),
         "runnerImageVersion": os.environ.get("ImageVersion"),
         "kernel": platform.release(),
@@ -48,6 +49,8 @@ def pressure():
 
 
 PRESSURE_LIMITS = {"cpu": 2.0, "io": 5.0, "memory": 0.1}
+MAX_CUMULATIVE_ADMISSION_SECONDS = 900.0
+PAIR_ADMISSION_SECONDS = 450.0
 
 
 def measurement_cpu_layout(affinity, selected=None):
@@ -127,8 +130,8 @@ def pressure_sample(identity):
 
 
 class AdmissionBudget:
-    def __init__(self):
-        self.remaining_seconds = 900.0
+    def __init__(self, seconds=MAX_CUMULATIVE_ADMISSION_SECONDS):
+        self.remaining_seconds = seconds
 
 
 def quiet_admission(root, timeout=600, window=None, budget=None):
@@ -267,7 +270,7 @@ def observe_resources(root, window):
         observer.finish()
 
 
-def verify_measurement_evidence(root, modes=("off", "metrics", "full")):
+def verify_measurement_evidence(root, modes=("off", "metrics", "full"), pair_index=None):
     """Admit only the complete mode/round windows with independently readable quiet samples."""
     try:
         run_config = json.loads((root / "run-config.json").read_text())
@@ -281,20 +284,33 @@ def verify_measurement_evidence(root, modes=("off", "metrics", "full")):
         assert run_config["appCpuQuota"] == 1
         assert run_config["appCpuSet"] == cpu_layout["app"]
         assert run_config["auxiliaryCpuSet"] == cpu_layout["auxiliary"]
-        expected = {f"{index}-{mode}" for index in range(3) for mode in modes}
-        assert len(windows) == 3 * len(modes) and {row["windowId"] for row in windows} == expected
+        indices = range(3) if pair_index is None else [pair_index]
+        expected = {f"{index}-{mode}" for index in indices for mode in modes}
+        assert len(windows) == len(indices) * len(modes) and {row["windowId"] for row in windows} == expected
         assert {row["windowId"] for row in raw} == expected
-        assert set(loads) == set(modes) and all(len(rows) == 3 for rows in loads.values())
+        assert set(loads) == set(modes) and all(len(rows) == len(indices) for rows in loads.values())
+        if pair_index is not None:
+            assert pair_index in range(3) and run_config["pairIndex"] == pair_index
+            assert run_config["windowSeconds"] == 60 and run_config["warmupSeconds"] == 60
+            assert run_config["requestRate"] == 5
+            assert sum(window["admissionWaitSeconds"] for window in windows) <= PAIR_ADMISSION_SECONDS
+            for rows in loads.values():
+                for row in rows:
+                    assert row["offered"] == row["completed"] == 300
+                    # 300 offered requests are scheduled at t=0..59.8s. The
+                    # final response can complete before the nominal t=60s.
+                    assert 59.8 <= row["durationSeconds"] <= 63 and row["cpuCores"] < 1.5
         if "full" in modes:
             assert all(row["traceEvidence"]["enabled"] and row["traceEvidence"]["searchableTrace"] and row["traceEvidence"]["exportedSpans"] > 0 and row["traceEvidence"]["failedSpans"] == 0 and row["traceEvidence"]["droppedSpans"] == 0 for row in loads["full"])
         load_rows = {row["windowId"]: row for rows in loads.values() for row in rows}
         assert set(load_rows) == expected
-        assert sum(window["admissionWaitSeconds"] for window in windows) <= 900
+        assert sum(window["admissionWaitSeconds"] for window in windows) <= MAX_CUMULATIVE_ADMISSION_SECONDS
         for window in windows:
             window_id = window["windowId"]
             assert window_id == f"{window['pairIndex']}-{window['enabled']}"
             assert window["status"] == "passed" and not window["reasonCodes"]
-            assert window["pressureLimits"] == PRESSURE_LIMITS and 0 <= window["admissionWaitSeconds"] <= 300
+            maximum_wait = 180 if pair_index is not None else 300
+            assert window["pressureLimits"] == PRESSURE_LIMITS and 0 <= window["admissionWaitSeconds"] <= maximum_wait
             start, end = window["startedMonotonicSeconds"], window["endedMonotonicSeconds"]
             assert all(math.isfinite(value) for value in (start, end)) and end >= start
             assert end - start >= load_rows[window_id]["durationSeconds"] > 0
@@ -341,19 +357,22 @@ def comparison_report(samples):
             cv = statistics.pstdev(values) / statistics.mean(values)
             metric[enabled] = {"values": values, "cv": cv, "stable": cv <= 0.05}
         valid = all(metric[mode]["stable"] for mode in modes)
-        baseline = statistics.median(metric[modes[0]]["values"])
-        enabled = statistics.median(metric[modes[-1]]["values"])
-        increase = enabled / baseline - 1
-        observed_within_budget = enabled <= baseline * 1.05
+        ratios = [enabled / baseline for baseline, enabled in zip(metric[modes[0]]["values"], metric[modes[-1]]["values"])]
+        paired_cv = statistics.pstdev(ratios) / statistics.mean(ratios)
+        valid = valid and paired_cv <= 0.05
+        increase = statistics.median(ratios) - 1
+        observed_within_budget = statistics.median(ratios) <= 1.05
         metric.update({
             "comparisonValid": valid,
             "increase": increase if valid else None,
             "observedIncrease": increase,
             "observedWithinBudget": observed_within_budget,
             "withinBudget": valid and observed_within_budget,
+            "pairedRatios": ratios,
+            "pairedCV": paired_cv,
         })
         if len(modes) == 3:
-            metrics_only = statistics.median(metric["metrics"]["values"])
-            metric["traceIncrement"] = enabled / metrics_only - 1 if valid else None
+            trace_ratios = [full / metrics_only for full, metrics_only in zip(metric["full"]["values"], metric["metrics"]["values"])]
+            metric["traceIncrement"] = statistics.median(trace_ratios) - 1 if valid else None
         metrics[key] = metric
     return {"stabilityLimit": 0.05, "overheadLimit": 0.05, "metrics": metrics}
