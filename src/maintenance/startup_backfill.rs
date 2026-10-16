@@ -17,13 +17,16 @@ use observability::{
 #[cfg(test)]
 use wake_confirmation::confirm_startup_backfill_wake_obligation;
 use wake_confirmation::confirm_startup_backfill_wake_obligations;
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use wake_confirmation::confirm_startup_backfill_wake_obligations_for_test;
 pub(crate) use wake_confirmation::{
     StartupBackfillWakeConfirmation, WakeProgressWriteContext,
     confirm_startup_backfill_progress_write,
 };
+
+#[cfg(test)]
+pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Pool<Sqlite>) {
+    wake_confirmation::confirm_startup_backfill_wake_obligations_for_test(pool).await;
+}
+
 mod prompt_cache_control;
 mod task_identity;
 #[cfg(test)]
