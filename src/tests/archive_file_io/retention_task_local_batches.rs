@@ -340,8 +340,13 @@ async fn retention_task_local_commit_counters_survive_cancel_during_native_drain
             ),
         ),
     );
-    let work = Box::pin(work);
-    tokio::time::timeout(Duration::from_secs(5), probe.returned.notified())
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.returned.notified() => {}
+            _ = &mut work => panic!("retention task completed before invocation COMMIT native drain pause"),
+        }
+    })
         .await
         .expect("pause after invocation COMMIT native drain");
     assert_eq!(
@@ -419,7 +424,12 @@ async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing
         ),
     );
     let mut work = Box::pin(work);
-    tokio::time::timeout(Duration::from_secs(5), probe.returned.notified())
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.returned.notified() => {}
+            _ = &mut work => panic!("retention task completed before manifest staging native drain pause"),
+        }
+    })
         .await
         .expect("pause after manifest staging native drain");
 
