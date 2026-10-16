@@ -344,8 +344,9 @@ fn catalog_identity_change_preserves_wake_backoff() {
         .into_iter()
         .next()
         .expect("claim first catalog notification");
+    let retry_observed_at = Utc::now();
     let failure = scheduler
-        .fail_wake_obligation(attempt.ticket, Utc::now())
+        .fail_wake_obligation(attempt.ticket, retry_observed_at)
         .expect("schedule catalog retry");
 
     let second_observation = scheduler
@@ -363,7 +364,11 @@ fn catalog_identity_change_preserves_wake_backoff() {
         .expect("accept replacement catalog notification");
 
     assert_eq!(scheduler.next_wake_obligation_due(), Some(failure.next_due));
-    assert!(scheduler.claim_due_wake_obligations(Utc::now()).is_empty());
+    assert!(
+        scheduler
+            .claim_due_wake_obligations(retry_observed_at)
+            .is_empty()
+    );
 }
 
 #[test]
@@ -416,6 +421,92 @@ fn in_flight_catalog_replacement_waits_for_current_attempt() {
     assert_eq!(
         second_attempt.key.progress_key.as_deref(),
         Some("catalog-v2")
+    );
+}
+
+#[test]
+fn in_flight_catalog_replacement_keeps_latest_observation_ticket_queued() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyCost;
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record first catalog notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v1".to_owned()),
+            },
+            first_observation,
+        )
+        .expect("accept first catalog notification");
+    let first_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim first catalog notification");
+
+    let second_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record replacement catalog notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v2".to_owned()),
+            },
+            second_observation,
+        )
+        .expect("queue replacement catalog notification");
+    let latest_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record latest catalog notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("catalog-v1".to_owned()),
+            },
+            latest_observation,
+        )
+        .expect("queue latest catalog notification");
+
+    let completed_observation = scheduler
+        .complete_wake_obligation(first_attempt.ticket)
+        .expect("complete first catalog notification");
+    assert_eq!(completed_observation, first_observation);
+    scheduler.confirm_observation(completed_observation);
+    assert!(
+        scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
+    );
+
+    let second_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim queued latest catalog notification");
+    assert_eq!(
+        second_attempt.key.progress_key.as_deref(),
+        Some("catalog-v1")
+    );
+    let completed_observation = scheduler
+        .complete_wake_obligation(second_attempt.ticket)
+        .expect("complete latest catalog notification");
+    assert_eq!(completed_observation, latest_observation);
+    scheduler.confirm_observation(completed_observation);
+    assert!(
+        !scheduler
+            .pending_since
+            .lock()
+            .expect("pending state lock")
+            .contains_key(&task)
     );
 }
 
