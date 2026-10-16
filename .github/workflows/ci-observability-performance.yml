@@ -50,7 +50,6 @@ jobs:
             APP_GIT_REVISION=${{ steps.identity.outputs.candidate }}
             APP_EFFECTIVE_VERSION=3.0.0-ci.${{ github.run_id }}.${{ github.run_attempt }}
           cache-from: type=gha,scope=observability-performance-amd64
-          cache-to: type=gha,mode=max,scope=observability-performance-amd64
 
       - name: Export immutable candidate image
         env:
