@@ -1,4 +1,7 @@
 use super::*;
+use crate::sqlite_batch_writer::{
+    BatchedTerminalInvocationWrite, SqliteBatchWrite, SqliteBatchWriter,
+};
 use std::cell::Cell;
 
 #[tokio::test]
@@ -60,15 +63,34 @@ async fn summary_projection_bootstrap_fallback_reopens_only_for_coverage_changes
         "unchanged fallback fence must skip hydration"
     );
 
-    sqlx::query(
-        "INSERT INTO codex_invocations \
-         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-         VALUES ('summary-bootstrap-fence-new', ?1, 'proxy', 'success', 19, 1.5, '{}', '', 'full')",
+    // A normal terminal commits its source descriptor in the same transaction. A raw SQL
+    // INSERT deliberately lacks that proof and must remain unavailable during tail recovery.
+    let mut record = crate::tests::test_proxy_capture_record(
+        "summary-bootstrap-fence-new",
+        &db_occurred_at_lower_bound(Utc::now()),
+    );
+    record.payload = Some("{}".to_string());
+    record.usage.input_tokens = Some(16);
+    record.usage.cache_input_tokens = Some(0);
+    record.usage.total_tokens = Some(19);
+    record.cost = Some(1.5);
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::TerminalInvocation(
+            BatchedTerminalInvocationWrite {
+                enqueued_at: None,
+                attempts: Vec::new(),
+                diagnostic: None,
+                capture_started: None,
+                raw_capture: false,
+                dashboard_terminal_sequence: None,
+                terminal_projection_event_ids: Vec::new(),
+                startup_backfill_tasks: Vec::new(),
+                record,
+            },
+        )],
     )
-    .bind(db_occurred_at_lower_bound(Utc::now()))
-    .execute(&state.pool)
-    .await
-    .expect("seed new live source fence");
+    .await;
     let (changed_result, changed_hydrations) =
         SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
             .scope(Cell::new(0), async {
