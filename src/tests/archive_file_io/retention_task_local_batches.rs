@@ -456,7 +456,8 @@ async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing
 
     let summary = tokio::time::timeout(Duration::from_secs(5), &mut work)
         .await
-        .expect("stale manifest page staging completes");
+        .expect("stale manifest page staging completes")
+        .expect("structured stale manifest failure summary");
     assert_eq!(summary.completion(), "failed");
     assert!(summary.fatal_error.is_some());
     assert_eq!(
