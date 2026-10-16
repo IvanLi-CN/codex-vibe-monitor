@@ -69,7 +69,7 @@
   - Shell cache：首次在线访问成功后，关闭网络仍可打开 app shell 与基础静态资源。
   - Dashboard overview snapshots：五个固定 range 各保留一份最近一次成功快照，离线时可读，但不承诺是实时数据。
 - service worker 继续只负责壳层与静态资源；Dashboard 历史概览数据通过前端 IndexedDB 持久化快照恢复。
-- `/api/*`、`/events` 与测试控制路径不得被 service worker fallback 误拦截成数据缓存入口。
+- `/api/*`、`/events`、`/v1/*` 与测试控制路径不得被 service worker fallback 误拦截成数据缓存入口。
 
 ### Dashboard overview snapshots
 
@@ -160,7 +160,7 @@
 
 ## Related ADRs
 
-- None
+None
 
 ## Visual Evidence
 

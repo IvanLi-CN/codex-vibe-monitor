@@ -585,6 +585,15 @@ test("serves revalidated PWA metadata and immutable content-hashed install icons
   ).toBe(false);
 });
 
+test("keeps API model discovery outside the document navigation fallback", async ({ page }) => {
+  await page.waitForFunction(() => Boolean(navigator.serviceWorker?.controller));
+  const response = await page.goto("/v1/models");
+
+  expect(response?.status()).toBe(200);
+  expect(response?.headers()["content-type"]).toContain("application/json");
+  await expect(page.locator("body")).toContainText("pwa-test-model");
+});
+
 test("updates a Chromium-installed PWA to V2 manifest and icons without reinstall", async ({
   page,
   request,

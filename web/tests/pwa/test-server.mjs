@@ -188,6 +188,17 @@ const server = createServer(async (request, response) => {
     return;
   }
 
+  if (url.pathname === "/v1/models") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(
+      JSON.stringify({
+        object: "list",
+        data: [{ id: "pwa-test-model", object: "model", owned_by: "test" }],
+      }),
+    );
+    return;
+  }
+
   const filePath = await resolveFile(url.pathname);
   if (!filePath) {
     response.writeHead(404).end("not found");
