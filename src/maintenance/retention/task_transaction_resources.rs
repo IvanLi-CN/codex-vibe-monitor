@@ -36,6 +36,7 @@ pub(crate) struct RetentionReturnToPoolProbe {
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_RETURN_TO_POOL: Arc<RetentionReturnToPoolProbe>;
+    pub(crate) static RETENTION_CLEANUP_WAITER_READY: Arc<tokio::sync::Notify>;
 }
 
 impl RetentionTransactionResources {
@@ -102,29 +103,60 @@ impl RetentionTransactionResources {
             })
     }
 
-    async fn cleanup(mut self, mode: RetentionConnectionCleanup) -> Result<()> {
+    async fn cleanup(
+        mut self,
+        mode: RetentionConnectionCleanup,
+        retain_archive_lock: bool,
+    ) -> Result<Option<RetentionArchiveFileLock>> {
         let Some(parts) = self.take_cleanup_parts() else {
             self.release_resources();
-            return Ok(());
+            return Ok(None);
         };
         #[cfg(test)]
         let return_probe = RETENTION_TEST_RETURN_TO_POOL.try_with(Arc::clone).ok();
         #[cfg(not(test))]
         let return_probe = None;
-        let handle = tokio::spawn(cleanup_retention_transaction(parts, mode, return_probe));
+        // A cancelled waiter drops only the JoinHandle. This independent owner
+        // retains the connection and both fences through native drain.
+        let handle = tokio::spawn(cleanup_retention_transaction(
+            parts,
+            mode,
+            return_probe,
+            retain_archive_lock,
+        ));
+        #[cfg(test)]
+        let _ = RETENTION_CLEANUP_WAITER_READY.try_with(|ready| ready.notify_one());
         handle
             .await
-            .map_err(|error| anyhow!("retention transaction cleanup task failed: {error}"))??;
-        Ok(())
+            .map_err(|error| anyhow!("retention transaction cleanup task failed: {error}"))?
     }
 
     pub(crate) async fn rollback_and_close(self) -> Result<()> {
-        self.cleanup(RetentionConnectionCleanup::RollbackAndClose)
+        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, false)
             .await
+            .map(|_| ())
     }
 
     pub(crate) async fn return_to_pool(self) -> Result<()> {
-        self.cleanup(RetentionConnectionCleanup::ReturnToPool).await
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool, false)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn rollback_and_close_retaining_archive_fence(
+        self,
+    ) -> Result<RetentionArchiveFileLock> {
+        self.cleanup(RetentionConnectionCleanup::RollbackAndClose, true)
+            .await?
+            .ok_or_else(|| anyhow!("archive publication lost its file fence"))
+    }
+
+    pub(crate) async fn return_to_pool_retaining_archive_fence(
+        self,
+    ) -> Result<RetentionArchiveFileLock> {
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool, true)
+            .await?
+            .ok_or_else(|| anyhow!("archive publication lost its file fence"))
     }
 }
 
@@ -133,7 +165,8 @@ async fn cleanup_retention_transaction(
     mode: RetentionConnectionCleanup,
     #[cfg(test)] return_probe: Option<Arc<RetentionReturnToPoolProbe>>,
     #[cfg(not(test))] _return_probe: Option<()>,
-) -> Result<()> {
+    retain_archive_lock: bool,
+) -> Result<Option<RetentionArchiveFileLock>> {
     let mut cleanup_error = None;
     if matches!(mode, RetentionConnectionCleanup::RollbackAndClose)
         && parts.transaction_started
@@ -173,9 +206,16 @@ async fn cleanup_retention_transaction(
             }
         }
     }
-    drop(parts.archive_lock);
+    // Publication cleanup/compensation may retain just the directory fence;
+    // its SQLite admission is released only after the native connection drains.
+    let archive_lock = if retain_archive_lock {
+        parts.archive_lock.take()
+    } else {
+        drop(parts.archive_lock.take());
+        None
+    };
     drop(parts.admission);
-    cleanup_error.map_or(Ok(()), Err)
+    cleanup_error.map_or(Ok(archive_lock), Err)
 }
 
 impl Drop for RetentionTransactionResources {
@@ -189,20 +229,12 @@ impl Drop for RetentionTransactionResources {
                 parts,
                 RetentionConnectionCleanup::RollbackAndClose,
                 None,
+                false,
             )));
         } else {
-            // No asynchronous rollback can complete after the runtime has exited. Leak the
-            // checked-out connection until process teardown instead of returning dirty state to
-            // the pool; normal runtime cancellation always takes the detached drain above.
-            let RetentionCleanupParts {
-                connection,
-                admission,
-                archive_lock,
-                ..
-            } = parts;
-            std::mem::forget(connection);
-            drop(archive_lock);
-            drop(admission);
+            // Runtime teardown cannot acknowledge native drain. Keep every
+            // ownership part through process exit instead of advertising release.
+            std::mem::forget(parts);
         }
     }
 }

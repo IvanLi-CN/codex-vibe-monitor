@@ -1401,7 +1401,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             )
             .await
         {
-            Ok(permit) => permit,
+            Ok(permit) => Arc::new(permit),
             Err(reason) => {
                 debug!(
                     stage = "summary_live_tail_reconciliation_deferred",
@@ -1448,14 +1448,31 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             .as_ref()
             .map(|checkpoint| checkpoint.base_projection_revision.max(0) as u64)
             .unwrap_or_default();
-        let mut publication_transaction = state
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .context("begin Summary live-tail publication transaction")?;
-        let publication_fence =
-            load_summary_projection_generation_fence_tx(state, publication_transaction.as_mut())
-                .await?;
+        let Some(mut publication_transaction) =
+            super::summary_live_tail_transaction::SummaryLiveTailTransaction::try_acquire(
+                &state.pool,
+                _reconciliation_permit.clone(),
+            )
+            .await?
+        else {
+            record_summary_live_tail_readiness(
+                state,
+                "write_admission_deferred",
+                "summary_live_tail_publication_deferred",
+                0,
+                0,
+                0,
+                started,
+            )
+            .await;
+            return Ok(());
+        };
+        publication_transaction.begin().await?;
+        let publication_fence = load_summary_projection_generation_fence_tx(
+            state,
+            publication_transaction.connection_mut(),
+        )
+        .await?;
         let target_still_current =
             source_target_fence.is_none_or(|target| target == publication_fence);
         let reconciled_live_tail = source_target_fence.is_some()
@@ -1472,13 +1489,13 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
                 && checkpoint.target_source_cursor > 0
             {
                 store_summary_source_change_checkpoint_tx(
-                    publication_transaction.as_mut(),
+                    publication_transaction.connection_mut(),
                     SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
                     checkpoint.target_source_cursor,
                 )
                 .await?;
                 store_summary_live_tail_reconciliation_checkpoint_tx(
-                    publication_transaction.as_mut(),
+                    publication_transaction.connection_mut(),
                     SummaryLiveTailReconciliationCheckpoint {
                         format_version: checkpoint.format_version,
                         recovery_epoch: checkpoint.recovery_epoch,
@@ -1492,7 +1509,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
                 .await?;
             }
             publication_transaction
-                .commit()
+                .finish(true)
                 .await
                 .context("commit Summary live-tail publication transaction")?;
             if let Some(checkpoint) = live_tail_checkpoint.as_ref()
@@ -1505,7 +1522,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             }
         } else {
             publication_transaction
-                .rollback()
+                .finish(false)
                 .await
                 .context("rollback stale Summary live-tail publication transaction")?;
         }

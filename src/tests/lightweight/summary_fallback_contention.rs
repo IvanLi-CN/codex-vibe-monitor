@@ -9,6 +9,7 @@ enum TailRecoveryFixture {
     Descriptors,
     Compacted,
     ConcurrentTerminal,
+    AdmissionBusy,
 }
 
 #[tokio::test]
@@ -29,6 +30,12 @@ async fn summary_projection_live_tail_does_not_checkpoint_beyond_reconstructed_s
         TailRecoveryFixture::ConcurrentTerminal,
     )
     .await;
+}
+
+#[tokio::test]
+async fn summary_projection_live_tail_yields_publication_to_terminal_admission() {
+    assert_bootstrap_fallback_reopens_only_for_coverage_changes(TailRecoveryFixture::AdmissionBusy)
+        .await;
 }
 
 async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: TailRecoveryFixture) {
@@ -108,6 +115,27 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
         );
     }
     let mut concurrent_hydrations = 0;
+    if matches!(fixture, TailRecoveryFixture::AdmissionBusy) {
+        let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator();
+        let terminal = coordinator
+            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+            .await;
+        let (result, hydrations) = tokio::time::timeout(
+            Duration::from_secs(2),
+            refresh_with_hydration_count(state.as_ref()),
+        )
+        .await
+        .expect("publication must defer rather than queue behind P1");
+        result.expect("busy publication retains its reconciliation obligation");
+        assert_eq!(hydrations, 0);
+        let checkpoint = load_summary_live_tail_reconciliation_checkpoint(&state.pool)
+            .await
+            .expect("deferred reconciliation checkpoint")
+            .expect("durable reconstruction remains pending");
+        assert_eq!(checkpoint.next_source_cursor, 0);
+        assert_ne!(checkpoint.state, "ready");
+        drop(terminal);
+    }
     if matches!(fixture, TailRecoveryFixture::ConcurrentTerminal) {
         let interleave = install_summary_projection_test_interleave_at(
             SummaryProjectionTestInterleaveStage::BeforeLiveTailPublication,

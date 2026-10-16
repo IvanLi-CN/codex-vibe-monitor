@@ -116,7 +116,7 @@ jobs:
   repository-tooling-checks:
     name: Repository Tooling Checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -787,7 +787,7 @@ jobs:
           NEXTEST_SUCCESS_OUTPUT: immediate
         run: |
           bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
-          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
+          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)'
 
   backend-tests-archive-file-io:
     needs: backend-test-archive

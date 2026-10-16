@@ -33,7 +33,7 @@ pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_
 pub(crate) use task_transaction_resources::RetentionTransactionResources;
 #[cfg(test)]
 pub(crate) use task_transaction_resources::{
-    RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
+    RETENTION_CLEANUP_WAITER_READY, RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
 };
 
 use chrono::{TimeZone, Timelike};
@@ -4257,6 +4257,14 @@ async fn reconcile_staged_archive_replacements(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn reconcile_staged_archive_replacements_for_test(
+    pool: &Pool<Sqlite>,
+    config: Option<&AppConfig>,
+) -> Result<()> {
+    reconcile_staged_archive_replacements(pool, config).await
 }
 
 fn replacement_staging_path_is_owned(final_path: &Path, staged_path: &Path) -> bool {

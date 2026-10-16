@@ -1,5 +1,13 @@
 use super::*;
 
+#[path = "archive/publication.rs"]
+mod archive_publication;
+#[cfg(test)]
+pub(crate) use archive_publication::{
+    PublicationTestPhase, PublicationTestProbe, RETENTION_PUBLICATION_TEST_PROBE,
+    replace_legacy_archive_file_with_cleanup_serialization as replace_legacy_archive_file_for_test,
+};
+
 #[path = "archive/cleanup.rs"]
 mod archive_cleanup;
 #[path = "archive/hourly_rollups.rs"]

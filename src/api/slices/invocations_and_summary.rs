@@ -40,11 +40,17 @@ mod model_performance_duration_override_tests;
 #[cfg(test)]
 #[path = "../../tests/lightweight/statistics_observability.rs"]
 mod statistics_observability;
+mod summary_live_tail_transaction;
 mod summary_observability;
 #[cfg(test)]
 #[path = "../../tests/lightweight/summary_fallback_contention.rs"]
 mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+
+#[cfg(test)]
+pub(crate) use summary_live_tail_transaction::{
+    SUMMARY_LIVE_TAIL_CLEANUP_READY, SummaryLiveTailTransaction,
+};
 
 pub(crate) use summary_observability::{
     fetch_summary, record_summary_projection_publication_metrics,

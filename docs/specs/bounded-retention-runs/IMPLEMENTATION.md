@@ -2,7 +2,7 @@
 
 ## Write-admission isolation
 
-REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The baseline still performs an admitted archive rehash and post-commit file cleanup, and task-local fixed 64-row slicing does not consume all adaptive feedback. File-fence ordering, native-worker drain, adaptive chunks and current-candidate CI evidence remain to be implemented and verified; existing release evidence does not prove these changes.
+REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The deployed baseline performs an admitted archive rehash and post-commit file cleanup, and task-local fixed 64-row slicing does not consume all adaptive feedback. The repair prepares a fenced predecessor before admission and retains the existing atomic rename/sync/manifest sequence in the short publication transaction. A native owner drains cancelled work before releasing admission; post-drain cleanup retains only the file fence, and ambiguous COMMIT or failed compensation preserves recovery references. Confirmed work is recorded before a cleanup await. Non-authoritative proof pages must not repeat full monthly hashing. Publication and native-cancellation regressions are prepared, while child integration, current-head GitHub CI and formal review remain pending; no released or partial-candidate evidence certifies the integrated repair.
 
 ## Current Status
 

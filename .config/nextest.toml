@@ -8,8 +8,13 @@ threads-required = "num-test-threads"
 # This fixture samples process-wide write-admission counters and real proxy
 # latency under an owned SQLite lock. Other tests must not alter either input.
 [[profile.default.overrides]]
-filter = 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure)'
+filter = 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_preserves_facts_under_current_thread_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)'
 threads-required = "num-test-threads"
+
+# Preserve the real A6 lock-window counts without rerunning its acceptance test.
+[[profile.default.overrides]]
+filter = 'test(=tests::archive_file_io::terminal_backfill_contention::repeated_backfill_notifications_keep_actual_attempts_bounded_during_one_minute_lock)'
+success-output = "immediate"
 
 # This fixture checks partial publication at 150 ms and completion at 3 seconds.
 # Preserve those real budgets while keeping other heavy fixtures out of its slots.
