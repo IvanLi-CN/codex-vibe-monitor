@@ -163,7 +163,7 @@ async fn retention_task_local_p2_queue_does_not_hold_file_io_admission() {
             ),
         ),
     );
-    let work = Box::pin(work);
+    let mut work = Box::pin(work);
     let coordinate = async {
         tokio::time::timeout(Duration::from_secs(1), probe.started.notified())
             .await
@@ -340,7 +340,7 @@ async fn retention_task_local_commit_counters_survive_cancel_during_native_drain
             ),
         ),
     );
-    let mut work = Box::pin(work);
+    let work = Box::pin(work);
     tokio::time::timeout(Duration::from_secs(5), probe.returned.notified())
         .await
         .expect("pause after invocation COMMIT native drain");
