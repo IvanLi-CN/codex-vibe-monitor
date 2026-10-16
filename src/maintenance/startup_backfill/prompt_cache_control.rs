@@ -271,9 +271,7 @@ pub(super) async fn wake_prompt_cache_materialization_with_scheduler(
         Ok((changed, changed > 0))
     })
     .await?;
-    if changed > 0
-        && let Some(ticket) = ticket
-    {
+    if let Some(ticket) = ticket {
         super::confirm_scheduler_wake_observation(scheduler, ticket);
     }
     if changed > 0

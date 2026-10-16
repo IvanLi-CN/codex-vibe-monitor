@@ -197,6 +197,69 @@ async fn noop_wake_preserves_business_schedule_with_observation_enabled_or_disab
 }
 
 #[tokio::test]
+async fn prompt_cache_noop_confirms_observation_without_changing_queued_work() {
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_name = task.name();
+    for enabled in [false, true] {
+        let store = startup_backfill_tests::prompt_cache_materialization_test_store().await;
+        let scheduler = StartupBackfillScheduler::default();
+        scheduler.wake(task);
+        let retry_at = Utc::now() + ChronoDuration::hours(1);
+        scheduler.record_next_due(task, retry_at);
+        let before = scheduler.health_snapshot();
+        let runtime = ObservabilityRuntime::new(enabled);
+
+        let changed = crate::observability::contention::with_performance(runtime.clone(), async {
+            wake_prompt_cache_materialization_with_scheduler(
+                &store,
+                "noop_observation_regression",
+                &scheduler,
+            )
+            .await
+        })
+        .await
+        .expect("confirm an already queued prompt-cache wake");
+
+        assert_eq!(changed, 0);
+        assert_eq!(scheduler.health_snapshot(), before);
+        assert!(scheduler.has_pending_wake(task));
+        assert_eq!(scheduler.next_due_for(task), Some(retry_at));
+        assert_eq!(
+            load_startup_backfill_progress_from_pool(&store.pool, task_name)
+                .await
+                .expect("read unchanged prompt-cache progress")
+                .wake_generation,
+            0
+        );
+        assert!(
+            !scheduler
+                .pending_since
+                .lock()
+                .expect("observation lock")
+                .contains_key(&task)
+        );
+        let text = runtime.render();
+        if enabled {
+            assert!(text.lines().any(|line| {
+                line.starts_with("cvm_backfill_wake_attempts_total{")
+                    && line.contains(&format!("task=\"{task_name}\""))
+                    && line.contains("outcome=\"noop\"")
+                    && line.ends_with(" 1")
+            }));
+            for metric in [
+                "cvm_backfill_wake_pending_tasks",
+                "cvm_backfill_wake_oldest_timestamp_seconds",
+            ] {
+                assert!(text.contains(&format!("{metric}{{task=\"{task_name}\"}} 0")));
+            }
+        } else {
+            assert!(text.is_empty());
+        }
+        store.pool.close().await;
+    }
+}
+
+#[tokio::test]
 async fn coverage_wake_without_maintenance_pool_does_not_confirm_attempt() {
     let runtime = ObservabilityRuntime::new(true);
     let task = StartupBackfillTask::AccountActivityV2Coverage;
