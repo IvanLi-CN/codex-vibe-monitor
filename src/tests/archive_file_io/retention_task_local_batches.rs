@@ -163,7 +163,7 @@ async fn retention_task_local_p2_queue_does_not_hold_file_io_admission() {
             ),
         ),
     );
-    let mut work = Box::pin(work);
+    let work = Box::pin(work);
     let coordinate = async {
         tokio::time::timeout(Duration::from_secs(1), probe.started.notified())
             .await

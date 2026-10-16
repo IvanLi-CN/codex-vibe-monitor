@@ -1,5 +1,5 @@
 use super::{RetentionArchiveFileLock, RetentionWriteAdmission};
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use sqlx::{Sqlite, SqliteConnection, pool::PoolConnection};
 #[cfg(test)]
 use std::sync::{Arc, atomic::AtomicUsize};
@@ -135,13 +135,13 @@ async fn cleanup_retention_transaction(
     #[cfg(not(test))] _return_probe: Option<()>,
 ) -> Result<()> {
     let mut cleanup_error = None;
-    if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) && parts.transaction_started {
-        if let Err(error) = sqlx::query("ROLLBACK")
+    if matches!(mode, RetentionConnectionCleanup::RollbackAndClose)
+        && parts.transaction_started
+        && let Err(error) = sqlx::query("ROLLBACK")
             .execute(&mut *parts.connection)
             .await
-        {
-            cleanup_error = Some(anyhow!("retention transaction rollback failed: {error}"));
-        }
+    {
+        cleanup_error = Some(anyhow!("retention transaction rollback failed: {error}"));
     }
     if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) {
         if let Err(error) = parts.connection.close().await {
