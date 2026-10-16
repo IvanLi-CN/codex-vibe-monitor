@@ -230,7 +230,7 @@ impl SubscriptionHub {
         for (topic_key, topic) in topics_to_start {
             let hub = self.clone();
             let state = state.clone();
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 run_server_push_topic_loop(hub, state, topic_key, topic).await;
             });
         }
@@ -1427,6 +1427,7 @@ impl SubscriptionHub {
                             build,
                             &prompt_cache_applied_terminal_ids,
                         );
+                        observe_prompt_cache_baseline_publication(&state.observability);
                     }
                     return Ok(Some(existing.clone()));
                 }
@@ -1441,6 +1442,7 @@ impl SubscriptionHub {
                             build,
                             &prompt_cache_applied_terminal_ids,
                         );
+                        observe_prompt_cache_baseline_publication(&state.observability);
                     }
                     return Ok(Some(existing.clone()));
                 }
@@ -1686,6 +1688,9 @@ impl SubscriptionHub {
                 prune_replay_window(&mut next.replay_events, &mut next.replay_bytes);
             }
             guard.topics.insert(topic_key.clone(), next.clone());
+            if prompt_cache_build.is_some() {
+                observe_prompt_cache_baseline_publication(&state.observability);
+            }
             let dispatch = emit_live.then_some(SubscriptionDispatchEvent { frame, full_frame });
             (
                 next,

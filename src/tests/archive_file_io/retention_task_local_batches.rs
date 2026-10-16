@@ -1,6 +1,53 @@
 use super::*;
 
 #[tokio::test]
+async fn retention_archive_exports_transaction_and_complete_write_hold_separately() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-observation-boundaries").await;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 3).await;
+    let runtime = crate::ObservabilityRuntime::new(true);
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let result = crate::observability::contention::with_performance(
+        runtime.clone(),
+        RETENTION_TEST_WRITE_COORDINATOR.scope(
+            coordinator.clone(),
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                Arc::new(crate::db_pressure::DbPressureGate::new(
+                    1,
+                    Duration::from_secs(30),
+                )),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ),
+        ),
+    )
+    .await
+    .expect("archive three source records");
+    assert_eq!(result.0, 3);
+    assert_eq!(coordinator.snapshot().await.active_write_class, None);
+    let text = runtime.render();
+    // The fixture selects two rows per batch, then archives the remaining row.
+    for phase in ["transaction", "write_hold"] {
+        assert!(
+            text.lines().any(|line| {
+                line.starts_with("cvm_retention_phase_duration_seconds_count{")
+                    && line.contains("operation=\"invocation_archive\"")
+                    && line.contains(&format!("phase=\"{phase}\""))
+                    && line.ends_with(" 2")
+            }),
+            "both committed archive chunks must report {phase}: {}",
+            text.lines()
+                .filter(|line| line.starts_with("cvm_retention_phase_duration_seconds_count{"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_dry_run_reports_due_release_without_mutating() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-dry-run-release").await;

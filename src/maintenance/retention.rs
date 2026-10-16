@@ -2,6 +2,7 @@ use super::*;
 
 mod archive_identity;
 pub(super) mod batch_plan;
+mod observability;
 mod task_batches;
 use archive_identity::invocation_archive_source_identity_matches;
 pub(crate) use archive_identity::{
@@ -23,6 +24,7 @@ pub(crate) use batch_plan::{
     RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
 };
 use batch_plan::{archive_batch_can_start, archive_candidate_limit, select_archive_batch};
+pub(crate) use observability::record_backlog_observation;
 #[cfg(test)]
 pub(crate) use task_batches::archive_old_invocations;
 use task_batches::archive_old_invocations_with_source_max;
@@ -30,6 +32,8 @@ pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
+#[cfg(test)]
+use tokio::sync::Notify;
 #[path = "retention/workload.rs"]
 mod workload;
 use sqlx::FromRow;
@@ -746,6 +750,13 @@ pub(super) fn retention_run_shutdown_token() -> Option<CancellationToken> {
     RETENTION_SHUTDOWN.try_with(Clone::clone).ok()
 }
 
+pub(super) fn retention_run_defer_reason() -> Option<String> {
+    RETENTION_RUN_DEFER_REASON
+        .try_with(|reason| reason.borrow().clone())
+        .ok()
+        .flatten()
+}
+
 #[cfg(test)]
 pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
     budget: Duration,
@@ -1310,6 +1321,8 @@ pub(crate) struct RetentionWriteAdmission {
     write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     p1_waiter_count: usize,
+    // Fields drop in declaration order, so the observation includes permit release.
+    _write_hold_observation: Option<observability::RetentionPhaseGuard>,
 }
 
 impl RetentionWriteAdmission {
@@ -8431,6 +8444,13 @@ async fn observe_retention_backlog_once(state: &AppState) -> Result<()> {
         }
     };
     drop(connection);
+    record_backlog_observation(
+        snapshot.invocation_count,
+        snapshot
+            .oldest_occurred_at
+            .as_deref()
+            .and_then(crate::stats::parse_to_utc_datetime),
+    );
     store
         .record_retention_backlog_observation(
             crate::maintenance_store::RetentionBacklogObservation {
@@ -8457,7 +8477,7 @@ pub(crate) fn spawn_retention_backlog_observer(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut ticker = interval(RETENTION_BACKLOG_OBSERVER_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
@@ -10715,6 +10735,10 @@ pub(crate) struct ArchiveExpiryBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) coverage_end_at: String,
 }
+
+#[cfg(test)]
+#[path = "../tests/lightweight/retention_observability.rs"]
+mod retention_observability;
 
 #[cfg(test)]
 mod retention_summary_tests {

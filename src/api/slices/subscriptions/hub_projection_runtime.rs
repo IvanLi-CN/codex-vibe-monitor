@@ -5,7 +5,7 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) {
         let hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             loop {
                 let Some(delay) = hub.prompt_cache_topic_reconcile_delay(&topic).await else {
                     hub.finish_prompt_cache_topic_reconcile(&topic).await;
@@ -99,7 +99,7 @@ impl SubscriptionHub {
     ) {
         let hub = state.subscription_hub.clone();
         let deadline = Instant::now() + PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE;
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
             if Instant::now().saturating_duration_since(deadline)
                 > PROMPT_CACHE_TOPIC_REFRESH_DEBOUNCE
@@ -132,7 +132,7 @@ impl SubscriptionHub {
         topic: SubscriptionTopic,
     ) {
         let hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             loop {
                 let gate = crate::db_pressure::global_db_pressure_gate();
                 let observed_eligibility = gate.eligibility_generation();
@@ -1206,7 +1206,7 @@ impl SubscriptionHub {
 
         if let Some(delay) = delay {
             let hub = state.subscription_hub.clone();
-            tokio::spawn(async move {
+            spawn_performance(state.observability.clone(), async move {
                 tokio::time::sleep(delay).await;
                 if !hub.has_active_topic_key(&topic_key).await {
                     tracing::debug!(
@@ -1299,7 +1299,7 @@ impl SubscriptionHub {
         delay: Duration,
     ) {
         let hub = state.subscription_hub.clone();
-        tokio::spawn(async move {
+        spawn_performance(state.observability.clone(), async move {
             tokio::time::sleep(delay).await;
             hub.run_summary_topic_refresh(state, topic).await;
         });

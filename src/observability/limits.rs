@@ -24,8 +24,12 @@ impl SeriesBudget {
         if entries.0.contains(&entry) {
             return true;
         }
-        // All histograms have 16 finite buckets, +Inf, sum and count.
-        let weight = if kind == 2 { 19 } else { 1 };
+        // Count the actual configured finite buckets, +Inf, sum and count.
+        let weight = if kind == 2 {
+            histogram_buckets(key.name()).len() + 3
+        } else {
+            1
+        };
         if entries.1 + weight > APP_SERIES_LIMIT {
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return false;

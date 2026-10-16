@@ -39,6 +39,8 @@
 - REQ-022: 共享 Tempo 接入使用独立 CVM tenant，摄入与查询凭据分离，认证入口覆盖 tenant header，拒绝伪造权限并关闭跨租户查询；原始接口不暴露公网。隔离 fixture 保留 24 小时，WAL/blocks/工作目录同处 512 MiB tmpfs、1 CPU/2 GiB、512 KiB/s/1 MiB burst、128 KiB/trace、查询并发 2/超时 5 秒；这些不构成正式容量或存储建议。 covers: [ADR 0034](../../adr/0034-shared-tempo-request-tracing.md)
 - REQ-023: Grafana 原生统计及案例页提供正常随机候选、慢响应（≥30 秒）、高本地等待（≥250 ms）、重试、错误/取消五类，每类最多 3 条可展开的完整案例；案例查询只接受 `cvm.export_completeness=detailed`，摘要记录继续用于总体统计但不进入案例列表。随机候选为独立 TraceID 哈希 1/16 标记，不限制采集。手动刷新，时间及 service/environment/instance/endpoint 筛选跳转，原生瀑布图展示选定 trace；缺测、截断、未完整、导出丢失及超过 24 小时窗口明确说明。 covers: [案例合同](../../design/request-lifecycle-observability.md)
 
+- REQ-024: 归档、补算和统计的固定事件接口、提交工作量、独立维护库结果、成功响应延迟、真实覆盖缺口与长尾桶遵循 [竞争观测合同](CONTENTION-METRICS.md)。指标先上线，后续修复复用同一口径；生产基线积累不阻塞修复开发或 PR 就绪。新增 Histogram 按实际桶数消耗现有系列预算，抓取不得新增 SQL 或文件扫描。
+
 ## API Contract
 
 - `GET /api/system/observability`: 保留本地能力、状态、Grafana public URL、固定 dashboard UID 与变量；增加 `tracing` 的本地 enabled/state、datasourceUid=`cvm-tempo` 与 caseDashboardUid=`cvm-proxy-cases`，不查询 Tempo 决定健康，不含凭据与外部历史。
@@ -66,6 +68,7 @@
 
 - VER-010: 定向生命周期回归覆盖前置拒绝、两次 attempt、EOF/error/cancel 仅结束一次及晚到 commit；等待统计验证嵌套区间并集、分母、固定标签及有界丢弃，导出白名单与初始化失败隔离通过回归。 covers: REQ-017, REQ-018, REQ-019, REQ-020, REQ-021
 - VER-011: 既有隔离验收实际摄入 Tempo、按类别搜索及 TraceID 获取晚到持久化，验证独立权限与伪造 tenant 被覆盖；当前 provision 的桌面及 393×852 Grafana 案例和瀑布图提供视觉证据。 covers: REQ-022, REQ-023
+- VER-012: 固定模块事件与缓存句柄覆盖真实成功、失败、取消、重复通知和确认，提交行数只在事务成功后累计，缺测不伪造零。归档 `write_hold` 覆盖成功准入至许可释放，包括其间文件复核和提交后清理；`transaction` 单独计量事务，部分批次因预算或取消退出不得报告完整成功。固定统计查询只计量对应 SQL：`long_term_overlap` 来自规范区间表的重叠查询，状态和日汇总读取不混入；真实 SQLite 查询的结果与错误保持不变。固定标签组合和实际 Histogram 桶数遵守现有系列预算，抓取不增加 SQL 或文件扫描。 covers: REQ-003, REQ-004, REQ-006, REQ-024
 
 ## Related ADRs
 
@@ -97,3 +100,16 @@ Mock-only `ui_demo` evidence uses the current implementation, including the reta
 
 ![Proxy runtime Grafana desktop](assets/proxy-runtime-grafana-desktop.png)
 ![Proxy runtime Grafana mobile](assets/proxy-runtime-grafana-mobile393.png)
+
+归档、补算、统计、比较和终态保护证据使用隔离 Agent VM 中实际 provision 的 Grafana/Prometheus 合成预览。桌面视口为 1440×1000，窄屏为 393×852，通过视口模拟和面板区域截取保留真实 Grafana 布局与原生滚动。正常、维护库锁冲突、低样本和缺测分别使用固定 fixture；缺测保留 Unknown，历史窗口没有样本时不伪造对照值。截图中的各自五分钟合成窗口用于验证展示，不表示生产优化幅度。十张 current-only 图片没有同路径基线；归档桌面与窄屏图展示独立 transaction、完整 write_hold 和同窗阶段样本。补算桌面图仅为有未确认义务且已排期的任务显示倒计时；窄屏图展示无未确认义务时的 Unknown。图片均已向主人展示并确认准确。页面区域裁剪不改变图表内容。
+
+![Retention transaction and complete write-hold phases with sample counts](assets/contention-retention-desktop.png)
+![Retention phases and samples on a narrow viewport](assets/contention-retention-mobile.png)
+![Backfill attempts and outstanding obligations under lock pressure](assets/contention-backfill-failures-desktop.png)
+![No outstanding backfill obligation leaves the retry countdown unknown](assets/contention-backfill-idle-mobile.png)
+![Summary outcomes and successful response latency](assets/contention-summary-desktop.png)
+![Normalized work and historical comparison](assets/contention-comparison-desktop.png)
+![Terminal observation and recovery protection](assets/contention-proxy-protection-desktop.png)
+![Summary and sample counts on a narrow viewport](assets/contention-summary-mobile.png)
+![Insufficient successful samples](assets/contention-low-samples-mobile.png)
+![Missing observations remain unknown](assets/contention-missing-mobile.png)

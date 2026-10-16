@@ -1,4 +1,7 @@
 use super::*;
+use crate::observability::contention::{
+    PerformanceGauge, StatsProjection, StatsQuery, current_performance, observe_query,
+};
 
 pub(super) fn projection_interval_key(
     bucket_kind: &'static str,
@@ -195,12 +198,15 @@ pub(super) async fn load_long_term_projection_interval_index(
         .filter_map(|(_, date)| long_term_day_epoch_bounds(*date).map(|(_, end)| end * 1_000))
         .max()
         .context("invalid long-term projection interval date range")?;
-    let canonical_rows = sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
-        "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+    let canonical_rows = observe_query(
+        StatsQuery::LongTermOverlap,
+        sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
+            "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+        )
+        .bind(last_end_ms)
+        .bind(first_start_ms)
+        .fetch_all(pool),
     )
-    .bind(last_end_ms)
-    .bind(first_start_ms)
-    .fetch_all(pool)
     .await?;
     let mut builder = QueryBuilder::<Sqlite>::new(
         "SELECT invocation_row_id, bucket_kind, bucket_date, bucket_key, dimension, series_key, interval_start_ms, interval_end_ms FROM long_term_projection_intervals legacy WHERE bucket_date IN (",
@@ -709,6 +715,12 @@ pub(super) async fn apply_long_term_projection_incremental_with_runtime_and_cont
     .execute(&mut *tx)
     .await?;
     control.commit(tx, permit).await?;
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        metrics.set_performance(
+            PerformanceGauge::ProjectionLastGood(StatsProjection::LongTerm),
+            Utc::now().timestamp() as f64,
+        );
+    }
     let mut runtime = runtime.lock().await;
     runtime.interval_index = interval_index;
     runtime.loaded_interval_dates = loaded_dates;

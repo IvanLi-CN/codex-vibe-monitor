@@ -48,6 +48,7 @@ impl TrackedTerminalJournal {
     ) {
         // This interface is invoked only after the invocation/attempt transaction
         // commits. Read ownership can be released even if the journal ACK retries.
+        self.pending.observe_materialized(id, occurred_at, raw);
         if let Some(store) = self
             .runtime_attempts
             .lock()

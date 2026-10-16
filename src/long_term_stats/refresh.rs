@@ -26,11 +26,12 @@ pub(super) async fn mark_long_term_stats_backfill_preparing_with_control(
 }
 
 pub(crate) fn spawn_long_term_stats_backfill(
+    observability: Arc<ObservabilityRuntime>,
     pool: Pool<Sqlite>,
     retention_days: u64,
     shutdown: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(observability, async move {
         let mut ticker = interval(Duration::from_secs(60));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
         loop {

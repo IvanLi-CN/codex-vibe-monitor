@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Add bounded contention observations and module-specific Grafana comparisons",
+    "release_unit_description": "CVM contention observability",
+    "affected_contracts": ["public-api"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "minor",
+      "reasoning": "Add fixed Prometheus metric families and compatible dashboard capabilities while preserving business APIs, scheduling and durable formats.",
+      "assessed_at": "2026-10-15T13:00:00Z",
+      "evidence": ["docs/specs/performance-telemetry/CONTENTION-METRICS.md"]
+    },
+    "current": {
+      "impact": "minor",
+      "scope_drift": {"detected": false, "description": "none"},
+      "reasoning": "New collector interfaces and long-tail histogram buckets are additive; existing metric semantics and application series limits are preserved.",
+      "reassessed_at": "2026-10-15T13:00:00Z",
+      "evidence": ["src/observability/contention.rs", "src/observability/limits.rs"]
+    },
+    "verified": {
+      "impact": "minor",
+      "reasoning": "The integrated module changes add fixed metric families and dashboard capabilities without changing HTTP/SSE fields, business SQL, indexes, scheduling, retry policy or durable formats. Module CI and source inspection support compatible API impact; this classification does not certify the separately required integrated performance or delivery gates.",
+      "verified_at": "2026-10-16T02:04:00Z",
+      "evidence": [
+        "docs/specs/performance-telemetry/CONTENTION-METRICS.md",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38757311280",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38767791790",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/38837177580"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "compatible",
+      "supported_consumer_range": "Existing HTTP/SSE consumers and existing Prometheus queries remain supported; added fixed metrics do not change response fields.",
+      "evidence": ["docs/specs/performance-telemetry/CONTENTION-METRICS.md"]
+    },
+    "persistent_state": {
+      "applicable": false,
+      "state_description": "Observations and cached handles are process memory; no SQLite, journal, raw-file or projection-format migration occurs in the observability release.",
+      "source_program_compatibility_range": "All durable formats supported by the baseline remain unchanged.",
+      "evidence": ["docs/specs/performance-telemetry/CONTENTION-METRICS.md"]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["contention-observability"],
+    "maximum_verified_impact": "minor",
+    "calculation_evidence": ["classification.verified: the single contention-observability release member has compatible additive API impact and no persistent-state change."]
+  }
+}

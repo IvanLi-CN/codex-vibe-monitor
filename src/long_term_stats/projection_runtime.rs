@@ -1,4 +1,7 @@
 use super::*;
+use crate::observability::contention::{
+    PendingKind, PerformanceGauge, StatsProjection, current_performance, spawn_performance,
+};
 
 pub(super) const LONG_TERM_PROJECTION_CONSUMER: &str = "long_term_v1";
 pub(super) const LONG_TERM_PROJECTION_FLUSH_INTERVAL: Duration = Duration::from_secs(60);
@@ -527,12 +530,13 @@ pub(crate) fn spawn_long_term_projection_supervisor(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     let backfill_handle = spawn_long_term_stats_backfill(
+        state.observability.clone(),
         state.pool.clone(),
         state.config.long_term_stats_hourly_retention_days,
         cancel.clone(),
     );
-    tokio::spawn(async move {
-        let supervisor_handle = tokio::spawn(async move {
+    spawn_performance(state.observability.clone(), async move {
+        let supervisor_handle = spawn_performance(state.observability.clone(), async move {
             let pressure_gate = crate::db_pressure::global_db_pressure_gate();
             let mut pressure_eligibility_generation = pressure_gate.eligibility_generation();
             let mut pressure_retry_pending = false;
@@ -1865,6 +1869,25 @@ pub(super) async fn flush_long_term_projection_inner(
     } else {
         None
     };
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        metrics.set_performance(
+            PerformanceGauge::ProjectionPending(
+                StatsProjection::LongTerm,
+                PendingKind::DirtyBuckets,
+            ),
+            dirty_bucket_count as f64,
+        );
+        metrics.set_performance(
+            PerformanceGauge::ProjectionPending(StatsProjection::LongTerm, PendingKind::Rows),
+            projection_health.pending_event_count as f64,
+        );
+        if dirty_bucket_count == 0 && deferred_repair_count == 0 {
+            metrics.set_performance(
+                PerformanceGauge::ProjectionLastGood(StatsProjection::LongTerm),
+                Utc::now().timestamp() as f64,
+            );
+        }
+    }
     let interval_bytes = runtime
         .interval_index
         .iter()
