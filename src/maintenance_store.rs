@@ -5742,13 +5742,13 @@ mod tests {
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
-        assert_eq!(MANAGED_TASKS.len(), 23);
+        assert_eq!(MANAGED_TASKS.len(), 24);
         assert_eq!(
             MANAGED_TASKS
                 .iter()
                 .filter(|(_, _, _, _, is_manual)| *is_manual)
                 .count(),
-            6
+            7
         );
         assert_eq!(STARTUP_BACKFILL_TASKS.len(), 16);
     }
