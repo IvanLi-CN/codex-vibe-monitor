@@ -701,6 +701,8 @@ fn litellm_rate(key: &str, source_value: f64) -> PricingRate {
         "usd_per_request"
     } else if key.contains("per_session") {
         "usd_per_session"
+    } else if key.contains("per_text_message") {
+        "usd_per_text_message"
     } else if key.contains("per_message") {
         "usd_per_message"
     } else if key.contains("per_credit") {
@@ -973,6 +975,7 @@ mod tests {
                     "output_cost_per_image_0.5K": 0.01,
                     "file_search_cost_per_1k_calls": 0.002,
                     "vector_store_cost_per_gb_per_day": 0.03,
+                    "input_cost_per_text_message": 0.004,
                     "search_context_cost_per_query": {
                         "search_context_size_low": 0.01,
                         "search_context_size_medium": 0.02,
@@ -1053,6 +1056,14 @@ mod tests {
             .find(|rate| rate.key == "vector_store_cost_per_gb_per_day")
             .expect("storage rate");
         assert_eq!(storage_rate.unit, "usd_per_gb_per_day");
+        let text_message_rate = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "input_cost_per_text_message")
+            .expect("text message rate");
+        assert_eq!(text_message_rate.source_unit, "usd_per_text_message");
+        assert_eq!(text_message_rate.unit, "usd_per_text_message");
+        assert_eq!(text_message_rate.value, 0.004);
         for (key, value) in [
             (
                 "search_context_cost_per_query.search_context_size_low",
