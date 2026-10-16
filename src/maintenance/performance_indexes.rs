@@ -288,7 +288,7 @@ async fn prepare_one_performance_index(
         Ok(connection) => connection,
         Err(error) => {
             let error = anyhow::Error::from(error);
-            return preparation_error_stop(&error, deadline, shutdown).map_or(Err(error), Ok);
+            return preparation_error_stop(&error, deadline, shutdown).ok_or(error);
         }
     };
     let mut transaction_open = false;
@@ -386,7 +386,7 @@ async fn prepare_one_performance_index(
     closed?;
     match outcome {
         Ok(outcome) => Ok(outcome),
-        Err(error) => preparation_error_stop(&error, deadline, shutdown).map_or(Err(error), Ok),
+        Err(error) => preparation_error_stop(&error, deadline, shutdown).ok_or(error),
     }
 }
 
