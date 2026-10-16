@@ -227,7 +227,11 @@ class Metrics:
             self.counter("cvm_backfill_wake_attempts_total", rate, {**labels, "outcome": "busy" if failing else "committed"})
             self.gauge("cvm_backfill_wake_pending_tasks", 1 if failing else 0, labels)
             self.gauge("cvm_backfill_wake_oldest_timestamp_seconds", START - 180 if failing else 0, labels)
-            self.gauge("cvm_backfill_wake_next_due_timestamp_seconds", now + 5 if failing else 0, labels)
+            # Cover a scheduled obligation, an obligation without a deadline, and
+            # a business deadline with no outstanding wake confirmation.
+            scheduled = (failing and task == "prompt_cache_conversations_materialization") or (
+                not failing and task == "historical_rollups")
+            self.gauge("cvm_backfill_wake_next_due_timestamp_seconds", now + 5 if scheduled else 0, labels)
         for operation in ("wake", "progress", "control", "run", "cleanup"):
             labels = {"operation": operation}
             self.counter("cvm_maintenance_store_writes_total", rate, {**labels, "outcome": "locked" if failing else "committed"})

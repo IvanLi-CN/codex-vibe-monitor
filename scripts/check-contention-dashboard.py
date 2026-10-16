@@ -6,6 +6,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import time
 import urllib.parse
 import urllib.request
 
@@ -31,9 +32,12 @@ def fetch(url):
         return json.load(response)
 
 
-def evaluate(base, expression):
+def evaluate(base, expression, at=None):
+    parameters = {"query": expression}
+    if at is not None:
+        parameters["time"] = at
     response = fetch(base + "/api/datasources/proxy/uid/cvm-prometheus/api/v1/query?" +
-                     urllib.parse.urlencode({"query": expression}))
+                     urllib.parse.urlencode(parameters))
     if response.get("status") != "success" or response.get("warnings"):
         raise AssertionError({"query": expression, "response": response})
     return response["data"]["result"]
@@ -58,12 +62,12 @@ def validate(base):
                 continue
             result = evaluate(base, substitute(target["expr"]))
             assert all(math.isfinite(value) for value in values(result)), panel["title"]
-            if 201 <= panel["id"] <= 236 and target["refId"] == "A":
+            if 201 <= panel["id"] <= 236 and panel["id"] != 215 and target["refId"] == "A":
                 assert result, "normal fixture must populate " + panel["title"]
             checked += 1
 
-    def query(panel_id, instance="fixture", target=0):
-        return evaluate(base, substitute(expected[panel_id]["targets"][target]["expr"], instance))
+    def query(panel_id, instance="fixture", target=0, at=None):
+        return evaluate(base, substitute(expected[panel_id]["targets"][target]["expr"], instance), at)
 
     # Gate and distribution use exactly the same time window, including sparse data.
     for instance in ("fixture", "failures", "low-samples", "missing"):
@@ -87,6 +91,12 @@ def validate(base):
     assert max(values(query(206, "failures"))) > 1000
     assert max(values(query(214, "failures"))) > 180
     assert values(query(214)) and set(values(query(214))) == {0}
+    assert not query(215), "no pending confirmation must hide even an existing business deadline"
+    assert not query(215, "missing"), "missing scheduling data must remain unknown"
+    assert {item["metric"]["task"] for item in query(215, "failures")} == {
+        "prompt_cache_conversations_materialization"
+    }, "pending confirmations without a deadline must remain unknown"
+    assert values(query(215, "failures", at=time.time() + 30)) == [0], "an overdue scheduled obligation must show zero"
     assert any(item["metric"].get("outcome") == "unavailable" and
                float(item["value"][1]) > 0 for item in query(221, "failures"))
     assert not query(234, target=1), "unseeded historic window must remain unknown"

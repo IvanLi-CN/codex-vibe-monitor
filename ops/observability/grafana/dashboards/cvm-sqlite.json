@@ -791,7 +791,7 @@
       "id": 215,
       "title": "距离下次尝试",
       "type": "timeseries",
-      "description": "独立下一次调度时间。该字段只观察当前调度，观测版不更改重试行为。",
+      "description": "只显示有待确认义务且已设置下次尝试时间的倒计时；无义务或未设置时间保持 Unknown，已到期的有效计划显示 0 秒。观测版不更改重试行为。",
       "gridPos": {
         "x": 16,
         "y": 39,
@@ -805,7 +805,7 @@
       "targets": [
         {
           "refId": "A",
-          "expr": "clamp_min(cvm_backfill_wake_next_due_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} - time(), 0)",
+          "expr": "clamp_min((cvm_backfill_wake_next_due_timestamp_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} > 0) - time(), 0) and on(service, environment, instance, task) (cvm_backfill_wake_pending_tasks{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} > 0)",
           "legendFormat": "{{task}} / {{instance}}",
           "range": true,
           "instant": false,
