@@ -174,7 +174,7 @@ pub(super) async fn confirm_startup_backfill_progress_write(
     Ok(result)
 }
 
-async fn confirm_startup_backfill_wake_obligations(cancel: &CancellationToken) {
+pub(super) async fn confirm_startup_backfill_wake_obligations(cancel: &CancellationToken) {
     if cancel.is_cancelled() {
         return;
     }

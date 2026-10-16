@@ -17,6 +17,7 @@ use observability::{
 use wake_confirmation::{
     StartupBackfillWakeConfirmation, WakeProgressWriteContext,
     confirm_startup_backfill_progress_write, confirm_startup_backfill_wake_obligation,
+    confirm_startup_backfill_wake_obligations,
 };
 mod prompt_cache_control;
 mod task_identity;
