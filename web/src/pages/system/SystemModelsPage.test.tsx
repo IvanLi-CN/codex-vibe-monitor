@@ -41,9 +41,9 @@ vi.mock("../../lib/api", async () => {
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
-function makeImageQuote(output = 30): PricingQuote {
+function makeImageQuote(output = 30, model = "gpt-image-2.5-flare"): PricingQuote {
   return {
-    model: "gpt-image-2.5-flare",
+    model,
     providerId: "provider-a",
     providerName: "Provider A",
     source: "litellm",
@@ -166,7 +166,12 @@ function makeSettings(): SettingsPayload {
       responseBodyLoggingEnabled: false,
       encryptedSessionOwnerRoutingEnabled: false,
       defaultHijackEnabled: true,
-      models: ["preset-without-price", "shared-model", "gpt-image-2.5-flare"],
+      models: [
+        "preset-without-price",
+        "shared-model",
+        "gpt-image-2.5-flare",
+        "gpt-image-2.5-sunburst",
+      ],
       enabledModels: ["shared-model"],
     },
     forwardProxy: { message: "" },
@@ -194,7 +199,7 @@ function makeSettings(): SettingsPayload {
           source: "custom",
         },
       ],
-      quotes: [makeImageQuote(29)],
+      quotes: [makeImageQuote(29), makeImageQuote(30, "gpt-image-2.5-sunburst")],
     },
   };
 }
@@ -817,6 +822,7 @@ describe("SystemModelsPage", () => {
     renderPage();
     await flushEffects();
     expect(host?.textContent).toContain("gpt-image-2.5-flare");
+    expect(host?.textContent).toContain("gpt-image-2.5-sunburst");
     expect(host?.textContent).toContain("output_cost_per_image_token");
     expect(host?.textContent).toContain("仅明细报价");
     expect(host?.textContent).toContain("没有完整的通用 token 兼容价");
@@ -848,7 +854,7 @@ describe("SystemModelsPage", () => {
 
     expect(apiMocks.updatePricingSettings).toHaveBeenCalledWith(
       expect.objectContaining({
-        quotes: [
+        quotes: expect.arrayContaining([
           expect.objectContaining({
             model: "gpt-image-2.5-flare",
             source: "custom",
@@ -856,7 +862,7 @@ describe("SystemModelsPage", () => {
               expect.objectContaining({ key: "output_cost_per_image_token", value: 31 }),
             ]),
           }),
-        ],
+        ]),
       }),
     );
   });
