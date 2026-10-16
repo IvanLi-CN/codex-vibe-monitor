@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.7.0",
+  "base_stable_version": "4.6.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-16T16:43:51Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.7.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "886bb1b730fe82d3fe28bb48cc30f95768434e8e",
+  "pr_number": 1116,
+  "pr_title": "feat(observability): expose maintenance contention and Grafana comparisons",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.7.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.7.0",
+  "target_sha": "8375e0d83cecb50a22d93bb815aa5cff91d67a05",
+  "type_label": "type:minor"
+}
