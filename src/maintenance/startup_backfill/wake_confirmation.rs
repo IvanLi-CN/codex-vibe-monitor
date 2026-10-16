@@ -296,7 +296,7 @@ pub(super) async fn confirm_startup_backfill_wake_obligation(
     scheduler: &StartupBackfillScheduler,
 ) -> Result<StartupBackfillWakeConfirmation> {
     let task = attempt.key.task;
-    let (confirmation, _) = observe_wake_attempt(task, async {
+    let confirmation = observe_wake_attempt(task, async {
         confirm_startup_backfill_wake_obligation_inner(pool, cancel, attempt, scheduler).await
     })
     .await?;
