@@ -101,11 +101,12 @@ Mock-only `ui_demo` evidence uses the current implementation, including the reta
 ![Proxy runtime Grafana desktop](assets/proxy-runtime-grafana-desktop.png)
 ![Proxy runtime Grafana mobile](assets/proxy-runtime-grafana-mobile393.png)
 
-归档、补算、统计、比较和终态保护证据使用隔离 Agent VM 中实际 provision 的 Grafana/Prometheus 合成预览。桌面视口为 1440×1000，窄屏为 393×852，通过视口模拟和面板区域截取保留真实 Grafana 布局与原生滚动。正常、维护库锁冲突、低样本和缺测分别使用固定 fixture；缺测保留 Unknown，历史窗口没有样本时不伪造对照值。截图中的各自五分钟合成窗口用于验证展示，不表示生产优化幅度。九张 current-only 图片没有同路径基线；归档桌面与窄屏图展示独立 transaction、完整 write_hold 和同窗阶段样本。页面区域裁剪不改变图表内容。
+归档、补算、统计、比较和终态保护证据使用隔离 Agent VM 中实际 provision 的 Grafana/Prometheus 合成预览。桌面视口为 1440×1000，窄屏为 393×852，通过视口模拟和面板区域截取保留真实 Grafana 布局与原生滚动。正常、维护库锁冲突、低样本和缺测分别使用固定 fixture；缺测保留 Unknown，历史窗口没有样本时不伪造对照值。截图中的各自五分钟合成窗口用于验证展示，不表示生产优化幅度。十张 current-only 图片没有同路径基线；归档桌面与窄屏图展示独立 transaction、完整 write_hold 和同窗阶段样本。补算桌面图仅为有未确认义务且已排期的任务显示倒计时；窄屏图展示无未确认义务时的 Unknown。图片均已向主人展示并确认准确。页面区域裁剪不改变图表内容。
 
 ![Retention transaction and complete write-hold phases with sample counts](assets/contention-retention-desktop.png)
 ![Retention phases and samples on a narrow viewport](assets/contention-retention-mobile.png)
 ![Backfill attempts and outstanding obligations under lock pressure](assets/contention-backfill-failures-desktop.png)
+![No outstanding backfill obligation leaves the retry countdown unknown](assets/contention-backfill-idle-mobile.png)
 ![Summary outcomes and successful response latency](assets/contention-summary-desktop.png)
 ![Normalized work and historical comparison](assets/contention-comparison-desktop.png)
 ![Terminal observation and recovery protection](assets/contention-proxy-protection-desktop.png)
