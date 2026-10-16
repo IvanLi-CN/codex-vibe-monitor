@@ -25,7 +25,7 @@
 
 ## Related Changes
 
-- Direct delivery: [PR #1120](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1120). This LiteLLM quote-catalog candidate is based on `origin/main` at `3b3600e5e0bb931686ae08861a00c778e9e1bcf8`; the runtime implementation candidate is `62121e6eb261ba40a7c0a655bdf47eedf5387bc0` and test follow-up `1893d0296d0cf97a2e1e376bb96efd683b392b10` adds coverage for both GPT Image 2.5 IDs.
+- Direct delivery: [PR #1120](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1120). This LiteLLM quote-catalog candidate is based on `origin/main` at `3b3600e5e0bb931686ae08861a00c778e9e1bcf8`; the runtime implementation candidate is `62121e6eb261ba40a7c0a655bdf47eedf5387bc0` and test follow-up `20ed638e` adds coverage for both GPT Image 2.5 IDs and simultaneous quote apply.
 - Compatibility classification: additive API and service-owned SQLite state, verified as `minor` in `assets/sync-memory-version-impact-record.json`; release labels are `type:minor` and `channel:stable`.
 
 ## References
