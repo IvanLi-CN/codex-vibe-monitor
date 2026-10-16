@@ -7,9 +7,9 @@ use super::*;
 #[cfg(test)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PublicationTestPhase {
-    AfterRename,
-    AfterCommit,
-    AfterNativeDrain,
+    Renamed,
+    Committed,
+    NativeDrained,
 }
 
 #[cfg(test)]
@@ -132,7 +132,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         fs::rename(temporary_file_path, final_file_path).context("publish prepared archive")?;
         renamed = true;
         #[cfg(test)]
-        publication_test_phase(PublicationTestPhase::AfterRename).await?;
+        publication_test_phase(PublicationTestPhase::Renamed).await?;
         // Keep the established rename -> file/directory sync -> manifest COMMIT
         // durability contract. Complete hashing and later cleanup are outside it.
         sync_published_archive_file(final_file_path)?;
@@ -155,7 +155,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
             0,
         );
         #[cfg(test)]
-        publication_test_phase(PublicationTestPhase::AfterCommit).await?;
+        publication_test_phase(PublicationTestPhase::Committed).await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -164,7 +164,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         Ok(()) => {
             let fence = resources.return_to_pool_retaining_archive_fence().await?;
             #[cfg(test)]
-            publication_test_phase(PublicationTestPhase::AfterNativeDrain).await?;
+            publication_test_phase(PublicationTestPhase::NativeDrained).await?;
             // The manifest is durable and SQLite has returned its connection.
             // Keep only the directory fence while removing the rollback link.
             if let Some(backup) = backup_path.as_deref() {

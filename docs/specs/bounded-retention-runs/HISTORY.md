@@ -4,6 +4,8 @@
 
 ADR 0040 and REQ-BRR-024 separate artifact preparation and post-commit cleanup from the admitted SQLite transaction without weakening source, archive or raw-link proof. The existing monthly file batch contract and long-term capacity goals remain; this boundary introduces no production deployment authorization or claim that historical capacity targets passed.
 
+PR #1125 integrates the retention repair from PR #1126 with the parent-owned monthly replacement path. Both now share native connection-drain ownership, while publication retains its directory fence for compensation after releasing SQLite admission. Regression coverage includes confirmed-commit accounting, cancellation of cleanup waiters, uncertain commit recovery, actual archived work and the unchanged terminal competition budgets. This integration does not certify the older long-term capacity targets or production-scale index preparation.
+
 ## 2026-10-11 Candidate Refresh
 
 PR #1098 is bound to base `7502e4e8c2d41328ac3ef95eb630bcb46e3e2bf7` and head `5c203d70132e81e7878851b0d46d3c3c5fa3a093`. The archive marker repair now fills missing sibling targets while preserving stale markers; required CI for that head passed before this evidence refresh, and post-refresh CI plus Tier 4 review remain pending.

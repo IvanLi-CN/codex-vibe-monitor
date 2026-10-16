@@ -263,6 +263,14 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             .initialize_schema_for_test()
             .await
             .expect("maintenance schema");
+        assert_eq!(
+            sqlx::query("UPDATE managed_tasks SET enabled=1 WHERE task_key='startup_backfill.reasoning_effort'")
+                .execute(&pool)
+                .await
+                .expect("enable the task exercised by the independent maintenance lock")
+                .rows_affected(),
+            1,
+        );
         assert!(
             crate::maintenance_store::global().is_none(),
             "joint fixture owns this process"
@@ -337,6 +345,19 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .snapshot()
             .await;
+    // The joint scenario models a project foreground writer, which takes write
+    // admission before a connection. Retention must wait without taking the
+    // remaining read connection. The original scenario still covers an external
+    // SQLite writer that bypasses the project's coordinator.
+    let pressure_admission = if maintenance_contention {
+        Some(
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+                .await,
+        )
+    } else {
+        None
+    };
     let mut locked_connection = state
         .pool
         .acquire()
@@ -616,7 +637,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         "complete runtime requests must never enter InteractiveProxy write admission"
     );
     println!(
-        "runtime_pressure mode={mode} requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
+        "runtime_pressure mode={mode} requests={request_count} confirmed_terminals={request_count} sqlite_lock_held_through_terminal=true coordinated_write_pressure={maintenance_contention} request_p95_ms={} interactive_admissions=0 attempt_progress_sql=0 terminal_pending_records={} terminal_pending_materialization={} terminal_pending_bytes={}",
         p95.as_millis(),
         held_lock_journal.pending_records,
         held_lock_journal.pending_materialization_records,
@@ -626,7 +647,8 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         .execute(&mut *locked_connection)
         .await
         .expect("release SQLite write pressure lock");
-    drop(locked_connection);
+    locked_connection.return_to_pool().await;
+    drop(pressure_admission);
     let drain_started = Instant::now();
     state
         .sqlite_batch_writer

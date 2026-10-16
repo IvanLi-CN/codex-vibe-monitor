@@ -9,6 +9,8 @@ pub(crate) struct RetentionTransactionResources {
     admission: Option<RetentionWriteAdmission>,
     archive_lock: Option<RetentionArchiveFileLock>,
     transaction_started: bool,
+    #[cfg(test)]
+    return_probe_operation: Option<&'static str>,
 }
 
 struct RetentionCleanupParts {
@@ -27,6 +29,7 @@ enum RetentionConnectionCleanup {
 #[cfg(test)]
 #[derive(Default)]
 pub(crate) struct RetentionReturnToPoolProbe {
+    pub(crate) operation: Option<&'static str>,
     pub(crate) returned: tokio::sync::Notify,
     pub(crate) resume: tokio::sync::Notify,
     pub(crate) pause_at_return: AtomicUsize,
@@ -50,6 +53,8 @@ impl RetentionTransactionResources {
             admission: Some(admission),
             archive_lock: Some(archive_lock),
             transaction_started: false,
+            #[cfg(test)]
+            return_probe_operation: None,
         }
     }
 
@@ -62,6 +67,8 @@ impl RetentionTransactionResources {
             admission: Some(admission),
             archive_lock: None,
             transaction_started: false,
+            #[cfg(test)]
+            return_probe_operation: None,
         }
     }
 
@@ -69,6 +76,11 @@ impl RetentionTransactionResources {
         self.connection
             .as_mut()
             .expect("retention transaction connection is present")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_return_for_test(&mut self, operation: &'static str) {
+        self.return_probe_operation = Some(operation);
     }
 
     pub(crate) fn mark_transaction_started(&mut self) {
@@ -113,7 +125,12 @@ impl RetentionTransactionResources {
             return Ok(None);
         };
         #[cfg(test)]
-        let return_probe = RETENTION_TEST_RETURN_TO_POOL.try_with(Arc::clone).ok();
+        let return_probe = RETENTION_TEST_RETURN_TO_POOL
+            .try_with(Arc::clone)
+            .ok()
+            .filter(|probe| {
+                probe.operation.is_none() || probe.operation == self.return_probe_operation
+            });
         #[cfg(not(test))]
         let return_probe = None;
         // A cancelled waiter drops only the JoinHandle. This independent owner

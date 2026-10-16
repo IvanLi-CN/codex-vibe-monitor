@@ -24,6 +24,16 @@ async fn terminal_commits_survive_locked_backfill_confirmation_and_coalesce_noti
         .initialize_schema_for_test()
         .await
         .expect("initialize maintenance progress and controls");
+    assert_eq!(
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1 WHERE task_key='startup_backfill.reasoning_effort'"
+        )
+        .execute(&maintenance_pool)
+        .await
+        .expect("enable the task whose confirmation must survive BUSY")
+        .rows_affected(),
+        1,
+    );
     let mut locked = maintenance_pool
         .acquire()
         .await
@@ -135,6 +145,16 @@ async fn repeated_backfill_notifications_keep_actual_attempts_bounded_during_one
         .initialize_schema_for_test()
         .await
         .expect("seed controls");
+    assert_eq!(
+        sqlx::query(
+            "UPDATE managed_tasks SET enabled=1 WHERE task_key='startup_backfill.reasoning_effort'"
+        )
+        .execute(&pool)
+        .await
+        .expect("enable the task before holding its maintenance write lock")
+        .rows_affected(),
+        1,
+    );
     let metrics = crate::ObservabilityRuntime::new(true);
     let task = StartupBackfillTask::ReasoningEffort;
     let mut locked = pool.acquire().await.expect("own maintenance lock");

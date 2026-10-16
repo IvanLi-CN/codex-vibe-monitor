@@ -237,7 +237,7 @@ where
             .zip(actual_sha256)
             .is_some_and(|(expected, actual)| expected != actual)
         {
-            bail!("archive artifact changed while awaiting retention admission");
+            bail!("archive artifact changed while awaiting retention admission; retry required");
         }
         if target_exists {
             bail!("archive target exists while awaiting retention admission");

@@ -944,6 +944,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 let p1_waiter_count = admission.p1_waiter_count();
                 let mut transaction_resources =
                     RetentionTransactionResources::new(source_connection, admission, archive_lock);
+                #[cfg(test)]
+                transaction_resources.observe_return_for_test("invocation_archive");
                 drop(admission_wait_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();

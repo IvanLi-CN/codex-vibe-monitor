@@ -400,6 +400,8 @@ pub(super) async fn prepare_summary_proof(
     };
     let mut transaction_resources =
         RetentionTransactionResources::new(connection, admission, archive_lock);
+    #[cfg(test)]
+    transaction_resources.observe_return_for_test("archive_snapshot_manifest");
     transaction_resources.mark_transaction_started();
     let begin_result = sqlx::query("BEGIN")
         .execute(transaction_resources.connection_mut())

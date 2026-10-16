@@ -149,7 +149,7 @@ async fn archive_publication_present_and_absent_predecessors_commit_and_clear_re
 async fn archive_publication_known_precommit_failure_restores_or_removes_only_its_artifact() {
     for existing in [false, true] {
         let fixture = PublicationFixture::new(existing).await;
-        let probe = publication_probe(PublicationTestPhase::AfterRename, true);
+        let probe = publication_probe(PublicationTestPhase::Renamed, true);
         probe.resume.notify_one();
         let result = RETENTION_PUBLICATION_TEST_PROBE
             .scope(probe, fixture.publish())
@@ -180,7 +180,7 @@ async fn archive_publication_known_precommit_failure_restores_or_removes_only_it
 #[tokio::test]
 async fn archive_publication_ambiguous_commit_retains_new_bytes_and_recovery_evidence() {
     let fixture = PublicationFixture::new(true).await;
-    let probe = publication_probe(PublicationTestPhase::AfterCommit, true);
+    let probe = publication_probe(PublicationTestPhase::Committed, true);
     probe.resume.notify_one();
     let error = RETENTION_PUBLICATION_TEST_PROBE
         .scope(probe, fixture.publish())
@@ -212,7 +212,7 @@ async fn archive_publication_ambiguous_commit_retains_new_bytes_and_recovery_evi
 #[tokio::test]
 async fn archive_publication_cleanup_retains_file_fence_after_releasing_database_admission() {
     let fixture = Arc::new(PublicationFixture::new(true).await);
-    let probe = publication_probe(PublicationTestPhase::AfterNativeDrain, false);
+    let probe = publication_probe(PublicationTestPhase::NativeDrained, false);
     let publication = tokio::spawn({
         let fixture = fixture.clone();
         let probe = probe.clone();
@@ -263,7 +263,7 @@ async fn archive_publication_cleanup_retains_file_fence_after_releasing_database
 #[tokio::test]
 async fn archive_publication_failed_file_restore_keeps_both_recovery_pointers() {
     let fixture = Arc::new(PublicationFixture::new(true).await);
-    let probe = publication_probe(PublicationTestPhase::AfterRename, true);
+    let probe = publication_probe(PublicationTestPhase::Renamed, true);
     let publication = tokio::spawn({
         let fixture = fixture.clone();
         let probe = probe.clone();
@@ -306,7 +306,7 @@ async fn archive_publication_failed_file_restore_keeps_both_recovery_pointers() 
 #[tokio::test]
 async fn archive_publication_cancellation_retains_recoverable_predecessor_until_worker_drain() {
     let fixture = Arc::new(PublicationFixture::new(true).await);
-    let probe = publication_probe(PublicationTestPhase::AfterRename, false);
+    let probe = publication_probe(PublicationTestPhase::Renamed, false);
     let publication = tokio::spawn({
         let fixture = fixture.clone();
         let probe = probe.clone();

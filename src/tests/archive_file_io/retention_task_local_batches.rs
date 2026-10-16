@@ -311,10 +311,13 @@ async fn retention_task_local_commit_counters_survive_cancel_during_native_drain
         1,
         Duration::from_secs(30),
     ));
-    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe::default());
+    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
+        operation: Some("invocation_archive"),
+        ..Default::default()
+    });
     probe
         .pause_at_return
-        .store(3, std::sync::atomic::Ordering::Release);
+        .store(1, std::sync::atomic::Ordering::Release);
     let observation = crate::TaskExecutionObservation::begin(
         "retention_archive",
         "Retention commit counter drain",
@@ -401,7 +404,10 @@ async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing
         1,
         Duration::from_secs(30),
     ));
-    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe::default());
+    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
+        operation: Some("archive_snapshot_manifest"),
+        ..Default::default()
+    });
     probe
         .pause_at_return
         .store(1, std::sync::atomic::Ordering::Release);
