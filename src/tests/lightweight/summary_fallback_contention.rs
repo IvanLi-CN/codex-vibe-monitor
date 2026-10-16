@@ -128,7 +128,31 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
                 panic!("tail reconstruction did not reach publication within its budget");
             }
         }
-        commit_fixture_terminal(state.as_ref(), "summary-bootstrap-fence-concurrent").await;
+        // Leave derived work pending: this race must recover from the P1 source fence
+        // even when the hourly-rollup cursor has not moved to force another replay.
+        let rollup_cursor = crate::load_hourly_rollup_live_progress(
+            &state.pool,
+            crate::HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        )
+        .await
+        .expect("read derived cursor before the concurrent terminal");
+        let writer = SqliteBatchWriter::spawn_for_test();
+        assert!(
+            writer
+                .enqueue_terminal(fixture_terminal("summary-bootstrap-fence-concurrent"))
+                .enqueued
+        );
+        writer.flush_buffered_for_test(&state.pool).await;
+        assert_eq!(
+            crate::load_hourly_rollup_live_progress(
+                &state.pool,
+                crate::HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            )
+            .await
+            .expect("read derived cursor after the concurrent terminal"),
+            rollup_cursor,
+            "P1 must commit while P2 remains pending"
+        );
         interleave.resume_build();
         let (result, hydrations) = refresh.await.expect("join stale target refresh");
         result.expect("defer stale target without losing its obligation");
@@ -201,6 +225,16 @@ async fn refresh_with_hydration_count(state: &AppState) -> (Result<()>, usize) {
 }
 
 async fn commit_fixture_terminal(state: &AppState, invoke_id: &str) {
+    SqliteBatchWriter::flush_for_test(
+        &state.pool,
+        vec![SqliteBatchWrite::TerminalInvocation(fixture_terminal(
+            invoke_id,
+        ))],
+    )
+    .await;
+}
+
+fn fixture_terminal(invoke_id: &str) -> BatchedTerminalInvocationWrite {
     let mut record =
         crate::tests::test_proxy_capture_record(invoke_id, &db_occurred_at_lower_bound(Utc::now()));
     record.payload = Some("{}".to_string());
@@ -208,21 +242,15 @@ async fn commit_fixture_terminal(state: &AppState, invoke_id: &str) {
     record.usage.cache_input_tokens = Some(0);
     record.usage.total_tokens = Some(19);
     record.cost = Some(1.5);
-    SqliteBatchWriter::flush_for_test(
-        &state.pool,
-        vec![SqliteBatchWrite::TerminalInvocation(
-            BatchedTerminalInvocationWrite {
-                enqueued_at: None,
-                attempts: Vec::new(),
-                diagnostic: None,
-                capture_started: None,
-                raw_capture: false,
-                dashboard_terminal_sequence: None,
-                terminal_projection_event_ids: Vec::new(),
-                startup_backfill_tasks: Vec::new(),
-                record,
-            },
-        )],
-    )
-    .await;
+    BatchedTerminalInvocationWrite {
+        enqueued_at: None,
+        attempts: Vec::new(),
+        diagnostic: None,
+        capture_started: None,
+        raw_capture: false,
+        dashboard_terminal_sequence: None,
+        terminal_projection_event_ids: Vec::new(),
+        startup_backfill_tasks: Vec::new(),
+        record,
+    }
 }
