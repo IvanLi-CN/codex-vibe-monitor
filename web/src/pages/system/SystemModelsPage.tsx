@@ -105,13 +105,13 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
   const { t } = useTranslation();
   if (!quotes.length) return null;
   const renderRates = (rates: PricingRate[]) => (
-    <div className="grid gap-1">
+    <div className="grid gap-1 desktop:grid-cols-2 xl:grid-cols-3">
       {rates.map((rate) => {
         const metadata = rateMeta(rate, t);
         return (
           <div
             key={`${rate.key}:${rate.unit}:${rate.value}`}
-            className="grid gap-x-4 gap-y-0.5 border-b border-base-300/45 py-1 last:border-0 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-center"
+            className="grid min-w-0 gap-x-4 gap-y-0.5 border-b border-base-300/45 py-1 last:border-0 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-center desktop:border desktop:border-base-300/45 desktop:px-2"
           >
             <div className="min-w-0">
               <div className="break-words font-mono text-[10px] leading-4 text-base-content/80">

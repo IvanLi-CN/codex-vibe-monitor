@@ -102,7 +102,7 @@
 
 ### REQ-MODEL-MGMT-023
 
-- The model page MUST identify a model that has complete quote records but no legacy generic projection as `Detailed quote only`; it MUST show an explanatory hint instead of five misleading empty dashes. Desktop quote details MUST span the model table and mobile quote details MUST stack with wrapped rate keys and separate values. Standard rates remain expanded, while other dimensions remain inspectable without truncation. Models with a legacy projection continue to show the five compatibility fields.
+- The model page MUST identify a model that has complete quote records but no legacy generic projection as `Detailed quote only`; it MUST show an explanatory hint instead of five misleading empty dashes. Desktop quote details MUST span the model table, arrange standard rates in a responsive two-column grid that expands to three columns on wide screens, and keep each rate's key, metadata, and value readable. Mobile quote details MUST stack with wrapped rate keys and separate values. Standard rates remain expanded, while other dimensions remain inspectable without truncation. Models with a legacy projection continue to show the five compatibility fields.
 - Inputs: local legacy price projections and complete quote records.
 - Outputs: an unambiguous model row that separates compatibility pricing from the full multi-dimensional quote.
 
@@ -197,7 +197,7 @@
 
 - Method: deterministic mock-only `/system/models` desktop and 393px mobile scenarios containing legacy-priced models and the two GPT Image 2.5 quote-only models.
 - covers: `REQ-MODEL-MGMT-001`, `REQ-MODEL-MGMT-021`, `REQ-MODEL-MGMT-023`
-- Pass condition: legacy rows retain the five compatibility columns; quote-only rows show a clear quote-only label and hint, render all five OpenAI image/text rates without truncation, span the desktop table width, and stack readable key/metadata/value rows on mobile.
+- Pass condition: legacy rows retain the five compatibility columns; quote-only rows show a clear quote-only label and hint, render all five OpenAI image/text rates without truncation, span the desktop table width, use a two-column desktop grid that expands to three columns on wide screens, and stack readable key/metadata/value rows on mobile.
 - Evidence binding: runtime layout candidate `62121e6eb261ba40a7c0a655bdf47eedf5387bc0`; test follow-up `20ed638e` extends the deterministic fixture to assert both GPT Image 2.5 model IDs and simultaneous quote apply.
 
 ### VER-MODEL-MGMT-003
