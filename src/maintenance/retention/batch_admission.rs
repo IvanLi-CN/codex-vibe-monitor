@@ -33,11 +33,19 @@ pub(crate) struct TransactionBeginProbe {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct GateGenerationProbe {
+    pub(crate) captured: Notify,
+    pub(crate) resume: Notify,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_FILE_VERIFY: Arc<ArchiveFileVerifyProbe>;
     pub(crate) static RETENTION_TEST_TRANSACTION_BEGIN: Arc<TransactionBeginProbe>;
+    pub(crate) static RETENTION_TEST_GATE_GENERATION: Arc<GateGenerationProbe>;
 }
 
 #[cfg(test)]
@@ -73,6 +81,14 @@ pub(super) async fn pause_before_archive_file_verify() {
 pub(super) async fn pause_after_transaction_begin() {
     if let Ok(probe) = RETENTION_TEST_TRANSACTION_BEGIN.try_with(Arc::clone) {
         probe.begun.notify_one();
+        probe.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_after_gate_generation() {
+    if let Ok(probe) = RETENTION_TEST_GATE_GENERATION.try_with(Arc::clone) {
+        probe.captured.notify_one();
         probe.resume.notified().await;
     }
 }
@@ -168,26 +184,21 @@ where
 
         // A known pressure denial is handled without taking the file fence. The background-busy
         // path waits through the normal admission loop, which keeps the fence out of the wait.
-        if let Some(reason) = gate.background_deny_reason()
-            && !matches!(
+        let gate_generation = gate.eligibility_generation();
+        #[cfg(test)]
+        pause_after_gate_generation().await;
+        if let Some(reason) = gate.background_deny_reason() {
+            if matches!(
                 reason,
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-            )
-        {
+            ) {
+                if !wait_for_background_change(gate, operation, gate_generation).await {
+                    return Ok(None);
+                }
+                continue;
+            }
             retention_record_defer(operation, reason);
             return Ok(None);
-        }
-        if let Some(reason) = gate.background_deny_reason()
-            && matches!(
-                reason,
-                crate::db_pressure::DbPressureDenyReason::BackgroundBusy
-            )
-        {
-            let generation = gate.eligibility_generation();
-            if !wait_for_background_change(gate, operation, generation).await {
-                return Ok(None);
-            }
-            continue;
         }
         if retention_run_budget_expired()
             || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
@@ -231,61 +242,93 @@ where
         if target_exists {
             bail!("archive target exists while awaiting retention admission");
         }
-        if let Some(mut admission) =
-            try_acquire_write_admission(operation, gate, requested_at).await
-        {
-            if retention_run_budget_expired()
-                || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
-            {
+        match try_acquire_write_admission(operation, gate, requested_at).await {
+            Ok(mut admission) => {
+                if retention_run_budget_expired()
+                    || retention_run_shutdown_token()
+                        .is_some_and(|shutdown| shutdown.is_cancelled())
+                {
+                    admission.write_permit.revoke_fairness_admission();
+                    drop(admission);
+                    drop(archive_lock);
+                    retention_record_defer(
+                        operation,
+                        if retention_run_budget_expired() {
+                            "retention_work_budget"
+                        } else {
+                            "shutdown"
+                        },
+                    );
+                    return Ok(None);
+                }
+                if let Some(connection) = pool.try_acquire() {
+                    return Ok(Some((connection, admission, archive_lock)));
+                }
                 admission.write_permit.revoke_fairness_admission();
                 drop(admission);
                 drop(archive_lock);
-                retention_record_defer(
-                    operation,
-                    if retention_run_budget_expired() {
-                        "retention_work_budget"
-                    } else {
-                        "shutdown"
-                    },
-                );
+                continue;
+            }
+            Err(RetentionWriteAdmissionRejection::GateDenied { reason, generation }) => {
+                drop(archive_lock);
+                if matches!(
+                    reason,
+                    crate::db_pressure::DbPressureDenyReason::BackgroundBusy
+                ) {
+                    if !wait_for_background_change(gate, operation, generation).await {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+                retention_record_defer(operation, reason);
                 return Ok(None);
             }
-            if let Some(connection) = pool.try_acquire() {
-                return Ok(Some((connection, admission, archive_lock)));
+            Err(RetentionWriteAdmissionRejection::CoordinatorBusy) => {
+                drop(archive_lock);
+                if !wait_for_maintenance_eligibility(operation, requested_at).await {
+                    return Ok(None);
+                }
             }
-            admission.write_permit.revoke_fairness_admission();
-            drop(admission);
-            drop(archive_lock);
-            continue;
-        }
-        drop(archive_lock);
-
-        if !wait_for_maintenance_eligibility(operation, requested_at).await {
-            return Ok(None);
+            Err(RetentionWriteAdmissionRejection::BudgetExpired) => {
+                drop(archive_lock);
+                retention_record_defer(operation, "retention_work_budget");
+                return Ok(None);
+            }
         }
     }
+}
+
+enum RetentionWriteAdmissionRejection {
+    CoordinatorBusy,
+    GateDenied {
+        reason: crate::db_pressure::DbPressureDenyReason,
+        generation: u64,
+    },
+    BudgetExpired,
 }
 
 async fn try_acquire_write_admission(
     operation: &'static str,
     gate: &crate::db_pressure::DbPressureGate,
     requested_at: Instant,
-) -> Option<RetentionWriteAdmission> {
+) -> Result<RetentionWriteAdmission, RetentionWriteAdmissionRejection> {
     if retention_run_budget_expired() {
-        return None;
+        return Err(RetentionWriteAdmissionRejection::BudgetExpired);
     }
     let coordinator = retention_write_coordinator_handle();
-    let mut write_permit =
-        coordinator.try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL)?;
+    let mut write_permit = coordinator
+        .try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL)
+        .ok_or(RetentionWriteAdmissionRejection::CoordinatorBusy)?;
     if retention_run_budget_expired() {
         drop(write_permit);
-        return None;
+        return Err(RetentionWriteAdmissionRejection::BudgetExpired);
     }
+    let generation = gate.eligibility_generation();
     match gate.try_begin_background(operation) {
         Ok(pressure_permit) => {
             let coordinator_snapshot = coordinator.snapshot().await;
             crate::task_runtime_observation::mark_managed_maintenance_work_started();
-            Some(RetentionWriteAdmission {
+            Ok(RetentionWriteAdmission {
                 write_permit,
                 _pressure_permit: pressure_permit,
                 p1_waiter_count: coordinator_snapshot.p1_waiter_count,
@@ -301,7 +344,7 @@ async fn try_acquire_write_admission(
                 write_permit.suppress_background_eligibility_wakeup();
             }
             drop(write_permit);
-            None
+            Err(RetentionWriteAdmissionRejection::GateDenied { reason, generation })
         }
     }
 }
@@ -485,6 +528,7 @@ pub(super) async fn acquire_write_admission(
             retention_record_defer(operation, "retention_work_budget");
             return None;
         }
+        let try_generation = gate.eligibility_generation();
         match gate.try_begin_background(operation) {
             Ok(pressure_permit) => {
                 crate::task_runtime_observation::mark_managed_maintenance_work_started();
@@ -512,7 +556,7 @@ pub(super) async fn acquire_write_admission(
                         crate::db_pressure::DbPressureDenyReason::BackgroundBusy
                     )
                 {
-                    if wait_for_background_change(gate, operation, generation).await {
+                    if wait_for_background_change(gate, operation, try_generation).await {
                         continue;
                     }
                 } else {

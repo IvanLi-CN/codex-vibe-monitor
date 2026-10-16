@@ -62,148 +62,7 @@ struct RetentionBatchCommit {
     prompt_cache_keys: Vec<String>,
 }
 
-struct RetentionTransactionResources {
-    connection: Option<sqlx::pool::PoolConnection<Sqlite>>,
-    admission: Option<RetentionWriteAdmission>,
-    archive_lock: Option<RetentionArchiveFileLock>,
-    transaction_started: bool,
-}
-
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
-
-struct RetentionCleanupParts {
-    connection: sqlx::pool::PoolConnection<Sqlite>,
-    admission: Option<RetentionWriteAdmission>,
-    archive_lock: Option<RetentionArchiveFileLock>,
-    transaction_started: bool,
-}
-
-#[derive(Clone, Copy)]
-enum RetentionConnectionCleanup {
-    RollbackAndClose,
-    ReturnToPool,
-}
-
-impl RetentionTransactionResources {
-    fn new(
-        connection: sqlx::pool::PoolConnection<Sqlite>,
-        admission: RetentionWriteAdmission,
-        archive_lock: RetentionArchiveFileLock,
-    ) -> Self {
-        Self {
-            connection: Some(connection),
-            admission: Some(admission),
-            archive_lock: Some(archive_lock),
-            transaction_started: false,
-        }
-    }
-
-    fn connection_mut(&mut self) -> &mut SqliteConnection {
-        self.connection
-            .as_mut()
-            .expect("retention transaction connection is present")
-    }
-
-    fn mark_transaction_started(&mut self) {
-        self.transaction_started = true;
-    }
-
-    fn mark_transaction_finished(&mut self) {
-        self.transaction_started = false;
-    }
-
-    fn release_archive_lock(&mut self) {
-        drop(self.archive_lock.take());
-    }
-
-    fn release_admission(&mut self) {
-        drop(self.admission.take());
-    }
-
-    fn release_resources(&mut self) {
-        self.release_archive_lock();
-        self.release_admission();
-    }
-
-    fn take_cleanup_parts(&mut self) -> Option<RetentionCleanupParts> {
-        self.connection
-            .take()
-            .map(|connection| RetentionCleanupParts {
-                connection,
-                admission: self.admission.take(),
-                archive_lock: self.archive_lock.take(),
-                transaction_started: self.transaction_started,
-            })
-    }
-
-    async fn cleanup(mut self, mode: RetentionConnectionCleanup) -> Option<sqlx::Error> {
-        let Some(parts) = self.take_cleanup_parts() else {
-            self.release_resources();
-            return None;
-        };
-        let handle = tokio::spawn(cleanup_retention_transaction(parts, mode));
-        handle.await.unwrap_or_default()
-    }
-
-    async fn rollback_and_close(self) -> Option<sqlx::Error> {
-        self.cleanup(RetentionConnectionCleanup::RollbackAndClose)
-            .await
-    }
-
-    async fn return_to_pool(self) -> Option<sqlx::Error> {
-        self.cleanup(RetentionConnectionCleanup::ReturnToPool).await
-    }
-}
-
-async fn cleanup_retention_transaction(
-    mut parts: RetentionCleanupParts,
-    mode: RetentionConnectionCleanup,
-) -> Option<sqlx::Error> {
-    let mut cleanup_error = None;
-    if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) && parts.transaction_started {
-        cleanup_error = sqlx::query("ROLLBACK")
-            .execute(&mut *parts.connection)
-            .await
-            .err();
-    }
-    let close_error = if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) {
-        parts.connection.close().await.err()
-    } else {
-        parts.connection.return_to_pool().await;
-        None
-    };
-    drop(parts.archive_lock);
-    drop(parts.admission);
-    cleanup_error.or(close_error)
-}
-
-impl Drop for RetentionTransactionResources {
-    fn drop(&mut self) {
-        let Some(parts) = self.take_cleanup_parts() else {
-            self.release_resources();
-            return;
-        };
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            drop(handle.spawn(cleanup_retention_transaction(
-                parts,
-                RetentionConnectionCleanup::RollbackAndClose,
-            )));
-        } else {
-            // No asynchronous rollback can complete after the runtime has exited. Leak the
-            // checked-out connection until process teardown instead of returning dirty state to
-            // the pool; normal runtime cancellation always takes the detached drain above.
-            let RetentionCleanupParts {
-                connection,
-                admission,
-                archive_lock,
-                ..
-            } = parts;
-            std::mem::forget(connection);
-            drop(archive_lock);
-            drop(admission);
-        }
-    }
-}
 
 impl RetentionSqliteTransaction<'_> {
     fn as_mut(&mut self) -> &mut SqliteConnection {
@@ -527,7 +386,7 @@ pub(crate) async fn prune_old_invocation_details(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
@@ -626,7 +485,7 @@ pub(crate) async fn prune_old_invocation_details(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
-                        if let Some(cleanup_error) = cleanup_error {
+                        if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
                             ));
@@ -643,7 +502,7 @@ pub(crate) async fn prune_old_invocation_details(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
@@ -651,13 +510,6 @@ pub(crate) async fn prune_old_invocation_details(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
-                drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Some(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
                 let raw_paths = commit.raw_paths;
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
@@ -678,6 +530,13 @@ pub(crate) async fn prune_old_invocation_details(
                 rows_pruned += group.len();
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), lock_wait);
+                drop(transaction_phase);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Err(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -1096,7 +955,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
@@ -1256,7 +1115,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
-                        if let Some(cleanup_error) = cleanup_error {
+                        if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
                             ));
@@ -1273,7 +1132,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
@@ -1281,13 +1140,6 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
-                drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Some(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
                 prompt_cache_keys.extend(commit.prompt_cache_keys);
                 let raw_paths = commit.raw_paths;
                 workload::record_processed_count(group.len());
@@ -1315,6 +1167,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 rows_archived += group.len();
                 committed_rows += group.len();
                 batch_observation.committed(group.len(), lock_wait);
+                drop(transaction_phase);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Err(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
@@ -1637,7 +1496,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
@@ -1820,7 +1679,7 @@ pub(crate) async fn archive_timestamped_dataset(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
-                        if let Some(cleanup_error) = cleanup_error {
+                        if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
                             ));
@@ -1837,7 +1696,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(cleanup_error) = cleanup_error {
+                    if let Err(cleanup_error) = cleanup_error {
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
@@ -1845,14 +1704,14 @@ pub(crate) async fn archive_timestamped_dataset(
                     return Err(error);
                 }
                 transaction_resources.mark_transaction_finished();
-                drop(transaction_phase);
-                let cleanup_error = transaction_resources.return_to_pool().await;
-                if let Some(cleanup_error) = cleanup_error {
-                    return Err(anyhow!(
-                        "failed to return retention transaction connection to pool: {cleanup_error}"
-                    ));
-                }
                 let Some(commit) = commit else {
+                    drop(transaction_phase);
+                    let cleanup_error = transaction_resources.return_to_pool().await;
+                    if let Err(cleanup_error) = cleanup_error {
+                        return Err(anyhow!(
+                            "failed to return retention transaction connection to pool: {cleanup_error}"
+                        ));
+                    }
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let raw_paths = commit.raw_paths;
@@ -1870,6 +1729,13 @@ pub(crate) async fn archive_timestamped_dataset(
                     candidate_remaining_hint,
                 );
                 batch_observation.committed(group.len(), lock_wait);
+                drop(transaction_phase);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Err(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_paths.is_empty() {

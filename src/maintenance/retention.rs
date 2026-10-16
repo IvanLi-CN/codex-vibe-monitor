@@ -4,6 +4,7 @@ mod archive_identity;
 pub(super) mod batch_plan;
 mod observability;
 mod task_batches;
+mod task_transaction_resources;
 use archive_identity::invocation_archive_source_identity_matches;
 pub(crate) use archive_identity::{
     InvocationArchiveIdentityDatabase, archive_table_source_identity_sha256,
@@ -29,6 +30,11 @@ pub(crate) use observability::record_backlog_observation;
 pub(crate) use task_batches::archive_old_invocations;
 use task_batches::archive_old_invocations_with_source_max;
 pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
+pub(crate) use task_transaction_resources::RetentionTransactionResources;
+#[cfg(test)]
+pub(crate) use task_transaction_resources::{
+    RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
+};
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
@@ -50,9 +56,10 @@ mod batch_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{
-    ArchiveArtifactProbe, ArchiveFileVerifyProbe, BatchCommitProbe,
+    ArchiveArtifactProbe, ArchiveFileVerifyProbe, BatchCommitProbe, GateGenerationProbe,
     RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
-    RETENTION_TEST_BATCH_COMMIT, RETENTION_TEST_TRANSACTION_BEGIN, TransactionBeginProbe,
+    RETENTION_TEST_BATCH_COMMIT, RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN,
+    TransactionBeginProbe,
 };
 
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
