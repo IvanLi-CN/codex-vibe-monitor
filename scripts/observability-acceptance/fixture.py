@@ -71,9 +71,12 @@ class HttpsEntry(BaseHTTPRequestHandler):
         self.send_response(response.status); self.send_header("Content-Type",response.getheader("Content-Type","application/json"))
         self.send_header("Content-Length",str(len(content))); self.end_headers(); self.wfile.write(content); connection.close()
     def do_POST(self):
-        if self.path not in {"/v1/traces", "/internal/v1/traces"}: self.deny(405); return
-        expected = INTERNAL_INGEST_TOKEN if self.path == "/internal/v1/traces" else Path("/private/tempo-ingest-token").read_text().strip()
-        if not authorized(self.headers.get("Authorization"), expected):
+        if self.path != "/v1/traces": self.deny(405); return
+        authorization = self.headers.get("Authorization")
+        # Both credentials have the same ingest-only capability in this isolated
+        # fixture. The candidate never receives the runner-generated credential.
+        if not (authorized(authorization, INTERNAL_INGEST_TOKEN)
+                or authorized(authorization, Path("/private/tempo-ingest-token").read_text().strip())):
             self.deny(401); return
         try: length = int(self.headers.get("Content-Length", "-1"))
         except ValueError: self.deny(400); return
