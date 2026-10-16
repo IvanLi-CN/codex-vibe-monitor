@@ -82,7 +82,11 @@ function rateUnitLabel(unit: string, t: Translate): string {
     usd_per_image: t("system.models.rateUnitUsdPerImage"),
     usd: t("system.models.rateUnitUsd"),
   };
-  return labels[unit] ?? unit.replaceAll("_", " ");
+  if (labels[unit]) return labels[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `$ / ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
 }
 
 function rateMeta(rate: PricingRate, t: Translate): string {
