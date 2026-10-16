@@ -4,6 +4,7 @@ use sqlx::SqliteConnection;
 
 struct ArchiveSourceIdentityProof {
     cleanup: TempSqliteCleanup,
+    _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
     connection: Option<SqliteConnection>,
     spec: ArchiveTableSpec,
 }
@@ -11,15 +12,18 @@ struct ArchiveSourceIdentityProof {
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
         let proof_path = PathBuf::from(format!(
-            "{}.identity-{}.sqlite",
+            "{}.task-{}.sqlite",
             path.display(),
             retention_temp_suffix()
         ));
+        let work_owner_file =
+            crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?;
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
         inflate_gzip_sqlite_file(path, &proof_path)?;
         let connection = open_archive_sqlite_connection(&proof_path).await?;
         Ok(Self {
             cleanup,
+            _work_owner_file: work_owner_file,
             connection: Some(connection),
             spec,
         })
@@ -58,9 +62,148 @@ struct RetentionBatchCommit {
     prompt_cache_keys: Vec<String>,
 }
 
-// Keep the transaction body on the pooled connection while issuing boundaries explicitly; this
-// lets begin failures close the native connection before releasing the admission and file fence.
+struct RetentionTransactionResources {
+    connection: Option<sqlx::pool::PoolConnection<Sqlite>>,
+    admission: Option<RetentionWriteAdmission>,
+    archive_lock: Option<RetentionArchiveFileLock>,
+    transaction_started: bool,
+}
+
 struct RetentionSqliteTransaction<'a>(&'a mut SqliteConnection);
+
+struct RetentionCleanupParts {
+    connection: sqlx::pool::PoolConnection<Sqlite>,
+    admission: Option<RetentionWriteAdmission>,
+    archive_lock: Option<RetentionArchiveFileLock>,
+    transaction_started: bool,
+}
+
+#[derive(Clone, Copy)]
+enum RetentionConnectionCleanup {
+    RollbackAndClose,
+    ReturnToPool,
+}
+
+impl RetentionTransactionResources {
+    fn new(
+        connection: sqlx::pool::PoolConnection<Sqlite>,
+        admission: RetentionWriteAdmission,
+        archive_lock: RetentionArchiveFileLock,
+    ) -> Self {
+        Self {
+            connection: Some(connection),
+            admission: Some(admission),
+            archive_lock: Some(archive_lock),
+            transaction_started: false,
+        }
+    }
+
+    fn connection_mut(&mut self) -> &mut SqliteConnection {
+        self.connection
+            .as_mut()
+            .expect("retention transaction connection is present")
+    }
+
+    fn mark_transaction_started(&mut self) {
+        self.transaction_started = true;
+    }
+
+    fn mark_transaction_finished(&mut self) {
+        self.transaction_started = false;
+    }
+
+    fn release_archive_lock(&mut self) {
+        drop(self.archive_lock.take());
+    }
+
+    fn release_admission(&mut self) {
+        drop(self.admission.take());
+    }
+
+    fn release_resources(&mut self) {
+        self.release_archive_lock();
+        self.release_admission();
+    }
+
+    fn take_cleanup_parts(&mut self) -> Option<RetentionCleanupParts> {
+        self.connection
+            .take()
+            .map(|connection| RetentionCleanupParts {
+                connection,
+                admission: self.admission.take(),
+                archive_lock: self.archive_lock.take(),
+                transaction_started: self.transaction_started,
+            })
+    }
+
+    async fn cleanup(mut self, mode: RetentionConnectionCleanup) -> Option<sqlx::Error> {
+        let Some(parts) = self.take_cleanup_parts() else {
+            self.release_resources();
+            return None;
+        };
+        let handle = tokio::spawn(cleanup_retention_transaction(parts, mode));
+        handle.await.unwrap_or_default()
+    }
+
+    async fn rollback_and_close(self) -> Option<sqlx::Error> {
+        self.cleanup(RetentionConnectionCleanup::RollbackAndClose)
+            .await
+    }
+
+    async fn return_to_pool(self) -> Option<sqlx::Error> {
+        self.cleanup(RetentionConnectionCleanup::ReturnToPool).await
+    }
+}
+
+async fn cleanup_retention_transaction(
+    mut parts: RetentionCleanupParts,
+    mode: RetentionConnectionCleanup,
+) -> Option<sqlx::Error> {
+    let mut cleanup_error = None;
+    if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) && parts.transaction_started {
+        cleanup_error = sqlx::query("ROLLBACK")
+            .execute(&mut *parts.connection)
+            .await
+            .err();
+    }
+    let close_error = if matches!(mode, RetentionConnectionCleanup::RollbackAndClose) {
+        parts.connection.close().await.err()
+    } else {
+        parts.connection.return_to_pool().await;
+        None
+    };
+    drop(parts.archive_lock);
+    drop(parts.admission);
+    cleanup_error.or(close_error)
+}
+
+impl Drop for RetentionTransactionResources {
+    fn drop(&mut self) {
+        let Some(parts) = self.take_cleanup_parts() else {
+            self.release_resources();
+            return;
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            drop(handle.spawn(cleanup_retention_transaction(
+                parts,
+                RetentionConnectionCleanup::RollbackAndClose,
+            )));
+        } else {
+            // No asynchronous rollback can complete after the runtime has exited. Leak the
+            // checked-out connection until process teardown instead of returning dirty state to
+            // the pool; normal runtime cancellation always takes the detached drain above.
+            let RetentionCleanupParts {
+                connection,
+                admission,
+                archive_lock,
+                ..
+            } = parts;
+            std::mem::forget(connection);
+            drop(archive_lock);
+            drop(admission);
+        }
+    }
+}
 
 impl RetentionSqliteTransaction<'_> {
     fn as_mut(&mut self) -> &mut SqliteConnection {
@@ -355,37 +498,46 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                     .context("read task-local invocation source chunk identity")?;
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission, archive_lock)) =
-                    acquire_retention_batch_write_connection_with_archive_fence(
+                let Some((source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "invocation_detail_prune",
                         Path::new(&archive_outcome.file_path),
-                        &archive_outcome.sha256,
+                        Some(&archive_outcome.sha256),
+                        || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
                     .await?
                 else {
                     drop(admission_wait_phase);
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
                 };
+                let admission_mode = admission.admission_mode();
+                let lock_wait = admission.lock_wait();
+                let p1_waiter_count = admission.p1_waiter_count();
+                let mut transaction_resources =
+                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
                 drop(admission_wait_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
-                let begin_result = sqlx::query("BEGIN").execute(&mut *source_connection).await;
+                transaction_resources.mark_transaction_started();
+                let begin_result = sqlx::query("BEGIN")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
                 if let Err(error) = begin_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    let close_error = source_connection.close().await.err();
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "failed to close source connection after begin failure: {close_error}"
+                            "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                #[cfg(test)]
+                batch_admission::pause_after_transaction_begin().await;
                 let transaction_result: Result<RetentionBatchCommit> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
+                    let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
                             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
                             mark_archive_batch_historical_rollups_materialized_tx(
                                 tx.as_mut(),
@@ -471,67 +623,62 @@ pub(crate) async fn prune_old_invocation_details(
                 let commit = match transaction_result {
                     Ok(commit) => commit,
                     Err(error) => {
-                        let rollback_error = sqlx::query("ROLLBACK")
-                            .execute(&mut *source_connection)
-                            .await
-                            .err();
-                        let close_error = source_connection.close().await.err();
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
-                        drop(archive_lock);
-                        drop(admission);
                         let mut error = error;
-                        if let Some(rollback_error) = rollback_error {
+                        if let Some(cleanup_error) = cleanup_error {
                             error = error.context(format!(
-                                "retention transaction rollback failed: {rollback_error}"
-                            ));
-                        }
-                        if let Some(close_error) = close_error {
-                            error = error.context(format!(
-                                "source connection close failed after retention transaction rollback: {close_error}"
+                                "retention transaction rollback and close failed: {cleanup_error}"
                             ));
                         }
                         return Err(error);
                     }
                 };
-                if let Err(error) = sqlx::query("COMMIT").execute(&mut *source_connection).await {
-                    let close_error = source_connection.close().await.err();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                let commit_result = sqlx::query("COMMIT")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
+                drop(commit_phase);
+                if let Err(error) = commit_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "source connection close failed after commit failure: {close_error}"
+                            "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                transaction_resources.mark_transaction_finished();
                 drop(transaction_phase);
-                source_connection.return_to_pool().await;
-                drop(source_connection);
-                drop(archive_lock);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Some(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 let raw_paths = commit.raw_paths;
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
-                    admission.admission_mode(),
+                    admission_mode,
                     group.len(),
                     group
                         .iter()
                         .map(|candidate| candidate.estimated_write_bytes.max(1) as usize)
                         .sum(),
                     prepare_elapsed,
-                    admission.lock_wait(),
+                    lock_wait,
                     commit.commit_started.duration_since(execute_started),
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
-                    admission.p1_waiter_count,
+                    p1_waiter_count,
                     candidate_remaining_hint,
                 );
                 rows_pruned += group.len();
                 committed_rows += group.len();
-                batch_observation.committed(group.len(), admission.lock_wait());
+                batch_observation.committed(group.len(), lock_wait);
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                drop(admission);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
@@ -915,12 +1062,13 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await
                     .context("read task-local invocation source chunk identity")?;
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission, archive_lock)) =
-                    acquire_retention_batch_write_connection_with_archive_fence(
+                let Some((source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "invocation_archive",
                         Path::new(&archive_outcome.file_path),
-                        &archive_outcome.sha256,
+                        Some(&archive_outcome.sha256),
+                        || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
                     .await?
                 else {
@@ -932,25 +1080,33 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prompt_cache_keys,
                     ));
                 };
+                let admission_mode = admission.admission_mode();
+                let lock_wait = admission.lock_wait();
+                let p1_waiter_count = admission.p1_waiter_count();
+                let mut transaction_resources =
+                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
                 drop(admission_wait_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
-                let begin_result = sqlx::query("BEGIN").execute(&mut *source_connection).await;
+                transaction_resources.mark_transaction_started();
+                let begin_result = sqlx::query("BEGIN")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
                 if let Err(error) = begin_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    let close_error = source_connection.close().await.err();
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "failed to close source connection after begin failure: {close_error}"
+                            "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                #[cfg(test)]
+                batch_admission::pause_after_transaction_begin().await;
                 let transaction_result: Result<RetentionBatchCommit> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
+                    let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
                     // P2 normally advances this cursor before retention. Rows beyond it would be
                     // deleted before the regular replay can observe them, so materialize just those
                     // rows in this same archive transaction before claiming the archive is covered.
@@ -1097,51 +1253,47 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 let commit = match transaction_result {
                     Ok(commit) => commit,
                     Err(error) => {
-                        let rollback_error = sqlx::query("ROLLBACK")
-                            .execute(&mut *source_connection)
-                            .await
-                            .err();
-                        let close_error = source_connection.close().await.err();
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
-                        drop(archive_lock);
-                        drop(admission);
                         let mut error = error;
-                        if let Some(rollback_error) = rollback_error {
+                        if let Some(cleanup_error) = cleanup_error {
                             error = error.context(format!(
-                                "retention transaction rollback failed: {rollback_error}"
-                            ));
-                        }
-                        if let Some(close_error) = close_error {
-                            error = error.context(format!(
-                                "source connection close failed after retention transaction rollback: {close_error}"
+                                "retention transaction rollback and close failed: {cleanup_error}"
                             ));
                         }
                         return Err(error);
                     }
                 };
-                if let Err(error) = sqlx::query("COMMIT").execute(&mut *source_connection).await {
-                    let close_error = source_connection.close().await.err();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                let commit_result = sqlx::query("COMMIT")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
+                drop(commit_phase);
+                if let Err(error) = commit_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "source connection close failed after commit failure: {close_error}"
+                            "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                transaction_resources.mark_transaction_finished();
                 drop(transaction_phase);
-                source_connection.return_to_pool().await;
-                drop(source_connection);
-                drop(archive_lock);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Some(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 prompt_cache_keys.extend(commit.prompt_cache_keys);
                 let raw_paths = commit.raw_paths;
                 workload::record_processed_count(group.len());
                 let breached = retention_record_commit_with_reference_check!(
                     "invocation_archive",
-                    admission.admission_mode(),
+                    admission_mode,
                     group.len(),
                     group
                         .iter()
@@ -1153,18 +1305,17 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         })
                         .sum(),
                     prepare_elapsed,
-                    admission.lock_wait(),
+                    lock_wait,
                     commit.commit_started.duration_since(execute_started),
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
-                    admission.p1_waiter_count,
+                    p1_waiter_count,
                     candidate_remaining_hint,
                 );
                 rows_archived += group.len();
                 committed_rows += group.len();
-                batch_observation.committed(group.len(), admission.lock_wait());
+                batch_observation.committed(group.len(), lock_wait);
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                drop(admission);
                 if !raw_paths.is_empty() {
                     mark_retention_raw_inventory_reset_intent(pool).await?;
                 }
@@ -1457,37 +1608,46 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await
                     .context("read task-local timestamped archive chunk identity")?;
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((mut source_connection, admission, archive_lock)) =
-                    acquire_retention_batch_write_connection_with_archive_fence(
+                let Some((source_connection, admission, archive_lock)) =
+                    acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "timestamped_archive",
                         Path::new(&archive_outcome.file_path),
-                        &archive_outcome.sha256,
+                        Some(&archive_outcome.sha256),
+                        || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
                     .await?
                 else {
                     drop(admission_wait_phase);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
+                let admission_mode = admission.admission_mode();
+                let lock_wait = admission.lock_wait();
+                let p1_waiter_count = admission.p1_waiter_count();
+                let mut transaction_resources =
+                    RetentionTransactionResources::new(source_connection, admission, archive_lock);
                 drop(admission_wait_phase);
                 let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
-                let begin_result = sqlx::query("BEGIN").execute(&mut *source_connection).await;
+                transaction_resources.mark_transaction_started();
+                let begin_result = sqlx::query("BEGIN")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
                 if let Err(error) = begin_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    let close_error = source_connection.close().await.err();
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "failed to close source connection after begin failure: {close_error}"
+                            "failed to rollback and close source connection after begin failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                #[cfg(test)]
+                batch_admission::pause_after_transaction_begin().await;
                 let transaction_result: Result<Option<RetentionBatchCommit>> = async {
-                    let mut tx = RetentionSqliteTransaction(&mut source_connection);
+                    let mut tx = RetentionSqliteTransaction(transaction_resources.connection_mut());
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
                 "SELECT cleanup_state FROM archive_batches WHERE dataset = ?1 AND month_key = ?2 AND file_path = ?3",
             )
@@ -1657,66 +1817,60 @@ pub(crate) async fn archive_timestamped_dataset(
                 let commit = match transaction_result {
                     Ok(commit) => commit,
                     Err(error) => {
-                        let rollback_error = sqlx::query("ROLLBACK")
-                            .execute(&mut *source_connection)
-                            .await
-                            .err();
-                        let close_error = source_connection.close().await.err();
+                        let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
-                        drop(archive_lock);
-                        drop(admission);
                         let mut error = error;
-                        if let Some(rollback_error) = rollback_error {
+                        if let Some(cleanup_error) = cleanup_error {
                             error = error.context(format!(
-                                "retention transaction rollback failed: {rollback_error}"
-                            ));
-                        }
-                        if let Some(close_error) = close_error {
-                            error = error.context(format!(
-                                "source connection close failed after retention transaction rollback: {close_error}"
+                                "retention transaction rollback and close failed: {cleanup_error}"
                             ));
                         }
                         return Err(error);
                     }
                 };
-                if let Err(error) = sqlx::query("COMMIT").execute(&mut *source_connection).await {
-                    let close_error = source_connection.close().await.err();
+                let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                let commit_result = sqlx::query("COMMIT")
+                    .execute(transaction_resources.connection_mut())
+                    .await;
+                drop(commit_phase);
+                if let Err(error) = commit_result {
+                    let cleanup_error = transaction_resources.rollback_and_close().await;
                     drop(transaction_phase);
-                    drop(archive_lock);
-                    drop(admission);
                     let mut error: anyhow::Error = error.into();
-                    if let Some(close_error) = close_error {
+                    if let Some(cleanup_error) = cleanup_error {
                         error = error.context(format!(
-                            "source connection close failed after commit failure: {close_error}"
+                            "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
                     }
                     return Err(error);
                 }
+                transaction_resources.mark_transaction_finished();
                 drop(transaction_phase);
-                source_connection.return_to_pool().await;
-                drop(source_connection);
-                drop(archive_lock);
+                let cleanup_error = transaction_resources.return_to_pool().await;
+                if let Some(cleanup_error) = cleanup_error {
+                    return Err(anyhow!(
+                        "failed to return retention transaction connection to pool: {cleanup_error}"
+                    ));
+                }
                 let Some(commit) = commit else {
-                    drop(admission);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let raw_paths = commit.raw_paths;
                 let breached = retention_record_commit_with_reference_check!(
                     "timestamped_archive",
-                    admission.admission_mode(),
+                    admission_mode,
                     group.len(),
                     group.len().saturating_mul(256),
                     prepare_elapsed,
-                    admission.lock_wait(),
+                    lock_wait,
                     commit.commit_started.duration_since(execute_started),
                     commit.commit_started.elapsed(),
                     commit.raw_reference_check_elapsed,
-                    admission.p1_waiter_count,
+                    p1_waiter_count,
                     candidate_remaining_hint,
                 );
-                batch_observation.committed(group.len(), admission.lock_wait());
+                batch_observation.committed(group.len(), lock_wait);
                 let cleanup_phase = batch_observation.phase(RetentionPhase::Cleanup);
-                drop(admission);
                 if spec.dataset == "pool_upstream_request_attempts" {
                     if !raw_paths.is_empty() {
                         mark_retention_raw_inventory_reset_intent(pool).await?;

@@ -18,9 +18,26 @@ pub(crate) struct ArchiveArtifactProbe {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ArchiveFileVerifyProbe {
+    pub(crate) started: Notify,
+    pub(crate) resume: Notify,
+    pub(crate) paused: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TransactionBeginProbe {
+    pub(crate) begun: Notify,
+    pub(crate) resume: Notify,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_FILE_VERIFY: Arc<ArchiveFileVerifyProbe>;
+    pub(crate) static RETENTION_TEST_TRANSACTION_BEGIN: Arc<TransactionBeginProbe>;
 }
 
 #[cfg(test)]
@@ -41,6 +58,25 @@ pub(super) async fn pause_after_archive_artifact_verified() {
     }
 }
 
+#[cfg(test)]
+pub(super) async fn pause_before_archive_file_verify() {
+    if let Ok(probe) = RETENTION_TEST_ARCHIVE_FILE_VERIFY.try_with(Arc::clone) {
+        if probe.paused.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return;
+        }
+        probe.started.notify_one();
+        probe.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_after_transaction_begin() {
+    if let Ok(probe) = RETENTION_TEST_TRANSACTION_BEGIN.try_with(Arc::clone) {
+        probe.begun.notify_one();
+        probe.resume.notified().await;
+    }
+}
+
 pub(crate) async fn acquire_retention_batch_write_connection(
     pool: &Pool<Sqlite>,
     operation: &'static str,
@@ -52,7 +88,7 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
     pool: &Pool<Sqlite>,
     operation: &'static str,
     archive_path: &Path,
-    expected_sha256: &str,
+    expected_sha256: Option<&str>,
 ) -> Result<
     Option<(
         sqlx::pool::PoolConnection<Sqlite>,
@@ -60,6 +96,32 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
         RetentionArchiveFileLock,
     )>,
 > {
+    acquire_write_connection_with_archive_fence_observed(
+        pool,
+        operation,
+        archive_path,
+        expected_sha256,
+        || None,
+    )
+    .await
+}
+
+pub(crate) async fn acquire_write_connection_with_archive_fence_observed<F>(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: Option<&str>,
+    mut observe_file_verify: F,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+>
+where
+    F: FnMut() -> Option<super::observability::RetentionPhaseGuard>,
+{
     #[cfg(test)]
     let test_gate = RETENTION_TEST_DB_PRESSURE_GATE.try_with(Arc::clone).ok();
     #[cfg(not(test))]
@@ -67,6 +129,7 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
     let gate = test_gate
         .as_deref()
         .unwrap_or_else(|| crate::db_pressure::global_db_pressure_gate());
+    let requested_at = Instant::now();
 
     loop {
         // Confirm pool readiness before taking the archive fence. This readiness notification is
@@ -120,10 +183,10 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
                 crate::db_pressure::DbPressureDenyReason::BackgroundBusy
             )
         {
-            let Some(admission) = acquire_write_admission(operation, true).await else {
+            let generation = gate.eligibility_generation();
+            if !wait_for_background_change(gate, operation, generation).await {
                 return Ok(None);
-            };
-            drop(admission);
+            }
             continue;
         }
         if retention_run_budget_expired()
@@ -143,10 +206,34 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
         // The fence is held only while the digest and non-blocking admission probe run. If either
         // resource is unavailable, release the fence before waiting for the other resource.
         let archive_lock = retention_archive_file_try_lock(archive_path)?;
-        if sha256_hex_file(archive_path)? != expected_sha256 {
+        #[cfg(test)]
+        pause_before_archive_file_verify().await;
+        let file_verify_phase = observe_file_verify();
+        let actual_sha256 = expected_sha256
+            .map(|_| sha256_hex_file(archive_path))
+            .transpose()?;
+        let target_exists = if expected_sha256.is_none() {
+            match fs::symlink_metadata(archive_path) {
+                Ok(_) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            false
+        };
+        drop(file_verify_phase);
+        if expected_sha256
+            .zip(actual_sha256)
+            .is_some_and(|(expected, actual)| expected != actual)
+        {
             bail!("archive artifact changed while awaiting retention admission");
         }
-        if let Some(mut admission) = try_acquire_write_admission(operation, gate).await {
+        if target_exists {
+            bail!("archive target exists while awaiting retention admission");
+        }
+        if let Some(mut admission) =
+            try_acquire_write_admission(operation, gate, requested_at).await
+        {
             if retention_run_budget_expired()
                 || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
             {
@@ -166,30 +253,30 @@ pub(crate) async fn acquire_write_connection_with_archive_fence(
             if let Some(connection) = pool.try_acquire() {
                 return Ok(Some((connection, admission, archive_lock)));
             }
+            admission.write_permit.revoke_fairness_admission();
             drop(admission);
             drop(archive_lock);
             continue;
         }
         drop(archive_lock);
 
-        let Some(admission) = acquire_write_admission(operation, true).await else {
+        if !wait_for_maintenance_eligibility(operation, requested_at).await {
             return Ok(None);
-        };
-        drop(admission);
+        }
     }
 }
 
 async fn try_acquire_write_admission(
     operation: &'static str,
     gate: &crate::db_pressure::DbPressureGate,
+    requested_at: Instant,
 ) -> Option<RetentionWriteAdmission> {
     if retention_run_budget_expired() {
         return None;
     }
     let coordinator = retention_write_coordinator_handle();
-    let mut write_permit = coordinator.try_acquire(
-        crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
-    )?;
+    let mut write_permit =
+        coordinator.try_acquire_maintenance(requested_at, RETENTION_FAIRNESS_INTERVAL)?;
     if retention_run_budget_expired() {
         drop(write_permit);
         return None;
@@ -217,6 +304,56 @@ async fn try_acquire_write_admission(
             None
         }
     }
+}
+
+async fn wait_for_maintenance_eligibility(operation: &'static str, requested_at: Instant) -> bool {
+    if retention_run_budget_expired()
+        || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+    {
+        retention_record_defer(
+            operation,
+            if retention_run_budget_expired() {
+                "retention_work_budget"
+            } else {
+                "shutdown"
+            },
+        );
+        return false;
+    }
+    let coordinator = retention_write_coordinator_handle();
+    let eligibility =
+        coordinator.wait_for_maintenance_eligibility(requested_at, RETENTION_FAIRNESS_INTERVAL);
+    let waited = if let Some(remaining) = retention_run_remaining_budget() {
+        let eligibility = tokio::time::timeout(remaining, eligibility);
+        if let Some(shutdown) = retention_run_shutdown_token() {
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => {
+                    retention_record_defer(operation, "shutdown");
+                    return false;
+                }
+                result = eligibility => result.is_ok(),
+            }
+        } else {
+            eligibility.await.is_ok()
+        }
+    } else if let Some(shutdown) = retention_run_shutdown_token() {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => {
+                retention_record_defer(operation, "shutdown");
+                return false;
+            }
+            () = eligibility => true,
+        }
+    } else {
+        eligibility.await;
+        true
+    };
+    if !waited {
+        retention_record_defer(operation, "retention_work_budget");
+    }
+    waited
 }
 
 pub(super) async fn acquire_write_connection(

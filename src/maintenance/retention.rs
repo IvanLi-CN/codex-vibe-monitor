@@ -50,8 +50,9 @@ mod batch_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{
-    ArchiveArtifactProbe, BatchCommitProbe, RETENTION_TEST_ARCHIVE_ARTIFACT,
-    RETENTION_TEST_BATCH_COMMIT,
+    ArchiveArtifactProbe, ArchiveFileVerifyProbe, BatchCommitProbe,
+    RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
+    RETENTION_TEST_BATCH_COMMIT, RETENTION_TEST_TRANSACTION_BEGIN, TransactionBeginProbe,
 };
 
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
@@ -1453,7 +1454,7 @@ pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence(
     pool: &Pool<Sqlite>,
     operation: &'static str,
     archive_path: &Path,
-    expected_sha256: &str,
+    expected_sha256: Option<&str>,
 ) -> Result<
     Option<(
         sqlx::pool::PoolConnection<Sqlite>,
@@ -1466,6 +1467,32 @@ pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence(
         operation,
         archive_path,
         expected_sha256,
+    )
+    .await
+}
+
+pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence_observed<F>(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: Option<&str>,
+    observe_file_verify: F,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+>
+where
+    F: FnMut() -> Option<observability::RetentionPhaseGuard>,
+{
+    batch_admission::acquire_write_connection_with_archive_fence_observed(
+        pool,
+        operation,
+        archive_path,
+        expected_sha256,
+        observe_file_verify,
     )
     .await
 }

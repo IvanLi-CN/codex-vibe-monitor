@@ -392,7 +392,7 @@ pub(super) async fn prepare_summary_proof(
             pool,
             "archive_snapshot_manifest",
             archive_path,
-            &outcome.sha256,
+            Some(&outcome.sha256),
         )
         .await?
     else {
@@ -418,7 +418,7 @@ pub(super) async fn prepare_summary_proof(
                 pool,
                 "archive_snapshot_page",
                 archive_path,
-                &outcome.sha256,
+                Some(&outcome.sha256),
             )
             .await?
         else {
