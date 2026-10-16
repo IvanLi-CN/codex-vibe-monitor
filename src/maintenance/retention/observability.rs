@@ -70,6 +70,22 @@ pub(crate) struct RetentionPhaseGuard {
     started: Instant,
 }
 
+pub(super) fn observe_write_admission(operation: &str) -> Option<RetentionPhaseGuard> {
+    let operation = match operation {
+        "invocation_archive" => RetentionOperation::InvocationArchive,
+        "timestamped_archive" => RetentionOperation::TimestampedArchive,
+        "invocation_detail_prune" => RetentionOperation::DetailPrune,
+        _ => return None,
+    };
+    let metrics = current_performance().filter(|metrics| metrics.enabled)?;
+    Some(RetentionPhaseGuard {
+        metrics: Some(metrics),
+        operation,
+        phase: RetentionPhase::WriteHold,
+        started: Instant::now(),
+    })
+}
+
 impl Drop for RetentionPhaseGuard {
     fn drop(&mut self) {
         if let Some(metrics) = &self.metrics {

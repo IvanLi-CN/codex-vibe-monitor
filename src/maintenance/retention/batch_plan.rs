@@ -103,6 +103,13 @@ impl BatchObservation {
     }
 
     pub(crate) fn complete(&mut self) {
+        if self.metrics.committed_rows < self.metrics.batch_rows
+            && (retention_run_budget_expired()
+                || retention_run_defer_reason().is_some()
+                || retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()))
+        {
+            return;
+        }
         self.finish(Outcome::Success);
     }
 }

@@ -86,7 +86,7 @@
       "id": 201,
       "title": "归档阶段 p95 与样本门槛",
       "type": "timeseries",
-      "description": "每条阶段 p95 至少 100 个样本；样本不足保持 Unknown，见同窗样本。write_hold 包含 source_verify/delete/commit，阶段有重叠，禁止相加。",
+      "description": "每条阶段 p95 至少 100 个样本；样本不足保持 Unknown，见同窗样本。write_hold 从成功准入持续到许可释放，包含其间文件复核、事务和清理；transaction 单独记录事务。阶段有重叠，禁止相加。",
       "gridPos": {
         "x": 0,
         "y": 6,

@@ -1321,6 +1321,8 @@ pub(crate) struct RetentionWriteAdmission {
     write_permit: crate::proxy_sqlite_write_coordinator::ProxySqliteWritePermit,
     _pressure_permit: crate::db_pressure::DbBackgroundPermit,
     p1_waiter_count: usize,
+    // Fields drop in declaration order, so the observation includes permit release.
+    _write_hold_observation: Option<observability::RetentionPhaseGuard>,
 }
 
 impl RetentionWriteAdmission {

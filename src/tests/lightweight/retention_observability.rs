@@ -14,6 +14,61 @@ fn has_metric(text: &str, name: &str, labels: &[&str], value: &str) -> bool {
 }
 
 #[tokio::test]
+async fn retention_observability_partial_batches_keep_deferred_and_cancelled_outcomes() {
+    let runtime = ObservabilityRuntime::new(true);
+    with_performance(runtime.clone(), async {
+        retention_test_with_work_budget(Duration::ZERO, async {
+            let mut partial = BatchObservation::begin("codex_invocations", "synthetic", 10);
+            partial.committed(4, Duration::ZERO);
+            partial.complete();
+            drop(partial);
+
+            let mut complete = BatchObservation::begin("codex_invocations", "synthetic", 3);
+            complete.committed(3, Duration::ZERO);
+            complete.complete();
+            drop(complete);
+        })
+        .await;
+        let shutdown = CancellationToken::new();
+        shutdown.cancel();
+        retention_test_with_shutdown(shutdown, async {
+            let mut partial = BatchObservation::begin("codex_invocations", "synthetic", 3);
+            partial.committed(1, Duration::ZERO);
+            partial.complete();
+            drop(partial);
+        })
+        .await;
+    })
+    .await;
+    let text = runtime.render();
+    for outcome in ["deferred", "cancelled", "success"] {
+        assert!(
+            has_metric(
+                &text,
+                "cvm_retention_batches_total",
+                &[
+                    "operation=\"invocation_archive\"",
+                    &format!("outcome=\"{outcome}\"")
+                ],
+                " 1"
+            ),
+            "one batch must retain its {outcome} outcome"
+        );
+    }
+    for name in [
+        "cvm_maintenance_processed_rows_total",
+        "cvm_maintenance_archived_rows_total",
+    ] {
+        assert!(has_metric(
+            &text,
+            name,
+            &["operation=\"invocation_archive\""],
+            " 8"
+        ));
+    }
+}
+
+#[tokio::test]
 async fn retention_observability_records_outcomes_rows_phases_and_export() {
     let runtime = ObservabilityRuntime::new(true);
     with_performance(runtime.clone(), async {

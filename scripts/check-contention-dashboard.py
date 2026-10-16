@@ -81,6 +81,7 @@ def validate(base):
             assert query(222, instance), "normal success p95 requires at least 100 samples"
     assert all(0 < value < .5 for value in values(query(222)))
     budgets = query(203)
+    assert {"write_hold", "transaction"} <= {item["metric"]["phase"] for item in query(201)}, "permit hold and transaction must be independently visible"
     assert {item["metric"]["phase"] for item in budgets} == {">250ms", ">1s", ">10s"}
     assert all(value >= 0 for value in values(budgets))
     assert max(values(query(206, "failures"))) > 1000

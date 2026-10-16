@@ -212,7 +212,7 @@ class Metrics:
         for operation in ("invocation_archive", "timestamped_archive", "detail_prune"):
             labels = {"operation": operation}
             for phase, seconds in (("prepare", .12), ("file_verify", .8), ("admission_wait", .08),
-                                   ("write_hold", .07), ("source_verify", .02), ("delete", .035),
+                                   ("write_hold", .07), ("transaction", .05), ("source_verify", .02), ("delete", .035),
                                    ("commit", .015), ("cleanup", .03)):
                 self.histogram("cvm_retention_phase_duration_seconds", rate, seconds * (80 if failing else 1), {**labels, "phase": phase}, buckets=buckets)
             self.counter("cvm_retention_batches_total", rate, {**labels, "outcome": "error" if failing else "success"})

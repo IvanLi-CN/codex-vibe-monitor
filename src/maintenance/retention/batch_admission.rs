@@ -168,6 +168,7 @@ pub(super) async fn acquire_write_admission(
                     write_permit,
                     _pressure_permit: pressure_permit,
                     p1_waiter_count: coordinator_snapshot.p1_waiter_count,
+                    _write_hold_observation: observability::observe_write_admission(operation),
                 });
             }
             Err(reason) => {

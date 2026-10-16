@@ -276,7 +276,7 @@ pub(crate) async fn prune_old_invocation_details(
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
                 };
                 drop(admission_wait_phase);
-                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
+                let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
@@ -350,7 +350,7 @@ pub(crate) async fn prune_old_invocation_details(
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
                 drop(commit_phase);
-                drop(write_hold_phase);
+                drop(transaction_phase);
                 drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "invocation_detail_prune",
@@ -766,7 +766,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     bail!("task-local invocation artifact changed while awaiting admission");
                 }
                 drop(file_verify_phase);
-                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
+                let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 // P2 normally advances this cursor before retention. Rows beyond it would be
@@ -907,7 +907,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
                 drop(commit_phase);
-                drop(write_hold_phase);
+                drop(transaction_phase);
                 drop(source_connection);
                 workload::record_processed_count(group.len());
                 retention_record_commit_with_reference_check!(
@@ -1251,7 +1251,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     bail!("task-local timestamped artifact changed while awaiting admission");
                 }
                 drop(file_verify_phase);
-                let write_hold_phase = batch_observation.phase(RetentionPhase::WriteHold);
+                let transaction_phase = batch_observation.phase(RetentionPhase::Transaction);
                 let execute_started = Instant::now();
                 let mut tx = source_connection.begin().await?;
                 let cleanup_state = sqlx::query_scalar::<_, Option<String>>(
@@ -1268,6 +1268,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     .is_some_and(|state| state != ARCHIVE_CLEANUP_STATE_ACTIVE)
                 {
                     tx.rollback().await?;
+                    drop(transaction_phase);
                     drop(admission);
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 }
@@ -1417,7 +1418,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
                 tx.commit().await?;
                 drop(commit_phase);
-                drop(write_hold_phase);
+                drop(transaction_phase);
                 drop(source_connection);
                 retention_record_commit_with_reference_check!(
                     "timestamped_archive",

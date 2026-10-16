@@ -93,7 +93,7 @@ labels!(RetentionOperation {
 labels!(RetentionPhase {
     Prepare => "prepare", FileVerify => "file_verify", AdmissionWait => "admission_wait",
     WriteHold => "write_hold", SourceVerify => "source_verify", Delete => "delete",
-    Commit => "commit", Cleanup => "cleanup"
+    Commit => "commit", Cleanup => "cleanup", Transaction => "transaction"
 });
 labels!(Outcome { Success => "success", Deferred => "deferred", Error => "error", Cancelled => "cancelled" });
 labels!(WakeDecision { New => "new", Merged => "merged", Disabled => "disabled", Stale => "stale" });
