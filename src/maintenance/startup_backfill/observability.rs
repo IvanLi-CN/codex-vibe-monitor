@@ -56,6 +56,22 @@ struct WakeObligation {
     in_flight: bool,
 }
 
+fn stale_prompt_control_generation(
+    existing: &WakeObligationKey,
+    incoming: &WakeObligationKey,
+) -> bool {
+    if existing.task != StartupBackfillTask::PromptCacheConversationsMaterialization
+        || incoming.task != existing.task
+    {
+        return false;
+    }
+    match (existing.control_generation, incoming.control_generation) {
+        (Some(existing), Some(incoming)) => incoming < existing,
+        (Some(_), None) => true,
+        (None, _) => false,
+    }
+}
+
 #[derive(Debug, Default)]
 pub(super) struct StartupBackfillScheduler {
     wake_generation: AtomicU64,
@@ -182,6 +198,14 @@ impl StartupBackfillScheduler {
                     existing.ticket,
                     !existing.in_flight && existing.next_due <= observed_at,
                 )
+            } else if let Some(existing) = obligations.get_mut(&key.task)
+                && stale_prompt_control_generation(&existing.key, &key)
+            {
+                existing.observation_ticket = observation_ticket;
+                (
+                    existing.ticket,
+                    !existing.in_flight && existing.next_due <= observed_at,
+                )
             } else {
                 let ticket = WakeObligationTicket {
                     task: key.task,
@@ -284,11 +308,64 @@ impl StartupBackfillScheduler {
         Some(failure)
     }
 
-    pub(super) fn cancel_wake_obligation(&self, task: StartupBackfillTask) {
-        if let Ok(mut obligations) = self.wake_obligations.lock() {
-            obligations.remove(&task);
+    pub(super) fn is_stale_wake_obligation_key(&self, key: &WakeObligationKey) -> bool {
+        self.wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations
+                    .get(&key.task)
+                    .is_some_and(|existing| stale_prompt_control_generation(&existing.key, key))
+            })
+            .unwrap_or(true)
+    }
+
+    pub(super) fn cancel_wake_obligation(
+        &self,
+        task: StartupBackfillTask,
+        control_generation: Option<u64>,
+    ) {
+        let should_clear = if let Ok(mut obligations) = self.wake_obligations.lock() {
+            let incoming = WakeObligationKey {
+                task,
+                control_generation,
+                progress_key: None,
+            };
+            if obligations
+                .get(&task)
+                .is_some_and(|existing| stale_prompt_control_generation(&existing.key, &incoming))
+            {
+                false
+            } else {
+                obligations.remove(&task);
+                true
+            }
+        } else {
+            false
+        };
+        if should_clear {
+            self.clear_observation(task);
         }
-        self.clear_observation(task);
+    }
+
+    pub(super) fn is_current_wake_obligation(&self, ticket: WakeObligationTicket) -> bool {
+        self.wake_obligations
+            .lock()
+            .map(|obligations| {
+                obligations
+                    .get(&ticket.task)
+                    .is_some_and(|obligation| obligation.ticket == ticket && obligation.in_flight)
+            })
+            .unwrap_or(false)
+    }
+
+    pub(super) fn defer_due_wake_obligations(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Vec<WakeObligationFailure> {
+        self.claim_due_wake_obligations(now)
+            .into_iter()
+            .filter_map(|attempt| self.fail_wake_obligation(attempt.ticket, now))
+            .collect()
     }
 
     pub(super) fn pending_wake_obligation_count(&self) -> usize {

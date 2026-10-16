@@ -359,10 +359,23 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     pool: &Pool<Sqlite>,
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
+    scheduler: &StartupBackfillScheduler,
 ) -> Result<super::StartupBackfillWakeConfirmation> {
     let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
     let task_name = task.name();
     let managed_task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if let Some(next_due) = scheduler
+        .next_due_for(task)
+        .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
+    {
+        return Ok(super::StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: false,
+            next_due: Some(next_due),
+        });
+    }
     let control_guard = if let Some(expected_generation) = attempt.key.control_generation {
         let Some(store) = crate::maintenance_store::global() else {
             return Ok(super::StartupBackfillWakeConfirmation::Retry);
@@ -380,6 +393,18 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
     };
     if cancel.is_cancelled() {
         return Ok(super::StartupBackfillWakeConfirmation::Cancelled);
+    }
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+    }
+    if let Some(next_due) = scheduler
+        .next_due_for(task)
+        .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
+    {
+        return Ok(super::StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: false,
+            next_due: Some(next_due),
+        });
     }
 
     let managed_tasks_present = sqlx::query_scalar::<_, i64>(
@@ -423,8 +448,13 @@ pub(super) async fn confirm_prompt_cache_materialization_wake(
         managed_tasks_present,
         expected_generation,
         &now,
+        attempt.ticket,
+        scheduler,
     )
     .await?;
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(super::StartupBackfillWakeConfirmation::Obsolete);
+    }
     if cancel.is_cancelled() {
         return Ok(super::StartupBackfillWakeConfirmation::Cancelled);
     }

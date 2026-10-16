@@ -9,8 +9,9 @@ use coverage_repair::run_startup_backfill_coverage_repair_if_due;
 pub(crate) use coverage_repair::run_startup_backfill_coverage_repair_if_due_with_repair;
 pub(crate) use observability::StartupBackfillHealthSnapshot;
 use observability::{
-    StartupBackfillScheduler, WakeObligationAttempt, WakeObligationKey, WakeObservationTicket,
-    confirm_scheduler_wake_observation, observe_wake_attempt, record_scheduler_wake_confirmation,
+    StartupBackfillScheduler, WakeObligationAttempt, WakeObligationKey, WakeObligationTicket,
+    WakeObservationTicket, confirm_scheduler_wake_observation, observe_wake_attempt,
+    record_scheduler_wake_confirmation,
 };
 mod prompt_cache_control;
 mod task_identity;
@@ -1097,39 +1098,37 @@ pub(crate) fn notify_startup_backfill_tasks(
                     .and_then(|store| store.prompt_cache_materialization_control.snapshot())
             })
             .flatten();
+        let control_generation = control_snapshot.map(|snapshot| snapshot.generation);
+        let progress_key = (task == StartupBackfillTask::ProxyCost)
+            .then(|| proxy_cost_progress_key.clone())
+            .flatten();
+        let obligation_key = WakeObligationKey {
+            task,
+            control_generation,
+            progress_key,
+        };
         if matches!(decision, WakeDecision::Disabled)
             || control_snapshot.is_some_and(|snapshot| !snapshot.enabled)
         {
+            if STARTUP_BACKFILL_SCHEDULER.is_stale_wake_obligation_key(&obligation_key) {
+                continue;
+            }
             let decision = if control_snapshot.is_some_and(|snapshot| !snapshot.enabled) {
                 WakeDecision::Disabled
             } else {
                 decision
             };
             let _ = STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision);
-            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task);
+            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task, control_generation);
             continue;
         }
         let Some(observation_ticket) =
             STARTUP_BACKFILL_SCHEDULER.record_notification(task, decision)
         else {
-            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task);
+            STARTUP_BACKFILL_SCHEDULER.cancel_wake_obligation(task, control_generation);
             continue;
         };
-        let progress_key = (task == StartupBackfillTask::ProxyCost)
-            .then(|| proxy_cost_progress_key.clone())
-            .flatten();
-        let control_generation = (task
-            == StartupBackfillTask::PromptCacheConversationsMaterialization)
-            .then(|| control_snapshot.map(|snapshot| snapshot.generation))
-            .flatten();
-        STARTUP_BACKFILL_SCHEDULER.accept_wake_obligation(
-            WakeObligationKey {
-                task,
-                control_generation,
-                progress_key,
-            },
-            observation_ticket,
-        )?;
+        STARTUP_BACKFILL_SCHEDULER.accept_wake_obligation(obligation_key, observation_ticket)?;
     }
     Ok(())
 }
@@ -1312,6 +1311,8 @@ async fn confirm_startup_backfill_progress_write(
     managed_tasks_present: bool,
     expected_generation: Option<i64>,
     now: &str,
+    ticket: WakeObligationTicket,
+    scheduler: &StartupBackfillScheduler,
 ) -> Result<u64> {
     let managed_guard = if managed_tasks_present {
         "AND EXISTS(SELECT 1 FROM managed_tasks WHERE task_key=? AND enabled!=0)"
@@ -1322,6 +1323,9 @@ async fn confirm_startup_backfill_progress_write(
         let result = crate::maintenance_store::observe_store_write(
             crate::observability::contention::StoreOperation::Wake,
             async {
+                if !scheduler.is_current_wake_obligation(ticket) {
+                    return Ok::<Option<sqlx::sqlite::SqliteQueryResult>, anyhow::Error>(None);
+                }
                 let result = if let Some(expected_generation) = expected_generation {
                     let query_sql = format!(
                         r#"UPDATE startup_backfill_progress
@@ -1438,11 +1442,11 @@ async fn confirm_startup_backfill_progress_write(
                     }
                     query.execute(pool).await?
                 };
-                Ok::<_, anyhow::Error>(result)
+                Ok::<_, anyhow::Error>(Some(result))
             },
         )
         .await?;
-        let rows_affected = result.rows_affected();
+        let rows_affected = result.map_or(0, |result| result.rows_affected());
         Ok::<(u64, bool), anyhow::Error>((rows_affected, rows_affected > 0))
     })
     .await?;
@@ -1450,7 +1454,19 @@ async fn confirm_startup_backfill_progress_write(
 }
 
 async fn confirm_startup_backfill_wake_obligations(cancel: &CancellationToken) {
+    if cancel.is_cancelled() {
+        return;
+    }
     let Some(store) = crate::maintenance_store::global() else {
+        for failure in STARTUP_BACKFILL_SCHEDULER.defer_due_wake_obligations(Utc::now()) {
+            if failure.should_warn {
+                warn!(
+                    attempt = failure.attempt,
+                    next_due = %failure.next_due,
+                    "startup backfill wake confirmation deferred because maintenance store is unavailable"
+                );
+            }
+        }
         return;
     };
     confirm_startup_backfill_wake_obligations_with_pool(&store.pool, cancel).await;
@@ -1465,25 +1481,34 @@ async fn confirm_startup_backfill_wake_obligations_with_pool(
         if cancel.is_cancelled() {
             break;
         }
-        let confirmation =
-            match confirm_startup_backfill_wake_obligation(pool, cancel, &attempt).await {
-                Ok(confirmation) => confirmation,
-                Err(error) => {
-                    if let Some(failure) =
-                        STARTUP_BACKFILL_SCHEDULER.fail_wake_obligation(attempt.ticket, Utc::now())
-                        && failure.should_warn
-                    {
-                        warn!(
-                            task = attempt.key.task.log_label(),
-                            attempt = failure.attempt,
-                            next_due = %failure.next_due,
-                            error = %error,
-                            "startup backfill wake confirmation failed"
-                        );
-                    }
-                    continue;
+        if !STARTUP_BACKFILL_SCHEDULER.is_current_wake_obligation(attempt.ticket) {
+            continue;
+        }
+        let confirmation = match confirm_startup_backfill_wake_obligation(
+            pool,
+            cancel,
+            &attempt,
+            &STARTUP_BACKFILL_SCHEDULER,
+        )
+        .await
+        {
+            Ok(confirmation) => confirmation,
+            Err(error) => {
+                if let Some(failure) =
+                    STARTUP_BACKFILL_SCHEDULER.fail_wake_obligation(attempt.ticket, Utc::now())
+                    && failure.should_warn
+                {
+                    warn!(
+                        task = attempt.key.task.log_label(),
+                        attempt = failure.attempt,
+                        next_due = %failure.next_due,
+                        error = %error,
+                        "startup backfill wake confirmation failed"
+                    );
                 }
-            };
+                continue;
+            }
+        };
         match confirmation {
             StartupBackfillWakeConfirmation::Confirmed {
                 wake_task,
@@ -1540,12 +1565,16 @@ async fn confirm_startup_backfill_wake_obligation(
     pool: &Pool<Sqlite>,
     cancel: &CancellationToken,
     attempt: &WakeObligationAttempt,
+    scheduler: &StartupBackfillScheduler,
 ) -> Result<StartupBackfillWakeConfirmation> {
     if cancel.is_cancelled() {
         return Ok(StartupBackfillWakeConfirmation::Cancelled);
     }
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
     if attempt.key.task == StartupBackfillTask::PromptCacheConversationsMaterialization {
-        return confirm_prompt_cache_materialization_wake(pool, cancel, attempt).await;
+        return confirm_prompt_cache_materialization_wake(pool, cancel, attempt, scheduler).await;
     }
 
     let task = attempt.key.task;
@@ -1590,6 +1619,9 @@ async fn confirm_startup_backfill_wake_obligation(
     if cancel.is_cancelled() {
         return Ok(StartupBackfillWakeConfirmation::Cancelled);
     }
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
     let expected_generation = progress.as_ref().map(|progress| progress.1);
     let now = format_utc_iso(Utc::now());
     let rows_affected = confirm_startup_backfill_progress_write(
@@ -1602,8 +1634,13 @@ async fn confirm_startup_backfill_wake_obligation(
         managed_tasks_present,
         expected_generation,
         &now,
+        attempt.ticket,
+        scheduler,
     )
     .await?;
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok(StartupBackfillWakeConfirmation::Obsolete);
+    }
     if cancel.is_cancelled() {
         return Ok(StartupBackfillWakeConfirmation::Cancelled);
     }

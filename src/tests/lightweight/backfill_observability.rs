@@ -106,6 +106,130 @@ async fn backfill_wake_retry_deadline_is_published_in_prometheus() {
     assert_eq!(actual_next_due, expected_next_due);
 }
 
+#[test]
+fn unavailable_wake_store_reschedules_due_obligations() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::ProxyUsage;
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept wake obligation");
+
+    let now = Utc::now();
+    let failures = scheduler.defer_due_wake_obligations(now);
+    assert_eq!(failures.len(), 1);
+    assert!(failures[0].next_due > now);
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+    assert_eq!(
+        scheduler.next_wake_obligation_due(),
+        Some(failures[0].next_due)
+    );
+    assert!(scheduler.claim_due_wake_obligations(now).is_empty());
+}
+
+#[test]
+fn stale_prompt_control_generation_does_not_replace_or_cancel_newer_obligation() {
+    let scheduler = StartupBackfillScheduler::default();
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let first_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record current wake notification");
+    let first_ticket = scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(3),
+                progress_key: None,
+            },
+            first_observation,
+        )
+        .expect("accept current wake obligation");
+    let stale_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record stale wake notification");
+    let stale_ticket = scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: Some(2),
+                progress_key: None,
+            },
+            stale_observation,
+        )
+        .expect("accept stale wake notification");
+
+    assert_eq!(stale_ticket, first_ticket);
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+    assert!(!scheduler.is_stale_wake_obligation_key(&WakeObligationKey {
+        task,
+        control_generation: Some(3),
+        progress_key: None,
+    }));
+    scheduler.cancel_wake_obligation(task, Some(2));
+    assert_eq!(scheduler.pending_wake_obligation_count(), 1);
+    scheduler.cancel_wake_obligation(task, Some(3));
+    assert_eq!(scheduler.pending_wake_obligation_count(), 0);
+}
+
+#[tokio::test]
+async fn prompt_cache_obligation_respects_pressure_retry_deadline() {
+    let store = startup_backfill_tests::prompt_cache_materialization_test_store().await;
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let scheduler = StartupBackfillScheduler::default();
+    let retry_at = Utc::now() + ChronoDuration::hours(1);
+    scheduler.defer_for_pressure(task, retry_at);
+    let observation_ticket = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record prompt-cache wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            observation_ticket,
+        )
+        .expect("accept prompt-cache wake obligation");
+    let attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim prompt-cache wake obligation");
+
+    assert!(matches!(
+        confirm_startup_backfill_wake_obligation(
+            &store.pool,
+            &tokio_util::sync::CancellationToken::new(),
+            &attempt,
+            &scheduler,
+        )
+        .await
+        .expect("confirm pressure-deferred wake obligation"),
+        StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: false,
+            next_due: Some(_),
+        }
+    ));
+    assert_eq!(
+        load_startup_backfill_progress_from_pool(&store.pool, task.name())
+            .await
+            .expect("read unchanged pressure-deferred progress")
+            .wake_generation,
+        0
+    );
+    store.pool.close().await;
+}
+
 #[tokio::test]
 async fn backfill_wake_attempts_record_outcomes_and_cancellation() {
     let runtime = ObservabilityRuntime::new(true);
@@ -551,6 +675,7 @@ async fn wake_obligation_confirmation_preserves_failed_deadline() {
         &pool,
         &tokio_util::sync::CancellationToken::new(),
         &attempt,
+        &scheduler,
     )
     .await
     .expect("confirm wake obligation");
@@ -571,6 +696,80 @@ async fn wake_obligation_confirmation_preserves_failed_deadline() {
     assert_eq!(stored.0, 1);
     assert_eq!(stored.1, STARTUP_BACKFILL_STATUS_FAILED);
     assert_eq!(stored.2.as_deref(), Some(retry_after.as_str()));
+    pool.close().await;
+}
+
+#[tokio::test]
+async fn replaced_claimed_wake_obligation_does_not_write_stale_progress() {
+    let pool = startup_backfill_tests::control_test_pool().await;
+    let task = StartupBackfillTask::ProxyUsage;
+    sqlx::query(
+        "INSERT INTO managed_tasks (task_key,enabled) VALUES ('startup_backfill.proxy_usage',1)",
+    )
+    .execute(&pool)
+    .await
+    .expect("insert enabled task control");
+    sqlx::query("INSERT INTO startup_backfill_progress (task_name,enabled) VALUES (?,1)")
+        .bind(task.name())
+        .execute(&pool)
+        .await
+        .expect("insert progress row");
+
+    let scheduler = StartupBackfillScheduler::default();
+    let old_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record old wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: None,
+            },
+            old_observation,
+        )
+        .expect("accept old wake obligation");
+    let old_attempt = scheduler
+        .claim_due_wake_obligations(Utc::now())
+        .into_iter()
+        .next()
+        .expect("claim old wake obligation");
+
+    let new_observation = scheduler
+        .record_notification(task, WakeDecision::New)
+        .expect("record replacement wake notification");
+    scheduler
+        .accept_wake_obligation(
+            WakeObligationKey {
+                task,
+                control_generation: None,
+                progress_key: Some("proxy_usage:new-catalog".to_string()),
+            },
+            new_observation,
+        )
+        .expect("accept replacement wake obligation");
+
+    assert!(matches!(
+        confirm_startup_backfill_wake_obligation(
+            &pool,
+            &tokio_util::sync::CancellationToken::new(),
+            &old_attempt,
+            &scheduler,
+        )
+        .await
+        .expect("fence replaced wake obligation"),
+        StartupBackfillWakeConfirmation::Obsolete
+    ));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT wake_generation FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(task.name())
+        .fetch_one(&pool)
+        .await
+        .expect("read stale progress row"),
+        0
+    );
     pool.close().await;
 }
 
@@ -626,6 +825,7 @@ async fn wake_obligation_confirmation_supports_legacy_pool_without_controls() {
             &pool,
             &tokio_util::sync::CancellationToken::new(),
             &attempt,
+            &scheduler,
         )
         .await
         .expect("confirm legacy wake obligation"),
@@ -688,6 +888,7 @@ async fn prompt_cache_wake_obligation_uses_the_same_conditional_confirmation() {
             &pool,
             &tokio_util::sync::CancellationToken::new(),
             &attempt,
+            &scheduler,
         )
         .await
         .expect("confirm prompt-cache wake obligation"),
