@@ -1108,7 +1108,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
             continue;
         }
         let mut query = build_invocation_select_query();
-        query.push(" WHERE id IN (");
+        query.push(" AND id IN (");
         {
             let mut separated = query.separated(", ");
             for id in chunk {
@@ -1252,8 +1252,7 @@ async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool>
         return Ok(false);
     }
     let mut query = build_invocation_select_query();
-    query.push(" WHERE ");
-    query.push(" LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
     query.push(" ORDER BY occurred_at ASC, id ASC LIMIT ");
     query.push_bind(MAX_REPLAY_DELTAS as i64 + 1);
     let rows = query
