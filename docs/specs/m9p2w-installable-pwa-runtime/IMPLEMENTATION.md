@@ -10,7 +10,7 @@
   - Dashboard 概览离线数据改为应用层 IndexedDB snapshot store：五个固定 range 各保存最近一份成功快照，不把 `/api/*` 缓存职责塞进 service worker。
   - `DashboardActivityOverview` 已接入 `live` / `cached-offline` / `not-cached-yet` 三态；`working conversations` 明确保留在线依赖，并在离线重开时显示不可用语义。
   - install icon 保留透明 regular 与独立 maskable 输出；`scripts/export_brand_assets.py` 为 favicon、regular 和 maskable 资源生成内容哈希文件名，`vite.config.ts` 只消费这组五个唯一资源。既有批准的 regular/maskable artwork 像素未改变。
-  - `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 走重新校验，service worker 排除运行时元数据和安装图标后再 precache，内容哈希图标由后端静态服务使用 immutable 缓存；产品 App 不生成或注入 Apple touch fallback。
+  - `site.webmanifest`、`sw.js`、`version.json` 与 `index.html` 走重新校验，service worker 排除运行时元数据、安装图标和 `/api/*`、`/events`、`/v1/*` API 路径后再 precache，内容哈希图标由后端静态服务使用 immutable 缓存；产品 App 不生成或注入 Apple touch fallback。
 
 ## 状态
 
@@ -85,7 +85,7 @@
 - `src/maintenance/hourly_rollups.rs`
   - 对 PWA 元数据和入口 HTML 返回重新校验策略，对内容哈希安装图标返回 immutable 缓存，并覆盖静态缓存分类单元测试。
 - `web/tests/pwa/installable-runtime.spec.ts` 与 `web/tests/pwa/test-server.mjs`
-  - 验证稳定 manifest identity、当前图标响应、缓存策略与 SW 不缓存运行时 manifest/version/安装图标，并模拟同一 Chromium registration 从 V1 更新到 V2 的新 manifest/icon URL。
+  - 验证稳定 manifest identity、当前图标响应、缓存策略与 SW 不缓存运行时 manifest/version/安装图标，不把 `/v1/models` 导航回退为 HTML，并模拟同一 Chromium registration 从 V1 更新到 V2 的新 manifest/icon URL。
 - 本次变更不重绘 regular/maskable artwork；资源检查器还会将 favicon 与批准的 regular SVG 做字节级比对，发布验证需保留四个 regular/maskable PNG 的原始哈希。
 
 ## Visual Evidence

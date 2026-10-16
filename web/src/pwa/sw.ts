@@ -37,7 +37,7 @@ const navigationHandler = createHandlerBoundToURL(`${import.meta.env.BASE_URL}in
 
 registerRoute(
   new NavigationRoute(navigationHandler, {
-    denylist: [/^\/api\//, /^\/events\//, /^\/__test\//],
+    denylist: [/^\/api\//, /^\/events\//, /^\/v1\//, /^\/__test\//],
   }),
 );
 
