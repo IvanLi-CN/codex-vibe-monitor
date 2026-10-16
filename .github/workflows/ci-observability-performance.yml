@@ -97,11 +97,17 @@ jobs:
         lane: [runtime, pair-0, pair-1, pair-2]
     steps:
       - name: Start test wall clock
+        timeout-minutes: 1
         env:
           TEST_STARTED: ${{ needs.observability-performance-image.outputs.test-started }}
-        run: echo "OBSERVABILITY_TEST_STARTED_UTC=$TEST_STARTED" >> "$GITHUB_ENV"
+        run: |
+          set -euo pipefail
+          test "$TEST_STARTED" -le "$(date +%s)"
+          test "$(( $(date +%s) - TEST_STARTED ))" -le 60
+          echo "OBSERVABILITY_TEST_STARTED_UTC=$TEST_STARTED" >> "$GITHUB_ENV"
 
       - name: Checkout trusted acceptance harness
+        timeout-minutes: 1
         uses: actions/checkout@v7
         with:
           repository: ${{ github.repository }}
@@ -110,6 +116,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout candidate identity
+        timeout-minutes: 1
         uses: actions/checkout@v7
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -118,6 +125,7 @@ jobs:
           persist-credentials: false
 
       - name: Download performance candidate image
+        timeout-minutes: 1
         uses: actions/download-artifact@v7
         with:
           name: observability-image-${{ github.run_id }}

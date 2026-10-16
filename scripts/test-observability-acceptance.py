@@ -746,6 +746,16 @@ class WorkflowGateTests(unittest.TestCase):
         workflow["jobs"]["observability-performance"]["steps"][0]["run"] = 'echo "OBSERVABILITY_TEST_STARTED_UTC=$(date +%s)" >> "$GITHUB_ENV"'
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
+    def test_action_preparation_and_runner_admission_cannot_bypass_deadline(self):
+        for name in ("Start test wall clock", "Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
+            workflow = copy.deepcopy(self.workflow)
+            step = next(row for row in workflow["jobs"]["observability-performance"]["steps"] if row["name"] == name)
+            step.pop("timeout-minutes")
+            with self.assertRaises(contract.ContractError): self.verify(workflow)
+        workflow = copy.deepcopy(self.workflow)
+        workflow["jobs"]["observability-performance"]["steps"][0]["run"] = workflow["jobs"]["observability-performance"]["steps"][0]["run"].replace('-le 60', '-le 900')
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
     def test_download_preparation_cannot_bypass_shared_deadline(self):
         workflow = copy.deepcopy(self.workflow)
         step = next(row for row in workflow["jobs"]["observability-performance"]["steps"] if row["name"] == "Prepare pinned CPU sampler")

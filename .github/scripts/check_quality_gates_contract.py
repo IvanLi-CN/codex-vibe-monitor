@@ -122,8 +122,15 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
             "all three paired experiments and runtime acceptance must run on isolated parallel runners")
     clock = step_config(performance_job, "Start test wall clock", workflow_path)
     require(clock.get("env", {}).get("TEST_STARTED") == "${{ needs.observability-performance-image.outputs.test-started }}"
-            and clock.get("run") == 'echo "OBSERVABILITY_TEST_STARTED_UTC=$TEST_STARTED" >> "$GITHUB_ENV"',
+            and str(clock.get("run", "")).strip().splitlines() == ["set -euo pipefail",
+                'test "$TEST_STARTED" -le "$(date +%s)"',
+                'test "$(( $(date +%s) - TEST_STARTED ))" -le 60',
+                'echo "OBSERVABILITY_TEST_STARTED_UTC=$TEST_STARTED" >> "$GITHUB_ENV"']
+            and clock.get("timeout-minutes") == 1,
             "test lanes must retain the shared wall-clock budget")
+    for name in ("Checkout trusted acceptance harness", "Checkout candidate identity", "Download performance candidate image"):
+        require(step_config(performance_job, name, workflow_path).get("timeout-minutes") == 1,
+                "checkout and artifact actions must fit bounded preparation before the shared deadline")
     require(image_job.get("outputs", {}).get("test-started") == "${{ steps.test-clock.outputs.started }}"
             and step_config(image_job, "Release shared test clock", workflow_path).get("run") == 'echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"',
             "image handoff must release exactly one shared test clock")
@@ -267,7 +274,7 @@ def require_observability_diagnostic_contract(workflow: dict[str, Any], workflow
             "diagnosis must not replace or certify the performance gate")
     for name in ["Checkout trusted acceptance harness", "Download performance candidate image",
                  "Verify and load candidate image", "Prepare pinned CPU sampler"]:
-        require(step_config(job, name, "diagnostics") == {key: value for key, value in step_config(performance, name, "performance").items() if key != "if"},
+        require(step_config(job, name, "diagnostics") == {key: value for key, value in step_config(performance, name, "performance").items() if key not in {"if", "timeout-minutes"}},
                 "diagnosis must use identical candidate image verification and pinned sampler")
     run = step_config(job, "Run bounded CPU diagnosis", "diagnostics")
     script = str(run.get("run", ""))
