@@ -11,7 +11,7 @@
     "planned": {
       "impact": "minor",
       "reasoning": "The HTTP changes add management endpoints and dynamic model IDs while preserving existing response fields. The SQLite catalog is additive, but older same-Major binaries do not support dynamic model membership and can discard dynamic enabled IDs when saving proxy settings.",
-      "assessed_at": "2026-10-15T16:52:31Z",
+      "assessed_at": "2026-10-16T03:36:54Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
@@ -24,7 +24,7 @@
         "description": "Implementation and local validation match the approved contract; no compatibility scope drift was found."
       },
       "reasoning": "Public API impact remains patch because the existing entries contract is retained and quotes are additive. Persistent state is minor because the quote table and dynamic model catalog add durable capabilities; the release unit takes the higher persistent-state impact.",
-      "reassessed_at": "2026-10-15T16:52:31Z",
+      "reassessed_at": "2026-10-16T03:36:54Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
@@ -33,10 +33,10 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The stateful SQLite profile verifies migration, deletion suppression after restart, explicit rediscovery with presets disabled, and unchanged historical costs. Public API impact remains patch for additive routes and model IDs; persistent state is minor because earlier same-Major writers do not preserve dynamic enabled IDs.",
-      "verified_at": "2026-10-15T16:52:31Z",
+      "verified_at": "2026-10-16T03:36:54Z",
       "evidence": [
-        "candidate_sha=293b08cbb9d9795e1e6045f3f4472010033888fa",
-        "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json: omission_count=0",
+        "candidate_sha=49ca7605f2973149403ba5007102bee0dd71c9c3",
+        "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json: official_ids_missing_from_litellm=[]",
         "cargo test pricing quote parser and transaction selectors: passed",
         "cargo check --locked --all-targets --all-features: passed",
         "cargo clippy --locked --all-targets --all-features -- -D warnings: passed",
@@ -58,7 +58,7 @@
     },
     "persistent_state": {
       "applicable": true,
-      "state_description": "SQLite managed model IDs, proxy enabled model IDs, pricing catalog, and historical invocation costs.",
+      "state_description": "SQLite managed model IDs, proxy enabled model IDs, legacy pricing projections, complete pricing_model_quotes rows, and historical invocation costs.",
       "source_program_compatibility_range": "Earlier repository versions with static proxy preset IDs and the existing pricing catalog; direct Major skips are unsupported.",
       "evidence": [
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json",

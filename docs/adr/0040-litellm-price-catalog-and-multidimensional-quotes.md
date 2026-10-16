@@ -10,6 +10,8 @@ The reviewed model-price flow previously normalized a directory response into fi
 
 ## Decision
 
+This ADR supersedes the price-source and single-dimension limitations in ADR 0023. ADR 0023 remains the governing workflow for user-triggered review, compatibility, and manual maintenance where this ADR does not replace it.
+
 Use the LiteLLM maintained raw JSON at `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` as the only online price source for the synchronization flow. Fetch it on explicit preview, retain the response SHA-256 and retrieval time, and do not advance the durable discovery baseline when retrieval or parsing fails.
 
 Normalize source entries by model ID and provider marker, while keeping source metadata, lifecycle fields, and every numeric rate. A rate stores its original key/value/unit plus a readable normalized value/unit and optional modality, processing tier, and threshold. A model may have a complete legacy token projection, a quote-only record, or both. Only a valid generic token input/output pair updates `pricing_settings_models`; missing dimensions remain missing and are never filled with placeholders. A future deprecation date remains metadata and does not hide or disable a quote.

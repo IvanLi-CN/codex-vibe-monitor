@@ -7,7 +7,7 @@
 - Implementation: 原模型管理能力与价格审核改进均已实现；LiteLLM 单一来源、SHA-256 报价版本、完整多维费率、独立报价持久化、兼容 `entries` 请求和事务应用均已接入。
 - Lifecycle: active
 - Catalog note: LiteLLM is fetched only on explicit preview; local estimates remain user-reviewed.
-- Delivery: 本次实现从 `origin/main` 的 `th/litellm-price-catalog` 分支交付；视觉和正式审查证据在交付门禁阶段刷新。
+- Delivery: 本次实现从 `origin/main` 的 `th/litellm-price-catalog` 分支交付；视觉候选等待主人确认，正式审查按当前候选刷新。
 
 ## Implementation Coverage
 
@@ -34,16 +34,16 @@
 
 ## Verification
 
-- Live acceptance for candidate `293b08cbb9d9795e1e6045f3f4472010033888fa`: the LiteLLM raw catalog was fetched anonymously at `2026-10-15T16:52:31Z` from `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` (`2,862,054` bytes, SHA-256 `c9f030205a0c2fd3878c7d7289dbd2c5fe4c8c258ef880a41f94ffcad3e98f2a`). The audit record in `assets/live-litellm-openai-coverage.json` compares the two OpenAI GPT Image 2.5 IDs against the official [OpenAI pricing page](https://developers.openai.com/api/docs/pricing) and records an omission count of zero. Both entries contain standard text input/cache at `$5/$1.25` and image input/cache/output at `$8/$2/$30` per million tokens, plus their Batch dimensions.
-- Parser regression: `cargo test litellm_catalog_preserves_openai_image_25_modal_rates -- --nocapture` and `cargo test litellm_catalog_normalizes_non_text_units_tiers_and_skips_sample_spec -- --nocapture` passed. The fixtures verify quote-only image models, audio/video/reasoning token normalization, non-token units, tier names, context thresholds, and exclusion of LiteLLM's `sample_spec` placeholder.
+- Live acceptance for code candidate `49ca7605f2973149403ba5007102bee0dd71c9c3`: the LiteLLM raw catalog was fetched anonymously at `2026-10-16T03:36:54Z` from `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` (`2,876,609` bytes, SHA-256 `83af88edfe2f22f65c7c57c4e91c0c0575d7dfd7510d4f837c96695272acc7bd`). The audit record in `assets/live-litellm-openai-coverage.json` compares 22 model IDs visible in the official [OpenAI pricing page](https://developers.openai.com/api/docs/pricing) against LiteLLM and records zero missing IDs. Both GPT Image 2.5 entries contain standard text input/cache at `$5/$1.25` and image input/cache/output at `$8/$2/$30` per million tokens, plus their Batch dimensions.
+- Parser regression: `cargo test litellm_catalog -- --nocapture` passed. The fixtures verify quote-only image models, audio/video/reasoning token normalization, nested query and guardrail rates, non-token units, tier names, context thresholds, threshold-only projection exclusion, and exclusion of LiteLLM's `sample_spec` placeholder.
 - Persistence regression: `cargo test pricing_settings_api_preserves_quotes_when_legacy_request_omits_quotes -- --nocapture`, `cargo test quote_only_apply_restores_a_deleted_model_without_legacy_price -- --nocapture`, `cargo test litellm_apply_updates_only_selected_prices_and_marks_the_source -- --nocapture`, and `cargo test model_price_sync_and_delete_roll_back_if_catalog_snapshot_fails -- --nocapture` passed. These cover additive quote recovery, omitted-quote preservation, quote-only apply, selected-provider merging, explicit deletion, and transaction rollback.
 - Backend quality gates: `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` passed locally. The full `stateful-sqlite` profile remains a CI gate for the current PR head.
-- Web quality gates: `SystemModelsPage.test.tsx` and `selection.test.ts` passed 37/37 tests; `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build` passed. Web lint reported 93 non-blocking repository warnings, and the production build retained the existing large-chunk advisory.
-- A new controlled mock-only visual candidate was captured after the quote detail/editor changes; canonical asset replacement is pending owner confirmation. The remaining delivery evidence is the current PR CI and the four read-only review lanes.
+- Web quality gates: `SystemModelsPage.test.tsx` and `selection.test.ts` passed 37/37 tests, and the Demo handler suite passed 36/36 tests; `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build` passed. Web lint reported 93 non-blocking repository warnings, and the production build retained the existing large-chunk advisory.
+- A new controlled mock-only visual candidate was captured after the quote detail/editor changes; canonical asset replacement remains pending owner confirmation. The current PR CI passed, and the four read-only review lanes have re-reviewed the repaired head; remaining delivery gates are the visual confirmation and Step 5C decision card.
 
 ## Remaining Delivery Gates
 
-- Current PR publication, current-head CI and read-only review readiness, and the Step 5C release decision card. Merge remains outside this implementation turn and requires the owner's confirmation of the decision card and predicted version.
+- Owner confirmation of the controlled visual candidate and the Step 5C release decision card. Merge remains outside this implementation turn and requires the owner's confirmation of the decision card and predicted version.
 
 ## References
 

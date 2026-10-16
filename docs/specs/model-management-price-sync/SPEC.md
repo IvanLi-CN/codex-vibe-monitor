@@ -329,7 +329,7 @@
   margin_policy: trim_only
   evidence_surface: page
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: `/system/models?demoTheme=dark`
   state: LiteLLM quote catalog desktop dark
   evidence_note: verifies the LiteLLM-backed OpenAI image 2.5 models, five preserved text/image rates, readable per-million-token units, and the expanded quote details
@@ -344,7 +344,7 @@
   margin_policy: trim_only
   evidence_surface: page
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: `/system/models?demoTheme=dark&demoViewport=mobile393`
   state: LiteLLM quote catalog mobile dark
   evidence_note: verifies the source-managed 393px responsive model list, expanded image 2.5 quote details, and preserved five-rate layout
