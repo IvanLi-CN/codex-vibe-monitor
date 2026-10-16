@@ -11,7 +11,7 @@
     "planned": {
       "impact": "minor",
       "reasoning": "The HTTP changes add management endpoints and dynamic model IDs while preserving existing response fields. The SQLite catalog is additive, but older same-Major binaries do not support dynamic model membership and can discard dynamic enabled IDs when saving proxy settings.",
-      "assessed_at": "2026-09-30T00:00:00Z",
+      "assessed_at": "2026-10-15T16:52:31Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
@@ -24,7 +24,7 @@
         "description": "Implementation and local validation match the approved contract; no compatibility scope drift was found."
       },
       "reasoning": "Public API impact remains patch because the existing entries contract is retained and quotes are additive. Persistent state is minor because the quote table and dynamic model catalog add durable capabilities; the release unit takes the higher persistent-state impact.",
-      "reassessed_at": "2026-09-30T08:55:43Z",
+      "reassessed_at": "2026-10-15T16:52:31Z",
       "evidence": [
         "docs/specs/model-management-price-sync/SPEC.md",
         "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
@@ -33,16 +33,16 @@
     "verified": {
       "impact": "minor",
       "reasoning": "The stateful SQLite profile verifies migration, deletion suppression after restart, explicit rediscovery with presets disabled, and unchanged historical costs. Public API impact remains patch for additive routes and model IDs; persistent state is minor because earlier same-Major writers do not preserve dynamic enabled IDs.",
-      "verified_at": "2026-09-30T08:55:43Z",
+      "verified_at": "2026-10-15T16:52:31Z",
       "evidence": [
-        "bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite: 1373 passed",
-        "cargo test ensure_schema_migrates_pre_gpt6_default_proxy_models -- --nocapture: passed",
-        "cargo test models_dev_catalog -- --nocapture: 3 passed",
-        "cd web && bun run test: 1663 passed, 6 skipped",
-        "bun run typecheck:web: passed",
-        "cd web && bun run build: passed",
-        "bun run test-storybook -- src/features/system/SystemWorkspace.stories.tsx: 26 passed",
+        "candidate_sha=293b08cbb9d9795e1e6045f3f4472010033888fa",
+        "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json: omission_count=0",
+        "cargo test pricing quote parser and transaction selectors: passed",
         "cargo check --locked --all-targets --all-features: passed",
+        "cargo clippy --locked --all-targets --all-features -- -D warnings: passed",
+        "SystemModelsPage.test.tsx and selection.test.ts: 37 passed",
+        "bun run typecheck:web and cd web && bun run build: passed",
+        "bun run lint:web: passed with 93 existing warnings",
         "cargo fmt --all -- --check and git diff --check: passed"
       ]
     }
@@ -51,14 +51,18 @@
     "public_api": {
       "change": "compatible",
       "supported_consumer_range": "Existing clients may continue reading existing settings fields and /v1/models responses; new management routes and dynamic model IDs are additive.",
-      "evidence": ["docs/specs/model-management-price-sync/SPEC.md"]
+      "evidence": [
+        "docs/specs/model-management-price-sync/SPEC.md",
+        "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json"
+      ]
     },
     "persistent_state": {
       "applicable": true,
       "state_description": "SQLite managed model IDs, proxy enabled model IDs, pricing catalog, and historical invocation costs.",
       "source_program_compatibility_range": "Earlier repository versions with static proxy preset IDs and the existing pricing catalog; direct Major skips are unsupported.",
       "evidence": [
-        "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json"
+        "docs/specs/model-management-price-sync/assets/persistent-state-migration-record.json",
+        "docs/specs/model-management-price-sync/assets/live-litellm-openai-coverage.json"
       ]
     }
   },

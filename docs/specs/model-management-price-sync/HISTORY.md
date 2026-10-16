@@ -25,7 +25,7 @@
 
 ## Related Changes
 
-- Direct delivery: [PR #1120](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1120). This LiteLLM quote-catalog candidate is based on `origin/main` at `3b3600e5e0bb931686ae08861a00c778e9e1bcf8`; the current head is recorded in the delivery evidence after the final repair commit.
+- Direct delivery: [PR #1120](https://github.com/IvanLi-CN/codex-vibe-monitor/pull/1120). This LiteLLM quote-catalog candidate is based on `origin/main` at `3b3600e5e0bb931686ae08861a00c778e9e1bcf8`; the implementation repair head is `293b08cbb9d9795e1e6045f3f4472010033888fa` and the live coverage evidence is bound to that candidate.
 - Compatibility classification: additive API and service-owned SQLite state, verified as `minor` in `assets/sync-memory-version-impact-record.json`; release labels are `type:minor` and `channel:stable`.
 
 ## References
