@@ -4,6 +4,7 @@ mod archive_identity;
 pub(super) mod batch_plan;
 mod observability;
 mod task_batches;
+mod task_transaction_resources;
 use archive_identity::invocation_archive_source_identity_matches;
 pub(crate) use archive_identity::{
     InvocationArchiveIdentityDatabase, archive_table_source_identity_sha256,
@@ -29,6 +30,11 @@ pub(crate) use observability::record_backlog_observation;
 pub(crate) use task_batches::archive_old_invocations;
 use task_batches::archive_old_invocations_with_source_max;
 pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
+pub(crate) use task_transaction_resources::RetentionTransactionResources;
+#[cfg(test)]
+pub(crate) use task_transaction_resources::{
+    RETENTION_TEST_RETURN_TO_POOL, RetentionReturnToPoolProbe,
+};
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
@@ -49,7 +55,12 @@ use std::{
 mod batch_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
-pub(crate) use batch_admission::{BatchCommitProbe, RETENTION_TEST_BATCH_COMMIT};
+pub(crate) use batch_admission::{
+    ArchiveArtifactProbe, ArchiveFileVerifyProbe, BatchCommitProbe, GateGenerationProbe,
+    RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
+    RETENTION_TEST_BATCH_COMMIT, RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN,
+    TransactionBeginProbe,
+};
 
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
 
@@ -1167,7 +1178,7 @@ macro_rules! retention_record_commit {
 
 pub(crate) use retention_record_commit;
 
-pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
+pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) -> bool {
     let RetentionWriteCommit {
         operation,
         admission_mode,
@@ -1229,6 +1240,7 @@ pub(crate) fn record_retention_write_commit(commit: RetentionWriteCommit) {
             "retention write micro-batch committed"
         );
     }
+    breached
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1443,6 +1455,53 @@ pub(crate) async fn acquire_retention_write_connection(
     operation: &'static str,
 ) -> Result<Option<(sqlx::pool::PoolConnection<Sqlite>, RetentionWriteAdmission)>> {
     batch_admission::acquire_write_connection(pool, operation, false).await
+}
+
+pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+> {
+    batch_admission::acquire_write_connection_with_archive_fence(
+        pool,
+        operation,
+        archive_path,
+        expected_sha256,
+    )
+    .await
+}
+
+pub(crate) async fn acquire_retention_batch_write_connection_with_archive_fence_observed<F>(
+    pool: &Pool<Sqlite>,
+    operation: &'static str,
+    archive_path: &Path,
+    expected_sha256: Option<&str>,
+    observe_file_verify: F,
+) -> Result<
+    Option<(
+        sqlx::pool::PoolConnection<Sqlite>,
+        RetentionWriteAdmission,
+        RetentionArchiveFileLock,
+    )>,
+>
+where
+    F: FnMut() -> Option<observability::RetentionPhaseGuard>,
+{
+    batch_admission::acquire_write_connection_with_archive_fence_observed(
+        pool,
+        operation,
+        archive_path,
+        expected_sha256,
+        observe_file_verify,
+    )
+    .await
 }
 
 pub(super) async fn acquire_retention_write_admission(

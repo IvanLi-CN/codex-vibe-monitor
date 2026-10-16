@@ -386,61 +386,178 @@ pub(super) async fn prepare_summary_proof(
     outcome: &ArchiveBatchOutcome,
     pages: Vec<TaskArchiveSnapshotPage>,
 ) -> Result<Option<VerifiedSummaryArchiveSnapshot>> {
-    let Some((mut connection, admission)) =
-        acquire_retention_batch_write_connection(pool, "archive_snapshot_manifest").await?
+    let archive_path = Path::new(&outcome.file_path);
+    let Some((connection, admission, archive_lock)) =
+        acquire_retention_batch_write_connection_with_archive_fence(
+            pool,
+            "archive_snapshot_manifest",
+            archive_path,
+            Some(&outcome.sha256),
+        )
+        .await?
     else {
         return Ok(None);
     };
-    let mut transaction = connection.begin().await?;
-    stage_invocation_archive_batch_manifest(transaction.as_mut(), outcome).await?;
-    let batch_id = load_archive_batch_id_for_file_tx(
-        transaction.as_mut(),
-        outcome.dataset,
-        &outcome.month_key,
-        &outcome.file_path,
-    )
-    .await?;
-    transaction.commit().await?;
-    drop(connection);
-    drop(admission);
+    let mut transaction_resources =
+        RetentionTransactionResources::new(connection, admission, archive_lock);
+    transaction_resources.mark_transaction_started();
+    let begin_result = sqlx::query("BEGIN")
+        .execute(transaction_resources.connection_mut())
+        .await;
+    if let Err(error) = begin_result {
+        let cleanup_error = transaction_resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "failed to rollback and close summary manifest connection after begin failure: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    let batch_id_result: Result<i64> = async {
+        stage_invocation_archive_batch_manifest(transaction_resources.connection_mut(), outcome)
+            .await?;
+        load_archive_batch_id_for_file_tx(
+            transaction_resources.connection_mut(),
+            outcome.dataset,
+            &outcome.month_key,
+            &outcome.file_path,
+        )
+        .await
+    }
+    .await;
+    let batch_id = match batch_id_result {
+        Ok(batch_id) => batch_id,
+        Err(error) => {
+            let cleanup_error = transaction_resources.rollback_and_close().await;
+            let mut error = error;
+            if let Err(cleanup_error) = cleanup_error {
+                error = error.context(format!(
+                    "summary manifest transaction rollback and close failed: {cleanup_error}"
+                ));
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = sqlx::query("COMMIT")
+        .execute(transaction_resources.connection_mut())
+        .await
+    {
+        let cleanup_error = transaction_resources.rollback_and_close().await;
+        let mut error: anyhow::Error = error.into();
+        if let Err(cleanup_error) = cleanup_error {
+            error = error.context(format!(
+                "summary manifest transaction rollback and close failed after commit failure: {cleanup_error}"
+            ));
+        }
+        return Err(error);
+    }
+    transaction_resources.mark_transaction_finished();
+    transaction_resources
+        .return_to_pool()
+        .await
+        .context("return summary manifest transaction connection to pool")?;
     for (index, page) in pages.into_iter().enumerate() {
-        let Some((mut connection, admission)) =
+        let Some((connection, admission)) =
             acquire_retention_batch_write_connection(pool, "archive_snapshot_page").await?
         else {
             return Ok(None);
         };
-        let mut transaction = connection.begin().await?;
-        // Older digests are no longer the identity of the canonical file. Replace only this
-        // page, keeping each write short and preventing one full copy per task from piling up.
-        sqlx::query(
-            "DELETE FROM summary_archive_snapshot WHERE archive_batch_id=?1 AND page_index=?2",
-        )
-        .bind(batch_id)
-        .bind(index as i64)
-        .execute(transaction.as_mut())
-        .await?;
-        store_summary_archive_snapshot_page_v2_tx(
-            transaction.as_mut(),
-            &SummaryArchiveSnapshotPage {
-                archive_batch_id: batch_id,
-                manifest_sha256: outcome.sha256.clone(),
-                page_index: u32::try_from(index)?,
-                coverage_start: page.coverage_start,
-                coverage_end: page.coverage_end,
-                row_count: page.row_count,
-                payload: page.payload,
-            },
-        )
-        .await?;
-        transaction.commit().await?;
-        drop(connection);
-        drop(admission);
+        let mut transaction_resources =
+            RetentionTransactionResources::without_archive_fence(connection, admission);
+        transaction_resources.mark_transaction_started();
+        let begin_result = sqlx::query("BEGIN IMMEDIATE")
+            .execute(transaction_resources.connection_mut())
+            .await;
+        if let Err(error) = begin_result {
+            let cleanup_error = transaction_resources.rollback_and_close().await;
+            let mut error: anyhow::Error = error.into();
+            if let Err(cleanup_error) = cleanup_error {
+                error = error.context(format!(
+                    "failed to rollback and close summary page connection after begin failure: {cleanup_error}"
+                ));
+            }
+            return Err(error);
+        }
+        let page_result: Result<()> = async {
+            let manifest_matches = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(
+                    SELECT 1 FROM archive_batches
+                    WHERE id=?1 AND file_path=?2 AND sha256=?3
+                )",
+            )
+            .bind(batch_id)
+            .bind(&outcome.file_path)
+            .bind(&outcome.sha256)
+            .fetch_one(transaction_resources.connection_mut())
+            .await?;
+            if manifest_matches == 0 {
+                bail!("summary archive manifest changed before page staging");
+            }
+            // Page staging has no deletion authority. Keep the replacement scoped to the
+            // manifest identity checked above, so an old digest cannot remove a new page.
+            sqlx::query(
+                "DELETE FROM summary_archive_snapshot
+                 WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=?3",
+            )
+            .bind(batch_id)
+            .bind(&outcome.sha256)
+            .bind(index as i64)
+            .execute(transaction_resources.connection_mut())
+            .await?;
+            store_summary_archive_snapshot_page_v2_tx(
+                transaction_resources.connection_mut(),
+                &SummaryArchiveSnapshotPage {
+                    archive_batch_id: batch_id,
+                    manifest_sha256: outcome.sha256.clone(),
+                    page_index: u32::try_from(index)?,
+                    coverage_start: page.coverage_start,
+                    coverage_end: page.coverage_end,
+                    row_count: page.row_count,
+                    payload: page.payload,
+                },
+            )
+            .await
+        }
+        .await;
+        if let Err(error) = page_result {
+            let cleanup_error = transaction_resources.rollback_and_close().await;
+            let mut error = error;
+            if let Err(cleanup_error) = cleanup_error {
+                error = error.context(format!(
+                    "summary page transaction rollback and close failed: {cleanup_error}"
+                ));
+            }
+            return Err(error);
+        }
+        if let Err(error) = sqlx::query("COMMIT")
+            .execute(transaction_resources.connection_mut())
+            .await
+        {
+            let cleanup_error = transaction_resources.rollback_and_close().await;
+            let mut error: anyhow::Error = error.into();
+            if let Err(cleanup_error) = cleanup_error {
+                error = error.context(format!(
+                    "summary page transaction rollback and close failed after commit failure: {cleanup_error}"
+                ));
+            }
+            return Err(error);
+        }
+        transaction_resources.mark_transaction_finished();
+        transaction_resources
+            .return_to_pool()
+            .await
+            .context("return summary page transaction connection to pool")?;
     }
     // Pages are not deletion authority until the complete semantic proof is checked. Reads
     // and decompression of the month happen with no main-database writer permit held.
-    Ok(Some(
-        prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?,
-    ))
+    let archive_lock = retention_archive_file_try_lock(archive_path)?;
+    if sha256_hex_file(archive_path)? != outcome.sha256 {
+        bail!("summary archive artifact changed before semantic proof");
+    }
+    let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;
+    drop(archive_lock);
+    Ok(Some(proof))
 }
 
 #[cfg(test)]
