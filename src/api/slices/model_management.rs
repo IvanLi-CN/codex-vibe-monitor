@@ -555,16 +555,12 @@ fn parse_litellm_catalog(
         {
             continue;
         }
-        let rates = model
-            .iter()
-            .filter_map(|(key, value)| {
-                let value = value.as_f64()?;
-                if !value.is_finite() || value < 0.0 || !key.contains("cost") {
-                    return None;
-                }
-                Some(litellm_rate(key, value))
-            })
-            .collect::<Vec<_>>();
+        let mut rates = Vec::new();
+        for (key, value) in model {
+            if key.contains("cost") {
+                collect_litellm_rates(key, value, &mut rates);
+            }
+        }
         if rates.is_empty() {
             continue;
         }
@@ -603,6 +599,7 @@ fn parse_litellm_catalog(
             .filter(|rate| {
                 !(rate.unit == "usd_per_1m_tokens"
                     && rate.tier.is_none()
+                    && rate.threshold.is_none()
                     && rate
                         .modality
                         .as_deref()
@@ -806,9 +803,29 @@ fn select_litellm_token_rate(
             rate.dimension.as_deref() == Some(dimension)
                 && rate.unit == "usd_per_1m_tokens"
                 && rate.tier.is_none()
+                && rate.threshold.is_none()
                 && rate.modality.as_deref() == Some(modality)
         })
         .map(|rate| rate.value)
+}
+
+fn collect_litellm_rates(key: &str, value: &Value, rates: &mut Vec<PricingRate>) {
+    if let Some(value) = value
+        .as_f64()
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    {
+        rates.push(litellm_rate(key, value));
+        return;
+    }
+    if let Some(object) = value.as_object() {
+        for (child_key, child_value) in object {
+            collect_litellm_rates(&format!("{key}.{child_key}"), child_value, rates);
+        }
+    } else if let Some(array) = value.as_array() {
+        for (index, child_value) in array.iter().enumerate() {
+            collect_litellm_rates(&format!("{key}[{index}]"), child_value, rates);
+        }
+    }
 }
 
 fn model_cost(
@@ -955,17 +972,38 @@ mod tests {
                     "input_cost_per_token_above_272k_tokens_decisions": 0.000001,
                     "output_cost_per_image_0.5K": 0.01,
                     "file_search_cost_per_1k_calls": 0.002,
-                    "vector_store_cost_per_gb_per_day": 0.03
+                    "vector_store_cost_per_gb_per_day": 0.03,
+                    "search_context_cost_per_query": {
+                        "search_context_size_low": 0.01,
+                        "search_context_size_medium": 0.02,
+                        "search_context_size_high": 0.03
+                    },
+                    "guardrail_cost_per_unit": {
+                        "contentPolicyUnits": 0.00015
+                    }
+                },
+                "threshold-only-model": {
+                    "litellm_provider": "provider",
+                    "input_cost_per_token_above_272k_tokens": 0.000001,
+                    "output_cost_per_token_above_272k_tokens": 0.000002
                 }
             }),
             "sha256:test",
         )
         .expect("LiteLLM fixture should parse");
 
-        assert_eq!(parsed.candidates.len(), 1);
-        assert_eq!(parsed.candidates[0].model, "multimodal-model");
-        assert!(!parsed.candidates[0].importable);
-        let quote = &parsed.quotes[0];
+        assert_eq!(parsed.candidates.len(), 2);
+        let multimodal = parsed
+            .candidates
+            .iter()
+            .find(|candidate| candidate.model == "multimodal-model")
+            .expect("multimodal candidate");
+        assert!(!multimodal.importable);
+        let quote = parsed
+            .quotes
+            .iter()
+            .find(|quote| quote.model == "multimodal-model")
+            .expect("multimodal quote");
         let audio = quote
             .rates
             .iter()
@@ -1015,6 +1053,43 @@ mod tests {
             .find(|rate| rate.key == "vector_store_cost_per_gb_per_day")
             .expect("storage rate");
         assert_eq!(storage_rate.unit, "usd_per_gb_per_day");
+        for (key, value) in [
+            (
+                "search_context_cost_per_query.search_context_size_low",
+                0.01,
+            ),
+            (
+                "search_context_cost_per_query.search_context_size_medium",
+                0.02,
+            ),
+            (
+                "search_context_cost_per_query.search_context_size_high",
+                0.03,
+            ),
+        ] {
+            let rate = quote
+                .rates
+                .iter()
+                .find(|rate| rate.key == key)
+                .expect("nested query rate");
+            assert_eq!(rate.source_value, value);
+            assert_eq!(rate.unit, "usd_per_query");
+        }
+        let guardrail = quote
+            .rates
+            .iter()
+            .find(|rate| rate.key == "guardrail_cost_per_unit.contentPolicyUnits")
+            .expect("nested guardrail rate");
+        assert_eq!(guardrail.source_value, 0.00015);
+        assert_eq!(guardrail.unit, "usd_per_unit");
+        let threshold_only = parsed
+            .candidates
+            .iter()
+            .find(|candidate| candidate.model == "threshold-only-model")
+            .expect("threshold-only candidate");
+        assert_eq!(threshold_only.input_per_1m, None);
+        assert_eq!(threshold_only.output_per_1m, None);
+        assert!(!threshold_only.importable);
     }
 
     #[test]

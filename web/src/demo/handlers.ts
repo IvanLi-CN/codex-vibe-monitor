@@ -52,6 +52,16 @@ const DEMO_INVOCATION_RESPONSE_BODY_TEXT = JSON.stringify(
   null,
   2,
 );
+const DEMO_LITELLM_SOURCE_QUOTES = JSON.parse(
+  JSON.stringify(
+    ((demoModel.snapshot.settings as { pricing?: { quotes?: unknown[] } }).pricing?.quotes ??
+      []) as unknown[],
+  ),
+) as unknown[];
+
+function cloneDemoLiteLlmSourceQuotes() {
+  return JSON.parse(JSON.stringify(DEMO_LITELLM_SOURCE_QUOTES)) as unknown[];
+}
 
 type DemoAccount = {
   id: number;
@@ -5182,8 +5192,6 @@ export async function handleDemoRequest(request: Request) {
     return json(demoModel.updateModelSyncState(await request.json().catch(() => ({}))));
   }
   if (pathname === "/api/settings/models/sync/preview" && request.method === "POST") {
-    const pricing = (demoModel.snapshot.settings as { pricing: { quotes: unknown[] } }).pricing;
-    const quotes = pricing.quotes;
     return json({
       fetchedAt: "2026-10-15T00:00:00Z",
       sourceUrl:
@@ -5240,15 +5248,8 @@ export async function handleDemoRequest(request: Request) {
           importable: false,
         },
       ],
-      quotes,
-      syncState: {
-        catalogBaselineInitialized: false,
-        providerSelectionInitialized: false,
-        providerSelections: [],
-        modelSelections: [],
-        quoteProviderChoices: [],
-        unviewedModelIds: [],
-      },
+      quotes: cloneDemoLiteLlmSourceQuotes(),
+      syncState: demoModel.snapshot.modelSyncState,
     });
   }
   if (pathname === "/api/settings/models/sync/apply" && request.method === "POST") {
