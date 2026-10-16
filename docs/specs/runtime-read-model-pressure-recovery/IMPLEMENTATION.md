@@ -6,6 +6,8 @@
 
 REQ-RMPR-006 / VER-RMPR-006 bind the producer, bounded confirmation, optional-index CLI and exact-query interfaces in [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). Existing terminal post-commit work still awaits wake confirmation and can retry a failed wake through the deferred writer batch. That baseline is to be replaced without weakening durable dirty/progress recovery. The new CLI, current-candidate compatibility, cancellation and controlled CI evidence are not yet verified.
 
+The parent implementation adds explicit ownership-aware `prepare-performance-indexes`, per-index result reporting, a shared total budget, and native interruption/rollback/close before admission release. It shares the normalized prompt-cache key expression with the live-row MAX query and adds reference/plan regressions without changing the returned fact. Legacy long-term interval migration advances an independent consumer cursor atomically with each canonical page using existing indexes, retaining invalid sources and revisiting valid late earlier IDs. These source changes and their resource-bucket regressions remain pending current-head CI and formal review. Summary continues to use its existing independent rolling and historical owners; no request-side SQL fallback is added.
+
 ## Current Status
 
 - `SummaryDeltaJournal` retains compact terminal deltas only after the SQLite

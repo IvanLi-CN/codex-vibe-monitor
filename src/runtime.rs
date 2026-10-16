@@ -202,6 +202,13 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some(CliCommand::Maintenance(MaintenanceCliArgs {
+        command: MaintenanceCommand::PreparePerformanceIndexes(options),
+    })) = &cli.command
+    {
+        selected_owned_maintenance(&cli)?;
+        return run_performance_index_preparation_cli(&config, options).await;
+    }
     if let Some((task_key, dry_run)) = selected_owned_maintenance(&cli)? {
         return run_owned_maintenance_cli(&config, task_key, dry_run).await;
     }
@@ -1267,7 +1274,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             );
             let result = if matches!(
                 task_key.as_str(),
-                "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+                "retention_archive"
+                    | "invocation_identity_cleanup"
+                    | "raw_orphan_sweep"
+                    | "prepare_performance_indexes"
             ) {
                 // These owners settle file/transaction work at their own cancellation boundaries.
                 // Dropping their future here could release admission before in-flight IO drains.
@@ -1629,6 +1639,39 @@ async fn run_managed_task_once_with_observation(
     let details: Value = details
         .and_then(|d| serde_json::from_str(&d).ok())
         .unwrap_or(Value::Null);
+    if task_key == "prepare_performance_indexes" {
+        let request: PerformanceIndexPreparationRequest = if details.is_null() {
+            PerformanceIndexPreparationRequest::default()
+        } else {
+            serde_json::from_value(details)
+                .context("invalid performance index preparation request")?
+        };
+        anyhow::ensure!(
+            trigger == "manual",
+            "index preparation requires a manual request"
+        );
+        let report = prepare_performance_indexes(
+            state.pool.connect_options().as_ref().clone(),
+            request,
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+            state.shutdown.clone(),
+        )
+        .await?;
+        return Ok(ManagedTaskExecution {
+            summary: "性能索引准备结束".to_string(),
+            detail: Some(report.outcome.to_string()),
+            completion: Some(
+                if report.is_complete() {
+                    "complete"
+                } else {
+                    "deferred"
+                }
+                .to_string(),
+            ),
+            core_completion: None,
+            details: Some(serde_json::to_value(report)?),
+        });
+    }
     let options = MaintenanceExecutionOptions {
         manual: trigger == "manual",
         admitted: true,

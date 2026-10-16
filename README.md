@@ -403,3 +403,10 @@ codex-vibe-monitor maintenance raw-orphan-sweep --dry-run
 ```
 
 CLI 在线时提交指定维护请求并等待服务执行；离线时独占业务库与维护库对应的运行态锁，仅执行指定任务。运行态无法确认或维护库不可用时返回不可用。同一数据目录的版本升级须先停止旧程序。
+
+性能索引单独准备，不随应用启动创建，也不触发历史补算。先用 dry-run 检查两个目标索引；实际执行默认总预算 2000ms，逐个提交。预算耗尽、取消或写锁繁忙时保留已有索引及正确的旧查询路径，等待原生 SQLite 回滚并关闭连接后才释放写许可；之后可用同一命令重入。定义冲突只告警并停止，不替换已有索引。生产规模构建时长须另行确认，部署应用不代表授权执行索引准备。
+
+```sh
+codex-vibe-monitor maintenance prepare-performance-indexes --dry-run
+codex-vibe-monitor maintenance prepare-performance-indexes --budget-ms 2000
+```

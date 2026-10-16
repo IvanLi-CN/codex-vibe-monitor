@@ -122,6 +122,7 @@ mod observability_retirement;
     reason = "Test fixture tuples mirror statistics row shapes."
 )]
 mod parallel_work_stats_and_timeseries;
+mod performance_indexes;
 mod pricing_catalog_and_models_passthrough;
 mod projection_observability;
 #[expect(

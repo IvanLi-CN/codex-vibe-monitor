@@ -263,6 +263,8 @@ pub(crate) struct MaintenanceCliArgs {
 
 #[derive(Subcommand, Debug)]
 pub(crate) enum MaintenanceCommand {
+    /// Prepare optional contention indexes under an explicit total work budget.
+    PreparePerformanceIndexes(PerformanceIndexPreparationArgs),
     /// Release orphan conversation identities and ended hourly invocation prefixes.
     InvocationIdentityCleanup(MaintenanceDryRunArgs),
     /// Inspect and safely release orphan raw payload files.
@@ -285,6 +287,14 @@ pub(crate) enum MaintenanceCommand {
 pub(crate) struct MaintenanceDryRunArgs {
     #[arg(long, default_value_t = false)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct PerformanceIndexPreparationArgs {
+    #[arg(long, default_value_t = false)]
+    pub(crate) dry_run: bool,
+    #[arg(long, default_value_t = 2_000, value_parser = clap::value_parser!(u64).range(1..))]
+    pub(crate) budget_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
