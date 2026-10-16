@@ -405,10 +405,14 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
         let metrics = archive_metrics.clone();
         tokio::spawn(async move {
             let started = Instant::now();
-            let archived = crate::observability::contention::with_performance(
-                metrics,
-                crate::maintenance::retention_test_with_work_budget(
-                    Duration::from_secs(5),
+            // The production run budget reserves five seconds before selecting
+            // a file batch. A five-second synthetic run budget would therefore
+            // select nothing. Bound the real elapsed work instead, retaining
+            // the production selection and native-drain ownership semantics.
+            let archived = tokio::time::timeout(
+                Duration::from_secs(5),
+                crate::observability::contention::with_performance(
+                    metrics,
                     archive_old_invocations(
                         &state.pool,
                         &state.config,
@@ -418,6 +422,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
                 ),
             )
             .await
+            .expect("all real archive work must finish within five elapsed seconds")
             .expect("archive owner must complete actual work");
             (archived, started.elapsed())
         })
