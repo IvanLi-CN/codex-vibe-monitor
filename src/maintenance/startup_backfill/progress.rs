@@ -71,27 +71,34 @@ pub(crate) async fn load_startup_backfill_progress_from_pool(
                     Some("operator_disabled".to_string()),
                 )
             };
-            let updated = sqlx::query(
-                "UPDATE startup_backfill_progress
-                 SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
-                     wake_generation=wake_generation + 1
-                 WHERE task_name=?
-                   AND EXISTS (
-                       SELECT 1 FROM managed_tasks
-                       WHERE task_key=? AND enabled=?
-                   )",
+            let updated = crate::maintenance_store::observe_store_write(
+                crate::observability::contention::StoreOperation::Control,
+                async {
+                    let result = sqlx::query(
+                        "UPDATE startup_backfill_progress
+                         SET enabled=?, next_run_after=?, suspension_reason=?, next_probe_at=NULL,
+                             wake_generation=wake_generation + 1
+                         WHERE task_name=?
+                           AND EXISTS (
+                               SELECT 1 FROM managed_tasks
+                               WHERE task_key=? AND enabled=?
+                           )",
+                    )
+                    .bind(if enabled { 1_i64 } else { 0_i64 })
+                    .bind(&next_run_after)
+                    .bind(&suspension_reason)
+                    .bind(task_name)
+                    .bind(
+                        managed_task_key
+                            .as_deref()
+                            .expect("managed task key exists for managed progress"),
+                    )
+                    .bind(if enabled { 1_i64 } else { 0_i64 })
+                    .execute(pool)
+                    .await?;
+                    Ok::<_, anyhow::Error>(result)
+                },
             )
-            .bind(if enabled { 1_i64 } else { 0_i64 })
-            .bind(&next_run_after)
-            .bind(&suspension_reason)
-            .bind(task_name)
-            .bind(
-                managed_task_key
-                    .as_deref()
-                    .expect("managed task key exists for managed progress"),
-            )
-            .bind(if enabled { 1_i64 } else { 0_i64 })
-            .execute(pool)
             .await?;
             let effective_enabled = if updated.rows_affected() == 0 {
                 sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")

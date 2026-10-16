@@ -32,6 +32,8 @@ pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_
 
 use chrono::{TimeZone, Timelike};
 use chrono_tz::Asia::Shanghai;
+#[cfg(test)]
+use tokio::sync::Notify;
 #[path = "retention/workload.rs"]
 mod workload;
 use sqlx::FromRow;
