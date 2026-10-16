@@ -386,6 +386,14 @@ class WorkflowGateTests(unittest.TestCase):
     def test_current_workflow_fails_closed(self):
         self.verify(self.workflow)
 
+    def test_read_only_cache_export_is_rejected(self):
+        workflow = copy.deepcopy(self.workflow)
+        step = next(x for x in workflow["jobs"]["observability-performance-image"]["steps"]
+                    if x["name"] == "Build exact production image")
+        self.assertEqual(step["with"]["cache-from"], "type=gha,scope=observability-performance-amd64")
+        step["with"]["cache-to"] = "type=gha,mode=max,scope=observability-performance-amd64"
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
     def test_self_hosted_measurement_is_rejected(self):
         workflow = copy.deepcopy(self.workflow)
         workflow["jobs"]["observability-performance"]["runs-on"] = ["self-hosted", "linux"]

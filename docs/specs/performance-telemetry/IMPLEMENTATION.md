@@ -22,6 +22,8 @@
 
 ## PR 检查与性能验收边界
 
+性能镜像构建仅从 GitHub Actions 缓存恢复已有层，不向 `pull_request_target` 默认分支上下文的只读缓存导出；镜像构建、装载和后续 artifact 交接仍须成功。质量合同拒绝重新加入缓存导出，避免镜像构建完成后因 `failed to reserve cache` 阻止测量。触发方式、权限、可信 base 验收脚本、独立 hosted 测量环境以及九窗口和 5% 预算保持原合同。
+
 按主人明确的测试政策，性能实验只在 GitHub Actions 执行，不作为每个 PR
 合并的必要测试。`Observability Performance Budget` 及 CPU 诊断保留为辅助
 job；它们位于默认分支控制的 `pull_request_target` 工作流中，只有显式添加一次性
