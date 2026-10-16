@@ -71,14 +71,29 @@ function rateUnitLabel(unit: string, t: ReturnType<typeof useTranslation>["t"]):
     : readableUnit.replaceAll("_", " ");
 }
 
-function rateMeta(rate: PricingRate, t: ReturnType<typeof useTranslation>["t"]): string {
+function rateUnitSuffix(unit: string): string {
+  const suffixes: Record<string, string> = {
+    usd_per_1m_tokens: "/ 1M tokens",
+    usd_per_token: "/ token",
+    usd_per_second: "/ second",
+    usd_per_minute: "/ minute",
+    usd_per_character: "/ character",
+    usd_per_image: "/ image",
+    usd: "",
+  };
+  if (suffixes[unit] != null) return suffixes[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `/ ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
+}
+
+function rateMeta(rate: PricingRate): string {
   const parts = [
-    rate.dimension ? `${t("system.models.rateDimension")}: ${rate.dimension}` : null,
-    rate.modality ? `${t("system.models.rateModality")}: ${rate.modality}` : null,
-    rate.tier ? `${t("system.models.rateTier")}: ${rate.tier}` : null,
-    rate.threshold != null
-      ? `${t("system.models.rateThreshold")}: ${new Intl.NumberFormat().format(rate.threshold)}`
-      : null,
+    rate.dimension,
+    rate.modality,
+    rate.tier ? `tier ${rate.tier}` : null,
+    rate.threshold != null ? `ctx ≥ ${new Intl.NumberFormat().format(rate.threshold)}` : null,
   ];
   return parts.filter((part): part is string => part != null).join(" · ");
 }
@@ -107,7 +122,8 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
   const renderRates = (rates: PricingRate[]) => (
     <div className="grid gap-1 desktop:grid-cols-2 xl:grid-cols-3">
       {rates.map((rate) => {
-        const metadata = rateMeta(rate, t);
+        const metadata = rateMeta(rate);
+        const unitSuffix = rateUnitSuffix(rate.unit);
         return (
           <div
             key={`${rate.key}:${rate.unit}:${rate.value}`}
@@ -124,7 +140,8 @@ function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
               ) : null}
             </div>
             <span className="shrink-0 whitespace-nowrap tabular-nums text-base-content/80">
-              {priceText(rate.value)} {rateUnitLabel(rate.unit, t)}
+              {priceText(rate.value)}
+              {unitSuffix ? ` ${unitSuffix}` : ""}
             </span>
           </div>
         );

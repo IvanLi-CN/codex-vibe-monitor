@@ -72,31 +72,29 @@ function formatPrice(value: number | null | undefined): string {
   }).format(value);
 }
 
-function rateUnitLabel(unit: string, t: Translate): string {
-  const labels: Record<string, string> = {
-    usd_per_1m_tokens: t("system.models.rateUnitUsdPerMillionTokens"),
-    usd_per_token: t("system.models.rateUnitUsdPerToken"),
-    usd_per_second: t("system.models.rateUnitUsdPerSecond"),
-    usd_per_minute: t("system.models.rateUnitUsdPerMinute"),
-    usd_per_character: t("system.models.rateUnitUsdPerCharacter"),
-    usd_per_image: t("system.models.rateUnitUsdPerImage"),
-    usd: t("system.models.rateUnitUsd"),
+function rateUnitSuffix(unit: string): string {
+  const suffixes: Record<string, string> = {
+    usd_per_1m_tokens: "/ 1M tokens",
+    usd_per_token: "/ token",
+    usd_per_second: "/ second",
+    usd_per_minute: "/ minute",
+    usd_per_character: "/ character",
+    usd_per_image: "/ image",
+    usd: "",
   };
-  if (labels[unit]) return labels[unit];
+  if (suffixes[unit] != null) return suffixes[unit];
   const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
   return unit.startsWith("usd_per_")
-    ? `$ / ${readableUnit.replaceAll("_", " ")}`
+    ? `/ ${readableUnit.replaceAll("_", " ")}`
     : readableUnit.replaceAll("_", " ");
 }
 
-function rateMeta(rate: PricingRate, t: Translate): string {
+function rateMeta(rate: PricingRate): string {
   const parts = [
-    rate.dimension ? `${t("system.models.rateDimension")}: ${rate.dimension}` : null,
-    rate.modality ? `${t("system.models.rateModality")}: ${rate.modality}` : null,
-    rate.tier ? `${t("system.models.rateTier")}: ${rate.tier}` : null,
-    rate.threshold != null
-      ? `${t("system.models.rateThreshold")}: ${new Intl.NumberFormat().format(rate.threshold)}`
-      : null,
+    rate.dimension,
+    rate.modality,
+    rate.tier ? `tier ${rate.tier}` : null,
+    rate.threshold != null ? `ctx ≥ ${new Intl.NumberFormat().format(rate.threshold)}` : null,
   ];
   return parts.filter((part): part is string => part != null).join(" · ");
 }
@@ -370,8 +368,8 @@ function RateRow({ rate, changed, t }: { rate: PricingRate; changed: boolean; t:
     <div className="flex min-w-0 justify-between gap-2">
       <span className="min-w-0 truncate" title={rate.key}>
         <span>{rate.key}</span>
-        {rateMeta(rate, t) ? (
-          <span className="ml-1 text-base-content/55">({rateMeta(rate, t)})</span>
+        {rateMeta(rate) ? (
+          <span className="ml-1 text-base-content/55">({rateMeta(rate)})</span>
         ) : null}
       </span>
       <span
@@ -381,7 +379,8 @@ function RateRow({ rate, changed, t }: { rate: PricingRate; changed: boolean; t:
             : "shrink-0 tabular-nums"
         }
       >
-        {formatPrice(rate.value)} {rateUnitLabel(rate.unit, t)}
+        {formatPrice(rate.value)}
+        {rateUnitSuffix(rate.unit) ? ` ${rateUnitSuffix(rate.unit)}` : ""}
         {changed ? ` · ${t("system.models.rateChanged")}` : ""}
       </span>
     </div>

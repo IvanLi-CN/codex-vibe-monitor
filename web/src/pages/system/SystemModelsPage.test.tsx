@@ -832,8 +832,10 @@ describe("SystemModelsPage", () => {
     expect(host?.textContent).toContain("gpt-image-2.5-flare");
     expect(host?.textContent).toContain("gpt-image-2.5-sunburst");
     expect(host?.textContent).toContain("output_cost_per_image_token");
-    expect(host?.textContent).toContain("仅明细报价");
-    expect(host?.textContent).toContain("没有完整的通用 token 兼容价");
+    expect(host?.textContent).toContain("Detailed rates only");
+    expect(host?.textContent).toContain("No generic token price");
+    expect(host?.textContent).toContain("input · text");
+    expect(host?.textContent).not.toContain("维度");
 
     clickButton("全部同步");
     await flushEffects();
@@ -869,7 +871,7 @@ describe("SystemModelsPage", () => {
     renderPage();
     await flushEffects();
     clickModelAction("gpt-image-2.5-flare", "编辑价格");
-    setLabeledInput("output_cost_per_image_token · Provider A (美元 / 百万 token)", "31");
+    setLabeledInput("output_cost_per_image_token · Provider A (USD / 1M tokens)", "31");
     clickButton("保存价格");
     await flushEffects();
 

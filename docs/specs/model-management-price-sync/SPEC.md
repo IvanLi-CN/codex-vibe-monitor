@@ -102,9 +102,10 @@
 
 ### REQ-MODEL-MGMT-023
 
-- The model page MUST identify a model that has complete quote records but no legacy generic projection as `Detailed quote only`; it MUST show an explanatory hint instead of five misleading empty dashes. Desktop quote details MUST span the model table, arrange standard rates in a responsive two-column grid that expands to three columns on wide screens, and keep each rate's key, metadata, and value readable. Mobile quote details MUST stack with wrapped rate keys and separate values. Standard rates remain expanded, while other dimensions remain inspectable without truncation. Models with a legacy projection continue to show the five compatibility fields.
-- Inputs: local legacy price projections and complete quote records.
-- Outputs: an unambiguous model row that separates compatibility pricing from the full multi-dimensional quote.
+- The model page MUST identify a model that has complete quote records but no legacy generic projection as `Detailed rates only`; it MUST show an explanatory hint instead of five misleading empty dashes. Desktop quote details MUST span the model table, arrange standard rates in a responsive two-column grid that expands to three columns on wide screens, and keep each rate's key, metadata, and value readable. Mobile quote details MUST stack with wrapped rate keys and separate values. Standard rates remain expanded, while other dimensions remain inspectable without truncation. Models with a legacy projection continue to show the five compatibility fields.
+
+* Inputs: local legacy price projections and complete quote records.
+* Outputs: an unambiguous model row that separates compatibility pricing from the full multi-dimensional quote.
 
 ### REQ-MODEL-MGMT-010
 
