@@ -4,14 +4,32 @@ mod backoff;
 mod coverage_repair;
 mod observability;
 mod progress;
+mod wake_confirmation;
 use coverage_repair::run_startup_backfill_coverage_repair_if_due;
 #[cfg(test)]
 pub(crate) use coverage_repair::run_startup_backfill_coverage_repair_if_due_with_repair;
 pub(crate) use observability::StartupBackfillHealthSnapshot;
 use observability::{
-    StartupBackfillScheduler, WakeObservationTicket, confirm_scheduler_wake_observation,
-    observe_wake_attempt, record_scheduler_wake_confirmation,
+    StartupBackfillScheduler, WakeObligationAttempt, WakeObligationKey, WakeObligationTicket,
+    WakeObservationTicket, confirm_scheduler_wake_observation, observe_wake_attempt,
+    record_scheduler_wake_confirmation,
 };
+#[cfg(test)]
+use wake_confirmation::confirm_startup_backfill_wake_obligation;
+use wake_confirmation::confirm_startup_backfill_wake_obligations;
+pub(crate) use wake_confirmation::{
+    StartupBackfillWakeConfirmation, WakeProgressWriteContext,
+    confirm_startup_backfill_progress_write,
+};
+
+#[cfg(test)]
+pub(crate) async fn confirm_startup_backfill_wake_obligations_for_test(pool: &Pool<Sqlite>) {
+    wake_confirmation::confirm_startup_backfill_wake_obligations_for_test(pool).await;
+}
+
+#[cfg(test)]
+pub(crate) use wake_confirmation::confirm_startup_backfill_wake_obligation_for_test;
+
 mod prompt_cache_control;
 mod task_identity;
 #[cfg(test)]
@@ -33,9 +51,10 @@ use prompt_cache_control::{
     requeue_legacy_startup_backfill_tasks, wake_prompt_cache_materialization_with_scheduler,
 };
 use prompt_cache_control::{
-    coordinator_for_prompt_cache_run, legacy_startup_backfill_tasks,
-    persist_prompt_cache_materialization_defer, prompt_cache_materialization_failed_outcome,
-    prompt_cache_stale_result_outcome, run_background_startup_backfill_pass_with_root_state,
+    confirm_prompt_cache_materialization_wake, coordinator_for_prompt_cache_run,
+    legacy_startup_backfill_tasks, persist_prompt_cache_materialization_defer,
+    prompt_cache_materialization_failed_outcome, prompt_cache_stale_result_outcome,
+    run_background_startup_backfill_pass_with_root_state,
     save_prompt_cache_materialization_progress,
 };
 pub(crate) use prompt_cache_control::{
@@ -1038,6 +1057,127 @@ pub(crate) async fn wake_startup_backfill_tasks(
     wake_reason: &'static str,
 ) -> Result<u64> {
     wake_startup_backfill_tasks_with_pricing_catalog(pool, tasks, None, wake_reason).await
+}
+
+const MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES: usize = 512;
+const MAX_WAKE_OBLIGATION_CATALOG_MODELS: usize = 16_384;
+
+fn reject_startup_backfill_notification(
+    task: StartupBackfillTask,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    if STARTUP_BACKFILL_SCHEDULER.wake_notification_rejection_should_warn(task, Utc::now()) {
+        warn!(
+            task = task.log_label(),
+            error = %error,
+            "startup backfill wake notification rejected"
+        );
+    }
+    error
+}
+
+pub(crate) fn notify_startup_backfill_tasks(
+    pool: &Pool<Sqlite>,
+    tasks: &[StartupBackfillTask],
+    pricing_catalog: Option<&PricingCatalog>,
+    wake_reason: &'static str,
+) -> Result<()> {
+    // The producer is intentionally memory-only. The pool remains in the signature so terminal
+    // callers can use one fixed notification boundary without giving this path database access.
+    let _ = pool;
+    if tasks.contains(&StartupBackfillTask::ProxyCost) && pricing_catalog.is_none() {
+        return Err(reject_startup_backfill_notification(
+            StartupBackfillTask::ProxyCost,
+            anyhow!(
+                "startup backfill proxy cost notification requires the runtime pricing catalog"
+            ),
+        ));
+    }
+    let proxy_cost_progress_key = if tasks.contains(&StartupBackfillTask::ProxyCost) {
+        let Some(catalog) = pricing_catalog else {
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost notification requires the runtime pricing catalog"
+                ),
+            ));
+        };
+        let max_version_bytes = MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES
+            .saturating_sub(StartupBackfillTask::ProxyCost.name().len() + 2 + 16);
+        if catalog.version.len() > max_version_bytes {
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost catalog version exceeds the bounded notification key"
+                ),
+            ));
+        }
+        if catalog.models.len() > MAX_WAKE_OBLIGATION_CATALOG_MODELS {
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost catalog exceeds the bounded notification model count"
+                ),
+            ));
+        }
+        let progress_key =
+            startup_backfill_task_progress_key_for_catalog(StartupBackfillTask::ProxyCost, catalog);
+        if progress_key.len() > MAX_WAKE_OBLIGATION_PROGRESS_KEY_BYTES {
+            return Err(reject_startup_backfill_notification(
+                StartupBackfillTask::ProxyCost,
+                anyhow!(
+                    "startup backfill proxy cost progress identity exceeds the bounded notification key"
+                ),
+            ));
+        }
+        Some(progress_key)
+    } else {
+        None
+    };
+
+    let decision = startup_backfill_wake_decision(wake_reason);
+    for task in tasks.iter().copied() {
+        let control_snapshot = (task
+            == StartupBackfillTask::PromptCacheConversationsMaterialization)
+            .then(|| {
+                crate::maintenance_store::global()
+                    .and_then(|store| store.prompt_cache_materialization_control.snapshot())
+            })
+            .flatten();
+        let control_generation = control_snapshot.map(|snapshot| snapshot.generation);
+        let progress_key = (task == StartupBackfillTask::ProxyCost)
+            .then(|| proxy_cost_progress_key.clone())
+            .flatten();
+        let obligation_key = WakeObligationKey {
+            task,
+            control_generation,
+            progress_key,
+        };
+        if matches!(decision, WakeDecision::Disabled)
+            || control_snapshot.is_some_and(|snapshot| !snapshot.enabled)
+        {
+            if STARTUP_BACKFILL_SCHEDULER.is_stale_wake_obligation_key(&obligation_key) {
+                continue;
+            }
+            let decision = if control_snapshot.is_some_and(|snapshot| !snapshot.enabled) {
+                WakeDecision::Disabled
+            } else {
+                decision
+            };
+            STARTUP_BACKFILL_SCHEDULER.record_and_cancel_wake_obligation(
+                task,
+                decision,
+                control_generation,
+            );
+            continue;
+        }
+        if let Err(error) =
+            STARTUP_BACKFILL_SCHEDULER.record_and_accept_wake_obligation(obligation_key, decision)
+        {
+            return Err(reject_startup_backfill_notification(task, error));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn wake_startup_backfill_tasks_with_pricing_catalog(
@@ -3376,9 +3516,19 @@ pub(crate) fn spawn_startup_backfill_maintenance(
         }
 
         loop {
+            if STARTUP_BACKFILL_SCHEDULER
+                .next_wake_obligation_due()
+                .is_some_and(|deadline| deadline <= Utc::now())
+            {
+                confirm_startup_backfill_wake_obligations(&cancel).await;
+            }
             let gate = crate::db_pressure::global_db_pressure_gate();
             let observed_pressure_eligibility = gate.eligibility_generation();
-            let next_due = STARTUP_BACKFILL_SCHEDULER.next_due();
+            let next_due = STARTUP_BACKFILL_SCHEDULER
+                .next_due()
+                .into_iter()
+                .chain(STARTUP_BACKFILL_SCHEDULER.next_wake_obligation_due())
+                .min();
             let mut wait_for = startup_backfill_wait_duration(next_due);
             if let Some(retry_at) = startup_prep_retry_at {
                 wait_for = wait_for.min(retry_at.saturating_duration_since(Instant::now()));
@@ -3391,6 +3541,7 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 }
                 _ = STARTUP_BACKFILL_SCHEDULER.wait_for_wake(observed_generation) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
+                    confirm_startup_backfill_wake_obligations(&cancel).await;
                     let tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
                     if !tasks.is_empty() {
                         run_background_startup_backfill_pass_with_gate(
@@ -3407,7 +3558,17 @@ pub(crate) fn spawn_startup_backfill_maintenance(
                 }
                 _ = sleep(wait_for) => {
                     observed_generation = STARTUP_BACKFILL_SCHEDULER.generation();
-                    STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
+                    confirm_startup_backfill_wake_obligations(&cancel).await;
+                    let woken_tasks = STARTUP_BACKFILL_SCHEDULER.drain_woken_tasks();
+                    if !woken_tasks.is_empty() {
+                        run_background_startup_backfill_pass_with_gate(
+                            state.clone(),
+                            &cancel,
+                            Some(&woken_tasks),
+                            crate::db_pressure::global_db_pressure_gate(),
+                        )
+                        .await;
+                    }
                     if startup_prep_pending
                         && startup_prep_retry_at.is_none_or(|retry_at| retry_at <= Instant::now())
                     {
