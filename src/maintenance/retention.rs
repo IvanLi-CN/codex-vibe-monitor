@@ -49,7 +49,10 @@ use std::{
 mod batch_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
-pub(crate) use batch_admission::{BatchCommitProbe, RETENTION_TEST_BATCH_COMMIT};
+pub(crate) use batch_admission::{
+    ArchiveArtifactProbe, BatchCommitProbe, RETENTION_TEST_ARCHIVE_ARTIFACT,
+    RETENTION_TEST_BATCH_COMMIT,
+};
 
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
 

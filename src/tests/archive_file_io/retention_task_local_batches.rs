@@ -48,6 +48,58 @@ async fn retention_archive_exports_transaction_and_complete_write_hold_separatel
 }
 
 #[tokio::test]
+async fn retention_task_local_rejects_source_change_after_archive_artifact_proof() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-artifact-source-change").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ),
+        ),
+    );
+    let mutate_source = async {
+        probe.verified.notified().await;
+        sqlx::query("UPDATE codex_invocations SET payload = '{\"changed\":true}' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("mutate source after artifact verification");
+        probe.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(work, mutate_source);
+    let error = result.expect_err("artifact-bound source proof must reject changed live rows");
+    assert!(
+        error
+            .to_string()
+            .contains("retention task-local archive source changed before conversion")
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source remains after proof mismatch"),
+        1
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn raw_orphan_dry_run_reports_due_release_without_mutating() {
     let (pool, config, temp_dir) =
         retention_fresh_schema_test_pool_and_config("retention-raw-dry-run-release").await;

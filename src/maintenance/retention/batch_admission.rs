@@ -11,8 +11,16 @@ pub(crate) struct BatchCommitProbe {
 }
 
 #[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ArchiveArtifactProbe {
+    pub(crate) verified: Notify,
+    pub(crate) resume: Notify,
+}
+
+#[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
 }
 
 #[cfg(test)]
@@ -21,6 +29,14 @@ pub(super) async fn pause_after_first_chunk(committed_rows: usize) {
         && let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone)
     {
         probe.committed.notify_one();
+        probe.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_after_archive_artifact_verified() {
+    if let Ok(probe) = RETENTION_TEST_ARCHIVE_ARTIFACT.try_with(Arc::clone) {
+        probe.verified.notify_one();
         probe.resume.notified().await;
     }
 }
