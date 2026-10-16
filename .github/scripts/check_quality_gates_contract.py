@@ -127,6 +127,10 @@ def require_observability_performance_contract(workflow: dict[str, Any], workflo
     require(image_job.get("outputs", {}).get("test-started") == "${{ steps.test-clock.outputs.started }}"
             and step_config(image_job, "Release shared test clock", workflow_path).get("run") == 'echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"',
             "image handoff must release exactly one shared test clock")
+    for name in ("Verify and load candidate image", "Prepare pinned CPU sampler"):
+        require("python3 trusted/scripts/observability-acceptance/deadline.py -- "
+                in str(step_config(performance_job, name, workflow_path).get("run", "")),
+                "preparation including download retries must share the execution deadline")
     require(performance_job.get("needs") == "observability-performance-image", "performance measurement must consume the separate image producer")
     require(image_job.get("if") == opt_in_if and performance_job.get("if") == opt_in_if,
             "observability performance jobs must require the explicit opt-in label")

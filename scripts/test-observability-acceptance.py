@@ -484,6 +484,25 @@ class CertificateTests(unittest.TestCase):
 
 
 class BoundedAcceptanceTests(unittest.TestCase):
+    def test_preparation_retries_and_children_are_killed_at_shared_cutoff(self):
+        process = Mock(pid=12345)
+        process.wait.side_effect = [acceptance.subprocess.TimeoutExpired(["curl"], 10), -9]
+        with patch.object(execution_deadline, "ExecutionDeadline", return_value=SimpleNamespace(remaining=10)), \
+             patch.object(execution_deadline.subprocess, "Popen", return_value=process) as popen, \
+             patch.object(execution_deadline.os, "killpg") as kill:
+            with self.assertRaises(acceptance.subprocess.TimeoutExpired):
+                execution_deadline.run_preparation(["curl", "synthetic-url"])
+            popen.assert_called_once_with(["curl", "synthetic-url"], start_new_session=True)
+            kill.assert_called_once_with(12345, execution_deadline.signal.SIGKILL)
+            self.assertEqual([call.kwargs["timeout"] for call in process.wait.call_args_list], [10, 5])
+
+    def test_expired_preparation_cannot_launch_download(self):
+        with patch.object(execution_deadline, "ExecutionDeadline", return_value=SimpleNamespace(remaining=0)), \
+             patch.object(execution_deadline.subprocess, "Popen") as popen:
+            with self.assertRaises(execution_deadline.AcceptanceDeadlineExceeded):
+                execution_deadline.run_preparation(["curl", "synthetic-url"])
+            popen.assert_not_called()
+
     def test_concurrent_load_subprocess_shares_deadline_before_executor_shutdown(self):
         with tempfile.TemporaryDirectory() as directory:
             run = Run.__new__(Run)
@@ -725,6 +744,12 @@ class WorkflowGateTests(unittest.TestCase):
     def test_each_job_cannot_restart_its_wall_clock(self):
         workflow = copy.deepcopy(self.workflow)
         workflow["jobs"]["observability-performance"]["steps"][0]["run"] = 'echo "OBSERVABILITY_TEST_STARTED_UTC=$(date +%s)" >> "$GITHUB_ENV"'
+        with self.assertRaises(contract.ContractError): self.verify(workflow)
+
+    def test_download_preparation_cannot_bypass_shared_deadline(self):
+        workflow = copy.deepcopy(self.workflow)
+        step = next(row for row in workflow["jobs"]["observability-performance"]["steps"] if row["name"] == "Prepare pinned CPU sampler")
+        step["run"] = step["run"].replace("python3 trusted/scripts/observability-acceptance/deadline.py -- ", "")
         with self.assertRaises(contract.ContractError): self.verify(workflow)
 
 

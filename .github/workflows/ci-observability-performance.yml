@@ -127,7 +127,7 @@ jobs:
         env:
           CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
         run: |
-          python3 - <<'PY'
+          python3 trusted/scripts/observability-acceptance/deadline.py -- python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
           metadata=json.loads((root/'candidate.json').read_text())
@@ -143,7 +143,7 @@ jobs:
       - name: Prepare pinned CPU sampler
         if: matrix.lane == 'runtime'
         run: |
-          set -euo pipefail
+          python3 trusted/scripts/observability-acceptance/deadline.py -- bash -euo pipefail -c '
           mkdir -p "$RUNNER_TEMP/observability-tools"
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
             https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-x86_64-unknown-linux-gnu.tar.xz \
@@ -152,6 +152,7 @@ jobs:
           tar -xJf "$RUNNER_TEMP/observability-tools/samply.tar.xz" -C "$RUNNER_TEMP/observability-tools"
           echo "0ca59d520059aa2ee4db1860c732089829e75740ee75314e84d2b0ab8c90873e  $RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" | sha256sum --check
           sudo sysctl -w kernel.perf_event_paranoid=1
+          '
 
       - name: Run candidate-bound runtime and performance acceptance
         id: acceptance
@@ -298,7 +299,7 @@ jobs:
         env:
           CANDIDATE: ${{ needs.observability-performance-image.outputs.candidate }}
         run: |
-          python3 - <<'PY'
+          python3 trusted/scripts/observability-acceptance/deadline.py -- python3 - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'observability-image'
           metadata=json.loads((root/'candidate.json').read_text())
@@ -313,7 +314,7 @@ jobs:
 
       - name: Prepare pinned CPU sampler
         run: |
-          set -euo pipefail
+          python3 trusted/scripts/observability-acceptance/deadline.py -- bash -euo pipefail -c '
           mkdir -p "$RUNNER_TEMP/observability-tools"
           curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL \
             https://github.com/mstange/samply/releases/download/samply-v0.13.1/samply-x86_64-unknown-linux-gnu.tar.xz \
@@ -322,6 +323,7 @@ jobs:
           tar -xJf "$RUNNER_TEMP/observability-tools/samply.tar.xz" -C "$RUNNER_TEMP/observability-tools"
           echo "0ca59d520059aa2ee4db1860c732089829e75740ee75314e84d2b0ab8c90873e  $RUNNER_TEMP/observability-tools/samply-x86_64-unknown-linux-gnu/samply" | sha256sum --check
           sudo sysctl -w kernel.perf_event_paranoid=1
+          '
 
       - name: Run bounded CPU diagnosis
         env:
