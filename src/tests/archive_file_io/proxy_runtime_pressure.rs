@@ -410,7 +410,7 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             // select nothing. Bound the real elapsed work instead, retaining
             // the production selection and native-drain ownership semantics.
             let (archived, batches) =
-                crate::maintenance::retention::retention_test_with_batch_metrics(
+                crate::maintenance::retention_test_with_batch_metrics(
                     tokio::time::timeout(
                         Duration::from_secs(5),
                         crate::observability::contention::with_performance(
