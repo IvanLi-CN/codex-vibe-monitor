@@ -22,6 +22,7 @@ const MAX_REFILL_BATCH_SIZE: usize = 64;
 const MIN_CAPACITY: usize = 128;
 const MAX_CAPACITY: usize = 4096;
 const ACTIVITY_WINDOW_MS: i64 = 48 * 3600 * 1000;
+pub(crate) const STARTUP_PREPARATION_QUERY: &str = "SELECT prompt_cache_key FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 128";
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -396,21 +397,26 @@ impl InvocationRangeManager {
             // on the indexed column, so the bounded covering range scan stays usable.
             let query_cutoff = format_naive(cutoff.with_timezone(&Shanghai).naive_local());
             let started = Instant::now();
-            let seed = tokio::time::timeout(Duration::from_secs(2), sqlx::query_as::<_, (String, String, String)>(
-                "SELECT conversation_id,last_invocation_at,prompt_cache_key FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 4096"
-            ).bind(query_cutoff).fetch_all(&pool)).await;
+            let seed = tokio::time::timeout(Duration::from_secs(2), async {
+                let rows = sqlx::query_as::<_, (String, String)>(
+                    "SELECT conversation_id,last_invocation_at FROM prompt_cache_conversations INDEXED BY idx_prompt_cache_conversations_last_invocation WHERE last_invocation_at>=?1 ORDER BY last_invocation_at DESC,conversation_id LIMIT 4096"
+                ).bind(&query_cutoff).fetch_all(&pool).await?;
+                // Keep activity sizing on its covering index. Only the bounded
+                // preparation set needs to read owner keys from table rows.
+                let keys = sqlx::query_scalar::<_, String>(STARTUP_PREPARATION_QUERY)
+                    .bind(&query_cutoff).fetch_all(&pool).await?;
+                Ok::<_, sqlx::Error>((rows, keys))
+            }).await;
             let mut warm_owners = std::collections::VecDeque::new();
             match seed {
-                Ok(Ok(rows)) => {
+                Ok(Ok((rows, keys))) => {
                     let mut memory = manager.memory.lock().expect("invocation range memory");
-                    for (prefix, timestamp, key) in &rows {
+                    for (prefix, timestamp) in &rows {
                         if let Some(timestamp) = activity_timestamp_ms(timestamp) {
                             memory.observe(prefix.clone(), timestamp);
-                            if warm_owners.len() < preparation::STARTUP_OWNER_LIMIT {
-                                warm_owners.push_back(Owner::Conversation(key.clone()));
-                            }
                         }
                     }
+                    warm_owners.extend(keys.into_iter().take(preparation::STARTUP_OWNER_LIMIT).map(Owner::Conversation));
                     info!(source = "database_seed", cutoff_utc = %cutoff, row_count = rows.len(), capped = rows.len() == MAX_CAPACITY, elapsed_ms = started.elapsed().as_millis(), "invocation cache activity seed merged");
                     memory.resize(Utc::now().timestamp_millis(), "database_seed");
                 }
@@ -744,7 +750,7 @@ impl InvocationRangeManager {
         generation: u64,
         permit: Option<ProxySqliteWritePermit>,
         existing_only: bool,
-    ) {
+    ) -> preparation::PreparationOutcome {
         let started = Instant::now();
         let result = self
             .initialize_committed(pool, &owner, generation, permit, existing_only)
@@ -755,26 +761,33 @@ impl InvocationRangeManager {
             .get_mut(&owner)
             .filter(|entry| entry.generation == generation)
         else {
-            return;
+            return preparation::PreparationOutcome::Deferred;
         };
         entry.operation = false;
-        match result {
-            Ok((prefix, range)) => {
+        let outcome = match result {
+            Ok(Some((prefix, range))) => {
                 entry.namespace = Some(lifecycle::PrefixGuard::new(&prefix));
                 entry.prefix = Some(prefix.clone());
                 entry.ceiling = i64::from(range.end) - 1;
                 entry.issued_floor = i64::from(range.next) - 1;
                 entry.current = range;
                 info!(owner_type = owner.kind(), utc_hour = owner.hour(), prefix = %prefix, generation, range_start = range.next, range_end = range.end, elapsed_ms = started.elapsed().as_millis(), "invocation initial committed range published");
+                preparation::PreparationOutcome::Ready
+            }
+            Ok(None) => {
+                entry.failure = Some("invocation preparation owner no longer exists".to_owned());
+                preparation::PreparationOutcome::Missing
             }
             Err(error) => {
                 warn!(owner_type = owner.kind(), utc_hour = owner.hour(), generation, error = %error, elapsed_ms = started.elapsed().as_millis(), "invocation range initialization failed");
                 entry.failure = Some(error.to_string());
+                preparation::PreparationOutcome::Deferred
             }
-        }
+        };
         entry.notify.notify_waiters();
         drop(memory);
         self.shrink();
+        outcome
     }
 
     async fn initialize_committed(
@@ -784,7 +797,7 @@ impl InvocationRangeManager {
         generation: u64,
         permit: Option<ProxySqliteWritePermit>,
         existing_only: bool,
-    ) -> Result<(String, Range)> {
+    ) -> Result<Option<(String, Range)>> {
         let started = Instant::now();
         let permit = match permit {
             Some(permit) => permit,
@@ -798,9 +811,11 @@ impl InvocationRangeManager {
         let (prefix, floor) = match owner {
             Owner::Conversation(key) => {
                 let identity = if existing_only {
-                    let (prefix, ceiling) = load_prompt_cache_conversation_row(pool, key)
-                        .await?
-                        .context("invocation preparation owner no longer exists")?;
+                    let Some((prefix, ceiling)) =
+                        load_prompt_cache_conversation_row(pool, key).await?
+                    else {
+                        return Ok(None);
+                    };
                     recover_prompt_cache_conversation_identity(pool, prefix, ceiling).await?
                 } else {
                     load_or_create_prompt_cache_conversation_identity(pool, key).await?
@@ -830,7 +845,7 @@ impl InvocationRangeManager {
         let result = reserve_on_connection(tx.connection(), &reservation).await;
         tx.finish(result.is_ok()).await?;
         let range = result?;
-        Ok((prefix, range))
+        Ok(Some((prefix, range)))
     }
 
     fn start_refill(self: &Arc<Self>, pool: &Pool<Sqlite>, trigger_owner: &Owner) {
@@ -986,6 +1001,7 @@ async fn reserve_on_connection(
     let end =
         (start + i64::from(RANGE_SIZE)).min(i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY));
     if start >= end {
+        record_recovery(RecoveryDiagnostic::RangeSequenceExhausted);
         bail!(
             "invocation sequence overflow: capacity={}",
             PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY

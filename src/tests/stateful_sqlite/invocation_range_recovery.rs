@@ -7,6 +7,31 @@ async fn fixture() -> SqlitePool {
     pool
 }
 
+#[tokio::test]
+async fn preparation_owner_query_uses_activity_index_without_sorting_or_full_scan() {
+    use prompt_cache_conversations::invocation_ranges::STARTUP_PREPARATION_QUERY;
+    let pool = fixture().await;
+    let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {STARTUP_PREPARATION_QUERY}"))
+        .bind("2026-10-01 00:00:00")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    let details: Vec<String> = rows.iter().map(|row| row.get("detail")).collect();
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail
+                .contains("USING INDEX idx_prompt_cache_conversations_last_invocation")),
+        "{details:?}"
+    );
+    assert!(
+        details.iter().all(|detail| !detail.contains("TEMP B-TREE")
+            && !detail.contains("SCAN prompt_cache_conversations")),
+        "{details:?}"
+    );
+    assert!(STARTUP_PREPARATION_QUERY.ends_with("LIMIT 128"));
+}
+
 async fn existing_conversation(pool: &SqlitePool, key: &str) {
     prompt_cache_conversations::ensure_prompt_cache_conversation_row(pool, key)
         .await
@@ -245,5 +270,31 @@ async fn ended_hour_retirement_preserves_active_and_pending_invocation_obligatio
     assert_eq!(
         ceiling, 63,
         "memory eviction never returns a committed reservation ceiling"
+    );
+}
+
+#[tokio::test]
+async fn removed_seed_owner_does_not_starve_remaining_preparation() {
+    let pool = fixture().await;
+    existing_conversation(&pool, "remaining-seed").await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    assert_eq!(
+        manager
+            .test_prepare_keys(&pool, &["deleted-seed", "remaining-seed"])
+            .await,
+        0
+    );
+    let ceiling: i64 = sqlx::query_scalar("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='remaining-seed'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(ceiling, 63);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM prompt_cache_conversations WHERE prompt_cache_key='deleted-seed'"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0,
+        "preparation cannot recreate a deleted conversation"
     );
 }
