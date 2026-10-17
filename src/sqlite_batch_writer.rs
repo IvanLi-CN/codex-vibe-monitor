@@ -1696,6 +1696,13 @@ impl SqliteBatchWriter {
                 if self.auto_flush_terminal_for_test() {
                     journal.force_sync()?;
                 }
+                // The background group-commit task is intentionally best-effort. Under a
+                // saturated executor, a terminal producer must still be able to advance the
+                // same 20ms journal group without turning an already appended fact into an
+                // unconfirmed request outcome.
+                if !self.journal_sync_shutdown.is_cancelled() {
+                    let _ = journal.sync_if_due();
+                }
                 journal.sequence_is_synced(sequence)?
             };
             if synced {
