@@ -3,7 +3,7 @@
   "kind": "persistent-state-migration-record",
   "migration": {
     "description": "Add additive SQLite storage for service-owned model price sync selections, provider filters, quote-provider choices, and discovery/view history.",
-    "release_unit_description": "System-shared models.dev sync memory and reviewed price synchronization.",
+    "release_unit_description": "System-shared LiteLLM sync memory and reviewed price synchronization.",
     "version_impact": "minor"
   },
   "durable_state": {

@@ -24,6 +24,7 @@ import {
   type PoolRoutingSettings,
   type PoolRoutingTimeoutSettings,
   type PricingEntry,
+  type PricingQuote,
   type PricingSettings,
   type ProxySettings,
   type RequestCompressionAlgorithm,
@@ -48,6 +49,7 @@ type PricingDraftEntry = {
 type PricingDraft = {
   catalogVersion: string;
   entries: PricingDraftEntry[];
+  quotes: PricingQuote[];
 };
 
 type RoutingDraft = {
@@ -160,6 +162,7 @@ function toPricingDraft(pricing: PricingSettings): PricingDraft {
       reasoningPer1m: entry.reasoningPer1m == null ? "" : String(entry.reasoningPer1m),
       source: entry.source,
     })),
+    quotes: pricing.quotes ?? [],
   };
 }
 
@@ -243,6 +246,7 @@ function parsePricingDraft(draft: PricingDraft): { value?: PricingSettings; erro
     value: {
       catalogVersion,
       entries,
+      quotes: draft.quotes,
     },
   };
 }
@@ -252,6 +256,7 @@ function stablePricingKey(value: PricingSettings | null): string {
   return JSON.stringify({
     catalogVersion: value.catalogVersion,
     entries: [...value.entries].sort((a, b) => a.model.localeCompare(b.model)),
+    quotes: value.quotes ?? [],
   });
 }
 
@@ -940,9 +945,13 @@ export default function SettingsPage({ mode = "all" }: SettingsPageProps) {
   const handleRemovePricingEntry = useCallback((index: number) => {
     setPricingDraft((current) => {
       if (!current) return current;
+      const removedModel = current.entries[index]?.model;
       return {
         ...current,
         entries: current.entries.filter((_, candidateIndex) => candidateIndex !== index),
+        quotes: removedModel
+          ? current.quotes.filter((quote) => quote.model !== removedModel)
+          : current.quotes,
       };
     });
   }, []);

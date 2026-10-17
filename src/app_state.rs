@@ -1040,24 +1040,67 @@ pub(crate) struct PricingEntry {
     pub(crate) source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PricingRate {
+    pub(crate) key: String,
+    pub(crate) source_value: f64,
+    pub(crate) source_unit: String,
+    pub(crate) value: f64,
+    pub(crate) unit: String,
+    pub(crate) dimension: Option<String>,
+    pub(crate) modality: Option<String>,
+    pub(crate) tier: Option<String>,
+    pub(crate) threshold: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PricingQuote {
+    pub(crate) model: String,
+    pub(crate) provider_id: String,
+    pub(crate) provider_name: String,
+    pub(crate) source: String,
+    pub(crate) source_version: String,
+    pub(crate) fetched_at: String,
+    pub(crate) status: Option<String>,
+    pub(crate) deprecation_date: Option<String>,
+    pub(crate) source_url: Option<String>,
+    pub(crate) rates: Vec<PricingRate>,
+}
+
+type PricingSettingsNormalization =
+    Result<(PricingCatalog, Option<Vec<PricingQuote>>), (StatusCode, String)>;
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PricingSettingsUpdateRequest {
     pub(crate) catalog_version: String,
     #[serde(default)]
     pub(crate) entries: Vec<PricingEntry>,
+    #[serde(default)]
+    pub(crate) quotes: Option<Vec<PricingQuote>>,
 }
 
 impl PricingSettingsUpdateRequest {
     pub(crate) fn normalized(self) -> Result<PricingCatalog, (StatusCode, String)> {
-        let version = normalize_pricing_catalog_version(self.catalog_version).ok_or_else(|| {
+        self.normalized_with_quotes().map(|(catalog, _)| catalog)
+    }
+
+    pub(crate) fn normalized_with_quotes(self) -> PricingSettingsNormalization {
+        let PricingSettingsUpdateRequest {
+            catalog_version,
+            entries,
+            quotes,
+        } = self;
+        let version = normalize_pricing_catalog_version(catalog_version).ok_or_else(|| {
             (
                 StatusCode::BAD_REQUEST,
                 "catalogVersion must be a non-empty string".to_string(),
             )
         })?;
         let mut models = HashMap::new();
-        for entry in self.entries {
+        for entry in entries {
             let model_id = entry.model.trim();
             if model_id.is_empty() || model_id.len() > 128 {
                 return Err((
@@ -1128,8 +1171,80 @@ impl PricingSettingsUpdateRequest {
                 ));
             }
         }
-        Ok(PricingCatalog { version, models })
+        let normalized_quotes = quotes
+            .map(|quotes| {
+                quotes
+                    .into_iter()
+                    .map(normalize_pricing_quote)
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .transpose()?;
+        Ok((PricingCatalog { version, models }, normalized_quotes))
     }
+}
+
+fn normalize_pricing_quote(quote: PricingQuote) -> Result<PricingQuote, (StatusCode, String)> {
+    let model = quote.model.trim();
+    if model.is_empty() || model.len() > 128 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid quote model id: {}", quote.model),
+        ));
+    }
+    if quote.provider_id.trim().is_empty()
+        || quote.provider_name.trim().is_empty()
+        || quote.source.trim().is_empty()
+        || quote.source_version.trim().is_empty()
+        || quote.fetched_at.trim().is_empty()
+        || quote.rates.is_empty()
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("invalid quote metadata for model: {model}"),
+        ));
+    }
+    for rate in &quote.rates {
+        if rate.key.trim().is_empty()
+            || rate.source_unit.trim().is_empty()
+            || rate.unit.trim().is_empty()
+            || !rate.source_value.is_finite()
+            || rate.source_value < 0.0
+            || !rate.value.is_finite()
+            || rate.value < 0.0
+            || rate
+                .threshold
+                .is_some_and(|value| !value.is_finite() || value < 0.0)
+        {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("invalid quote rate for model: {model}"),
+            ));
+        }
+    }
+    Ok(PricingQuote {
+        model: model.to_string(),
+        provider_id: quote.provider_id.trim().to_string(),
+        provider_name: quote.provider_name.trim().to_string(),
+        source: normalize_pricing_source(quote.source),
+        source_version: quote.source_version.trim().to_string(),
+        fetched_at: quote.fetched_at.trim().to_string(),
+        status: quote.status.and_then(|value| {
+            let value = value.trim().to_string();
+            (!value.is_empty()).then_some(value)
+        }),
+        deprecation_date: quote.deprecation_date.and_then(|value| {
+            let value = value.trim().to_string();
+            (!value.is_empty()).then_some(value)
+        }),
+        source_url: quote.source_url.and_then(|url| {
+            let url = url.trim().to_string();
+            reqwest::Url::parse(&url)
+                .ok()
+                .filter(|parsed| matches!(parsed.scheme(), "http" | "https"))
+                .map(|_| url)
+        }),
+        rates: quote.rates,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1137,6 +1252,7 @@ impl PricingSettingsUpdateRequest {
 pub(crate) struct PricingSettingsResponse {
     pub(crate) catalog_version: String,
     pub(crate) entries: Vec<PricingEntry>,
+    pub(crate) quotes: Vec<PricingQuote>,
 }
 
 impl PricingSettingsResponse {
@@ -1162,7 +1278,13 @@ impl PricingSettingsResponse {
         Self {
             catalog_version: catalog.version.clone(),
             entries,
+            quotes: Vec::new(),
         }
+    }
+
+    pub(crate) fn with_quotes(mut self, quotes: Vec<PricingQuote>) -> Self {
+        self.quotes = quotes;
+        self
     }
 }
 
@@ -1468,7 +1590,7 @@ pub(crate) struct HttpClients {
     pub(crate) shared: Client,
     pub(crate) pool_upstream: Client,
     pub(crate) proxy: Client,
-    pub(crate) models_dev: Client,
+    pub(crate) price_catalog: Client,
     pub(crate) timeout: Duration,
     pub(crate) user_agent: String,
 }
@@ -1483,11 +1605,11 @@ impl HttpClients {
             .build()
             .context("failed to construct shared HTTP client")?;
 
-        let models_dev = Self::builder(Some(timeout), &user_agent)
+        let price_catalog = Self::builder(Some(timeout), &user_agent)
             .pool_max_idle_per_host(config.shared_connection_parallelism)
             .redirect(reqwest::redirect::Policy::none())
             .build()
-            .context("failed to construct models.dev HTTP client")?;
+            .context("failed to construct LiteLLM price catalog HTTP client")?;
 
         // Pool live upstream traffic can legitimately stream well past REQUEST_TIMEOUT_SECS.
         // Handshake and upload budgets are enforced by route-specific timeout wrappers instead.
@@ -1507,7 +1629,7 @@ impl HttpClients {
             shared,
             pool_upstream,
             proxy,
-            models_dev,
+            price_catalog,
             timeout,
             user_agent,
         })

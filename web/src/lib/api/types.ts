@@ -175,6 +175,8 @@ export type {
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
   PricingEntry,
+  PricingQuote,
+  PricingRate,
   PricingSettings,
   PromptCacheConversation,
   PromptCacheConversationBindingKind,

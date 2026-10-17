@@ -52,6 +52,16 @@ const DEMO_INVOCATION_RESPONSE_BODY_TEXT = JSON.stringify(
   null,
   2,
 );
+const DEMO_LITELLM_SOURCE_QUOTES = JSON.parse(
+  JSON.stringify(
+    ((demoModel.snapshot.settings as { pricing?: { quotes?: unknown[] } }).pricing?.quotes ??
+      []) as unknown[],
+  ),
+) as unknown[];
+
+function cloneDemoLiteLlmSourceQuotes() {
+  return JSON.parse(JSON.stringify(DEMO_LITELLM_SOURCE_QUOTES)) as unknown[];
+}
 
 type DemoAccount = {
   id: number;
@@ -5176,6 +5186,103 @@ export async function handleDemoRequest(request: Request) {
 
   if (pathname === "/api/settings" && request.method === "GET")
     return json(demoModel.snapshot.settings);
+  if (pathname === "/api/settings/models/sync/state" && request.method === "GET")
+    return json(demoModel.snapshot.modelSyncState);
+  if (pathname === "/api/settings/models/sync/state" && request.method === "PATCH") {
+    return json(demoModel.updateModelSyncState(await request.json().catch(() => ({}))));
+  }
+  if (pathname === "/api/settings/models/sync/preview" && request.method === "POST") {
+    return json({
+      fetchedAt: "2026-10-15T00:00:00Z",
+      sourceUrl:
+        "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+      sourceVersion: "sha256:demo-openai-image-25",
+      providerCount: 1,
+      candidateCount: 2,
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+        },
+      ],
+      candidates: [
+        {
+          model: "gpt-image-2.5-flare",
+          name: "gpt-image-2.5-flare",
+          providerId: "openai",
+          providerName: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+          status: null,
+          deprecationDate: null,
+          inputPer1m: 5,
+          outputPer1m: null,
+          cacheReadPer1m: 1.25,
+          cacheWritePer1m: null,
+          reasoningPer1m: null,
+          unsupportedDimensions: [
+            "cache_read_input_image_token_cost",
+            "input_cost_per_image_token",
+            "output_cost_per_image_token",
+          ],
+          importable: false,
+        },
+        {
+          model: "gpt-image-2.5-sunburst",
+          name: "gpt-image-2.5-sunburst",
+          providerId: "openai",
+          providerName: "OpenAI",
+          docUrl: "https://developers.openai.com/api/docs/pricing",
+          status: null,
+          deprecationDate: null,
+          inputPer1m: 5,
+          outputPer1m: null,
+          cacheReadPer1m: 1.25,
+          cacheWritePer1m: null,
+          reasoningPer1m: null,
+          unsupportedDimensions: [
+            "cache_read_input_image_token_cost",
+            "input_cost_per_image_token",
+            "output_cost_per_image_token",
+          ],
+          importable: false,
+        },
+      ],
+      quotes: cloneDemoLiteLlmSourceQuotes(),
+      syncState: demoModel.snapshot.modelSyncState,
+    });
+  }
+  if (pathname === "/api/settings/models/sync/apply" && request.method === "POST") {
+    const payload = (await request.json().catch(() => ({}))) as Record<string, unknown>;
+    const currentPricing = (demoModel.snapshot.settings as { pricing: Record<string, unknown> })
+      .pricing;
+    const entries = (Array.isArray(payload.entries) ? payload.entries : []) as Array<
+      Record<string, unknown>
+    >;
+    const quotes = (Array.isArray(payload.quotes) ? payload.quotes : []) as Array<
+      Record<string, unknown>
+    >;
+    const existingEntries = Array.isArray(currentPricing.entries) ? currentPricing.entries : [];
+    const existingQuotes = Array.isArray(currentPricing.quotes) ? currentPricing.quotes : [];
+    const nextPricing = {
+      ...currentPricing,
+      catalogVersion: "litellm",
+      entries: [
+        ...existingEntries.filter(
+          (entry) => !entries.some((candidate) => candidate && candidate.model === entry.model),
+        ),
+        ...entries,
+      ],
+      quotes: [
+        ...existingQuotes.filter(
+          (quote) => !quotes.some((candidate) => candidate && candidate.model === quote.model),
+        ),
+        ...quotes,
+      ],
+    };
+    demoModel.updateSettings("/api/settings/pricing", nextPricing);
+    return json(nextPricing);
+  }
   if (pathname === "/api/settings/external-api-keys" && request.method === "GET")
     return json({ items: demoModel.snapshot.externalApiKeys });
   if (pathname === "/api/settings/external-api-keys" && request.method === "POST")

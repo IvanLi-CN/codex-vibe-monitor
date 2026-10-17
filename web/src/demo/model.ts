@@ -12,6 +12,14 @@ type DemoState = {
   revision: number;
   actions: DemoAction[];
   settings: Record<string, unknown>;
+  modelSyncState: {
+    catalogBaselineInitialized: boolean;
+    providerSelectionInitialized: boolean;
+    providerSelections: unknown[];
+    modelSelections: unknown[];
+    quoteProviderChoices: unknown[];
+    unviewedModelIds: unknown[];
+  };
   externalApiKeys: Array<Record<string, unknown>>;
   accounts: Array<Record<string, unknown>>;
 };
@@ -234,6 +242,144 @@ function createSettings() {
           cacheWritePer1m: 3.125,
           reasoningPer1m: null,
           source: "demo",
+        },
+      ],
+      quotes: [
+        {
+          model: "gpt-image-2.5-flare",
+          providerId: "openai",
+          providerName: "OpenAI",
+          source: "litellm",
+          sourceVersion: "sha256:demo-openai-image-25",
+          fetchedAt: "2026-10-15T00:00:00Z",
+          status: null,
+          deprecationDate: null,
+          sourceUrl: "https://developers.openai.com/api/docs/pricing",
+          rates: [
+            {
+              key: "input_cost_per_token",
+              sourceValue: 0.000005,
+              sourceUnit: "usd_per_token",
+              value: 5,
+              unit: "usd_per_1m_tokens",
+              dimension: "input",
+              modality: "text",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "cache_read_input_token_cost",
+              sourceValue: 0.00000125,
+              sourceUnit: "usd_per_token",
+              value: 1.25,
+              unit: "usd_per_1m_tokens",
+              dimension: "cacheRead",
+              modality: "text",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "cache_read_input_image_token_cost",
+              sourceValue: 0.000002,
+              sourceUnit: "usd_per_image_token",
+              value: 2,
+              unit: "usd_per_1m_tokens",
+              dimension: "cacheRead",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "input_cost_per_image_token",
+              sourceValue: 0.000008,
+              sourceUnit: "usd_per_image_token",
+              value: 8,
+              unit: "usd_per_1m_tokens",
+              dimension: "input",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "output_cost_per_image_token",
+              sourceValue: 0.00003,
+              sourceUnit: "usd_per_image_token",
+              value: 30,
+              unit: "usd_per_1m_tokens",
+              dimension: "output",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+          ],
+        },
+        {
+          model: "gpt-image-2.5-sunburst",
+          providerId: "openai",
+          providerName: "OpenAI",
+          source: "litellm",
+          sourceVersion: "sha256:demo-openai-image-25",
+          fetchedAt: "2026-10-15T00:00:00Z",
+          status: null,
+          deprecationDate: null,
+          sourceUrl: "https://developers.openai.com/api/docs/pricing",
+          rates: [
+            {
+              key: "input_cost_per_token",
+              sourceValue: 0.000005,
+              sourceUnit: "usd_per_token",
+              value: 5,
+              unit: "usd_per_1m_tokens",
+              dimension: "input",
+              modality: "text",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "cache_read_input_token_cost",
+              sourceValue: 0.00000125,
+              sourceUnit: "usd_per_token",
+              value: 1.25,
+              unit: "usd_per_1m_tokens",
+              dimension: "cacheRead",
+              modality: "text",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "cache_read_input_image_token_cost",
+              sourceValue: 0.000002,
+              sourceUnit: "usd_per_image_token",
+              value: 2,
+              unit: "usd_per_1m_tokens",
+              dimension: "cacheRead",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "input_cost_per_image_token",
+              sourceValue: 0.000008,
+              sourceUnit: "usd_per_image_token",
+              value: 8,
+              unit: "usd_per_1m_tokens",
+              dimension: "input",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+            {
+              key: "output_cost_per_image_token",
+              sourceValue: 0.00003,
+              sourceUnit: "usd_per_image_token",
+              value: 30,
+              unit: "usd_per_1m_tokens",
+              dimension: "output",
+              modality: "image",
+              tier: null,
+              threshold: null,
+            },
+          ],
         },
       ],
     },
@@ -633,6 +779,14 @@ function createState(scene: DemoScene): DemoState {
     revision: 0,
     actions: [],
     settings: createSettings(),
+    modelSyncState: {
+      catalogBaselineInitialized: false,
+      providerSelectionInitialized: false,
+      providerSelections: [],
+      modelSelections: [],
+      quoteProviderChoices: [],
+      unviewedModelIds: [],
+    },
     externalApiKeys: [
       {
         id: 41,
@@ -761,6 +915,33 @@ class DemoModel {
     if (pathname === "/api/settings/forward-proxy") return clone(settings.forwardProxy);
     if (pathname === "/api/settings/pricing") return clone(settings.pricing);
     return clone(settings);
+  }
+
+  updateModelSyncState(payload: unknown) {
+    const nextPayload = safePayload(payload);
+    const update =
+      typeof nextPayload === "object" && nextPayload !== null
+        ? (nextPayload as Record<string, unknown>)
+        : {};
+    const arrayFields = [
+      "providerSelections",
+      "modelSelections",
+      "quoteProviderChoices",
+      "unviewedModelIds",
+    ] as const;
+    const nextState = { ...this.#state.modelSyncState };
+    for (const field of arrayFields) {
+      if (Array.isArray(update[field])) nextState[field] = update[field];
+    }
+    if (typeof update.catalogBaselineInitialized === "boolean") {
+      nextState.catalogBaselineInitialized = update.catalogBaselineInitialized;
+    }
+    if (typeof update.providerSelectionInitialized === "boolean") {
+      nextState.providerSelectionInitialized = update.providerSelectionInitialized;
+    }
+    this.#state = { ...this.#state, modelSyncState: nextState };
+    this.record("模拟保存模型同步选择");
+    return clone(this.#state.modelSyncState);
   }
 
   createAccount() {

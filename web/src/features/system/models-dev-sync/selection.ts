@@ -2,6 +2,7 @@ import type {
   ModelsDevPriceCandidate,
   ModelsDevSyncMemoryState,
   PricingEntry,
+  PricingQuote,
 } from "../../../lib/api";
 
 export const PRICE_FIELDS = [
@@ -130,7 +131,7 @@ export function createApplicablePriceEntries(
   const entries: PricingEntry[] = [];
   for (const group of groups) {
     const candidate = resolveModelCandidate(group, quoteChoicesByModel[group.model]);
-    if (!candidate || !candidate.importable) continue;
+    if (!candidate?.importable) continue;
     if (!selectionsByKey[modelProviderKey(group.model, candidate.providerId)]) continue;
     if (modelPricesEqual(pricesByModel.get(group.model), candidate)) continue;
     entries.push({
@@ -141,10 +142,72 @@ export function createApplicablePriceEntries(
       cacheReadPer1m: candidate.cacheReadPer1m,
       cacheWritePer1m: candidate.cacheWritePer1m,
       reasoningPer1m: candidate.reasoningPer1m,
-      source: "models.dev",
+      source: "litellm",
     });
   }
   return entries;
+}
+
+export function quoteForCandidate(
+  quotes: readonly PricingQuote[],
+  model: string,
+  providerId: string,
+): PricingQuote | undefined {
+  return quotes.find((quote) => quote.model === model && quote.providerId === providerId);
+}
+
+export function quoteContentEqual(left: PricingQuote, right: PricingQuote): boolean {
+  if (
+    left.model !== right.model ||
+    left.providerId !== right.providerId ||
+    left.providerName !== right.providerName ||
+    left.source !== right.source ||
+    left.status !== right.status ||
+    left.deprecationDate !== right.deprecationDate ||
+    left.sourceUrl !== right.sourceUrl ||
+    left.rates.length !== right.rates.length
+  ) {
+    return false;
+  }
+  return left.rates.every((rate, index) => {
+    const other = right.rates[index];
+    return (
+      other !== undefined &&
+      rate.key === other.key &&
+      rate.sourceValue === other.sourceValue &&
+      rate.sourceUnit === other.sourceUnit &&
+      rate.value === other.value &&
+      rate.unit === other.unit &&
+      rate.dimension === other.dimension &&
+      rate.modality === other.modality &&
+      rate.tier === other.tier &&
+      rate.threshold === other.threshold
+    );
+  });
+}
+
+export function createApplicableQuotes(
+  groups: ModelCandidateGroup[],
+  quotes: readonly PricingQuote[],
+  existingQuotesByModel: ReadonlyMap<string, readonly PricingQuote[]>,
+  selectionsByKey: Readonly<Record<string, boolean>>,
+  quoteChoicesByModel: Readonly<Record<string, string>>,
+): PricingQuote[] {
+  const selectedQuotes: PricingQuote[] = [];
+  for (const group of groups) {
+    const candidate = resolveModelCandidate(group, quoteChoicesByModel[group.model]);
+    if (!candidate || !selectionsByKey[modelProviderKey(group.model, candidate.providerId)]) {
+      continue;
+    }
+    const quote = quoteForCandidate(quotes, group.model, candidate.providerId);
+    const existingQuote = existingQuotesByModel
+      .get(group.model)
+      ?.find((item) => item.providerId === candidate.providerId);
+    if (quote && (!existingQuote || !quoteContentEqual(existingQuote, quote))) {
+      selectedQuotes.push(quote);
+    }
+  }
+  return selectedQuotes;
 }
 
 export function applySelectionChanges(

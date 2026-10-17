@@ -4135,6 +4135,7 @@ async fn pricing_settings_api_reads_and_persists_updates() {
         HeaderMap::new(),
         Json(PricingSettingsUpdateRequest {
             catalog_version: "custom-ci".to_string(),
+            quotes: None,
             entries: vec![PricingEntry {
                 model: "gpt-5.2-codex".to_string(),
                 input_per_1m: 8.8,
