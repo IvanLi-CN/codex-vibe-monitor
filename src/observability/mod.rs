@@ -67,6 +67,7 @@ const MAINTENANCE_HISTOGRAMS: &[&str] = &[
     "cvm_maintenance_store_write_duration_seconds",
     "cvm_summary_response_duration_seconds",
     "cvm_stats_query_duration_seconds",
+    "cvm_invocation_range_phase_duration_seconds",
 ];
 
 fn histogram_buckets(name: &str) -> &'static [f64] {

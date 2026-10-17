@@ -98,6 +98,12 @@ fn performance_metrics_fixed_combinations_fit_budget_and_do_not_alias() {
         runtime.set_performance(event, 1.0);
     };
     assert_eq!(StartupBackfillTask::ordered_tasks().len(), TASK_COUNT);
+    for &diagnostic in RecoveryDiagnostic::ALL {
+        count(PerformanceCounter::Recovery(diagnostic));
+    }
+    for &phase in InvocationRangePhase::ALL {
+        observe(PerformanceHistogram::InvocationRange(phase));
+    }
     for &op in RetentionOperation::ALL {
         for &outcome in Outcome::ALL {
             count(PerformanceCounter::RetentionBatch(op, outcome));

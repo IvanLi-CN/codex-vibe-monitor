@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Prepare bounded committed invocation ranges off the request path and retain native transaction ownership through cancellation.",
+    "release_unit_description": "Runtime recovery invocation-range component; the parent release requires its own current-candidate acceptance.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Preserve ID encoding, range size, committed reservation ordering and the request wait budget.",
+      "assessed_at": "2026-10-17T06:20:00Z",
+      "evidence": ["../SPEC.md#req-rmpr-007"]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "No schema, durable row encoding, ID protocol or public HTTP/SSE field changes."
+      },
+      "reasoning": "Preparation writes the same existing conversation/hour reservation ceiling. Supported v4.8 and v4.9.0 readers recognize these rows and skip committed unused IDs after restart; memory eviction does not lower a prepared hour ceiling. Integrating v4.9.0 changes neither allocator sources nor schema.",
+      "reassessed_at": "2026-10-17T17:08:31Z",
+      "evidence": [
+        "src/prompt_cache_conversations/invocation_ranges.rs",
+        "src/prompt_cache_conversations/invocation_ranges/preparation.rs",
+        "src/prompt_cache_conversations/invocation_ranges/transaction.rs"
+      ]
+    },
+    "verified": {
+      "status": "component-compatibility-verified",
+      "impact": "patch",
+      "reasoning": "The persisted reservation protocol, public fields, durable encoding and schema remain unchanged from the passed integrated a7b6bff0627475ed34311eef25bc988c7e3f58c0 candidate. The later missing-owner correction changes only empty-memory handoff and adds a gated regression; it does not introduce newly encoded state. This verifies component compatibility, not execution of the revised regression: the parent PR still requires separate current-head CI, empirical acceptance and formal review.",
+      "evidence": [
+        "invocation-range-persistent-state.json#validation",
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39050785188"
+      ]
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "none to HTTP/SSE; additive fixed-label diagnostic metrics",
+      "supported_consumer_range": "Existing v4.8 and v4.9.0 HTTP/SSE clients and metrics consumers.",
+      "evidence": ["src/tests/lightweight/performance_metrics_contract.rs"]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Existing prompt_cache_conversations.last_invoke_sequence and hourly_invoke_prefixes reservation rows; no new durable representation.",
+      "source_program_compatibility_range": "v4.8.x and v4.9.0 readers of the existing 64-ID reservation protocol; a single runtime continues to own the database.",
+      "evidence": ["invocation-range-persistent-state.json"]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["invocation-range-persistent-state.json"],
+    "maximum_verified_impact": "patch",
+    "calculation_evidence": ["This component's public API and durable-state compatibility are both patch; the parent release decision separately checks every integrated surface and current candidate evidence."]
+  }
+}

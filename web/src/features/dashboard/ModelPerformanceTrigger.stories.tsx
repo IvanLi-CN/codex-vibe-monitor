@@ -259,10 +259,31 @@ export const DesktopTooltip: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: /open model performance/i }));
+    const trigger = canvas.getByRole("button", { name: /open model performance/i });
+    const logTooltipDiagnostic = () => {
+      console.error("model-performance-tooltip-diagnostic", {
+        viewportWidth: window.innerWidth,
+        compactViewport: window.matchMedia("(max-width: 767px)").matches,
+        canvasConnected: canvasElement.isConnected,
+        canvasChildren: canvasElement.childElementCount,
+        triggerConnected: trigger.isConnected,
+        triggerElement: trigger.tagName,
+        triggerState: trigger.getAttribute("data-state"),
+        tooltipCount: document.querySelectorAll('[role="tooltip"]').length,
+        drawerCount: document.querySelectorAll('[data-testid="model-performance-drawer-content"]')
+          .length,
+      });
+    };
+    await userEvent.click(trigger);
     const initialDetails = (
-      await within(document.body).findAllByTestId("model-performance-tooltip-content")
+      await within(document.body)
+        .findAllByTestId("model-performance-tooltip-content")
+        .catch((error: unknown) => {
+          logTooltipDiagnostic();
+          throw error;
+        })
     ).find((element) => element.getBoundingClientRect().width > 1);
+    if (!initialDetails) logTooltipDiagnostic();
     await expect(initialDetails).toBeDefined();
     if (!initialDetails) return;
     await expect(initialDetails).toBeVisible();

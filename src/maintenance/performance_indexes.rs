@@ -1,4 +1,7 @@
 use super::*;
+use crate::observability::contention::{
+    RecoveryDiagnostic, current_performance, record_recovery, spawn_performance,
+};
 use crate::proxy_sqlite_write_coordinator::ProxySqliteWriteCoordinator;
 use serde::Deserialize;
 
@@ -165,7 +168,7 @@ pub(crate) async fn prepare_performance_indexes(
     shutdown: CancellationToken,
 ) -> Result<PerformanceIndexPreparationReport> {
     let deadline = request.deadline()?;
-    tokio::spawn(prepare_performance_indexes_owned(
+    let work = prepare_performance_indexes_owned(
         options,
         request,
         deadline,
@@ -173,9 +176,12 @@ pub(crate) async fn prepare_performance_indexes(
         shutdown,
         #[cfg(test)]
         PERFORMANCE_INDEX_TEST_PROBE.try_with(Arc::clone).ok(),
-    ))
-    .await
-    .context("index preparation owner failed")?
+    );
+    let owner = match current_performance() {
+        Some(metrics) => spawn_performance(metrics, work),
+        None => tokio::spawn(work),
+    };
+    owner.await.context("index preparation owner failed")?
 }
 
 async fn prepare_performance_indexes_owned(
@@ -287,6 +293,7 @@ async fn prepare_one_performance_index(
     let mut connection = match SqliteConnection::connect_with(&options).await {
         Ok(connection) => connection,
         Err(error) => {
+            record_recovery(RecoveryDiagnostic::IndexUnavailable);
             let error = anyhow::Error::from(error);
             return preparation_error_stop(&error, deadline, shutdown).ok_or(error);
         }
@@ -329,13 +336,60 @@ async fn prepare_one_performance_index(
             sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type='index' AND name=?")
                 .bind(name)
                 .fetch_optional(&mut connection)
-                .await?;
+                .await
+                .inspect_err(|_| record_recovery(RecoveryDiagnostic::IndexUnavailable))?;
+        if dry_run && name == "idx_codex_invocations_prompt_cache_key_id" {
+            // Compile the actual query shape only at this explicit inspection
+            // boundary. EXPLAIN never executes the lookup or reads business rows.
+            // Reuse the owned connection, deadline and native progress handler.
+            let remaining_ms = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis();
+            sqlx::query(&format!(
+                "PRAGMA busy_timeout = {}",
+                remaining_ms.min(i32::MAX as u128)
+            ))
+            .execute(&mut connection)
+            .await?;
+            let keys = [String::new()];
+            let plan = crate::api::build_prompt_cache_conversation_statistics_query(
+                "EXPLAIN QUERY PLAN ",
+                &keys,
+            )
+            .build_query_as::<(i64, i64, i64, String)>()
+            .persistent(false)
+            .fetch_all(&mut connection)
+            .await;
+            if let Some(stop) = preparation_stop(deadline, shutdown) {
+                record_recovery(RecoveryDiagnostic::QueryPlanUnavailable);
+                return Ok(stop);
+            }
+            let matching_definition = existing.as_deref().is_some_and(|sql| {
+                normalize_index_definition(sql) == normalize_index_definition(definition)
+            });
+            let indexed_search = format!("SEARCH i USING INDEX {name}");
+            record_recovery(match plan {
+                Ok(rows)
+                    if matching_definition
+                        && rows
+                            .iter()
+                            .any(|(_, _, _, detail)| detail.contains(&indexed_search)) =>
+                {
+                    RecoveryDiagnostic::QueryPlanIndexed
+                }
+                Ok(rows) if !rows.is_empty() => RecoveryDiagnostic::QueryPlanFallback,
+                _ => RecoveryDiagnostic::QueryPlanUnavailable,
+            });
+        }
         if let Some(existing) = existing {
             if normalize_index_definition(&existing) != normalize_index_definition(definition) {
+                record_recovery(RecoveryDiagnostic::IndexDefinitionConflict);
                 return Ok("definition_conflict");
             }
+            record_recovery(RecoveryDiagnostic::IndexPresent);
             return Ok("present");
         }
+        record_recovery(RecoveryDiagnostic::IndexMissing);
         if dry_run {
             return Ok("would_create");
         }

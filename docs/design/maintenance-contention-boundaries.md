@@ -10,6 +10,10 @@ Monthly file publication preserves its existing durable replacement journal and 
 
 File batches and source transactions are distinct. Existing task-local monthly files remain; write chunks consume the existing adaptive feedback with a 200ms target, 250ms warning, at most 64 rows and 1MiB. An individually oversized or slow row is retained losslessly, reported and followed by a yield. Fixed slicing must not ignore feedback. Report committed rows, throughput and backlog beside permit duration; partial commits remain counted after a later failure.
 
+The file candidate query uses the existing 1000-row target and 16MiB workset selector independently of `RETENTION_BATCH_ROWS`. That setting continues to cap source SQL microtransactions, including two-row contention fixtures; it must not cause one complete monthly rewrite for each source chunk. Writer-returned artifact identity replaces redundant caller hashes before proof loading, while first admission still rechecks the digest under the archive fence and every transaction checks its live-source chunk. A replaced artifact leaves the staged manifest unpublished and preserves the source rows.
+
+Monthly-writer diagnostics separate fixed preflight, predecessor digest and identity, inflate, copy/source identity, finalization, Summary pages, deflate, output digest, publication and cleanup phases. Durations are elapsed time, including waits, rather than CPU attribution. A completed phase and a stopped observation are distinct; stopped does not distinguish error from cancellation, claim successful work, or prove native-worker drain and resource release. These bounded structured logs contain no file paths, source identities or error content and add no histogram series. The first admission defer in a run is logged once at normal visibility with its fixed operation and existing reason; later repeats retain debug visibility. Neither diagnostic path performs extra SQL or file reads.
+
 Once COMMIT is confirmed, committed-work counters and timing are recorded before any cleanup or pool-return await. Cleanup cancellation must not hide already confirmed work. Summary page construction remains non-authoritative staging: it cannot multiply complete monthly-file hashing by the page count. Short page transactions fence their manifest identity; the final complete semantic proof and actual deletion retain the artifact identity checks that grant deletion authority.
 
 ## Backfill and terminal integration
@@ -23,6 +27,8 @@ Obligations merge by task key and control generation, preserving the oldest outs
 ## Statistics
 
 Prompt-cache statistics retain `last_invocation_id = MAX(i.id)` over currently live invocations. Both the aliased query and the expression index use the exact normalized `CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END` expression. No additional aggregate field becomes a competing source of truth.
+
+The correlated lookup compares that expression with `+c.prompt_cache_key`: unary plus removes the outer TEXT column's comparison affinity without changing its stored value, allowing the optional expression index to serve the live-row MAX lookup. The production query builder also supplies the bounded EXPLAIN regression. Plan evidence must name `idx_codex_invocations_prompt_cache_key_id`; a generic primary-key `SEARCH` is insufficient. Exact reference checks cover missing and prepared indexes, normalized numeric/text keys, whitespace, NULL or malformed payloads, and changed, appended or deleted live rows. Correctness never depends on forcing an absent index.
 
 An already published Bootstrap fallback suppresses repeated historical hydration while its coverage fence is unchanged. New live terminals use the existing bounded descriptor/delta reconciliation; they neither reopen the cold builder nor erase a historical gap. A changed manifest or historical coverage proof permits one bounded Bootstrap attempt. An unchanged complete fence renews freshness only through the existing proof checks.
 
@@ -39,6 +45,27 @@ Legacy interval migration stores its independent `legacy_interval_migration_v1` 
 `maintenance prepare-performance-indexes --dry-run --budget-ms <ms>` defaults to 2000ms. The only target definitions are `idx_proxy_raw_payload_blob_links_owner` on `proxy_raw_payload_blob_links(owner_kind, owner_id)` and `idx_codex_invocations_prompt_cache_key_id` on `codex_invocations(<normalized prompt-cache-key expression>, id DESC)`. Names and definitions are verified together; a conflicting definition is reported without dropping or replacing it. Neither index is added to automatic startup DDL. Correct queries work before, during and after preparation and never require `INDEXED BY` on a missing index.
 
 The CLI reuses `MaintenanceRuntimeLock::route`: an active service owns online execution; offline execution holds the existing exclusive runtime proof. Each DDL is an independent, idempotent operation within the supplied total budget. Stop before the next operation when the budget is exhausted. A native progress handler and bounded lock wait enforce interruption of active work; rollback and worker drain finish before releasing admission or runtime ownership. An expired operation warns and retains the old query path, without extending its budget or blocking startup. Already committed indexes remain for re-entry. DDL structure, current-data work and historical backfill are recorded separately. No production index build is authorized merely by deploying the binary.
+
+### Deployment evidence
+
+Read-only inspection and index preparation are separate operations. Through an already authorized read-only SQLite connection, inspect only the two fixed schema definitions below; do not copy the database or export invocation rows. Compare their complete expressions, including the case-sensitive JSON path and normalization, with `performance_index_definitions()`. A matching name alone is insufficient. A denied or unavailable inspection remains unknown rather than missing.
+
+```sql
+SELECT name, sql
+FROM sqlite_schema
+WHERE type = 'index'
+  AND name IN (
+    'idx_proxy_raw_payload_blob_links_owner',
+    'idx_codex_invocations_prompt_cache_key_id'
+  )
+ORDER BY name;
+```
+
+Collect bounded `EXPLAIN QUERY PLAN` output for the actual correlated statistics query through its shared SQL builder. A standalone expression lookup is not evidence for that query. Record definition inspection and query-plan evidence separately, without bound values or business identities; do not execute the underlying historical query or run `ANALYZE` to obtain a plan. Definition diagnostics count completed inspection events and do not represent a continuously sampled index inventory. Exporting metrics does not perform this inspection.
+
+The existing explicit dry-run command compiles that shared query with a fixed empty key when it inspects the conversation index, on the same read-only connection and within its original total budget. Fixed diagnostics distinguish an observed named-index plan, a successfully compiled fallback and an unavailable plan; no raw plan details or key values become metric labels. The managed command's task metadata writes still exclude it from production read-only investigation authorization.
+
+When an index is proven missing, the deployment checklist names the missing definition, preserves the existing correct fallback and proposes the existing explicit preparation command with its default 2000ms total budget. The managed maintenance entry point can persist task-run state even with `--dry-run`; it must not be used as a substitute for read-only production investigation. A conflicting definition requires a separate decision, never an automatic drop. Longer build budgets require a separately approved maintenance window backed by measured lock duration and disk needs; an application release does not prove installation or successful query-plan selection.
 
 ## Verification boundary
 
