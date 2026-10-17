@@ -75,13 +75,17 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
         1,
         Duration::from_secs(30),
     ));
-    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
-        coordinator,
-        RETENTION_TEST_DB_PRESSURE_GATE.scope(
-            gate,
-            crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
-                probe.clone(),
-                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+    let runtime = crate::ObservabilityRuntime::new(true);
+    let work = crate::observability::contention::with_performance(
+        runtime.clone(),
+        RETENTION_TEST_WRITE_COORDINATOR.scope(
+            coordinator,
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                gate,
+                crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                    probe.clone(),
+                    archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+                ),
             ),
         ),
     );
@@ -99,6 +103,26 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
         error
             .to_string()
             .contains("retention task-local archive source changed before conversion")
+    );
+    let proof_diagnostics = runtime
+        .render()
+        .lines()
+        .filter(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("operation=\"retention\"")
+                && line.contains("reason=\"proof_unavailable\"")
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        proof_diagnostics.len(),
+        1,
+        "source changes must record one proof diagnostic: {}",
+        proof_diagnostics.join("\n")
+    );
+    assert!(
+        proof_diagnostics[0].ends_with(" 1"),
+        "source changes must not emit duplicate proof diagnostics: {}",
+        proof_diagnostics[0]
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")

@@ -550,6 +550,7 @@ pub(crate) async fn prune_old_invocation_details(
                             .await?
                                 != chunk_identity
                             {
+                                recovery_diagnostic.mark_proof_unavailable();
                                 bail!("retention task-local detail source changed before conversion");
                             }
                             drop(source_verify_phase);
@@ -1214,6 +1215,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await?
                         != chunk_identity
                     {
+                        recovery_diagnostic.mark_proof_unavailable();
                         bail!("retention task-local archive source changed before conversion");
                     }
                     drop(source_verify_phase);
@@ -1730,6 +1732,7 @@ pub(crate) async fn archive_timestamped_dataset(
                 if archive_table_source_identity_sha256(tx.as_mut(), spec, "main", &ids).await?
                     != chunk_identity
                 {
+                    recovery_diagnostic.mark_proof_unavailable();
                     bail!("timestamped task-local archive source changed before conversion");
                 }
                 drop(source_verify_phase);
