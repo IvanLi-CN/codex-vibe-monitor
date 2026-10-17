@@ -79,7 +79,16 @@ impl InvocationRangeManager {
             memory.entries.insert(owner.clone(), entry);
             generation
         };
-        let permit = proxy_sqlite_write_coordinator().try_acquire(ProxySqliteWriteClass::P2Derived);
+        // Do not reserve writer admission while waiting for a pool connection.
+        // The actual reservation still rechecks availability after admission.
+        let idle = pool.try_acquire();
+        let pool_ready = idle.is_some();
+        if let Some(mut connection) = idle {
+            connection.return_to_pool().await;
+        }
+        let permit = pool_ready
+            .then(|| proxy_sqlite_write_coordinator().try_acquire(ProxySqliteWriteClass::P2Derived))
+            .flatten();
         if let Some(permit) = permit {
             self.initialize(pool, owner.clone(), generation, Some(permit), true)
                 .await;

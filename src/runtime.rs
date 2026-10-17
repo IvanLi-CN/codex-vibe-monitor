@@ -371,6 +371,8 @@ pub(crate) async fn run() -> Result<()> {
             .await;
 
         observability.start_exporter(&config.observability, shutdown.clone());
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+            .bind_observability(observability.clone())?;
 
         let prompt_cache_conversation_cache =
             Arc::new(Mutex::new(PromptCacheConversationsCacheState::default()));
@@ -398,8 +400,6 @@ pub(crate) async fn run() -> Result<()> {
         let terminal_projection_hub = Arc::new(TerminalProjectionHub::default());
         let long_term_projection_runtime = Arc::new(Mutex::new(LongTermProjectionRuntime::default()));
         let memory_diagnostics = Arc::new(MemoryDiagnosticsRuntime::new());
-        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .bind_observability(observability.clone())?;
         let sqlite_batch_writer = SqliteBatchWriter::spawn(
             pool.clone(),
             shutdown.clone(),
