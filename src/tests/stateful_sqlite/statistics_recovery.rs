@@ -43,7 +43,9 @@ async fn prompt_cache_statistics_fixture() -> SqlitePool {
         .expect("create raw payload fixture");
     sqlx::query(
         "INSERT INTO prompt_cache_conversations(prompt_cache_key, conversation_id, created_at)
-         VALUES ('cache', 'conversation-cache', '2026-10-16'), ('42', 'conversation-number', '2026-10-16')",
+         VALUES ('cache', 'conversation-cache', '2026-10-16'),
+                ('42', 'conversation-number', '2026-10-16'),
+                ('missing', 'conversation-missing', '2026-10-16')",
     )
     .execute(&pool)
     .await
@@ -82,6 +84,21 @@ async fn reference_prompt_cache_last_invocation_id(pool: &SqlitePool, key: &str)
     .expect("query reference prompt-cache statistics")
 }
 
+async fn explain_prompt_cache_statistics_query(
+    pool: &SqlitePool,
+    selected_keys: &[String],
+) -> Vec<String> {
+    build_prompt_cache_conversation_statistics_query("EXPLAIN QUERY PLAN ", selected_keys)
+        .build_query_as::<(i64, i64, i64, String)>()
+        .persistent(false)
+        .fetch_all(pool)
+        .await
+        .expect("explain production prompt-cache statistics query")
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect()
+}
+
 #[tokio::test]
 async fn statistics_recovery_matches_live_max_reference_before_and_after_index_preparation() {
     let pool = prompt_cache_statistics_fixture().await;
@@ -101,27 +118,17 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
             .expect("seed invocation row");
     }
 
-    for key in ["cache", "42"] {
+    for key in ["cache", "42", "missing"] {
         assert_eq!(
             prompt_cache_last_invocation_id(&pool, key).await,
             reference_prompt_cache_last_invocation_id(&pool, key).await,
             "statistics query must match the live-row reference without optional indexes"
         );
     }
-    let missing_plan = sqlx::query(&format!(
-        "EXPLAIN QUERY PLAN SELECT MAX(i.id) FROM codex_invocations AS i
-         WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1"
-    ))
-    .bind("cache")
-    .fetch_all(&pool)
-    .await
-    .expect("explain missing-index statistics query");
-    let missing_plan_details = missing_plan
-        .iter()
-        .map(|row| row.get::<String, _>("detail"))
-        .collect::<Vec<_>>();
+    let selected_keys = vec!["cache".to_string()];
+    let missing_plan_details = explain_prompt_cache_statistics_query(&pool, &selected_keys).await;
     assert!(
-        !missing_plan.is_empty() && missing_plan.len() <= 8,
+        !missing_plan_details.is_empty() && missing_plan_details.len() <= 8,
         "missing-index plan evidence must stay bounded: {missing_plan_details:?}"
     );
 
@@ -137,31 +144,43 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
             .iter()
             .all(|index| { matches!(index.outcome, "created" | "present") })
     );
-    for key in ["cache", "42"] {
+    for key in ["cache", "42", "missing"] {
         assert_eq!(
             prompt_cache_last_invocation_id(&pool, key).await,
             reference_prompt_cache_last_invocation_id(&pool, key).await,
             "index preparation must not change live-row statistics semantics"
         );
     }
-    let indexed_plan = sqlx::query(&format!(
-        "EXPLAIN QUERY PLAN SELECT MAX(i.id) FROM codex_invocations AS i
-         WHERE {INVOCATION_PROMPT_CACHE_KEY_EXPR_SQL} = ?1"
-    ))
-    .bind("cache")
-    .fetch_all(&pool)
-    .await
-    .expect("explain indexed statistics query");
-    let indexed_plan_details = indexed_plan
-        .iter()
-        .map(|row| row.get::<String, _>("detail"))
-        .collect::<Vec<_>>();
+    let indexed_plan_details = explain_prompt_cache_statistics_query(&pool, &selected_keys).await;
+    let production_sql =
+        build_prompt_cache_conversation_statistics_query("EXPLAIN QUERY PLAN ", &selected_keys)
+            .sql()
+            .to_string();
+    assert!(production_sql.contains("WHERE ") && production_sql.contains("= c.prompt_cache_key"));
+    let affinity_candidate_sql =
+        production_sql.replace("= c.prompt_cache_key", "= +c.prompt_cache_key");
+    let affinity_candidate_plan =
+        sqlx::query_as::<_, (i64, i64, i64, String)>(&affinity_candidate_sql)
+            .bind("cache")
+            .persistent(false)
+            .fetch_all(&pool)
+            .await
+            .expect("explain prompt-cache affinity candidate")
+            .into_iter()
+            .map(|(_, _, _, detail)| detail)
+            .collect::<Vec<_>>();
     assert!(
-        indexed_plan.len() <= 8
+        affinity_candidate_plan
+            .iter()
+            .any(|detail| { detail.contains("idx_codex_invocations_prompt_cache_key_id") }),
+        "prompt-cache affinity candidate must retain the target index plan: {affinity_candidate_plan:?}"
+    );
+    assert!(
+        indexed_plan_details.len() <= 8
             && indexed_plan_details
                 .iter()
-                .any(|detail| detail.contains("idx_codex_invocations_prompt_cache_key_id")),
-        "indexed statistics query must use the target expression index: {indexed_plan_details:?}"
+                .any(|detail| { detail.contains("idx_codex_invocations_prompt_cache_key_id") }),
+        "production correlated statistics query must use the target expression index: {indexed_plan_details:?}"
     );
 
     sqlx::query(
