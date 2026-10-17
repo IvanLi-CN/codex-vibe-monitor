@@ -25,7 +25,8 @@ threads-required = "num-test-threads"
 # These fixtures retain real allocator, routing, hydration and scheduler deadlines.
 # Reserve the original profile's slots while they run; do not stretch a deadline.
 [[profile.default.overrides]]
-filter = '''test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_concurrent_cold_conversation_initialization_completes)
+filter = '''test(/^tests::stateful_sqlite::invocation_range_recovery::/)
+| test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_concurrent_cold_conversation_initialization_completes)
 | test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_hot_issuance_survives_closed_database)
 | test(=tests::stateful_sqlite::invocation_ranges::invocation_ranges_retirement_returns_only_unissued_tail)
 | test(=tests::stateful_sqlite::startup_rebuild_and_retention_basics::background_startup_hourly_rollup_bootstrap_defers_when_repair_cursor_remains_pending)

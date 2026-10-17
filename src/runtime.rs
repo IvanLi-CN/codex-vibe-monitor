@@ -379,6 +379,12 @@ pub(crate) async fn run() -> Result<()> {
             .await
             .identity_cache
             .range_manager
+            .bind_observability(observability.clone());
+        prompt_cache_conversation_cache
+            .lock()
+            .await
+            .identity_cache
+            .range_manager
             .start_sizing(&pool, shutdown.clone());
         let proxy_runtime_invocations =
             Arc::new(RuntimeProjectionHub::new(RuntimeProjectionMode::Auto));
