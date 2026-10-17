@@ -91,16 +91,24 @@ fn observe_startup_recovery_state(
     oldest_age: Duration,
     state_name: &'static str,
 ) {
+    let available = state_name != "unavailable";
     state.observability.gauge(
-        "cvm_startup_recovery_pending_records",
+        "cvm_startup_recovery_data_available",
         &[("component", component)],
-        pending as f64,
+        f64::from(available),
     );
-    state.observability.gauge(
-        "cvm_startup_recovery_oldest_age_seconds",
-        &[("component", component)],
-        oldest_age.as_secs_f64(),
-    );
+    if available {
+        state.observability.gauge(
+            "cvm_startup_recovery_pending_records",
+            &[("component", component)],
+            pending as f64,
+        );
+        state.observability.gauge(
+            "cvm_startup_recovery_oldest_age_seconds",
+            &[("component", component)],
+            oldest_age.as_secs_f64(),
+        );
+    }
     for candidate in ["running", "complete", "unavailable"] {
         state.observability.gauge(
             "cvm_startup_recovery_last_state",
@@ -506,20 +514,45 @@ async fn run_startup_recovery(
                             invocation_cursor = ids.last().copied().unwrap_or(invocation_cursor);
                             progressed = true;
                             retry_index = 0;
-                            let (pending, oldest_age) = load_startup_invocation_pending_stats(
+                            match load_startup_invocation_pending_stats(
                                 connection_ref,
                                 invocation_cursor,
                                 fence.invocation_max_id,
                             )
                             .await
-                            .unwrap_or((0, Duration::ZERO));
-                            observe_startup_recovery_state(
-                                &state,
-                                "invocations",
-                                pending.saturating_add(ids.len().saturating_sub(recovered)),
-                                oldest_age,
-                                "running",
-                            );
+                            {
+                                Ok((pending, oldest_age)) => {
+                                    observe_startup_recovery_state(
+                                        &state,
+                                        "invocations",
+                                        pending.saturating_add(ids.len().saturating_sub(recovered)),
+                                        oldest_age,
+                                        "running",
+                                    );
+                                }
+                                Err(error) => {
+                                    retry_required = true;
+                                    connection_failed = true;
+                                    observe_startup_recovery_retry(
+                                        &state,
+                                        "invocations",
+                                        "pending_stats",
+                                    );
+                                    crate::db_pressure::global_db_pressure_gate()
+                                        .record_error("startup_recovery_invocations", &error);
+                                    observe_startup_recovery_state(
+                                        &state,
+                                        "invocations",
+                                        0,
+                                        Duration::ZERO,
+                                        "unavailable",
+                                    );
+                                    warn!(
+                                        error = %error,
+                                        "startup invocation recovery progress query deferred"
+                                    );
+                                }
+                            }
                         }
                         Err(error) => {
                             retry_required = true;
@@ -567,20 +600,45 @@ async fn run_startup_recovery(
                                 ids.last().copied().unwrap_or(pool_attempt_cursor);
                             progressed = true;
                             retry_index = 0;
-                            let (pending, oldest_age) = load_startup_pool_attempt_pending_stats(
+                            match load_startup_pool_attempt_pending_stats(
                                 connection_ref,
                                 pool_attempt_cursor,
                                 fence.pool_attempt_max_id,
                             )
                             .await
-                            .unwrap_or((0, Duration::ZERO));
-                            observe_startup_recovery_state(
-                                &state,
-                                "pool_attempts",
-                                pending.saturating_add(ids.len().saturating_sub(recovered)),
-                                oldest_age,
-                                "running",
-                            );
+                            {
+                                Ok((pending, oldest_age)) => {
+                                    observe_startup_recovery_state(
+                                        &state,
+                                        "pool_attempts",
+                                        pending.saturating_add(ids.len().saturating_sub(recovered)),
+                                        oldest_age,
+                                        "running",
+                                    );
+                                }
+                                Err(error) => {
+                                    retry_required = true;
+                                    connection_failed = true;
+                                    observe_startup_recovery_retry(
+                                        &state,
+                                        "pool_attempts",
+                                        "pending_stats",
+                                    );
+                                    crate::db_pressure::global_db_pressure_gate()
+                                        .record_error("startup_recovery_pool_attempts", &error);
+                                    observe_startup_recovery_state(
+                                        &state,
+                                        "pool_attempts",
+                                        0,
+                                        Duration::ZERO,
+                                        "unavailable",
+                                    );
+                                    warn!(
+                                        error = %error,
+                                        "startup pool attempt recovery progress query deferred"
+                                    );
+                                }
+                            }
                         }
                         Err(error) => {
                             retry_required = true;

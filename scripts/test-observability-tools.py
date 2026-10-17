@@ -79,6 +79,8 @@ class GrafanaPreviewTests(unittest.TestCase):
         failure = preview.Metrics("failures").render(9091)
         self.assertNotIn("cvm_summary_responses_total", missing)
         self.assertIn('cvm_summary_responses_total{outcome="unavailable",reason="source_gap"}', failure)
+        self.assertIn('cvm_startup_recovery_data_available{component="invocations"} 0', failure)
+        self.assertNotIn('cvm_startup_recovery_pending_records{component="invocations"}', failure)
         self.assertIn('cvm_startup_recovery_last_state{component="terminal_journal",state="unavailable"}', failure)
         self.assertIn("cvm_startup_recovery_readiness_to_recovery_seconds", normal)
         self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="0.2",operation="invocation_archive",phase="write_hold"}', normal)
@@ -127,6 +129,22 @@ class GrafanaPreviewTests(unittest.TestCase):
             self.assertIn("increase(", expression)
             self.assertIn("_count", expression)
             self.assertIn(">= 100", expression)
+
+    def test_recovery_backlog_panels_require_data_availability(self):
+        expected_panels = {
+            "cvm-runtime.json": (140, 141),
+            "cvm-sqlite.json": (241, 243),
+        }
+        for dashboard_name, panel_ids in expected_panels.items():
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            row = next(panel for panel in dashboard["panels"] if panel.get("type") == "row" and panel["title"].startswith("启动恢复"))
+            for panel_id in panel_ids:
+                panel = next(panel for panel in row["panels"] if panel["id"] == panel_id)
+                expression = panel["targets"][0]["expr"]
+                self.assertIn("cvm_startup_recovery_data_available", expression)
+                self.assertIn("== 1", expression)
 
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)

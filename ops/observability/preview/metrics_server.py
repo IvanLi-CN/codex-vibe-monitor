@@ -216,9 +216,15 @@ class Metrics:
         )
         for component, pending, oldest_age, batch_seconds in recovery_components:
             labels = {"component": component}
-            self.gauge("cvm_startup_recovery_pending_records", pending, labels)
-            self.gauge("cvm_startup_recovery_oldest_age_seconds", oldest_age, labels)
             state = "unavailable" if failing else ("running" if pending else "complete")
+            self.gauge(
+                "cvm_startup_recovery_data_available",
+                0 if failing else 1,
+                labels,
+            )
+            if not failing:
+                self.gauge("cvm_startup_recovery_pending_records", pending, labels)
+                self.gauge("cvm_startup_recovery_oldest_age_seconds", oldest_age, labels)
             for candidate in ("running", "complete", "unavailable"):
                 self.gauge(
                     "cvm_startup_recovery_last_state",

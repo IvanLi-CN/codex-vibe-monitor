@@ -893,7 +893,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)",
               "legendFormat": "{{component}}",
               "range": true,
               "instant": false,
@@ -913,7 +913,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)",
               "legendFormat": "{{component}}",
               "range": true,
               "instant": false,

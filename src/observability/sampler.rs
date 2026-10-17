@@ -114,16 +114,24 @@ async fn sample_runtime(state: &AppState) {
         &[("journal", "terminal")],
         terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
     );
+    let terminal_journal_available = !terminal_journal.unavailable;
     metrics.gauge(
-        "cvm_startup_recovery_pending_records",
+        "cvm_startup_recovery_data_available",
         &[("component", "terminal_journal")],
-        terminal_journal.pending_materialization_records as f64,
+        f64::from(terminal_journal_available),
     );
-    metrics.gauge(
-        "cvm_startup_recovery_oldest_age_seconds",
-        &[("component", "terminal_journal")],
-        terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
-    );
+    if terminal_journal_available {
+        metrics.gauge(
+            "cvm_startup_recovery_pending_records",
+            &[("component", "terminal_journal")],
+            terminal_journal.pending_materialization_records as f64,
+        );
+        metrics.gauge(
+            "cvm_startup_recovery_oldest_age_seconds",
+            &[("component", "terminal_journal")],
+            terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
+        );
+    }
     let terminal_journal_state = if terminal_journal.unavailable {
         "unavailable"
     } else if terminal_journal.pending_materialization_records == 0 {

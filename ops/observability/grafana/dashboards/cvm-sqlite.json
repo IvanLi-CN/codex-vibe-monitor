@@ -2794,7 +2794,7 @@
           "description": "按固定恢复 component 显示未完成记录；与 HTTP readiness 分开阅读。",
           "gridPos": {"x": 0, "y": 0, "w": 6, "h": 8},
           "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
-          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "pending / {{component}}", "range": true, "instant": false, "format": "time_series"}],
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)", "legendFormat": "pending / {{component}}", "range": true, "instant": false, "format": "time_series"}],
           "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
           "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
         },
@@ -2805,7 +2805,7 @@
           "description": "按固定恢复 component 显示最老未完成记录年龄；缺测显示 Unknown。",
           "gridPos": {"x": 6, "y": 0, "w": 6, "h": 8},
           "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
-          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "oldest age / {{component}}", "range": true, "instant": false, "format": "time_series"}],
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)", "legendFormat": "oldest age / {{component}}", "range": true, "instant": false, "format": "time_series"}],
           "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
           "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
         },
