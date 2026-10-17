@@ -104,8 +104,8 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
             .to_string()
             .contains("retention task-local archive source changed before conversion")
     );
-    let proof_diagnostics = runtime
-        .render()
+    let rendered_metrics = runtime.render();
+    let proof_diagnostics = rendered_metrics
         .lines()
         .filter(|line| {
             line.starts_with("cvm_runtime_recovery_diagnostics_total{")
