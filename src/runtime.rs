@@ -621,6 +621,14 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
 }
 
 async fn run_post_readiness_runtime_warmups(state: Arc<AppState>) {
+    let shutdown = state.shutdown.clone();
+    tokio::select! {
+        _ = shutdown.cancelled() => {}
+        _ = run_post_readiness_runtime_warmups_inner(state) => {}
+    }
+}
+
+async fn run_post_readiness_runtime_warmups_inner(state: Arc<AppState>) {
     if let Err(error) = runtime_route_facts(state.as_ref()).await {
         warn!(error = %error, "runtime route facts warm-up failed after readiness");
     }
