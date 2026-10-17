@@ -73,9 +73,9 @@ async fn id_scoped_recovery_does_not_touch_rows_outside_the_startup_fence() {
     .expect("load startup recovery fixture ids");
     assert_eq!(ids.len(), 2);
 
-    let recovered = crate::proxy::usage_persistence::recover_proxy_invocations_with_scope(
+    let recovered = crate::recover_proxy_invocations_with_scope(
         &state.pool,
-        crate::proxy::usage_persistence::ProxyInvocationRecoveryScope::Ids(&ids[..1]),
+        crate::ProxyInvocationRecoveryScope::Ids(&ids[..1]),
     )
     .await
     .expect("recover only fenced invocation ids");

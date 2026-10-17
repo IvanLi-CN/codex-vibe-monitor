@@ -22,7 +22,7 @@ static POOL_ATTEMPT_RECOVERY_GATE: std::sync::OnceLock<tokio::sync::RwLock<()>> 
     std::sync::OnceLock::new();
 
 pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
-    POOL_ATTEMPT_RECOVERY_GATE.get_or_init(tokio::sync::RwLock::new)
+    POOL_ATTEMPT_RECOVERY_GATE.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -3915,10 +3915,10 @@ mod startup_recovery_contract_tests {
     #[tokio::test]
     async fn startup_recovery_retry_wait_honors_shutdown() {
         let shutdown = CancellationToken::new();
-        let task = tokio::spawn(wait_for_startup_recovery_retry(
-            &shutdown,
-            Duration::from_secs(5),
-        ));
+        let task_shutdown = shutdown.clone();
+        let task = tokio::spawn(async move {
+            wait_for_startup_recovery_retry(&task_shutdown, Duration::from_secs(5)).await
+        });
         shutdown.cancel();
         assert!(!task.await.expect("retry wait task should finish"));
     }
