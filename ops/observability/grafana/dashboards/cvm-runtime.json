@@ -948,7 +948,7 @@
           "type": "timeseries",
           "title": "恢复状态",
           "description": "区分 complete、running 与 unavailable；pending 为零不等于恢复可用。",
-          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+          "gridPos": {"x": 0, "y": 8, "w": 16, "h": 8},
           "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
           "targets": [
             {
@@ -962,6 +962,26 @@
           ],
           "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "noValue": "Unknown", "custom": {"drawStyle": "steps", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
           "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 144,
+          "type": "stat",
+          "title": "就绪到恢复启动",
+          "description": "HTTP readiness 发布到恢复 coordinator 开始的时间；缺测保持 Unknown。",
+          "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "cvm_startup_recovery_readiness_to_recovery_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "legendFormat": "seconds",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value"}
         }
       ]
     },

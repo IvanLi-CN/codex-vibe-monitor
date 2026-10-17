@@ -3855,6 +3855,7 @@ pub(crate) async fn flush_pending_batch(
                     "sqlite batch writer P1 terminal flush failed"
                 );
                 batch.terminal_invocations = p1_batch.terminal_invocations;
+                batch.recovery_replay = recovery_replay;
                 batch.recalculate_estimates();
                 return Some(RetainedBatch::new(batch, true));
             }
@@ -6003,6 +6004,35 @@ mod tests {
         assert!(retried.failed);
         assert_eq!(accounting.snapshot().retry_count, 1);
         assert_eq!(accounting.observed_queue_depths(), (1, 1));
+
+        let recovery_accounting = PendingQueueAccounting::default();
+        let recovery_write = SqliteBatchWrite::TerminalInvocation(terminal_write_for_coalescing(
+            "failed-recovery-p1",
+            Some(10),
+        ));
+        recovery_accounting.enqueue(recovery_write.estimated_memory_bytes());
+        recovery_accounting.observe_p1_replace(0, 1);
+        let mut recovery_batch = PendingBatch::default();
+        recovery_batch.push_accounted(recovery_write, &recovery_accounting);
+        recovery_batch.recovery_replay = true;
+        let retained_recovery = flush_pending_batch_accounted(
+            &recovery_accounting,
+            &pool,
+            None,
+            recovery_batch,
+            FlushReason::Barrier,
+            None,
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(std::sync::Mutex::new(None)),
+            &Arc::new(Mutex::new(())),
+            &Arc::new(TrackedTerminalJournal::new(None)),
+        )
+        .await
+        .expect("failed recovery P1 flush should retain its batch");
+        assert!(retained_recovery.failed);
+        assert!(retained_recovery.batch.recovery_replay);
     }
 
     #[tokio::test]

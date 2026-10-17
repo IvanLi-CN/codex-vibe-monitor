@@ -1635,16 +1635,13 @@ where
         startup_started_at,
         startup_recovery_fence,
     ));
-    if startup_recovery_fence.captured {
-        pool_orphan_recovery_handle = Some(spawn_pool_orphan_recovery_maintenance(
-            state.clone(),
-            cancel.clone(),
-        ));
-    } else {
-        warn!(
-            "pool orphan recovery maintenance deferred because startup recovery fence was unavailable"
-        );
-    }
+    // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
+    // remains available after a fence capture failure, while the shared owner gate prevents it
+    // from overlapping the startup coordinator when that coordinator is still active.
+    pool_orphan_recovery_handle = Some(spawn_pool_orphan_recovery_maintenance(
+        state.clone(),
+        cancel.clone(),
+    ));
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_system_status_snapshot_maintenance(state.clone());
     spawn_system_storage_maintenance(state.clone());

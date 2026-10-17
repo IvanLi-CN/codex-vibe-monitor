@@ -79,6 +79,8 @@ class GrafanaPreviewTests(unittest.TestCase):
         failure = preview.Metrics("failures").render(9091)
         self.assertNotIn("cvm_summary_responses_total", missing)
         self.assertIn('cvm_summary_responses_total{outcome="unavailable",reason="source_gap"}', failure)
+        self.assertIn('cvm_startup_recovery_last_state{component="terminal_journal",state="unavailable"}', failure)
+        self.assertIn("cvm_startup_recovery_readiness_to_recovery_seconds", normal)
         self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="0.2",operation="invocation_archive",phase="write_hold"}', normal)
         self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="300",operation="invocation_archive",phase="write_hold"}', normal)
         for scenario in ("normal", "failures", "low-samples", "missing"):

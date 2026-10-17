@@ -218,7 +218,7 @@ class Metrics:
             labels = {"component": component}
             self.gauge("cvm_startup_recovery_pending_records", pending, labels)
             self.gauge("cvm_startup_recovery_oldest_age_seconds", oldest_age, labels)
-            state = "running" if pending else "complete"
+            state = "unavailable" if failing else ("running" if pending else "complete")
             for candidate in ("running", "complete", "unavailable"):
                 self.gauge(
                     "cvm_startup_recovery_last_state",
@@ -238,6 +238,11 @@ class Metrics:
                     recovery_rate if failing else 0,
                     {**labels, "reason": reason},
                 )
+        self.gauge(
+            "cvm_startup_recovery_readiness_to_recovery_seconds",
+            3.8 if failing else 0.42,
+            {},
+        )
         buckets = (.00001, .00005, .0001, .0005, .001, .005, .01, .025, .05, .1, .2, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300)
         for operation in ("invocation_archive", "timestamped_archive", "detail_prune"):
             labels = {"operation": operation}
