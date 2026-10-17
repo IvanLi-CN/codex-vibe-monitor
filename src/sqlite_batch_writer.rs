@@ -1128,7 +1128,7 @@ async fn configure_startup_recovery_connection(
         "PRAGMA busy_timeout = {}",
         crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
     ))
-    .execute(&mut *connection)
+    .execute(&mut **connection)
     .await
     .context("configure startup recovery SQLite busy timeout")?;
     Ok(())
@@ -1138,7 +1138,7 @@ async fn restore_sqlite_connection_busy_timeout(
     connection: &mut sqlx::pool::PoolConnection<Sqlite>,
 ) -> Result<()> {
     sqlx::query("PRAGMA busy_timeout = 30000")
-        .execute(&mut *connection)
+        .execute(&mut **connection)
         .await
         .context("restore SQLite busy timeout after startup recovery")?;
     Ok(())
