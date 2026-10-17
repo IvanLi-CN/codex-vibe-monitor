@@ -44,7 +44,10 @@ async fn prepare(
 #[tokio::test]
 async fn performance_indexes_dry_run_is_read_only_and_reentry_recognizes_partial_state() {
     let pool = fixture().await;
-    let dry_run = prepare(&pool, true).await;
+    let metrics = ObservabilityRuntime::new(true);
+    let dry_run =
+        crate::observability::contention::with_performance(metrics.clone(), prepare(&pool, true))
+            .await;
     assert_eq!(dry_run.outcome, "dry_run");
     assert_eq!(dry_run.indexes.len(), 2);
     assert!(
@@ -52,6 +55,20 @@ async fn performance_indexes_dry_run_is_read_only_and_reentry_recognizes_partial
             .indexes
             .iter()
             .all(|index| index.outcome == "would_create")
+    );
+    let before_scrape = metrics.render();
+    assert!(
+        before_scrape.lines().any(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("reason=\"index_missing\"")
+                && line.ends_with(" 2")
+        }),
+        "the owned inspector inherits its explicit metric scope"
+    );
+    assert_eq!(
+        metrics.render(),
+        before_scrape,
+        "scraping must not repeat the inspection"
     );
     assert_eq!(
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_schema WHERE type='index'")
