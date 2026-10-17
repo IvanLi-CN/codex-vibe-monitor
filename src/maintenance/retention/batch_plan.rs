@@ -195,10 +195,8 @@ pub(super) fn collect_run_metrics(summary: &mut RetentionRunSummary) {
 
 /// File work is amortized across a selected batch, independently of the SQL write limiter.
 /// A run selects once per dataset; another run selects the remaining live rows afresh.
-pub(crate) fn archive_candidate_limit(config: &AppConfig) -> usize {
-    config
-        .retention_batch_rows
-        .clamp(1, ARCHIVE_BATCH_TARGET_ROWS)
+pub(crate) fn archive_candidate_limit(_config: &AppConfig) -> usize {
+    ARCHIVE_BATCH_TARGET_ROWS
 }
 
 pub(crate) fn select_archive_batch<T>(rows: Vec<T>, bytes: impl Fn(&T) -> usize) -> Vec<T> {
@@ -571,6 +569,13 @@ mod tests {
         let rows = select_archive_batch((0..2_000).collect(), |_| 256);
         assert_eq!(rows.len(), 1_000);
         assert!(rows.len() > RETENTION_WRITE_MAX_ROWS);
+    }
+
+    #[test]
+    fn archive_file_candidate_limit_is_independent_of_configured_write_rows() {
+        let mut config = crate::tests::test_config();
+        config.retention_batch_rows = 2;
+        assert_eq!(archive_candidate_limit(&config), ARCHIVE_BATCH_TARGET_ROWS);
     }
 
     #[test]
