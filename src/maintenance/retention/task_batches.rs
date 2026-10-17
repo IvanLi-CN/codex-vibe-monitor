@@ -187,6 +187,53 @@ async fn load_selected_invocation_archive_candidates(
         .collect()
 }
 
+async fn select_invocation_archive_group(
+    pool: &Pool<Sqlite>,
+    group: Vec<InvocationArchiveCandidate>,
+) -> Result<(Vec<i64>, Vec<InvocationArchiveCandidate>)> {
+    let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
+    let row_sizes = archive_source_row_sizes(
+        pool,
+        archive_table_spec("codex_invocations"),
+        &candidate_ids,
+    )
+    .await?;
+    let selected_group = select_archive_batch(group, |candidate| {
+        row_sizes.get(&candidate.id).copied().unwrap_or(512)
+    });
+    let ids = selected_group
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    if ids.is_empty() {
+        return Ok((ids, Vec::new()));
+    }
+    let group = load_selected_invocation_archive_candidates(pool, &ids).await?;
+    Ok((ids, group))
+}
+
+#[cfg(test)]
+pub(crate) async fn invocation_archive_candidate_selection_for_test(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+    source_max_invocation_id: Option<i64>,
+    candidate_limit: usize,
+) -> Result<(
+    Vec<InvocationArchiveCandidate>,
+    Vec<InvocationArchiveCandidate>,
+)> {
+    let candidates = load_invocation_archive_candidate_metadata(
+        pool,
+        cutoff,
+        source_max_invocation_id,
+        Some(candidate_limit),
+    )
+    .await?;
+    let metadata = candidates.clone();
+    let (_, selected) = select_invocation_archive_group(pool, candidates).await?;
+    Ok((metadata, selected))
+}
+
 struct ArchiveSourceIdentityProof {
     cleanup: TempSqliteCleanup,
     _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
@@ -920,23 +967,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 recovery_diagnostic.mark_budget();
                 break;
             }
-            let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
-            let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
-            let selected_group = select_archive_batch(group, |candidate| {
-                row_sizes.get(&candidate.id).copied().unwrap_or(512)
-            });
-            let ids = selected_group
-                .iter()
-                .map(|candidate| candidate.id)
-                .collect::<Vec<_>>();
-            if ids.is_empty() || retention_run_budget_expired() {
-                if retention_run_budget_expired() {
-                    recovery_diagnostic.mark_budget();
-                }
-                break;
-            }
-            let group = match load_selected_invocation_archive_candidates(pool, &ids).await {
-                Ok(group) => group,
+            let selection = select_invocation_archive_group(pool, group).await;
+            let (ids, group) = match selection {
+                Ok(selection) => selection,
                 Err(error) => {
                     if error
                         .to_string()
@@ -949,6 +982,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     return Err(error);
                 }
             };
+            if ids.is_empty() || retention_run_budget_expired() {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                }
+                break;
+            }
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
             let Some(mut source_connection) =
@@ -2049,79 +2088,6 @@ pub(crate) async fn archive_timestamped_dataset(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn invocation_archive_selection_defers_large_payload_materialization() {
-        let (pool, _config, temp_dir) =
-            crate::tests::retention_test_pool_and_config("archive-selection-metadata").await;
-        let occurred_at = "2020-01-15 12:00:00";
-        let payload = "x".repeat(48 * 1024);
-        sqlx::query(
-            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
-             INSERT INTO codex_invocations(
-                 invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
-             )
-             SELECT 'metadata-selection-' || i, ?1, 'proxy', 'success', 7, 0.07, ?2, '{}'
-             FROM n",
-        )
-        .bind(occurred_at)
-        .bind(&payload)
-        .execute(&pool)
-        .await
-        .expect("seed large invocation archive candidates");
-
-        let candidates = load_invocation_archive_candidate_metadata(
-            &pool,
-            "9999-12-31 00:00:00",
-            None,
-            Some(1_000),
-        )
-        .await
-        .expect("load metadata-only invocation archive candidates");
-        assert_eq!(candidates.len(), 1_000);
-        assert!(
-            candidates
-                .iter()
-                .all(|candidate| candidate.payload.is_none()),
-            "candidate selection must not materialize payloads before the size selector"
-        );
-
-        let candidate_ids = candidates
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
-        let row_sizes = archive_source_row_sizes(
-            &pool,
-            archive_table_spec("codex_invocations"),
-            &candidate_ids,
-        )
-        .await
-        .expect("calculate SQL row sizes for candidate selection");
-        let selected = select_archive_batch(candidates, |candidate| {
-            row_sizes.get(&candidate.id).copied().unwrap_or(512)
-        });
-        assert!(
-            selected.len() < candidate_ids.len(),
-            "large payloads must constrain the selected batch before full materialization"
-        );
-        let selected_ids = selected
-            .iter()
-            .map(|candidate| candidate.id)
-            .collect::<Vec<_>>();
-        let materialized = load_selected_invocation_archive_candidates(&pool, &selected_ids)
-            .await
-            .expect("load only selected invocation archive payloads");
-        assert_eq!(materialized.len(), selected.len());
-        assert!(
-            materialized
-                .iter()
-                .all(|candidate| candidate.payload.as_deref() == Some(payload.as_str())),
-            "selected candidates must retain their full payloads for archive conversion"
-        );
-
-        pool.close().await;
-        crate::tests::cleanup_temp_test_dir(&temp_dir);
-    }
 
     #[tokio::test]
     async fn retention_error_classifier_distinguishes_lock_from_unclassified_failure() {

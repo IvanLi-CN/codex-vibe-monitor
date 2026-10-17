@@ -137,6 +137,65 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
 }
 
 #[tokio::test]
+async fn retention_archive_selection_defers_large_payload_materialization() {
+    let (pool, _config, temp_dir) =
+        retention_test_pool_and_config("archive-selection-metadata").await;
+    let occurred_at = "2020-01-15 12:00:00";
+    let payload = "x".repeat(48 * 1024);
+    sqlx::query(
+        "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+         INSERT INTO codex_invocations(
+             invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+         )
+         SELECT 'metadata-selection-' || i, ?1, 'proxy', 'success', 7, 0.07, ?2, '{}'
+         FROM n",
+    )
+    .bind(occurred_at)
+    .bind(&payload)
+    .execute(&pool)
+    .await
+    .expect("seed large invocation archive candidates");
+
+    let (candidates, selected) =
+        crate::maintenance::invocation_archive_candidate_selection_for_test(
+            &pool,
+            "9999-12-31 00:00:00",
+            None,
+            1_000,
+        )
+        .await
+        .expect("select and materialize bounded invocation archive candidates");
+    assert_eq!(candidates.len(), 1_000);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.payload.is_none()),
+        "candidate selection must not materialize payloads before the size selector"
+    );
+    assert!(
+        selected.len() < candidates.len(),
+        "large payloads must constrain the selected batch before full materialization"
+    );
+    let selected_ids = selected
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<Vec<_>>();
+    assert!(
+        selected_ids.windows(2).all(|ids| ids[0] < ids[1]),
+        "selected candidates must retain the source ordering"
+    );
+    assert!(
+        selected
+            .iter()
+            .all(|candidate| candidate.payload.as_deref() == Some(payload.as_str())),
+        "selected candidates must retain their full payloads for archive conversion"
+    );
+
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_commit_reader_lock_is_pressure_deferred_before_durable_commit() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-commit-reader-lock").await;
