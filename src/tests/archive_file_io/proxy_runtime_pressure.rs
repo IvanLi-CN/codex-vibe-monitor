@@ -596,11 +596,22 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
     {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let terminal_confirmations = state
+        .sqlite_batch_writer
+        .runtime_terminal_confirmation_count_for_test();
+    if terminal_confirmations != request_count {
+        let journal = state.sqlite_batch_writer.terminal_journal_stats();
+        let queue = state.sqlite_batch_writer.accounting_snapshot();
+        println!(
+            "runtime_pressure_confirmation_timeout mode={mode} confirmed={terminal_confirmations} expected={request_count} elapsed_ms={} request_p95_ms={} journal={journal:?} queue={queue:?} raw_writer_available_permits={} raw_reserved_bytes={}",
+            scenario_started.elapsed().as_millis(),
+            p95.as_millis(),
+            state.proxy_raw_async_semaphore.available_permits(),
+            state.raw_capture_circuit.snapshot().reserved_bytes,
+        );
+    }
     assert_eq!(
-        state
-            .sqlite_batch_writer
-            .runtime_terminal_confirmation_count_for_test(),
-        request_count,
+        terminal_confirmations, request_count,
         "every producer must confirm durability and materializer admission within two seconds"
     );
     let held_lock_journal = state.sqlite_batch_writer.terminal_journal_stats();
