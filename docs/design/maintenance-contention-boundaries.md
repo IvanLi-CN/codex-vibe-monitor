@@ -40,6 +40,25 @@ Legacy interval migration stores its independent `legacy_interval_migration_v1` 
 
 The CLI reuses `MaintenanceRuntimeLock::route`: an active service owns online execution; offline execution holds the existing exclusive runtime proof. Each DDL is an independent, idempotent operation within the supplied total budget. Stop before the next operation when the budget is exhausted. A native progress handler and bounded lock wait enforce interruption of active work; rollback and worker drain finish before releasing admission or runtime ownership. An expired operation warns and retains the old query path, without extending its budget or blocking startup. Already committed indexes remain for re-entry. DDL structure, current-data work and historical backfill are recorded separately. No production index build is authorized merely by deploying the binary.
 
+### Deployment evidence
+
+Read-only inspection and index preparation are separate operations. Through an already authorized read-only SQLite connection, inspect only the two fixed schema definitions below; do not copy the database or export invocation rows. Compare their complete expressions, including the case-sensitive JSON path and normalization, with `performance_index_definitions()`. A matching name alone is insufficient. A denied or unavailable inspection remains unknown rather than missing.
+
+```sql
+SELECT name, sql
+FROM sqlite_schema
+WHERE type = 'index'
+  AND name IN (
+    'idx_proxy_raw_payload_blob_links_owner',
+    'idx_codex_invocations_prompt_cache_key_id'
+  )
+ORDER BY name;
+```
+
+Collect bounded `EXPLAIN QUERY PLAN` output for the actual correlated statistics query through its shared SQL builder. A standalone expression lookup is not evidence for that query. Record definition inspection and query-plan evidence separately, without bound values or business identities; do not execute the underlying historical query or run `ANALYZE` to obtain a plan. Definition diagnostics count completed inspection events and do not represent a continuously sampled index inventory. Exporting metrics does not perform this inspection.
+
+When an index is proven missing, the deployment checklist names the missing definition, preserves the existing correct fallback and proposes the existing explicit preparation command with its default 2000ms total budget. The managed maintenance entry point can persist task-run state even with `--dry-run`; it must not be used as a substitute for read-only production investigation. A conflicting definition requires a separate decision, never an automatic drop. Longer build budgets require a separately approved maintenance window backed by measured lock duration and disk needs; an application release does not prove installation or successful query-plan selection.
+
 ## Verification boundary
 
 Relevant named regressions and the shared lightweight, stateful-sqlite and archive-file-io profiles run in GitHub CI. Heavy execution and all pressure tests are forbidden on the developer machine and Agent VM; necessary controlled competition acceptance runs only in GitHub CI, retaining the existing 32 requests, p95 <2s, full commit <5s and zero lifecycle SQL writes. Each test stage has a shared 15-minute ceiling. Tests preserve exact data/proof oracles, cancellation and lock ownership rather than asserting only implementation shape. No production synthetic requests or upstream comparisons are permitted.
