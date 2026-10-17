@@ -1,6 +1,111 @@
 use super::*;
 use crate::observability::contention::RetentionPhase;
+use crate::observability::contention::{RecoveryDiagnostic, record_recovery};
 use sqlx::SqliteConnection;
+
+struct RetentionDiagnosticRecorder {
+    outcome: Option<RecoveryDiagnostic>,
+    committed_rows: usize,
+    emitted: bool,
+}
+
+impl RetentionDiagnosticRecorder {
+    fn new() -> Self {
+        Self {
+            outcome: None,
+            committed_rows: 0,
+            emitted: false,
+        }
+    }
+
+    fn committed(&mut self, rows: usize) {
+        self.committed_rows = self.committed_rows.saturating_add(rows);
+    }
+
+    fn mark(&mut self, outcome: RecoveryDiagnostic) {
+        self.outcome = Some(outcome);
+    }
+
+    fn mark_budget(&mut self) {
+        self.mark(RecoveryDiagnostic::RetentionBudgetExhausted);
+    }
+
+    fn mark_proof_unavailable(&mut self) {
+        self.mark(RecoveryDiagnostic::RetentionProofUnavailable);
+    }
+
+    fn mark_stop(&mut self) {
+        let outcome =
+            if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()) {
+                RecoveryDiagnostic::RetentionCancelled
+            } else if retention_run_budget_expired()
+                || matches!(
+                    retention_run_defer_reason().as_deref(),
+                    Some("retention_work_budget") | Some("archive_design_budget")
+                )
+            {
+                RecoveryDiagnostic::RetentionBudgetExhausted
+            } else {
+                RecoveryDiagnostic::RetentionPressureDeferred
+            };
+        self.mark(outcome);
+    }
+
+    fn finish(&mut self) {
+        let outcome = self.outcome.unwrap_or_else(|| {
+            if self.committed_rows > 0 {
+                RecoveryDiagnostic::RetentionCommitted
+            } else if retention_run_budget_expired() {
+                RecoveryDiagnostic::RetentionBudgetExhausted
+            } else if retention_run_defer_reason().is_some() {
+                RecoveryDiagnostic::RetentionPressureDeferred
+            } else {
+                RecoveryDiagnostic::RetentionNoWork
+            }
+        });
+        self.emit(outcome);
+    }
+
+    fn emit(&mut self, outcome: RecoveryDiagnostic) {
+        if !self.emitted {
+            record_recovery(outcome);
+            self.emitted = true;
+        }
+    }
+}
+
+impl Drop for RetentionDiagnosticRecorder {
+    fn drop(&mut self) {
+        if self.emitted {
+            return;
+        }
+        let outcome = self.outcome.unwrap_or_else(|| {
+            if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled()) {
+                RecoveryDiagnostic::RetentionCancelled
+            } else {
+                RecoveryDiagnostic::RetentionFailed
+            }
+        });
+        self.emit(outcome);
+    }
+}
+
+fn mark_error(diagnostic: &mut RetentionDiagnosticRecorder, error: &anyhow::Error) {
+    let message = error.to_string();
+    if message.contains("archive artifact")
+        || message.contains("source identity")
+        || message.contains("summary archive")
+        || message.contains("semantic proof")
+    {
+        diagnostic.mark_proof_unavailable();
+    } else if retention_run_shutdown_token().is_some_and(|shutdown| shutdown.is_cancelled())
+        || retention_run_budget_expired()
+        || is_retention_write_deferred(error)
+        || crate::is_sqlite_lock_error(error)
+    {
+        diagnostic.mark_stop();
+    }
+}
 
 struct ArchiveSourceIdentityProof {
     cleanup: TempSqliteCleanup,
@@ -152,9 +257,11 @@ pub(crate) async fn prune_old_invocation_details(
     let mut rows_pruned = 0usize;
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
+    let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
     loop {
         if retention_run_budget_expired() {
+            recovery_diagnostic.mark_budget();
             break;
         }
         let sql = format!(
@@ -182,7 +289,10 @@ pub(crate) async fn prune_old_invocation_details(
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => break,
+                Err(_) => {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
             }
         } else {
             candidates_query.await?
@@ -196,6 +306,7 @@ pub(crate) async fn prune_old_invocation_details(
         let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -204,6 +315,7 @@ pub(crate) async fn prune_old_invocation_details(
 
         for (group_key, group) in by_group {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let group = select_archive_batch(group, |candidate| {
@@ -220,11 +332,15 @@ pub(crate) async fn prune_old_invocation_details(
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
             if ids.is_empty() || retention_run_budget_expired() {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                }
                 break;
             }
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_detail_identity").await?
             else {
+                recovery_diagnostic.mark_stop();
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
@@ -237,7 +353,10 @@ pub(crate) async fn prune_old_invocation_details(
             let source_identity_sha256 = if let Some(remaining) = retention_run_remaining_budget() {
                 match tokio::time::timeout(remaining, source_identity_query).await {
                     Ok(result) => result?,
-                    Err(_) => break,
+                    Err(_) => {
+                        recovery_diagnostic.mark_budget();
+                        break;
+                    }
                 }
             } else {
                 source_identity_query
@@ -248,6 +367,7 @@ pub(crate) async fn prune_old_invocation_details(
             drop(source_connection);
             drop(source_verify_phase);
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let mut descriptor = retention_prepared_archive_descriptor(
@@ -294,13 +414,22 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                 }
             };
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
+            let Some(mut archive_outcome) =
+                (match retention_prepared_batch_or_deferred(archive_result) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        mark_error(&mut recovery_diagnostic, &error);
+                        return Err(error);
+                    }
+                })
             else {
+                recovery_diagnostic.mark_stop();
                 return Ok((rows_pruned, archive_batches, raw_files_removed));
             };
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(descriptor.source_identity_sha256.as_str())
             {
+                recovery_diagnostic.mark_proof_unavailable();
                 bail!("retention task-local archive source identity verification failed");
             }
             set_archive_batch_coverage_from_local_rows(
@@ -314,8 +443,15 @@ pub(crate) async fn prune_old_invocation_details(
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
             let mut archive_identity_proof =
-                ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
-                    .await?;
+                match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
+                    .await
+                {
+                    Ok(proof) => proof,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(error);
+                    }
+                };
             #[cfg(test)]
             batch_admission::pause_after_archive_artifact_verified().await;
             let mut committed_rows = 0;
@@ -340,12 +476,17 @@ pub(crate) async fn prune_old_invocation_details(
                         ]
                     })
                     .collect::<Vec<_>>();
-                let chunk_identity = archive_identity_proof
-                    .identity(&ids)
-                    .await
-                    .context("read task-local invocation source chunk identity")?;
+                let chunk_identity = match archive_identity_proof.identity(&ids).await {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(
+                            error.context("read task-local invocation source chunk identity")
+                        );
+                    }
+                };
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((source_connection, admission, archive_lock)) =
+                let admission_result =
                     acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "invocation_detail_prune",
@@ -353,9 +494,16 @@ pub(crate) async fn prune_old_invocation_details(
                         Some(&archive_outcome.sha256),
                         || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
-                    .await?
-                else {
+                    .await;
+                let Some((source_connection, admission, archive_lock)) = (match admission_result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        mark_error(&mut recovery_diagnostic, &error);
+                        return Err(error);
+                    }
+                }) else {
                     drop(admission_wait_phase);
+                    recovery_diagnostic.mark_stop();
                     return Ok((rows_pruned, archive_batches, raw_files_removed));
                 };
                 let admission_mode = admission.admission_mode();
@@ -473,6 +621,7 @@ pub(crate) async fn prune_old_invocation_details(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
+                        mark_error(&mut recovery_diagnostic, &error);
                         if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
@@ -517,6 +666,7 @@ pub(crate) async fn prune_old_invocation_details(
                 );
                 rows_pruned += group.len();
                 committed_rows += group.len();
+                recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
                 let cleanup_error = transaction_resources.return_to_pool().await;
@@ -546,6 +696,7 @@ pub(crate) async fn prune_old_invocation_details(
         }
     }
 
+    recovery_diagnostic.finish();
     Ok((rows_pruned, archive_batches, raw_files_removed))
 }
 
@@ -651,12 +802,15 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let mut raw_files_removed = 0usize;
     let mut prompt_cache_keys = std::collections::HashSet::new();
     let mut discovered_ids = HashSet::new();
+    let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
     loop {
         if retention_run_budget_expired() {
+            recovery_diagnostic.mark_budget();
             break;
         }
         if !archive_batch_can_start() {
+            recovery_diagnostic.mark_budget();
             break;
         }
         let candidate_limit = archive_candidate_limit(config);
@@ -692,7 +846,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => break,
+                Err(_) => {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
             }
         } else {
             candidates_query.await?
@@ -709,6 +866,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let group_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
@@ -717,6 +875,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
 
         for (group_key, group) in by_group {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -729,6 +888,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
             if ids.is_empty() || retention_run_budget_expired() {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                }
                 break;
             }
             let mut batch_observation =
@@ -736,6 +898,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "invocation_archive_identity").await?
             else {
+                recovery_diagnostic.mark_stop();
                 return Ok((
                     rows_archived,
                     archive_batches,
@@ -756,6 +919,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     Err(_) => {
                         batch_observation
                             .source_identity_finished(source_identity_started.elapsed());
+                        recovery_diagnostic.mark_budget();
                         break;
                     }
                 }
@@ -768,6 +932,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             drop(source_connection);
             drop(source_verify_phase);
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let prepare_started = Instant::now();
@@ -787,6 +952,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     Ok(result) => result,
                     Err(_) => {
                         batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        recovery_diagnostic.mark_budget();
                         break;
                     }
                 }
@@ -798,6 +964,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 Ok(outcome) => Some(outcome),
                 Err(error) if is_retention_write_deferred(&error) => {
                     retention_recovery_record_deferred("preparing");
+                    recovery_diagnostic.mark_stop();
                     return Ok((
                         rows_archived,
                         archive_batches,
@@ -805,8 +972,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         prompt_cache_keys,
                     ));
                 }
-                Err(error) => return Err(error.context("prepare task-local invocation month file")),
+                Err(error) => {
+                    mark_error(&mut recovery_diagnostic, &error);
+                    return Err(error.context("prepare task-local invocation month file"));
+                }
             }) else {
+                recovery_diagnostic.mark_stop();
                 return Ok((
                     rows_archived,
                     archive_batches,
@@ -817,6 +988,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
             if archive_outcome.source_identity_sha256.as_deref()
                 != Some(source_identity_sha256.as_str())
             {
+                recovery_diagnostic.mark_proof_unavailable();
                 bail!("retention task-local archive source identity verification failed");
             }
             set_archive_batch_coverage_from_local_rows(
@@ -839,21 +1011,36 @@ pub(super) async fn archive_old_invocations_with_source_max(
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
             let mut archive_identity_proof =
-                ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
-                    .await?;
+                match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
+                    .await
+                {
+                    Ok(proof) => proof,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(error);
+                    }
+                };
             let summary_proof_started = Instant::now();
             let proof_result =
                 batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
                     .await
                     .context("prepare task-local monthly Summary proof");
             batch_observation.summary_proof_finished(summary_proof_started.elapsed());
-            let Some(proof) = proof_result? else {
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
+            let proof = match proof_result {
+                Ok(Some(proof)) => proof,
+                Ok(None) => {
+                    recovery_diagnostic.mark_proof_unavailable();
+                    return Ok((
+                        rows_archived,
+                        archive_batches,
+                        raw_files_removed,
+                        prompt_cache_keys,
+                    ));
+                }
+                Err(error) => {
+                    recovery_diagnostic.mark_proof_unavailable();
+                    return Err(error);
+                }
             };
             #[cfg(test)]
             batch_admission::pause_after_archive_artifact_verified().await;
@@ -889,12 +1076,17 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .iter()
                     .map(invocation_archive_candidate_to_hourly_source_record)
                     .collect::<Vec<_>>();
-                let chunk_identity = archive_identity_proof
-                    .identity(&ids)
-                    .await
-                    .context("read task-local invocation source chunk identity")?;
+                let chunk_identity = match archive_identity_proof.identity(&ids).await {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(
+                            error.context("read task-local invocation source chunk identity")
+                        );
+                    }
+                };
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((source_connection, admission, archive_lock)) =
+                let admission_result =
                     acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "invocation_archive",
@@ -902,9 +1094,16 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         Some(&archive_outcome.sha256),
                         || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
-                    .await?
-                else {
+                    .await;
+                let Some((source_connection, admission, archive_lock)) = (match admission_result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        mark_error(&mut recovery_diagnostic, &error);
+                        return Err(error);
+                    }
+                }) else {
                     drop(admission_wait_phase);
+                    recovery_diagnostic.mark_stop();
                     return Ok((
                         rows_archived,
                         archive_batches,
@@ -1090,6 +1289,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
+                        mark_error(&mut recovery_diagnostic, &error);
                         if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
@@ -1141,6 +1341,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 );
                 rows_archived += group.len();
                 committed_rows += group.len();
+                recovery_diagnostic.committed(group.len());
                 batch_observation.committed(group.len(), lock_wait);
                 drop(transaction_phase);
                 let cleanup_error = transaction_resources.return_to_pool().await;
@@ -1176,6 +1377,7 @@ pub(super) async fn archive_old_invocations_with_source_max(
         }
     }
 
+    recovery_diagnostic.finish();
     Ok((
         rows_archived,
         archive_batches,
@@ -1241,12 +1443,15 @@ pub(crate) async fn archive_timestamped_dataset(
     let mut rows_archived = 0usize;
     let mut archive_batches = 0usize;
     let mut raw_files_removed = 0usize;
+    let mut recovery_diagnostic = RetentionDiagnosticRecorder::new();
 
     loop {
         if retention_run_budget_expired() {
+            recovery_diagnostic.mark_budget();
             break;
         }
         if !archive_batch_can_start() {
+            recovery_diagnostic.mark_budget();
             break;
         }
         let candidate_limit = archive_candidate_limit(config);
@@ -1257,7 +1462,10 @@ pub(crate) async fn archive_timestamped_dataset(
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
-                Err(_) => break,
+                Err(_) => {
+                    recovery_diagnostic.mark_budget();
+                    break;
+                }
             }
         } else {
             candidates_query.await?
@@ -1271,6 +1479,7 @@ pub(crate) async fn archive_timestamped_dataset(
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let month_key =
@@ -1280,6 +1489,7 @@ pub(crate) async fn archive_timestamped_dataset(
 
         for (month_key, group) in by_month {
             if retention_run_budget_expired() {
+                recovery_diagnostic.mark_budget();
                 break;
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
@@ -1295,6 +1505,9 @@ pub(crate) async fn archive_timestamped_dataset(
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
             if ids.is_empty() || retention_run_budget_expired() {
+                if retention_run_budget_expired() {
+                    recovery_diagnostic.mark_budget();
+                }
                 break;
             }
             let recreated_pool_upstream_month_archive = if spec.dataset
@@ -1311,6 +1524,7 @@ pub(crate) async fn archive_timestamped_dataset(
             let Some(mut source_connection) =
                 acquire_retention_pool_connection(pool, "timestamped_archive_identity").await?
             else {
+                recovery_diagnostic.mark_stop();
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             let source_verify_phase = batch_observation.phase(RetentionPhase::SourceVerify);
@@ -1323,6 +1537,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     Err(_) => {
                         batch_observation
                             .source_identity_finished(source_identity_started.elapsed());
+                        recovery_diagnostic.mark_budget();
                         break;
                     }
                 }
@@ -1341,6 +1556,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     Ok(result) => result,
                     Err(_) => {
                         batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                        recovery_diagnostic.mark_budget();
                         break;
                     }
                 }
@@ -1348,11 +1564,20 @@ pub(crate) async fn archive_timestamped_dataset(
                 archive_future.await
             };
             batch_observation.archive_writer_finished(archive_writer_started.elapsed());
-            let Some(mut archive_outcome) = retention_prepared_batch_or_deferred(archive_result)?
+            let Some(mut archive_outcome) =
+                (match retention_prepared_batch_or_deferred(archive_result) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        mark_error(&mut recovery_diagnostic, &error);
+                        return Err(error);
+                    }
+                })
             else {
+                recovery_diagnostic.mark_stop();
                 return Ok((rows_archived, archive_batches, raw_files_removed));
             };
             if archive_outcome.source_identity_sha256.as_deref() != Some(source_identity.as_str()) {
+                recovery_diagnostic.mark_proof_unavailable();
                 bail!("timestamped task-local archive source identity verification failed");
             }
             if spec.dataset == "pool_upstream_request_attempts" {
@@ -1384,8 +1609,15 @@ pub(crate) async fn archive_timestamped_dataset(
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
             let mut archive_identity_proof =
-                ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
-                    .await?;
+                match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
+                    .await
+                {
+                    Ok(proof) => proof,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(error);
+                    }
+                };
             #[cfg(test)]
             batch_admission::pause_after_archive_artifact_verified().await;
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
@@ -1422,12 +1654,17 @@ pub(crate) async fn archive_timestamped_dataset(
                 } else {
                     Vec::new()
                 };
-                let chunk_identity = archive_identity_proof
-                    .identity(&ids)
-                    .await
-                    .context("read task-local timestamped archive chunk identity")?;
+                let chunk_identity = match archive_identity_proof.identity(&ids).await {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        recovery_diagnostic.mark_proof_unavailable();
+                        return Err(
+                            error.context("read task-local timestamped archive chunk identity")
+                        );
+                    }
+                };
                 let admission_wait_phase = batch_observation.phase(RetentionPhase::AdmissionWait);
-                let Some((source_connection, admission, archive_lock)) =
+                let admission_result =
                     acquire_retention_batch_write_connection_with_archive_fence_observed(
                         pool,
                         "timestamped_archive",
@@ -1435,9 +1672,16 @@ pub(crate) async fn archive_timestamped_dataset(
                         Some(&archive_outcome.sha256),
                         || Some(batch_observation.phase(RetentionPhase::FileVerify)),
                     )
-                    .await?
-                else {
+                    .await;
+                let Some((source_connection, admission, archive_lock)) = (match admission_result {
+                    Ok(value) => value,
+                    Err(error) => {
+                        mark_error(&mut recovery_diagnostic, &error);
+                        return Err(error);
+                    }
+                }) else {
                     drop(admission_wait_phase);
+                    recovery_diagnostic.mark_stop();
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let admission_mode = admission.admission_mode();
@@ -1639,6 +1883,7 @@ pub(crate) async fn archive_timestamped_dataset(
                         let cleanup_error = transaction_resources.rollback_and_close().await;
                         drop(transaction_phase);
                         let mut error = error;
+                        mark_error(&mut recovery_diagnostic, &error);
                         if let Err(cleanup_error) = cleanup_error {
                             error = error.context(format!(
                                 "retention transaction rollback and close failed: {cleanup_error}"
@@ -1672,6 +1917,7 @@ pub(crate) async fn archive_timestamped_dataset(
                             "failed to return retention transaction connection to pool: {cleanup_error}"
                         ));
                     }
+                    recovery_diagnostic.mark_stop();
                     return Ok((rows_archived, archive_batches, raw_files_removed));
                 };
                 let raw_paths = commit.raw_paths;
@@ -1709,6 +1955,7 @@ pub(crate) async fn archive_timestamped_dataset(
                     rows_archived += group.len();
                     committed_rows += group.len();
                 }
+                recovery_diagnostic.committed(group.len());
                 drop(cleanup_phase);
                 if breached {
                     tokio::task::yield_now().await;
@@ -1727,5 +1974,6 @@ pub(crate) async fn archive_timestamped_dataset(
         }
     }
 
+    recovery_diagnostic.finish();
     Ok((rows_archived, archive_batches, raw_files_removed))
 }

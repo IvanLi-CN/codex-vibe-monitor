@@ -53,12 +53,15 @@ async fn retention_rejects_archive_replacement_after_writer_proof_before_admissi
             .expect("source remains after archive replacement"),
         1
     );
+    let manifest_status = sqlx::query_scalar::<_, String>(
+        "SELECT status FROM archive_batches WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("staged archive manifest remains after replacement");
     assert_eq!(
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM archive_batches")
-            .fetch_one(&pool)
-            .await
-            .expect("archive manifest remains unpublished"),
-        0
+        manifest_status, ARCHIVE_STATUS_MATERIALIZING,
+        "replacement rejection must leave the staged manifest unpublished"
     );
     assert_no_recovery_task_work_files(&config.archive_dir);
     pool.close().await;
