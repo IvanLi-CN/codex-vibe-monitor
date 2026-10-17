@@ -84,6 +84,29 @@ async fn reference_prompt_cache_last_invocation_id(pool: &SqlitePool, key: &str)
     .expect("query reference prompt-cache statistics")
 }
 
+async fn prompt_cache_semantic_snapshot(
+    pool: &SqlitePool,
+    keys: &[&str],
+) -> Vec<(Option<i64>, Option<i64>)> {
+    let mut snapshot = Vec::with_capacity(keys.len());
+    for key in keys {
+        snapshot.push((
+            prompt_cache_last_invocation_id(pool, key).await,
+            reference_prompt_cache_last_invocation_id(pool, key).await,
+        ));
+    }
+    snapshot
+}
+
+fn print_bounded_prompt_cache_plan(label: &str, details: &[String]) {
+    let bounded_details = details
+        .iter()
+        .take(8)
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    eprintln!("prompt-cache {label} EXPLAIN QUERY PLAN: {bounded_details:?}");
+}
+
 async fn explain_prompt_cache_statistics_query(
     pool: &SqlitePool,
     selected_keys: &[String],
@@ -118,45 +141,18 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
             .expect("seed invocation row");
     }
 
-    for key in ["cache", "42", "missing"] {
-        assert_eq!(
-            prompt_cache_last_invocation_id(&pool, key).await,
-            reference_prompt_cache_last_invocation_id(&pool, key).await,
-            "statistics query must match the live-row reference without optional indexes"
-        );
-    }
+    let semantic_keys = ["cache", "42", "missing"];
+    let before_index_semantics = prompt_cache_semantic_snapshot(&pool, &semantic_keys).await;
     let selected_keys = vec!["cache".to_string()];
     let missing_plan_details = explain_prompt_cache_statistics_query(&pool, &selected_keys).await;
-    assert!(
-        !missing_plan_details.is_empty() && missing_plan_details.len() <= 8,
-        "missing-index plan evidence must stay bounded: {missing_plan_details:?}"
-    );
 
     let prepared = prepare_fixture_indexes(&pool).await;
-    assert!(prepared.is_complete());
-    assert_eq!(
-        prepared.indexes.len(),
-        performance_index_definitions().len()
-    );
-    assert!(
-        prepared
-            .indexes
-            .iter()
-            .all(|index| { matches!(index.outcome, "created" | "present") })
-    );
-    for key in ["cache", "42", "missing"] {
-        assert_eq!(
-            prompt_cache_last_invocation_id(&pool, key).await,
-            reference_prompt_cache_last_invocation_id(&pool, key).await,
-            "index preparation must not change live-row statistics semantics"
-        );
-    }
+    let after_index_semantics = prompt_cache_semantic_snapshot(&pool, &semantic_keys).await;
     let indexed_plan_details = explain_prompt_cache_statistics_query(&pool, &selected_keys).await;
     let production_sql =
         build_prompt_cache_conversation_statistics_query("EXPLAIN QUERY PLAN ", &selected_keys)
             .sql()
             .to_string();
-    assert!(production_sql.contains("WHERE ") && production_sql.contains("= c.prompt_cache_key"));
     let affinity_candidate_sql =
         production_sql.replace("= c.prompt_cache_key", "= +c.prompt_cache_key");
     let affinity_candidate_plan =
@@ -169,6 +165,37 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
             .into_iter()
             .map(|(_, _, _, detail)| detail)
             .collect::<Vec<_>>();
+    print_bounded_prompt_cache_plan("missing-index", &missing_plan_details);
+    print_bounded_prompt_cache_plan("correlated", &indexed_plan_details);
+    print_bounded_prompt_cache_plan("affinity-candidate", &affinity_candidate_plan);
+    assert!(production_sql.contains("WHERE ") && production_sql.contains("= c.prompt_cache_key"));
+    assert!(
+        !missing_plan_details.is_empty() && missing_plan_details.len() <= 8,
+        "missing-index plan evidence must stay bounded: {missing_plan_details:?}"
+    );
+    assert!(prepared.is_complete());
+    assert_eq!(
+        prepared.indexes.len(),
+        performance_index_definitions().len()
+    );
+    assert!(
+        prepared
+            .indexes
+            .iter()
+            .all(|index| { matches!(index.outcome, "created" | "present") })
+    );
+    assert!(
+        before_index_semantics
+            .iter()
+            .all(|(actual, reference)| actual == reference),
+        "statistics query must match the live-row reference without optional indexes"
+    );
+    assert!(
+        after_index_semantics
+            .iter()
+            .all(|(actual, reference)| actual == reference),
+        "index preparation must not change live-row statistics semantics"
+    );
     assert!(
         affinity_candidate_plan
             .iter()
