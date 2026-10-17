@@ -87,7 +87,7 @@
     {
       "path": "src/sqlite_batch_writer.rs",
       "role": "production",
-      "line_budget": 6870,
+      "line_budget": 6871,
       "next_module_workstream": "Split SQLite batch queue state, flush, recovery, writer loop, and batch types."
     },
     {

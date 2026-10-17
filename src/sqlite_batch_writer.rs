@@ -6722,6 +6722,7 @@ mod tests {
             terminal_projection_event_ids: Vec::new(),
             startup_backfill_tasks: Vec::new(),
         }));
+        journal.start_recovery_dispatch(SQLITE_BATCH_MAX_ROWS);
         let journal = Arc::new(TrackedTerminalJournal::new(Some(journal)));
         let mut pending = PendingBatch::default();
 
