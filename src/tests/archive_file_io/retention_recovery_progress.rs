@@ -5,7 +5,7 @@ async fn retention_rejects_archive_replacement_after_writer_proof_before_admissi
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("retention-recovery-file-replacement").await;
     let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
-    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    seed_recovery_invocation(&pool, &occurred_at).await;
     let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
     let archive_path =
         archive_batch_file_path(&config, "codex_invocations", &month).expect("archive path");
@@ -60,7 +60,34 @@ async fn retention_rejects_archive_replacement_after_writer_proof_before_admissi
             .expect("archive manifest remains unpublished"),
         0
     );
-    assert_no_task_work_files(&config.archive_dir);
+    assert_no_recovery_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);
+}
+
+async fn seed_recovery_invocation(pool: &sqlx::SqlitePool, occurred_at: &str) {
+    sqlx::query(
+        "INSERT INTO codex_invocations
+         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response)
+         VALUES ('retention-recovery-file-replacement', ?1, 'proxy', 'success', 7, 0.07, '{}', '{}')",
+    )
+    .bind(occurred_at)
+    .execute(pool)
+    .await
+    .expect("seed recovery invocation");
+}
+
+fn assert_no_recovery_task_work_files(directory: &std::path::Path) {
+    for entry in fs::read_dir(directory).expect("list archive directory") {
+        let entry = entry.expect("archive entry");
+        if entry.file_type().expect("archive entry type").is_dir() {
+            assert_no_recovery_task_work_files(&entry.path());
+        } else {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert!(
+                !name.contains(".task-") && !name.ends_with(".restore"),
+                "unfinished file: {name}"
+            );
+        }
+    }
 }
