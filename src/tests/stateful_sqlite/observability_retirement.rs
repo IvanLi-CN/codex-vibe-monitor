@@ -182,6 +182,7 @@ async fn browser_ingestion_mixed_rejections_consume_global_budget() {
     let mut config = test_config();
     config.observability.enabled = true;
     let mut state = test_state_from_config(config, false).await;
+    state.startup_ready.store(true, Ordering::Release);
     Arc::get_mut(&mut state)
         .expect("browser fixture is exclusive before HTTP server startup")
         .observability = ObservabilityRuntime::new(true);
