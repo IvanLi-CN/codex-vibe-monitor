@@ -409,21 +409,50 @@ async fn proxy_runtime_write_pressure_scenario_with_maintenance(
             // a file batch. A five-second synthetic run budget would therefore
             // select nothing. Bound the real elapsed work instead, retaining
             // the production selection and native-drain ownership semantics.
-            let archived = tokio::time::timeout(
-                Duration::from_secs(5),
-                crate::observability::contention::with_performance(
-                    metrics,
-                    archive_old_invocations(
-                        &state.pool,
-                        &state.config,
-                        state.config.database_path.parent(),
-                        false,
+            let (archived, batches) =
+                crate::maintenance::retention::retention_test_with_batch_metrics(
+                    tokio::time::timeout(
+                        Duration::from_secs(5),
+                        crate::observability::contention::with_performance(
+                            metrics,
+                            archive_old_invocations(
+                                &state.pool,
+                                &state.config,
+                                state.config.database_path.parent(),
+                                false,
+                            ),
+                        ),
                     ),
-                ),
-            )
-            .await
-            .expect("all real archive work must finish within five elapsed seconds")
-            .expect("archive owner must complete actual work");
+                )
+                .await;
+            if archived.is_err() {
+                let coordinator = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                    .snapshot()
+                    .await;
+                println!(
+                    "runtime_pressure_archive_timeout elapsed_ms={} pool_size={} pool_idle={} coordinator={coordinator:?}",
+                    started.elapsed().as_millis(),
+                    state.pool.size(),
+                    state.pool.num_idle(),
+                );
+                for batch in &batches {
+                    println!(
+                        "runtime_pressure_archive_batch rows={} committed={} elapsed_ms={} writer_ms={:?} source_identity_ms={:?} summary_proof_ms={:?} file_prepare_ms={:?} lock_wait_ms={} timeouts={}",
+                        batch.batch_rows,
+                        batch.committed_rows,
+                        batch.elapsed_ms,
+                        batch.archive_writer_ms,
+                        batch.source_identity_ms,
+                        batch.summary_proof_ms,
+                        batch.file_prepare_ms,
+                        batch.lock_wait_ms,
+                        batch.timeout_count,
+                    );
+                }
+            }
+            let archived = archived
+                .expect("all real archive work must finish within five elapsed seconds")
+                .expect("archive owner must complete actual work");
             (archived, started.elapsed())
         })
     });

@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "kind": "persistent-state-migration-record",
+  "migration": {
+    "description": "Advance existing committed reservation ceilings during bounded background preparation; preserve the deployed allocator protocol.",
+    "release_unit_description": "Invocation-range runtime recovery component.",
+    "version_impact": "patch"
+  },
+  "durable_state": {
+    "description": "Existing conversation and UTC-hour namespace rows and last_invoke_sequence ceilings. Prepared ranges are private memory issuance rights until their reservation transaction commits.",
+    "storage_implementation": "Existing SQLite tables and existing pending journal identity obligations.",
+    "source_compatibility_range": {
+      "from_program_versions": "Supported v4.8.x implementations of the current/standby 64-ID reservation protocol.",
+      "to_program_version": "Runtime recovery candidate; version chosen by repository release policy.",
+      "direct_major_skips_supported": false
+    }
+  },
+  "database_migration": {
+    "applicable": true,
+    "ddl_structural_changes": [],
+    "dml_changes": [{
+      "id": "range-reservation",
+      "description": "Reserve at most 64 IDs per owner in the existing transaction and compare-and-update the previous ceiling. Publish issuance rights only after commit and native settlement. Startup reads at most 4096 covering activity entries and 128 owner keys within the shared two-second background seed budget; it does not recreate removed conversations. Current UTC-hour preparation and final-60-second next-hour preparation use the existing namespace allocator. Actual missing-range demand takes priority over evictable speculative preparation.",
+      "order": 1,
+      "observable": true,
+      "pauseable": true
+    }],
+    "historical_data_backfill_or_transformation": []
+  },
+  "rollout_observability": {
+    "operations_must_remain_separate": true,
+    "operation_sequence": ["range-reservation"],
+    "progress_signals": [
+      "cvm_runtime_recovery_diagnostics_total fixed invocation_range reasons distinguish initialization, admission, refill, exhaustion and preparation outcomes.",
+      "cvm_invocation_range_phase_duration_seconds separates cache admission, write admission, connection and transaction time."
+    ],
+    "pause_points": ["Between preparation turns and between committed reservations; startup and HTTP readiness do not await preparation."]
+  },
+  "recovery": {
+    "deployed_migrations_immutable": true,
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; supported earlier v4.8 readers recognize all written rows and skip committed reserved tails after restart",
+    "faulty_release_recovery": "Forward repair re-enters the existing ceiling protocol. A cancelled caller does not cancel the native settlement owner. An uncommitted reservation rolls back before write admission is released; an uncertain committed tail is skipped rather than reissued. Ended-hour memory retirement retains namespace protection while active leases or journal obligations exist.",
+    "backup_restore_role": "separate-disaster-recovery"
+  },
+  "validation": {
+    "patch": {
+      "required_test_evidence": [
+        "Existing durable ceilings are readable without schema migration; restart never reissues a committed range.",
+        "Concurrent same-owner demand remains singleflight; prepared memory issues under a short writer block while a new empty owner retains the 100ms boundary.",
+        "Removed seed owners do not recreate rows or starve remaining preparation; bounded activity and owner queries retain the intended index plans.",
+        "Cancelling a reservation or its finish waiter retains logical admission and the physical SQLite lock until the native owner drains.",
+        "Ended-hour eviction waits for both active lease and pending journal identity acknowledgement."
+      ]
+    },
+    "minor": {"required_test_evidence": []},
+    "major": {"required_test_evidence": []},
+    "status": "pending-current-integrated-validation",
+    "source_regressions": [
+      "src/tests/stateful_sqlite/invocation_range_recovery.rs",
+      "src/tests/archive_file_io/invocation_range_native_recovery.rs"
+    ]
+  }
+}

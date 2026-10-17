@@ -1656,11 +1656,14 @@ async fn run_managed_task_once_with_observation(
             trigger == "manual",
             "index preparation requires a manual request"
         );
-        let report = prepare_performance_indexes(
-            state.pool.connect_options().as_ref().clone(),
-            request,
-            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
-            state.shutdown.clone(),
+        let report = crate::observability::contention::with_performance(
+            state.observability.clone(),
+            prepare_performance_indexes(
+                state.pool.connect_options().as_ref().clone(),
+                request,
+                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+                state.shutdown.clone(),
+            ),
         )
         .await?;
         return Ok(ManagedTaskExecution {

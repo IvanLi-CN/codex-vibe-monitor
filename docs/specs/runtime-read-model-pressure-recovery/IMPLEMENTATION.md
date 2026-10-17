@@ -122,6 +122,7 @@ Backfill integration adds two file-backed regressions: terminal facts remain dur
 
 ## Compatibility and Migration Records
 
+- The invocation-range recovery component has separate [API/version impact](assets/invocation-range-version-impact.json) and [durable reservation/re-entry](assets/invocation-range-persistent-state.json) records. They preserve the deployed v4.8 reservation representation and explicitly leave final integrated verification pending.
 - Public API and persistent-state impacts are recorded separately in `assets/version-impact-record.json`.
 - SQLite index installation, bounded replay writes, idempotent re-entry, recovery, and excluded deployment/allocator scope are recorded in `assets/persistent-state-migration-record.json`.
 - The current PR-B delivery is rebased onto `origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0`; runtime implementation commit `f34d3663c305de0f31db6cb997fbff90e0ab4167` contains no unrelated base merge, and the test-only follow-up `535397fb30e0ee0953161d4c6a50d960f6cb13b4` records the split-module materialization regression. Current required-lane evidence is tracked in `assets/current-candidate-validation.json`; documentation follow-ups do not alter the runtime candidate.
