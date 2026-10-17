@@ -5152,7 +5152,28 @@ pub(crate) fn build_proxy_routes(router: Router<Arc<AppState>>) -> Router<Arc<Ap
 }
 
 pub(crate) fn build_app_router(state: Arc<AppState>) -> Router {
-    build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state))
+    apply_startup_readiness_gate(
+        build_app_router_without_browser(state.clone()).merge(browser_ingest_router(state.clone())),
+        state,
+    )
+}
+
+fn apply_startup_readiness_gate(router: Router, state: Arc<AppState>) -> Router {
+    router.layer(axum::middleware::from_fn_with_state(
+        state,
+        startup_readiness_gate,
+    ))
+}
+
+async fn startup_readiness_gate(
+    State(state): State<Arc<AppState>>,
+    request: Request<Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    if request.uri().path() != "/health" && !state.startup_ready.load(Ordering::Acquire) {
+        return (StatusCode::SERVICE_UNAVAILABLE, "starting").into_response();
+    }
+    next.run(request).await
 }
 
 fn build_app_router_without_browser(state: Arc<AppState>) -> Router {
@@ -5310,6 +5331,7 @@ pub(crate) async fn spawn_http_server(
         router = router.route_layer(hotpath::AxumLayer::new());
     }
     router = router.merge(browser_ingest_router(state.clone()));
+    router = apply_startup_readiness_gate(router, state.clone());
     router = router
         .layer(TraceLayer::new_for_http().make_span_with(|request: &Request<Body>| {
             tracing::info_span!("request", method = %request.method(), uri_path = %observability::http_request_trace_path(request), version = ?request.version())

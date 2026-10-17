@@ -365,8 +365,21 @@ async fn run_startup_recovery(
             );
             return;
         }
+        let journal = state.sqlite_batch_writer.terminal_journal_stats();
+        if journal.unavailable {
+            observe_startup_recovery_state(
+                &state,
+                "terminal_journal",
+                journal.replay_count,
+                Duration::from_millis(journal.oldest_pending_age_ms),
+                "unavailable",
+            );
+            warn!(
+                "startup recovery stopped because terminal journal recovery is unavailable; durable obligations remain for the next start"
+            );
+            return;
+        }
         if !fence.captured {
-            let journal = state.sqlite_batch_writer.terminal_journal_stats();
             observe_startup_recovery_state(
                 &state,
                 "terminal_journal",
@@ -380,7 +393,7 @@ async fn run_startup_recovery(
                     "running"
                 },
             );
-            if !journal.unavailable && journal.replay_count == 0 {
+            if journal.replay_count == 0 {
                 info!(
                     "startup recovery deferred fenced database rows because the pre-readiness fence was unavailable"
                 );
@@ -559,6 +572,12 @@ async fn run_startup_recovery(
                 "running"
             },
         );
+        if journal.unavailable {
+            warn!(
+                "startup recovery stopped because terminal journal recovery became unavailable; durable obligations remain for the next start"
+            );
+            return;
+        }
         if invocation_done && pool_attempt_done && !journal.unavailable && journal.replay_count == 0
         {
             info!("startup recovery coordinator completed fenced recovery");
@@ -3716,12 +3735,12 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
-                    if STARTUP_RECOVERY_ACTIVE.load(Ordering::Acquire) {
-                        continue;
-                    }
                     if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
                         continue;
                     }
+                    let Some(_recovery_guard) = StartupRecoveryActiveGuard::acquire() else {
+                        continue;
+                    };
                     let Some(_execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution("pool_orphan_recovery")
                     else {

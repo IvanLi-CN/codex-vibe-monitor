@@ -46,6 +46,9 @@ pub(crate) async fn proxy_openai_v1_with_connect_info(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
+    if !state.startup_ready.load(Ordering::Acquire) {
+        return startup_not_ready_response();
+    }
     if is_websocket_upgrade_request(&headers, http2_protocol.as_ref()) {
         info!(
             method = %method,
@@ -107,6 +110,9 @@ pub(crate) async fn proxy_openai_v1_common(
     peer_ip: Option<IpAddr>,
     downstream_transport: Option<DownstreamTransportObserver>,
 ) -> Response {
+    if !state.startup_ready.load(Ordering::Acquire) {
+        return startup_not_ready_response();
+    }
     if method == Method::GET
         && is_models_list_path(original_uri.path())
         && !request_matches_pool_route(state.as_ref(), &headers)
@@ -390,6 +396,17 @@ pub(crate) async fn proxy_openai_v1_common(
             build_proxy_error_response(err, &invoke_id)
         }
     }
+}
+
+fn startup_not_ready_response() -> Response {
+    build_proxy_error_response_without_invoke_id(ProxyErrorResponse {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: "service is starting".to_string(),
+        cvm_id: None,
+        retry_after_secs: None,
+        code: Some("startup_in_progress".to_string()),
+        blocked_binding: None,
+    })
 }
 
 #[derive(Debug, Clone)]

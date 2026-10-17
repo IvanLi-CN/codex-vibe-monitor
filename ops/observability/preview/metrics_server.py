@@ -232,7 +232,7 @@ class Metrics:
                 {**labels, "outcome": "error" if failing else "success"},
                 buckets=(.05, .1, .2, .25, .5, 1, 2.5, 5, 10, 30, 60, 120),
             )
-            for reason in ("busy", "locked", "disk_io"):
+            for reason in ("connect_failed", "write_or_lock", "read_or_lock"):
                 self.counter(
                     "cvm_startup_recovery_retries_total",
                     recovery_rate if failing else 0,
