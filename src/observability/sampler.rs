@@ -117,7 +117,7 @@ async fn sample_runtime(state: &AppState) {
     metrics.gauge(
         "cvm_startup_recovery_pending_records",
         &[("component", "terminal_journal")],
-        terminal_journal.replay_count as f64,
+        terminal_journal.pending_materialization_records as f64,
     );
     metrics.gauge(
         "cvm_startup_recovery_oldest_age_seconds",
@@ -126,7 +126,7 @@ async fn sample_runtime(state: &AppState) {
     );
     let terminal_journal_state = if terminal_journal.unavailable {
         "unavailable"
-    } else if terminal_journal.replay_count == 0 {
+    } else if terminal_journal.pending_materialization_records == 0 {
         "complete"
     } else {
         "running"

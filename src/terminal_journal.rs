@@ -862,10 +862,6 @@ impl TerminalJournal {
                         .sum::<usize>()
             })
             .sum();
-        let pending_since = (!pending_attempt_starts.is_empty()
-            || !pending_by_key.is_empty()
-            || !shutdown_recovery_pending.is_empty())
-        .then_some(Instant::now());
         let mut completion_capacity = CompletionCapacity::default();
         for snapshot in &unmatched_attempt_starts {
             completion_capacity.insert(snapshot);
@@ -892,6 +888,45 @@ impl TerminalJournal {
             deferred_write_bytes = deferred_write_bytes.saturating_add(terminal_bytes);
             deferred_writes.push_back(terminal);
         }
+        let has_pending_records = !pending_attempt_starts.is_empty()
+            || !pending_by_key.is_empty()
+            || !shutdown_recovery_pending.is_empty();
+        let oldest_pending_at = pending_by_key
+            .keys()
+            .map(|(_, occurred_at, _)| occurred_at.as_str())
+            .chain(
+                shutdown_recovery_pending
+                    .keys()
+                    .map(|(_, occurred_at, _)| occurred_at.as_str()),
+            )
+            .chain(
+                unmatched_attempt_starts
+                    .iter()
+                    .map(|snapshot| snapshot.occurred_at.as_str()),
+            )
+            .chain(
+                deferred_writes
+                    .iter()
+                    .map(|write| write.record.occurred_at.as_str()),
+            )
+            .filter_map(crate::stats::parse_to_utc_datetime)
+            .min();
+        let pending_since = if has_pending_records {
+            let now = chrono::Utc::now();
+            oldest_pending_at
+                .map(|occurred_at| {
+                    let age_ms = now
+                        .signed_duration_since(occurred_at)
+                        .num_milliseconds()
+                        .max(0) as u64;
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(age_ms))
+                        .unwrap_or_else(Instant::now)
+                })
+                .or_else(|| Some(Instant::now()))
+        } else {
+            None
+        };
         let system_task_quarantine_ids = load_system_task_quarantine_ids(&[
             directory.join("system-task-quarantine.jsonl"),
             directory.join("shutdown-system-task-quarantine.jsonl"),
@@ -2552,6 +2587,7 @@ mod tests {
 
         let mut replayed = TerminalJournal::open(&database_path).expect("reopen journal");
         assert_eq!(replayed.stats().replay_count, 1);
+        assert!(replayed.stats().oldest_pending_age_ms >= 60_000);
         let replay = replayed.take_replay();
         assert_eq!(replay.len(), 1);
         let replayed_capture_started = replay[0]

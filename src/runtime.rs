@@ -42,15 +42,17 @@ async fn capture_startup_recovery_fence(state: &AppState) -> Result<StartupRecov
     let options =
         build_sqlite_connect_options(&state.config.database_url(), STARTUP_RECOVERY_BUSY_TIMEOUT)?;
     let mut connection = SqliteConnection::connect_with(&options).await?;
+    let mut transaction = connection.begin().await?;
     let invocation_max_id =
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
-            .fetch_one(&mut connection)
+            .fetch_one(transaction.as_mut())
             .await?;
     let pool_attempt_max_id = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(id), 0) FROM pool_upstream_request_attempts",
     )
-    .fetch_one(&mut connection)
+    .fetch_one(transaction.as_mut())
     .await?;
+    transaction.commit().await?;
     Ok(StartupRecoveryFence {
         invocation_max_id,
         pool_attempt_max_id,
@@ -140,6 +142,20 @@ impl StartupRecoveryActiveGuard {
 impl Drop for StartupRecoveryActiveGuard {
     fn drop(&mut self) {
         STARTUP_RECOVERY_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+async fn wait_for_startup_recovery_guard(
+    shutdown: &CancellationToken,
+) -> Option<StartupRecoveryActiveGuard> {
+    loop {
+        if let Some(guard) = StartupRecoveryActiveGuard::acquire() {
+            return Some(guard);
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => return None,
+            _ = sleep(Duration::from_millis(25)) => {}
+        }
     }
 }
 
@@ -346,8 +362,8 @@ async fn run_startup_recovery(
     fence: StartupRecoveryFence,
     readiness_at: Instant,
 ) {
-    let Some(_active_guard) = StartupRecoveryActiveGuard::acquire() else {
-        warn!("startup recovery coordinator already owns the recovery path");
+    let Some(_active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
+        warn!("startup recovery coordinator stopped while waiting for the recovery path");
         return;
     };
     let mut connection = None;
@@ -383,7 +399,7 @@ async fn run_startup_recovery(
             observe_startup_recovery_state(
                 &state,
                 "terminal_journal",
-                journal.replay_count,
+                journal.pending_materialization_records,
                 Duration::from_millis(journal.oldest_pending_age_ms),
                 "unavailable",
             );
@@ -396,17 +412,17 @@ async fn run_startup_recovery(
             observe_startup_recovery_state(
                 &state,
                 "terminal_journal",
-                journal.replay_count,
+                journal.pending_materialization_records,
                 Duration::from_millis(journal.oldest_pending_age_ms),
                 if journal.unavailable {
                     "unavailable"
-                } else if journal.replay_count == 0 {
+                } else if journal.pending_materialization_records == 0 {
                     "complete"
                 } else {
                     "running"
                 },
             );
-            if journal.replay_count == 0 {
+            if journal.pending_materialization_records == 0 {
                 info!(
                     "startup recovery deferred fenced database rows because the pre-readiness fence was unavailable"
                 );
@@ -599,11 +615,11 @@ async fn run_startup_recovery(
         observe_startup_recovery_state(
             &state,
             "terminal_journal",
-            journal.replay_count,
+            journal.pending_materialization_records,
             Duration::from_millis(journal.oldest_pending_age_ms),
             if journal.unavailable {
                 "unavailable"
-            } else if journal.replay_count == 0 {
+            } else if journal.pending_materialization_records == 0 {
                 "complete"
             } else {
                 "running"
@@ -615,7 +631,10 @@ async fn run_startup_recovery(
             );
             return;
         }
-        if invocation_done && pool_attempt_done && !journal.unavailable && journal.replay_count == 0
+        if invocation_done
+            && pool_attempt_done
+            && !journal.unavailable
+            && journal.pending_materialization_records == 0
         {
             info!("startup recovery coordinator completed fenced recovery");
             return;
@@ -1616,10 +1635,16 @@ where
         startup_started_at,
         startup_recovery_fence,
     ));
-    pool_orphan_recovery_handle = Some(spawn_pool_orphan_recovery_maintenance(
-        state.clone(),
-        cancel.clone(),
-    ));
+    if startup_recovery_fence.captured {
+        pool_orphan_recovery_handle = Some(spawn_pool_orphan_recovery_maintenance(
+            state.clone(),
+            cancel.clone(),
+        ));
+    } else {
+        warn!(
+            "pool orphan recovery maintenance deferred because startup recovery fence was unavailable"
+        );
+    }
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_system_status_snapshot_maintenance(state.clone());
     spawn_system_storage_maintenance(state.clone());
@@ -3787,8 +3812,8 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
                         continue;
                     }
-                    let Some(_recovery_guard) = StartupRecoveryActiveGuard::acquire() else {
-                        continue;
+                    let Some(_recovery_guard) = wait_for_startup_recovery_guard(&cancel).await else {
+                        break;
                     };
                     let Some(_execution_lease) =
                         crate::maintenance_store::try_acquire_task_execution("pool_orphan_recovery")
