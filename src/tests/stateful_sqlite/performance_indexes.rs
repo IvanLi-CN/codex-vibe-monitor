@@ -65,6 +65,14 @@ async fn performance_indexes_dry_run_is_read_only_and_reentry_recognizes_partial
         }),
         "the owned inspector inherits its explicit metric scope"
     );
+    assert!(
+        before_scrape.lines().any(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("reason=\"query_plan_unavailable\"")
+                && line.ends_with(" 1")
+        }),
+        "a fixture without the conversation query schema has an unavailable plan, not a fallback"
+    );
     assert_eq!(
         metrics.render(),
         before_scrape,

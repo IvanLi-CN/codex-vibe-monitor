@@ -21,7 +21,7 @@
         "description": "No schema, durable row encoding, ID protocol or public HTTP/SSE field changes."
       },
       "reasoning": "Preparation writes the same existing conversation/hour reservation ceiling. Supported v4.8 and v4.9.0 readers recognize these rows and skip committed unused IDs after restart; memory eviction does not lower a prepared hour ceiling. Integrating v4.9.0 changes neither allocator sources nor schema.",
-      "reassessed_at": "2026-10-17T16:38:24Z",
+      "reassessed_at": "2026-10-17T17:08:31Z",
       "evidence": [
         "src/prompt_cache_conversations/invocation_ranges.rs",
         "src/prompt_cache_conversations/invocation_ranges/preparation.rs",
@@ -31,10 +31,10 @@
     "verified": {
       "status": "component-compatibility-verified",
       "impact": "patch",
-      "reasoning": "Current component sources and stateful/native regressions match f9f29ca8f145291dc33baf7d472747505e27fff7, whose GitHub CI passed. Public fields, durable encoding and schema are unchanged. This verifies the component compatibility contract; the parent PR still requires separate current-head CI, empirical acceptance and formal review.",
+      "reasoning": "The persisted reservation protocol, public fields, durable encoding and schema remain unchanged from the passed integrated a7b6bff0627475ed34311eef25bc988c7e3f58c0 candidate. The later missing-owner correction changes only empty-memory handoff and adds a gated regression; it does not introduce newly encoded state. This verifies component compatibility, not execution of the revised regression: the parent PR still requires separate current-head CI, empirical acceptance and formal review.",
       "evidence": [
         "invocation-range-persistent-state.json#validation",
-        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39021726193"
+        "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39050785188"
       ]
     }
   },

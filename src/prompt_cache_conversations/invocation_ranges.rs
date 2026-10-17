@@ -14,6 +14,11 @@ pub(crate) mod lifecycle;
 mod preparation;
 pub(crate) mod transaction;
 
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static PREPARATION_BEFORE_READ: (Arc<Notify>, Arc<Notify>);
+}
+
 const RANGE_SIZE: u32 = 64;
 const WAIT_BUDGET: Duration = Duration::from_millis(100);
 // Keep one shared SQLite transaction below the empty-range wait budget even
@@ -752,6 +757,13 @@ impl InvocationRangeManager {
         existing_only: bool,
     ) -> preparation::PreparationOutcome {
         let started = Instant::now();
+        #[cfg(test)]
+        if existing_only
+            && let Ok((entered, resume)) = PREPARATION_BEFORE_READ.try_with(Clone::clone)
+        {
+            entered.notify_one();
+            resume.notified().await;
+        }
         let result = self
             .initialize_committed(pool, &owner, generation, permit, existing_only)
             .await;
@@ -775,8 +787,16 @@ impl InvocationRangeManager {
                 preparation::PreparationOutcome::Ready
             }
             Ok(None) => {
-                entry.failure = Some("invocation preparation owner no longer exists".to_owned());
-                preparation::PreparationOutcome::Missing
+                // A deleted speculative owner is not a failed real request. Demand
+                // may have promoted this entry while the seed read was in flight.
+                // Remove it atomically before waking demand to retry normal admission.
+                let notify = entry.notify.clone();
+                memory.entries.remove(&owner);
+                notify.notify_waiters();
+                self.admission.notify_waiters();
+                drop(memory);
+                self.shrink();
+                return preparation::PreparationOutcome::Missing;
             }
             Err(error) => {
                 warn!(owner_type = owner.kind(), utc_hour = owner.hour(), generation, error = %error, elapsed_ms = started.elapsed().as_millis(), "invocation range initialization failed");

@@ -55,13 +55,14 @@
     "minor": {"required_test_evidence": []},
     "major": {"required_test_evidence": []},
     "status": "component-compatibility-verified",
-    "evidence_scope": "The invocation-range implementation and its stateful/native-cancellation regression files are byte-identical to f9f29ca8f145291dc33baf7d472747505e27fff7, whose GitHub CI run passed all backend profiles. The v4.9.0 mainline integration changes no allocator source or schema. This component record does not substitute for the parent PR's current-head CI, contention acceptance or formal review.",
+    "evidence_scope": "The committed reservation SQL, durable encoding, preparation loop, native settlement and schema retain the protocol verified by the passed integrated candidate a7b6bff0627475ed34311eef25bc988c7e3f58c0. The subsequent missing-owner handoff correction only removes an empty memory generation and notifies demand; it performs no durable mutation. Its gated regression still requires current-head CI. Component compatibility does not substitute for the parent PR's current-head CI, contention acceptance or formal review.",
     "evidence": [
       "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39021726193",
-      "src/prompt_cache_conversations/invocation_ranges.rs@ffa90d54964ea638765ae3cf41420b2150290810",
+      "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39050785188",
+      "src/prompt_cache_conversations/invocation_ranges.rs@eeec61df86fb425f9aafbdbc931faac32aa66cb8",
       "src/prompt_cache_conversations/invocation_ranges/preparation.rs@5848df1bc00a2fd14c41ceb2940a03d08e7a76fb",
       "src/prompt_cache_conversations/invocation_ranges/transaction.rs@10872610ddfe6f59084124df4441bcf96e1c28c9",
-      "src/tests/stateful_sqlite/invocation_range_recovery.rs@ac0d811f93f684e56300f77d20815190d1052fd1",
+      "src/tests/stateful_sqlite/invocation_range_recovery.rs@1d060a896adbd479e597bd6d7c97048fcd1c67e8",
       "src/tests/archive_file_io/invocation_range_native_recovery.rs@e8e2a7dac393e208756ff902082e245647c0fd83"
     ],
     "source_regressions": [

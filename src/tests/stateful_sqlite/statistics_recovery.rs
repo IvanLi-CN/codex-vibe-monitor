@@ -66,6 +66,43 @@ async fn prepare_fixture_indexes(
     .expect("prepare fixture indexes")
 }
 
+#[tokio::test]
+async fn explicit_index_inspection_observes_actual_statistics_plan_without_scrape_queries() {
+    let pool = prompt_cache_statistics_fixture().await;
+    let metrics = ObservabilityRuntime::new(true);
+    for reason in ["query_plan_fallback", "query_plan_indexed"] {
+        let report = crate::observability::contention::with_performance(
+            metrics.clone(),
+            prepare_performance_indexes(
+                pool.connect_options().as_ref().clone(),
+                PerformanceIndexPreparationRequest {
+                    dry_run: true,
+                    budget_ms: 2_000,
+                },
+                test_proxy_sqlite_write_coordinator(),
+                CancellationToken::new(),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(report.is_complete());
+        let snapshot = metrics.render();
+        assert!(
+            snapshot.lines().any(|line| {
+                line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                    && line.contains(&format!("reason=\"{reason}\""))
+                    && line.ends_with(" 1")
+            }),
+            "the explicit inspector must observe the actual {reason} plan"
+        );
+        assert_eq!(metrics.render(), snapshot, "scrape does not inspect plans");
+        if reason == "query_plan_fallback" {
+            assert!(prepare_fixture_indexes(&pool).await.is_complete());
+        }
+    }
+    pool.close().await;
+}
+
 async fn prompt_cache_last_invocation_id(pool: &SqlitePool, key: &str) -> Option<i64> {
     let rows = query_prompt_cache_conversation_statistics(pool, &[key.to_string()])
         .await

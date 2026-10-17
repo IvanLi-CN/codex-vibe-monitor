@@ -134,7 +134,8 @@ labels!(RecoveryDiagnostic {
     IndexDefinitionConflict => "index_definition_conflict", IndexUnavailable => "index_unavailable",
     StatisticsLiveTail => "live_tail", StatisticsHistoricalCoverage => "historical_coverage",
     StatisticsPublicationConflict => "publication_conflict",
-    QueryPlanIndexed => "query_plan_indexed", QueryPlanFallback => "query_plan_fallback"
+    QueryPlanIndexed => "query_plan_indexed", QueryPlanFallback => "query_plan_fallback",
+    QueryPlanUnavailable => "query_plan_unavailable"
 });
 impl RecoveryDiagnostic {
     fn operation(self) -> &'static str {

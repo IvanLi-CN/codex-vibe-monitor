@@ -338,6 +338,49 @@ async fn prepare_one_performance_index(
                 .fetch_optional(&mut connection)
                 .await
                 .inspect_err(|_| record_recovery(RecoveryDiagnostic::IndexUnavailable))?;
+        if dry_run && name == "idx_codex_invocations_prompt_cache_key_id" {
+            // Compile the actual query shape only at this explicit inspection
+            // boundary. EXPLAIN never executes the lookup or reads business rows.
+            // Reuse the owned connection, deadline and native progress handler.
+            let remaining_ms = deadline
+                .saturating_duration_since(Instant::now())
+                .as_millis();
+            sqlx::query(&format!(
+                "PRAGMA busy_timeout = {}",
+                remaining_ms.min(i32::MAX as u128)
+            ))
+            .execute(&mut connection)
+            .await?;
+            let keys = [String::new()];
+            let plan = crate::api::build_prompt_cache_conversation_statistics_query(
+                "EXPLAIN QUERY PLAN ",
+                &keys,
+            )
+            .build_query_as::<(i64, i64, i64, String)>()
+            .persistent(false)
+            .fetch_all(&mut connection)
+            .await;
+            if let Some(stop) = preparation_stop(deadline, shutdown) {
+                record_recovery(RecoveryDiagnostic::QueryPlanUnavailable);
+                return Ok(stop);
+            }
+            let matching_definition = existing.as_deref().is_some_and(|sql| {
+                normalize_index_definition(sql) == normalize_index_definition(definition)
+            });
+            let indexed_search = format!("SEARCH i USING INDEX {name}");
+            record_recovery(match plan {
+                Ok(rows)
+                    if matching_definition
+                        && rows
+                            .iter()
+                            .any(|(_, _, _, detail)| detail.contains(&indexed_search)) =>
+                {
+                    RecoveryDiagnostic::QueryPlanIndexed
+                }
+                Ok(rows) if !rows.is_empty() => RecoveryDiagnostic::QueryPlanFallback,
+                _ => RecoveryDiagnostic::QueryPlanUnavailable,
+            });
+        }
         if let Some(existing) = existing {
             if normalize_index_definition(&existing) != normalize_index_definition(definition) {
                 record_recovery(RecoveryDiagnostic::IndexDefinitionConflict);

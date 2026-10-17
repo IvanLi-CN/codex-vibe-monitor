@@ -63,6 +63,8 @@ ORDER BY name;
 
 Collect bounded `EXPLAIN QUERY PLAN` output for the actual correlated statistics query through its shared SQL builder. A standalone expression lookup is not evidence for that query. Record definition inspection and query-plan evidence separately, without bound values or business identities; do not execute the underlying historical query or run `ANALYZE` to obtain a plan. Definition diagnostics count completed inspection events and do not represent a continuously sampled index inventory. Exporting metrics does not perform this inspection.
 
+The existing explicit dry-run command compiles that shared query with a fixed empty key when it inspects the conversation index, on the same read-only connection and within its original total budget. Fixed diagnostics distinguish an observed named-index plan, a successfully compiled fallback and an unavailable plan; no raw plan details or key values become metric labels. The managed command's task metadata writes still exclude it from production read-only investigation authorization.
+
 When an index is proven missing, the deployment checklist names the missing definition, preserves the existing correct fallback and proposes the existing explicit preparation command with its default 2000ms total budget. The managed maintenance entry point can persist task-run state even with `--dry-run`; it must not be used as a substitute for read-only production investigation. A conflicting definition requires a separate decision, never an automatic drop. Longer build budgets require a separately approved maintenance window backed by measured lock duration and disk needs; an application release does not prove installation or successful query-plan selection.
 
 ## Verification boundary

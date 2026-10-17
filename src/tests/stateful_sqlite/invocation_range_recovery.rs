@@ -298,3 +298,50 @@ async fn removed_seed_owner_does_not_starve_remaining_preparation() {
         "preparation cannot recreate a deleted conversation"
     );
 }
+
+#[tokio::test]
+async fn demand_retries_when_an_inflight_preparation_owner_was_deleted() {
+    use prompt_cache_conversations::invocation_ranges::PREPARATION_BEFORE_READ;
+    use tokio::sync::Notify;
+    let pool = fixture().await;
+    let key = "deleted-during-preparation";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let entered = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let preparation = PREPARATION_BEFORE_READ.scope(
+        (entered.clone(), resume.clone()),
+        manager.test_prepare_key(&pool, key),
+    );
+    tokio::pin!(preparation);
+    tokio::select! {
+        result = &mut preparation => panic!("preparation skipped the read gate: {result}"),
+        _ = entered.notified() => {},
+    }
+    sqlx::query("DELETE FROM prompt_cache_conversations WHERE prompt_cache_key=?")
+        .bind(key)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let demand = manager.allocate(&pool, Some(key));
+    tokio::pin!(demand);
+    // Poll real demand through promotion before allowing the stale seed read.
+    tokio::select! {
+        biased;
+        result = &mut demand => panic!("demand bypassed in-flight initialization: {result:?}"),
+        _ = std::future::ready(()) => {},
+    }
+    resume.notify_one();
+    let (prepared, invoke_id) = tokio::join!(preparation, demand);
+    assert!(!prepared, "a deleted seed owner is not prepared");
+    let invoke_id = invoke_id.expect("real demand retries normal committed initialization");
+    assert_eq!(invoke_id.len(), 10);
+    let ceiling: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ceiling, 63, "demand publishes only a committed reservation");
+}
