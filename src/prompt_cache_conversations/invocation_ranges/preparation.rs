@@ -3,6 +3,12 @@ use super::*;
 
 pub(super) const STARTUP_OWNER_LIMIT: usize = 128;
 
+pub(super) enum PreparationOutcome {
+    Ready,
+    Missing,
+    Deferred,
+}
+
 fn hours(now: DateTime<Utc>) -> impl Iterator<Item = Owner> {
     let hour = now.timestamp().div_euclid(3600);
     let next = (now.timestamp().rem_euclid(3600) >= 3540).then_some(Owner::Hour(hour + 1));
@@ -24,17 +30,19 @@ impl InvocationRangeManager {
             }
             self.prepare_owner(pool, owner).await;
         }
-        for _ in 0..MAX_REFILL_BATCH_SIZE {
+        for _ in 0..owners.len().min(MAX_REFILL_BATCH_SIZE) {
             if shutdown.is_cancelled() {
                 break;
             }
-            let Some(owner) = owners.front().cloned() else {
+            let Some(owner) = owners.pop_front() else {
                 break;
             };
-            if !self.prepare_owner(pool, owner).await {
-                break;
+            if matches!(
+                self.prepare_owner(pool, owner.clone()).await,
+                PreparationOutcome::Deferred
+            ) {
+                owners.push_back(owner);
             }
-            owners.pop_front();
         }
         // Hour cleanup uses the existing lifecycle owner, including active leases
         // and journal obligations. Never discard an ended-hour entry directly.
@@ -59,17 +67,25 @@ impl InvocationRangeManager {
         }
     }
 
-    async fn prepare_owner(self: &Arc<Self>, pool: &Pool<Sqlite>, owner: Owner) -> bool {
+    async fn prepare_owner(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        owner: Owner,
+    ) -> PreparationOutcome {
         let generation = {
             let mut memory = self.memory.lock().expect("invocation range memory");
             if let Some(entry) = memory.entries.get(&owner) {
-                return !entry.retiring;
+                return if entry.retiring {
+                    PreparationOutcome::Deferred
+                } else {
+                    PreparationOutcome::Ready
+                };
             }
             if !memory.allocations.is_empty()
                 || (matches!(owner, Owner::Conversation(_)) && memory.occupancy() >= memory.target)
             {
                 record_recovery(RecoveryDiagnostic::RangePrewarmDeferred);
-                return false;
+                return PreparationOutcome::Deferred;
             }
             memory.generation += 1;
             let generation = memory.generation;
@@ -91,7 +107,8 @@ impl InvocationRangeManager {
             None
         };
         if let Some(permit) = permit {
-            self.initialize(pool, owner.clone(), generation, Some(permit), true)
+            let outcome = self
+                .initialize(pool, owner.clone(), generation, Some(permit), true)
                 .await;
             let mut memory = self.memory.lock().expect("invocation range memory");
             let ready = memory.entries.get(&owner).is_some_and(|entry| {
@@ -110,8 +127,13 @@ impl InvocationRangeManager {
                 && let Some(entry) = memory.entries.remove(&owner)
             {
                 entry.notify.notify_waiters();
+                self.admission.notify_waiters();
             }
-            ready
+            if ready {
+                PreparationOutcome::Ready
+            } else {
+                outcome
+            }
         } else {
             let mut memory = self.memory.lock().expect("invocation range memory");
             if memory
@@ -121,9 +143,10 @@ impl InvocationRangeManager {
                 && let Some(entry) = memory.entries.remove(&owner)
             {
                 entry.notify.notify_waiters();
+                self.admission.notify_waiters();
             }
             record_recovery(RecoveryDiagnostic::RangePrewarmDeferred);
-            false
+            PreparationOutcome::Deferred
         }
     }
 
@@ -146,7 +169,26 @@ impl InvocationRangeManager {
     pub(crate) async fn test_prepare_key(self: &Arc<Self>, pool: &Pool<Sqlite>, key: &str) -> bool {
         self.pool.get_or_init(|| pool.clone());
         pool.acquire().await.unwrap().return_to_pool().await;
-        self.prepare_owner(pool, Owner::Conversation(key.to_owned()))
-            .await
+        matches!(
+            self.prepare_owner(pool, Owner::Conversation(key.to_owned()))
+                .await,
+            PreparationOutcome::Ready
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_prepare_keys(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+        keys: &[&str],
+    ) -> usize {
+        let mut owners = keys
+            .iter()
+            .map(|key| Owner::Conversation((*key).to_owned()))
+            .collect();
+        pool.acquire().await.unwrap().return_to_pool().await;
+        self.prepare_turn(pool, Utc::now(), &mut owners, &CancellationToken::new())
+            .await;
+        owners.len()
     }
 }
