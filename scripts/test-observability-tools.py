@@ -89,6 +89,29 @@ class GrafanaPreviewTests(unittest.TestCase):
             self.assertEqual(len(series), len(set(series)))
             self.assertLessEqual(len(series), 4000)
 
+    def test_recovery_dashboard_rows_do_not_overlap_following_rows(self):
+        for dashboard_name in ("cvm-runtime.json", "cvm-sqlite.json"):
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            rows = sorted(
+                (
+                    panel["gridPos"]["y"],
+                    panel["gridPos"].get("h", 1),
+                    panel["title"],
+                )
+                for panel in dashboard["panels"]
+                if panel.get("type") == "row"
+            )
+            for (current_y, current_height, current_title), (next_y, _, next_title) in zip(
+                rows, rows[1:]
+            ):
+                self.assertGreaterEqual(
+                    next_y,
+                    current_y + current_height,
+                    msg=f"{dashboard_name}: {current_title} overlaps {next_title}",
+                )
+
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
 

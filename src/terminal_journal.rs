@@ -1061,7 +1061,7 @@ impl TerminalJournal {
             record.occurred_at.clone(),
             raw_capture,
         );
-        if self.sync_failed || self.append_failed {
+        if self.replay_blocked || self.sync_failed || self.append_failed {
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         }
         if self.pending_by_key.contains_key(&key) {
@@ -1404,7 +1404,7 @@ impl TerminalJournal {
     }
 
     pub(crate) fn sequence_is_synced(&self, sequence: u64) -> Result<bool> {
-        if self.sync_failed || self.append_failed {
+        if self.replay_blocked || self.sync_failed || self.append_failed {
             return Err(anyhow::anyhow!("runtime journal group sync failed"));
         }
         Ok(sequence <= self.synced_sequence)
@@ -2686,6 +2686,15 @@ mod tests {
 
         assert!(journal.take_replay().is_empty());
         assert!(journal.stats().unavailable);
+        let new_record = crate::tests::test_proxy_capture_record(
+            "journal-replay-unavailable-new",
+            "2026-07-29T00:01:00Z",
+        );
+        assert_eq!(
+            journal.append(&new_record, false, None).durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        );
+        assert!(journal.sequence_is_synced(1).is_err());
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 
