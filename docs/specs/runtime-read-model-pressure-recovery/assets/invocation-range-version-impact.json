@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "version-impact-record",
+  "change": {
+    "description": "Prepare bounded committed invocation ranges off the request path and retain native transaction ownership through cancellation.",
+    "release_unit_description": "Runtime recovery invocation-range component; final integrated release classification remains pending.",
+    "affected_contracts": ["public-api", "persistent-state"]
+  },
+  "classification": {
+    "allowed_impacts": ["patch", "minor", "major"],
+    "planned": {
+      "impact": "patch",
+      "reasoning": "Preserve ID encoding, range size, committed reservation ordering and the request wait budget.",
+      "assessed_at": "2026-10-17T06:20:00Z",
+      "evidence": ["../SPEC.md#req-rmpr-007"]
+    },
+    "current": {
+      "impact": "patch",
+      "scope_drift": {
+        "detected": false,
+        "description": "No schema, durable row encoding, ID protocol or public HTTP/SSE field changes."
+      },
+      "reasoning": "Preparation writes the same existing conversation/hour reservation ceiling. Supported v4.8 readers recognize these rows and skip committed unused IDs after restart; memory eviction does not lower a prepared hour ceiling.",
+      "reassessed_at": "2026-10-17T06:20:00Z",
+      "evidence": [
+        "src/prompt_cache_conversations/invocation_ranges.rs",
+        "src/prompt_cache_conversations/invocation_ranges/preparation.rs",
+        "src/prompt_cache_conversations/invocation_ranges/transaction.rs"
+      ]
+    },
+    "verified": {
+      "status": "pending-current-integrated-validation",
+      "impact": null,
+      "reasoning": "Source regressions are registered; the final integrated candidate and empirical acceptance are not yet complete.",
+      "evidence": []
+    }
+  },
+  "compatibility_evidence": {
+    "public_api": {
+      "change": "none to HTTP/SSE; additive fixed-label diagnostic metrics",
+      "supported_consumer_range": "Existing v4.8 HTTP/SSE clients and metrics consumers.",
+      "evidence": ["src/tests/lightweight/performance_metrics_contract.rs"]
+    },
+    "persistent_state": {
+      "applicable": true,
+      "state_description": "Existing prompt_cache_conversations.last_invoke_sequence and hourly_invoke_prefixes reservation rows; no new durable representation.",
+      "source_program_compatibility_range": "v4.8.x readers of the existing 64-ID reservation protocol; a single runtime continues to own the database.",
+      "evidence": ["invocation-range-persistent-state.json"]
+    }
+  },
+  "release_unit": {
+    "member_change_records": ["invocation-range-persistent-state.json"],
+    "maximum_verified_impact": null,
+    "calculation_evidence": ["Current API and durable-state assessment is patch; verified release classification is pending."]
+  }
+}
