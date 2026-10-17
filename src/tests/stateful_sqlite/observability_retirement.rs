@@ -6,6 +6,7 @@ async fn retired_performance_apis_return_410_through_the_real_cors_stack() {
     let mut config = test_config();
     config.http_bind = "127.0.0.1:0".parse().expect("ephemeral HTTP bind");
     let state = test_state_from_config(config, false).await;
+    state.startup_ready.store(true, Ordering::Release);
     let (address, server) = spawn_http_server(state.clone())
         .await
         .expect("start application HTTP stack");
@@ -110,6 +111,7 @@ async fn browser_ingestion_rejections_consume_client_budget_before_parsing() {
         let mut config = test_config();
         config.observability.enabled = true;
         let mut state = test_state_from_config(config, false).await;
+        state.startup_ready.store(true, Ordering::Release);
         Arc::get_mut(&mut state)
             .expect("browser fixture is exclusive before HTTP server startup")
             .observability = ObservabilityRuntime::new(true);
