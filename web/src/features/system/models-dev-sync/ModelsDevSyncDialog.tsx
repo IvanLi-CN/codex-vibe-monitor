@@ -21,6 +21,8 @@ import {
   type ModelsDevSyncPreview,
   type ModelsDevSyncProvider,
   type PricingEntry,
+  type PricingQuote,
+  type PricingRate,
   previewModelsDevPriceSync,
 } from "../../../lib/api";
 import { AppIcon } from "../../shared/AppIcon";
@@ -29,6 +31,7 @@ import {
   buildModelCandidateGroups,
   candidatePriceFields,
   createApplicablePriceEntries,
+  createApplicableQuotes,
   filterModelCandidateGroups,
   localPriceFields,
   type ModelCandidateGroup,
@@ -36,6 +39,8 @@ import {
   modelProviderKey,
   PRICE_FIELDS,
   priceDifferenceFields,
+  quoteContentEqual,
+  quoteForCandidate,
   quoteProviderChoicesByModel,
   resolveModelCandidate,
   selectionMemoryByKey,
@@ -49,6 +54,7 @@ interface ModelsDevSyncDialogProps {
   onOpenChange(open: boolean): void;
   returnFocusRef: RefObject<HTMLButtonElement | null>;
   pricesByModel: ReadonlyMap<string, PricingEntry>;
+  quotesByModel: ReadonlyMap<string, readonly PricingQuote[]>;
   onPricesApplied(
     pricing: Awaited<ReturnType<typeof applyModelsDevPriceSync>>,
     entries: PricingEntry[],
@@ -66,10 +72,39 @@ function formatPrice(value: number | null | undefined): string {
   }).format(value);
 }
 
+function rateUnitSuffix(unit: string): string {
+  const suffixes: Record<string, string> = {
+    usd_per_1m_tokens: "/ 1M tokens",
+    usd_per_token: "/ token",
+    usd_per_second: "/ second",
+    usd_per_minute: "/ minute",
+    usd_per_character: "/ character",
+    usd_per_image: "/ image",
+    usd: "",
+  };
+  if (suffixes[unit] != null) return suffixes[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `/ ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
+}
+
+function rateMeta(rate: PricingRate): string {
+  const parts = [
+    rate.dimension,
+    rate.modality,
+    rate.tier ? `tier ${rate.tier}` : null,
+    rate.threshold != null ? `ctx ≥ ${new Intl.NumberFormat().format(rate.threshold)}` : null,
+  ];
+  return parts.filter((part): part is string => part != null).join(" · ");
+}
+
 interface ModelCandidateRowProps {
   group: ModelCandidateGroup;
   local: PricingEntry | undefined;
   candidate: ModelCandidateGroup["candidates"][number] | undefined;
+  quote: PricingQuote | undefined;
+  existingQuote: PricingQuote | undefined;
   rememberedProviderUnavailable: boolean;
   selected: boolean;
   isNew: boolean;
@@ -85,6 +120,8 @@ function ModelCandidateRow({
   group,
   local,
   candidate,
+  quote,
+  existingQuote,
   rememberedProviderUnavailable,
   selected,
   isNew,
@@ -100,6 +137,32 @@ function ModelCandidateRow({
     () => (candidate ? priceDifferenceFields(local, candidate) : new Set()),
     [candidate, local],
   );
+  const quoteChanged = Boolean(
+    quote && (!existingQuote || !quoteContentEqual(existingQuote, quote)),
+  );
+  const changedRateKeys = useMemo(() => {
+    if (!quote) return new Set<string>();
+    if (!existingQuote) return new Set(quote.rates.map((rate) => rate.key));
+    const existingRates = new Map(existingQuote.rates.map((rate) => [rate.key, rate]));
+    return new Set(
+      quote.rates
+        .filter((rate) => {
+          const previous = existingRates.get(rate.key);
+          return (
+            !previous ||
+            previous.sourceValue !== rate.sourceValue ||
+            previous.sourceUnit !== rate.sourceUnit ||
+            previous.value !== rate.value ||
+            previous.unit !== rate.unit ||
+            previous.dimension !== rate.dimension ||
+            previous.modality !== rate.modality ||
+            previous.tier !== rate.tier ||
+            previous.threshold !== rate.threshold
+          );
+        })
+        .map((rate) => rate.key),
+    );
+  }, [existingQuote, quote]);
   useEffect(() => {
     if (
       !isNew ||
@@ -142,9 +205,10 @@ function ModelCandidateRow({
         <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-base-content/65">
           {!local ? <span>{t("system.models.locallyUnpriced")}</span> : null}
           {local?.source === "custom" ? <span>{t("system.models.manualPrice")}</span> : null}
-          {candidate && modelPricesEqual(local, candidate) && local ? (
+          {candidate && modelPricesEqual(local, candidate) && local && !quoteChanged ? (
             <span>{t("system.models.noPriceChange")}</span>
           ) : null}
+          {quoteChanged ? <span>{t("system.models.rateChanged")}</span> : null}
           {candidate?.status ? (
             <span className="text-base-content/55">
               {t("system.models.sourceStatus", { status: candidate.status })}
@@ -228,7 +292,56 @@ function ModelCandidateRow({
             })}
           </p>
         ) : null}
-        {candidate && !candidate.importable ? (
+        {quote ? (
+          <div className="mt-3 border-t border-base-300/50 pt-2 text-[11px] text-base-content/70">
+            <div className="mb-1 font-medium text-base-content/60">
+              {t("system.models.detailedRates")}
+            </div>
+            {quote.status || quote.deprecationDate ? (
+              <div className="mb-1 text-base-content/55">
+                {quote.status ? `${t("system.models.rateStatus")}: ${quote.status}` : null}
+                {quote.status && quote.deprecationDate ? " · " : null}
+                {quote.deprecationDate
+                  ? `${t("system.models.deprecationDate")}: ${quote.deprecationDate}`
+                  : null}
+              </div>
+            ) : null}
+            {[
+              quote.rates.filter((rate) => rate.tier == null && rate.threshold == null),
+              quote.rates.filter((rate) => rate.tier != null || rate.threshold != null),
+            ].map((rates, index) =>
+              rates.length === 0 ? null : index === 0 ? (
+                <div key="standard" className="grid gap-1">
+                  {rates.map((rate) => (
+                    <RateRow
+                      key={rate.key}
+                      rate={rate}
+                      changed={changedRateKeys.has(rate.key)}
+                      t={t}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <details key="other" className="mt-2">
+                  <summary className="cursor-pointer text-base-content/55">
+                    {t("system.models.otherRates", { count: rates.length })}
+                  </summary>
+                  <div className="mt-1 grid gap-1">
+                    {rates.map((rate) => (
+                      <RateRow
+                        key={rate.key}
+                        rate={rate}
+                        changed={changedRateKeys.has(rate.key)}
+                        t={t}
+                      />
+                    ))}
+                  </div>
+                </details>
+              ),
+            )}
+          </div>
+        ) : null}
+        {candidate && !candidate.importable && !quote ? (
           <p className="mt-2 text-xs text-base-content/65">{t("system.models.notImportable")}</p>
         ) : null}
       </div>
@@ -239,7 +352,7 @@ function ModelCandidateRow({
           type="checkbox"
           className="checkbox checkbox-sm"
           checked={selected}
-          disabled={!candidate?.importable || applying}
+          disabled={(!candidate?.importable && !quote) || applying}
           aria-label={t("system.models.syncModelPrice", { model: group.model })}
           onChange={(event) =>
             candidate && onSelectionChange(group.model, candidate.providerId, event.target.checked)
@@ -247,6 +360,30 @@ function ModelCandidateRow({
         />
       </label>
     </article>
+  );
+}
+
+function RateRow({ rate, changed, t }: { rate: PricingRate; changed: boolean; t: Translate }) {
+  return (
+    <div className="flex min-w-0 justify-between gap-2">
+      <span className="min-w-0 truncate" title={rate.key}>
+        <span>{rate.key}</span>
+        {rateMeta(rate) ? (
+          <span className="ml-1 text-base-content/55">({rateMeta(rate)})</span>
+        ) : null}
+      </span>
+      <span
+        className={
+          changed
+            ? "shrink-0 rounded-sm border border-warning/40 bg-warning/10 px-1 font-semibold text-warning tabular-nums"
+            : "shrink-0 tabular-nums"
+        }
+      >
+        {formatPrice(rate.value)}
+        {rateUnitSuffix(rate.unit) ? ` ${rateUnitSuffix(rate.unit)}` : ""}
+        {changed ? ` · ${t("system.models.rateChanged")}` : ""}
+      </span>
+    </div>
   );
 }
 
@@ -410,6 +547,7 @@ export function ModelsDevSyncDialog({
   onOpenChange,
   returnFocusRef,
   pricesByModel,
+  quotesByModel,
   onPricesApplied,
 }: ModelsDevSyncDialogProps) {
   const { t } = useTranslation();
@@ -547,12 +685,32 @@ export function ModelsDevSyncDialog({
       createApplicablePriceEntries(candidateGroups, pricesByModel, selectionByKey, quoteChoices),
     [candidateGroups, pricesByModel, quoteChoices, selectionByKey],
   );
+  const applicableQuotes = useMemo(
+    () =>
+      createApplicableQuotes(
+        candidateGroups,
+        syncPreview?.quotes ?? [],
+        quotesByModel,
+        selectionByKey,
+        quoteChoices,
+      ),
+    [candidateGroups, quoteChoices, quotesByModel, selectionByKey, syncPreview?.quotes],
+  );
   const visibleModelIds = useMemo(
     () => new Set(visibleGroups.map((group) => group.model)),
     [visibleGroups],
   );
-  const hiddenApplyCount = applicableEntries.reduce(
-    (count, entry) => count + Number(!visibleModelIds.has(entry.model)),
+  const applicableModelIds = useMemo(
+    () =>
+      new Set([
+        ...applicableEntries.map((entry) => entry.model),
+        ...applicableQuotes.map((quote) => quote.model),
+      ]),
+    [applicableEntries, applicableQuotes],
+  );
+  const applicableModelCount = applicableModelIds.size;
+  const hiddenApplyCount = Array.from(applicableModelIds).reduce(
+    (count, model) => count + Number(!visibleModelIds.has(model)),
     0,
   );
   const virtualizer = useVirtualizer({
@@ -610,7 +768,10 @@ export function ModelsDevSyncDialog({
     (value: boolean | "invert") => {
       const changes = visibleGroups.flatMap((group) => {
         const candidate = resolveModelCandidate(group, quoteChoices[group.model]);
-        return candidate?.importable
+        const quote = candidate
+          ? quoteForCandidate(syncPreview?.quotes ?? [], group.model, candidate.providerId)
+          : undefined;
+        return candidate && (candidate.importable || quote)
           ? [{ model: group.model, providerId: candidate.providerId }]
           : [];
       });
@@ -623,19 +784,22 @@ export function ModelsDevSyncDialog({
       }));
       queueMemoryPatch({ modelSelections });
     },
-    [queueMemoryPatch, quoteChoices, selectionByKey, visibleGroups],
+    [queueMemoryPatch, quoteChoices, selectionByKey, syncPreview?.quotes, visibleGroups],
   );
 
   const applySelected = useCallback(async () => {
-    if (!applicableEntries.length || applyingRef.current) return;
+    if ((!applicableEntries.length && !applicableQuotes.length) || applyingRef.current) return;
     applyingRef.current = true;
     const requestId = ++applyRequestIdRef.current;
     setDialogState("applying");
     setSyncError(null);
     try {
-      const pricing = await applyModelsDevPriceSync(applicableEntries);
+      const pricing =
+        applicableQuotes.length > 0
+          ? await applyModelsDevPriceSync(applicableEntries, applicableQuotes)
+          : await applyModelsDevPriceSync(applicableEntries);
       if (!mountedRef.current || requestId !== applyRequestIdRef.current) return;
-      setResultCount(applicableEntries.length);
+      setResultCount(applicableModelCount);
       onPricesApplied(pricing, applicableEntries);
       setDialogState("applied");
     } catch {
@@ -645,7 +809,7 @@ export function ModelsDevSyncDialog({
     } finally {
       if (requestId === applyRequestIdRef.current) applyingRef.current = false;
     }
-  }, [applicableEntries, onPricesApplied, t]);
+  }, [applicableEntries, applicableModelCount, applicableQuotes, onPricesApplied, t]);
 
   const providers = syncPreview?.providers ?? [];
   const virtualRows = virtualizer.getVirtualItems();
@@ -837,7 +1001,7 @@ export function ModelsDevSyncDialog({
                 <div className="contents desktop:col-start-3 desktop:row-start-1 desktop:flex desktop:items-center desktop:justify-end desktop:gap-x-3">
                   <span className="col-start-2 row-start-2 w-full min-w-0 self-center text-right text-base-content/80 desktop:col-auto desktop:row-auto desktop:w-auto desktop:whitespace-nowrap">
                     {t("system.models.applyCount", {
-                      count: applicableEntries.length,
+                      count: applicableModelCount,
                     })}
                     {hiddenApplyCount > 0
                       ? ` · ${t("system.models.searchHiddenApplyCount", { count: hiddenApplyCount })}`
@@ -898,6 +1062,22 @@ export function ModelsDevSyncDialog({
                             group={group}
                             local={local}
                             candidate={candidate}
+                            existingQuote={
+                              candidate
+                                ? quotesByModel
+                                    .get(group.model)
+                                    ?.find((item) => item.providerId === candidate.providerId)
+                                : undefined
+                            }
+                            quote={
+                              candidate
+                                ? quoteForCandidate(
+                                    syncPreview.quotes ?? [],
+                                    candidate.model,
+                                    candidate.providerId,
+                                  )
+                                : undefined
+                            }
                             rememberedProviderUnavailable={
                               quoteChoices[group.model] !== undefined && candidate === undefined
                             }
@@ -938,13 +1118,16 @@ export function ModelsDevSyncDialog({
                   </Button>
                   <Button
                     type="button"
-                    disabled={applicableEntries.length === 0 || dialogState === "applying"}
+                    disabled={
+                      (applicableEntries.length === 0 && applicableQuotes.length === 0) ||
+                      dialogState === "applying"
+                    }
                     onClick={() => void applySelected()}
                   >
                     {dialogState === "applying"
                       ? t("system.models.syncing")
                       : t("system.models.syncSelected", {
-                          count: applicableEntries.length,
+                          count: applicableModelCount,
                         })}
                   </Button>
                 </div>

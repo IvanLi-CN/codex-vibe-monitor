@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert } from "../../components/ui/alert";
 import { Button } from "../../components/ui/button";
 import { Chip } from "../../components/ui/chip";
@@ -20,6 +20,8 @@ import {
   deleteManagedModel,
   fetchSettings,
   type PricingEntry,
+  type PricingQuote,
+  type PricingRate,
   type SettingsPayload,
   updateManagedModelPreset,
   updatePricingSettings,
@@ -32,6 +34,7 @@ type PriceDraft = {
   cacheRead: string;
   cacheWrite: string;
   reasoning: string;
+  rates: Record<string, string>;
 };
 
 const PRICE_FIELDS = [
@@ -49,6 +52,50 @@ function priceText(value: number | null | undefined): string {
     currency: "USD",
     maximumFractionDigits: 8,
   }).format(value);
+}
+
+function rateUnitLabel(unit: string, t: ReturnType<typeof useTranslation>["t"]): string {
+  const labels: Record<string, string> = {
+    usd_per_1m_tokens: t("system.models.rateUnitUsdPerMillionTokens"),
+    usd_per_token: t("system.models.rateUnitUsdPerToken"),
+    usd_per_second: t("system.models.rateUnitUsdPerSecond"),
+    usd_per_minute: t("system.models.rateUnitUsdPerMinute"),
+    usd_per_character: t("system.models.rateUnitUsdPerCharacter"),
+    usd_per_image: t("system.models.rateUnitUsdPerImage"),
+    usd: t("system.models.rateUnitUsd"),
+  };
+  if (labels[unit]) return labels[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `$ / ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
+}
+
+function rateUnitSuffix(unit: string): string {
+  const suffixes: Record<string, string> = {
+    usd_per_1m_tokens: "/ 1M tokens",
+    usd_per_token: "/ token",
+    usd_per_second: "/ second",
+    usd_per_minute: "/ minute",
+    usd_per_character: "/ character",
+    usd_per_image: "/ image",
+    usd: "",
+  };
+  if (suffixes[unit] != null) return suffixes[unit];
+  const readableUnit = unit.startsWith("usd_per_") ? unit.slice("usd_per_".length) : unit;
+  return unit.startsWith("usd_per_")
+    ? `/ ${readableUnit.replaceAll("_", " ")}`
+    : readableUnit.replaceAll("_", " ");
+}
+
+function rateMeta(rate: PricingRate): string {
+  const parts = [
+    rate.dimension,
+    rate.modality,
+    rate.tier ? `tier ${rate.tier}` : null,
+    rate.threshold != null ? `ctx ≥ ${new Intl.NumberFormat().format(rate.threshold)}` : null,
+  ];
+  return parts.filter((part): part is string => part != null).join(" · ");
 }
 
 function optionalNumber(value: string): number | null | undefined {
@@ -69,7 +116,86 @@ function localPriceFields(entry: PricingEntry | undefined) {
   };
 }
 
-function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
+function QuoteDetails({ quotes }: { quotes: PricingQuote[] }) {
+  const { t } = useTranslation();
+  if (!quotes.length) return null;
+  const renderRates = (rates: PricingRate[]) => (
+    <div className="grid gap-1 desktop:grid-cols-2 xl:grid-cols-3">
+      {rates.map((rate) => {
+        const metadata = rateMeta(rate);
+        const unitSuffix = rateUnitSuffix(rate.unit);
+        return (
+          <div
+            key={`${rate.key}:${rate.unit}:${rate.value}`}
+            className="grid min-w-0 gap-x-4 gap-y-0.5 border-b border-base-300/45 py-1 last:border-0 desktop:grid-cols-[minmax(0,1fr)_auto] desktop:items-center desktop:border desktop:border-base-300/45 desktop:px-2"
+          >
+            <div className="min-w-0">
+              <div className="break-words font-mono text-[10px] leading-4 text-base-content/80">
+                {rate.key}
+              </div>
+              {metadata ? (
+                <div className="break-words text-[10px] leading-4 text-base-content/50">
+                  {metadata}
+                </div>
+              ) : null}
+            </div>
+            <span className="shrink-0 whitespace-nowrap tabular-nums text-base-content/80">
+              {priceText(rate.value)}
+              {unitSuffix ? ` ${unitSuffix}` : ""}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+  return (
+    <div className="text-xs">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 border-b border-base-300/60 pb-2">
+        <span className="font-medium text-base-content/80">{t("system.models.detailedRates")}</span>
+        <span className="text-[11px] text-base-content/55">
+          {t("system.models.quoteCount", {
+            count: quotes.reduce((total, quote) => total + quote.rates.length, 0),
+          })}
+        </span>
+      </div>
+      <div className="mt-2 grid gap-3 text-[11px] text-base-content/65">
+        {quotes.map((quote) => (
+          <section key={`${quote.model}:${quote.providerId}:${quote.sourceVersion}`}>
+            <div className="font-medium text-base-content/80">
+              {quote.providerName} ({quote.providerId})
+              {quote.status ? ` · ${t("system.models.rateStatus")}: ${quote.status}` : ""}
+              {quote.deprecationDate
+                ? ` · ${t("system.models.deprecationDate")}: ${quote.deprecationDate}`
+                : ""}
+            </div>
+            {renderRates(quote.rates.filter((rate) => rate.tier == null && rate.threshold == null))}
+            {quote.rates.some((rate) => rate.tier != null || rate.threshold != null) ? (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-base-content/55">
+                  {t("system.models.otherRates", {
+                    count: quote.rates.filter((rate) => rate.tier != null || rate.threshold != null)
+                      .length,
+                  })}
+                </summary>
+                <div className="mt-1">
+                  {renderRates(
+                    quote.rates.filter((rate) => rate.tier != null || rate.threshold != null),
+                  )}
+                </div>
+              </details>
+            ) : null}
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function formatDraft(
+  entry?: PricingEntry,
+  model = "",
+  quotes: readonly PricingQuote[] = [],
+): PriceDraft {
   return {
     model: entry?.model ?? model,
     input: entry ? String(entry.inputPer1m) : "",
@@ -80,6 +206,11 @@ function formatDraft(entry?: PricingEntry, model = ""): PriceDraft {
         : String(entry.cacheReadPer1m ?? entry.cacheInputPer1m),
     cacheWrite: entry?.cacheWritePer1m == null ? "" : String(entry.cacheWritePer1m),
     reasoning: entry?.reasoningPer1m == null ? "" : String(entry.reasoningPer1m),
+    rates: Object.fromEntries(
+      quotes.flatMap((quote) =>
+        quote.rates.map((rate) => [`${quote.providerId}:${rate.key}`, String(rate.value)]),
+      ),
+    ),
   };
 }
 
@@ -143,9 +274,17 @@ export default function SystemModelsPage() {
       new Set([
         ...(settings?.proxy.models ?? []),
         ...(settings?.pricing.entries.map((entry) => entry.model) ?? []),
+        ...(settings?.pricing.quotes?.map((quote) => quote.model) ?? []),
       ]),
     ).sort((a, b) => a.localeCompare(b));
-  }, [settings?.pricing.entries, settings?.proxy.models]);
+  }, [settings?.pricing.entries, settings?.pricing.quotes, settings?.proxy.models]);
+  const quotesByModel = useMemo(() => {
+    const grouped = new Map<string, PricingQuote[]>();
+    for (const quote of settings?.pricing.quotes ?? []) {
+      grouped.set(quote.model, [...(grouped.get(quote.model) ?? []), quote]);
+    }
+    return grouped;
+  }, [settings?.pricing.quotes]);
   const enabledModels = useMemo(
     () => new Set(settings?.proxy.enabledModels ?? []),
     [settings?.proxy.enabledModels],
@@ -159,7 +298,14 @@ export default function SystemModelsPage() {
     const cacheRead = optionalNumber(editorDraft.cacheRead);
     const cacheWrite = optionalNumber(editorDraft.cacheWrite);
     const reasoning = optionalNumber(editorDraft.reasoning);
-    if (!model || model.length > 128 || input == null || output == null) {
+    const existingEntry = settings.pricing.entries.find((entry) => entry.model === model);
+    const existingQuotes = (settings.pricing.quotes ?? []).filter((quote) => quote.model === model);
+    const hasLegacyProjection = input != null && output != null;
+    if (
+      !model ||
+      model.length > 128 ||
+      (!hasLegacyProjection && (existingEntry !== undefined || existingQuotes.length === 0))
+    ) {
       setEditorError(t("system.models.editor.required"));
       return;
     }
@@ -167,24 +313,59 @@ export default function SystemModelsPage() {
       setEditorError(t("system.models.editor.invalidPrice"));
       return;
     }
-    const entry: PricingEntry = {
-      model,
-      inputPer1m: input,
-      outputPer1m: output,
-      cacheInputPer1m: cacheRead ?? null,
-      cacheReadPer1m: cacheRead ?? null,
-      cacheWritePer1m: cacheWrite ?? null,
-      reasoningPer1m: reasoning ?? null,
+    const customQuotes = existingQuotes.map((quote) => ({
+      ...quote,
       source: "custom",
-    };
+      sourceVersion: "manual",
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: null,
+      rates: quote.rates.map((rate) => {
+        const draftKey = `${quote.providerId}:${rate.key}`;
+        const value = optionalNumber(editorDraft.rates[draftKey] ?? String(rate.value));
+        return {
+          ...rate,
+          sourceValue: value ?? rate.value,
+          sourceUnit: rate.unit,
+          value: value ?? rate.value,
+        };
+      }),
+    }));
+    if (
+      customQuotes.some((quote) =>
+        quote.rates.some(
+          (rate) =>
+            optionalNumber(editorDraft.rates[`${quote.providerId}:${rate.key}`]) === undefined,
+        ),
+      )
+    ) {
+      setEditorError(t("system.models.editor.invalidPrice"));
+      return;
+    }
+    const entry: PricingEntry | null = hasLegacyProjection
+      ? {
+          model,
+          inputPer1m: input!,
+          outputPer1m: output!,
+          cacheInputPer1m: cacheRead ?? null,
+          cacheReadPer1m: cacheRead ?? null,
+          cacheWritePer1m: cacheWrite ?? null,
+          reasoningPer1m: reasoning ?? null,
+          source: "custom",
+        }
+      : null;
     const entries = settings.pricing.entries.filter((current) => current.model !== model);
-    entries.push(entry);
+    if (entry) entries.push(entry);
+    const quotes = [
+      ...(settings.pricing.quotes ?? []).filter((quote) => quote.model !== model),
+      ...customQuotes,
+    ];
     setSavingPrice(true);
     setEditorError(null);
     try {
       await updatePricingSettings({
         catalogVersion: settings.pricing.catalogVersion,
         entries: entries.sort((a, b) => a.model.localeCompare(b.model)),
+        quotes,
       });
       await reloadSettings();
       setEditorOpen(false);
@@ -216,6 +397,7 @@ export default function SystemModelsPage() {
               pricing: {
                 ...current.pricing,
                 entries: current.pricing.entries.filter((entry) => entry.model !== model),
+                quotes: (current.pricing.quotes ?? []).filter((quote) => quote.model !== model),
               },
             }
           : current,
@@ -255,7 +437,11 @@ export default function SystemModelsPage() {
               proxy: {
                 ...current.proxy,
                 models: Array.from(
-                  new Set([...current.proxy.models, ...entries.map((entry) => entry.model)]),
+                  new Set([
+                    ...current.proxy.models,
+                    ...entries.map((entry) => entry.model),
+                    ...(pricing.quotes ?? []).map((quote) => quote.model),
+                  ]),
                 ).sort((a, b) => a.localeCompare(b)),
               },
             }
@@ -269,11 +455,11 @@ export default function SystemModelsPage() {
     (model?: string) => {
       const entry = model ? pricesByModel.get(model) : undefined;
       setEditorIsNew(!model);
-      setEditorDraft(formatDraft(entry, model));
+      setEditorDraft(formatDraft(entry, model, model ? (quotesByModel.get(model) ?? []) : []));
       setEditorError(null);
       setEditorOpen(true);
     },
-    [pricesByModel],
+    [pricesByModel, quotesByModel],
   );
 
   if (loading) {
@@ -389,61 +575,91 @@ export default function SystemModelsPage() {
                   {managedModels.map((model) => {
                     const price = pricesByModel.get(model);
                     const priceFields = localPriceFields(price);
+                    const quotes = quotesByModel.get(model) ?? [];
                     const isBusy = busyModel === model;
                     return (
-                      <tr key={model} className="hover:bg-base-200/35">
-                        <td className="py-3 pr-4 align-middle">
-                          <div className="break-all font-mono text-[13px]">{model}</div>
-                          {price ? (
-                            <Chip size="compact" tone="secondary" className="mt-1.5">
-                              {price.source}
-                            </Chip>
-                          ) : null}
-                        </td>
-                        {PRICE_FIELDS.map(([field]) => (
-                          <td key={field} className="py-3 pr-3 align-middle tabular-nums">
-                            {priceText(priceFields[field])}
+                      <Fragment key={model}>
+                        <tr className="hover:bg-base-200/35">
+                          <td className="py-3 pr-4 align-middle">
+                            <div className="break-all font-mono text-[13px]">{model}</div>
+                            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                              {price ? (
+                                <Chip size="compact" tone="secondary">
+                                  {price.source}
+                                </Chip>
+                              ) : quotes.length ? (
+                                <Chip size="compact" tone="info">
+                                  {t("system.models.quoteOnly")}
+                                </Chip>
+                              ) : null}
+                            </div>
                           </td>
-                        ))}
-                        <td className="py-3 pr-3 align-middle">
-                          <Switch
-                            checked={enabledModels.has(model)}
-                            disabled={isBusy}
-                            aria-label={t("system.models.presetFor", { model })}
-                            onCheckedChange={(checked) => void handlePresetChange(model, checked)}
-                          />
-                        </td>
-                        <td className="py-3 text-right align-middle">
-                          <div className="inline-flex gap-1">
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={t("system.models.editPrice")}
-                              title={t("system.models.editPrice")}
+                          {price ? (
+                            PRICE_FIELDS.map(([field]) => (
+                              <td key={field} className="py-3 pr-3 align-middle tabular-nums">
+                                {priceText(priceFields[field])}
+                              </td>
+                            ))
+                          ) : quotes.length ? (
+                            <td colSpan={5} className="py-3 pr-3 align-middle">
+                              <div className="text-xs text-base-content/70">
+                                {t("system.models.quoteOnlyHint")}
+                              </div>
+                            </td>
+                          ) : (
+                            PRICE_FIELDS.map(([field]) => (
+                              <td key={field} className="py-3 pr-3 align-middle tabular-nums">
+                                {priceText(priceFields[field])}
+                              </td>
+                            ))
+                          )}
+                          <td className="py-3 pr-3 align-middle">
+                            <Switch
+                              checked={enabledModels.has(model)}
                               disabled={isBusy}
-                              onClick={() => openPriceEditor(model)}
-                            >
-                              <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
-                            </Button>
-                            <Button
-                              type="button"
-                              size="icon"
-                              variant="ghost"
-                              aria-label={t("system.models.delete")}
-                              title={t("system.models.delete")}
-                              disabled={isBusy}
-                              onClick={() => setDeleteTarget(model)}
-                            >
-                              <AppIcon
-                                name="trash-can-outline"
-                                className="h-4 w-4 text-error"
-                                aria-hidden
-                              />
-                            </Button>
-                          </div>
-                        </td>
-                      </tr>
+                              aria-label={t("system.models.presetFor", { model })}
+                              onCheckedChange={(checked) => void handlePresetChange(model, checked)}
+                            />
+                          </td>
+                          <td className="py-3 text-right align-middle">
+                            <div className="inline-flex gap-1">
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={t("system.models.editPrice")}
+                                title={t("system.models.editPrice")}
+                                disabled={isBusy}
+                                onClick={() => openPriceEditor(model)}
+                              >
+                                <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
+                              </Button>
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant="ghost"
+                                aria-label={t("system.models.delete")}
+                                title={t("system.models.delete")}
+                                disabled={isBusy}
+                                onClick={() => setDeleteTarget(model)}
+                              >
+                                <AppIcon
+                                  name="trash-can-outline"
+                                  className="h-4 w-4 text-error"
+                                  aria-hidden
+                                />
+                              </Button>
+                            </div>
+                          </td>
+                        </tr>
+                        {quotes.length ? (
+                          <tr className="bg-base-200/15">
+                            <td colSpan={8} className="px-4 py-3">
+                              <QuoteDetails quotes={quotes} />
+                            </td>
+                          </tr>
+                        ) : null}
+                      </Fragment>
                     );
                   })}
                 </tbody>
@@ -454,6 +670,7 @@ export default function SystemModelsPage() {
               {managedModels.map((model) => {
                 const price = pricesByModel.get(model);
                 const priceFields = localPriceFields(price);
+                const quotes = quotesByModel.get(model) ?? [];
                 const isBusy = busyModel === model;
                 return (
                   <article key={model} className="py-4 first:pt-3 last:pb-2">
@@ -464,6 +681,15 @@ export default function SystemModelsPage() {
                           <Chip size="compact" tone="secondary" className="mt-1.5">
                             {price.source}
                           </Chip>
+                        ) : quotes.length ? (
+                          <Chip size="compact" tone="info" className="mt-1.5">
+                            {t("system.models.quoteOnly")}
+                          </Chip>
+                        ) : null}
+                        {quotes.length ? (
+                          <div className="mt-3">
+                            <QuoteDetails quotes={quotes} />
+                          </div>
                         ) : null}
                       </div>
                       <div className="flex shrink-0 items-center gap-1">
@@ -495,16 +721,24 @@ export default function SystemModelsPage() {
                         </Button>
                       </div>
                     </div>
-                    <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
-                      {PRICE_FIELDS.map(([field, label]) => (
-                        <div key={field} className="flex min-w-0 justify-between gap-2">
-                          <dt className="truncate text-base-content/65">
-                            {t(`settings.pricing.columns.${label}`)}
-                          </dt>
-                          <dd className="shrink-0 tabular-nums">{priceText(priceFields[field])}</dd>
-                        </div>
-                      ))}
-                    </dl>
+                    {price ? (
+                      <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                        {PRICE_FIELDS.map(([field, label]) => (
+                          <div key={field} className="flex min-w-0 justify-between gap-2">
+                            <dt className="truncate text-base-content/65">
+                              {t(`settings.pricing.columns.${label}`)}
+                            </dt>
+                            <dd className="shrink-0 tabular-nums">
+                              {priceText(priceFields[field])}
+                            </dd>
+                          </div>
+                        ))}
+                      </dl>
+                    ) : quotes.length ? (
+                      <div className="mt-3 text-xs text-base-content/65">
+                        {t("system.models.quoteOnlyHint")}
+                      </div>
+                    ) : null}
                     <div className="mt-3 flex items-center justify-between border-t border-base-300/60 pt-3">
                       <span className="text-xs text-base-content/70">
                         {t("system.models.preset")}
@@ -579,7 +813,38 @@ export default function SystemModelsPage() {
                   </label>
                 );
               })}
+              {!editorIsNew
+                ? (quotesByModel.get(editorDraft.model.trim()) ?? []).flatMap((quote) =>
+                    quote.rates.map((rate) => {
+                      const draftKey = `${quote.providerId}:${rate.key}`;
+                      return (
+                        <label key={draftKey} className="space-y-1.5 sm:col-span-2">
+                          <span className="text-sm font-medium">
+                            {rate.key} · {quote.providerName} ({rateUnitLabel(rate.unit, t)})
+                          </span>
+                          <Input
+                            type="number"
+                            min="0"
+                            step="any"
+                            inputMode="decimal"
+                            value={editorDraft.rates[draftKey] ?? String(rate.value)}
+                            onChange={(event) =>
+                              setEditorDraft((draft) => ({
+                                ...draft,
+                                rates: {
+                                  ...draft.rates,
+                                  [draftKey]: event.target.value,
+                                },
+                              }))
+                            }
+                          />
+                        </label>
+                      );
+                    }),
+                  )
+                : null}
             </div>
+            <QuoteDetails quotes={quotesByModel.get(editorDraft.model.trim()) ?? []} />
             {editorError ? (
               <Alert variant="error" role="alert" className="mt-4">
                 {editorError}
@@ -631,6 +896,7 @@ export default function SystemModelsPage() {
         onOpenChange={setSyncOpen}
         returnFocusRef={syncTriggerRef}
         pricesByModel={pricesByModel}
+        quotesByModel={quotesByModel}
         onPricesApplied={handleSyncPricesApplied}
       />
     </div>

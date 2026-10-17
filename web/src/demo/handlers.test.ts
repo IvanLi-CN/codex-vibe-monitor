@@ -255,6 +255,56 @@ describe("demo MSW handlers", () => {
     ]);
   });
 
+  it("keeps model sync memory and the LiteLLM source independent of custom pricing", async () => {
+    const memoryResponse = await fetch("http://demo.invalid/api/settings/models/sync/state", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        providerSelectionInitialized: true,
+        providerSelections: [{ providerId: "openai", selected: true }],
+        modelSelections: [{ model: "gpt-image-2.5-flare", providerId: "openai", selected: true }],
+      }),
+    });
+    expect(memoryResponse.ok).toBe(true);
+
+    const settingsResponse = await fetch("http://demo.invalid/api/settings");
+    const settings = (await settingsResponse.json()) as {
+      pricing: { quotes: Array<{ model: string; rates: Array<{ key: string; value: number }> }> };
+    };
+    const customQuotes = settings.pricing.quotes.map((quote) =>
+      quote.model === "gpt-image-2.5-flare"
+        ? {
+            ...quote,
+            rates: quote.rates.map((rate) =>
+              rate.key === "input_cost_per_token" ? { ...rate, value: 99 } : rate,
+            ),
+          }
+        : quote,
+    );
+    const saveResponse = await fetch("http://demo.invalid/api/settings/pricing", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...settings.pricing, quotes: customQuotes }),
+    });
+    expect(saveResponse.ok).toBe(true);
+
+    const previewResponse = await fetch("http://demo.invalid/api/settings/models/sync/preview", {
+      method: "POST",
+    });
+    const preview = (await previewResponse.json()) as {
+      quotes: Array<{ model: string; rates: Array<{ key: string; value: number }> }>;
+      syncState: { modelSelections: Array<{ model: string; selected: boolean }> };
+    };
+    expect(preview.syncState.modelSelections).toEqual([
+      { model: "gpt-image-2.5-flare", providerId: "openai", selected: true },
+    ]);
+    expect(
+      preview.quotes
+        .find((quote) => quote.model === "gpt-image-2.5-flare")
+        ?.rates.find((rate) => rate.key === "input_cost_per_token")?.value,
+    ).toBe(5);
+  });
+
   it("serves invocation timeline records with account filtering and in-flight state", async () => {
     const response = await fetch(
       "http://demo.invalid/api/stats/invocation-timeline?from=2026-08-16T00:00:00.000Z&to=2026-08-16T11:31:00.000Z&upstreamAccountId=101",

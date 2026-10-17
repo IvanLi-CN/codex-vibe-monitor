@@ -2045,10 +2045,13 @@ pub(crate) async fn get_settings(
         .await
         .map_err(ApiError::from)?;
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
+    let quotes = load_pricing_quotes(&state.pool)
+        .await
+        .map_err(ApiError::from)?;
     Ok(Json(SettingsResponse {
         proxy: ProxyModelSettingsResponse::from_settings_with_models(proxy, models),
         forward_proxy,
-        pricing: PricingSettingsResponse::from_catalog(&pricing),
+        pricing: PricingSettingsResponse::from_catalog(&pricing).with_quotes(quotes),
     }))
 }
 
@@ -2131,9 +2134,9 @@ pub(crate) async fn put_pricing_settings(
         ));
     }
 
-    let next = payload.normalized()?;
+    let (next, quotes) = payload.normalized_with_quotes()?;
     let _update_guard = state.pricing_settings_update_lock.lock().await;
-    save_pricing_catalog(&state.pool, &next)
+    save_pricing_catalog_with_quotes(&state.pool, &next, quotes.as_deref())
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
@@ -2151,7 +2154,12 @@ pub(crate) async fn put_pricing_settings(
     {
         warn!(error = %err, "failed to wake ProxyCost backfill after pricing catalog update");
     }
-    Ok(Json(PricingSettingsResponse::from_catalog(&next)))
+    let quotes = load_pricing_quotes(&state.pool)
+        .await
+        .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    Ok(Json(
+        PricingSettingsResponse::from_catalog(&next).with_quotes(quotes),
+    ))
 }
 
 pub(crate) async fn get_versions(

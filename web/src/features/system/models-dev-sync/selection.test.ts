@@ -3,13 +3,16 @@ import type {
   ModelsDevPriceCandidate,
   ModelsDevSyncMemoryState,
   PricingEntry,
+  PricingQuote,
 } from "../../../lib/api";
 import {
   applySelectionChanges,
   buildModelCandidateGroups,
   createApplicablePriceEntries,
+  createApplicableQuotes,
   modelProviderKey,
   priceDifferenceFields,
+  quoteContentEqual,
   resolveModelCandidate,
   selectionMemoryByKey,
 } from "./selection";
@@ -47,6 +50,33 @@ function memory(
     modelSelections,
     quoteProviderChoices: [],
     unviewedModelIds: [],
+  };
+}
+
+function quote(model: string, value = 5): PricingQuote {
+  return {
+    model,
+    providerId: "provider-a",
+    providerName: "Provider A",
+    source: "litellm",
+    sourceVersion: "sha256:current",
+    fetchedAt: "2026-10-15T00:00:00Z",
+    status: null,
+    deprecationDate: null,
+    sourceUrl: "https://example.test/pricing",
+    rates: [
+      {
+        key: "input_cost_per_token",
+        sourceValue: value / 1_000_000,
+        sourceUnit: "usd_per_token",
+        value,
+        unit: "usd_per_1m_tokens",
+        dimension: "input",
+        modality: "text",
+        tier: null,
+        threshold: null,
+      },
+    ],
   };
 }
 
@@ -141,6 +171,36 @@ describe("models.dev price selection", () => {
         {},
       ),
     ).toHaveLength(0);
+  });
+
+  it("omits unchanged quote dimensions while applying changed details", () => {
+    const model = "model-a";
+    const groups = buildModelCandidateGroups(
+      [candidate(model, "provider-a")],
+      new Set(["provider-a"]),
+      false,
+    );
+    const selection = { [modelProviderKey(model, "provider-a")]: true };
+    const existing = quote(model);
+    const incoming = {
+      ...existing,
+      sourceVersion: "sha256:next",
+      fetchedAt: "2026-10-16T00:00:00Z",
+    };
+
+    expect(quoteContentEqual(existing, incoming)).toBe(true);
+    expect(
+      createApplicableQuotes(groups, [incoming], new Map([[model, [existing]]]), selection, {}),
+    ).toHaveLength(0);
+    expect(
+      createApplicableQuotes(
+        groups,
+        [quote(model, 6)],
+        new Map([[model, [existing]]]),
+        selection,
+        {},
+      ),
+    ).toHaveLength(1);
   });
 
   it.each([
