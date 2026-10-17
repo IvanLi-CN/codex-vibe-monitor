@@ -91,7 +91,7 @@ fn observe_startup_recovery_state(
         &[("component", component)],
         oldest_age.as_secs_f64(),
     );
-    for candidate in ["running", "complete"] {
+    for candidate in ["running", "complete", "unavailable"] {
         state.observability.gauge(
             "cvm_startup_recovery_last_state",
             &[("component", component), ("state", candidate)],
@@ -180,6 +180,62 @@ async fn load_startup_pool_attempt_ids(
     .fetch_all(&mut *connection)
     .await
     .context("load startup pool attempt recovery batch")
+}
+
+async fn load_startup_invocation_pending_stats(
+    connection: &mut SqliteConnection,
+    cursor: i64,
+    fence: i64,
+) -> Result<(usize, Duration)> {
+    let (pending, oldest_age_seconds): (i64, f64) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) AS pending,
+               COALESCE((julianday('now') - julianday(MIN(occurred_at))) * 86400.0, 0.0)
+        FROM codex_invocations
+        WHERE id > ?1
+          AND id <= ?2
+          AND source = ?3
+          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        "#,
+    )
+    .bind(cursor)
+    .bind(fence)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&mut *connection)
+    .await
+    .context("load startup invocation recovery progress")?;
+    Ok((
+        pending.max(0) as usize,
+        Duration::from_secs_f64(oldest_age_seconds.max(0.0)),
+    ))
+}
+
+async fn load_startup_pool_attempt_pending_stats(
+    connection: &mut SqliteConnection,
+    cursor: i64,
+    fence: i64,
+) -> Result<(usize, Duration)> {
+    let (pending, oldest_age_seconds): (i64, f64) = sqlx::query_as(
+        r#"
+        SELECT COUNT(*) AS pending,
+               COALESCE((julianday('now') - julianday(MIN(occurred_at))) * 86400.0, 0.0)
+        FROM pool_upstream_request_attempts
+        WHERE id > ?1
+          AND id <= ?2
+          AND status = ?3
+          AND finished_at IS NULL
+        "#,
+    )
+    .bind(cursor)
+    .bind(fence)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+    .fetch_one(&mut *connection)
+    .await
+    .context("load startup pool attempt recovery progress")?;
+    Ok((
+        pending.max(0) as usize,
+        Duration::from_secs_f64(oldest_age_seconds.max(0.0)),
+    ))
 }
 
 async fn run_startup_recovery_batch(
@@ -274,7 +330,7 @@ async fn publish_startup_recovery_batch(state: &AppState, batch: &StartupRecover
 
 async fn run_startup_recovery(
     state: Arc<AppState>,
-    mut fence: StartupRecoveryFence,
+    fence: StartupRecoveryFence,
     readiness_at: Instant,
 ) {
     let Some(_active_guard) = StartupRecoveryActiveGuard::acquire() else {
@@ -293,6 +349,14 @@ async fn run_startup_recovery(
         &[],
         readiness_at.elapsed().as_secs_f64(),
     );
+    let _ = state.sqlite_batch_writer.start_terminal_journal_recovery();
+    if !fence.captured {
+        warn!(
+            "startup recovery fence was unavailable before HTTP readiness; deferring database row recovery to the next start"
+        );
+        observe_startup_recovery_state(&state, "invocations", 0, Duration::ZERO, "unavailable");
+        observe_startup_recovery_state(&state, "pool_attempts", 0, Duration::ZERO, "unavailable");
+    }
 
     loop {
         if state.shutdown.is_cancelled() {
@@ -301,20 +365,34 @@ async fn run_startup_recovery(
             );
             return;
         }
-        if connection.is_none() {
-            if !fence.captured {
-                match capture_startup_recovery_fence(&state).await {
-                    Ok(captured) => fence = captured,
-                    Err(error) => {
-                        observe_startup_recovery_retry(&state, "fence", "capture_failed");
-                        warn!(error = %error, "startup recovery fence capture deferred");
-                        sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
-                        retry_index =
-                            (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
-                        continue;
-                    }
-                }
+        if !fence.captured {
+            let journal = state.sqlite_batch_writer.terminal_journal_stats();
+            observe_startup_recovery_state(
+                &state,
+                "terminal_journal",
+                journal.replay_count,
+                Duration::from_millis(journal.oldest_pending_age_ms),
+                if journal.unavailable {
+                    "unavailable"
+                } else if journal.replay_count == 0 {
+                    "complete"
+                } else {
+                    "running"
+                },
+            );
+            if !journal.unavailable && journal.replay_count == 0 {
+                info!(
+                    "startup recovery deferred fenced database rows because the pre-readiness fence was unavailable"
+                );
+                return;
             }
+            if retry_index > 0 {
+                sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+            }
+            retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+            continue;
+        }
+        if connection.is_none() {
             let options = match build_sqlite_connect_options(
                 &state.config.database_url(),
                 STARTUP_RECOVERY_BUSY_TIMEOUT,
@@ -341,6 +419,7 @@ async fn run_startup_recovery(
             .as_mut()
             .expect("startup recovery connection exists");
         let mut progressed = false;
+        let mut connection_failed = false;
         if !invocation_done {
             match load_startup_invocation_ids(
                 connection_ref,
@@ -368,11 +447,18 @@ async fn run_startup_recovery(
                             invocation_cursor = ids.last().copied().unwrap_or(invocation_cursor);
                             progressed = true;
                             retry_index = 0;
+                            let (pending, oldest_age) = load_startup_invocation_pending_stats(
+                                connection_ref,
+                                invocation_cursor,
+                                fence.invocation_max_id,
+                            )
+                            .await
+                            .unwrap_or((0, Duration::ZERO));
                             observe_startup_recovery_state(
                                 &state,
                                 "invocations",
-                                ids.len().saturating_sub(recovered),
-                                Duration::ZERO,
+                                pending.saturating_add(ids.len().saturating_sub(recovered)),
+                                oldest_age,
                                 "running",
                             );
                         }
@@ -380,12 +466,14 @@ async fn run_startup_recovery(
                             observe_startup_recovery_retry(&state, "invocations", "write_or_lock");
                             crate::db_pressure::global_db_pressure_gate()
                                 .record_error("startup_recovery_invocations", &error);
+                            connection_failed = true;
                             warn!(error = %error, "startup invocation recovery batch deferred");
                         }
                     }
                 }
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "invocations", "read_or_lock");
+                    connection_failed = true;
                     warn!(error = %error, "startup invocation recovery batch read deferred");
                 }
             }
@@ -418,11 +506,18 @@ async fn run_startup_recovery(
                                 ids.last().copied().unwrap_or(pool_attempt_cursor);
                             progressed = true;
                             retry_index = 0;
+                            let (pending, oldest_age) = load_startup_pool_attempt_pending_stats(
+                                connection_ref,
+                                pool_attempt_cursor,
+                                fence.pool_attempt_max_id,
+                            )
+                            .await
+                            .unwrap_or((0, Duration::ZERO));
                             observe_startup_recovery_state(
                                 &state,
                                 "pool_attempts",
-                                ids.len().saturating_sub(recovered),
-                                Duration::ZERO,
+                                pending.saturating_add(ids.len().saturating_sub(recovered)),
+                                oldest_age,
                                 "running",
                             );
                         }
@@ -434,15 +529,20 @@ async fn run_startup_recovery(
                             );
                             crate::db_pressure::global_db_pressure_gate()
                                 .record_error("startup_recovery_pool_attempts", &error);
+                            connection_failed = true;
                             warn!(error = %error, "startup pool attempt recovery batch deferred");
                         }
                     }
                 }
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "pool_attempts", "read_or_lock");
+                    connection_failed = true;
                     warn!(error = %error, "startup pool attempt recovery batch read deferred");
                 }
             }
+        }
+        if connection_failed {
+            connection = None;
         }
 
         let journal = state.sqlite_batch_writer.terminal_journal_stats();
@@ -451,13 +551,16 @@ async fn run_startup_recovery(
             "terminal_journal",
             journal.replay_count,
             Duration::from_millis(journal.oldest_pending_age_ms),
-            if journal.replay_count == 0 {
+            if journal.unavailable {
+                "unavailable"
+            } else if journal.replay_count == 0 {
                 "complete"
             } else {
                 "running"
             },
         );
-        if invocation_done && pool_attempt_done && journal.replay_count == 0 {
+        if invocation_done && pool_attempt_done && !journal.unavailable && journal.replay_count == 0
+        {
             info!("startup recovery coordinator completed fenced recovery");
             return;
         }

@@ -1258,12 +1258,8 @@ impl SqliteBatchWriter {
             .as_ref()
             .map(|journal| journal.stats().replay_count)
             .unwrap_or_default();
-        let mut terminal_journal = terminal_journal;
-        if let Some(journal) = terminal_journal.as_mut() {
-            journal.queue_replay_for_dispatch(SQLITE_BATCH_MAX_ROWS);
-        }
+        let terminal_journal = terminal_journal;
         let terminal_journal = Arc::new(TrackedTerminalJournal::new(terminal_journal));
-        queued_p1_count.store(replay_writes, Ordering::SeqCst);
         let dashboard_reconcile_gate = Arc::new(Mutex::new(()));
         let journal_sync_shutdown = shutdown.child_token();
         let journal_sync_handle = Some(tokio::spawn(run_terminal_journal_sync(
@@ -1325,7 +1321,7 @@ impl SqliteBatchWriter {
         if replay_writes > 0 {
             warn!(
                 replay_count = replay_writes,
-                "requeued terminal journal records during startup"
+                "deferred terminal journal replay until HTTP readiness"
             );
         }
         Ok(writer)
@@ -1839,6 +1835,18 @@ impl SqliteBatchWriter {
                 unavailable: true,
                 ..TerminalJournalStats::default()
             })
+    }
+
+    pub(crate) fn start_terminal_journal_recovery(&self) -> TerminalJournalStats {
+        let stats = self.terminal_journal.lock().ok().and_then(|mut journal| {
+            journal
+                .as_mut()
+                .map(|journal| journal.start_recovery_dispatch(SQLITE_BATCH_MAX_ROWS))
+        });
+        let replay_count = stats.unwrap_or_default();
+        self.queued_p1_count
+            .fetch_add(replay_count, Ordering::SeqCst);
+        self.terminal_journal_stats()
     }
 
     pub(crate) fn append_runtime_attempt_start(
@@ -3257,6 +3265,9 @@ fn drain_terminal_journal_deferred_writes(
     if let Ok(mut guard) = terminal_journal.lock()
         && let Some(journal) = guard.as_mut()
     {
+        if !journal.recovery_dispatch_started() {
+            return;
+        }
         let deferred_capacity = max_writes.saturating_sub(journal.deferred_write_count());
         journal.queue_replay_for_dispatch(deferred_capacity);
         for terminal in journal.take_deferred_writes(max_writes) {

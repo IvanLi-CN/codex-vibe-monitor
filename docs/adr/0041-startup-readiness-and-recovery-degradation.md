@@ -12,11 +12,11 @@ The service previously treated terminal journal replay and proxy orphan recovery
 
 Basic HTTP readiness is published after the database connection, schema, required structure state and listener are ready. Terminal journal replay, proxy invocation recovery and pool attempt recovery run behind a single post-readiness recovery coordinator. Live requests retain their existing fail-closed terminal journal confirmation contract; readiness does not claim that historical recovery is complete.
 
-The coordinator captures a startup fence using the maximum invocation and pool-attempt IDs observed before the listener is published. It processes each fenced table in ascending ID order, with at most 64 IDs per transaction. A committed batch advances its cursor and then refreshes runtime projections and broadcasts. Rows created after the fence are left to normal lifecycle or a later recovery pass.
+The coordinator captures a startup fence using the maximum invocation and pool-attempt IDs observed before the listener is published. It processes each fenced table in ascending ID order, with at most 64 IDs per transaction. A committed batch advances its cursor and then refreshes runtime projections and broadcasts. Rows created after the fence are left to normal lifecycle or a later recovery pass. If the bounded pre-readiness fence capture is unavailable, the coordinator does not recapture it after readiness; it reports the database recovery components as unavailable, continues only the post-readiness terminal journal dispatch, and leaves the fenced row recovery for the next start.
 
 Recovery uses a dedicated SQLite connection with a 200ms busy timeout and a 250ms write-admission budget. Busy, locked, pool-pressure and I/O failures roll back the current batch, retain the durable obligation, emit a fixed-category warning and retry with 250ms, 500ms, 1s, 2s and 5s capped delays. The startup coordinator and periodic pool orphan sweep share an in-process owner so they cannot run overlapping recovery transactions.
 
-Terminal journal frames and database schemas are unchanged. Journal acknowledgement remains after SQLite commit. Incomplete tails and isolated historical frames continue to follow ADR 0039; an unavailable journal or an unconfirmed live append still rejects new terminal acceptance.
+Terminal journal frames and database schemas are unchanged. Journal replay dispatch is enabled only after HTTP readiness; group syncing may continue earlier, but journal-backed SQLite writes and acknowledgements remain post-readiness and after SQLite commit. Incomplete tails and isolated historical frames continue to follow ADR 0039; an unavailable journal or an unconfirmed live append still rejects new terminal acceptance.
 
 ## Consequences
 

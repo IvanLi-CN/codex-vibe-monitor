@@ -293,6 +293,7 @@ pub(crate) struct TerminalJournal {
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
     deferred_write_bytes: usize,
     deferred_rejected: u64,
+    recovery_dispatch_started: bool,
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     shutdown_recovery_order: HashMap<ShutdownRecoveryKey, u64>,
@@ -917,6 +918,7 @@ impl TerminalJournal {
             deferred_writes,
             deferred_write_bytes,
             deferred_rejected: 0,
+            recovery_dispatch_started: false,
             replay_blocked: false,
             pending_attempt_starts,
             completion_capacity,
@@ -1646,6 +1648,12 @@ impl TerminalJournal {
         self.take_replay_chunk(usize::MAX, usize::MAX)
     }
 
+    pub(crate) fn start_recovery_dispatch(&mut self, max_writes: usize) -> usize {
+        self.recovery_dispatch_started = true;
+        self.queue_replay_for_dispatch(max_writes);
+        self.replay_count
+    }
+
     pub(crate) fn queue_replay_for_dispatch(&mut self, max_writes: usize) {
         if max_writes == 0 || self.deferred_writes.len() >= max_writes {
             return;
@@ -1666,6 +1674,10 @@ impl TerminalJournal {
         }
         let available = max_writes.saturating_sub(self.deferred_writes.len());
         self.queue_shutdown_recovery_for_dispatch(available);
+    }
+
+    pub(crate) fn recovery_dispatch_started(&self) -> bool {
+        self.recovery_dispatch_started
     }
 
     fn queue_shutdown_recovery_for_dispatch(&mut self, max_writes: usize) {

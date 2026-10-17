@@ -219,7 +219,7 @@ class Metrics:
             self.gauge("cvm_startup_recovery_pending_records", pending, labels)
             self.gauge("cvm_startup_recovery_oldest_age_seconds", oldest_age, labels)
             state = "running" if pending else "complete"
-            for candidate in ("running", "complete"):
+            for candidate in ("running", "complete", "unavailable"):
                 self.gauge(
                     "cvm_startup_recovery_last_state",
                     1 if candidate == state else 0,
@@ -229,7 +229,7 @@ class Metrics:
                 "cvm_startup_recovery_batch_duration_seconds",
                 recovery_rate,
                 batch_seconds,
-                {**labels, "outcome": "retry" if failing else "committed"},
+                {**labels, "outcome": "error" if failing else "success"},
                 buckets=(.05, .1, .2, .25, .5, 1, 2.5, 5, 10, 30, 60, 120),
             )
             for reason in ("busy", "locked", "disk_io"):

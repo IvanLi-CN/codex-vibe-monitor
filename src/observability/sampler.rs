@@ -124,12 +124,14 @@ async fn sample_runtime(state: &AppState) {
         &[("component", "terminal_journal")],
         terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
     );
-    let terminal_journal_state = if terminal_journal.replay_count == 0 {
+    let terminal_journal_state = if terminal_journal.unavailable {
+        "unavailable"
+    } else if terminal_journal.replay_count == 0 {
         "complete"
     } else {
         "running"
     };
-    for candidate in ["running", "complete"] {
+    for candidate in ["running", "complete", "unavailable"] {
         metrics.gauge(
             "cvm_startup_recovery_last_state",
             &[("component", "terminal_journal"), ("state", candidate)],
