@@ -6,6 +6,79 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use std::io::ErrorKind;
 use std::str::FromStr;
 
+#[derive(Clone, Copy)]
+enum MonthlyWriterPhase {
+    Preflight,
+    PredecessorDigest,
+    PredecessorIdentity,
+    Inflate,
+    CopyAndSourceIdentity,
+    Finalize,
+    SummaryPages,
+    Deflate,
+    OutputDigest,
+    Publication,
+    Cleanup,
+}
+
+impl MonthlyWriterPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Preflight => "preflight",
+            Self::PredecessorDigest => "predecessor_digest",
+            Self::PredecessorIdentity => "predecessor_identity",
+            Self::Inflate => "inflate",
+            Self::CopyAndSourceIdentity => "copy_and_source_identity",
+            Self::Finalize => "finalize",
+            Self::SummaryPages => "summary_pages",
+            Self::Deflate => "deflate",
+            Self::OutputDigest => "output_digest",
+            Self::Publication => "publication",
+            Self::Cleanup => "cleanup",
+        }
+    }
+}
+
+struct MonthlyWriterObservation {
+    dataset: &'static str,
+    active: Option<(MonthlyWriterPhase, std::time::Instant)>,
+}
+
+impl MonthlyWriterObservation {
+    fn new(dataset: &'static str) -> Self {
+        Self {
+            dataset,
+            active: Some((MonthlyWriterPhase::Preflight, std::time::Instant::now())),
+        }
+    }
+
+    fn advance(&mut self, phase: MonthlyWriterPhase) {
+        self.finish("completed");
+        self.active = Some((phase, std::time::Instant::now()));
+    }
+
+    fn finish(&mut self, outcome: &'static str) {
+        if let Some((phase, started)) = self.active.take() {
+            // Fixed fields only: no archive path, month, source identity, or error content.
+            // A stopped observation may be an error or cancellation; it does not prove native
+            // worker completion or resource release.
+            info!(
+                dataset = self.dataset,
+                writer_phase = phase.as_str(),
+                phase_outcome = outcome,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "monthly archive writer phase observed"
+            );
+        }
+    }
+}
+
+impl Drop for MonthlyWriterObservation {
+    fn drop(&mut self) {
+        self.finish("stopped");
+    }
+}
+
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_PAUSE: Duration;
@@ -726,6 +799,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
     if ids.is_empty() {
         bail!("archive batch requires at least one row id");
     }
+    let mut writer_observation = MonthlyWriterObservation::new(spec.dataset);
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
@@ -749,11 +823,13 @@ async fn archive_rows_into_month_batch_with_snapshots(
     // work files to a later retention run.
     let _work_cleanup = TempSqliteCleanup::new(work_path.clone());
     let _gzip_cleanup = TempSqliteCleanup::new(temp_gzip_path.clone());
+    writer_observation.advance(MonthlyWriterPhase::PredecessorDigest);
     let existing_final_sha256 = if final_path.exists() {
         Some(sha256_hex_file(&final_path)?)
     } else {
         None
     };
+    writer_observation.advance(MonthlyWriterPhase::PredecessorIdentity);
     if spec.dataset == "codex_invocations"
         && let Some(existing_sha256) = existing_final_sha256.as_deref()
     {
@@ -792,11 +868,13 @@ async fn archive_rows_into_month_batch_with_snapshots(
         let _ = fs::remove_file(&temp_gzip_path);
     }
 
+    writer_observation.advance(MonthlyWriterPhase::Inflate);
     if final_path.exists() {
         inflate_gzip_sqlite_file(&final_path, &work_path)?;
     } else {
         ensure_attachable_archive_sqlite_path(&work_path)?;
     }
+    writer_observation.advance(MonthlyWriterPhase::CopyAndSourceIdentity);
     let row_count = if spec.dataset == "pool_upstream_request_attempts" {
         async {
             let (count, activity) = archive_pool_upstream_request_attempt_rows_into_month_batch(
@@ -943,6 +1021,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
             return Err(err);
         }
     };
+    writer_observation.advance(MonthlyWriterPhase::Finalize);
     if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
@@ -950,6 +1029,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
     }
 
     if let Some(snapshots) = snapshots {
+        writer_observation.advance(MonthlyWriterPhase::SummaryPages);
         // The monthly target contains previous committed rows as well as this batch. Prepare
         // its complete raw-free Summary proof outside the main write transaction, while the
         // already-inflated task-local copy is available. Never overwrite it with page 0 of
@@ -965,12 +1045,15 @@ async fn archive_rows_into_month_batch_with_snapshots(
         }
     }
 
+    writer_observation.advance(MonthlyWriterPhase::Deflate);
     if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
+    writer_observation.advance(MonthlyWriterPhase::OutputDigest);
     let sha256 = sha256_hex_file(&temp_gzip_path)?;
+    writer_observation.advance(MonthlyWriterPhase::Publication);
     if let Err(err) = replace_legacy_archive_file_with_cleanup_serialization(
         pool,
         spec.dataset,
@@ -986,7 +1069,16 @@ async fn archive_rows_into_month_batch_with_snapshots(
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
-    let _ = fs::remove_file(&work_path);
+    writer_observation.advance(MonthlyWriterPhase::Cleanup);
+    let cleanup_complete = match fs::remove_file(&work_path) {
+        Ok(()) => true,
+        Err(error) => error.kind() == ErrorKind::NotFound,
+    };
+    writer_observation.finish(if cleanup_complete {
+        "completed"
+    } else {
+        "stopped"
+    });
 
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,

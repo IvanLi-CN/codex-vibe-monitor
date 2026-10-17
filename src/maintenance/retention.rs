@@ -1076,12 +1076,17 @@ fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     RETENTION_DEFER_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let reason = reason.to_string();
     // Later stages may commit and clear shared health; retain this run's first actual cause.
-    let _ = RETENTION_RUN_DEFER_REASON.try_with(|current| {
-        let mut current = current.borrow_mut();
-        if current.is_none() {
-            *current = Some(reason.clone());
-        }
-    });
+    let first_run_defer = RETENTION_RUN_DEFER_REASON
+        .try_with(|current| {
+            let mut current = current.borrow_mut();
+            if current.is_none() {
+                *current = Some(reason.clone());
+                true
+            } else {
+                false
+            }
+        })
+        .unwrap_or(false);
     let mut health = RETENTION_WRITE_HEALTH
         .lock()
         .expect("retention write health");
@@ -1090,11 +1095,20 @@ fn retention_record_defer(operation: &'static str, reason: impl ToString) {
     health.snapshot.defer_reason = Some(reason.clone());
     health.snapshot.raw_reference_check_ms = None;
     health.snapshot.last_error = None;
-    debug!(
-        operation,
-        defer_reason = %reason,
-        "retention write deferred before SQLite admission"
-    );
+    drop(health);
+    if first_run_defer {
+        info!(
+            operation,
+            defer_reason = %reason,
+            "retention run first deferred before SQLite admission"
+        );
+    } else {
+        debug!(
+            operation,
+            defer_reason = %reason,
+            "retention write deferred before SQLite admission"
+        );
+    }
 }
 
 pub(crate) fn retention_defer_generation() -> u64 {

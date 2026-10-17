@@ -2,6 +2,8 @@
 
 - REQ-RMPR-007 refines invocation readiness while retaining committed 64-ID ranges, owner singleflight, bounded cache and the 100ms request deadline. Shared fixed diagnostic events distinguish recovery causes without replacing committed-work evidence. ADR 0040 remains the maintenance ownership and native-drain boundary.
 
+- Correlated conversation statistics previously retained the outer key column's TEXT affinity, preventing the existing normalized-key expression index from serving the live-row MAX lookup. Removing only that affinity preserves the normalized comparison and missing-index fallback. The regression now explains the actual production query and requires the named expression index instead of accepting any generic SEARCH plan; exact-reference and Summary live-tail interleave cases preserve the existing recovery fences.
+
 - ADR 0040 and REQ-RMPR-006 refine wake confirmation and index preparation using the owner-approved contention repair boundary. They retain exact published-memory Summary responses, existing durable progress and the established terminal competition budgets; historical performance evidence is not promoted to current-candidate proof.
 
 - PR #1125 integrates PR #1127's bounded wake obligations with the terminal writer's synchronous memory producer. Its independent maintenance owner confirms accepted notifications; rejected notifications remain retryable after the business terminal commits. Summary live-tail publication keeps writer and background ownership through native drain, and fixtures distinguish the real sixty-second maintenance lock window from proxy latency acceptance. The final candidate owns its CI and review evidence independently of earlier partial slices.
