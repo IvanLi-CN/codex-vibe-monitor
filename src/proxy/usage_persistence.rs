@@ -1842,14 +1842,13 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope_tx(
                     r#")
                     WHERE id IN ("#,
                 );
-                let mut separated = query.separated(", ");
-                for id in ids {
-                    separated.push_bind(id);
+                {
+                    let mut separated = query.separated(", ");
+                    for id in ids {
+                        separated.push_bind(id);
+                    }
+                    separated.push_unseparated(r#")"#);
                 }
-                separated.push_unseparated(
-                    r#")"#,
-                );
-                drop(separated);
                 query.push(
                     r#"
                       AND status = "#,
@@ -2206,12 +2205,13 @@ pub(crate) async fn recover_proxy_invocations_with_scope_tx(
                     r#", is_actionable = 1
                     WHERE id IN ("#,
                 );
-                let mut separated = query.separated(", ");
-                for id in ids {
-                    separated.push_bind(id);
+                {
+                    let mut separated = query.separated(", ");
+                    for id in ids {
+                        separated.push_bind(id);
+                    }
+                    separated.push_unseparated(r#")"#);
                 }
-                separated.push_unseparated(r#")"#);
-                drop(separated);
                 query.push(
                     r#"
                       AND source = "#,
