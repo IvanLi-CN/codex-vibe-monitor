@@ -2776,13 +2776,83 @@
       }
     },
     {
+      "id": 240,
+      "type": "row",
+      "title": "启动恢复：就绪、积压与锁退避",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 150,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 241,
+          "type": "timeseries",
+          "title": "恢复积压与最老年龄",
+          "description": "按固定恢复 component 显示未完成记录和年龄；与 HTTP readiness 分开阅读。",
+          "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "legendFormat": "pending / {{component}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "B",
+              "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "legendFormat": "oldest age / {{component}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 242,
+          "type": "timeseries",
+          "title": "恢复批次耗时与重试原因",
+          "description": "锁、忙、准入和连接失败单独计量；缺测或低样本不生成改善结论。",
+          "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (rate(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+              "legendFormat": "p95 / {{component}} / {{outcome}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            },
+            {
+              "refId": "B",
+              "expr": "sum by(component,reason) (increase(cvm_startup_recovery_retries_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))",
+              "legendFormat": "retry / {{component}} / {{reason}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        }
+      ]
+    },
+    {
       "id": 90,
       "type": "row",
       "title": "高级：准入解释",
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 150,
+        "y": 159,
         "w": 24,
         "h": 1
       },

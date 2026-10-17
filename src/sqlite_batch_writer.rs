@@ -13,7 +13,7 @@ use sqlx::{Pool, Sqlite, SqliteConnection};
 use tokio::{
     sync::{Mutex, Notify, RwLock, mpsc, oneshot},
     task::JoinHandle,
-    time::{MissedTickBehavior, interval, sleep, timeout_at},
+    time::{MissedTickBehavior, interval, sleep, timeout, timeout_at},
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
@@ -474,6 +474,7 @@ pub(crate) struct PendingBatch {
     terminal_estimated_bytes: usize,
     oldest_at: Option<Instant>,
     retained_for_retry: bool,
+    recovery_replay: bool,
 }
 
 impl PendingBatch {
@@ -732,8 +733,10 @@ impl PendingBatch {
         self.terminal_estimated_bytes = self
             .terminal_estimated_bytes
             .saturating_sub(estimated_bytes);
+        let recovery_replay = self.recovery_replay;
         if !self.has_p2() {
             self.oldest_at = None;
+            self.recovery_replay = false;
         }
         Self {
             enqueued_rows: terminal_invocations.len(),
@@ -741,6 +744,7 @@ impl PendingBatch {
             terminal_estimated_bytes: estimated_bytes,
             terminal_invocations,
             oldest_at: self.oldest_at,
+            recovery_replay,
             ..Self::default()
         }
     }
@@ -783,10 +787,12 @@ impl PendingBatch {
             return Self::default();
         }
         self.recalculate_estimates();
+        let recovery_replay = self.recovery_replay;
         let mut chunk = Self {
             terminal_invocations,
             oldest_at: self.oldest_at,
             retained_for_retry: self.retained_for_retry,
+            recovery_replay,
             ..Self::default()
         };
         chunk.recalculate_estimates();
@@ -794,6 +800,7 @@ impl PendingBatch {
         self.enqueued_rows = self.logical_rows();
         if self.is_empty() {
             self.oldest_at = None;
+            self.recovery_replay = false;
         }
         chunk
     }
@@ -819,12 +826,14 @@ impl PendingBatch {
         }
 
         let oldest_at = self.oldest_at;
+        let recovery_replay = self.recovery_replay;
         let attempt_progress_coalesced_rows = self.attempt_progress_coalesced_rows;
         self.attempt_progress_coalesced_rows = 0;
         let mut chunk = Self {
             oldest_at,
             retained_for_retry: self.retained_for_retry,
             attempt_progress_coalesced_rows,
+            recovery_replay,
             ..Self::default()
         };
         let mut selected_rows = 0_usize;
@@ -903,6 +912,7 @@ impl PendingBatch {
         chunk.coalesced_rows = 0;
         if self.is_empty() {
             self.oldest_at = None;
+            self.recovery_replay = false;
         }
         chunk
     }
@@ -917,6 +927,7 @@ impl PendingBatch {
     }
 
     fn merge_p2(&mut self, mut other: Self) {
+        self.recovery_replay |= other.recovery_replay;
         let attempt_progress = std::mem::take(&mut other.attempt_progress);
         for progress in attempt_progress.into_values() {
             let write_bytes = estimated_attempt_progress_memory_bytes(&progress);
@@ -951,6 +962,7 @@ impl PendingBatch {
     }
 
     fn merge_all(&mut self, mut other: Self) {
+        self.recovery_replay |= other.recovery_replay;
         let terminal_invocations = std::mem::take(&mut other.terminal_invocations);
         let terminal_count = terminal_invocations.len();
         for terminal in terminal_invocations.into_values() {
@@ -1085,6 +1097,51 @@ enum P2DeferReason {
 
 fn estimated_option_string_bytes(value: &Option<String>) -> usize {
     value.as_ref().map_or(0, String::capacity)
+}
+
+async fn acquire_sqlite_flush_connection(
+    pool: &Pool<Sqlite>,
+    recovery_replay: bool,
+) -> Result<sqlx::pool::PoolConnection<Sqlite>> {
+    if recovery_replay {
+        let connection = timeout(
+            crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
+            pool.acquire(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "startup recovery SQLite write admission exceeded {}ms",
+                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis()
+            )
+        })??;
+        Ok(connection)
+    } else {
+        Ok(pool.acquire().await?)
+    }
+}
+
+async fn configure_startup_recovery_connection(
+    connection: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<()> {
+    sqlx::query(&format!(
+        "PRAGMA busy_timeout = {}",
+        crate::runtime::STARTUP_RECOVERY_BUSY_TIMEOUT.as_millis()
+    ))
+    .execute(&mut *connection)
+    .await
+    .context("configure startup recovery SQLite busy timeout")?;
+    Ok(())
+}
+
+async fn restore_sqlite_connection_busy_timeout(
+    connection: &mut sqlx::pool::PoolConnection<Sqlite>,
+) -> Result<()> {
+    sqlx::query("PRAGMA busy_timeout = 30000")
+        .execute(&mut *connection)
+        .await
+        .context("restore SQLite busy timeout after startup recovery")?;
+    Ok(())
 }
 
 impl SqliteBatchWrite {
@@ -3202,6 +3259,7 @@ fn drain_terminal_journal_deferred_writes(
             accounting.observe_p1_replace(0, 1);
             accounting.retry_p1_deferred();
             accounting.observe_p1_retry();
+            pending.recovery_replay = true;
             pending.push_accounted(write, accounting);
         }
         for finish in
@@ -3211,6 +3269,7 @@ fn drain_terminal_journal_deferred_writes(
             accounting.enqueue(write.estimated_memory_bytes());
             accounting.retry_p2_deferred();
             accounting.observe_p2_retry(false);
+            pending.recovery_replay = true;
             pending.push_accounted(write, accounting);
         }
     }
@@ -3583,14 +3642,39 @@ pub(crate) async fn flush_pending_batch(
     }
 
     let flush_reason = reason.as_str();
+    let recovery_replay = batch.recovery_replay;
     let p2_pending_before_p1 = batch.has_p2();
     let p1_batch = batch.take_p1_terminals();
     if !p1_batch.is_empty() {
         let transaction_id = format!("p1-{}", started.elapsed().as_nanos());
         let diagnostic_admission = diagnostics::begin_batch(&p1_batch);
-        let permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
-            .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
-            .await;
+        let permit = if recovery_replay {
+            match timeout(
+                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
+                crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator().acquire(
+                    crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal,
+                ),
+            )
+            .await
+            {
+                Ok(permit) => permit,
+                Err(_) => {
+                    batch.terminal_invocations = p1_batch.terminal_invocations;
+                    batch.recovery_replay = true;
+                    batch.recalculate_estimates();
+                    warn!(
+                        admission_budget_ms =
+                            crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis() as u64,
+                        "startup terminal journal replay deferred before SQLite write admission"
+                    );
+                    return Some(RetainedBatch::new(batch, true));
+                }
+            }
+        } else {
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+                .await
+        };
         let admission_context = diagnostic_admission.coordinator_admitted();
         reference_batch(&p1_batch, admission_context);
         let lock_wait_ms = permit.lock_wait().as_millis() as u64;
@@ -4135,12 +4219,27 @@ pub(crate) async fn flush_pending_batch_inner(
     let mut deferred_batch = PendingBatch::default();
     let mut prompt_cache_keys_touched = HashSet::new();
     let mut active_prompt_cache_key_releases = Vec::new();
-    let _dashboard_reconcile_guard = dashboard_reconcile_gate.lock().await;
+    let recovery_replay = batch.recovery_replay;
+    let _dashboard_reconcile_guard = if recovery_replay {
+        timeout(
+            crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET,
+            dashboard_reconcile_gate.lock(),
+        )
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "startup recovery dashboard reconcile admission exceeded {}ms",
+                crate::runtime::STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis()
+            )
+        })?
+    } else {
+        dashboard_reconcile_gate.lock().await
+    };
     let mut persisted_terminals = Vec::with_capacity(batch.terminal_invocations.len());
     if !batch.terminal_invocations.is_empty() {
         let mut diagnostic_batch = diagnostics::begin_batch(batch);
         let pool_started = Instant::now();
-        let connection_result = pool.acquire().await;
+        let mut connection = acquire_sqlite_flush_connection(pool, recovery_replay).await?;
         if let Some(m) = observability {
             m.duration(
                 "cvm_sqlite_pool_acquire_duration_seconds",
@@ -4148,7 +4247,9 @@ pub(crate) async fn flush_pending_batch_inner(
                 pool_started.elapsed(),
             );
         }
-        let mut connection = connection_result?;
+        if recovery_replay {
+            configure_startup_recovery_connection(&mut connection).await?;
+        }
         diagnostic_batch.pool_acquired();
         let execute_started = Instant::now();
         let execute_result: Result<()> = async {
@@ -4258,6 +4359,20 @@ pub(crate) async fn flush_pending_batch_inner(
         terminal_tx.commit().await?;
         Ok(())
         }.await;
+        let execute_result = if recovery_replay {
+            match (
+                execute_result,
+                restore_sqlite_connection_busy_timeout(&mut connection).await,
+            ) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(error), Err(restore_error)) => Err(anyhow::anyhow!(
+                    "{error:#}; failed to restore SQLite busy timeout: {restore_error:#}"
+                )),
+            }
+        } else {
+            execute_result
+        };
         if let Some(m) = observability {
             let outcome = if execute_result.is_ok() {
                 "success"
@@ -4441,7 +4556,7 @@ pub(crate) async fn flush_pending_batch_inner(
         }
     };
     let pool_started = Instant::now();
-    let connection_result = pool.acquire().await;
+    let mut connection = acquire_sqlite_flush_connection(pool, recovery_replay).await?;
     if let Some(m) = observability {
         m.duration(
             "cvm_sqlite_pool_acquire_duration_seconds",
@@ -4449,7 +4564,9 @@ pub(crate) async fn flush_pending_batch_inner(
             pool_started.elapsed(),
         );
     }
-    let mut connection = connection_result?;
+    if recovery_replay {
+        configure_startup_recovery_connection(&mut connection).await?;
+    }
     let execute_started = Instant::now();
     let mut terminal_overlay_keys = Vec::new();
     let execute_result: Result<()> = async {
@@ -4548,6 +4665,20 @@ pub(crate) async fn flush_pending_batch_inner(
     tx.commit().await?;
     Ok(())
     }.await;
+    let execute_result = if recovery_replay {
+        match (
+            execute_result,
+            restore_sqlite_connection_busy_timeout(&mut connection).await,
+        ) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(restore_error)) => Err(anyhow::anyhow!(
+                "{error:#}; failed to restore SQLite busy timeout: {restore_error:#}"
+            )),
+        }
+    } else {
+        execute_result
+    };
     if let Some(m) = observability {
         let outcome = if execute_result.is_ok() {
             "success"
@@ -6587,6 +6718,10 @@ mod tests {
         );
 
         assert_eq!(pending.terminal_invocations.len(), 1);
+        assert!(
+            pending.recovery_replay,
+            "journal replay batches must retain the bounded recovery write policy"
+        );
         let snapshot = accounting.snapshot();
         assert_eq!(snapshot.pending_depth, 1);
         assert_eq!(snapshot.pending_bytes, pending.estimated_memory_bytes());
