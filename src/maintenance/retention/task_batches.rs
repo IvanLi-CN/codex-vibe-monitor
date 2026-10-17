@@ -11,6 +11,9 @@ struct ArchiveSourceIdentityProof {
 
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
+        // The writer/publication path already proves the returned artifact digest. The first
+        // source admission revalidates that digest under the archive fence; this local copy only
+        // supplies per-chunk identity data and must not replace that final recheck.
         let proof_path = PathBuf::from(format!(
             "{}.task-{}.sqlite",
             path.display(),
@@ -310,26 +313,11 @@ pub(crate) async fn prune_old_invocation_details(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-            let archive_lock =
-                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            if actual_archive_sha256 != archive_outcome.sha256 {
-                bail!("retention task-local archive artifact digest verification failed");
-            }
-            drop(file_verify_phase);
-            drop(archive_lock);
-            #[cfg(test)]
-            batch_admission::pause_after_archive_artifact_verified().await;
             let mut archive_identity_proof =
                 ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await?;
+            #[cfg(test)]
+            batch_admission::pause_after_archive_artifact_verified().await;
             let mut committed_rows = 0;
             let mut pending_group = group;
             while !pending_group.is_empty() {
@@ -850,23 +838,6 @@ pub(super) async fn archive_old_invocations_with_source_max(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-            let archive_lock =
-                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_archive_sha256 = sha256_hex_file(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            if actual_archive_sha256 != archive_outcome.sha256 {
-                bail!("retention task-local archive artifact changed before publication");
-            }
-            drop(file_verify_phase);
-            drop(archive_lock);
-            #[cfg(test)]
-            batch_admission::pause_after_archive_artifact_verified().await;
             let mut archive_identity_proof =
                 ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await?;
@@ -884,6 +855,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     prompt_cache_keys,
                 ));
             };
+            #[cfg(test)]
+            batch_admission::pause_after_archive_artifact_verified().await;
             let mut committed_rows = 0;
             let mut chunk_index = 0usize;
             let mut pending_group = group;
@@ -1410,26 +1383,11 @@ pub(crate) async fn archive_timestamped_dataset(
             let prepare_elapsed = prepare_started.elapsed();
             batch_observation.file_prepared(prepare_elapsed);
             drop(prepare_phase);
-            let file_verify_phase = batch_observation.phase(RetentionPhase::FileVerify);
-            let archive_lock =
-                retention_archive_file_try_lock(Path::new(&archive_outcome.file_path))?;
-            if retention_run_budget_expired() {
-                break;
-            }
-            let actual_sha256 = match sha256_hex_file(Path::new(&archive_outcome.file_path)) {
-                Ok(value) => value,
-                Err(_) => return Ok((rows_archived, archive_batches, raw_files_removed)),
-            };
-            if actual_sha256 != archive_outcome.sha256 {
-                return Ok((rows_archived, archive_batches, raw_files_removed));
-            }
-            drop(file_verify_phase);
-            drop(archive_lock);
-            #[cfg(test)]
-            batch_admission::pause_after_archive_artifact_verified().await;
             let mut archive_identity_proof =
                 ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
                     .await?;
+            #[cfg(test)]
+            batch_admission::pause_after_archive_artifact_verified().await;
             let archive_file_contains_only_new_rows = archive_outcome.row_count == ids.len() as i64;
             let mut committed_rows = 0;
             let mut pending_group = group;
