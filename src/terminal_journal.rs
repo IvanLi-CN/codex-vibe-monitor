@@ -1669,7 +1669,18 @@ impl TerminalJournal {
                 );
                 self.pending_by_key.remove(&key);
                 self.overflowed = true;
-                self.remember_shutdown_recovery(&[&write]);
+                if !self.remember_shutdown_recovery(&[&write]) {
+                    self.replay_blocked = true;
+                    warn!(
+                        invoke_id = %write.record.invoke_id,
+                        occurred_at = %write.record.occurred_at,
+                        "terminal journal replay could not preserve a deferred write in shutdown recovery"
+                    );
+                } else {
+                    // Moving the record to the durable shutdown-recovery projection transfers
+                    // the existing replay obligation; it must not create a second count.
+                    self.replay_count = self.replay_count.saturating_sub(1);
+                }
             }
         }
         let available = max_writes.saturating_sub(self.deferred_writes.len());
@@ -1747,10 +1758,14 @@ impl TerminalJournal {
                 continue;
             };
             let Ok(file) = File::open(&segment.path) else {
+                self.replay_blocked = true;
+                warn!(path = %segment.path.display(), "terminal journal replay segment could not be opened");
                 break;
             };
             let mut reader = BufReader::new(file);
             if reader.seek(SeekFrom::Start(cursor.byte_offset)).is_err() {
+                self.replay_blocked = true;
+                warn!(path = %segment.path.display(), "terminal journal replay segment could not be seeked");
                 break;
             }
             let mut reached_end = false;
@@ -1768,7 +1783,11 @@ impl TerminalJournal {
                 };
                 let stream_end = match reader.stream_position() {
                     Ok(stream_end) => stream_end,
-                    Err(_) => break,
+                    Err(error) => {
+                        self.replay_blocked = true;
+                        warn!(error = %error, path = %segment.path.display(), "terminal journal replay segment position could not be read");
+                        break;
+                    }
                 };
                 if stream_end == stream_start {
                     reached_end = true;
@@ -1919,7 +1938,7 @@ impl TerminalJournal {
                 .pending_since
                 .map_or(0, |instant| instant.elapsed().as_millis() as u64),
             overflowed: self.overflowed,
-            unavailable: false,
+            unavailable: self.replay_blocked || self.sync_failed || self.append_failed,
             deferred_records: self.deferred_writes.len(),
             deferred_bytes: self.deferred_write_bytes,
             deferred_rejected: self.deferred_rejected,
@@ -2539,6 +2558,82 @@ mod tests {
             TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
         assert_eq!(replayed_after_ack.stats().replay_count, 0);
 
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_capacity_transfer_does_not_duplicate_obligation() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-transfer-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-transfer",
+            "2026-07-29T00:00:00Z",
+        );
+        let terminal = BatchedTerminalInvocationWrite {
+            enqueued_at: None,
+            diagnostic: None,
+            record: record.clone(),
+            attempts: Vec::new(),
+            capture_started: None,
+            raw_capture: false,
+            dashboard_terminal_sequence: None,
+            terminal_projection_event_ids: Vec::new(),
+            startup_backfill_tasks: Vec::new(),
+        };
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+
+        let mut journal = TerminalJournal::open(&database_path).expect("reopen journal");
+        for _ in 0..TERMINAL_JOURNAL_MAX_DEFERRED_WRITES {
+            assert!(journal.defer_write(terminal.clone()));
+        }
+        assert_eq!(journal.stats().replay_count, 1);
+        journal.queue_replay_for_dispatch(usize::MAX);
+        assert_eq!(journal.stats().replay_count, 1);
+        assert_eq!(journal.shutdown_recovery_pending.len(), 1);
+
+        journal.acknowledge(&record.invoke_id, &record.occurred_at, false);
+        assert_eq!(journal.stats().replay_count, 0);
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_segment_failure_marks_journal_unavailable() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-unavailable-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-unavailable",
+            "2026-07-29T00:00:00Z",
+        );
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        let first_sequence = journal
+            .replay_segments
+            .front()
+            .expect("replay segment")
+            .first_sequence;
+        let segment_path = journal
+            .segments
+            .get(&first_sequence)
+            .expect("replay segment metadata")
+            .path
+            .clone();
+        fs::remove_file(segment_path).expect("remove replay segment");
+
+        assert!(journal.take_replay().is_empty());
+        assert!(journal.stats().unavailable);
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 

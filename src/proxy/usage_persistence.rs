@@ -2660,27 +2660,31 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
 pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     state: &AppState,
 ) -> Result<PoolOrphanRecoveryOutcome> {
-    state.sqlite_batch_writer.flush_now(&state.pool).await?;
-
-    let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
-    let responses_started_before = stale_started_before_string(
-        timeouts.responses_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let compact_started_before = stale_started_before_string(
-        timeouts.compact_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let default_started_before = stale_started_before_string(
-        timeouts.default_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let active_attempt_ids = state
-        .pool_live_attempt_ids
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
     let recovery = {
+        state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
+        let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
+        let responses_started_before = stale_started_before_string(
+            timeouts.responses_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        let compact_started_before = stale_started_before_string(
+            timeouts.compact_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        let default_started_before = stale_started_before_string(
+            timeouts.default_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        let active_attempt_ids = state
+            .pool_live_attempt_ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
+        // The write guard spans candidate selection and the update transaction. Request-side
+        // attempt registration takes a read guard until its live lease is installed, so a sweep
+        // cannot classify a newly-started attempt from a stale in-memory snapshot.
+        let _attempt_recovery_gate = crate::runtime::pool_attempt_recovery_gate().write().await;
         let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
             .await;

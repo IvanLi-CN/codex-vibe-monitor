@@ -2294,6 +2294,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         selected_proxy.key.as_str(),
                     )
                     .await;
+                    let _attempt_recovery_gate =
+                        crate::runtime::pool_attempt_recovery_gate().read().await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         let mut attempt_trace = trace.clone();
                         if attempt_trace.request_model.is_none() {
@@ -2396,6 +2398,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         .map(|attempt_id| {
                             PoolLiveAttemptActivityLease::new(state.clone(), attempt_id)
                         });
+                    drop(_attempt_recovery_gate);
                     if let (Some(trace), Some(runtime_snapshot)) =
                         (trace_context.as_ref(), attempt_runtime_snapshot.as_ref())
                     {
@@ -3201,6 +3204,8 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                     record_account_selected(state.as_ref(), account.account_id).await;
                     let group_name_snapshot =
                         normalize_pool_attempt_group_name(account.group_name.clone());
+                    let _attempt_recovery_gate =
+                        crate::runtime::pool_attempt_recovery_gate().read().await;
                     pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
                         let mut attempt_trace = trace.clone();
                         if attempt_trace.request_model.is_none() {
@@ -3313,6 +3318,7 @@ async fn send_pool_request_with_failover_and_binding_constraint_inner(
                         .map(|attempt_id| {
                             PoolLiveAttemptActivityLease::new(state.clone(), attempt_id)
                         });
+                    drop(_attempt_recovery_gate);
                     if let (Some(trace), Some(runtime_snapshot)) =
                         (trace_context.as_ref(), attempt_runtime_snapshot.as_ref())
                     {

@@ -2784,7 +2784,7 @@
         "x": 0,
         "y": 150,
         "w": 24,
-        "h": 1
+        "h": 17
       },
       "panels": [
         {
@@ -2829,6 +2829,17 @@
           "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
           "targets": [{"refId": "A", "expr": "sum by(component,reason) (increase(cvm_startup_recovery_retries_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))", "legendFormat": "retry / {{component}} / {{reason}}", "range": true, "instant": false, "format": "time_series"}],
           "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 245,
+          "type": "timeseries",
+          "title": "恢复状态",
+          "description": "区分 complete、running 与 unavailable；pending 为零不等于恢复可用。",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_last_state{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "{{component}} / {{state}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "noValue": "Unknown", "custom": {"drawStyle": "steps", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
           "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
         }
       ]

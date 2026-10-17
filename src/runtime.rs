@@ -18,6 +18,12 @@ const STARTUP_RECOVERY_RETRY_DELAYS: [Duration; 5] = [
     Duration::from_secs(5),
 ];
 static STARTUP_RECOVERY_ACTIVE: AtomicBool = AtomicBool::new(false);
+static POOL_ATTEMPT_RECOVERY_GATE: std::sync::OnceLock<tokio::sync::RwLock<()>> =
+    std::sync::OnceLock::new();
+
+pub(crate) fn pool_attempt_recovery_gate() -> &'static tokio::sync::RwLock<()> {
+    POOL_ATTEMPT_RECOVERY_GATE.get_or_init(tokio::sync::RwLock::new)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct StartupRecoveryFence {
@@ -106,6 +112,13 @@ fn observe_startup_recovery_retry(state: &AppState, component: &'static str, rea
         &[("component", component), ("reason", reason)],
         1,
     );
+}
+
+async fn wait_for_startup_recovery_retry(shutdown: &CancellationToken, delay: Duration) -> bool {
+    tokio::select! {
+        _ = shutdown.cancelled() => false,
+        _ = sleep(delay) => true,
+    }
 }
 
 enum StartupRecoveryBatch {
@@ -400,7 +413,17 @@ async fn run_startup_recovery(
                 return;
             }
             if retry_index > 0 {
-                sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+                if !wait_for_startup_recovery_retry(
+                    &state.shutdown,
+                    STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
+                )
+                .await
+                {
+                    warn!(
+                        "startup recovery retry wait cancelled; durable obligations remain for the next start"
+                    );
+                    return;
+                }
             }
             retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
             continue;
@@ -421,7 +444,17 @@ async fn run_startup_recovery(
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "connection", "connect_failed");
                     warn!(error = %error, "startup recovery connection unavailable");
-                    sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+                    if !wait_for_startup_recovery_retry(
+                        &state.shutdown,
+                        STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
+                    )
+                    .await
+                    {
+                        warn!(
+                            "startup recovery connection retry cancelled; durable obligations remain for the next start"
+                        );
+                        return;
+                    }
                     retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
                     continue;
                 }
@@ -432,6 +465,7 @@ async fn run_startup_recovery(
             .as_mut()
             .expect("startup recovery connection exists");
         let mut progressed = false;
+        let mut retry_required = false;
         let mut connection_failed = false;
         if !invocation_done {
             match load_startup_invocation_ids(
@@ -476,6 +510,7 @@ async fn run_startup_recovery(
                             );
                         }
                         Err(error) => {
+                            retry_required = true;
                             observe_startup_recovery_retry(&state, "invocations", "write_or_lock");
                             crate::db_pressure::global_db_pressure_gate()
                                 .record_error("startup_recovery_invocations", &error);
@@ -485,6 +520,7 @@ async fn run_startup_recovery(
                     }
                 }
                 Err(error) => {
+                    retry_required = true;
                     observe_startup_recovery_retry(&state, "invocations", "read_or_lock");
                     connection_failed = true;
                     warn!(error = %error, "startup invocation recovery batch read deferred");
@@ -535,6 +571,7 @@ async fn run_startup_recovery(
                             );
                         }
                         Err(error) => {
+                            retry_required = true;
                             observe_startup_recovery_retry(
                                 &state,
                                 "pool_attempts",
@@ -548,6 +585,7 @@ async fn run_startup_recovery(
                     }
                 }
                 Err(error) => {
+                    retry_required = true;
                     observe_startup_recovery_retry(&state, "pool_attempts", "read_or_lock");
                     connection_failed = true;
                     warn!(error = %error, "startup pool attempt recovery batch read deferred");
@@ -583,9 +621,21 @@ async fn run_startup_recovery(
             info!("startup recovery coordinator completed fenced recovery");
             return;
         }
-        if !progressed {
-            sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+        if retry_required || !progressed {
+            if !wait_for_startup_recovery_retry(
+                &state.shutdown,
+                STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
+            )
+            .await
+            {
+                warn!(
+                    "startup recovery retry wait cancelled; durable obligations remain for the next start"
+                );
+                return;
+            }
             retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+        } else {
+            retry_index = 0;
         }
     }
 }
@@ -3860,5 +3910,16 @@ mod startup_recovery_contract_tests {
         let second = StartupRecoveryActiveGuard::acquire();
         assert!(second.is_some());
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_retry_wait_honors_shutdown() {
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(wait_for_startup_recovery_retry(
+            &shutdown,
+            Duration::from_secs(5),
+        ));
+        shutdown.cancel();
+        assert!(!task.await.expect("retry wait task should finish"));
     }
 }
