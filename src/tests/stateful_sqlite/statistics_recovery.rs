@@ -116,9 +116,13 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
     .fetch_all(&pool)
     .await
     .expect("explain missing-index statistics query");
+    let missing_plan_details = missing_plan
+        .iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>();
     assert!(
         !missing_plan.is_empty() && missing_plan.len() <= 8,
-        "missing-index plan evidence must stay bounded: {missing_plan:?}"
+        "missing-index plan evidence must stay bounded: {missing_plan_details:?}"
     );
 
     let prepared = prepare_fixture_indexes(&pool).await;
@@ -148,13 +152,16 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
     .fetch_all(&pool)
     .await
     .expect("explain indexed statistics query");
+    let indexed_plan_details = indexed_plan
+        .iter()
+        .map(|row| row.get::<String, _>("detail"))
+        .collect::<Vec<_>>();
     assert!(
         indexed_plan.len() <= 8
-            && indexed_plan.iter().any(|row| {
-                row.get::<String, _>("detail")
-                    .contains("idx_codex_invocations_prompt_cache_key_id")
-            }),
-        "indexed statistics query must use the target expression index: {indexed_plan:?}"
+            && indexed_plan_details
+                .iter()
+                .any(|detail| detail.contains("idx_codex_invocations_prompt_cache_key_id")),
+        "indexed statistics query must use the target expression index: {indexed_plan_details:?}"
     );
 
     sqlx::query(
