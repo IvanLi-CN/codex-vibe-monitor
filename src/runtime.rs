@@ -38,10 +38,10 @@ impl StartupRecoveryFence {
     }
 }
 
-async fn capture_startup_recovery_fence(state: &AppState) -> Result<StartupRecoveryFence> {
-    let options =
-        build_sqlite_connect_options(&state.config.database_url(), STARTUP_RECOVERY_BUSY_TIMEOUT)?;
-    let mut connection = SqliteConnection::connect_with(&options).await?;
+async fn capture_startup_recovery_fence(
+    options: &SqliteConnectOptions,
+) -> Result<StartupRecoveryFence> {
+    let mut connection = SqliteConnection::connect_with(options).await?;
     let mut transaction = connection.begin().await?;
     let invocation_max_id =
         sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
@@ -60,10 +60,12 @@ async fn capture_startup_recovery_fence(state: &AppState) -> Result<StartupRecov
     })
 }
 
-async fn capture_startup_recovery_fence_bounded(state: &AppState) -> StartupRecoveryFence {
+async fn capture_startup_recovery_fence_bounded(
+    options: &SqliteConnectOptions,
+) -> StartupRecoveryFence {
     match timeout(
         STARTUP_RECOVERY_ADMISSION_BUDGET,
-        capture_startup_recovery_fence(state),
+        capture_startup_recovery_fence(options),
     )
     .await
     {
@@ -361,8 +363,9 @@ async fn run_startup_recovery(
     state: Arc<AppState>,
     fence: StartupRecoveryFence,
     readiness_at: Instant,
+    recovery_connect_options: Arc<SqliteConnectOptions>,
 ) {
-    let Some(_active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
+    let Some(active_guard) = wait_for_startup_recovery_guard(&state.shutdown).await else {
         warn!("startup recovery coordinator stopped while waiting for the recovery path");
         return;
     };
@@ -385,6 +388,10 @@ async fn run_startup_recovery(
         );
         observe_startup_recovery_state(&state, "invocations", 0, Duration::ZERO, "unavailable");
         observe_startup_recovery_state(&state, "pool_attempts", 0, Duration::ZERO, "unavailable");
+        // Only terminal-journal dispatch remains in this path. Release the database recovery
+        // owner so the independent runtime orphan sweep can continue while fenced row recovery
+        // is deferred to the next start.
+        drop(active_guard);
     }
 
     loop {
@@ -444,17 +451,7 @@ async fn run_startup_recovery(
             continue;
         }
         if connection.is_none() {
-            let options = match build_sqlite_connect_options(
-                &state.config.database_url(),
-                STARTUP_RECOVERY_BUSY_TIMEOUT,
-            ) {
-                Ok(options) => options,
-                Err(error) => {
-                    warn!(error = %error, "startup recovery connection options unavailable");
-                    return;
-                }
-            };
-            match SqliteConnection::connect_with(&options).await {
+            match SqliteConnection::connect_with(recovery_connect_options.as_ref()).await {
                 Ok(new_connection) => connection = Some(new_connection),
                 Err(error) => {
                     observe_startup_recovery_retry(&state, "connection", "connect_failed");
@@ -675,6 +672,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         None,
+        None,
     )
 }
 
@@ -682,6 +680,7 @@ fn publish_http_readiness_and_spawn_recovery(
     state: Arc<AppState>,
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
+    recovery_connect_options: Arc<SqliteConnectOptions>,
 ) -> JoinHandle<()> {
     publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
@@ -689,6 +688,7 @@ fn publish_http_readiness_and_spawn_recovery(
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
+        Some(recovery_connect_options),
     )
 }
 
@@ -702,6 +702,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         state,
         startup_started_at,
         summary_deadline,
+        None,
         None,
         None,
     )
@@ -719,6 +720,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         Some(summary_start_delay),
         None,
+        None,
     )
 }
 
@@ -728,6 +730,7 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     summary_deadline: Duration,
     summary_start_delay: Option<Duration>,
     startup_recovery_fence: Option<StartupRecoveryFence>,
+    startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
     let readiness_at = Instant::now();
@@ -737,12 +740,19 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     );
 
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
-        let recovery_handle = startup_recovery_fence.map(|fence| {
-            crate::observability::contention::spawn_performance(
-                state.observability.clone(),
-                run_startup_recovery(state.clone(), fence, readiness_at),
-            )
-        });
+        let recovery_handle = startup_recovery_fence
+            .zip(startup_recovery_connect_options)
+            .map(|(fence, recovery_connect_options)| {
+                crate::observability::contention::spawn_performance(
+                    state.observability.clone(),
+                    run_startup_recovery(
+                        state.clone(),
+                        fence,
+                        readiness_at,
+                        recovery_connect_options,
+                    ),
+                )
+            });
         let post_readiness_warmups_handle = crate::observability::contention::spawn_performance(
             state.observability.clone(),
             run_post_readiness_runtime_warmups(state.clone()),
@@ -941,6 +951,11 @@ pub(crate) async fn run() -> Result<()> {
 
     let database_url = config.database_url();
     ensure_db_directory(&config.database_path)?;
+    let recovery_connect_opts =
+        build_sqlite_connect_options(&database_url, STARTUP_RECOVERY_BUSY_TIMEOUT)?;
+    let recovery_connect_options = Arc::new(
+        runtime_lock.sqlite_connect_options(&config.database_path, recovery_connect_opts)?,
+    );
     let connect_opts = build_sqlite_connect_options(
         &database_url,
         Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
@@ -1581,7 +1596,8 @@ where
         .await;
     }
 
-    let startup_recovery_fence = capture_startup_recovery_fence_bounded(state.as_ref()).await;
+    let startup_recovery_fence =
+        capture_startup_recovery_fence_bounded(recovery_connect_options.as_ref()).await;
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -1634,6 +1650,7 @@ where
         state.clone(),
         startup_started_at,
         startup_recovery_fence,
+        recovery_connect_options,
     ));
     // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
     // remains available after a fence capture failure, while the shared owner gate prevents it

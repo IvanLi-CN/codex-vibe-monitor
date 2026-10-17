@@ -2816,7 +2816,7 @@
           "description": "批次 p95 只展示秒数；锁、忙、准入和连接失败见相邻重试面板。",
           "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
           "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
-          "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (rate(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))", "legendFormat": "p95 / {{component}} / {{outcome}}", "range": true, "instant": false, "format": "time_series"}],
+          "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))) and on(component,outcome) (sum by(component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) >= 100)", "legendFormat": "p95 / {{component}} / {{outcome}}", "range": true, "instant": false, "format": "time_series"}],
           "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
           "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
         },

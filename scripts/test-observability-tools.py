@@ -112,6 +112,22 @@ class GrafanaPreviewTests(unittest.TestCase):
                     msg=f"{dashboard_name}: {current_title} overlaps {next_title}",
                 )
 
+    def test_recovery_p95_panels_require_a_selected_window_sample_gate(self):
+        expected_panels = {
+            "cvm-runtime.json": 142,
+            "cvm-sqlite.json": 242,
+        }
+        for dashboard_name, panel_id in expected_panels.items():
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            row = next(panel for panel in dashboard["panels"] if panel.get("type") == "row" and panel["title"].startswith("启动恢复"))
+            panel = next(panel for panel in row["panels"] if panel["id"] == panel_id)
+            expression = panel["targets"][0]["expr"]
+            self.assertIn("increase(", expression)
+            self.assertIn("_count", expression)
+            self.assertIn(">= 100", expression)
+
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
 

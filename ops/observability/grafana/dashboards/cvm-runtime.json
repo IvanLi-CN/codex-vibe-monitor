@@ -933,7 +933,7 @@
           "targets": [
             {
               "refId": "A",
-              "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (rate(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+              "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))) and on(component,outcome) (sum by(component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) >= 100)",
               "legendFormat": "{{component}} / {{outcome}}",
               "range": true,
               "instant": false,
