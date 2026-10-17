@@ -1669,7 +1669,21 @@ impl TerminalJournal {
                 );
                 self.pending_by_key.remove(&key);
                 self.overflowed = true;
-                if !self.remember_shutdown_recovery(&[&write]) {
+                let recovery_persisted = self
+                    .quarantine_shutdown_batch(
+                        &[&write],
+                        &[],
+                        "terminal journal replay dispatch capacity",
+                    )
+                    .is_ok();
+                if !recovery_persisted {
+                    self.replay_blocked = true;
+                    warn!(
+                        invoke_id = %write.record.invoke_id,
+                        occurred_at = %write.record.occurred_at,
+                        "terminal journal replay could not persist a shutdown recovery obligation"
+                    );
+                } else if !self.remember_shutdown_recovery(&[&write]) {
                     self.replay_blocked = true;
                     warn!(
                         invoke_id = %write.record.invoke_id,
@@ -2619,6 +2633,8 @@ mod tests {
         let mut journal = TerminalJournal::open(&database_path).expect("open journal");
         journal.append(&record, false, None);
         journal.force_sync().expect("sync journal");
+        drop(journal);
+        let mut journal = TerminalJournal::open(&database_path).expect("reopen journal");
         let first_sequence = journal
             .replay_segments
             .front()

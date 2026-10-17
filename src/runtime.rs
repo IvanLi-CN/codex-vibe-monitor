@@ -412,18 +412,17 @@ async fn run_startup_recovery(
                 );
                 return;
             }
-            if retry_index > 0 {
-                if !wait_for_startup_recovery_retry(
+            if retry_index > 0
+                && !wait_for_startup_recovery_retry(
                     &state.shutdown,
                     STARTUP_RECOVERY_RETRY_DELAYS[retry_index],
                 )
                 .await
-                {
-                    warn!(
-                        "startup recovery retry wait cancelled; durable obligations remain for the next start"
-                    );
-                    return;
-                }
+            {
+                warn!(
+                    "startup recovery retry wait cancelled; durable obligations remain for the next start"
+                );
+                return;
             }
             retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
             continue;

@@ -1847,11 +1847,15 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope_tx(
                     separated.push_bind(id);
                 }
                 separated.push_unseparated(
-                    r#")
+                    r#")"#,
+                );
+                drop(separated);
+                query.push(
+                    r#"
                       AND status = "#,
                 );
-                separated.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
-                separated.push_unseparated(
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+                query.push(
                     r#"
                       AND finished_at IS NULL
                     RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
@@ -2206,12 +2210,14 @@ pub(crate) async fn recover_proxy_invocations_with_scope_tx(
                 for id in ids {
                     separated.push_bind(id);
                 }
-                separated.push_unseparated(
-                    r#")
+                separated.push_unseparated(r#")"#);
+                drop(separated);
+                query.push(
+                    r#"
                       AND source = "#,
                 );
-                separated.push_bind(SOURCE_PROXY);
-                separated.push_unseparated(
+                query.push_bind(SOURCE_PROXY);
+                query.push(
                     r#"
                       AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
                     RETURNING id, invoke_id, occurred_at

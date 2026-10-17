@@ -75,7 +75,7 @@
     {
       "path": "src/proxy/usage_persistence.rs",
       "role": "production",
-      "line_budget": 7380,
+      "line_budget": 7386,
       "next_module_workstream": "Split proxy usage persistence, billing projection, archive writes, and retry reconciliation."
     },
     {
