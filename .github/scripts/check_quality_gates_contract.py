@@ -1035,12 +1035,12 @@ def validate_ci_pr(path: Path, contract: ContractModel) -> None:
             ]
             for profile, selector in [
                 ("stateful-sqlite", "test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)"),
-                ("archive-file-io", "test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)"),
+                ("archive-file-io", "test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)"),
             ]
         ]
         require(
             commands == expected_commands,
-            "ci-pr.yml representative-scale selectors must replay both exact archived tests in their resource profiles",
+            "ci-pr.yml representative-scale selectors must replay Summary, proxy and maintenance contention acceptance in their resource profiles",
         )
 
     build_job = named_job_config(workflow, "build", expected_jobs, "ci-pr.yml")

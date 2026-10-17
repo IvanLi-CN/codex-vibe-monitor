@@ -4399,41 +4399,25 @@ pub(crate) async fn flush_pending_batch_inner(
     }
 
     if !batch.startup_backfill_wake_tasks.is_empty() {
-        let pricing_catalog = if let Some(pricing_catalog) = pricing_catalog {
-            Some(pricing_catalog.read().await.clone())
+        let pricing_catalog_guard = if let Some(pricing_catalog) = pricing_catalog {
+            Some(pricing_catalog.read().await)
         } else {
             None
         };
-        let wake_tasks = batch
-            .startup_backfill_wake_tasks
-            .iter()
-            .copied()
-            .filter(|task| {
-                let available = pricing_catalog.is_some()
-                    || !matches!(task, StartupBackfillTask::ProxyCost);
-                if !available {
-                    warn!(
-                        task = task.name(),
-                        "skipping startup backfill wake because its runtime pricing catalog is unavailable"
-                    );
-                }
-                available
-            })
-            .collect::<Vec<_>>();
-        if let Err(error) = wake_startup_backfill_tasks_with_pricing_catalog(
+        let wake_tasks = &batch.startup_backfill_wake_tasks;
+        if let Err(error) = notify_startup_backfill_tasks(
             pool,
-            &wake_tasks,
-            pricing_catalog.as_ref(),
+            wake_tasks,
+            pricing_catalog_guard.as_deref(),
             "terminal_payload_repair_input",
         )
-        .await
         {
-            warn!(
+            debug!(
                 error = %error,
                 tasks = wake_tasks.len(),
-                "failed to wake startup backfill tasks after terminal commit; retaining wake obligation"
+                "startup backfill notification rejected after terminal commit; retaining wake obligation"
             );
-            deferred_batch.add_startup_backfill_wake_tasks(&wake_tasks);
+            deferred_batch.add_startup_backfill_wake_tasks(wake_tasks);
         }
     }
 
@@ -4656,6 +4640,10 @@ pub(crate) async fn replay_live_invocation_hourly_rollups_until_tx(
     }
     replay_live_invocation_hourly_rollups_tx(tx).await
 }
+
+#[cfg(test)]
+#[path = "tests/lightweight/terminal_backfill_obligations.rs"]
+mod terminal_backfill_obligations;
 
 #[cfg(test)]
 mod tests {
@@ -5348,7 +5336,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn p1_terminal_defers_backfill_wake_to_the_coordinated_p2_batch() {
+    async fn p1_terminal_defers_backfill_confirmation_to_the_background_owner() {
         let pool = test_pool().await;
         let task = StartupBackfillTask::ReasoningEffort;
         let record = crate::tests::test_proxy_capture_record(
@@ -5418,6 +5406,18 @@ mod tests {
         .await
         .expect("flush coordinated P2 backfill wake");
 
+        let accepted_generation: Option<i64> = sqlx::query_scalar(
+            "SELECT wake_generation FROM startup_backfill_progress WHERE task_name=?",
+        )
+        .bind(task.name())
+        .fetch_optional(&pool)
+        .await
+        .expect("inspect accepted in-memory wake without confirmation");
+        assert!(
+            accepted_generation.is_none_or(|generation| generation == 0),
+            "acceptance must not synchronously confirm in SQLite"
+        );
+        crate::maintenance::confirm_startup_backfill_wake_obligations_for_test(&pool).await;
         let progress = load_startup_backfill_progress(&pool, task.name())
             .await
             .expect("load terminal-woken backfill progress");
@@ -5644,6 +5644,7 @@ mod tests {
         )
         .await;
 
+        crate::maintenance::confirm_startup_backfill_wake_obligations_for_test(&pool).await;
         let wake_deadline = Instant::now() + Duration::from_secs(1);
         loop {
             let progress = load_startup_backfill_progress(&pool, &task_name)

@@ -27,7 +27,7 @@ async fn retention_archive_exports_transaction_and_complete_write_hold_separatel
     assert_eq!(coordinator.snapshot().await.active_write_class, None);
     let text = runtime.render();
     // The fixture selects two rows per batch, then archives the remaining row.
-    for phase in ["transaction", "write_hold"] {
+    for phase in ["transaction", "commit", "write_hold"] {
         assert!(
             text.lines().any(|line| {
                 line.starts_with("cvm_retention_phase_duration_seconds_count{")
@@ -42,6 +42,453 @@ async fn retention_archive_exports_transaction_and_complete_write_hold_separatel
                 .join("\n")
         );
     }
+    assert!(
+        text.lines().any(|line| {
+            line.starts_with("cvm_retention_phase_duration_seconds_count{")
+                && line.contains("operation=\"invocation_archive\"")
+                && line.contains("phase=\"file_verify\"")
+                && !line.ends_with(" 0")
+        }),
+        "archive chunks must report file_verify: {}",
+        text.lines()
+            .filter(|line| line.starts_with("cvm_retention_phase_duration_seconds_count{"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_rejects_source_change_after_archive_artifact_proof() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-artifact-source-change").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ),
+        ),
+    );
+    let mutate_source = async {
+        probe.verified.notified().await;
+        sqlx::query("UPDATE codex_invocations SET payload = '{\"changed\":true}' WHERE id = 1")
+            .execute(&pool)
+            .await
+            .expect("mutate source after artifact verification");
+        probe.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(work, mutate_source);
+    let error = result.expect_err("artifact-bound source proof must reject changed live rows");
+    assert!(
+        error
+            .to_string()
+            .contains("retention task-local archive source changed before conversion")
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source remains after proof mismatch"),
+        1
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_p2_queue_does_not_hold_file_io_admission() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("task-local-p2-file-io-admission").await;
+    let archive_path = config.archive_dir.join("fairness-probe.sqlite.gz");
+    fs::write(&archive_path, b"retention fairness probe").expect("fairness probe file");
+    let expected_sha256 = sha256_hex_file(&archive_path).expect("fairness probe digest");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let p1 = coordinator
+        .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P1Terminal)
+        .await;
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::ArchiveFileVerifyProbe::default());
+    let p2_acquired = Arc::new(Notify::new());
+    let p2_resume = Arc::new(Notify::new());
+    let p2_task = {
+        let coordinator = coordinator.clone();
+        let p2_acquired = Arc::clone(&p2_acquired);
+        let p2_resume = Arc::clone(&p2_resume);
+        tokio::spawn(async move {
+            let permit = coordinator
+                .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::P2Derived)
+                .await;
+            p2_acquired.notify_one();
+            p2_resume.notified().await;
+            drop(permit);
+        })
+    };
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_ARCHIVE_FILE_VERIFY.scope(
+                probe.clone(),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_secs(60),
+                    crate::maintenance::acquire_retention_batch_write_connection_with_archive_fence_observed(
+                        &pool,
+                        "retention_fairness_probe",
+                        &archive_path,
+                        Some(&expected_sha256),
+                        || None,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    let coordinate = async {
+        tokio::time::timeout(Duration::from_secs(1), probe.started.notified())
+            .await
+            .expect("archive file verification probe started");
+        let snapshot = coordinator.snapshot().await;
+        assert_eq!(snapshot.active_write_class.as_deref(), Some("p1_terminal"));
+        assert_eq!(snapshot.maintenance_fairness_admission_count, 0);
+        assert_eq!(
+            snapshot
+                .write_admission
+                .maintenance_retention
+                .admission_count,
+            0,
+            "file verification must not claim maintenance admission"
+        );
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if coordinator.snapshot().await.p2_waiter_count == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("P2 writer queued behind the active P1 writer");
+
+        probe.resume.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let snapshot = coordinator.snapshot().await;
+                if snapshot.p2_waiter_count == 1 && snapshot.maintenance_waiter_count == 1 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("archive waits for eligibility without holding the file fence");
+        drop(p1);
+        tokio::time::timeout(Duration::from_secs(1), p2_acquired.notified())
+            .await
+            .expect("P2 writer admitted before the archive");
+        let snapshot = coordinator.snapshot().await;
+        assert_eq!(snapshot.active_write_class.as_deref(), Some("p2_derived"));
+        assert_eq!(snapshot.maintenance_fairness_admission_count, 0);
+        p2_resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(&mut work, coordinate);
+    let (mut connection, admission, archive_lock) = result
+        .expect("archive fence helper admitted after P2")
+        .expect("archive fence helper returned resources");
+    connection.return_to_pool().await;
+    drop(archive_lock);
+    drop(admission);
+    p2_task.await.expect("P2 task joined");
+    assert_eq!(coordinator.snapshot().await.active_write_class, None);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_transaction_cancel_rolls_back_before_releasing_admission() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-transaction-cancel").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::TransactionBeginProbe::default());
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_TRANSACTION_BEGIN.scope(
+                probe.clone(),
+                crate::maintenance::retention_test_with_work_budget(
+                    Duration::from_secs(60),
+                    archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::select! {
+        result = &mut work => panic!("transaction cancellation unexpectedly completed: {result:?}"),
+        _ = probe.begun.notified() => drop(work),
+    }
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if coordinator.snapshot().await.active_write_class.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("cancel cleanup releases admission after native drain");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source remains after transaction cancellation"),
+        1
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("independent writer after cancellation");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut writer)
+        .await
+        .expect("rollback drained before releasing the pool connection");
+    sqlx::query("ROLLBACK")
+        .execute(&mut writer)
+        .await
+        .expect("rollback probe transaction");
+    writer
+        .close()
+        .await
+        .expect("close cancellation probe writer");
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_commit_counters_survive_cancel_during_native_drain() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-commit-counter-drain").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
+        operation: Some("invocation_archive"),
+        ..Default::default()
+    });
+    probe
+        .pause_at_return
+        .store(1, std::sync::atomic::Ordering::Release);
+    let observation = crate::TaskExecutionObservation::begin(
+        "retention_archive",
+        "Retention commit counter drain",
+        "manual",
+        Some("maintenance_retention"),
+        "processing",
+    );
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_RETURN_TO_POOL.scope(
+                probe.clone(),
+                run_data_retention_maintenance_with_circuit_and_prompt_cache(
+                    &pool,
+                    &config,
+                    Some(false),
+                    None,
+                    Arc::new(RawCaptureCircuitBreaker::new(config.archive_dir.clone())),
+                    None,
+                    Some(observation.clone()),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.returned.notified() => {}
+            _ = &mut work => panic!("retention task completed before invocation COMMIT native drain pause"),
+        }
+    })
+        .await
+        .expect("pause after invocation COMMIT native drain");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("committed source deletion visible during native drain"),
+        0
+    );
+    let workload = crate::task_runtime_observation::workload_sample("retention_archive")
+        .expect("committed workload sample");
+    assert_eq!(
+        workload.processed.as_ref().and_then(|metric| metric.value),
+        Some(1)
+    );
+
+    drop(work);
+    probe.resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if coordinator.snapshot().await.active_write_class.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("native drain completes before admission release");
+    observation.finish_with_status("cancelled");
+    let workload = crate::task_runtime_observation::workload_sample("retention_archive")
+        .expect("workload sample after cancellation");
+    assert_eq!(
+        workload.processed.as_ref().and_then(|metric| metric.value),
+        Some(1)
+    );
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-stale-summary-manifest").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
+        operation: Some("archive_snapshot_manifest"),
+        ..Default::default()
+    });
+    probe
+        .pause_at_return
+        .store(1, std::sync::atomic::Ordering::Release);
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator,
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_RETURN_TO_POOL.scope(
+                probe.clone(),
+                run_data_retention_maintenance_with_circuit_and_prompt_cache(
+                    &pool,
+                    &config,
+                    Some(false),
+                    None,
+                    Arc::new(RawCaptureCircuitBreaker::new(config.archive_dir.clone())),
+                    None,
+                    None,
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        tokio::select! {
+            _ = probe.returned.notified() => {}
+            _ = &mut work => panic!("retention task completed before manifest staging native drain pause"),
+        }
+    })
+        .await
+        .expect("pause after manifest staging native drain");
+
+    let mut writer = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("open independent manifest replacement writer");
+    assert_eq!(
+        sqlx::query(
+            "UPDATE archive_batches
+             SET sha256='replacement-digest'
+             WHERE dataset='codex_invocations'",
+        )
+        .execute(&mut writer)
+        .await
+        .expect("replace staged manifest digest")
+        .rows_affected(),
+        1
+    );
+    writer
+        .close()
+        .await
+        .expect("close manifest replacement writer");
+    probe.resume.notify_one();
+
+    let summary = tokio::time::timeout(Duration::from_secs(5), &mut work)
+        .await
+        .expect("stale manifest page staging completes")
+        .expect("structured stale manifest failure summary");
+    assert_eq!(summary.completion(), "failed");
+    assert!(summary.fatal_error.is_some());
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot")
+            .fetch_one(&pool)
+            .await
+            .expect("stale manifest has no staged page overwrite"),
+        0
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT sha256 FROM archive_batches WHERE dataset='codex_invocations'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("replacement manifest remains current"),
+        "replacement-digest"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("stale manifest leaves source live"),
+        1
+    );
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
     cleanup_temp_test_dir(&temp_dir);

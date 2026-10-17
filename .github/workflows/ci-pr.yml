@@ -116,7 +116,7 @@ jobs:
   repository-tooling-checks:
     name: Repository Tooling Checks
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -310,7 +310,7 @@ jobs:
   frontend-tests:
     name: Front-end Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -337,7 +337,7 @@ jobs:
   storybook-accessibility-tests:
     name: Storybook Accessibility Tests
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -424,7 +424,7 @@ jobs:
   records-overlay-e2e-producer:
     name: PR E2E Test Producer
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -533,7 +533,7 @@ jobs:
     needs: records-overlay-e2e-producer
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify E2E test producer
         env:
@@ -628,7 +628,7 @@ jobs:
     if: always()
     name: Backend Tests (Lightweight)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -663,7 +663,7 @@ jobs:
     if: always()
     name: Backend Tests (Stateful SQLite shard 1/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -698,7 +698,7 @@ jobs:
     if: always()
     name: Backend Tests (Stateful SQLite shard 2/2)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:
@@ -753,7 +753,7 @@ jobs:
     needs: backend-test-archive
     if: always()
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -783,16 +783,18 @@ jobs:
           path: ${{ runner.temp }}
 
       - name: Run deterministic representative-scale acceptance
+        env:
+          NEXTEST_SUCCESS_OUTPUT: immediate
         run: |
           bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::stateful_sqlite::representative_scale_acceptance::summary_representative_scale_acceptance)'
-          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure)'
+          bash .github/scripts/run-backend-tests.sh --profile archive-file-io --archive-file "$RUNNER_TEMP/backend-tests.tar.zst" --test-filter 'test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_attempt_lifecycle_avoids_sqlite_admission_under_write_pressure) | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)'
 
   backend-tests-archive-file-io:
     needs: backend-test-archive
     if: always()
     name: Backend Tests (Archive / File I/O)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - name: Verify backend test archive producer
         env:

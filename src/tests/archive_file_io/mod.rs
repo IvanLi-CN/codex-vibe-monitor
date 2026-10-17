@@ -8,16 +8,19 @@ mod runtime_attempt_cancellation;
 mod runtime_attempt_visibility;
 mod runtime_journal_capacity;
 mod shutdown_terminal_recovery;
+mod terminal_backfill_contention;
 mod terminal_journal_recovery;
 
 pub(crate) use super::*;
 
 mod archive_backfill_and_materialization;
+mod archive_publication;
 mod archive_replay_safety;
 mod gpt6_cache_write_migration;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
 mod payload_metadata_backfills;
+mod performance_index_ownership;
 mod prompt_cache_control_file_lock;
 mod raw_compression_budget;
 #[expect(

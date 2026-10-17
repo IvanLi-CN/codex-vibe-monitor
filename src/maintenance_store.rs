@@ -1113,6 +1113,13 @@ pub(crate) struct TimelineCoverage {
 
 pub(crate) const MANAGED_TASKS: &[(&str, &str, &str, &str, bool)] = &[
     (
+        "prepare_performance_indexes",
+        "性能索引准备",
+        "在明确预算内逐个准备可选索引，不随服务启动自动执行",
+        "manual",
+        true,
+    ),
+    (
         "invocation_identity_cleanup",
         "调用身份清理",
         "释放无引用的对话身份与已结束小时前缀",
@@ -5735,13 +5742,13 @@ mod tests {
 
     #[test]
     fn managed_task_registry_matches_the_operations_catalog() {
-        assert_eq!(MANAGED_TASKS.len(), 23);
+        assert_eq!(MANAGED_TASKS.len(), 24);
         assert_eq!(
             MANAGED_TASKS
                 .iter()
                 .filter(|(_, _, _, _, is_manual)| *is_manual)
                 .count(),
-            6
+            7
         );
         assert_eq!(STARTUP_BACKFILL_TASKS.len(), 16);
     }

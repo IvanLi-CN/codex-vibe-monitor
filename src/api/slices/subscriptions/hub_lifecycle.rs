@@ -208,6 +208,12 @@ impl SubscriptionHub {
         if !projection.coverage_sources_match(generation_fence) {
             return false;
         }
+        // A reconstructed tail whose target changed is still awaiting fenced publication.
+        // Renewing from its partial overlay would skip the next durable replay and hide a
+        // terminal committed between reconstruction and publication.
+        if state.summary_delta_journal.reconciliation_completed {
+            return false;
+        }
         if state
             .summary_delta_journal
             .overflowed_through_sequence

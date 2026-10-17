@@ -40,8 +40,17 @@ mod model_performance_duration_override_tests;
 #[cfg(test)]
 #[path = "../../tests/lightweight/statistics_observability.rs"]
 mod statistics_observability;
+mod summary_live_tail_transaction;
 mod summary_observability;
+#[cfg(test)]
+#[path = "../../tests/lightweight/summary_fallback_contention.rs"]
+mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+
+#[cfg(test)]
+pub(crate) use summary_live_tail_transaction::{
+    SUMMARY_LIVE_TAIL_CLEANUP_READY, SummaryLiveTailTransaction,
+};
 
 pub(crate) use summary_observability::{
     fetch_summary, record_summary_projection_publication_metrics,
@@ -219,6 +228,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
     BeforeHistoricalLiveCoverage,
+    BeforeLiveTailPublication,
     BeforeProjectionPublication,
 }
 
@@ -36909,96 +36919,6 @@ mod request_compression_query_tests {
             matches!(historical, ApiError::Unavailable(_)),
             "historical fallback error must be explicit: {historical:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn summary_projection_unchanged_bootstrap_fence_skips_repeated_hydration_until_source_changes()
-     {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
-        sqlx::query(
-            "INSERT INTO codex_invocations \
-             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-bootstrap-fence', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
-        )
-        .bind(historical_at)
-        .execute(&state.pool)
-        .await
-        .expect("seed historical source");
-        sqlx::query(
-            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("create Bootstrap interleave gate");
-
-        let interleave = install_summary_projection_test_interleave_at(
-            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
-        );
-        let initial_state = state.clone();
-        let initial = tokio::spawn(async move {
-            hydrate_summary_snapshots_with_deadline(initial_state.as_ref(), Duration::from_secs(1))
-                .await
-        });
-        tokio::pin!(initial);
-        tokio::select! {
-            _ = interleave.wait_for_writer() => {}
-            result = &mut initial => {
-                clear_summary_projection_test_interleave();
-                result.expect("join Bootstrap fallback").expect("Bootstrap fallback");
-                panic!("Bootstrap must reach the deterministic timeout stage");
-            }
-        }
-        initial
-            .await
-            .expect("join Bootstrap fallback")
-            .expect("Bootstrap fallback");
-        clear_summary_projection_test_interleave();
-
-        let (first_result, first_hydrations) =
-            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                .scope(Cell::new(0), async {
-                    let result = refresh_summary_snapshots(state.as_ref()).await;
-                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                        .try_with(Cell::get)
-                        .expect("boundary hydration counter scope");
-                    (result, calls)
-                })
-                .await;
-        first_result.expect("unchanged fallback fence refresh");
-        assert_eq!(
-            first_hydrations, 0,
-            "unchanged fallback fence must skip hydration"
-        );
-
-        sqlx::query(
-            "INSERT INTO codex_invocations \
-             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-bootstrap-fence-new', ?1, 'proxy', 'success', 19, 1.5, '{}', '', 'full')",
-        )
-        .bind(db_occurred_at_lower_bound(Utc::now()))
-        .execute(&state.pool)
-        .await
-        .expect("seed new live source fence");
-        let (changed_result, changed_hydrations) =
-            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                .scope(Cell::new(0), async {
-                    let result = refresh_summary_snapshots(state.as_ref()).await;
-                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                        .try_with(Cell::get)
-                        .expect("boundary hydration counter scope");
-                    (result, calls)
-                })
-                .await;
-        changed_result.expect("changed source fence refresh");
-        assert_eq!(
-            changed_hydrations, 1,
-            "a changed source fence must reopen one bounded Bootstrap admission"
-        );
-        state.pool.close().await;
     }
 
     #[tokio::test]

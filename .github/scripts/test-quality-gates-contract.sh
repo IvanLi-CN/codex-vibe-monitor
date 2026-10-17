@@ -118,6 +118,25 @@ grep -q "PR smoke artifact must be run-scoped and replace the prior attempt" "$t
 continue_error_repo="$tmp_dir/continue-error-repo"
 copy_repo_snapshot "$repo_root" "$continue_error_repo"
 
+python3 - "$continue_error_repo/.github/workflows/ci-pr.yml" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+joint = " | test(=tests::archive_file_io::proxy_runtime_pressure::proxy_runtime_terminal_commits_survive_retention_and_backfill_contention)"
+if text.count(joint) != 1:
+    raise SystemExit("expected one joint contention acceptance selector")
+path.write_text(text.replace(joint, "", 1))
+PY
+if python3 "$repo_root/.github/scripts/check_quality_gates_contract.py" \
+  --repo-root "$continue_error_repo" --profile final >/dev/null 2>"$tmp_dir/missing-joint-acceptance.log"; then
+  echo "expected missing joint maintenance acceptance to fail" >&2
+  exit 1
+fi
+grep -q "selectors must replay Summary, proxy and maintenance contention acceptance" "$tmp_dir/missing-joint-acceptance.log"
+cp "$repo_root/.github/workflows/ci-pr.yml" "$continue_error_repo/.github/workflows/ci-pr.yml"
+
 expect_continue_on_error_rejected() {
   local name="$1"
   local workflow="$2"

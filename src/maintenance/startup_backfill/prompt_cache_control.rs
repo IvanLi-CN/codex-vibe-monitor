@@ -355,6 +355,205 @@ async fn wake_prompt_cache_materialization_write(
     Ok(changed)
 }
 
+pub(super) async fn confirm_prompt_cache_materialization_wake(
+    pool: &Pool<Sqlite>,
+    cancel: &CancellationToken,
+    attempt: &WakeObligationAttempt,
+    scheduler: &StartupBackfillScheduler,
+    prompt_cache_control: Option<&crate::maintenance_store::PromptCacheMaterializationControl>,
+) -> Result<(super::StartupBackfillWakeConfirmation, bool)> {
+    let task = StartupBackfillTask::PromptCacheConversationsMaterialization;
+    let task_name = task.name();
+    let managed_task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    let prompt_cache_control = prompt_cache_control.or_else(|| {
+        crate::maintenance_store::global()
+            .map(|store| store.prompt_cache_materialization_control.as_ref())
+    });
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
+    }
+    if let Some(next_due) = scheduler
+        .next_due_for(task)
+        .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
+    {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Deferred { next_due },
+            false,
+        ));
+    }
+    let control_guard = if let Some(expected_generation) = attempt.key.control_generation {
+        let Some(prompt_cache_control) = prompt_cache_control else {
+            return Ok((super::StartupBackfillWakeConfirmation::Retry, false));
+        };
+        let Some(guard) = prompt_cache_control
+            .lock_current_generation(expected_generation)
+            .await
+        else {
+            return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
+        };
+        Some(guard)
+    } else {
+        None
+    };
+    if cancel.is_cancelled() {
+        return Ok((super::StartupBackfillWakeConfirmation::Cancelled, false));
+    }
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
+    }
+    if let Some(next_due) = scheduler
+        .next_due_for(task)
+        .filter(|_| scheduler.has_future_pressure_deadline(task, Utc::now()))
+    {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Deferred { next_due },
+            false,
+        ));
+    }
+
+    let managed_tasks_present = sqlx::query_scalar::<_, i64>(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='managed_tasks')",
+    )
+    .fetch_one(pool)
+    .await?
+        != 0;
+    let managed_enabled = if managed_tasks_present {
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(managed_task_key)
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
+    if managed_enabled == Some(false) {
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
+    }
+    let progress = sqlx::query_as::<_, (bool, i64, Option<String>, String)>(
+        "SELECT enabled,wake_generation,next_run_after,last_status
+         FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task_name)
+    .fetch_optional(pool)
+    .await?;
+    if progress.as_ref().is_some_and(|progress| !progress.0) {
+        return Ok((super::StartupBackfillWakeConfirmation::Obsolete, false));
+    }
+    if cancel.is_cancelled() {
+        return Ok((super::StartupBackfillWakeConfirmation::Cancelled, false));
+    }
+
+    let expected_generation = progress.as_ref().map(|progress| progress.1);
+    let now = super::format_utc_iso(super::Utc::now());
+    let rows_affected = super::confirm_startup_backfill_progress_write(
+        pool,
+        task,
+        super::WakeProgressWriteContext {
+            task_name,
+            managed_task_key,
+            managed_tasks_present,
+            expected_generation,
+            now: &now,
+            ticket: attempt.ticket,
+            scheduler,
+        },
+    )
+    .await?;
+    if !scheduler.is_current_wake_obligation(attempt.ticket) {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
+    }
+    if cancel.is_cancelled() {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Cancelled,
+            rows_affected > 0,
+        ));
+    }
+    if let Some(expected_generation) = attempt.key.control_generation
+        && let Some(prompt_cache_control) = prompt_cache_control
+        && prompt_cache_control
+            .snapshot()
+            .is_none_or(|snapshot| !snapshot.enabled || snapshot.generation != expected_generation)
+    {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
+    }
+    if rows_affected == 0 {
+        let managed_enabled_after = if managed_tasks_present {
+            sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+                .bind(managed_task_key)
+                .fetch_optional(pool)
+                .await?
+        } else {
+            None
+        };
+        return Ok((
+            if managed_enabled_after == Some(false) {
+                super::StartupBackfillWakeConfirmation::Obsolete
+            } else {
+                super::StartupBackfillWakeConfirmation::Retry
+            },
+            rows_affected > 0,
+        ));
+    }
+    let progress_after = sqlx::query_as::<_, (bool, i64, Option<String>)>(
+        "SELECT enabled,wake_generation,next_run_after
+         FROM startup_backfill_progress WHERE task_name=?",
+    )
+    .bind(task_name)
+    .fetch_optional(pool)
+    .await?;
+    let Some((enabled_after, generation_after, next_run_after)) = progress_after else {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Retry,
+            rows_affected > 0,
+        ));
+    };
+    if !enabled_after {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
+    }
+    if expected_generation
+        .is_some_and(|generation| generation_after != generation.saturating_add(1))
+    {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Retry,
+            rows_affected > 0,
+        ));
+    }
+    let managed_enabled_after = if managed_tasks_present {
+        sqlx::query_scalar::<_, bool>("SELECT enabled FROM managed_tasks WHERE task_key=?")
+            .bind(managed_task_key)
+            .fetch_optional(pool)
+            .await?
+    } else {
+        None
+    };
+    if managed_enabled_after == Some(false) {
+        return Ok((
+            super::StartupBackfillWakeConfirmation::Obsolete,
+            rows_affected > 0,
+        ));
+    }
+    let next_due = next_run_after
+        .as_deref()
+        .and_then(super::parse_to_utc_datetime)
+        .filter(|deadline| *deadline > super::Utc::now());
+    drop(control_guard);
+    Ok((
+        super::StartupBackfillWakeConfirmation::Confirmed {
+            wake_task: next_due.is_none(),
+            next_due,
+        },
+        rows_affected > 0,
+    ))
+}
+
 #[cfg(test)]
 pub(crate) async fn wake_prompt_cache_materialization_for_test(
     store: &crate::maintenance_store::MaintenanceStore,

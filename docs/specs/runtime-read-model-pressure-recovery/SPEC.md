@@ -15,6 +15,7 @@
 - [ADR 0012: Historical Summary Coverage Recovery Supervisor](../../adr/0012-historical-summary-coverage-supervisor.md)
 - [ADR 0014: Durable Summary coverage recovery](../../adr/0014-durable-summary-coverage-recovery.md)
 - [ADR 0035: Summary Source Journal degraded read path](../../adr/0035-summary-source-journal-degraded-read-path.md)
+- [ADR 0040: Bounded maintenance contention](../../adr/0040-bounded-maintenance-contention.md)
 
 ## Context and Scope
 
@@ -109,6 +110,12 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 
 - Checkpoint promotion MUST produce GitHub artifacts only. Any post-deployment observation requires explicit owner confirmation and MUST remain read-only, with no automated deployment, restart, rollback, or server mutation.
 
+### REQ-RMPR-006 — Bounded wake obligations and optional indexes
+
+- Live-tail publication MUST recheck its captured durable target under a short derived-write transaction before advancing the source checkpoint. A waiting foreground writer defers publication without queueing a derived write while holding a background slot. Cancellation MUST retain both permits until native SQLite rollback/close has drained; cancellation of a commit or cleanup waiter cannot advertise a released writer early.
+- Backfill notifications MUST merge into bounded task/control-generation obligations; terminal commits do not wait for maintenance-database confirmation. Durable dirty/progress facts reconstruct valid work after restart. Failed confirmation retains original age and an independent next-due time; repeated notifications and unrelated completions cannot reset backoff. The base delays are 250ms, 500ms, 1s, 2s and capped 5s with 0–20% positive jitter. Confirmation uses short conditional transactions with control checks before and after commit. Persistent BUSY for 60s permits at most 16 actual attempts per task/generation; warning output is capped at one per task/minute while metrics count every attempt.
+- The explicit `maintenance prepare-performance-indexes` CLI MUST reuse online service ownership or offline exclusive proof, honor `--dry-run` and a default 2000ms total `--budget-ms`, and prepare only the raw-link owner and normalized prompt-cache-key/id indexes. Installation is absent from startup; interruption rolls back the active operation and drains native SQLite work before releasing ownership. An absent or unprepared index retains a correct query path. DDL, current-data manipulation and historical recovery remain separate. Detailed interfaces and unchanged exact-query semantics are defined in [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md).
+
 ### MUST
 
 #### Exact Summary Projection
@@ -124,6 +131,7 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - 当 source-record admission 无法为某个 record 或 page 建立精确 coverage 时，hydration 必须发布所有独立已证明的 exact selection，并将受影响的 temporal/current-rank boundary 保留为 range-local `unavailable`。相交的 rolling/calendar selection，或可能包含该记录的 `current` prefix，必须 fail closed；不相交 selection 继续可用。不得发布 partial snapshot 或使整个 cold Projection 失败。
 - hub 尚无 Projection 时，初次 hydration 的 timeout、pressure defer 或其他可恢复失败后的 maintenance retry 必须再次使用 30 秒 Bootstrap；不得先运行 4 秒 Rolling 再把缺失 historical proof 交给背景恢复。只有一个 immutable Projection 已原子发布后，maintenance 才可使用 4 秒 Rolling 和既有 all-time checkpoint cadence。
 - Bootstrap telemetry 必须只记录 build mode、阶段名与耗时，不得记录 source text、archive path、record identity 或 payload。它至少覆盖 current archive admission、runtime overlay、Projection materialization 与 generation-fence snapshot，以便 cold retry 的超时阶段可被脱敏归因。
+- 已发布 Bootstrap fallback 后，未变化的 historical coverage fence 必须抑制重复 cold hydration；仅 live terminal/cursor 变化时使用既有有界 descriptor/delta reconciliation，并保留原有真实 source gap。manifest 或历史 coverage proof 变化才允许重新尝试一次有界 Bootstrap；不得因代理持续有新终态而反复占用 cold recovery 预算。
 - Bootstrap 与 Rolling 可以分页读取 archive manifest metadata 来建立 compact coverage 或有限 gap proof，但不得打开、校验或合并 paged raw archive。需要 paged raw replacement 的范围必须在已发布 Projection 中按 global 或 account scope 保留为 temporal/current-rank unavailable；缺少 account-manifest proof 不能否定已证明的 global compact response。raw hydration 只属于 generation-fenced All-Time Coverage Checkpoint，且不得撤销近期 Exact-Ready selection。
 - Rolling 在 generation fence 变化后不得重新分组整个 bounded historical live interval。它只能复用前一 Projection 中 high-watermark 之前未变化的 Historical Live Coverage Proof；新 ID 落入该 overlap 或移动边界无法在小范围内证明时，必须仅将相交时间范围标为 unavailable，并由独立、可取消的后台 historical-live coverage pass 重建完整 proof。该 pass 的延期或失败不得撤销已发布的 current/recent Projection。
 - 已发布的 Exact-Ready rolling Projection 只能在其 live high-watermark、global/account rollup cursor、archive manifest high-watermark 与 settled terminal sequence 均未变化时续租 freshness。任一 fence 成员变化必须进入新的 bounded reconciliation，不得把旧 source coverage 当作新鲜结果。
@@ -264,6 +272,12 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - Method: repository workflow and documentation checks plus release/observation procedure review.
 - covers: `REQ-RMPR-005`
 - Pass condition: validation produces a reviewable GitHub artifact and no automated deployment or mutable production observation is performed.
+
+### VER-RMPR-006 — Wake confirmation and index recovery
+
+- covers: `REQ-RMPR-001`, `REQ-RMPR-003`, `REQ-RMPR-004`, `REQ-RMPR-006`
+- Method: GitHub CI fixtures hold the independent maintenance database BUSY for 60s under duplicate notifications, disable/cancel/restart and generation changes; compare exact statistics across index preparation, interruption and re-entry. Pause live-tail publication against a concurrent terminal and cancel its native statement or finish waiter. Keep index preparation measurements separate from steady-state competition.
+- Pass: at most 16 attempts per task/generation and one warning per task/minute; accepted valid obligations recover and confirm, terminal commits remain independent, old generations cannot clear newer work; MAX uses the exact target expression index, historical ranges remain complete, Summary request SQL/file IO stays zero. A pending foreground writer defers live-tail publication without advancing its checkpoint, and cancellation retains both native admission fences through actual SQLite drain. Interrupted DDL leaves the service usable and re-entry idempotent. The existing 32-request p95 <2s/full commit <5s/zero lifecycle SQL contract remains; all test stages finish within 15 minutes and no local/Agent VM pressure test is permitted.
 
 ## Detailed Acceptance Criteria
 

@@ -4,26 +4,69 @@ use std::fs::File;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 
-/// The directory lock fences creation against scavenging. The work-file lock then
-/// stays with the task without blocking archive readers or publishers for file I/O.
-pub(super) fn create_task_work_file(final_path: &Path, work_path: &Path) -> Result<File> {
+/// The directory lock fences creation against scavenging. The sidecar owner lock then
+/// stays with the task without locking the SQLite work file itself.
+pub(crate) struct TaskWorkOwner {
+    file: Option<File>,
+    path: PathBuf,
+}
+
+impl Drop for TaskWorkOwner {
+    fn drop(&mut self) {
+        drop(self.file.take());
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub(super) fn create_task_work_file(final_path: &Path, work_path: &Path) -> Result<TaskWorkOwner> {
     let _directory_lock = super::super::retention::retention_task_work_directory_lock(final_path)?;
-    let file = fs::OpenOptions::new()
+    let _work_file = fs::OpenOptions::new()
         .read(true)
         .write(true)
         .create_new(true)
         .open(work_path)
         .context("create owned task-local archive work")?;
+    let owner_path = task_work_owner_path(work_path);
+    let owner_file = match fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&owner_path)
+    {
+        Ok(file) => file,
+        Err(error) => {
+            drop(_work_file);
+            let _ = fs::remove_file(work_path);
+            return Err(error).context("create task-local archive work owner");
+        }
+    };
     #[cfg(unix)]
-    match try_lock_task_work(&file) {
+    match try_lock_task_work(&owner_file) {
         Ok(true) => {}
         result => {
+            drop(owner_file);
+            drop(_work_file);
+            let _ = fs::remove_file(&owner_path);
             let _ = fs::remove_file(work_path);
             result?;
             bail!("new task-local archive work unexpectedly has another owner");
         }
     }
-    Ok(file)
+    Ok(TaskWorkOwner {
+        file: Some(owner_file),
+        path: owner_path,
+    })
+}
+
+fn task_work_owner_path(work_path: &Path) -> PathBuf {
+    work_path.with_extension("owner")
+}
+
+pub(crate) fn create_retention_identity_work_file(
+    final_path: &Path,
+    work_path: &Path,
+) -> Result<TaskWorkOwner> {
+    create_task_work_file(final_path, work_path)
 }
 
 pub(super) fn discard_abandoned_task_work(final_path: &Path) -> Result<()> {
@@ -71,6 +114,7 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             ".sqlite-shm",
             ".sqlite",
             ".tmp",
+            ".owner",
         ]
         .iter()
         .find_map(|extension| suffix.strip_suffix(extension)) else {
@@ -91,22 +135,42 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
                 "archive_work_cleanup",
             ));
         }
-        let work_path = parent.join(format!("{stem}.sqlite"));
-        match fs::symlink_metadata(&work_path) {
-            Ok(metadata) if !metadata.is_file() => continue,
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
-            _ => {}
-        }
-        // A crash may leave just gzip or SQLite sidecars. Create a locked placeholder
-        // under the directory fence so those names have the same ownership check.
-        let file = fs::OpenOptions::new()
+        let owner_path = parent.join(format!("{stem}.owner"));
+        let owner_file = match fs::OpenOptions::new()
             .read(true)
             .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&work_path)?;
-        if !try_lock_task_work(&file)? {
-            continue;
+            .open(&owner_path)
+        {
+            Ok(file) => {
+                if !try_lock_task_work(&file)? {
+                    continue;
+                }
+                Some(file)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        if owner_file.is_none() {
+            let work_path = parent.join(format!("{stem}.sqlite"));
+            match fs::symlink_metadata(&work_path) {
+                Ok(metadata) if !metadata.is_file() => continue,
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(error.into());
+                }
+                _ => {}
+            }
+            // Legacy work files used the SQLite path itself as the owner lock. Keep
+            // recognizing that format while new work uses a sidecar lock so SQLite can
+            // acquire its own database locks on platforms where flock and SQLite overlap.
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&work_path)?;
+            if !try_lock_task_work(&file)? {
+                continue;
+            }
         }
         for extension in [
             ".tmp",
@@ -114,6 +178,7 @@ fn discard_abandoned_task_work_locked(final_path: &Path) -> Result<()> {
             ".sqlite-wal",
             ".sqlite-shm",
             ".sqlite",
+            ".owner",
         ] {
             let path = parent.join(format!("{stem}{extension}"));
             match fs::symlink_metadata(&path) {

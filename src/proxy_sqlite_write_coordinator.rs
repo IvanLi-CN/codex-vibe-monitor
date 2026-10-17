@@ -337,11 +337,27 @@ impl ProxySqliteWriteCoordinator {
         fairness_interval: Duration,
     ) -> ProxySqliteWritePermit {
         let requested_at = Instant::now();
+        loop {
+            self.wait_for_maintenance_eligibility(requested_at, fairness_interval)
+                .await;
+            if let Some(permit) = self.try_acquire_maintenance(requested_at, fairness_interval) {
+                return permit;
+            }
+        }
+    }
+
+    /// Claim only when prepared work can start immediately. Keep the original request time
+    /// across resource-readiness retries so checking a file never spends a fairness token.
+    pub(crate) fn try_acquire_maintenance(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) -> Option<ProxySqliteWritePermit> {
         let class = ProxySqliteWriteClass::MaintenanceRetention;
         if !self.coordinated {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.direct_write_bypass_count = state.direct_write_bypass_count.saturating_add(1);
-            return ProxySqliteWritePermit {
+            return Some(ProxySqliteWritePermit {
                 coordinator: self.clone(),
                 observability: self.observability.get(),
                 class,
@@ -350,14 +366,53 @@ impl ProxySqliteWriteCoordinator {
                 observed_at: self.observe_admission(class, requested_at.elapsed(), false),
                 notify_background_eligibility: false,
                 fairness_admission: false,
-            };
+            });
         }
 
+        let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+        let now = Instant::now();
+        let deadline = state
+            .maintenance_fairness_deadline(requested_at + fairness_interval, fairness_interval);
+        let fairness_admission = state.can_admit_maintenance_fairness(deadline, now);
+        if !state.can_admit(class) && !fairness_admission {
+            return None;
+        }
+        state.active = Some(class);
+        let lock_wait = requested_at.elapsed();
+        state.record_admission(class, lock_wait);
+        if fairness_admission {
+            state.maintenance_fairness_admissions =
+                state.maintenance_fairness_admissions.saturating_add(1);
+            state.last_maintenance_fairness_admission = Some(now);
+        }
+        Some(ProxySqliteWritePermit {
+            coordinator: self.clone(),
+            observability: self.observability.get(),
+            class,
+            coordinated: true,
+            lock_wait,
+            observed_at: self.observe_admission(class, lock_wait, true),
+            notify_background_eligibility: true,
+            fairness_admission,
+        })
+    }
+
+    /// Wait without reserving the writer. Callers may release other resources, await this
+    /// hint, then validate them again before a non-blocking claim; readiness can race.
+    pub(crate) async fn wait_for_maintenance_eligibility(
+        self: &Arc<Self>,
+        requested_at: Instant,
+        fairness_interval: Duration,
+    ) {
+        if !self.coordinated {
+            return;
+        }
+        let class = ProxySqliteWriteClass::MaintenanceRetention;
         {
             let mut state = self.state.lock().expect("proxy sqlite coordinator state");
             state.increment(class);
         }
-        let mut waiter = ProxySqliteWriteWaiter {
+        let _waiter = ProxySqliteWriteWaiter {
             coordinator: self.clone(),
             class,
             registered: true,
@@ -366,33 +421,16 @@ impl ProxySqliteWriteCoordinator {
         loop {
             let now = Instant::now();
             let notified = self.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             let next_fairness_deadline = {
-                let mut state = self.state.lock().expect("proxy sqlite coordinator state");
+                let state = self.state.lock().expect("proxy sqlite coordinator state");
                 let next_fairness_deadline =
                     state.maintenance_fairness_deadline(fairness_deadline, fairness_interval);
                 let fairness_admission =
                     state.can_admit_maintenance_fairness(next_fairness_deadline, now);
                 if state.can_admit(class) || fairness_admission {
-                    state.decrement(class);
-                    waiter.registered = false;
-                    state.active = Some(class);
-                    let lock_wait = requested_at.elapsed();
-                    state.record_admission(class, lock_wait);
-                    if fairness_admission {
-                        state.maintenance_fairness_admissions =
-                            state.maintenance_fairness_admissions.saturating_add(1);
-                        state.last_maintenance_fairness_admission = Some(now);
-                    }
-                    return ProxySqliteWritePermit {
-                        coordinator: self.clone(),
-                        observability: self.observability.get(),
-                        class,
-                        coordinated: true,
-                        lock_wait,
-                        observed_at: self.observe_admission(class, lock_wait, true),
-                        notify_background_eligibility: true,
-                        fairness_admission,
-                    };
+                    return;
                 }
                 next_fairness_deadline
             };
@@ -733,6 +771,101 @@ mod tests {
         );
         assert_eq!(coordinator.snapshot().await.p2_waiter_count, 0);
         drop(p1);
+    }
+
+    #[tokio::test]
+    async fn maintenance_readiness_preserves_fairness_until_prepared_work_claims_it() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+        let p2 = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move { coordinator.acquire(ProxySqliteWriteClass::P2Derived).await }
+        });
+        wait_for_waiters(&coordinator, |snapshot| snapshot.p2_waiter_count == 1).await;
+        let interval = Duration::from_secs(60);
+        let requested_at = Instant::now() - interval;
+        assert!(
+            coordinator
+                .try_acquire_maintenance(requested_at, interval)
+                .is_none()
+        );
+        drop(active);
+
+        // Neither readiness observation yields this current-thread executor to the queued
+        // P2 task. Both must leave the original fairness opportunity available for SQL.
+        for _ in 0..2 {
+            coordinator
+                .wait_for_maintenance_eligibility(requested_at, interval)
+                .await;
+        }
+        let snapshot = coordinator.snapshot().await;
+        assert_eq!(snapshot.active_write_class, None);
+        assert_eq!(snapshot.maintenance_waiter_count, 0);
+        assert_eq!(snapshot.maintenance_fairness_admission_count, 0);
+        assert_eq!(
+            snapshot
+                .write_admission
+                .maintenance_retention
+                .admission_count,
+            0
+        );
+        assert!(
+            coordinator
+                .try_acquire(ProxySqliteWriteClass::MaintenanceRetention)
+                .is_none()
+        );
+
+        let mut permit = coordinator
+            .try_acquire_maintenance(requested_at, interval)
+            .expect("prepared maintenance keeps its age across readiness retries");
+        assert!(permit.fairness_admission());
+        permit.revoke_fairness_admission();
+        drop(permit);
+        let permit = coordinator
+            .try_acquire_maintenance(requested_at, interval)
+            .expect("a lost pool race must not spend the fairness token");
+        assert!(permit.fairness_admission());
+        drop(permit);
+        assert!(
+            coordinator
+                .try_acquire_maintenance(requested_at, interval)
+                .is_none(),
+            "completed admission still rate limits the next fairness token"
+        );
+        p2.abort();
+        let _ = p2.await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_maintenance_readiness_does_not_reserve_or_count_an_admission() {
+        let coordinator = test_proxy_sqlite_write_coordinator();
+        let active = coordinator.acquire(ProxySqliteWriteClass::P1Terminal).await;
+        let readiness = tokio::spawn({
+            let coordinator = coordinator.clone();
+            async move {
+                coordinator
+                    .wait_for_maintenance_eligibility(Instant::now(), Duration::from_secs(60))
+                    .await;
+            }
+        });
+        wait_for_waiters(&coordinator, |snapshot| {
+            snapshot.maintenance_waiter_count == 1
+        })
+        .await;
+        readiness.abort();
+        let _ = readiness.await;
+        let snapshot = coordinator.snapshot().await;
+        assert_eq!(snapshot.active_write_class.as_deref(), Some("p1_terminal"));
+        assert_eq!(snapshot.maintenance_waiter_count, 0);
+        assert_eq!(snapshot.maintenance_fairness_admission_count, 0);
+        assert_eq!(
+            snapshot
+                .write_admission
+                .maintenance_retention
+                .admission_count,
+            0
+        );
+        drop(active);
     }
 
     #[tokio::test]
