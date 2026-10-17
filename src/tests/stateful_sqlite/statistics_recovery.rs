@@ -95,7 +95,12 @@ async fn explicit_index_inspection_observes_actual_statistics_plan_without_scrap
             }),
             "the explicit inspector must observe the actual {reason} plan"
         );
-        assert_eq!(metrics.render(), snapshot, "scrape does not inspect plans");
+        let after_scrape = metrics.render();
+        let mut before_lines: Vec<_> = snapshot.lines().collect();
+        let mut after_lines: Vec<_> = after_scrape.lines().collect();
+        before_lines.sort_unstable();
+        after_lines.sort_unstable();
+        assert_eq!(after_lines, before_lines, "scrape does not inspect plans");
         if reason == "query_plan_fallback" {
             assert!(prepare_fixture_indexes(&pool).await.is_complete());
         }

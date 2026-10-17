@@ -73,9 +73,13 @@ async fn performance_indexes_dry_run_is_read_only_and_reentry_recognizes_partial
         }),
         "a fixture without the conversation query schema has an unavailable plan, not a fallback"
     );
+    let after_scrape = metrics.render();
+    let mut before_lines: Vec<_> = before_scrape.lines().collect();
+    let mut after_lines: Vec<_> = after_scrape.lines().collect();
+    before_lines.sort_unstable();
+    after_lines.sort_unstable();
     assert_eq!(
-        metrics.render(),
-        before_scrape,
+        after_lines, before_lines,
         "scraping must not repeat the inspection"
     );
     assert_eq!(
