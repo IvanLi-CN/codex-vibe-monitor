@@ -680,7 +680,7 @@ fn publish_http_readiness_and_spawn_recovery(
     state: Arc<AppState>,
     startup_started_at: Instant,
     fence: StartupRecoveryFence,
-    recovery_connect_options: Arc<SqliteConnectOptions>,
+    recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
 ) -> JoinHandle<()> {
     publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         state,
@@ -688,7 +688,7 @@ fn publish_http_readiness_and_spawn_recovery(
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
         Some(fence),
-        Some(recovery_connect_options),
+        recovery_connect_options,
     )
 }
 
@@ -1210,6 +1210,7 @@ pub(crate) async fn run() -> Result<()> {
             state,
             startup_started_at,
             spawn_background_hourly_rollup_bootstrap,
+            Some(recovery_connect_options),
             async move {
                 let _ = signal_listener.await;
             },
@@ -1384,6 +1385,7 @@ pub(crate) async fn run_runtime_until_shutdown<F>(
     state: Arc<AppState>,
     startup_started_at: Instant,
     spawn_background_hourly_rollup_bootstrap: bool,
+    startup_recovery_connect_options: Option<Arc<SqliteConnectOptions>>,
     shutdown_signal: F,
 ) -> Result<()>
 where
@@ -1596,8 +1598,12 @@ where
         .await;
     }
 
-    let startup_recovery_fence =
-        capture_startup_recovery_fence_bounded(recovery_connect_options.as_ref()).await;
+    let startup_recovery_fence = match startup_recovery_connect_options.as_deref() {
+        Some(recovery_connect_options) => {
+            capture_startup_recovery_fence_bounded(recovery_connect_options).await
+        }
+        None => StartupRecoveryFence::empty(),
+    };
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -1650,7 +1656,7 @@ where
         state.clone(),
         startup_started_at,
         startup_recovery_fence,
-        recovery_connect_options,
+        startup_recovery_connect_options,
     ));
     // The periodic sweep is a runtime recovery path, not part of the fenced startup batch. It
     // remains available after a fence capture failure, while the shared owner gate prevents it
