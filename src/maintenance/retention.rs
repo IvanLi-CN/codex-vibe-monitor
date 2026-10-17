@@ -26,9 +26,11 @@ pub(crate) use batch_plan::{
 };
 use batch_plan::{archive_batch_can_start, archive_candidate_limit, select_archive_batch};
 pub(crate) use observability::record_backlog_observation;
-#[cfg(test)]
-pub(crate) use task_batches::archive_old_invocations;
 use task_batches::archive_old_invocations_with_source_max;
+#[cfg(test)]
+pub(crate) use task_batches::{
+    archive_old_invocations, invocation_archive_candidate_selection_for_test,
+};
 pub(crate) use task_batches::{archive_timestamped_dataset, prune_old_invocation_details};
 pub(crate) use task_transaction_resources::RetentionTransactionResources;
 #[cfg(test)]

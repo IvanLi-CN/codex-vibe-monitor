@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 pub(crate) struct BatchCommitProbe {
     pub(crate) committed: Notify,
     pub(crate) resume: Notify,
+    pub(crate) force_commit_busy_timeout_zero: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(test)]
@@ -55,6 +56,22 @@ pub(super) async fn pause_after_first_chunk(committed_rows: usize) {
     {
         probe.committed.notify_one();
         probe.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn prepare_commit_for_test(connection: &mut SqliteConnection) {
+    let Ok(probe) = RETENTION_TEST_BATCH_COMMIT.try_with(Arc::clone) else {
+        return;
+    };
+    if probe
+        .force_commit_busy_timeout_zero
+        .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        sqlx::query("PRAGMA busy_timeout=0")
+            .execute(connection)
+            .await
+            .expect("set deterministic commit lock timeout");
     }
 }
 
