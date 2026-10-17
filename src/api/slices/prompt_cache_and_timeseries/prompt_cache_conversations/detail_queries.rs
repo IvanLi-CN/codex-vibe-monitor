@@ -31,6 +31,9 @@ pub(crate) fn build_prompt_cache_conversation_statistics_query<'args>(
     prefix: &str,
     selected_keys: &'args [String],
 ) -> QueryBuilder<'args, Sqlite> {
+    // Remove the master column's TEXT affinity so SQLite can match the exact expression index.
+    // The expression itself is normalized to TEXT; the regression compares the live result with
+    // the same expression against a bound reference value.
     let invocation_prompt_cache_key_expr = invocation_prompt_cache_key_expr_sql("i");
     let mut query = QueryBuilder::<Sqlite>::new(format!(
         "{prefix}SELECT c.prompt_cache_key, c.conversation_id, c.created_at, c.success_count, c.failure_count, \
@@ -38,7 +41,7 @@ pub(crate) fn build_prompt_cache_conversation_statistics_query<'args>(
                 c.reasoning_tokens, c.cost_input, c.cost_cache_write, c.cost_cache_read, c.cost_output, \
                 c.cost_reasoning, c.first_invocation_at, c.last_invocation_at, \
                 (SELECT MAX(i.id) FROM codex_invocations AS i \
-                 WHERE {invocation_prompt_cache_key_expr} = c.prompt_cache_key) AS last_invocation_id \
+                 WHERE {invocation_prompt_cache_key_expr} = +c.prompt_cache_key) AS last_invocation_id \
          FROM prompt_cache_conversations AS c WHERE c.prompt_cache_key IN (",
     ));
     {

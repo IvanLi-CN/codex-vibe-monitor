@@ -153,22 +153,9 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
         build_prompt_cache_conversation_statistics_query("EXPLAIN QUERY PLAN ", &selected_keys)
             .sql()
             .to_string();
-    let affinity_candidate_sql =
-        production_sql.replace("= c.prompt_cache_key", "= +c.prompt_cache_key");
-    let affinity_candidate_plan =
-        sqlx::query_as::<_, (i64, i64, i64, String)>(&affinity_candidate_sql)
-            .bind("cache")
-            .persistent(false)
-            .fetch_all(&pool)
-            .await
-            .expect("explain prompt-cache affinity candidate")
-            .into_iter()
-            .map(|(_, _, _, detail)| detail)
-            .collect::<Vec<_>>();
     print_bounded_prompt_cache_plan("missing-index", &missing_plan_details);
     print_bounded_prompt_cache_plan("correlated", &indexed_plan_details);
-    print_bounded_prompt_cache_plan("affinity-candidate", &affinity_candidate_plan);
-    assert!(production_sql.contains("WHERE ") && production_sql.contains("= c.prompt_cache_key"));
+    assert!(production_sql.contains("WHERE ") && production_sql.contains("= +c.prompt_cache_key"));
     assert!(
         !missing_plan_details.is_empty() && missing_plan_details.len() <= 8,
         "missing-index plan evidence must stay bounded: {missing_plan_details:?}"
@@ -197,12 +184,6 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
         "index preparation must not change live-row statistics semantics"
     );
     assert!(
-        affinity_candidate_plan
-            .iter()
-            .any(|detail| { detail.contains("idx_codex_invocations_prompt_cache_key_id") }),
-        "prompt-cache affinity candidate must retain the target index plan: {affinity_candidate_plan:?}"
-    );
-    assert!(
         indexed_plan_details.len() <= 8
             && indexed_plan_details
                 .iter()
@@ -218,6 +199,11 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
     .expect("change prompt-cache generation");
     assert_eq!(
         prompt_cache_last_invocation_id(&pool, "cache").await,
+        Some(1),
+        "live MAX(id) must fall back after the newer generation stops matching"
+    );
+    assert_eq!(
+        prompt_cache_last_invocation_id(&pool, "cache").await,
         reference_prompt_cache_last_invocation_id(&pool, "cache").await
     );
     sqlx::query(
@@ -231,6 +217,19 @@ async fn statistics_recovery_matches_live_max_reference_before_and_after_index_p
         prompt_cache_last_invocation_id(&pool, "cache").await,
         Some(6),
         "live MAX(id) must follow the current generation after a cross-day append"
+    );
+    assert_eq!(
+        prompt_cache_last_invocation_id(&pool, "cache").await,
+        reference_prompt_cache_last_invocation_id(&pool, "cache").await
+    );
+    sqlx::query("DELETE FROM codex_invocations WHERE id = 6")
+        .execute(&pool)
+        .await
+        .expect("delete current-generation invocation");
+    assert_eq!(
+        prompt_cache_last_invocation_id(&pool, "cache").await,
+        Some(1),
+        "live MAX(id) must fall back after deleting the current generation"
     );
     assert_eq!(
         prompt_cache_last_invocation_id(&pool, "cache").await,
