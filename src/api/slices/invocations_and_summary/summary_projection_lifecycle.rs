@@ -1,4 +1,5 @@
 use super::*;
+use crate::observability::contention::{RecoveryDiagnostic, record_recovery};
 
 fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = SummarySnapshotKey> {
     [
@@ -449,6 +450,7 @@ impl SummaryCoverageRecoverySupervisor {
                 });
             }
         };
+        record_recovery(RecoveryDiagnostic::StatisticsHistoricalCoverage);
         let started_at = Instant::now();
         // Required 30-day authority takes priority over all-time aggregation. Each V2 turn is
         // page- and time-bounded, and committed cursor/hash progress is immediately eligible
@@ -1421,6 +1423,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
                 return Ok(());
             }
         };
+        record_recovery(RecoveryDiagnostic::StatisticsLiveTail);
         record_summary_live_tail_readiness(
             state,
             "reconciling",
@@ -1484,6 +1487,16 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
                     publication_fence,
                 )
                 .await;
+        if source_target_fence.is_some() && !reconciled_live_tail {
+            let projection_revision_conflict = state
+                .subscription_hub
+                .summary_projection()
+                .await
+                .is_none_or(|projection| projection.revision() != expected_revision);
+            if !target_still_current || projection_revision_conflict {
+                record_recovery(RecoveryDiagnostic::StatisticsPublicationConflict);
+            }
+        }
         if reconciled_live_tail {
             if let Some(checkpoint) = live_tail_checkpoint.as_ref()
                 && checkpoint.target_source_cursor > 0
@@ -1805,6 +1818,7 @@ async fn refresh_summary_snapshots_with_deadline(
         load_summary_projection_generation_fence_tx(state, publication_transaction.as_mut())
             .await?;
     if projection.generation_fence != durable_generation_fence {
+        record_recovery(RecoveryDiagnostic::StatisticsPublicationConflict);
         // The read transaction may have opened before a coverage/proof commit. Never publish
         // that stale build. Revoke the affected all-time authority on the currently published
         // projection immediately so the memory-only handler cannot keep serving the old 200
@@ -1831,6 +1845,7 @@ async fn refresh_summary_snapshots_with_deadline(
         .store_summary_projection_if_revision(projection, expected_projection_revision)
         .await;
     if !published {
+        record_recovery(RecoveryDiagnostic::StatisticsPublicationConflict);
         debug!(
             ?mode,
             "summary projection build discarded because its immutable base was replaced"
