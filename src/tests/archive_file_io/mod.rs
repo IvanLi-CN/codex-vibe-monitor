@@ -17,6 +17,7 @@ mod archive_backfill_and_materialization;
 mod archive_publication;
 mod archive_replay_safety;
 mod gpt6_cache_write_migration;
+mod invocation_range_native_recovery;
 mod maintenance_runtime_active_io;
 mod maintenance_runtime_ownership;
 mod payload_metadata_backfills;
