@@ -637,7 +637,6 @@ impl InvocationRangeManager {
                     if entry.current.remaining() == 0
                         && let Some(standby) = entry.standby.take()
                     {
-                        record_recovery(RecoveryDiagnostic::RangeSequenceExhausted);
                         entry.current = standby;
                     }
                     if entry.current.remaining() > 0 {
@@ -654,6 +653,7 @@ impl InvocationRangeManager {
                         && entry.ceiling
                             == i64::from(PROMPT_CACHE_CONVERSATION_SEQUENCE_CAPACITY - 1)
                     {
+                        record_recovery(RecoveryDiagnostic::RangeSequenceExhausted);
                         error!(owner_type = owner.kind(), utc_hour = owner.hour(), prefix = ?entry.prefix, generation = entry.generation, "invocation sequence exhausted");
                         bail!(
                             "prompt-cache conversation invoke sequence overflow: capacity={}",
