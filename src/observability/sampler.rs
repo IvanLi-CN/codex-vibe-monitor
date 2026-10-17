@@ -114,6 +114,32 @@ async fn sample_runtime(state: &AppState) {
         &[("journal", "terminal")],
         terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
     );
+    metrics.gauge(
+        "cvm_startup_recovery_pending_records",
+        &[("component", "terminal_journal")],
+        terminal_journal.replay_count as f64,
+    );
+    metrics.gauge(
+        "cvm_startup_recovery_oldest_age_seconds",
+        &[("component", "terminal_journal")],
+        terminal_journal.oldest_pending_age_ms as f64 / 1000.0,
+    );
+    let terminal_journal_state = if terminal_journal.replay_count == 0 {
+        "complete"
+    } else {
+        "running"
+    };
+    for candidate in ["running", "complete"] {
+        metrics.gauge(
+            "cvm_startup_recovery_last_state",
+            &[("component", "terminal_journal"), ("state", candidate)],
+            if candidate == terminal_journal_state {
+                1.0
+            } else {
+                0.0
+            },
+        );
+    }
     if let Some(runtime) = state.upstream_accounts.route_facts.lock().await.clone() {
         let health = runtime.health_snapshot();
         for (name, value) in [

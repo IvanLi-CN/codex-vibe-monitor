@@ -872,13 +872,87 @@
       }
     },
     {
+      "id": 14,
+      "type": "row",
+      "title": "启动恢复：就绪与历史积压",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 54,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [
+        {
+          "id": 140,
+          "type": "timeseries",
+          "title": "恢复 pending records",
+          "description": "HTTP readiness 与历史恢复解耦；按固定 component 显示未完成恢复义务。",
+          "gridPos": {"x": 0, "y": 0, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "legendFormat": "{{component}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 141,
+          "type": "timeseries",
+          "title": "恢复 oldest age",
+          "description": "最老未完成恢复义务年龄；缺测保持 Unknown。",
+          "gridPos": {"x": 8, "y": 0, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}",
+              "legendFormat": "{{component}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 142,
+          "type": "timeseries",
+          "title": "恢复批次 p95",
+          "description": "真实恢复批次耗时，按 component 与 outcome 区分；不是总体启动耗时。",
+          "gridPos": {"x": 16, "y": 0, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [
+            {
+              "refId": "A",
+              "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (rate(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__rate_interval])))",
+              "legendFormat": "{{component}} / {{outcome}}",
+              "range": true,
+              "instant": false,
+              "format": "time_series"
+            }
+          ],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        }
+      ]
+    },
+    {
       "id": 90,
       "type": "row",
       "title": "高级：CPU 火焰图与内存归因",
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 63,
         "w": 24,
         "h": 1
       },

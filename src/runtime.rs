@@ -7,6 +7,466 @@ const STARTUP_HOURLY_ROLLUP_P2_PREEMPTION_RETRY_MAX: Duration = Duration::from_s
 const MANAGED_TASK_FINISH_RETRY_ATTEMPTS: usize = 4;
 const MANAGED_TASK_FINISH_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 const MANAGED_TASK_FINISH_ATTEMPT_TIMEOUT: Duration = Duration::from_millis(250);
+const STARTUP_RECOVERY_BATCH_ROWS: usize = 64;
+pub(crate) const STARTUP_RECOVERY_BUSY_TIMEOUT: Duration = Duration::from_millis(200);
+pub(crate) const STARTUP_RECOVERY_ADMISSION_BUDGET: Duration = Duration::from_millis(250);
+const STARTUP_RECOVERY_RETRY_DELAYS: [Duration; 5] = [
+    Duration::from_millis(250),
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+];
+static STARTUP_RECOVERY_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct StartupRecoveryFence {
+    pub(crate) invocation_max_id: i64,
+    pub(crate) pool_attempt_max_id: i64,
+    pub(crate) captured: bool,
+}
+
+impl StartupRecoveryFence {
+    fn empty() -> Self {
+        Self::default()
+    }
+}
+
+async fn capture_startup_recovery_fence(state: &AppState) -> Result<StartupRecoveryFence> {
+    let options =
+        build_sqlite_connect_options(&state.config.database_url(), STARTUP_RECOVERY_BUSY_TIMEOUT)?;
+    let mut connection = SqliteConnection::connect_with(&options).await?;
+    let invocation_max_id =
+        sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
+            .fetch_one(&mut connection)
+            .await?;
+    let pool_attempt_max_id = sqlx::query_scalar::<_, i64>(
+        "SELECT COALESCE(MAX(id), 0) FROM pool_upstream_request_attempts",
+    )
+    .fetch_one(&mut connection)
+    .await?;
+    Ok(StartupRecoveryFence {
+        invocation_max_id,
+        pool_attempt_max_id,
+        captured: true,
+    })
+}
+
+async fn capture_startup_recovery_fence_bounded(state: &AppState) -> StartupRecoveryFence {
+    match timeout(
+        STARTUP_RECOVERY_ADMISSION_BUDGET,
+        capture_startup_recovery_fence(state),
+    )
+    .await
+    {
+        Ok(Ok(fence)) => fence,
+        Ok(Err(error)) => {
+            warn!(error = %error, "startup recovery fence could not be captured before HTTP readiness");
+            StartupRecoveryFence::empty()
+        }
+        Err(_) => {
+            warn!(
+                budget_ms = STARTUP_RECOVERY_ADMISSION_BUDGET.as_millis() as u64,
+                "startup recovery fence capture exceeded its bounded readiness budget"
+            );
+            StartupRecoveryFence::empty()
+        }
+    }
+}
+
+fn observe_startup_recovery_state(
+    state: &AppState,
+    component: &'static str,
+    pending: usize,
+    oldest_age: Duration,
+    state_name: &'static str,
+) {
+    state.observability.gauge(
+        "cvm_startup_recovery_pending_records",
+        &[("component", component)],
+        pending as f64,
+    );
+    state.observability.gauge(
+        "cvm_startup_recovery_oldest_age_seconds",
+        &[("component", component)],
+        oldest_age.as_secs_f64(),
+    );
+    for candidate in ["running", "complete"] {
+        state.observability.gauge(
+            "cvm_startup_recovery_last_state",
+            &[("component", component), ("state", candidate)],
+            if candidate == state_name { 1.0 } else { 0.0 },
+        );
+    }
+}
+
+fn observe_startup_recovery_retry(state: &AppState, component: &'static str, reason: &'static str) {
+    state.observability.counter(
+        "cvm_startup_recovery_retries_total",
+        &[("component", component), ("reason", reason)],
+        1,
+    );
+}
+
+enum StartupRecoveryBatch {
+    Invocations(Vec<crate::proxy::RecoveredInvocationRow>),
+    PoolAttempts(Vec<crate::proxy::RecoveredPoolAttemptRow>),
+}
+
+struct StartupRecoveryActiveGuard;
+
+impl StartupRecoveryActiveGuard {
+    fn acquire() -> Option<Self> {
+        STARTUP_RECOVERY_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            .then_some(Self)
+    }
+}
+
+impl Drop for StartupRecoveryActiveGuard {
+    fn drop(&mut self) {
+        STARTUP_RECOVERY_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
+async fn load_startup_invocation_ids(
+    connection: &mut SqliteConnection,
+    cursor: i64,
+    fence: i64,
+) -> Result<Vec<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM codex_invocations
+        WHERE id > ?1
+          AND id <= ?2
+          AND source = ?3
+          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        ORDER BY id
+        LIMIT ?4
+        "#,
+    )
+    .bind(cursor)
+    .bind(fence)
+    .bind(SOURCE_PROXY)
+    .bind(STARTUP_RECOVERY_BATCH_ROWS as i64)
+    .fetch_all(&mut *connection)
+    .await
+    .context("load startup invocation recovery batch")
+}
+
+async fn load_startup_pool_attempt_ids(
+    connection: &mut SqliteConnection,
+    cursor: i64,
+    fence: i64,
+) -> Result<Vec<i64>> {
+    sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_upstream_request_attempts
+        WHERE id > ?1
+          AND id <= ?2
+          AND status = ?3
+          AND finished_at IS NULL
+        ORDER BY id
+        LIMIT ?4
+        "#,
+    )
+    .bind(cursor)
+    .bind(fence)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+    .bind(STARTUP_RECOVERY_BATCH_ROWS as i64)
+    .fetch_all(&mut *connection)
+    .await
+    .context("load startup pool attempt recovery batch")
+}
+
+async fn run_startup_recovery_batch(
+    state: &AppState,
+    connection: &mut SqliteConnection,
+    component: &'static str,
+    ids: &[i64],
+) -> Result<StartupRecoveryBatch> {
+    if ids.is_empty() {
+        return Ok(match component {
+            "invocations" => StartupRecoveryBatch::Invocations(Vec::new()),
+            "pool_attempts" => StartupRecoveryBatch::PoolAttempts(Vec::new()),
+            _ => unreachable!("startup recovery component is fixed"),
+        });
+    }
+    let background_permit = crate::db_pressure::global_db_pressure_gate()
+        .try_begin_background("startup_recovery")
+        .map_err(|reason| anyhow!("startup recovery background slot unavailable: {reason}"))?;
+    let write_permit = timeout(
+        STARTUP_RECOVERY_ADMISSION_BUDGET,
+        crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator().acquire(
+            crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::MaintenanceRetention,
+        ),
+    )
+    .await
+    .map_err(|_| anyhow!("startup recovery write admission exceeded 250ms"))?;
+    let started = Instant::now();
+    let recovered = match component {
+        "invocations" => crate::proxy::recover_proxy_invocations_with_connection(
+            connection,
+            crate::proxy::ProxyInvocationRecoveryScope::Ids(ids),
+        )
+        .await
+        .map(StartupRecoveryBatch::Invocations),
+        "pool_attempts" => crate::proxy::recover_pool_upstream_request_attempts_with_connection(
+            connection,
+            crate::proxy::PoolAttemptRecoveryScope::Ids(ids),
+        )
+        .await
+        .map(StartupRecoveryBatch::PoolAttempts),
+        _ => unreachable!("startup recovery component is fixed"),
+    };
+    drop(write_permit);
+    drop(background_permit);
+    let outcome = if recovered.is_ok() {
+        "success"
+    } else {
+        "error"
+    };
+    state.observability.duration(
+        "cvm_startup_recovery_batch_duration_seconds",
+        &[("component", component), ("outcome", outcome)],
+        started.elapsed(),
+    );
+    state.observability.counter(
+        "cvm_startup_recovery_batches_total",
+        &[("component", component), ("outcome", outcome)],
+        1,
+    );
+    recovered
+}
+
+async fn publish_startup_recovery_batch(state: &AppState, batch: &StartupRecoveryBatch) -> usize {
+    match batch {
+        StartupRecoveryBatch::Invocations(rows) => {
+            if let Err(error) = broadcast_recovered_proxy_invocations(state, rows).await {
+                warn!(error = %error, "failed to broadcast startup-recovered invocations");
+            }
+            rows.len()
+        }
+        StartupRecoveryBatch::PoolAttempts(rows) => {
+            clean_up_recovered_pool_routes(state, rows, &[], "startup_recovery").await;
+            for invoke_id in rows
+                .iter()
+                .map(|row| row.invoke_id.as_str())
+                .collect::<BTreeSet<_>>()
+            {
+                if let Err(error) =
+                    broadcast_pool_upstream_attempts_snapshot(state, invoke_id).await
+                {
+                    warn!(
+                        invoke_id,
+                        error = %error,
+                        "failed to broadcast startup-recovered pool attempt snapshot"
+                    );
+                }
+            }
+            rows.len()
+        }
+    }
+}
+
+async fn run_startup_recovery(
+    state: Arc<AppState>,
+    mut fence: StartupRecoveryFence,
+    readiness_at: Instant,
+) {
+    let Some(_active_guard) = StartupRecoveryActiveGuard::acquire() else {
+        warn!("startup recovery coordinator already owns the recovery path");
+        return;
+    };
+    let mut connection = None;
+    let mut invocation_cursor = 0_i64;
+    let mut pool_attempt_cursor = 0_i64;
+    let mut retry_index = 0_usize;
+    let mut invocation_done = false;
+    let mut pool_attempt_done = false;
+
+    state.observability.gauge(
+        "cvm_startup_recovery_readiness_to_recovery_seconds",
+        &[],
+        readiness_at.elapsed().as_secs_f64(),
+    );
+
+    loop {
+        if state.shutdown.is_cancelled() {
+            warn!(
+                "startup recovery stopped during shutdown; durable obligations remain for the next start"
+            );
+            return;
+        }
+        if connection.is_none() {
+            if !fence.captured {
+                match capture_startup_recovery_fence(&state).await {
+                    Ok(captured) => fence = captured,
+                    Err(error) => {
+                        observe_startup_recovery_retry(&state, "fence", "capture_failed");
+                        warn!(error = %error, "startup recovery fence capture deferred");
+                        sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+                        retry_index =
+                            (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+                        continue;
+                    }
+                }
+            }
+            let options = match build_sqlite_connect_options(
+                &state.config.database_url(),
+                STARTUP_RECOVERY_BUSY_TIMEOUT,
+            ) {
+                Ok(options) => options,
+                Err(error) => {
+                    warn!(error = %error, "startup recovery connection options unavailable");
+                    return;
+                }
+            };
+            match SqliteConnection::connect_with(&options).await {
+                Ok(new_connection) => connection = Some(new_connection),
+                Err(error) => {
+                    observe_startup_recovery_retry(&state, "connection", "connect_failed");
+                    warn!(error = %error, "startup recovery connection unavailable");
+                    sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+                    retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+                    continue;
+                }
+            }
+        }
+
+        let connection_ref = connection
+            .as_mut()
+            .expect("startup recovery connection exists");
+        let mut progressed = false;
+        if !invocation_done {
+            match load_startup_invocation_ids(
+                connection_ref,
+                invocation_cursor,
+                fence.invocation_max_id,
+            )
+            .await
+            {
+                Ok(ids) if ids.is_empty() => {
+                    invocation_done = true;
+                    observe_startup_recovery_state(
+                        &state,
+                        "invocations",
+                        0,
+                        Duration::ZERO,
+                        "complete",
+                    );
+                }
+                Ok(ids) => {
+                    match run_startup_recovery_batch(&state, connection_ref, "invocations", &ids)
+                        .await
+                    {
+                        Ok(batch) => {
+                            let recovered = publish_startup_recovery_batch(&state, &batch).await;
+                            invocation_cursor = ids.last().copied().unwrap_or(invocation_cursor);
+                            progressed = true;
+                            retry_index = 0;
+                            observe_startup_recovery_state(
+                                &state,
+                                "invocations",
+                                ids.len().saturating_sub(recovered),
+                                Duration::ZERO,
+                                "running",
+                            );
+                        }
+                        Err(error) => {
+                            observe_startup_recovery_retry(&state, "invocations", "write_or_lock");
+                            crate::db_pressure::global_db_pressure_gate()
+                                .record_error("startup_recovery_invocations", &error);
+                            warn!(error = %error, "startup invocation recovery batch deferred");
+                        }
+                    }
+                }
+                Err(error) => {
+                    observe_startup_recovery_retry(&state, "invocations", "read_or_lock");
+                    warn!(error = %error, "startup invocation recovery batch read deferred");
+                }
+            }
+        }
+        if !pool_attempt_done && (invocation_done || progressed) {
+            match load_startup_pool_attempt_ids(
+                connection_ref,
+                pool_attempt_cursor,
+                fence.pool_attempt_max_id,
+            )
+            .await
+            {
+                Ok(ids) if ids.is_empty() => {
+                    pool_attempt_done = true;
+                    observe_startup_recovery_state(
+                        &state,
+                        "pool_attempts",
+                        0,
+                        Duration::ZERO,
+                        "complete",
+                    );
+                }
+                Ok(ids) => {
+                    match run_startup_recovery_batch(&state, connection_ref, "pool_attempts", &ids)
+                        .await
+                    {
+                        Ok(batch) => {
+                            let recovered = publish_startup_recovery_batch(&state, &batch).await;
+                            pool_attempt_cursor =
+                                ids.last().copied().unwrap_or(pool_attempt_cursor);
+                            progressed = true;
+                            retry_index = 0;
+                            observe_startup_recovery_state(
+                                &state,
+                                "pool_attempts",
+                                ids.len().saturating_sub(recovered),
+                                Duration::ZERO,
+                                "running",
+                            );
+                        }
+                        Err(error) => {
+                            observe_startup_recovery_retry(
+                                &state,
+                                "pool_attempts",
+                                "write_or_lock",
+                            );
+                            crate::db_pressure::global_db_pressure_gate()
+                                .record_error("startup_recovery_pool_attempts", &error);
+                            warn!(error = %error, "startup pool attempt recovery batch deferred");
+                        }
+                    }
+                }
+                Err(error) => {
+                    observe_startup_recovery_retry(&state, "pool_attempts", "read_or_lock");
+                    warn!(error = %error, "startup pool attempt recovery batch read deferred");
+                }
+            }
+        }
+
+        let journal = state.sqlite_batch_writer.terminal_journal_stats();
+        observe_startup_recovery_state(
+            &state,
+            "terminal_journal",
+            journal.replay_count,
+            Duration::from_millis(journal.oldest_pending_age_ms),
+            if journal.replay_count == 0 {
+                "complete"
+            } else {
+                "running"
+            },
+        );
+        if invocation_done && pool_attempt_done && journal.replay_count == 0 {
+            info!("startup recovery coordinator completed fenced recovery");
+            return;
+        }
+        if !progressed {
+            sleep(STARTUP_RECOVERY_RETRY_DELAYS[retry_index]).await;
+            retry_index = (retry_index + 1).min(STARTUP_RECOVERY_RETRY_DELAYS.len() - 1);
+        }
+    }
+}
 
 pub(crate) fn next_startup_hourly_rollup_p2_preemption_retry(current: Duration) -> Duration {
     current
@@ -24,6 +484,21 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration(
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         None,
+        None,
+    )
+}
+
+fn publish_http_readiness_and_spawn_recovery(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    fence: StartupRecoveryFence,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        None,
+        Some(fence),
     )
 }
 
@@ -37,6 +512,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         state,
         startup_started_at,
         summary_deadline,
+        None,
         None,
     )
 }
@@ -52,6 +528,7 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
         startup_started_at,
         SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
         Some(summary_start_delay),
+        None,
     )
 }
 
@@ -60,14 +537,26 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
     startup_started_at: Instant,
     summary_deadline: Duration,
     summary_start_delay: Option<Duration>,
+    startup_recovery_fence: Option<StartupRecoveryFence>,
 ) -> JoinHandle<()> {
     state.startup_ready.store(true, Ordering::Release);
+    let readiness_at = Instant::now();
     info!(
         time_to_health_ms = startup_started_at.elapsed().as_millis() as u64,
         "application readiness reached"
     );
 
     crate::observability::contention::spawn_performance(state.observability.clone(), async move {
+        let recovery_handle = startup_recovery_fence.map(|fence| {
+            crate::observability::contention::spawn_performance(
+                state.observability.clone(),
+                run_startup_recovery(state.clone(), fence, readiness_at),
+            )
+        });
+        let post_readiness_warmups_handle = crate::observability::contention::spawn_performance(
+            state.observability.clone(),
+            run_post_readiness_runtime_warmups(state.clone()),
+        );
         // Spawn the independent system-status worker before taking the Summary priority
         // reservation. A busy database gate must never delay the readiness-side status cache.
         let system_status_handle = crate::observability::contention::spawn_performance(
@@ -96,8 +585,11 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
                 }
             },
         );
-        let (summary_result, system_status_result) =
-            tokio::join!(summary_handle, system_status_handle);
+        let (summary_result, system_status_result, post_readiness_warmups_result) = tokio::join!(
+            summary_handle,
+            system_status_handle,
+            post_readiness_warmups_handle
+        );
 
         match summary_result {
             Ok(true) | Ok(false) => {}
@@ -114,7 +606,33 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
                 "system status startup hydration worker ended unexpectedly"
             );
         }
+        if let Err(error) = post_readiness_warmups_result {
+            warn!(
+                ?error,
+                "post-readiness runtime warm-up worker ended unexpectedly"
+            );
+        }
+        if let Some(recovery_handle) = recovery_handle
+            && let Err(error) = recovery_handle.await
+        {
+            warn!(error = %error, "startup recovery coordinator ended unexpectedly");
+        }
     })
+}
+
+async fn run_post_readiness_runtime_warmups(state: Arc<AppState>) {
+    if let Err(error) = runtime_route_facts(state.as_ref()).await {
+        warn!(error = %error, "runtime route facts warm-up failed after readiness");
+    }
+    warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
+    warm_dashboard_runtime_projection(state.as_ref()).await;
+    if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
+        warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
+    }
+    recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
+    crate::api::register_dashboard_runtime_projection_handle(
+        spawn_dashboard_runtime_projection_reconcile(state),
+    );
 }
 
 async fn hydrate_summary_at_startup(
@@ -291,23 +809,6 @@ pub(crate) async fn run() -> Result<()> {
             }
         };
         log_startup_phase("schema", schema_started_at);
-        if should_recover_pending_pool_attempts_on_startup(&cli) {
-            let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
-            if recovered_running_invocations > 0 {
-                warn!(
-                    recovered_running_invocations,
-                    "recovered orphaned running invocation rows at startup"
-                );
-            }
-            let recovered_pending_pool_attempts =
-                recover_orphaned_pool_upstream_request_attempts(&pool).await?;
-            if recovered_pending_pool_attempts > 0 {
-                warn!(
-                    recovered_pending_pool_attempts,
-                    "recovered orphaned pending pool attempt rows at startup"
-                );
-            }
-        }
         if should_run_blocking_startup_persistent_prep(&cli) {
             let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
             info!(
@@ -485,25 +986,12 @@ pub(crate) async fn run() -> Result<()> {
         // Listen for shutdown before the readiness-gated hydration loop so an unavailable
         // persistent baseline can be interrupted cleanly without publishing partial HTTP state.
         let signal_listener = spawn_shutdown_signal_listener(state.shutdown.clone());
-        // Durable startup warm-ups may wait behind SQLite recovery or an overloaded pool. Complete
-        // the early routing and dashboard reads before progressing through the remaining startup
-        // stages. Summary/System Status hydration itself is intentionally deferred to the final
-        // HTTP-readiness boundary below, so its 15s/60s service clocks cannot expire beforehand.
-        runtime_route_facts(state.as_ref()).await.context("recover proxy routing facts before readiness")?;
-        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
-        warm_dashboard_runtime_projection(state.as_ref()).await;
-        if let Err(error) = hydrate_raw_capture_circuit(state.as_ref()).await {
-            warn!(error = %error, "raw capture circuit hydration failed; keeping capture fail-closed");
-        }
-        recover_raw_overflow_spools_with_circuit(state.as_ref()).await;
-        crate::api::register_dashboard_runtime_projection_handle(
-            spawn_dashboard_runtime_projection_reconcile(state.clone()),
-        );
+        // Only database/schema checks and listener setup remain before readiness. Routing,
+        // dashboard, raw-capture, and recovery warm-ups run from the post-readiness coordinator.
         spawn_subscription_broadcast_listener(state.clone());
         spawn_system_raw_payload_metrics_inventory(state.clone(), state.shutdown.clone());
         spawn_memory_diagnostics(state.clone(), state.shutdown.clone());
         spawn_observability_sampler(state.clone());
-        warm_pool_routing_runtime_cache_best_effort(state.as_ref()).await;
 
         run_runtime_until_shutdown(
             state,
@@ -679,33 +1167,6 @@ pub(crate) async fn drain_runtime_after_pending_shutdown(
     .await
 }
 
-async fn flush_terminal_journal_replay_before_startup(state: &AppState) -> Result<()> {
-    let mut remaining = state
-        .sqlite_batch_writer
-        .terminal_journal_stats()
-        .replay_count;
-    while remaining > 0 {
-        info!(
-            replay_count = remaining,
-            "flushing terminal journal replay before retention startup"
-        );
-        state
-            .sqlite_batch_writer
-            .flush_now(&state.pool)
-            .await
-            .context("failed to flush terminal journal replay before retention startup")?;
-        let next_remaining = state
-            .sqlite_batch_writer
-            .terminal_journal_stats()
-            .replay_count;
-        if next_remaining >= remaining {
-            bail!("terminal journal replay made no progress: remaining={remaining}");
-        }
-        remaining = next_remaining;
-    }
-    Ok(())
-}
-
 pub(crate) async fn run_runtime_until_shutdown<F>(
     state: Arc<AppState>,
     startup_started_at: Instant,
@@ -877,61 +1338,6 @@ where
         .await;
     }
 
-    let replay_state = state.clone();
-    let replay_flush_result = tokio::select! {
-        biased;
-        _ = shutdown_signal.clone() => {
-            begin_runtime_shutdown(&cancel);
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-                startup_hot_read_hydration_handle,
-            )
-            .await;
-        }
-        _ = cancel.cancelled() => {
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-                startup_hot_read_hydration_handle,
-            )
-            .await;
-        }
-        result = flush_terminal_journal_replay_before_startup(replay_state.as_ref()) => result,
-    };
-    if let Err(err) = replay_flush_result {
-        if cancel.is_cancelled() {
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-                startup_hot_read_hydration_handle,
-            )
-            .await;
-        }
-        return Err(err);
-    }
-
     let retention_stage = run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
         // The dispatcher is the sole automatic executor of all owned maintenance.
         None
@@ -977,54 +1383,7 @@ where
         .await;
     }
 
-    let pool_orphan_recovery_stage =
-        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
-            Some(spawn_pool_orphan_recovery_maintenance(
-                state.clone(),
-                cancel.clone(),
-            ))
-        })
-        .await;
-    let pool_orphan_recovery_shutdown_requested = match pool_orphan_recovery_stage {
-        StartupStageOutcome::SkippedByShutdown => {
-            return drain_runtime_after_pending_shutdown(
-                state,
-                shutdown_watcher,
-                server_handle,
-                poller_handle,
-                upstream_accounts_handle,
-                forward_proxy_handle,
-                pool_orphan_recovery_handle,
-                retention_handle,
-                startup_backfill_handle,
-                startup_hot_read_hydration_handle,
-            )
-            .await;
-        }
-        StartupStageOutcome::Completed {
-            result,
-            shutdown_requested,
-        } => {
-            pool_orphan_recovery_handle = result;
-            shutdown_requested
-        }
-    };
-    if pool_orphan_recovery_shutdown_requested {
-        return drain_runtime_after_pending_shutdown(
-            state,
-            shutdown_watcher,
-            server_handle,
-            poller_handle,
-            upstream_accounts_handle,
-            forward_proxy_handle,
-            pool_orphan_recovery_handle,
-            retention_handle,
-            startup_backfill_handle,
-            startup_hot_read_hydration_handle,
-        )
-        .await;
-    }
-
+    let startup_recovery_fence = capture_startup_recovery_fence_bounded(state.as_ref()).await;
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -1073,9 +1432,14 @@ where
         .await;
     }
 
-    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_hot_read_hydration(
+    startup_hot_read_hydration_handle = Some(publish_http_readiness_and_spawn_recovery(
         state.clone(),
         startup_started_at,
+        startup_recovery_fence,
+    ));
+    pool_orphan_recovery_handle = Some(spawn_pool_orphan_recovery_maintenance(
+        state.clone(),
+        cancel.clone(),
     ));
     log_startup_phase("http_ready", http_ready_started_at);
     spawn_system_status_snapshot_maintenance(state.clone());
@@ -3241,6 +3605,9 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
                     break;
                 }
                 _ = ticker.tick() => {
+                    if STARTUP_RECOVERY_ACTIVE.load(Ordering::Acquire) {
+                        continue;
+                    }
                     if crate::maintenance_store::legacy_worker_should_skip("pool_orphan_recovery").await {
                         continue;
                     }
@@ -3320,5 +3687,48 @@ pub(crate) mod managed_task_dispatch_tests {
             );
         }
         assert!(managed_startup_backfill_task("unknown_child").is_err());
+    }
+}
+
+#[cfg(test)]
+mod startup_recovery_contract_tests {
+    use super::*;
+
+    #[test]
+    fn startup_recovery_contract_is_bounded_and_fenced() {
+        assert_eq!(STARTUP_RECOVERY_BATCH_ROWS, 64);
+        assert_eq!(STARTUP_RECOVERY_BUSY_TIMEOUT, Duration::from_millis(200));
+        assert_eq!(
+            STARTUP_RECOVERY_ADMISSION_BUDGET,
+            Duration::from_millis(250)
+        );
+        assert_eq!(STARTUP_RECOVERY_RETRY_DELAYS[0], Duration::from_millis(250));
+        assert_eq!(
+            STARTUP_RECOVERY_RETRY_DELAYS[STARTUP_RECOVERY_RETRY_DELAYS.len() - 1],
+            Duration::from_secs(5)
+        );
+        assert_eq!(
+            StartupRecoveryFence {
+                invocation_max_id: 12,
+                pool_attempt_max_id: 18,
+                captured: true,
+            },
+            StartupRecoveryFence {
+                invocation_max_id: 12,
+                pool_attempt_max_id: 18,
+                captured: true,
+            }
+        );
+    }
+
+    #[test]
+    fn startup_recovery_has_one_owner_and_releases_it() {
+        let first = StartupRecoveryActiveGuard::acquire();
+        assert!(first.is_some());
+        assert!(StartupRecoveryActiveGuard::acquire().is_none());
+        drop(first);
+        let second = StartupRecoveryActiveGuard::acquire();
+        assert!(second.is_some());
+        drop(second);
     }
 }
