@@ -173,8 +173,21 @@ async fn retention_archive_selection_defers_large_payload_materialization() {
         "candidate selection must not materialize payloads before the size selector"
     );
     assert!(
+        !selected.is_empty(),
+        "the bounded selector must retain a minimum unit"
+    );
+    assert!(
         selected.len() < candidates.len(),
         "large payloads must constrain the selected batch before full materialization"
+    );
+    let materialized_payload_bytes: usize = selected
+        .iter()
+        .filter_map(|candidate| candidate.payload.as_deref())
+        .map(str::len)
+        .sum();
+    assert!(
+        materialized_payload_bytes <= 16 * 1024 * 1024,
+        "selected payload materialization must remain within the 16 MiB selector budget: {materialized_payload_bytes}"
     );
     let selected_ids = selected
         .iter()
