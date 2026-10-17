@@ -120,6 +120,55 @@ labels!(PendingKind { DirtyBuckets => "dirty_buckets", SourceGaps => "source_gap
 labels!(BacklogKind { Records => "records", OldestTimestamp => "oldest_timestamp" });
 labels!(WakeState { Pending => "pending", OldestTimestamp => "oldest_timestamp", NextDueTimestamp => "next_due_timestamp" });
 
+// A diagnostic is one observed boundary, not a replacement for committed-work
+// counters. Keeping valid combinations in one enum avoids dynamic label pairs.
+labels!(RecoveryDiagnostic {
+    RangeFirstInitialization => "first_initialization", RangeCacheAdmission => "cache_admission",
+    RangeRefillWait => "refill_wait", RangeSequenceExhausted => "sequence_exhausted",
+    RangeReady => "ready", RangeUnavailable => "unavailable",
+    RangePrewarmReady => "prewarm_ready", RangePrewarmDeferred => "prewarm_deferred",
+    RetentionNoWork => "no_work", RetentionBudgetExhausted => "budget_exhausted",
+    RetentionPressureDeferred => "pressure_deferred", RetentionProofUnavailable => "proof_unavailable",
+    RetentionCancelled => "cancelled", RetentionFailed => "failed", RetentionCommitted => "committed",
+    IndexPresent => "index_present", IndexMissing => "index_missing",
+    IndexDefinitionConflict => "index_definition_conflict", IndexUnavailable => "index_unavailable",
+    StatisticsLiveTail => "live_tail", StatisticsHistoricalCoverage => "historical_coverage",
+    StatisticsPublicationConflict => "publication_conflict",
+    QueryPlanIndexed => "query_plan_indexed", QueryPlanFallback => "query_plan_fallback"
+});
+impl RecoveryDiagnostic {
+    fn operation(self) -> &'static str {
+        match self {
+            Self::RangeFirstInitialization
+            | Self::RangeCacheAdmission
+            | Self::RangeRefillWait
+            | Self::RangeSequenceExhausted
+            | Self::RangeReady
+            | Self::RangeUnavailable
+            | Self::RangePrewarmReady
+            | Self::RangePrewarmDeferred => "invocation_range",
+            Self::RetentionNoWork
+            | Self::RetentionBudgetExhausted
+            | Self::RetentionPressureDeferred
+            | Self::RetentionProofUnavailable
+            | Self::RetentionCancelled
+            | Self::RetentionFailed
+            | Self::RetentionCommitted => "retention",
+            _ => "statistics",
+        }
+    }
+}
+labels!(InvocationRangePhase {
+    CacheAdmission => "cache_admission", WriteAdmission => "write_admission",
+    Connection => "connection", Transaction => "transaction"
+});
+
+pub(crate) fn record_recovery(diagnostic: RecoveryDiagnostic) {
+    if let Some(metrics) = current_performance() {
+        metrics.count_performance(PerformanceCounter::Recovery(diagnostic), 1);
+    }
+}
+
 const TASK_COUNT: usize = 16;
 const RETENTION_COUNT: usize = RetentionOperation::ALL.len();
 const OUTCOMES: usize = Outcome::ALL.len();
@@ -134,9 +183,13 @@ const COUNTERS: usize = RETENTION_COUNT * (OUTCOMES + 2)
     + TASK_COUNT * (WAKE_DECISIONS + WAKE_OUTCOMES)
     + STORE_COUNT * WAKE_OUTCOMES
     + RESULTS * REASONS
-    + QUERIES * QUERY_OUTCOMES;
-const HISTOGRAMS: usize =
-    RETENTION_COUNT * RetentionPhase::ALL.len() + STORE_COUNT + RESULTS + QUERIES * QUERY_OUTCOMES;
+    + QUERIES * QUERY_OUTCOMES
+    + RecoveryDiagnostic::ALL.len();
+const HISTOGRAMS: usize = RETENTION_COUNT * RetentionPhase::ALL.len()
+    + STORE_COUNT
+    + RESULTS
+    + QUERIES * QUERY_OUTCOMES
+    + InvocationRangePhase::ALL.len();
 const GAUGES: usize = RETENTION_COUNT * BacklogKind::ALL.len()
     + TASK_COUNT * WakeState::ALL.len()
     + StatsProjection::ALL.len() * (PendingKind::ALL.len() + 1);
@@ -151,6 +204,7 @@ pub(crate) enum PerformanceCounter {
     StoreWrite(StoreOperation, WakeOutcome),
     SummaryResponse(SummaryResult, SummaryReason),
     Query(StatsQuery, QueryOutcome),
+    Recovery(RecoveryDiagnostic),
 }
 impl PerformanceCounter {
     fn index(self) -> usize {
@@ -175,6 +229,7 @@ impl PerformanceCounter {
                 summary + result as usize * REASONS + reason as usize
             }
             Self::Query(id, outcome) => query + id as usize * QUERY_OUTCOMES + outcome as usize,
+            Self::Recovery(diagnostic) => query + QUERIES * QUERY_OUTCOMES + diagnostic as usize,
         }
     }
     fn key(self) -> Key {
@@ -211,6 +266,13 @@ impl PerformanceCounter {
                 "cvm_stats_queries_total",
                 vec![("query", query.label()), ("outcome", outcome.label())],
             ),
+            Self::Recovery(diagnostic) => (
+                "cvm_runtime_recovery_diagnostics_total",
+                vec![
+                    ("operation", diagnostic.operation()),
+                    ("reason", diagnostic.label()),
+                ],
+            ),
         };
         ObservabilityRuntime::key(name, &labels)
     }
@@ -222,6 +284,7 @@ pub(crate) enum PerformanceHistogram {
     StoreWrite(StoreOperation),
     SummaryResponse(SummaryResult),
     Query(StatsQuery, QueryOutcome),
+    InvocationRange(InvocationRangePhase),
 }
 impl PerformanceHistogram {
     fn index(self) -> usize {
@@ -234,6 +297,9 @@ impl PerformanceHistogram {
             Self::SummaryResponse(result) => store + STORE_COUNT + result as usize,
             Self::Query(query, outcome) => {
                 store + STORE_COUNT + RESULTS + query as usize * QUERY_OUTCOMES + outcome as usize
+            }
+            Self::InvocationRange(phase) => {
+                store + STORE_COUNT + RESULTS + QUERIES * QUERY_OUTCOMES + phase as usize
             }
         }
     }
@@ -254,6 +320,10 @@ impl PerformanceHistogram {
             Self::Query(query, outcome) => (
                 "cvm_stats_query_duration_seconds",
                 vec![("query", query.label()), ("outcome", outcome.label())],
+            ),
+            Self::InvocationRange(phase) => (
+                "cvm_invocation_range_phase_duration_seconds",
+                vec![("phase", phase.label())],
             ),
         };
         ObservabilityRuntime::key(name, &labels)

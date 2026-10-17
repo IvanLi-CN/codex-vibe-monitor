@@ -116,6 +116,11 @@ Summary、后台回填和长期投影共享 SQLite 的有限写入能力。Summa
 - Backfill notifications MUST merge into bounded task/control-generation obligations; terminal commits do not wait for maintenance-database confirmation. Durable dirty/progress facts reconstruct valid work after restart. Failed confirmation retains original age and an independent next-due time; repeated notifications and unrelated completions cannot reset backoff. The base delays are 250ms, 500ms, 1s, 2s and capped 5s with 0–20% positive jitter. Confirmation uses short conditional transactions with control checks before and after commit. Persistent BUSY for 60s permits at most 16 actual attempts per task/generation; warning output is capped at one per task/minute while metrics count every attempt.
 - The explicit `maintenance prepare-performance-indexes` CLI MUST reuse online service ownership or offline exclusive proof, honor `--dry-run` and a default 2000ms total `--budget-ms`, and prepare only the raw-link owner and normalized prompt-cache-key/id indexes. Installation is absent from startup; interruption rolls back the active operation and drains native SQLite work before releasing ownership. An absent or unprepared index retains a correct query path. DDL, current-data manipulation and historical recovery remain separate. Detailed interfaces and unchanged exact-query semantics are defined in [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md).
 
+### REQ-RMPR-007 — Committed invocation ranges and recovery diagnostics
+
+- Invocation IDs MUST be issued only from committed 64-ID current/standby ranges, with the existing singleflight, cache bounds and 100ms request wait. Background preparation MAY warm the current UTC hour, the next hour within 60 seconds of rollover, and at most 128 existing conversations active in the preceding 48 hours. Preparation is evictable and cannot block startup, displace active leases or pending journal obligations, or take priority over real missing-range demand. Refill completion MUST drive still-eligible owners without requiring another request. Cancellation retains native transaction ownership until settlement; a new owner under persistent database unavailability retains the existing bounded failure.
+- Recovery diagnostics MUST distinguish cold initialization, cache admission, refill wait and exhaustion; retention no-work, budget, pressure, proof, cancellation and failure; and statistics index state, access plan, live tail, historical coverage and publication conflict. Fixed cached handles MUST preserve existing work-counter semantics and perform no scrape-time SQL or file I/O. Missing optional indexes require an explicit preparation checklist, not startup DDL or an automatically enlarged maintenance budget.
+
 ### MUST
 
 #### Exact Summary Projection
@@ -278,6 +283,12 @@ Summary HTTP 保持既有 totals/usage/maintenance 字段；健康响应省略 `
 - covers: `REQ-RMPR-001`, `REQ-RMPR-003`, `REQ-RMPR-004`, `REQ-RMPR-006`
 - Method: GitHub CI fixtures hold the independent maintenance database BUSY for 60s under duplicate notifications, disable/cancel/restart and generation changes; compare exact statistics across index preparation, interruption and re-entry. Pause live-tail publication against a concurrent terminal and cancel its native statement or finish waiter. Keep index preparation measurements separate from steady-state competition.
 - Pass: at most 16 attempts per task/generation and one warning per task/minute; accepted valid obligations recover and confirm, terminal commits remain independent, old generations cannot clear newer work; MAX uses the exact target expression index, historical ranges remain complete, Summary request SQL/file IO stays zero. A pending foreground writer defers live-tail publication without advancing its checkpoint, and cancellation retains both native admission fences through actual SQLite drain. Interrupted DDL leaves the service usable and re-entry idempotent. The existing 32-request p95 <2s/full commit <5s/zero lifecycle SQL contract remains; all test stages finish within 15 minutes and no local/Agent VM pressure test is permitted.
+
+### VER-RMPR-007 — Invocation readiness and bounded recovery classification
+
+- covers: `REQ-RMPR-007`
+- Method: GitHub CI tests concurrent owners, startup and UTC rollover preparation, blocked SQLite, refill completion, eviction, cancellation and restart; fixed metric combinations are exported and checked for budget and instance isolation.
+- Pass: no range is issued before durable commit or reused across recovery; speculative preparation stays bounded and demand has priority, eligible refill work continues without another request, and an empty range retains the 100ms failure bound. Diagnostic scrape performs no SQL or file scan. Compilation and runtime validation run only in GitHub CI and each test stage is limited to 15 minutes.
 
 ## Detailed Acceptance Criteria
 
