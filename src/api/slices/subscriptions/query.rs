@@ -335,6 +335,14 @@ pub(crate) fn finish_prompt_cache_baseline_reuse(
     existing.prompt_cache_applied_terminal_ids = applied_terminal_ids.clone();
 }
 
+pub(crate) fn observe_prompt_cache_baseline_publication(metrics: &ObservabilityRuntime) {
+    use crate::observability::contention::{PerformanceGauge, StatsProjection};
+    metrics.set_performance(
+        PerformanceGauge::ProjectionLastGood(StatsProjection::PromptCache),
+        Utc::now().timestamp_millis() as f64 / 1_000.0,
+    );
+}
+
 pub(crate) fn prune_replay_window(
     events: &mut VecDeque<ReplayableTopicEvent>,
     total_bytes: &mut usize,

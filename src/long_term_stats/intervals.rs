@@ -1,4 +1,7 @@
 use super::*;
+use crate::observability::contention::{
+    PerformanceGauge, StatsProjection, StatsQuery, current_performance, observe_query,
+};
 
 pub(super) fn projection_interval_key(
     bucket_kind: &'static str,
@@ -195,12 +198,15 @@ pub(super) async fn load_long_term_projection_interval_index(
         .filter_map(|(_, date)| long_term_day_epoch_bounds(*date).map(|(_, end)| end * 1_000))
         .max()
         .context("invalid long-term projection interval date range")?;
-    let canonical_rows = sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
-        "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+    let canonical_rows = observe_query(
+        StatsQuery::LongTermOverlap,
+        sqlx::query_as::<_, LongTermProjectionIntervalStateRow>(
+            "SELECT invocation_row_id, model_series_key, upstream_series_key, interval_start_ms, interval_end_ms FROM long_term_projection_interval_state WHERE interval_start_ms < ?1 AND interval_end_ms > ?2",
+        )
+        .bind(last_end_ms)
+        .bind(first_start_ms)
+        .fetch_all(pool),
     )
-    .bind(last_end_ms)
-    .bind(first_start_ms)
-    .fetch_all(pool)
     .await?;
     let mut builder = QueryBuilder::<Sqlite>::new(
         "SELECT invocation_row_id, bucket_kind, bucket_date, bucket_key, dimension, series_key, interval_start_ms, interval_end_ms FROM long_term_projection_intervals legacy WHERE bucket_date IN (",
@@ -378,11 +384,34 @@ pub(super) async fn load_long_term_projection_interval_state_ids(
         .collect())
 }
 
+const LEGACY_INTERVAL_MIGRATION_CONSUMER: &str = "legacy_interval_migration_v1";
+
+pub(super) const LEGACY_INTERVAL_PAGE_END_SQL: &str = "SELECT MAX(invocation_row_id) FROM (
+         SELECT DISTINCT invocation_row_id FROM long_term_projection_intervals
+         WHERE invocation_row_id > ?1 ORDER BY invocation_row_id ASC LIMIT ?2
+     )";
+
 pub(super) async fn migrate_long_term_projection_legacy_interval_state(
     pool: &Pool<Sqlite>,
     control: &LongTermProjectionWriteControl<'_>,
 ) -> Result<bool> {
-    let legacy_rows = sqlx::query_as::<_, LongTermProjectionLegacyCompactRow>(
+    control.check()?;
+    let cursor: i64 =
+        sqlx::query_scalar("SELECT cursor_row_id FROM long_term_projection_state WHERE consumer=?")
+            .bind(LEGACY_INTERVAL_MIGRATION_CONSUMER)
+            .fetch_optional(pool)
+            .await?
+            .unwrap_or(0);
+    // Bound the candidate IDs before filtering covered rows. NOT EXISTS followed by LIMIT
+    // alone rescans the entire already-covered prefix on every continuation.
+    let page_end: Option<i64> = sqlx::query_scalar(LEGACY_INTERVAL_PAGE_END_SQL)
+        .bind(cursor)
+        .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
+        .fetch_one(pool)
+        .await?;
+    if let Some(page_end) = page_end {
+        let (mut transaction, permit) = control.begin(pool).await?;
+        let legacy_rows = sqlx::query_as::<_, LongTermProjectionLegacyCompactRow>(
         r#"
         SELECT legacy.invocation_row_id,
                MAX(CASE WHEN legacy.dimension = 'model' THEN legacy.series_key END) AS model_series_key,
@@ -390,20 +419,22 @@ pub(super) async fn migrate_long_term_projection_legacy_interval_state(
                MIN(legacy.interval_start_ms) AS interval_start_ms,
                MAX(legacy.interval_end_ms) AS interval_end_ms
         FROM long_term_projection_intervals legacy
-        WHERE NOT EXISTS (
+        WHERE legacy.invocation_row_id > ?1
+          AND legacy.invocation_row_id <= ?2
+          AND NOT EXISTS (
             SELECT 1
             FROM long_term_projection_interval_state state
             WHERE state.invocation_row_id = legacy.invocation_row_id
         )
         GROUP BY legacy.invocation_row_id
         ORDER BY legacy.invocation_row_id ASC
-        LIMIT ?1
         "#,
     )
-    .bind(LONG_TERM_PROJECTION_WRITE_BATCH_ROWS as i64)
-    .fetch_all(pool)
+    .bind(cursor)
+    .bind(page_end)
+    .fetch_all(&mut *transaction)
     .await?;
-    if !legacy_rows.is_empty() {
+        let candidate_count = legacy_rows.len();
         let segments = legacy_rows
             .into_iter()
             .filter(|row| row.interval_end_ms > row.interval_start_ms)
@@ -419,10 +450,23 @@ pub(super) async fn migrate_long_term_projection_legacy_interval_state(
                 interval_end_ms: row.interval_end_ms,
             })
             .collect::<Vec<_>>();
-        if segments.is_empty() {
-            return Ok(false);
+        if segments.len() < candidate_count {
+            warn!(
+                invalid_interval_count = candidate_count - segments.len(),
+                "legacy interval migration retained non-positive source intervals and advanced its bounded page"
+            );
         }
-        upsert_long_term_projection_interval_segments(pool, &segments, control).await?;
+        upsert_long_term_projection_interval_segments_in_transaction(&mut transaction, &segments)
+            .await?;
+        sqlx::query(
+            "INSERT INTO long_term_projection_state(consumer,cursor_row_id) VALUES(?,?)
+             ON CONFLICT(consumer) DO UPDATE SET cursor_row_id=MAX(cursor_row_id,excluded.cursor_row_id),updated_at=datetime('now')",
+        )
+        .bind(LEGACY_INTERVAL_MIGRATION_CONSUMER)
+        .bind(page_end)
+        .execute(&mut *transaction)
+        .await?;
+        control.commit(transaction, permit).await?;
         return Ok(true);
     }
 
@@ -433,6 +477,32 @@ pub(super) async fn migrate_long_term_projection_legacy_interval_state(
     .await?
         != 0;
     if !cleanup_pending {
+        // Older supported programs or a forward repair may add legacy rows behind the
+        // checkpoint. Rewind only for real uncovered work; do not truncate that history.
+        let earlier_uncovered: Option<i64> = sqlx::query_scalar(
+            "SELECT MIN(legacy.invocation_row_id) FROM long_term_projection_intervals legacy
+             WHERE legacy.invocation_row_id <= ?1 AND legacy.interval_end_ms > legacy.interval_start_ms
+               AND NOT EXISTS(SELECT 1 FROM long_term_projection_interval_state state
+                              WHERE state.invocation_row_id=legacy.invocation_row_id)",
+        )
+        .bind(cursor)
+        .fetch_one(pool)
+        .await?;
+        if let Some(earlier) = earlier_uncovered {
+            let (mut transaction, permit) = control.begin(pool).await?;
+            let changed = sqlx::query(
+                "UPDATE long_term_projection_state SET cursor_row_id=?,updated_at=datetime('now')
+                 WHERE consumer=? AND cursor_row_id=?",
+            )
+            .bind(earlier.saturating_sub(1).max(0))
+            .bind(LEGACY_INTERVAL_MIGRATION_CONSUMER)
+            .bind(cursor)
+            .execute(&mut *transaction)
+            .await?
+            .rows_affected();
+            control.commit(transaction, permit).await?;
+            return Ok(changed != 0);
+        }
         return Ok(false);
     }
     let (mut transaction, permit) = control.begin(pool).await?;
@@ -709,6 +779,12 @@ pub(super) async fn apply_long_term_projection_incremental_with_runtime_and_cont
     .execute(&mut *tx)
     .await?;
     control.commit(tx, permit).await?;
+    if let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) {
+        metrics.set_performance(
+            PerformanceGauge::ProjectionLastGood(StatsProjection::LongTerm),
+            Utc::now().timestamp() as f64,
+        );
+    }
     let mut runtime = runtime.lock().await;
     runtime.interval_index = interval_index;
     runtime.loaded_interval_dates = loaded_dates;

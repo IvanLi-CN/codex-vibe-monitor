@@ -6,6 +6,71 @@ use crate::maintenance::{
 };
 
 #[tokio::test]
+async fn retention_write_hold_observation_covers_the_whole_admission() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("pool");
+    let runtime = crate::ObservabilityRuntime::new(true);
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        RETENTION_TEST_WRITE_COORDINATOR
+            .scope(
+                coordinator.clone(),
+                RETENTION_TEST_DB_PRESSURE_GATE.scope(gate, async {
+                    let (mut connection, admission) =
+                        acquire_retention_batch_write_connection(&pool, "invocation_archive")
+                            .await
+                            .expect("acquire")
+                            .expect("admitted");
+                    let write_hold_count = || {
+                        runtime.render().lines().any(|line| {
+                            line.starts_with("cvm_retention_phase_duration_seconds_count{")
+                                && line.contains("operation=\"invocation_archive\"")
+                                && line.contains("phase=\"write_hold\"")
+                                && line.ends_with(" 1")
+                        })
+                    };
+                    assert!(
+                        !write_hold_count(),
+                        "pre-transaction verification still owns the permit"
+                    );
+                    let mut tx = connection.begin().await.expect("begin");
+                    sqlx::query("CREATE TABLE observation_boundary(id INTEGER)")
+                        .execute(tx.as_mut())
+                        .await
+                        .expect("write");
+                    tx.commit().await.expect("commit");
+                    connection.return_to_pool().await;
+                    drop(connection);
+                    assert!(
+                        !write_hold_count(),
+                        "post-commit cleanup still owns the permit"
+                    );
+                    assert_eq!(
+                        coordinator.snapshot().await.active_write_class.as_deref(),
+                        Some("maintenance_retention")
+                    );
+                    drop(admission);
+                    assert!(
+                        write_hold_count(),
+                        "one hold completes only when the permit is released"
+                    );
+                    assert_eq!(coordinator.snapshot().await.active_write_class, None);
+                }),
+            )
+            .await;
+    })
+    .await;
+    pool.close().await;
+}
+
+#[tokio::test]
 async fn retention_batch_priority_reservation_wait_does_not_wake_itself() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)
@@ -93,6 +158,68 @@ async fn retention_batch_priority_reservation_wait_does_not_wake_itself() {
     connection.return_to_pool().await;
     drop(connection);
     pool.close().await;
+}
+
+#[tokio::test]
+async fn retention_batch_preflight_captures_gate_generation_before_check() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-gate-generation-race").await;
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let owner = gate
+        .try_begin_background("generation_race_owner")
+        .expect("gate owner");
+    let probe = Arc::new(crate::maintenance::GateGenerationProbe::default());
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let archive_path = config.archive_dir.join("generation-race.sqlite.gz");
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate.clone(),
+            crate::maintenance::RETENTION_TEST_GATE_GENERATION.scope(
+                probe.clone(),
+                retention_test_with_work_budget(
+                    Duration::from_secs(5),
+                    crate::maintenance::acquire_retention_batch_write_connection_with_archive_fence(
+                        &pool,
+                        "generation_race",
+                        &archive_path,
+                        None,
+                    ),
+                ),
+            ),
+        ),
+    );
+    let release = async {
+        tokio::time::timeout(Duration::from_secs(1), probe.captured.notified())
+            .await
+            .expect("gate generation captured before preflight check");
+        let generation = gate.eligibility_generation();
+        drop(owner);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if gate.eligibility_generation() != generation {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("gate release advances eligibility generation");
+        probe.resume.notify_one();
+    };
+    let (result, ()) = tokio::join!(work, release);
+    let (mut connection, admission, archive_lock) = result
+        .expect("generation race admission")
+        .expect("released gate admits the archive");
+    connection.return_to_pool().await;
+    drop(archive_lock);
+    drop(admission);
+    assert_eq!(coordinator.snapshot().await.active_write_class, None);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]

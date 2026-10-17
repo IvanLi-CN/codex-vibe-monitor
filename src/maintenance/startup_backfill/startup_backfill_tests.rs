@@ -1,7 +1,7 @@
 use super::*;
 use sqlx::SqlitePool;
 
-async fn control_test_pool() -> SqlitePool {
+pub(super) async fn control_test_pool() -> SqlitePool {
     let pool = SqlitePool::connect("sqlite::memory:")
         .await
         .expect("connect startup backfill test pool");
@@ -32,7 +32,8 @@ async fn control_test_pool() -> SqlitePool {
     pool
 }
 
-async fn prompt_cache_materialization_test_store() -> crate::maintenance_store::MaintenanceStore {
+pub(super) async fn prompt_cache_materialization_test_store()
+-> crate::maintenance_store::MaintenanceStore {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect maintenance store test pool");

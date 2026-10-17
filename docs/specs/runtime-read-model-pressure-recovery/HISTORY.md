@@ -1,5 +1,9 @@
 # Runtime Read-Model Pressure Recovery - History
 
+- ADR 0040 and REQ-RMPR-006 refine wake confirmation and index preparation using the owner-approved contention repair boundary. They retain exact published-memory Summary responses, existing durable progress and the established terminal competition budgets; historical performance evidence is not promoted to current-candidate proof.
+
+- PR #1125 integrates PR #1127's bounded wake obligations with the terminal writer's synchronous memory producer. Its independent maintenance owner confirms accepted notifications; rejected notifications remain retryable after the business terminal commits. Summary live-tail publication keeps writer and background ownership through native drain, and fixtures distinguish the real sixty-second maintenance lock window from proxy latency acceptance. The final candidate owns its CI and review evidence independently of earlier partial slices.
+
 - PR-B is rebased onto `origin/main@98698a24176c9ca7d9b5c35f8268f475b8d5d4d0`; runtime implementation commit `f34d3663c305de0f31db6cb997fbff90e0ab4167` adds eligible broad Source Journal degradation and generation-fenced cached Summary SSE gap revalidation, while test-only follow-up `535397fb30e0ee0953161d4c6a50d960f6cb13b4` covers the split-module materialization path. Documentation follow-ups do not change this runtime candidate. No deploy or merge is authorized by this candidate, and final CI/Tier4 evidence must bind to the pushed branch head.
 - The preceding PR #1097 validation used `main@1f3881075b1fe749e964dda3ec66ab10b710c797` after a normal merge of merged Proxy PR #1096; that historical review base is superseded for PR-B.
 - The Initiative adopts an exact-read-model contract: Summary availability may not be obtained by returning partial, empty or request-time reconstructed data.

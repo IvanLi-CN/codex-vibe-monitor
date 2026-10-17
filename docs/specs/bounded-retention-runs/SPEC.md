@@ -135,6 +135,10 @@
 
 普通负载容量的首轮工程目标为对应到达速率约 50 倍：以每日 30,000 条 invocation 和 1.2 倍上游尝试计，成功提交服务速率分别至少 17.4 和 20.8 rows/s。两个数据集 MUST 分别报告批次行数、服务速率、到达速率、倍率、文件准备耗时、锁等待及超时次数。该目标与固定百万级存量在 24 小时内消化、在线 p95/p99 不劣于基线共同实测；压缩写入或 staging 行数不能冒充成功提交。
 
+### REQ-BRR-024 — 写许可内只保留必要数据库工作
+
+文件锁取得、文件准备和完整校验 MUST 在取得主库写许可之前完成；文件身份围栏保持到源证明与删除事务提交。若等待资源资格，MUST 释放文件锁和池连接，恢复后先重新取得围栏及校验再申请写许可。月度文件发布保留既有恢复日志及不可分割的原子 rename、耐久 sync 与 manifest 提交顺序；该短发布事务之外不得夹带整文件哈希或后续文件清理。提交或回滚及 native SQLite worker 排空后释放许可，之后才执行文件清理；丢弃 future 不视为完成，取消清理等待者也不得提前释放许可或文件围栏。确认 COMMIT 后 MUST 在下一次可取消等待之前记录已提交工作量；结果不确定或文件补偿失败 MUST 保留恢复依据。摘要分页暂存不是删除授权，不得每页重复哈希整月文件；最终完整语义证明和实际删除仍须验证文件身份。固定切片 MUST 消费现有自适应反馈，保持 200ms 目标、250ms 告警、最多 64 行及 1MiB 边界；单行超限不得丢弃，必须记录并让出。详见 [维护竞争边界](../../design/maintenance-contention-boundaries.md)。
+
 ## Verification
 
 ### VER-BRR-001
@@ -209,6 +213,12 @@
 - 方法：同月多次任务、迟到记录、重复身份、文件摘要失败、准入拒绝、超时及进程中断夹具；检查目标路径、源记录/raw link、临时文件和未新增主库结构。发布构建使用同种子百万级 cohort、30,000/day invocation、1.2 倍 attempt 与在线读写进行基线/候选各三次实测。
 - 通过条件：任务内闭环且下轮从 live rows 重选；失败未证明源行不转换，不依赖旧 staging/cursor；同月只使用规范目标且重复记录不计数；正常批次达到数百到约千行，两个数据集达到规定服务速率并在 24 小时内消化固定 cohort；超时/空间/锁等待可观测，在线 p95/p99 不劣于基线。
 
+### VER-BRR-013
+
+- covers: `REQ-BRR-004`, `REQ-BRR-018`, `REQ-BRR-024`
+- 方法：CI 中以合成归档叠加终态提交，注入文件替换、事务失败、提交后退出、补偿失败、native 语句与清理等待者取消及慢单行；同时记录文件阶段、写许可、提交吞吐与积压。
+- 通过条件：完整文件准备/哈希和后续清理不占写许可，必要的原子发布保留既有耐久顺序，未通过源/归档证明不删除；native worker 结束后才释放许可，已确认提交的计数不因后续取消丢失，不确定结果保留恢复依据；分页暂存不重复整文件哈希；后续微批次实际缩小；受控稳态写许可 p95 ≤250ms，单行超限可观测且恢复不遗漏或重复。性能验收仅 GitHub CI，测试阶段不超过 15 分钟；既有长期容量目标不据此宣称通过。
+
 ## Related ADRs
 
 - [Prompt-cache background materialization](../../adr/0021-prompt-cache-background-materialization.md)
@@ -217,6 +227,7 @@
 - [Retention core and conversation derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
 - [Retention catch-up independent of inspection schedules](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
 - [Retention task-local batches and monthly archive targets](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
+- [Bounded maintenance contention](../../adr/0040-bounded-maintenance-contention.md)
 
 ## References
 

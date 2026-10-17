@@ -73,6 +73,20 @@ class GrafanaPreviewTests(unittest.TestCase):
                 self.assertEqual(len(series), len(set(series)))
         self.assertIn('source="synthetic-preview"', preview.Metrics().render(9091))
 
+    def test_contention_fixtures_keep_missing_distinct_from_zero(self):
+        missing = preview.Metrics("missing").render(9091)
+        normal = preview.Metrics().render(9091)
+        failure = preview.Metrics("failures").render(9091)
+        self.assertNotIn("cvm_summary_responses_total", missing)
+        self.assertIn('cvm_summary_responses_total{outcome="unavailable",reason="source_gap"}', failure)
+        self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="0.2",operation="invocation_archive",phase="write_hold"}', normal)
+        self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="300",operation="invocation_archive",phase="write_hold"}', normal)
+        for scenario in ("normal", "failures", "low-samples", "missing"):
+            payload = preview.Metrics(scenario).render(9091)
+            series = [line.split(" ", 1)[0] for line in payload.splitlines() if line and not line.startswith("#")]
+            self.assertEqual(len(series), len(set(series)))
+            self.assertLessEqual(len(series), 4000)
+
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)
 

@@ -168,11 +168,13 @@ where
         ))
         .push_bind(limit);
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_active_prompt_cache_conversation_count<'e, E>(
@@ -187,7 +189,8 @@ where
     append_current_prompt_cache_conversation_keys(&mut query, range_start_bound, source_scope);
     query.push(")");
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
+    let (count,) =
+        observe_prompt_cache_query(query.build_query_as::<(i64,)>().fetch_one(executor)).await?;
     Ok(count)
 }
 
@@ -228,7 +231,8 @@ where
         ),
     }
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
+    let (count,) =
+        observe_prompt_cache_query(query.build_query_as::<(i64,)>().fetch_one(executor)).await?;
     Ok(count)
 }
 
@@ -252,7 +256,8 @@ pub(crate) async fn query_in_progress_prompt_cache_conversation_count(
             .push_bind(upstream_account_id);
     }
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(pool).await?;
+    let (count,) =
+        observe_prompt_cache_query(query.build_query_as::<(i64,)>().fetch_one(pool)).await?;
     Ok(count)
 }
 
@@ -305,7 +310,8 @@ where
         blocked_binding_filter,
     );
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
+    let (count,) =
+        observe_prompt_cache_query(query.build_query_as::<(i64,)>().fetch_one(executor)).await?;
     Ok(count)
 }
 
@@ -375,13 +381,15 @@ where
     }
     query.push(")");
 
-    Ok(query
-        .build_query_as::<PromptCacheKeyRow>()
-        .fetch_all(executor)
-        .await?
-        .into_iter()
-        .map(|row| row.prompt_cache_key)
-        .collect())
+    Ok(observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheKeyRow>()
+            .fetch_all(executor),
+    )
+    .await?
+    .into_iter()
+    .map(|row| row.prompt_cache_key)
+    .collect())
 }
 
 pub(crate) async fn query_prompt_cache_conversation_hidden_count<'e, E>(
@@ -452,7 +460,8 @@ where
         .push_bind(requested_limit)
         .push("))");
 
-    let (count,) = query.build_query_as::<(i64,)>().fetch_one(executor).await?;
+    let (count,) =
+        observe_prompt_cache_query(query.build_query_as::<(i64,)>().fetch_one(executor)).await?;
     Ok(count)
 }
 
@@ -523,11 +532,13 @@ where
         )
         .push_bind(limit);
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_working_conversation_aggregates_page<'e, E>(
@@ -629,11 +640,13 @@ where
         .push(" ORDER BY sort_anchor_at DESC, cursor_created_at DESC, prompt_cache_key DESC LIMIT ")
         .push_bind(limit);
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_working_conversation_aggregate_for_key<'e, E>(
@@ -708,11 +721,13 @@ where
         .push_bind(prompt_cache_key)
         .push(" LIMIT 1");
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_optional(executor)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_optional(executor),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_working_conversation_lifecycle_aggregate_for_key(
@@ -766,10 +781,12 @@ pub(crate) async fn query_prompt_cache_working_conversation_lifecycle_aggregate_
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    let (last_terminal_at, last_in_flight_at) = query
-        .build_query_as::<(Option<String>, Option<String>)>()
-        .fetch_one(&mut *connection)
-        .await?;
+    let (last_terminal_at, last_in_flight_at) = observe_prompt_cache_query(
+        query
+            .build_query_as::<(Option<String>, Option<String>)>()
+            .fetch_one(&mut *connection),
+    )
+    .await?;
     let is_fresh = last_in_flight_at.is_some()
         || last_terminal_at
             .as_deref()
@@ -836,10 +853,12 @@ pub(crate) async fn query_prompt_cache_working_conversation_lifecycle_aggregate_
                 .push_bind(raw);
         }
         filter_query.push(")");
-        let (matches_filter,) = filter_query
-            .build_query_as::<(i64,)>()
-            .fetch_one(&mut *connection)
-            .await?;
+        let (matches_filter,) = observe_prompt_cache_query(
+            filter_query
+                .build_query_as::<(i64,)>()
+                .fetch_one(&mut *connection),
+        )
+        .await?;
         if matches_filter == 0 {
             return Ok(None);
         }
@@ -907,11 +926,13 @@ pub(crate) async fn query_prompt_cache_lifecycle_rollup_aggregates_tx(
     }
     query.push(" GROUP BY prompt_cache_key");
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(&mut *tx),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
@@ -1000,11 +1021,13 @@ pub(crate) async fn query_prompt_cache_lifecycle_snapshot_rollup_aggregates_tx(
         .push(DELTA_COUNT_EXPR)
         .push(") > 0");
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(&mut *tx),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
@@ -1070,11 +1093,13 @@ pub(crate) async fn query_prompt_cache_lifecycle_exact_tail_aggregates_tx(
     }
     query.push(" GROUP BY prompt_cache_key");
 
-    query
-        .build_query_as::<PromptCacheConversationAggregateRow>()
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(Into::into)
+    observe_prompt_cache_query(
+        query
+            .build_query_as::<PromptCacheConversationAggregateRow>()
+            .fetch_all(&mut *tx),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 pub(crate) async fn query_prompt_cache_conversation_lifecycle_aggregates(

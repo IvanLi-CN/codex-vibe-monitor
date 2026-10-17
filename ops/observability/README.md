@@ -8,6 +8,8 @@
 
 需要调整 dashboard 布局或 PromQL 时，使用仓库内的合成预览栈：[`preview/README.md`](preview/README.md)。它复用本目录的正式 dashboard JSON，但只连接隔离的 Prometheus、Tempo 和明确标记为 `synthetic-preview` 的合成 fixture，不读取生产服务、数据库或 token。
 
+维护竞争的上线前后固定 UTC 窗口、查询集、处理量与采集质量要求见[维护竞争前后比较](contention-comparison.md)。观测版本上线后，修复开发与自然基线采集并行；基线充分性只约束修复上线。
+
 ## 应用配置
 
 ```dotenv
@@ -190,23 +192,20 @@ Actions job 执行；未显式启动时不阻塞普通 PR Ready，且不得把�
 原容器 CPU attach，写出 `runtime-card.json`；它不能替代完整性能验收卡，也不执行 A/B。
 
 `.github/workflows/ci-observability-performance.yml` 的 `Observability Performance Image` 使用当前提交构建生产镜像，并传输镜像
-ID、revision 与 archive checksum；`Observability Performance Budget` 在另一个
-`ubuntu-24.04` runner 上加载同一镜像，先完成运行时场景，再串行测量 A/B。
+ID、revision 与 archive checksum；四个 `Observability Acceptance` 分支在独立的 `ubuntu-24.04` runner 上加载同一镜像，三轮同机配对与功能/CPU attach 并行执行，`Observability Performance Budget` 只校验和汇总证据。
 该工作流只接受默认分支版本的 `pull_request_target` 标签事件；测量和诊断脚本从
 base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为隔离容器镜像运行。
 因此 fork PR 的 `pull_request` 工作流不能直接启动长测，必须在受信任的目标工作流中显式触发。
 首次引入该 workflow 的 PR 也不能从自己的新增文件触发它；合并到默认分支后，后续候选 PR 才能通过一次性标签启动。
 测量期间没有编译或并行测试套件；采样工具固定 samply 0.13.1 与 checksum。
-默认 5 req/s、3 次交替配对、每窗口 300 秒与 60 秒预热；保留两组 CV ≤5% 的稳定性
-门槛、CPU 非饱和与窗口末尾无积压检查，以及 CPU/完成请求和 p95 增幅 ≤5% 的预算。
+默认 5 req/s、3 次同机配对、每窗口 60 秒与 60 秒预热，三轮轮换模式顺序，每窗口须完成 300/300 请求；保留原始窗口及配对比值 CV ≤5%、CPU 非饱和、无尾部积压以及 CPU/完成请求与成功请求 p95 增幅 ≤5% 的门槛。三台配对 runner 的硬件和 runtime 必须兼容，不能跨机器直接配对，也不能筛掉失败分支。
 资源准入不满足时标记 unavailable；窗口不稳定时不输出已接受的增幅结论。
 
 资源准入使用 PSI `some avg10/avg60`：CPU <2%、IO <5%、memory <0.1%。每轮
-预热后按 20 秒间隔取得连续三次安静样本；额外等待每轮最多 300 秒、总计 900 秒。
-正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；压力
-超限、样本缺失/非法、采集错误或间隔超过 20 秒都标记 unavailable。仅环境不可用的
+预热后按 20 秒间隔取得连续三次安静样本；每窗口额外等待最多 180 秒、每轮三窗口累计最多 450 秒，同时受共享总时限约束。
+正式窗口记录开关、配对编号、UTC/单调起止与初末压力，随后每 10 秒采样；首样本不满足准入、样本缺失/非法、采集错误或间隔超过 20 秒标记 unavailable。后续负载压力超限保留原始 PSI 和计数，不伪装成采集故障。仅环境不可用的
 结果由分类器保留证据并作为中性辅助结果；功能失败或真实预算超限仍使这次显式验收失败。
-等待超限不自动重跑；100 分钟性能 job 上限、5% CV 和开销预算保持不变。
+测试阶段从镜像交接起共享 15 分钟时钟，包含 checkout、下载装载、准备、预热、等待、测量及清理；第 14 分钟中断脚本，各测试 job 硬超时 15 分钟，汇总超时不能通过。镜像构建独立计时且上限为 15 分钟，不宣称构建加测试总计只需 15 分钟。等待或时限耗尽不自动重跑，不增加等待预算；短窗口导致样本不足或不稳定时仍报告未验证。
 `measurement-windows.json` 保存逐窗口判定，`resource-observer.jsonl` 与
 `environment-admission.jsonl` 保存带窗口身份的原始证据，失败时也按白名单上传。
 
@@ -215,7 +214,7 @@ base checkout 执行，候选 checkout 只用于确认 SHA，候选代码作为�
 从公网直接访问；该检查不能用测试 fixture 推定通过。
 
 每次 attempt 的 `observability-acceptance-<run_id>-<attempt>` artifact 保留 14 天，
-包含原始样本、比较摘要、runner/资源环境、场景结果与七字段 `empirical-card.json`。
+包含汇总样本、比较摘要、场景结果与七字段 `empirical-card.json`；四个 `observability-part-<run_id>-<attempt>-<lane>` artifact 分别保留原始样本、runner/资源环境和部分证据卡。部分卡不能独立证明性能预算。
 只上传明确白名单，不上传 Token、数据库或私有 Compose 配置；卡片 locator 指向 Actions
 run/attempt。失败或环境不可用不会成为普通 `Build Artifacts` 的依赖；显式启动的性能
 job 仍保留完整失败/不可用证据，不得把辅助结果当作预算通过卡，无需新增远端保护规则。
@@ -224,7 +223,7 @@ job 仍保留完整失败/不可用证据，不得把辅助结果当作预算通
 ## 有界 Actions CPU 诊断
 
 PR #1071 的独立 `Observability CPU Diagnosis` job 消费同一镜像，在另一台 hosted VM
-运行六个交替 300 秒窗口，不修改上述预算 job。诊断工具位于
+按历史诊断入口采集窗口，受 15 分钟 job 硬超时约束，未采完时保留不完整状态，不修改上述预算 job。诊断工具位于
 `scripts/observability-diagnostics/`，每秒保留 cgroup user/system/throttle、原进程
 CPU/context switch/IO、可获取的 frequency/steal，缺测保持 unknown。
 合成数据副本在启动前核对相同指纹；固定指标数值摘要不保留 SQL、客户端或其他标签。

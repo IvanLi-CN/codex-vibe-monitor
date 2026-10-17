@@ -1,0 +1,101 @@
+use super::*;
+use crate::ObservabilityRuntime;
+
+#[tokio::test]
+async fn maintenance_store_writes_record_results_duration_and_cancellation() {
+    let runtime = ObservabilityRuntime::new(true);
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        observe_store_write(StoreOperation::Progress, async {
+            Ok::<(), anyhow::Error>(())
+        })
+        .await
+        .expect("successful store write");
+        observe_store_write(StoreOperation::Progress, async {
+            Err::<(), _>(anyhow::anyhow!("fixture store failure"))
+        })
+        .await
+        .expect_err("fixture store failure");
+        observe_store_write(StoreOperation::Progress, async {
+            Err::<(), _>(anyhow::anyhow!("database is busy"))
+        })
+        .await
+        .expect_err("busy store write");
+        observe_store_write(StoreOperation::Progress, async {
+            Err::<(), _>(anyhow::anyhow!("database is locked"))
+        })
+        .await
+        .expect_err("locked store write");
+    })
+    .await;
+
+    let mut pending = Box::pin(crate::observability::contention::with_performance(
+        runtime.clone(),
+        observe_store_write(
+            StoreOperation::Cleanup,
+            std::future::pending::<anyhow::Result<()>>(),
+        ),
+    ));
+    assert!(futures_util::FutureExt::now_or_never(pending.as_mut()).is_none());
+    drop(pending);
+
+    let text = runtime.render();
+    for outcome in ["committed", "error", "busy", "locked"] {
+        assert!(
+            text.contains(&format!(
+                "cvm_maintenance_store_writes_total{{operation=\"progress\",outcome=\"{outcome}\"}} 1"
+            )),
+            "missing store outcome {outcome}: {text}"
+        );
+    }
+    assert!(text.contains(
+        "cvm_maintenance_store_writes_total{operation=\"cleanup\",outcome=\"cancelled\"} 1"
+    ));
+    assert!(
+        text.contains(
+            "cvm_maintenance_store_write_duration_seconds_count{operation=\"progress\"} 4"
+        )
+    );
+    assert!(
+        text.contains(
+            "cvm_maintenance_store_write_duration_seconds_count{operation=\"cleanup\"} 1"
+        )
+    );
+}
+
+#[tokio::test]
+async fn cached_prompt_cache_control_initialization_does_not_record_store_write() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:")
+        .await
+        .expect("connect maintenance store test pool");
+    let store = MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+    let task_key = "startup_backfill.prompt_cache_conversations_materialization";
+    let task_name = "prompt_cache_conversations_materialization";
+    let runtime = ObservabilityRuntime::new(true);
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        store
+            .initialize_prompt_cache_materialization_control(task_key, task_name)
+            .await
+            .expect("initialize prompt-cache control");
+        store
+            .initialize_prompt_cache_materialization_control(task_key, task_name)
+            .await
+            .expect("read cached prompt-cache control");
+    })
+    .await;
+
+    let text = runtime.render();
+    assert!(text.contains(
+        "cvm_maintenance_store_writes_total{operation=\"control\",outcome=\"committed\"} 1"
+    ));
+    assert!(
+        text.contains(
+            "cvm_maintenance_store_write_duration_seconds_count{operation=\"control\"} 1"
+        )
+    );
+}

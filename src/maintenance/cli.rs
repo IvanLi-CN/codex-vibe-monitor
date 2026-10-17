@@ -8,7 +8,8 @@ pub(crate) async fn run_cli_command(
     let raw_path_fallback_root = config.database_path.parent();
     match command {
         CliCommand::Maintenance(args) => match &args.command {
-            MaintenanceCommand::InvocationIdentityCleanup(_)
+            MaintenanceCommand::PreparePerformanceIndexes(_)
+            | MaintenanceCommand::InvocationIdentityCleanup(_)
             | MaintenanceCommand::RawOrphanSweep(_) => {
                 bail!("owned maintenance must select its runtime route before startup")
             }

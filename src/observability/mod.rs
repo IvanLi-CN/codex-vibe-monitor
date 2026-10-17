@@ -6,6 +6,7 @@ use metrics_exporter_prometheus::{
 
 mod browser;
 mod config;
+pub(crate) mod contention;
 pub(crate) mod diagnostics;
 mod http;
 mod limits;
@@ -40,6 +41,43 @@ const SHORT_BUCKETS: &[f64] = &[
 const REQUEST_BUCKETS: &[f64] = &[
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0,
 ];
+// Preserve the short-duration buckets and resolve maintenance budgets and long tails.
+const MAINTENANCE_BUCKETS: &[f64] = &[
+    0.00001, 0.00005, 0.0001, 0.0005, 0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.2, 0.25, 0.5, 1.0,
+    2.5, 5.0, 10.0, 20.0, 30.0, 60.0, 120.0, 300.0,
+];
+const REQUEST_HISTOGRAMS: &[&str] = &[
+    "cvm_http_header_duration_seconds",
+    "cvm_http_body_duration_seconds",
+    "cvm_proxy_stream_duration_seconds",
+    "cvm_task_run_duration_seconds",
+    "cvm_proxy_phase_duration_seconds",
+    "cvm_proxy_ttfb_seconds",
+    "cvm_proxy_ttft_seconds",
+    "cvm_request_local_wait_seconds",
+    "cvm_request_resource_wait_seconds",
+    "cvm_request_unattributed_seconds",
+    "cvm_request_response_duration_seconds",
+    "cvm_request_stage_seconds",
+    "cvm_request_milestone_seconds",
+    "cvm_request_persistence_seconds",
+];
+const MAINTENANCE_HISTOGRAMS: &[&str] = &[
+    "cvm_retention_phase_duration_seconds",
+    "cvm_maintenance_store_write_duration_seconds",
+    "cvm_summary_response_duration_seconds",
+    "cvm_stats_query_duration_seconds",
+];
+
+fn histogram_buckets(name: &str) -> &'static [f64] {
+    if MAINTENANCE_HISTOGRAMS.contains(&name) {
+        MAINTENANCE_BUCKETS
+    } else if REQUEST_HISTOGRAMS.contains(&name) {
+        REQUEST_BUCKETS
+    } else {
+        SHORT_BUCKETS
+    }
+}
 
 pub(crate) struct ObservabilityRuntime {
     pub(crate) enabled: bool,
@@ -59,6 +97,7 @@ pub(crate) struct ObservabilityRuntime {
     request_metrics:
         [std::sync::OnceLock<Arc<diagnostics::RequestMetricHandles>>; diagnostics::ENDPOINT_COUNT],
     series: limits::SeriesBudget,
+    contention: contention::ContentionMetrics,
 }
 impl std::fmt::Debug for ObservabilityRuntime {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -82,24 +121,9 @@ impl ObservabilityRuntime {
         let mut builder = PrometheusBuilder::new()
             .set_buckets(SHORT_BUCKETS)
             .expect("static buckets");
-        for name in [
-            "cvm_http_header_duration_seconds",
-            "cvm_http_body_duration_seconds",
-            "cvm_proxy_stream_duration_seconds",
-            "cvm_task_run_duration_seconds",
-            "cvm_proxy_phase_duration_seconds",
-            "cvm_proxy_ttfb_seconds",
-            "cvm_proxy_ttft_seconds",
-            "cvm_request_local_wait_seconds",
-            "cvm_request_resource_wait_seconds",
-            "cvm_request_unattributed_seconds",
-            "cvm_request_response_duration_seconds",
-            "cvm_request_stage_seconds",
-            "cvm_request_milestone_seconds",
-            "cvm_request_persistence_seconds",
-        ] {
+        for name in REQUEST_HISTOGRAMS.iter().chain(MAINTENANCE_HISTOGRAMS) {
             builder = builder
-                .set_buckets_for_metric(Matcher::Full(name.into()), REQUEST_BUCKETS)
+                .set_buckets_for_metric(Matcher::Full((*name).into()), histogram_buckets(name))
                 .expect("static request buckets");
         }
         let recorder = builder.build_recorder();
@@ -120,6 +144,7 @@ impl ObservabilityRuntime {
             http_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
             request_metrics: std::array::from_fn(|_| std::sync::OnceLock::new()),
             series: limits::SeriesBudget::default(),
+            contention: contention::ContentionMetrics::default(),
         })
     }
     #[cfg(test)]
@@ -378,6 +403,9 @@ impl MetricsSink {
     }
     pub(crate) fn get(&self) -> Option<&ObservabilityRuntime> {
         self.0.get().map(Arc::as_ref)
+    }
+    pub(crate) fn runtime(&self) -> Option<Arc<ObservabilityRuntime>> {
+        self.0.get().cloned()
     }
 }
 

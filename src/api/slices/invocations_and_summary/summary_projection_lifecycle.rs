@@ -115,13 +115,19 @@ pub(crate) async fn refresh_summary_snapshots(state: &AppState) -> Result<()> {
             // bounded cold-start budget. Keep the local unavailable range in place until a
             // durable source fence changes; do not re-enter boundary/archive hydration.
             let _ = renew_summary_projection_freshness_if_generation_matches(state).await?;
+        } else if fallback_fence.coverage_sources_match(current_fence) {
+            // New terminals do not repair the historical authority which made Bootstrap
+            // fall back. Reconcile only their bounded tail, preserving the published gap;
+            // otherwise every active request stream can reopen the 30-second cold builder.
+            refresh_summary_snapshots_with_mode(state, SummaryProjectionBuildMode::RollingDelta)
+                .await?;
         } else {
             state
                 .subscription_hub
                 .clear_summary_bootstrap_fallback_fence()
                 .await;
-            // A new live/manifest/coverage fence is a new admission identity. Give Bootstrap
-            // exactly one chance to replace the fallback before the supervisor catches up.
+            // A changed manifest or coverage proof is a new historical admission identity.
+            // Give Bootstrap one chance to replace the fallback before the supervisor catches up.
             hydrate_summary_snapshots(state).await?;
         }
     } else if !renew_summary_projection_freshness_if_generation_matches(state).await? {
@@ -754,7 +760,7 @@ pub(crate) fn spawn_summary_coverage_recovery_maintenance(
     state: Arc<AppState>,
     startup_priority: crate::db_pressure::DbBackgroundPriorityReservation,
 ) {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         if crate::maintenance_store::legacy_worker_should_skip("summary_coverage_recovery").await {
             return;
         }
@@ -1027,7 +1033,9 @@ async fn record_summary_live_tail_readiness(
         .await;
 }
 
-async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
+async fn restore_summary_source_change_tail(
+    state: &AppState,
+) -> Result<(bool, Option<SummaryProjectionGenerationFence>)> {
     let mut after_cursor = state.subscription_hub.summary_source_change_cursor().await;
     if after_cursor == 0 {
         after_cursor = load_summary_source_change_checkpoint(
@@ -1070,8 +1078,18 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
         // The descriptor prefix may have been compacted, but the canonical invocation table is
         // still an authoritative recovery source. Reconstruct it only when the complete tail
         // fits the existing bounded replay budget; otherwise retain the broad fail-closed proof.
-        return restore_compacted_summary_source_tail(state).await;
+        return restore_compacted_summary_source_tail(state)
+            .await
+            .map(|restored| (restored, None));
     }
+    let Some(base_projection) = state.subscription_hub.summary_projection().await else {
+        return Ok((false, None));
+    };
+    let base_projection_revision = base_projection.revision();
+    let base_generation_fence = base_projection.generation_fence();
+    // The published base and durable target are different identities when new terminals
+    // arrive. Reconcile against the base; publish only if this captured target is still current.
+    let target_generation_fence = load_summary_projection_generation_fence(state).await?;
     let tail = load_summary_source_change_tail(
         &state.pool,
         after_cursor,
@@ -1079,7 +1097,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
     )
     .await?;
     let Some(last_cursor) = tail.last().map(|record| record.cursor) else {
-        return Ok(false);
+        return Ok((false, None));
     };
     let mut expected_cursor = after_cursor.saturating_add(1);
     for record in &tail {
@@ -1088,7 +1106,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
                 .subscription_hub
                 .record_summary_source_change_gap(expected_cursor)
                 .await;
-            return Ok(false);
+            return Ok((false, None));
         }
         expected_cursor = record.cursor.saturating_add(1);
     }
@@ -1102,7 +1120,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
             continue;
         }
         let mut query = build_invocation_select_query();
-        query.push(" WHERE id IN (");
+        query.push(" AND id IN (");
         {
             let mut separated = query.separated(", ");
             for id in chunk {
@@ -1129,13 +1147,6 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
         .map(|record| record.descriptor.source_revision)
         .max()
         .unwrap_or_default();
-    let base_projection_revision = state
-        .subscription_hub
-        .summary_projection()
-        .await
-        .map(|projection| projection.revision() as i64)
-        .unwrap_or_default();
-    let base_generation_fence = load_summary_projection_generation_fence(state).await?;
     let previous_epoch = load_summary_live_tail_reconciliation_checkpoint(&state.pool)
         .await?
         .map(|checkpoint| checkpoint.recovery_epoch)
@@ -1145,7 +1156,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
         SummaryLiveTailReconciliationCheckpoint {
             format_version: 1,
             recovery_epoch: previous_epoch.saturating_add(1),
-            base_projection_revision,
+            base_projection_revision: base_projection_revision as i64,
             target_terminal_watermark,
             target_source_cursor: last_cursor,
             next_source_cursor: after_cursor,
@@ -1207,7 +1218,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
             &replayed_deltas,
             target_terminal_watermark,
             complete,
-            base_projection_revision as u64,
+            base_projection_revision,
             base_generation_fence,
         )
         .await;
@@ -1221,7 +1232,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
             SummaryLiveTailReconciliationCheckpoint {
                 format_version: 1,
                 recovery_epoch: previous_epoch.saturating_add(1),
-                base_projection_revision,
+                base_projection_revision: base_projection_revision as i64,
                 target_terminal_watermark,
                 target_source_cursor: last_cursor,
                 next_source_cursor: after_cursor,
@@ -1230,7 +1241,7 @@ async fn restore_summary_source_change_tail(state: &AppState) -> Result<bool> {
         )
         .await?;
     }
-    Ok(restored || reconciled)
+    Ok((restored || reconciled, Some(target_generation_fence)))
 }
 
 async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool> {
@@ -1246,8 +1257,7 @@ async fn restore_compacted_summary_source_tail(state: &AppState) -> Result<bool>
         return Ok(false);
     }
     let mut query = build_invocation_select_query();
-    query.push(" WHERE ");
-    query.push(" LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
+    query.push(" AND LOWER(TRIM(COALESCE(status, ''))) NOT IN ('running', 'pending')");
     query.push(" ORDER BY occurred_at ASC, id ASC LIMIT ");
     query.push_bind(MAX_REPLAY_DELTAS as i64 + 1);
     let rows = query
@@ -1391,7 +1401,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             )
             .await
         {
-            Ok(permit) => permit,
+            Ok(permit) => Arc::new(permit),
             Err(reason) => {
                 debug!(
                     stage = "summary_live_tail_reconciliation_deferred",
@@ -1421,43 +1431,71 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             started,
         )
         .await;
-        let mut restored = restore_summary_source_change_tail(state).await?;
+        let (mut restored, source_target_fence) = restore_summary_source_change_tail(state).await?;
         if !restored {
             restored = restore_legacy_summary_source_tail(state).await?;
         }
+        #[cfg(test)]
+        pause_summary_projection_test_interleave(
+            &state.pool,
+            mode,
+            SummaryProjectionTestInterleaveStage::BeforeLiveTailPublication,
+        )
+        .await?;
         let live_tail_checkpoint =
             load_summary_live_tail_reconciliation_checkpoint(&state.pool).await?;
         let expected_revision = live_tail_checkpoint
             .as_ref()
             .map(|checkpoint| checkpoint.base_projection_revision.max(0) as u64)
             .unwrap_or_default();
-        let mut publication_transaction = state
-            .pool
-            .begin()
-            .await
-            .context("begin Summary live-tail publication transaction")?;
-        let publication_fence =
-            load_summary_projection_generation_fence_tx(state, publication_transaction.as_mut())
-                .await?;
-        let reconciled_live_tail = state
-            .subscription_hub
-            .renew_summary_projection_after_live_tail_reconciliation_if_generation_matches(
-                expected_revision,
-                publication_fence,
+        let Some(mut publication_transaction) =
+            super::summary_live_tail_transaction::SummaryLiveTailTransaction::try_acquire(
+                &state.pool,
+                _reconciliation_permit.clone(),
+            )
+            .await?
+        else {
+            record_summary_live_tail_readiness(
+                state,
+                "write_admission_deferred",
+                "summary_live_tail_publication_deferred",
+                0,
+                0,
+                0,
+                started,
             )
             .await;
+            return Ok(());
+        };
+        publication_transaction.begin().await?;
+        let publication_fence = load_summary_projection_generation_fence_tx(
+            state,
+            publication_transaction.connection_mut(),
+        )
+        .await?;
+        let target_still_current =
+            source_target_fence.is_none_or(|target| target == publication_fence);
+        let reconciled_live_tail = source_target_fence.is_some()
+            && target_still_current
+            && state
+                .subscription_hub
+                .renew_summary_projection_after_live_tail_reconciliation_if_generation_matches(
+                    expected_revision,
+                    publication_fence,
+                )
+                .await;
         if reconciled_live_tail {
             if let Some(checkpoint) = live_tail_checkpoint.as_ref()
                 && checkpoint.target_source_cursor > 0
             {
                 store_summary_source_change_checkpoint_tx(
-                    publication_transaction.as_mut(),
+                    publication_transaction.connection_mut(),
                     SUMMARY_SOURCE_CHANGE_CHECKPOINT_SCOPE,
                     checkpoint.target_source_cursor,
                 )
                 .await?;
                 store_summary_live_tail_reconciliation_checkpoint_tx(
-                    publication_transaction.as_mut(),
+                    publication_transaction.connection_mut(),
                     SummaryLiveTailReconciliationCheckpoint {
                         format_version: checkpoint.format_version,
                         recovery_epoch: checkpoint.recovery_epoch,
@@ -1471,7 +1509,7 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
                 .await?;
             }
             publication_transaction
-                .commit()
+                .finish(true)
                 .await
                 .context("commit Summary live-tail publication transaction")?;
             if let Some(checkpoint) = live_tail_checkpoint.as_ref()
@@ -1484,11 +1522,12 @@ pub(crate) async fn refresh_summary_snapshots_with_mode(
             }
         } else {
             publication_transaction
-                .rollback()
+                .finish(false)
                 .await
                 .context("rollback stale Summary live-tail publication transaction")?;
         }
-        let renewed_from_overlay = restored
+        let renewed_from_overlay = target_still_current
+            && restored
             && state
                 .subscription_hub
                 .renew_summary_projection_freshness_from_delta_journal_if_coverage_matches(
@@ -1708,6 +1747,15 @@ async fn refresh_summary_snapshots_with_deadline(
         }
         Err(error) => return Err(error),
     };
+    let projection_kind = if matches!(
+        mode,
+        SummaryProjectionBuildMode::HistoricalLiveCoverage | SummaryProjectionBuildMode::AllTime
+    ) {
+        crate::observability::contention::StatsProjection::SummaryHistorical
+    } else {
+        crate::observability::contention::StatsProjection::SummaryRecent
+    };
+    let pending_source_gaps = summary_projection_pending_source_gaps(&projection, projection_kind);
     info!(
         ?mode,
         stage = "generation_fence_snapshot",
@@ -1730,6 +1778,7 @@ async fn refresh_summary_snapshots_with_deadline(
             );
             return Ok(());
         }
+        record_summary_projection_publication_metrics(projection_kind, pending_source_gaps);
         let generation_fence = state
             .subscription_hub
             .summary_projection()
@@ -1808,6 +1857,7 @@ async fn refresh_summary_snapshots_with_deadline(
             .await;
     }
     publication_transaction.commit().await?;
+    record_summary_projection_publication_metrics(projection_kind, pending_source_gaps);
     debug!(
         ?mode,
         elapsed_ms = build_started_at.elapsed().as_millis() as u64,

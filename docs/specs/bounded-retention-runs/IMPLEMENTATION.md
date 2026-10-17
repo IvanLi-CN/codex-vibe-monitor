@@ -1,5 +1,11 @@
 # Retention：实现映射与验证
 
+## Write-admission isolation
+
+REQ-BRR-024 / VER-BRR-013 refine the existing monthly batch path using [maintenance contention boundaries](../../design/maintenance-contention-boundaries.md). The deployed baseline performs an admitted archive rehash and post-commit file cleanup, and task-local fixed 64-row slicing does not consume all adaptive feedback. The repair prepares a fenced predecessor before admission and retains the existing atomic rename/sync/manifest sequence in the short publication transaction. A native owner drains cancelled work before releasing admission; post-drain cleanup retains only the file fence, and ambiguous COMMIT or failed compensation preserves recovery references. Confirmed work is recorded before a cleanup await. Non-authoritative proof pages must not repeat full monthly hashing. The child repairs and parent publication path are integrated. Final current-head GitHub CI and formal review remain pending; no released or partial-candidate evidence certifies the integrated repair.
+
+The joint competition fixture retains 64 real source rows, two-row archive selections, the independent locked maintenance database and all proxy/write-hold assertions. Its five-second archive completion limit is an outer elapsed deadline around real archive work. The production run-budget seam reserves five seconds before selecting a new file batch, so supplying that same five-second value would exercise no archive work at all. Production run and settlement budgets stay unchanged; timeout or zero archived rows still fails acceptance.
+
 ## Current Status
 
 本轮实现 REQ-BRR-022..023 / VER-BRR-012，容量对照基线为 `162253adecf9dba913202201041846f9062e713c`；开发分支为 `th/retention-task-local-monthly-batches`；候选的实际 main 基线与 head 绑定在当前交付证据中。主人授权将唯一直接 PR 推进到合并；不包含生产部署、生产修复或本地清理。

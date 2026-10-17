@@ -1,4 +1,5 @@
 use super::*;
+use crate::observability::contention::{StatsQuery, observe_query};
 use crate::runtime_mutation_bus::{RuntimeMutation, SequencedRuntimeMutation};
 use crate::{
     EXPLICIT_BILLING_PRICE_VERSION_SUFFIX, ProxyPricingMode, REQUESTED_TIER_PRICE_VERSION_SUFFIX,
@@ -36,7 +37,25 @@ mod invocation_timeline;
 mod invocation_workflow_detail;
 #[cfg(test)]
 mod model_performance_duration_override_tests;
+#[cfg(test)]
+#[path = "../../tests/lightweight/statistics_observability.rs"]
+mod statistics_observability;
+mod summary_live_tail_transaction;
+mod summary_observability;
+#[cfg(test)]
+#[path = "../../tests/lightweight/summary_fallback_contention.rs"]
+mod summary_projection_fallback_contention;
 mod summary_projection_lifecycle;
+
+#[cfg(test)]
+pub(crate) use summary_live_tail_transaction::{
+    SUMMARY_LIVE_TAIL_CLEANUP_READY, SummaryLiveTailTransaction,
+};
+
+pub(crate) use summary_observability::{
+    fetch_summary, record_summary_projection_publication_metrics,
+    summary_projection_pending_source_gaps,
+};
 
 pub(crate) use invocation_workflow_detail::{
     INVOCATION_COST_AUDIT_MISMATCH_EPSILON_USD, INVOCATION_COST_AUDIT_REASON_MODEL_MISSING,
@@ -209,6 +228,7 @@ pub(crate) enum SummaryProjectionTestInterleaveStage {
     BeforeAllTimeArchiveScan,
     BeforePagedBoundaryArchiveHydration,
     BeforeHistoricalLiveCoverage,
+    BeforeLiveTailPublication,
     BeforeProjectionPublication,
 }
 
@@ -16429,7 +16449,7 @@ async fn summary_snapshot_cadence_trigger(state: &AppState) -> Option<SummarySna
 }
 
 pub(crate) fn spawn_summary_snapshot_maintenance(state: Arc<AppState>) {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut receiver = state.broadcaster.subscribe();
         let mut mutation_receiver = state.subscription_hub.runtime_mutation_bus().subscribe();
         let mut cadence = tokio::time::interval(SUMMARY_SNAPSHOT_REFRESH_INTERVAL);
@@ -20911,11 +20931,14 @@ fn summary_projection_live_source_row_bytes_sql(text_columns: &[&str]) -> String
 async fn load_summary_projection_live_high_watermark(
     pool: &Pool<Sqlite>,
 ) -> Result<i64, anyhow::Error> {
-    sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
-        .fetch_one(pool)
-        .await
-        .map(|high_watermark| high_watermark.unwrap_or_default())
-        .context("summary projection live high-watermark hydration failed")
+    observe_query(
+        StatsQuery::Summary,
+        sqlx::query_scalar::<_, Option<i64>>("SELECT MAX(id) FROM codex_invocations")
+            .fetch_one(pool),
+    )
+    .await
+    .map(|high_watermark| high_watermark.unwrap_or_default())
+    .context("summary projection live high-watermark hydration failed")
 }
 
 fn pack_summary_projection_live_candidates(
@@ -30264,7 +30287,7 @@ pub(crate) fn summary_delta_affects_selection(
     }
 }
 
-pub(crate) async fn fetch_summary(
+async fn fetch_summary_inner(
     State(state): State<Arc<AppState>>,
     Query(params): Query<SummaryQuery>,
 ) -> Result<Json<StatsResponse>, ApiError> {
@@ -36896,96 +36919,6 @@ mod request_compression_query_tests {
             matches!(historical, ApiError::Unavailable(_)),
             "historical fallback error must be explicit: {historical:?}"
         );
-    }
-
-    #[tokio::test]
-    async fn summary_projection_unchanged_bootstrap_fence_skips_repeated_hydration_until_source_changes()
-     {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
-        sqlx::query(
-            "INSERT INTO codex_invocations \
-             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-bootstrap-fence', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
-        )
-        .bind(historical_at)
-        .execute(&state.pool)
-        .await
-        .expect("seed historical source");
-        sqlx::query(
-            "CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("create Bootstrap interleave gate");
-
-        let interleave = install_summary_projection_test_interleave_at(
-            SummaryProjectionTestInterleaveStage::BeforeHistoricalLiveCoverage,
-        );
-        let initial_state = state.clone();
-        let initial = tokio::spawn(async move {
-            hydrate_summary_snapshots_with_deadline(initial_state.as_ref(), Duration::from_secs(1))
-                .await
-        });
-        tokio::pin!(initial);
-        tokio::select! {
-            _ = interleave.wait_for_writer() => {}
-            result = &mut initial => {
-                clear_summary_projection_test_interleave();
-                result.expect("join Bootstrap fallback").expect("Bootstrap fallback");
-                panic!("Bootstrap must reach the deterministic timeout stage");
-            }
-        }
-        initial
-            .await
-            .expect("join Bootstrap fallback")
-            .expect("Bootstrap fallback");
-        clear_summary_projection_test_interleave();
-
-        let (first_result, first_hydrations) =
-            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                .scope(Cell::new(0), async {
-                    let result = refresh_summary_snapshots(state.as_ref()).await;
-                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                        .try_with(Cell::get)
-                        .expect("boundary hydration counter scope");
-                    (result, calls)
-                })
-                .await;
-        first_result.expect("unchanged fallback fence refresh");
-        assert_eq!(
-            first_hydrations, 0,
-            "unchanged fallback fence must skip hydration"
-        );
-
-        sqlx::query(
-            "INSERT INTO codex_invocations \
-             (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-             VALUES ('summary-bootstrap-fence-new', ?1, 'proxy', 'success', 19, 1.5, '{}', '', 'full')",
-        )
-        .bind(db_occurred_at_lower_bound(Utc::now()))
-        .execute(&state.pool)
-        .await
-        .expect("seed new live source fence");
-        let (changed_result, changed_hydrations) =
-            SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                .scope(Cell::new(0), async {
-                    let result = refresh_summary_snapshots(state.as_ref()).await;
-                    let calls = SUMMARY_PROJECTION_TEST_BOUNDARY_ARCHIVE_HYDRATION_CALLS
-                        .try_with(Cell::get)
-                        .expect("boundary hydration counter scope");
-                    (result, calls)
-                })
-                .await;
-        changed_result.expect("changed source fence refresh");
-        assert_eq!(
-            changed_hydrations, 1,
-            "a changed source fence must reopen one bounded Bootstrap admission"
-        );
-        state.pool.close().await;
     }
 
     #[tokio::test]

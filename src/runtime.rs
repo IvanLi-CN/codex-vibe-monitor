@@ -67,29 +67,35 @@ fn publish_http_readiness_and_spawn_hot_read_hydration_with_options(
         "application readiness reached"
     );
 
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         // Spawn the independent system-status worker before taking the Summary priority
         // reservation. A busy database gate must never delay the readiness-side status cache.
-        let system_status_handle = tokio::spawn(hydrate_system_status_at_startup(state.clone()));
+        let system_status_handle = crate::observability::contention::spawn_performance(
+            state.observability.clone(),
+            hydrate_system_status_at_startup(state.clone()),
+        );
         let summary_startup_priority =
             crate::db_pressure::global_db_pressure_gate().reserve_priority_background();
         let summary_state = state.clone();
-        let summary_handle = tokio::spawn(async move {
-            let startup_priority = hydrate_summary_at_startup(
-                summary_state.clone(),
-                summary_deadline,
-                summary_start_delay,
-                summary_startup_priority,
-            )
-            .await;
-            if let Some(startup_priority) = startup_priority {
-                spawn_summary_snapshot_maintenance(summary_state.clone());
-                spawn_summary_coverage_recovery_maintenance(summary_state, startup_priority);
-                true
-            } else {
-                false
-            }
-        });
+        let summary_handle = crate::observability::contention::spawn_performance(
+            summary_state.observability.clone(),
+            async move {
+                let startup_priority = hydrate_summary_at_startup(
+                    summary_state.clone(),
+                    summary_deadline,
+                    summary_start_delay,
+                    summary_startup_priority,
+                )
+                .await;
+                if let Some(startup_priority) = startup_priority {
+                    spawn_summary_snapshot_maintenance(summary_state.clone());
+                    spawn_summary_coverage_recovery_maintenance(summary_state, startup_priority);
+                    true
+                } else {
+                    false
+                }
+            },
+        );
         let (summary_result, system_status_result) =
             tokio::join!(summary_handle, system_status_handle);
 
@@ -196,6 +202,13 @@ pub(crate) async fn run() -> Result<()> {
 
     let cli = CliArgs::parse();
     let config = AppConfig::from_sources(&cli)?;
+    if let Some(CliCommand::Maintenance(MaintenanceCliArgs {
+        command: MaintenanceCommand::PreparePerformanceIndexes(options),
+    })) = &cli.command
+    {
+        selected_owned_maintenance(&cli)?;
+        return run_performance_index_preparation_cli(&config, options).await;
+    }
     if let Some((task_key, dry_run)) = selected_owned_maintenance(&cli)? {
         return run_owned_maintenance_cli(&config, task_key, dry_run).await;
     }
@@ -224,7 +237,8 @@ pub(crate) async fn run() -> Result<()> {
         .await
         .context("failed to open sqlite database")?;
     let mut maintenance_pool = None;
-    let outcome = async {
+    let observability = ObservabilityRuntime::new(config.observability.enabled);
+    let outcome = crate::observability::contention::with_performance(observability.clone(), async {
         log_startup_phase("db_connect", db_connect_started_at);
 
         let schema_started_at = Instant::now();
@@ -352,7 +366,6 @@ pub(crate) async fn run() -> Result<()> {
         let proxy_raw_async_semaphore = Arc::new(Semaphore::new(proxy_raw_async_writer_limit(&config)));
         let shutdown = CancellationToken::new();
         let process_started_at_utc = Utc::now();
-        let observability = ObservabilityRuntime::new(config.observability.enabled);
         observability
             .initialize_traces(config.observability.traces.clone())
             .await;
@@ -495,7 +508,7 @@ pub(crate) async fn run() -> Result<()> {
             },
         )
         .await
-    }
+    })
     .await;
     // The process lifetime lock also covers SQL workers left by startup failures or shutdown.
     pool.close().await;
@@ -1152,7 +1165,7 @@ where
 }
 
 fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let Some(store) = crate::maintenance_store::global().cloned() else {
             return;
         };
@@ -1261,7 +1274,10 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
             );
             let result = if matches!(
                 task_key.as_str(),
-                "retention_archive" | "invocation_identity_cleanup" | "raw_orphan_sweep"
+                "retention_archive"
+                    | "invocation_identity_cleanup"
+                    | "raw_orphan_sweep"
+                    | "prepare_performance_indexes"
             ) {
                 // These owners settle file/transaction work at their own cancellation boundaries.
                 // Dropping their future here could release admission before in-flight IO drains.
@@ -1623,6 +1639,39 @@ async fn run_managed_task_once_with_observation(
     let details: Value = details
         .and_then(|d| serde_json::from_str(&d).ok())
         .unwrap_or(Value::Null);
+    if task_key == "prepare_performance_indexes" {
+        let request: PerformanceIndexPreparationRequest = if details.is_null() {
+            PerformanceIndexPreparationRequest::default()
+        } else {
+            serde_json::from_value(details)
+                .context("invalid performance index preparation request")?
+        };
+        anyhow::ensure!(
+            trigger == "manual",
+            "index preparation requires a manual request"
+        );
+        let report = prepare_performance_indexes(
+            state.pool.connect_options().as_ref().clone(),
+            request,
+            crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator(),
+            state.shutdown.clone(),
+        )
+        .await?;
+        return Ok(ManagedTaskExecution {
+            summary: "性能索引准备结束".to_string(),
+            detail: Some(report.outcome.to_string()),
+            completion: Some(
+                if report.is_complete() {
+                    "complete"
+                } else {
+                    "deferred"
+                }
+                .to_string(),
+            ),
+            core_completion: None,
+            details: Some(serde_json::to_value(report)?),
+        });
+    }
     let options = MaintenanceExecutionOptions {
         manual: trigger == "manual",
         admitted: true,
@@ -1643,16 +1692,19 @@ async fn run_managed_task_once_with_observation(
             .bind(json!({"ownershipVersion": 1,"ownerScope": task_key,"dryRun": options.dry_run,"manual": options.manual}).to_string())
             .bind(run_id).execute(&store.pool).await?;
     }
-    let mut execution = with_maintenance_execution_options(
-        options,
-        crate::with_managed_task_observation(
-            observation.clone(),
-            Box::pin(run_managed_task_once_with_scoped_observation(
-                state,
-                task_key,
-                run_id,
-                observation,
-            )),
+    let mut execution = crate::observability::contention::with_performance(
+        state.observability.clone(),
+        with_maintenance_execution_options(
+            options,
+            crate::with_managed_task_observation(
+                observation.clone(),
+                Box::pin(run_managed_task_once_with_scoped_observation(
+                    state,
+                    task_key,
+                    run_id,
+                    observation,
+                )),
+            ),
         ),
     )
     .await?;
@@ -2338,7 +2390,7 @@ pub(crate) fn spawn_runtime_startup_hourly_rollup_bootstrap(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         if crate::maintenance_store::legacy_worker_should_skip("startup_hourly_rollup_bootstrap")
             .await
         {
@@ -2989,7 +3041,7 @@ pub(crate) fn spawn_forward_proxy_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let startup_known_subscription_keys = {
             let manager = state.forward_proxy.lock().await;
             snapshot_known_subscription_proxy_keys(&manager)
@@ -3170,7 +3222,7 @@ pub(crate) fn spawn_pool_orphan_recovery_maintenance(
     state: Arc<AppState>,
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
-    tokio::spawn(async move {
+    crate::observability::contention::spawn_performance(state.observability.clone(), async move {
         let mut ticker = interval(POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {

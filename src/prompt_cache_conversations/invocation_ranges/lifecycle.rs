@@ -93,6 +93,7 @@ pub(crate) fn pending_floor(prefix: &str) -> i64 {
 struct PendingIdentityGuard {
     id: String,
     prefix: PrefixGuard,
+    materialization_since: Option<Instant>,
 }
 
 impl PendingIdentityGuard {
@@ -111,6 +112,7 @@ impl PendingIdentityGuard {
         Some(Self {
             id: id.to_owned(),
             prefix: PrefixGuard(prefix),
+            materialization_since: Some(Instant::now()),
         })
     }
 }
@@ -131,6 +133,37 @@ pub(crate) struct PendingIdentityRegistry {
 }
 
 impl PendingIdentityRegistry {
+    pub(crate) fn materialization_snapshot(&self) -> (usize, Duration) {
+        let identities = self
+            .identities
+            .lock()
+            .expect("pending invocation identities");
+        let mut count = 0;
+        let mut oldest = None;
+        for since in identities
+            .values()
+            .filter_map(|guard| guard.materialization_since)
+        {
+            count += 1;
+            oldest = Some(oldest.map_or(since, |value: Instant| value.min(since)));
+        }
+        (
+            count,
+            oldest.map_or(Duration::ZERO, |since| since.elapsed()),
+        )
+    }
+
+    pub(crate) fn observe_materialized(&self, id: &str, occurred_at: &str, raw: bool) {
+        if let Some(identity) = self
+            .identities
+            .lock()
+            .expect("pending invocation identities")
+            .get_mut(&(id.to_owned(), occurred_at.to_owned(), raw))
+        {
+            identity.materialization_since = None;
+        }
+    }
+
     pub(crate) fn register(&self, id: &str, occurred_at: &str, raw: bool) {
         let mut identities = self
             .identities
@@ -363,3 +396,7 @@ pub(crate) struct HourlyIdentityCleanupResult {
     pub(crate) released: usize,
     pub(crate) has_more: bool,
 }
+
+#[cfg(test)]
+#[path = "../../tests/lightweight/terminal_materialization_observation.rs"]
+mod observation_tests;
