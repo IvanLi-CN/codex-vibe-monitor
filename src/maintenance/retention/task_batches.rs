@@ -178,11 +178,9 @@ async fn load_selected_invocation_archive_candidates(
         .map(|id| {
             by_id
                 .remove(id)
-                .with_context(|| {
-                    format!(
-                        "retention task-local archive source selection changed before conversion: selected invocation archive candidate {id} disappeared"
-                    )
-                })
+                .context(
+                    "retention task-local archive source selection changed before conversion: selected candidate unavailable",
+                )
         })
         .collect()
 }
