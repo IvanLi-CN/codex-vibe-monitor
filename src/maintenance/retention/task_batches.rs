@@ -107,6 +107,86 @@ fn mark_error(diagnostic: &mut RetentionDiagnosticRecorder, error: &anyhow::Erro
     }
 }
 
+const INVOCATION_ARCHIVE_SELECTION_COLUMNS: &str = r#"
+    id,
+    invoke_id,
+    occurred_at,
+    source,
+    status,
+    input_tokens,
+    output_tokens,
+    cache_input_tokens,
+    reasoning_tokens,
+    total_tokens,
+    cost,
+    first_token_ms,
+    NULL AS payload,
+    request_raw_path,
+    response_raw_path
+"#;
+
+async fn load_invocation_archive_candidate_metadata(
+    pool: &Pool<Sqlite>,
+    cutoff: &str,
+    source_max_invocation_id: Option<i64>,
+    candidate_limit: Option<usize>,
+) -> Result<Vec<InvocationArchiveCandidate>> {
+    // Selection only needs metadata and SQL-computed row sizes. Full payloads are loaded after
+    // the 16 MiB/1000-row selector has chosen the bounded source IDs.
+    let sql = format!(
+        "SELECT {INVOCATION_ARCHIVE_SELECTION_COLUMNS}
+         FROM codex_invocations
+         WHERE occurred_at < ?1
+           AND (?2 IS NULL OR id <= ?2)
+         ORDER BY occurred_at ASC, id ASC{}",
+        if candidate_limit.is_some() {
+            "\n         LIMIT ?3"
+        } else {
+            ""
+        }
+    );
+    let candidates = if let Some(candidate_limit) = candidate_limit {
+        sqlx::query_as::<_, InvocationArchiveCandidate>(&sql)
+            .bind(cutoff)
+            .bind(source_max_invocation_id)
+            .bind(candidate_limit as i64)
+            .fetch_all(pool)
+            .await?
+    } else {
+        sqlx::query_as::<_, InvocationArchiveCandidate>(&sql)
+            .bind(cutoff)
+            .bind(source_max_invocation_id)
+            .fetch_all(pool)
+            .await?
+    };
+    Ok(candidates)
+}
+
+async fn load_selected_invocation_archive_candidates(
+    pool: &Pool<Sqlite>,
+    ids: &[i64],
+) -> Result<Vec<InvocationArchiveCandidate>> {
+    let loaded = load_invocation_archive_candidates_by_ids(pool, ids).await?;
+    if loaded.len() != ids.len() {
+        bail!("retention task-local archive source selection changed before conversion");
+    }
+    let mut by_id = loaded
+        .into_iter()
+        .map(|candidate| (candidate.id, candidate))
+        .collect::<HashMap<_, _>>();
+    ids.iter()
+        .map(|id| {
+            by_id
+                .remove(id)
+                .with_context(|| {
+                    format!(
+                        "retention task-local archive source selection changed before conversion: selected invocation archive candidate {id} disappeared"
+                    )
+                })
+        })
+        .collect()
+}
+
 struct ArchiveSourceIdentityProof {
     cleanup: TempSqliteCleanup,
     _work_owner_file: crate::maintenance::archive::TaskWorkOwner,
@@ -632,6 +712,9 @@ pub(crate) async fn prune_old_invocation_details(
                     }
                 };
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                #[cfg(test)]
+                batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
+                    .await;
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
@@ -644,6 +727,8 @@ pub(crate) async fn prune_old_invocation_details(
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
+                    } else {
+                        mark_error(&mut recovery_diagnostic, &error);
                     }
                     return Err(error);
                 }
@@ -731,33 +816,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
     let spec = archive_table_spec("codex_invocations");
 
     if dry_run {
-        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
-            r#"
-            SELECT
-                id,
-                invoke_id,
-                occurred_at,
-                source,
-                status,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                reasoning_tokens,
-                total_tokens,
-                cost,
-                first_token_ms,
-                payload,
-                request_raw_path,
-                response_raw_path
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-              AND (?2 IS NULL OR id <= ?2)
-            ORDER BY occurred_at ASC, id ASC
-            "#,
-        )
-        .bind(cutoff)
-        .bind(source_max_invocation_id)
-        .fetch_all(pool);
+        let candidates_query = load_invocation_archive_candidate_metadata(
+            pool,
+            cutoff,
+            source_max_invocation_id,
+            None,
+        );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
@@ -815,35 +879,12 @@ pub(super) async fn archive_old_invocations_with_source_max(
             break;
         }
         let candidate_limit = archive_candidate_limit(config);
-        let candidates_query = sqlx::query_as::<_, InvocationArchiveCandidate>(
-            r#"
-            SELECT
-                id,
-                invoke_id,
-                occurred_at,
-                source,
-                status,
-                input_tokens,
-                output_tokens,
-                cache_input_tokens,
-                reasoning_tokens,
-                total_tokens,
-                cost,
-                first_token_ms,
-                payload,
-                request_raw_path,
-                response_raw_path
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-              AND (?2 IS NULL OR id <= ?2)
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?3
-            "#,
-        )
-        .bind(cutoff)
-        .bind(source_max_invocation_id)
-        .bind(candidate_limit as i64)
-        .fetch_all(pool);
+        let candidates_query = load_invocation_archive_candidate_metadata(
+            pool,
+            cutoff,
+            source_max_invocation_id,
+            Some(candidate_limit),
+        );
         let candidates = if let Some(remaining) = retention_run_remaining_budget() {
             match tokio::time::timeout(remaining, candidates_query).await {
                 Ok(result) => result?,
@@ -881,10 +922,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             let candidate_ids = group.iter().map(|row| row.id).collect::<Vec<_>>();
             let row_sizes = archive_source_row_sizes(pool, spec, &candidate_ids).await?;
-            let group = select_archive_batch(group, |candidate| {
+            let selected_group = select_archive_batch(group, |candidate| {
                 row_sizes.get(&candidate.id).copied().unwrap_or(512)
             });
-            let ids = group
+            let ids = selected_group
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
@@ -894,6 +935,20 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 }
                 break;
             }
+            let group = match load_selected_invocation_archive_candidates(pool, &ids).await {
+                Ok(group) => group,
+                Err(error) => {
+                    if error
+                        .to_string()
+                        .contains("archive source selection changed")
+                    {
+                        recovery_diagnostic.mark_proof_unavailable();
+                    } else {
+                        mark_error(&mut recovery_diagnostic, &error);
+                    }
+                    return Err(error);
+                }
+            };
             let mut batch_observation =
                 batch_plan::BatchObservation::begin(spec.dataset, &group_key, group.len());
             let Some(mut source_connection) =
@@ -1301,6 +1356,9 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     }
                 };
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                #[cfg(test)]
+                batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
+                    .await;
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
@@ -1313,6 +1371,8 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
+                    } else {
+                        mark_error(&mut recovery_diagnostic, &error);
                     }
                     return Err(error);
                 }
@@ -1896,6 +1956,9 @@ pub(crate) async fn archive_timestamped_dataset(
                     }
                 };
                 let commit_phase = batch_observation.phase(RetentionPhase::Commit);
+                #[cfg(test)]
+                batch_admission::prepare_commit_for_test(transaction_resources.connection_mut())
+                    .await;
                 let commit_result = sqlx::query("COMMIT")
                     .execute(transaction_resources.connection_mut())
                     .await;
@@ -1908,6 +1971,8 @@ pub(crate) async fn archive_timestamped_dataset(
                         error = error.context(format!(
                             "retention transaction rollback and close failed after commit failure: {cleanup_error}"
                         ));
+                    } else {
+                        mark_error(&mut recovery_diagnostic, &error);
                     }
                     return Err(error);
                 }
@@ -1979,4 +2044,127 @@ pub(crate) async fn archive_timestamped_dataset(
 
     recovery_diagnostic.finish();
     Ok((rows_archived, archive_batches, raw_files_removed))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn invocation_archive_selection_defers_large_payload_materialization() {
+        let (pool, _config, temp_dir) =
+            crate::tests::retention_test_pool_and_config("archive-selection-metadata").await;
+        let occurred_at = "2020-01-15 12:00:00";
+        let payload = "x".repeat(48 * 1024);
+        sqlx::query(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<1000)
+             INSERT INTO codex_invocations(
+                 invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+             )
+             SELECT 'metadata-selection-' || i, ?1, 'proxy', 'success', 7, 0.07, ?2, '{}'
+             FROM n",
+        )
+        .bind(occurred_at)
+        .bind(&payload)
+        .execute(&pool)
+        .await
+        .expect("seed large invocation archive candidates");
+
+        let candidates = load_invocation_archive_candidate_metadata(
+            &pool,
+            "9999-12-31 00:00:00",
+            None,
+            Some(1_000),
+        )
+        .await
+        .expect("load metadata-only invocation archive candidates");
+        assert_eq!(candidates.len(), 1_000);
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| candidate.payload.is_none()),
+            "candidate selection must not materialize payloads before the size selector"
+        );
+
+        let candidate_ids = candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let row_sizes = archive_source_row_sizes(
+            &pool,
+            archive_table_spec("codex_invocations"),
+            &candidate_ids,
+        )
+        .await
+        .expect("calculate SQL row sizes for candidate selection");
+        let selected = select_archive_batch(candidates, |candidate| {
+            row_sizes.get(&candidate.id).copied().unwrap_or(512)
+        });
+        assert!(
+            selected.len() < candidate_ids.len(),
+            "large payloads must constrain the selected batch before full materialization"
+        );
+        let selected_ids = selected
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>();
+        let materialized = load_selected_invocation_archive_candidates(&pool, &selected_ids)
+            .await
+            .expect("load only selected invocation archive payloads");
+        assert_eq!(materialized.len(), selected.len());
+        assert!(
+            materialized
+                .iter()
+                .all(|candidate| candidate.payload.as_deref() == Some(payload.as_str())),
+            "selected candidates must retain their full payloads for archive conversion"
+        );
+
+        pool.close().await;
+        crate::tests::cleanup_temp_test_dir(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn retention_error_classifier_distinguishes_lock_from_unclassified_failure() {
+        let lock_runtime = crate::ObservabilityRuntime::new(true);
+        crate::observability::contention::with_performance(lock_runtime.clone(), async {
+            let mut diagnostic = RetentionDiagnosticRecorder::new();
+            mark_error(&mut diagnostic, &anyhow::anyhow!("database is locked"));
+            drop(diagnostic);
+        })
+        .await;
+        let lock_metrics = lock_runtime.render();
+        assert!(
+            lock_metrics.lines().any(|line| {
+                line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                    && line.contains("operation=\"retention\"")
+                    && line.contains("reason=\"pressure_deferred\"")
+                    && line.ends_with(" 1")
+            }),
+            "known SQLite locks must remain pressure-deferred: {lock_metrics}"
+        );
+        assert!(!lock_metrics.lines().any(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("operation=\"retention\"")
+                && line.contains("reason=\"failed\"")
+                && line.ends_with(" 1")
+        }));
+
+        let failure_runtime = crate::ObservabilityRuntime::new(true);
+        crate::observability::contention::with_performance(failure_runtime.clone(), async {
+            let mut diagnostic = RetentionDiagnosticRecorder::new();
+            mark_error(&mut diagnostic, &anyhow::anyhow!("commit failed: injected"));
+            drop(diagnostic);
+        })
+        .await;
+        let failure_metrics = failure_runtime.render();
+        assert!(
+            failure_metrics.lines().any(|line| {
+                line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                    && line.contains("operation=\"retention\"")
+                    && line.contains("reason=\"failed\"")
+                    && line.ends_with(" 1")
+            }),
+            "unclassified commit failures must remain failed: {failure_metrics}"
+        );
+    }
 }

@@ -137,6 +137,143 @@ async fn retention_task_local_rejects_source_change_after_archive_artifact_proof
 }
 
 #[tokio::test]
+async fn retention_task_local_commit_reader_lock_is_pressure_deferred_before_durable_commit() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-commit-reader-lock").await;
+    config.retention_batch_rows = 1;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+
+    // A rollback-journal reader keeps a SHARED lock while the retention writer reaches COMMIT.
+    // The production connection is switched to a zero busy timeout only by the test seam immediately
+    // before the real COMMIT, so this exercises SQLite's reversible BUSY outcome.
+    let mut journal_setup = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("open journal-mode setup connection");
+    let journal_mode: String = sqlx::query_scalar("PRAGMA journal_mode=DELETE")
+        .fetch_one(&mut journal_setup)
+        .await
+        .expect("switch test database to rollback journal");
+    assert_eq!(journal_mode.to_ascii_lowercase(), "delete");
+    sqlx::query("PRAGMA busy_timeout=0")
+        .execute(&mut journal_setup)
+        .await
+        .expect("disable setup connection busy timeout");
+    journal_setup
+        .close()
+        .await
+        .expect("close journal-mode setup connection");
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let transaction_probe = Arc::new(crate::maintenance::TransactionBeginProbe::default());
+    let commit_probe = Arc::new(crate::maintenance::BatchCommitProbe::default());
+    commit_probe
+        .force_commit_busy_timeout_zero
+        .store(true, Ordering::Release);
+    let runtime = crate::ObservabilityRuntime::new(true);
+    let work = crate::observability::contention::with_performance(
+        runtime.clone(),
+        RETENTION_TEST_WRITE_COORDINATOR.scope(
+            coordinator,
+            RETENTION_TEST_DB_PRESSURE_GATE.scope(
+                gate,
+                crate::maintenance::RETENTION_TEST_TRANSACTION_BEGIN.scope(
+                    transaction_probe.clone(),
+                    crate::maintenance::RETENTION_TEST_BATCH_COMMIT.scope(
+                        commit_probe,
+                        crate::maintenance::retention_test_with_work_budget(
+                            Duration::from_secs(60),
+                            archive_old_invocations(
+                                &pool,
+                                &config,
+                                config.database_path.parent(),
+                                false,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::select! {
+        result = &mut work => panic!("retention reached a terminal result before the reader lock: {result:?}"),
+        notification = tokio::time::timeout(
+            Duration::from_secs(5),
+            transaction_probe.begun.notified(),
+        ) => {
+            notification.expect("retention transaction began");
+        }
+    }
+
+    let mut reader = SqliteConnection::connect_with(pool.connect_options().as_ref())
+        .await
+        .expect("open rollback-journal reader");
+    sqlx::query("PRAGMA busy_timeout=0")
+        .execute(&mut reader)
+        .await
+        .expect("disable reader busy timeout");
+    sqlx::query("BEGIN")
+        .execute(&mut reader)
+        .await
+        .expect("begin reader transaction");
+    let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&mut reader)
+        .await
+        .expect("establish reader shared lock");
+    transaction_probe.resume.notify_one();
+
+    let error = work
+        .await
+        .expect_err("reader lock must fail the real retention COMMIT");
+    assert!(
+        crate::is_sqlite_lock_error(&error),
+        "expected SQLite BUSY/LOCKED from COMMIT, got: {error:#}"
+    );
+    sqlx::query("ROLLBACK")
+        .execute(&mut reader)
+        .await
+        .expect("release reader shared lock");
+    reader.close().await.expect("close rollback-journal reader");
+
+    let rendered = runtime.render();
+    assert!(
+        rendered.lines().any(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("operation=\"retention\"")
+                && line.contains("reason=\"pressure_deferred\"")
+                && line.ends_with(" 1")
+        }),
+        "known COMMIT locks must use the existing pressure classification: {rendered}"
+    );
+    assert!(
+        !rendered.lines().any(|line| {
+            line.starts_with("cvm_runtime_recovery_diagnostics_total{")
+                && line.contains("operation=\"retention\"")
+                && line.contains("reason=\"failed\"")
+                && line.ends_with(" 1")
+        }),
+        "a reversible COMMIT lock must not be reported as generic failure: {rendered}"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source remains after reversible commit failure"),
+        1
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_p2_queue_does_not_hold_file_io_admission() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("task-local-p2-file-io-admission").await;
