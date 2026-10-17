@@ -10,7 +10,7 @@
     "description": "Existing conversation and UTC-hour namespace rows and last_invoke_sequence ceilings. Prepared ranges are private memory issuance rights until their reservation transaction commits.",
     "storage_implementation": "Existing SQLite tables and existing pending journal identity obligations.",
     "source_compatibility_range": {
-      "from_program_versions": "Supported v4.8.x implementations of the current/standby 64-ID reservation protocol.",
+      "from_program_versions": "Supported v4.8.x and v4.9.0 implementations of the current/standby 64-ID reservation protocol.",
       "to_program_version": "Runtime recovery candidate; version chosen by repository release policy.",
       "direct_major_skips_supported": false
     }
@@ -38,7 +38,7 @@
   },
   "recovery": {
     "deployed_migrations_immutable": true,
-    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; supported earlier v4.8 readers recognize all written rows and skip committed reserved tails after restart",
+    "program_rollback_state_behavior": "does-not-automatically-reverse-compensate-or-down-migrate; supported earlier v4.8 and v4.9.0 readers recognize all written rows and skip committed reserved tails after restart",
     "faulty_release_recovery": "Forward repair re-enters the existing ceiling protocol. A cancelled caller does not cancel the native settlement owner. An uncommitted reservation rolls back before write admission is released; an uncertain committed tail is skipped rather than reissued. Ended-hour memory retirement retains namespace protection while active leases or journal obligations exist.",
     "backup_restore_role": "separate-disaster-recovery"
   },
@@ -54,7 +54,16 @@
     },
     "minor": {"required_test_evidence": []},
     "major": {"required_test_evidence": []},
-    "status": "pending-current-integrated-validation",
+    "status": "component-compatibility-verified",
+    "evidence_scope": "The invocation-range implementation and its stateful/native-cancellation regression files are byte-identical to f9f29ca8f145291dc33baf7d472747505e27fff7, whose GitHub CI run passed all backend profiles. The v4.9.0 mainline integration changes no allocator source or schema. This component record does not substitute for the parent PR's current-head CI, contention acceptance or formal review.",
+    "evidence": [
+      "https://github.com/IvanLi-CN/codex-vibe-monitor/actions/runs/39021726193",
+      "src/prompt_cache_conversations/invocation_ranges.rs@ffa90d54964ea638765ae3cf41420b2150290810",
+      "src/prompt_cache_conversations/invocation_ranges/preparation.rs@5848df1bc00a2fd14c41ceb2940a03d08e7a76fb",
+      "src/prompt_cache_conversations/invocation_ranges/transaction.rs@10872610ddfe6f59084124df4441bcf96e1c28c9",
+      "src/tests/stateful_sqlite/invocation_range_recovery.rs@ac0d811f93f684e56300f77d20815190d1052fd1",
+      "src/tests/archive_file_io/invocation_range_native_recovery.rs@e8e2a7dac393e208756ff902082e245647c0fd83"
+    ],
     "source_regressions": [
       "src/tests/stateful_sqlite/invocation_range_recovery.rs",
       "src/tests/archive_file_io/invocation_range_native_recovery.rs"
