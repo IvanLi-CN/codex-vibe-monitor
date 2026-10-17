@@ -46,10 +46,9 @@ impl InvocationRangeManager {
             memory
                 .entries
                 .iter()
+                .filter(|(owner, _)| owner.hour().is_some_and(|hour| hour < current_hour))
                 .filter_map(|(owner, entry)| {
-                    (owner.hour().is_some_and(|hour| hour < current_hour))
-                        .then(|| entry.prefix.clone().map(|prefix| (owner.clone(), prefix)))
-                        .flatten()
+                    entry.prefix.clone().map(|prefix| (owner.clone(), prefix))
                 })
                 .collect::<Vec<_>>()
         };
@@ -86,9 +85,11 @@ impl InvocationRangeManager {
         if let Some(mut connection) = idle {
             connection.return_to_pool().await;
         }
-        let permit = pool_ready
-            .then(|| proxy_sqlite_write_coordinator().try_acquire(ProxySqliteWriteClass::P2Derived))
-            .flatten();
+        let permit = if pool_ready {
+            proxy_sqlite_write_coordinator().try_acquire(ProxySqliteWriteClass::P2Derived)
+        } else {
+            None
+        };
         if let Some(permit) = permit {
             self.initialize(pool, owner.clone(), generation, Some(permit), true)
                 .await;
@@ -106,10 +107,9 @@ impl InvocationRangeManager {
                     .entries
                     .get(&owner)
                     .is_some_and(|entry| entry.speculative)
+                && let Some(entry) = memory.entries.remove(&owner)
             {
-                if let Some(entry) = memory.entries.remove(&owner) {
-                    entry.notify.notify_waiters();
-                }
+                entry.notify.notify_waiters();
             }
             ready
         } else {
@@ -118,10 +118,9 @@ impl InvocationRangeManager {
                 .entries
                 .get(&owner)
                 .is_some_and(|entry| entry.generation == generation)
+                && let Some(entry) = memory.entries.remove(&owner)
             {
-                if let Some(entry) = memory.entries.remove(&owner) {
-                    entry.notify.notify_waiters();
-                }
+                entry.notify.notify_waiters();
             }
             record_recovery(RecoveryDiagnostic::RangePrewarmDeferred);
             false
@@ -131,6 +130,9 @@ impl InvocationRangeManager {
     #[cfg(test)]
     pub(crate) async fn test_prepare_at(self: &Arc<Self>, pool: &Pool<Sqlite>, now: DateTime<Utc>) {
         self.pool.get_or_init(|| pool.clone());
+        // Establish this fixture's idle-pool precondition; production preparation
+        // skips rather than waiting when the pool is busy.
+        pool.acquire().await.unwrap().return_to_pool().await;
         self.prepare_turn(
             pool,
             now,
@@ -143,6 +145,7 @@ impl InvocationRangeManager {
     #[cfg(test)]
     pub(crate) async fn test_prepare_key(self: &Arc<Self>, pool: &Pool<Sqlite>, key: &str) -> bool {
         self.pool.get_or_init(|| pool.clone());
+        pool.acquire().await.unwrap().return_to_pool().await;
         self.prepare_owner(pool, Owner::Conversation(key.to_owned()))
             .await
     }

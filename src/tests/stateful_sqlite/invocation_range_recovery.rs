@@ -202,3 +202,48 @@ async fn prepared_range_survives_writer_block_and_restart_never_reissues_it() {
         prompt_cache_conversations::encode_prompt_cache_conversation_sequence(64).unwrap()
     );
 }
+
+#[tokio::test]
+async fn ended_hour_retirement_preserves_active_and_pending_invocation_obligations() {
+    use prompt_cache_conversations::invocation_ranges::lifecycle::{
+        PendingIdentityRegistry, prefix_occupied,
+    };
+    let pool = fixture().await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let hour = Utc::now().timestamp().div_euclid(3600);
+    manager
+        .test_prepare_at(&pool, DateTime::from_timestamp(hour * 3600, 0).unwrap())
+        .await;
+    let id = manager.test_allocate_hour(&pool, hour).await.unwrap();
+    let pending = PendingIdentityRegistry::default();
+    pending.register(&id, "2026-10-17 00:00:00", false);
+    let next = DateTime::from_timestamp((hour + 1) * 3600, 0).unwrap();
+    manager.test_prepare_at(&pool, next).await;
+    assert!(
+        prefix_occupied(&id[..6]),
+        "active and pending owners keep their namespace"
+    );
+    manager.reconcile_persistence(&id);
+    manager.test_prepare_at(&pool, next).await;
+    assert!(
+        prefix_occupied(&id[..6]),
+        "journal obligation survives active lease release"
+    );
+    pending.acknowledge(&id, "2026-10-17 00:00:00", false);
+    manager.test_prepare_at(&pool, next).await;
+    assert!(
+        !prefix_occupied(&id[..6]),
+        "only fully idle ended hours retire from memory"
+    );
+    let ceiling: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM hourly_invoke_prefixes WHERE utc_hour=?",
+    )
+    .bind(hour)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        ceiling, 63,
+        "memory eviction never returns a committed reservation ceiling"
+    );
+}
