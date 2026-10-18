@@ -1755,6 +1755,7 @@ fn build_pool_upstream_request_attempt_progress(
 
 pub(crate) enum PoolAttemptRecoveryScope<'a> {
     AllPending,
+    Ids(&'a [i64]),
     SpecificEarlyPhase {
         attempt_id: i64,
     },
@@ -1809,6 +1810,61 @@ pub(crate) async fn recover_pool_upstream_request_attempts_with_scope_tx(
             .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
             .fetch_all(&mut *tx)
             .await?
+        }
+        PoolAttemptRecoveryScope::Ids(ids) => {
+            if ids.is_empty() {
+                Vec::new()
+            } else {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    r#"
+                    UPDATE pool_upstream_request_attempts
+                    SET
+                        finished_at = COALESCE(finished_at, "#,
+                );
+                query.push_bind(&finished_at);
+                query.push(
+                    r#", status = "#,
+                );
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE);
+                query.push(
+                    r#", phase = "#,
+                );
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED);
+                query.push(
+                    r#", failure_kind = COALESCE(failure_kind, "#,
+                );
+                query.push_bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED);
+                query.push(
+                    r#"), error_message = COALESCE(error_message, "#,
+                );
+                query.push_bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE);
+                query.push(
+                    r#")
+                    WHERE id IN ("#,
+                );
+                {
+                    let mut separated = query.separated(", ");
+                    for id in ids {
+                        separated.push_bind(id);
+                    }
+                    separated.push_unseparated(r#")"#);
+                }
+                query.push(
+                    r#"
+                      AND status = "#,
+                );
+                query.push_bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+                query.push(
+                    r#"
+                      AND finished_at IS NULL
+                    RETURNING id, invoke_id, occurred_at, sticky_key, upstream_account_id
+                    "#,
+                );
+                query
+                    .build_query_as::<RecoveredPoolAttemptRow>()
+                    .fetch_all(&mut *tx)
+                    .await?
+            }
         }
         PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id } => {
             sqlx::query_as::<_, RecoveredPoolAttemptRow>(
@@ -2071,8 +2127,20 @@ pub(crate) async fn recover_orphaned_pool_upstream_request_attempts(
     )
 }
 
+pub(crate) async fn recover_pool_upstream_request_attempts_with_connection(
+    connection: &mut SqliteConnection,
+    scope: PoolAttemptRecoveryScope<'_>,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    let mut tx = connection.begin().await?;
+    let recovered =
+        recover_pool_upstream_request_attempts_with_scope_tx(tx.as_mut(), scope).await?;
+    tx.commit().await?;
+    Ok(recovered)
+}
+
 pub(crate) enum ProxyInvocationRecoveryScope<'a> {
     AllInFlight,
+    Ids(&'a [i64]),
     Selectors(&'a [InvocationRecoverySelector]),
 }
 
@@ -2116,6 +2184,50 @@ pub(crate) async fn recover_proxy_invocations_with_scope_tx(
             .bind(SOURCE_PROXY)
             .fetch_all(&mut *tx)
             .await?
+        }
+        ProxyInvocationRecoveryScope::Ids(ids) => {
+            if ids.is_empty() {
+                Vec::new()
+            } else {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    r#"
+                    UPDATE codex_invocations
+                    SET status = "#,
+                );
+                query.push_bind(INVOCATION_STATUS_INTERRUPTED);
+                query.push(r#", error_message = "#);
+                query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
+                query.push(r#", failure_kind = "#);
+                query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
+                query.push(r#", failure_class = "#);
+                query.push_bind(FAILURE_CLASS_SERVICE);
+                query.push(
+                    r#", is_actionable = 1
+                    WHERE id IN ("#,
+                );
+                {
+                    let mut separated = query.separated(", ");
+                    for id in ids {
+                        separated.push_bind(id);
+                    }
+                    separated.push_unseparated(r#")"#);
+                }
+                query.push(
+                    r#"
+                      AND source = "#,
+                );
+                query.push_bind(SOURCE_PROXY);
+                query.push(
+                    r#"
+                      AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                    RETURNING id, invoke_id, occurred_at
+                    "#,
+                );
+                query
+                    .build_query_as::<RecoveredInvocationRow>()
+                    .fetch_all(&mut *tx)
+                    .await?
+            }
         }
         ProxyInvocationRecoveryScope::Selectors(selectors) => {
             let selectors: Vec<_> = selectors
@@ -2215,6 +2327,16 @@ pub(crate) async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> R
             .await?
             .len() as u64,
     )
+}
+
+pub(crate) async fn recover_proxy_invocations_with_connection(
+    connection: &mut SqliteConnection,
+    scope: ProxyInvocationRecoveryScope<'_>,
+) -> Result<Vec<RecoveredInvocationRow>> {
+    let mut tx = connection.begin().await?;
+    let rows = recover_proxy_invocations_with_scope_tx(tx.as_mut(), scope).await?;
+    tx.commit().await?;
+    Ok(rows)
 }
 
 pub(crate) fn stale_started_before_string(timeout: Duration, grace: Duration) -> String {
@@ -2544,27 +2666,31 @@ pub(crate) async fn recover_guard_dropped_pool_terminal_invocation_orphan(
 pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
     state: &AppState,
 ) -> Result<PoolOrphanRecoveryOutcome> {
-    state.sqlite_batch_writer.flush_now(&state.pool).await?;
-
-    let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
-    let responses_started_before = stale_started_before_string(
-        timeouts.responses_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let compact_started_before = stale_started_before_string(
-        timeouts.compact_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let default_started_before = stale_started_before_string(
-        timeouts.default_first_byte_timeout,
-        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
-    );
-    let active_attempt_ids = state
-        .pool_live_attempt_ids
-        .lock()
-        .unwrap_or_else(|err| err.into_inner())
-        .clone();
     let recovery = {
+        state.sqlite_batch_writer.flush_now(&state.pool).await?;
+
+        let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
+        let responses_started_before = stale_started_before_string(
+            timeouts.responses_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        let compact_started_before = stale_started_before_string(
+            timeouts.compact_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        let default_started_before = stale_started_before_string(
+            timeouts.default_first_byte_timeout,
+            POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+        );
+        // The write guard spans candidate selection and the update transaction. Request-side
+        // attempt registration takes a read guard until its live lease is installed, so capture
+        // the live set only after taking the write guard.
+        let _attempt_recovery_gate = crate::runtime::pool_attempt_recovery_gate().write().await;
+        let active_attempt_ids = state
+            .pool_live_attempt_ids
+            .lock()
+            .unwrap_or_else(|err| err.into_inner())
+            .clone();
         let _write_permit = crate::proxy_sqlite_write_coordinator::proxy_sqlite_write_coordinator()
             .acquire(crate::proxy_sqlite_write_coordinator::ProxySqliteWriteClass::InteractiveProxy)
             .await;

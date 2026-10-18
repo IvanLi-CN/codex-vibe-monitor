@@ -79,6 +79,10 @@ class GrafanaPreviewTests(unittest.TestCase):
         failure = preview.Metrics("failures").render(9091)
         self.assertNotIn("cvm_summary_responses_total", missing)
         self.assertIn('cvm_summary_responses_total{outcome="unavailable",reason="source_gap"}', failure)
+        self.assertIn('cvm_startup_recovery_data_available{component="invocations"} 0', failure)
+        self.assertNotIn('cvm_startup_recovery_pending_records{component="invocations"}', failure)
+        self.assertIn('cvm_startup_recovery_last_state{component="terminal_journal",state="unavailable"}', failure)
+        self.assertIn("cvm_startup_recovery_readiness_to_recovery_seconds", normal)
         self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="0.2",operation="invocation_archive",phase="write_hold"}', normal)
         self.assertIn('cvm_retention_phase_duration_seconds_bucket{le="300",operation="invocation_archive",phase="write_hold"}', normal)
         for scenario in ("normal", "failures", "low-samples", "missing"):
@@ -86,6 +90,61 @@ class GrafanaPreviewTests(unittest.TestCase):
             series = [line.split(" ", 1)[0] for line in payload.splitlines() if line and not line.startswith("#")]
             self.assertEqual(len(series), len(set(series)))
             self.assertLessEqual(len(series), 4000)
+
+    def test_recovery_dashboard_rows_do_not_overlap_following_rows(self):
+        for dashboard_name in ("cvm-runtime.json", "cvm-sqlite.json"):
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            rows = sorted(
+                (
+                    panel["gridPos"]["y"],
+                    panel["gridPos"].get("h", 1),
+                    panel["title"],
+                )
+                for panel in dashboard["panels"]
+                if panel.get("type") == "row"
+            )
+            for (current_y, current_height, current_title), (next_y, _, next_title) in zip(
+                rows, rows[1:]
+            ):
+                self.assertGreaterEqual(
+                    next_y,
+                    current_y + current_height,
+                    msg=f"{dashboard_name}: {current_title} overlaps {next_title}",
+                )
+
+    def test_recovery_p95_panels_require_a_selected_window_sample_gate(self):
+        expected_panels = {
+            "cvm-runtime.json": 142,
+            "cvm-sqlite.json": 242,
+        }
+        for dashboard_name, panel_id in expected_panels.items():
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            row = next(panel for panel in dashboard["panels"] if panel.get("type") == "row" and panel["title"].startswith("启动恢复"))
+            panel = next(panel for panel in row["panels"] if panel["id"] == panel_id)
+            expression = panel["targets"][0]["expr"]
+            self.assertIn("increase(", expression)
+            self.assertIn("_count", expression)
+            self.assertIn(">= 100", expression)
+
+    def test_recovery_backlog_panels_require_data_availability(self):
+        expected_panels = {
+            "cvm-runtime.json": (140, 141),
+            "cvm-sqlite.json": (241, 243),
+        }
+        for dashboard_name, panel_ids in expected_panels.items():
+            dashboard = json.loads(
+                (SOURCE / "ops/observability/grafana/dashboards" / dashboard_name).read_text()
+            )
+            row = next(panel for panel in dashboard["panels"] if panel.get("type") == "row" and panel["title"].startswith("启动恢复"))
+            for panel_id in panel_ids:
+                panel = next(panel for panel in row["panels"] if panel["id"] == panel_id)
+                expression = panel["targets"][0]["expr"]
+                self.assertIn("cvm_startup_recovery_data_available", expression)
+                self.assertIn("== 1", expression)
 
     def test_preview_command_passes_shell_syntax_check(self):
         subprocess.run(["bash", "-n", str(SCRIPTS / "cvm-grafana-preview")], check=True)

@@ -12,7 +12,7 @@ struct RawJournalLine<'a> {
     checksum: &'a str,
 }
 
-fn verified_frame(raw: &[u8]) -> std::result::Result<JournalLine, &'static str> {
+pub(super) fn verified_frame(raw: &[u8]) -> std::result::Result<JournalLine, &'static str> {
     #[derive(Deserialize)]
     struct VersionProbe<'a> {
         event_version: Option<u64>,

@@ -170,6 +170,7 @@ mod runtime_overlay_and_group_rule_behaviors;
 mod schema_templates;
 mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
+mod startup_recovery_readiness;
 mod statistics_recovery;
 mod system_status_and_account_roster;
 mod task_workload_coverage;

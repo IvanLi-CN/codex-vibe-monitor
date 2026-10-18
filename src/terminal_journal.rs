@@ -155,6 +155,14 @@ pub(crate) struct TerminalJournalStats {
     pub(crate) deferred_rejected: u64,
 }
 
+pub(crate) fn terminal_journal_p1_reservation(stats: TerminalJournalStats) -> usize {
+    if stats.unavailable {
+        stats.deferred_records
+    } else {
+        stats.replay_count
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JournalTerminalRecord {
     sequence: u64,
@@ -293,6 +301,7 @@ pub(crate) struct TerminalJournal {
     deferred_writes: VecDeque<BatchedTerminalInvocationWrite>,
     deferred_write_bytes: usize,
     deferred_rejected: u64,
+    recovery_dispatch_started: bool,
     replay_blocked: bool,
     shutdown_recovery_pending: HashMap<ShutdownRecoveryKey, ShutdownRecoveryValue>,
     shutdown_recovery_order: HashMap<ShutdownRecoveryKey, u64>,
@@ -861,10 +870,6 @@ impl TerminalJournal {
                         .sum::<usize>()
             })
             .sum();
-        let pending_since = (!pending_attempt_starts.is_empty()
-            || !pending_by_key.is_empty()
-            || !shutdown_recovery_pending.is_empty())
-        .then_some(Instant::now());
         let mut completion_capacity = CompletionCapacity::default();
         for snapshot in &unmatched_attempt_starts {
             completion_capacity.insert(snapshot);
@@ -891,6 +896,45 @@ impl TerminalJournal {
             deferred_write_bytes = deferred_write_bytes.saturating_add(terminal_bytes);
             deferred_writes.push_back(terminal);
         }
+        let has_pending_records = !pending_attempt_starts.is_empty()
+            || !pending_by_key.is_empty()
+            || !shutdown_recovery_pending.is_empty();
+        let oldest_pending_at = pending_by_key
+            .keys()
+            .map(|(_, occurred_at, _)| occurred_at.as_str())
+            .chain(
+                shutdown_recovery_pending
+                    .keys()
+                    .map(|(_, occurred_at, _)| occurred_at.as_str()),
+            )
+            .chain(
+                unmatched_attempt_starts
+                    .iter()
+                    .map(|snapshot| snapshot.occurred_at.as_str()),
+            )
+            .chain(
+                deferred_writes
+                    .iter()
+                    .map(|write| write.record.occurred_at.as_str()),
+            )
+            .filter_map(crate::stats::parse_to_utc_datetime)
+            .min();
+        let pending_since = if has_pending_records {
+            let now = chrono::Utc::now();
+            oldest_pending_at
+                .map(|occurred_at| {
+                    let age_ms = now
+                        .signed_duration_since(occurred_at)
+                        .num_milliseconds()
+                        .max(0) as u64;
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(age_ms))
+                        .unwrap_or_else(Instant::now)
+                })
+                .or_else(|| Some(Instant::now()))
+        } else {
+            None
+        };
         let system_task_quarantine_ids = load_system_task_quarantine_ids(&[
             directory.join("system-task-quarantine.jsonl"),
             directory.join("shutdown-system-task-quarantine.jsonl"),
@@ -917,6 +961,7 @@ impl TerminalJournal {
             deferred_writes,
             deferred_write_bytes,
             deferred_rejected: 0,
+            recovery_dispatch_started: false,
             replay_blocked: false,
             pending_attempt_starts,
             completion_capacity,
@@ -1024,7 +1069,7 @@ impl TerminalJournal {
             record.occurred_at.clone(),
             raw_capture,
         );
-        if self.sync_failed || self.append_failed {
+        if self.replay_blocked || self.sync_failed || self.append_failed {
             return self.append_outcome(TerminalJournalDurabilityMode::MemoryOverflow, None);
         }
         if self.pending_by_key.contains_key(&key) {
@@ -1367,7 +1412,7 @@ impl TerminalJournal {
     }
 
     pub(crate) fn sequence_is_synced(&self, sequence: u64) -> Result<bool> {
-        if self.sync_failed || self.append_failed {
+        if self.replay_blocked || self.sync_failed || self.append_failed {
             return Err(anyhow::anyhow!("runtime journal group sync failed"));
         }
         Ok(sequence <= self.synced_sequence)
@@ -1646,6 +1691,17 @@ impl TerminalJournal {
         self.take_replay_chunk(usize::MAX, usize::MAX)
     }
 
+    pub(crate) fn start_recovery_dispatch(&mut self, max_writes: usize) -> usize {
+        self.recovery_dispatch_started = true;
+        self.queue_replay_for_dispatch(max_writes);
+        self.replay_count
+    }
+
+    pub(crate) fn start_recovery_dispatch_p1_reservation(&mut self, max_writes: usize) -> usize {
+        self.start_recovery_dispatch(max_writes);
+        terminal_journal_p1_reservation(self.stats())
+    }
+
     pub(crate) fn queue_replay_for_dispatch(&mut self, max_writes: usize) {
         if max_writes == 0 || self.deferred_writes.len() >= max_writes {
             return;
@@ -1661,11 +1717,40 @@ impl TerminalJournal {
                 );
                 self.pending_by_key.remove(&key);
                 self.overflowed = true;
-                self.remember_shutdown_recovery(&[&write]);
+                let recovery_persisted = self
+                    .quarantine_shutdown_batch(
+                        &[&write],
+                        &[],
+                        "terminal journal replay dispatch capacity",
+                    )
+                    .is_ok();
+                if !recovery_persisted {
+                    self.replay_blocked = true;
+                    warn!(
+                        invoke_id = %write.record.invoke_id,
+                        occurred_at = %write.record.occurred_at,
+                        "terminal journal replay could not persist a shutdown recovery obligation"
+                    );
+                } else if !self.remember_shutdown_recovery(&[&write]) {
+                    self.replay_blocked = true;
+                    warn!(
+                        invoke_id = %write.record.invoke_id,
+                        occurred_at = %write.record.occurred_at,
+                        "terminal journal replay could not preserve a deferred write in shutdown recovery"
+                    );
+                } else {
+                    // Moving the record to the durable shutdown-recovery projection transfers
+                    // the existing replay obligation; it must not create a second count.
+                    self.replay_count = self.replay_count.saturating_sub(1);
+                }
             }
         }
         let available = max_writes.saturating_sub(self.deferred_writes.len());
         self.queue_shutdown_recovery_for_dispatch(available);
+    }
+
+    pub(crate) fn recovery_dispatch_started(&self) -> bool {
+        self.recovery_dispatch_started
     }
 
     fn queue_shutdown_recovery_for_dispatch(&mut self, max_writes: usize) {
@@ -1735,52 +1820,85 @@ impl TerminalJournal {
                 continue;
             };
             let Ok(file) = File::open(&segment.path) else {
+                self.replay_blocked = true;
+                warn!(path = %segment.path.display(), "terminal journal replay segment could not be opened");
                 break;
             };
             let mut reader = BufReader::new(file);
             if reader.seek(SeekFrom::Start(cursor.byte_offset)).is_err() {
+                self.replay_blocked = true;
+                warn!(path = %segment.path.display(), "terminal journal replay segment could not be seeked");
                 break;
             }
             let mut reached_end = false;
             let mut produced = None;
             loop {
                 let stream_start = cursor.byte_offset;
-                let parsed = {
+                let mut raw_line = Vec::new();
+                let read_bytes = {
                     let mut budget_reader = ReplayBudgetReader {
                         reader: &mut reader,
                         remaining: TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
                     };
-                    let mut stream = serde_json::Deserializer::from_reader(&mut budget_reader)
-                        .into_iter::<JournalLine>();
-                    stream.next()
+                    budget_reader.read_until(b'\n', &mut raw_line)
                 };
                 let stream_end = match reader.stream_position() {
                     Ok(stream_end) => stream_end,
-                    Err(_) => break,
+                    Err(error) => {
+                        self.replay_blocked = true;
+                        warn!(error = %error, path = %segment.path.display(), "terminal journal replay segment position could not be read");
+                        break;
+                    }
                 };
-                if stream_end == stream_start {
+                let Ok(read_bytes) = read_bytes else {
+                    cursor.byte_offset = stream_start;
+                    self.replay_blocked = true;
+                    warn!(
+                        replay_offset = stream_start,
+                        "terminal journal replay exceeded the bounded record input budget; preserving the cursor for recovery"
+                    );
+                    break;
+                };
+                if read_bytes == 0 || stream_end == stream_start {
                     reached_end = true;
                     break;
                 }
-                let Some(parsed) = parsed else {
-                    cursor.byte_offset = stream_end;
-                    reached_end = true;
+                if raw_line.last().copied() != Some(b'\n') {
+                    cursor.byte_offset = stream_start;
+                    self.replay_blocked = true;
+                    warn!(
+                        replay_offset = stream_start,
+                        "terminal journal replay stopped at an incomplete entry; preserving the cursor for recovery"
+                    );
                     break;
-                };
+                }
                 scanned_bytes = scanned_bytes.saturating_add(
                     stream_end
                         .saturating_sub(stream_start)
                         .min(usize::MAX as u64) as usize,
                 );
                 scanned_lines = scanned_lines.saturating_add(1);
-                let Ok(parsed) = parsed else {
-                    cursor.byte_offset = stream_start;
-                    self.replay_blocked = true;
-                    warn!(
-                        replay_offset = stream_start,
-                        "terminal journal replay stopped at an unparseable entry; preserving the cursor for recovery"
-                    );
-                    break;
+                if raw_line.iter().all(u8::is_ascii_whitespace) {
+                    cursor.byte_offset = stream_end;
+                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                let parsed = match segment_recovery::verified_frame(&raw_line) {
+                    Ok(parsed) => parsed,
+                    Err(reason) => {
+                        cursor.byte_offset = stream_start;
+                        self.replay_blocked = true;
+                        warn!(
+                            replay_offset = stream_start,
+                            reason,
+                            "terminal journal replay stopped at an invalid entry; preserving the cursor for recovery"
+                        );
+                        break;
+                    }
                 };
                 cursor.byte_offset = stream_end;
                 let Some(entry) = parsed.entry else {
@@ -1907,7 +2025,7 @@ impl TerminalJournal {
                 .pending_since
                 .map_or(0, |instant| instant.elapsed().as_millis() as u64),
             overflowed: self.overflowed,
-            unavailable: false,
+            unavailable: self.replay_blocked || self.sync_failed || self.append_failed,
             deferred_records: self.deferred_writes.len(),
             deferred_bytes: self.deferred_write_bytes,
             deferred_rejected: self.deferred_rejected,
@@ -2007,6 +2125,25 @@ impl Read for ReplayBudgetReader<'_> {
         let read = self.reader.read(&mut buffer[..limit])?;
         self.remaining = self.remaining.saturating_sub(read);
         Ok(read)
+    }
+}
+
+impl std::io::BufRead for ReplayBudgetReader<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        let available = self.reader.fill_buf()?;
+        if self.remaining == 0 && !available.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "terminal journal replay record exceeds the bounded input budget",
+            ));
+        }
+        Ok(&available[..available.len().min(self.remaining)])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        let bounded = amount.min(self.remaining);
+        self.reader.consume(bounded);
+        self.remaining = self.remaining.saturating_sub(bounded);
     }
 }
 
@@ -2278,6 +2415,27 @@ pub(crate) use tests::test_attempt_snapshot;
 mod tests {
     use super::*;
 
+    #[test]
+    fn unavailable_terminal_journal_reserves_only_deferred_p1_records() {
+        assert_eq!(
+            terminal_journal_p1_reservation(TerminalJournalStats {
+                replay_count: 4,
+                deferred_records: 1,
+                unavailable: true,
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            terminal_journal_p1_reservation(TerminalJournalStats {
+                replay_count: 4,
+                deferred_records: 1,
+                ..Default::default()
+            }),
+            4
+        );
+    }
+
     pub(crate) fn test_attempt_snapshot() -> RuntimeAttemptSnapshot {
         RuntimeAttemptSnapshot {
             routing_control_fingerprint: None,
@@ -2507,6 +2665,7 @@ mod tests {
 
         let mut replayed = TerminalJournal::open(&database_path).expect("reopen journal");
         assert_eq!(replayed.stats().replay_count, 1);
+        assert!(replayed.stats().oldest_pending_age_ms >= 60_000);
         let replay = replayed.take_replay();
         assert_eq!(replay.len(), 1);
         let replayed_capture_started = replay[0]
@@ -2527,6 +2686,141 @@ mod tests {
             TerminalJournal::open(&database_path).expect("reopen acknowledged journal");
         assert_eq!(replayed_after_ack.stats().replay_count, 0);
 
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_capacity_transfer_does_not_duplicate_obligation() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-transfer-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-transfer",
+            "2026-07-29T00:00:00Z",
+        );
+        let terminal = BatchedTerminalInvocationWrite {
+            enqueued_at: None,
+            diagnostic: None,
+            record: record.clone(),
+            attempts: Vec::new(),
+            capture_started: None,
+            raw_capture: false,
+            dashboard_terminal_sequence: None,
+            terminal_projection_event_ids: Vec::new(),
+            startup_backfill_tasks: Vec::new(),
+        };
+
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+
+        let mut journal = TerminalJournal::open(&database_path).expect("reopen journal");
+        for _ in 0..TERMINAL_JOURNAL_MAX_DEFERRED_WRITES {
+            assert!(journal.defer_write(terminal.clone()));
+        }
+        assert_eq!(journal.stats().replay_count, 1);
+        journal.queue_replay_for_dispatch(usize::MAX);
+        assert_eq!(journal.stats().replay_count, 1);
+        assert_eq!(journal.shutdown_recovery_pending.len(), 1);
+
+        journal.acknowledge(&record.invoke_id, &record.occurred_at, false);
+        assert_eq!(journal.stats().replay_count, 0);
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_segment_failure_marks_journal_unavailable() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-unavailable-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-unavailable",
+            "2026-07-29T00:00:00Z",
+        );
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+        let mut journal = TerminalJournal::open(&database_path).expect("reopen journal");
+        let first_sequence = journal
+            .replay_segments
+            .front()
+            .expect("replay segment")
+            .first_sequence;
+        let segment_path = journal
+            .segments
+            .get(&first_sequence)
+            .expect("replay segment metadata")
+            .path
+            .clone();
+        fs::remove_file(segment_path).expect("remove replay segment");
+
+        assert!(journal.take_replay().is_empty());
+        assert!(journal.stats().unavailable);
+        let new_record = crate::tests::test_proxy_capture_record(
+            "journal-replay-unavailable-new",
+            "2026-07-29T00:01:00Z",
+        );
+        assert_eq!(
+            journal.append(&new_record, false, None).durability_mode,
+            TerminalJournalDurabilityMode::MemoryOverflow
+        );
+        assert!(journal.sequence_is_synced(1).is_err());
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_revalidates_checksum_after_journal_open() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-checksum-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-checksum",
+            "2026-07-29T00:00:00Z",
+        );
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        let segment_path = reopened
+            .segments
+            .values()
+            .find(|segment| !segment.current && segment.bytes > 0)
+            .or_else(|| reopened.segments.values().find(|segment| segment.bytes > 0))
+            .expect("replay segment")
+            .path
+            .clone();
+        let mut bytes = fs::read(&segment_path).expect("read replay segment");
+        let marker = b"\"checksum\":\"";
+        let checksum_offset = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .map(|offset| offset + marker.len())
+            .expect("checksum field");
+        bytes[checksum_offset] = if bytes[checksum_offset] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        fs::write(&segment_path, bytes).expect("tamper replay checksum");
+
+        assert!(reopened.take_replay().is_empty());
+        let stats = reopened.stats();
+        assert!(stats.unavailable);
+        assert_eq!(stats.replay_count, 1);
+        drop(reopened);
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 

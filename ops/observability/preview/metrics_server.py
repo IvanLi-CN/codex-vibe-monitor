@@ -208,6 +208,47 @@ class Metrics:
         low = self.scenario == "low-samples"
         failing = self.scenario == "failures"
         rate = .02 if low else 12.0
+        recovery_rate = .02 if low else 1.5
+        recovery_components = (
+            ("terminal_journal", 4 if not failing else 18, 0.8 if not failing else 42.0, 0.16),
+            ("invocations", 12 if not failing else 96, 2.4 if not failing else 180.0, 0.42),
+            ("pool_attempts", 6 if not failing else 48, 1.1 if not failing else 96.0, 0.28),
+        )
+        for component, pending, oldest_age, batch_seconds in recovery_components:
+            labels = {"component": component}
+            state = "unavailable" if failing else ("running" if pending else "complete")
+            self.gauge(
+                "cvm_startup_recovery_data_available",
+                0 if failing else 1,
+                labels,
+            )
+            if not failing:
+                self.gauge("cvm_startup_recovery_pending_records", pending, labels)
+                self.gauge("cvm_startup_recovery_oldest_age_seconds", oldest_age, labels)
+            for candidate in ("running", "complete", "unavailable"):
+                self.gauge(
+                    "cvm_startup_recovery_last_state",
+                    1 if candidate == state else 0,
+                    {**labels, "state": candidate},
+                )
+            self.histogram(
+                "cvm_startup_recovery_batch_duration_seconds",
+                recovery_rate,
+                batch_seconds,
+                {**labels, "outcome": "error" if failing else "success"},
+                buckets=(.05, .1, .2, .25, .5, 1, 2.5, 5, 10, 30, 60, 120),
+            )
+            for reason in ("connect_failed", "write_or_lock", "read_or_lock"):
+                self.counter(
+                    "cvm_startup_recovery_retries_total",
+                    recovery_rate if failing else 0,
+                    {**labels, "reason": reason},
+                )
+        self.gauge(
+            "cvm_startup_recovery_readiness_to_recovery_seconds",
+            3.8 if failing else 0.42,
+            {},
+        )
         buckets = (.00001, .00005, .0001, .0005, .001, .005, .01, .025, .05, .1, .2, .25, .5, 1, 2.5, 5, 10, 20, 30, 60, 120, 300)
         for operation in ("invocation_archive", "timestamped_archive", "detail_prune"):
             labels = {"operation": operation}

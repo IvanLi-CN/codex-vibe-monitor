@@ -2776,13 +2776,93 @@
       }
     },
     {
+      "id": 240,
+      "type": "row",
+      "title": "启动恢复：就绪、积压与锁退避",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 150,
+        "w": 24,
+        "h": 17
+      },
+      "panels": [
+        {
+          "id": 241,
+          "type": "timeseries",
+          "title": "恢复积压",
+          "description": "按固定恢复 component 显示未完成记录；与 HTTP readiness 分开阅读。",
+          "gridPos": {"x": 0, "y": 0, "w": 6, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_pending_records{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)", "legendFormat": "pending / {{component}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 243,
+          "type": "timeseries",
+          "title": "恢复最老年龄",
+          "description": "按固定恢复 component 显示最老未完成记录年龄；缺测显示 Unknown。",
+          "gridPos": {"x": 6, "y": 0, "w": 6, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_oldest_age_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} and on(service,environment,instance,component) (cvm_startup_recovery_data_available{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"} == 1)", "legendFormat": "oldest age / {{component}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 242,
+          "type": "timeseries",
+          "title": "恢复批次耗时",
+          "description": "批次 p95 只展示秒数；锁、忙、准入和连接失败见相邻重试面板。",
+          "gridPos": {"x": 12, "y": 0, "w": 6, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le,component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_bucket{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))) and on(component,outcome) (sum by(component,outcome) (increase(cvm_startup_recovery_batch_duration_seconds_count{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range])) >= 100)", "legendFormat": "p95 / {{component}} / {{outcome}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 244,
+          "type": "timeseries",
+          "title": "恢复重试次数",
+          "description": "按固定 retry reason 统计次数；缺测或低样本不生成改善结论。",
+          "gridPos": {"x": 18, "y": 0, "w": 6, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "sum by(component,reason) (increase(cvm_startup_recovery_retries_total{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}[$__range]))", "legendFormat": "retry / {{component}} / {{reason}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "short", "noValue": "Unknown", "custom": {"drawStyle": "line", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 245,
+          "type": "timeseries",
+          "title": "恢复状态",
+          "description": "区分 complete、running 与 unavailable；pending 为零不等于恢复可用。",
+          "gridPos": {"x": 0, "y": 8, "w": 16, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_last_state{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "{{component}} / {{state}}", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "short", "min": 0, "max": 1, "noValue": "Unknown", "custom": {"drawStyle": "steps", "lineWidth": 2, "spanNulls": false}}, "overrides": []},
+          "options": {"legend": {"displayMode": "table", "placement": "bottom", "calcs": ["lastNotNull"]}, "tooltip": {"mode": "multi", "sort": "desc"}}
+        },
+        {
+          "id": 246,
+          "type": "stat",
+          "title": "就绪到恢复启动",
+          "description": "HTTP readiness 发布到恢复 coordinator 开始的时间；缺测保持 Unknown。",
+          "gridPos": {"x": 16, "y": 8, "w": 8, "h": 8},
+          "datasource": {"type": "prometheus", "uid": "cvm-prometheus"},
+          "targets": [{"refId": "A", "expr": "cvm_startup_recovery_readiness_to_recovery_seconds{service=~\"$service\",environment=~\"$environment\",instance=~\"$instance\"}", "legendFormat": "seconds", "range": true, "instant": false, "format": "time_series"}],
+          "fieldConfig": {"defaults": {"unit": "s", "noValue": "Unknown"}, "overrides": []},
+          "options": {"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "orientation": "auto", "textMode": "auto", "colorMode": "value"}
+        }
+      ]
+    },
+    {
       "id": 90,
       "type": "row",
       "title": "高级：准入解释",
       "collapsed": true,
       "gridPos": {
         "x": 0,
-        "y": 150,
+        "y": 167,
         "w": 24,
         "h": 1
       },

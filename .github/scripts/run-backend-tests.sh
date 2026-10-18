@@ -302,7 +302,7 @@ run_profile() {
 
   case "$selected_profile" in
     lightweight)
-      filter_expr='(test(/^(tests|upstream_accounts::tests)::lightweight::/)) or (not test(/^(tests|upstream_accounts::tests|maintenance::archive::archive_writers::tests|maintenance::retention::retention_recovery_race_tests)::/))'
+      filter_expr='((test(/^(tests|upstream_accounts::tests)::lightweight::/)) or (not test(/^(tests|upstream_accounts::tests|maintenance::archive::archive_writers::tests|maintenance::retention::retention_recovery_race_tests)::/))) and (not test(/^(sqlite_batch_writer::tests::barrier_drain_includes_deferred_journal_terminals|terminal_journal::tests::(replay_capacity_transfer_does_not_duplicate_obligation|replay_segment_failure_marks_journal_unavailable))$/))'
       # Bound overlap to limit SQLite connection-pool contention while shortening the profile.
       test_threads="4"
       ;;
@@ -312,7 +312,7 @@ run_profile() {
       test_threads="6"
       ;;
     archive-file-io)
-      filter_expr='(test(/^(tests|upstream_accounts::tests)::archive_file_io::/)) or (test(/^maintenance::archive::archive_writers::tests::/)) or (test(/^maintenance::retention::retention_recovery_race_tests::/))'
+      filter_expr='(test(/^(tests|upstream_accounts::tests)::archive_file_io::/)) or (test(/^maintenance::archive::archive_writers::tests::/)) or (test(/^maintenance::retention::retention_recovery_race_tests::/)) or (test(/^sqlite_batch_writer::tests::barrier_drain_includes_deferred_journal_terminals$/)) or (test(/^terminal_journal::tests::(replay_capacity_transfer_does_not_duplicate_obligation|replay_segment_failure_marks_journal_unavailable)$/))'
       ;;
     *)
       echo "::error::unsupported backend test profile: $selected_profile" >&2
