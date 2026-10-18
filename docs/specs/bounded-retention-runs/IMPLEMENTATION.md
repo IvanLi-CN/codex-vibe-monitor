@@ -28,7 +28,7 @@ Caller-side duplicate artifact hashes before identity-proof loading are removed 
 
 当前任务创建带 PID/唯一序号的临时 SQLite 副本，批量写入已选记录，一次校验内容和身份、一次压缩、一次原子替换目标文件。临时 SQLite、journal/WAL/SHM 和压缩中间文件有任务内清理 guard。工作文件的内核锁识别实际活跃所有者，不依赖可复用或跨容器命名空间的 PID；创建及废弃清理使用短暂、非阻塞的目录锁，文件准备期间只保留工作文件锁。清理只接受规范目标下三个数字组成的任务文件名，在磁盘预检之前丢弃已无内核所有者的临时文件及孤立 sidecar；不读取其中数据，不续作它们。
 
-文件发布后按现有 manifest、摘要及 Verified Archive 证明转换源记录。独立源连接不回收到连接池；归档 ATTACH 的文件 URI 显式使用磁盘模式，避免共享内存源把目标文件也建到内存。主库写入每次最多 64 条；全部内容证明在事务外准备，短事务复核源身份、证明元数据和 raw 引用后提交。预算耗尽发生在发布和完整 Summary proof 之后时，proof 可在 `materializing` manifest 下持久化，后续运行仅在重新验证文件、manifest、最终 proof marker、精确 row count/selected ID set、coverage、proof 和当前 live source identity 后复用该最终 gzip；该状态仍不具备 Summary/cleanup 权威，源转换完成事务仍是唯一删除授权路径。已提交微批次保留其完整事实；失败后未提交源行仍为 live，下一轮重新选择。小时物化进度的前缀复核使用有界存在性检查，避免持有 writer permit 时 COUNT 百万行；运行详情只保存阶段错误与指纹，不输出源错误中的路径或敏感内容。已发布文件中的 live 副本按身份重新覆盖，不能作为已删除源行的证明替代品。旧目标的恢复备份只保护文件替换异常，不用作下一轮数据 staging。
+文件发布后按现有 manifest、摘要及 Verified Archive 证明转换源记录。独立源连接不回收到连接池；归档 ATTACH 的文件 URI 显式使用磁盘模式，避免共享内存源把目标文件也建到内存。主库写入每次最多 64 条；全部内容证明在事务外准备，短事务复核源身份、证明元数据和 raw 引用后提交。预算耗尽发生在发布和完整 Summary proof 之后时，proof 可在 `materializing` manifest 下持久化，后续运行仅在重新验证文件、manifest、最终 proof marker、解压归档实际 row count/selected ID set、coverage、proof 和当前 live source identity 后复用该最终 gzip；该状态仍不具备 Summary/cleanup 权威，源转换完成事务仍是唯一删除授权路径。已提交微批次保留其完整事实；失败后未提交源行仍为 live，下一轮重新选择。小时物化进度的前缀复核使用有界存在性检查，避免持有 writer permit 时 COUNT 百万行；运行详情只保存阶段错误与指纹，不输出源错误中的路径或敏感内容。已发布文件中的 live 副本按身份重新覆盖，不能作为已删除源行的证明替代品。旧目标的恢复备份只保护文件替换异常，不用作下一轮数据 staging。
 
 普通任务将旧 preparing/published prepared 行隔离为现有 `quarantined`，不解析其 source IDs 作为正常归档输入。既有 manifest、completed archive 和 cleanup 事实保留；历史恢复工具仍可读取旧状态。主库不增加表、列或状态枚举值。
 

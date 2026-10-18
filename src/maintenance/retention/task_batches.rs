@@ -279,14 +279,17 @@ impl ArchiveSourceIdentityProof {
         }
     }
 
-    async fn contains_all_ids(&mut self, ids: &[i64]) -> Result<bool> {
-        let expected_count =
-            i64::try_from(ids.len()).context("count retention archive source ids")?;
+    async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
         let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
         let connection = self
             .connection
             .as_mut()
             .context("archive source identity proof connection is closed")?;
+        let archive_row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+                .fetch_one(&mut *connection)
+                .await
+                .context("count rows in archive source identity proof")?;
         let selected_count = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM main.codex_invocations
              WHERE id IN (SELECT value FROM json_each(?1))",
@@ -295,7 +298,7 @@ impl ArchiveSourceIdentityProof {
         .fetch_one(&mut *connection)
         .await
         .context("count selected rows in archive source identity proof")?;
-        Ok(selected_count == expected_count)
+        Ok(archive_row_count == expected_count && selected_count == expected_count)
     }
 
     async fn close(mut self) -> Result<()> {
@@ -387,14 +390,14 @@ async fn reuse_task_month_archive_if_proven(
         Ok(proof) => proof,
         Err(_) => return Ok(None),
     };
-    let contains_all_ids = match identity_proof.contains_all_ids(ids).await {
-        Ok(contains_all_ids) => contains_all_ids,
+    let has_exact_ids = match identity_proof.has_exact_ids(ids, expected_row_count).await {
+        Ok(has_exact_ids) => has_exact_ids,
         Err(_) => {
             identity_proof.close().await?;
             return Ok(None);
         }
     };
-    if !contains_all_ids {
+    if !has_exact_ids {
         identity_proof.close().await?;
         return Ok(None);
     }

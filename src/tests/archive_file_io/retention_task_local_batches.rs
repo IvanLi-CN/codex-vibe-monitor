@@ -328,9 +328,17 @@ async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not
     .execute(&pool)
     .await
     .expect("remove one source row after durable proof");
+    sqlx::query(
+        "UPDATE archive_batches
+         SET row_count = 400
+         WHERE dataset = 'codex_invocations' AND status = 'materializing'",
+    )
+    .execute(&pool)
+    .await
+    .expect("corrupt staged manifest row count");
 
-    // The final gzip contains 401 rows, while the live source selection now contains 400. The
-    // fallback writer is paused so this test can only pass when reuse is rejected before deletion.
+    // The final gzip still contains 401 rows, while both the live source selection and corrupted
+    // manifest claim 400. The fallback writer is paused so reuse must inspect the archive itself.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(

@@ -38,7 +38,7 @@ ADR 0032 将归档文件批次与主库写批次区分，规定月份只决定�
 
 ## Related Changes
 
-- 当 120 秒预算在月度文件发布和完整 Summary proof 之后、首个源转换之前耗尽时，最终 gzip 与持久 proof 现在保留为可恢复事实；后续运行只有在重新验证 `materializing` manifest、文件摘要、最终 proof marker、精确 row count/selected ID set、coverage/keyset、proof 和当前 live source identity 后才复用该文件。Summary proof validation 与 proof 写事务本身也受剩余工作预算约束，超时通过既有 native cleanup 释放已启动事务。`materializing` 仍不具备 Summary 或 cleanup 权威，源转换事务仍负责最终删除授权。
+- 当 120 秒预算在月度文件发布和完整 Summary proof 之后、首个源转换之前耗尽时，最终 gzip 与持久 proof 现在保留为可恢复事实；后续运行只有在重新验证 `materializing` manifest、文件摘要、最终 proof marker、解压归档实际 row count/selected ID set、coverage/keyset、proof 和当前 live source identity 后才复用该文件。Summary proof validation 与 proof 写事务本身也受剩余工作预算约束，超时通过既有 native cleanup 释放已启动事务。`materializing` 仍不具备 Summary 或 cleanup 权威，源转换事务仍负责最终删除授权。
 
 - 已授权完成度修正补齐零提交超时组合：预算耗尽优先判为 overall partial，fatal 优先级和未超时纯准入 deferred 不变。确定性轻量回归验证标志组合；不改主库结构、归档提交、核心完成度或吞吐指标，不在本地运行 stateful profile 或性能验证。
 
