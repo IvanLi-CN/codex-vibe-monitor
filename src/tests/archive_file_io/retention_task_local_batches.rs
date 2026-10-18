@@ -1177,6 +1177,546 @@ async fn retention_task_local_month_batch_reselects_live_rows_without_main_schem
 }
 
 #[tokio::test]
+async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-page-resume").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
+    let first_page_committed = Arc::new(tokio::sync::Notify::new());
+    let mut first_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE.scope(
+        Duration::from_secs(60),
+        RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED.scope(
+            first_page_committed.clone(),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            _ = first_page_committed.notified() => {}
+            result = &mut first_work => panic!("archive completed before the injected page pause: {result:?}"),
+        }
+    })
+    .await
+    .expect("first Summary Snapshot page is durably committed");
+    drop(first_work);
+
+    assert!(
+        target.exists(),
+        "published archive must survive cancellation"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM codex_invocations WHERE occurred_at < ?1",
+        )
+        .bind(shanghai_local_cutoff_string(config.invocation_max_days))
+        .fetch_one(&pool)
+        .await
+        .expect("live rows remain after cancellation"),
+        401
+    );
+    let staged = sqlx::query_as::<_, (String, i64, i64)>(
+        "SELECT status, row_count, (SELECT COUNT(*) FROM summary_archive_snapshot)
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1",
+    )
+    .bind(target.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("staged archive manifest");
+    assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
+    assert_eq!(staged.1, 401);
+    assert_eq!(staged.2, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT row_count FROM summary_archive_snapshot
+             WHERE archive_batch_id=(SELECT id FROM archive_batches WHERE file_path=?1)
+             AND page_index=0",
+        )
+        .bind(target.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("first durable Summary Snapshot page"),
+        400
+    );
+    // Model a concurrent writer that completed the same artifact before this stale retry stages
+    // its manifest. Completed authority must remain monotonic across the retry boundary.
+    sqlx::query(
+        "UPDATE archive_batches
+         SET status=?1
+         WHERE dataset='codex_invocations' AND file_path=?2",
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(target.to_string_lossy().to_string())
+    .execute(&pool)
+    .await
+    .expect("simulate concurrent completed writer");
+
+    let page_prefix_reused = Arc::new(tokio::sync::Notify::new());
+    let mut resumed_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED.scope(
+        page_prefix_reused.clone(),
+        archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            _ = page_prefix_reused.notified() => {}
+            result = &mut resumed_work => panic!("resume completed without loading the durable Summary Snapshot page: {result:?}"),
+        }
+    })
+    .await
+    .expect("resume loads the durable Summary Snapshot page");
+    let resumed = resumed_work
+        .await
+        .expect("resume from the durable Summary Snapshot page");
+    assert_eq!(resumed.0, 401);
+    let settled = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT status, row_count,
+                (SELECT COUNT(*) FROM summary_archive_snapshot),
+                (SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof)
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1",
+    )
+    .bind(target.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("completed archive manifest");
+    assert_eq!(settled.0, ARCHIVE_STATUS_COMPLETED);
+    assert_eq!(settled.1, 401);
+    assert_eq!(settled.2, 2);
+    assert_eq!(settled.3, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("all source rows converted after resume"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_first_manifest_insert_preserves_predecessor_identity() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-predecessor-identity").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 4).await;
+    let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM codex_invocations ORDER BY id LIMIT 3")
+        .fetch_all(&pool)
+        .await
+        .expect("legacy archive source IDs");
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let target = archive_batch_file_path(&config, "codex_invocations", &month)
+        .expect("canonical archive target");
+    let legacy = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("codex_invocations"),
+        &month,
+        &ids,
+    )
+    .await
+    .expect("publish legacy archive without a Summary manifest");
+    assert_eq!(legacy.row_count, 3);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM archive_batches
+             WHERE dataset='codex_invocations' AND file_path=?1",
+        )
+        .bind(target.to_string_lossy().to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("legacy manifest count"),
+        0
+    );
+
+    let coordinator = crate::proxy_sqlite_write_coordinator::test_proxy_sqlite_write_coordinator();
+    let gate = Arc::new(crate::db_pressure::DbPressureGate::new(
+        1,
+        Duration::from_secs(30),
+    ));
+    let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
+        operation: Some("archive_snapshot_manifest"),
+        ..Default::default()
+    });
+    probe
+        .pause_at_return
+        .store(1, std::sync::atomic::Ordering::Release);
+    let work = RETENTION_TEST_WRITE_COORDINATOR.scope(
+        coordinator.clone(),
+        RETENTION_TEST_DB_PRESSURE_GATE.scope(
+            gate,
+            crate::maintenance::RETENTION_TEST_RETURN_TO_POOL.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ),
+        ),
+    );
+    let mut work = Box::pin(work);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            _ = probe.returned.notified() => {}
+            result = &mut work => panic!("archive completed before predecessor manifest pause: {result:?}"),
+        }
+    })
+    .await
+    .expect("pause after predecessor manifest staging");
+    drop(work);
+    probe.resume.notify_one();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            if coordinator.snapshot().await.active_write_class.is_none() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("manifest cancellation cleanup releases admission");
+
+    let staged = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT status, sha256, row_count
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1",
+    )
+    .bind(target.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("staged predecessor manifest");
+    assert_eq!(staged.0, ARCHIVE_STATUS_MATERIALIZING);
+    assert_eq!(staged.1, legacy.sha256);
+    assert_eq!(staged.2, legacy.row_count);
+    assert_eq!(
+        sha256_hex_file(&target).expect("predecessor file digest"),
+        legacy.sha256
+    );
+
+    let resumed = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("retry replaces the predecessor archive");
+    assert_eq!(resumed.0, 4);
+    let settled = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT status, sha256, row_count
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND file_path=?1",
+    )
+    .bind(target.to_string_lossy().to_string())
+    .fetch_one(&pool)
+    .await
+    .expect("completed replacement manifest");
+    assert_eq!(settled.0, ARCHIVE_STATUS_COMPLETED);
+    assert_ne!(settled.1, legacy.sha256);
+    assert_eq!(settled.2, 4);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("all source rows convert after predecessor retry"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_same_sha_page_replay_preserves_final_proof() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-page-proof-replay").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let completed = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("complete monthly archive before same-SHA replay");
+    assert_eq!(completed.0, 401);
+
+    let (batch_id, file_path, sha256, row_count, coverage_start_at, coverage_end_at): (
+        i64,
+        String,
+        String,
+        i64,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "SELECT id, file_path, sha256, row_count, coverage_start_at, coverage_end_at
+         FROM archive_batches
+         WHERE dataset='codex_invocations' AND month_key=?1",
+    )
+    .bind(&month)
+    .fetch_one(&pool)
+    .await
+    .expect("load completed Summary archive manifest");
+    let pages = sqlx::query_as::<_, (i64, String, String, i64, Vec<u8>)>(
+        "SELECT page_index, coverage_start, coverage_end, row_count, payload
+         FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2
+         ORDER BY page_index",
+    )
+    .bind(batch_id)
+    .bind(&sha256)
+    .fetch_all(&pool)
+    .await
+    .expect("load completed Summary archive pages")
+    .into_iter()
+    .map(
+        |(page_index, coverage_start, coverage_end, row_count, payload)| {
+            (
+                u32::try_from(page_index).expect("page index fits test type"),
+                TaskArchiveSnapshotPage {
+                    coverage_start,
+                    coverage_end,
+                    row_count: u32::try_from(row_count).expect("page row count fits test type"),
+                    payload,
+                },
+            )
+        },
+    )
+    .collect::<Vec<_>>();
+    let outcome = ArchiveBatchOutcome {
+        dataset: HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        month_key: month,
+        day_key: None,
+        part_key: None,
+        file_path,
+        sha256,
+        source_identity_sha256: None,
+        row_count,
+        upstream_last_activity: Vec::new(),
+        coverage_start_at,
+        coverage_end_at,
+        archive_expires_at: None,
+        summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+        layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+        codec: ARCHIVE_FILE_CODEC_GZIP,
+        writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
+    };
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof")
+            .fetch_one(&pool)
+            .await
+            .expect("existing final Summary proof"),
+        1
+    );
+    for (page_index, page) in pages {
+        crate::maintenance::store_task_summary_snapshot_page(
+            &pool, &outcome, batch_id, page_index, page,
+        )
+        .await
+        .expect("same-SHA page replay")
+        .expect("same-SHA page replay admission");
+    }
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot_v2_proof")
+            .fetch_one(&pool)
+            .await
+            .expect("final Summary proof after same-SHA replay"),
+        1
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_month_snapshot_rebuilds_semantically_stale_page() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-page-semantic-rebuild").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 1).await;
+    let first_page_committed = Arc::new(tokio::sync::Notify::new());
+    let mut first_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE.scope(
+        Duration::from_secs(60),
+        RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED.scope(
+            first_page_committed.clone(),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            _ = first_page_committed.notified() => {}
+            result = &mut first_work => panic!("archive completed before the injected page pause: {result:?}"),
+        }
+    })
+    .await
+    .expect("first Summary Snapshot page is durably committed");
+    drop(first_work);
+
+    let (batch_id, manifest_sha256): (i64, String) = sqlx::query_as(
+        "SELECT id, sha256 FROM archive_batches
+         WHERE dataset='codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load staged Summary archive identity");
+    let payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=0",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load committed Summary page payload");
+    let mut records =
+        crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(&payload)
+            .expect("decode committed Summary page payload");
+    records[0].status = "semantically-corrupted".to_string();
+    let normalized = serde_json::to_vec(&records).expect("encode corrupted Summary page payload");
+    let corrupted_payload = zstd::stream::encode_all(normalized.as_slice(), 1)
+        .expect("compress corrupted Summary page");
+    sqlx::query(
+        "UPDATE summary_archive_snapshot
+         SET payload=?1, payload_bytes=?2
+         WHERE archive_batch_id=?3 AND manifest_sha256=?4 AND page_index=0",
+    )
+    .bind(&corrupted_payload)
+    .bind(corrupted_payload.len() as i64)
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .execute(&pool)
+    .await
+    .expect("mutate decodable Summary page payload");
+
+    let resumed = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("resume rebuilds the semantically stale Summary page");
+    assert_eq!(resumed.0, 1);
+    let rebuilt_payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=0",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt Summary page payload");
+    let rebuilt_records =
+        crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(&rebuilt_payload)
+            .expect("decode rebuilt Summary page payload");
+    assert_eq!(rebuilt_records[0].status, "success");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows convert after semantic page rebuild"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_month_snapshot_rebuilds_non_prefix_page() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-summary-page-prefix-rebuild").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+    let first_page_committed = Arc::new(tokio::sync::Notify::new());
+    let mut first_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE.scope(
+        Duration::from_secs(60),
+        RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED.scope(
+            first_page_committed.clone(),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    ));
+    tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::select! {
+            _ = first_page_committed.notified() => {}
+            result = &mut first_work => panic!("archive completed before the injected page pause: {result:?}"),
+        }
+    })
+    .await
+    .expect("first Summary Snapshot page is durably committed");
+    drop(first_work);
+
+    let (batch_id, manifest_sha256): (i64, String) = sqlx::query_as(
+        "SELECT id, sha256 FROM archive_batches
+         WHERE dataset='codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load staged Summary archive identity");
+    let payload: Vec<u8> = sqlx::query_scalar(
+        "SELECT payload FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2 AND page_index=0",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load committed Summary page payload");
+    let mut records =
+        crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(&payload)
+            .expect("decode committed Summary page payload");
+    assert_eq!(records.len(), 400);
+    records.remove(0);
+    let normalized = serde_json::to_vec(&records).expect("encode non-prefix Summary page payload");
+    let corrupted_payload = zstd::stream::encode_all(normalized.as_slice(), 1)
+        .expect("compress non-prefix Summary page");
+    sqlx::query(
+        "UPDATE summary_archive_snapshot
+         SET payload=?1, payload_bytes=?2, row_count=?3
+         WHERE archive_batch_id=?4 AND manifest_sha256=?5 AND page_index=0",
+    )
+    .bind(&corrupted_payload)
+    .bind(corrupted_payload.len() as i64)
+    .bind(records.len() as i64)
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .execute(&pool)
+    .await
+    .expect("mutate Summary page into a non-prefix subset");
+
+    let resumed = archive_old_invocations(&pool, &config, config.database_path.parent(), false)
+        .await
+        .expect("resume rebuilds the non-prefix Summary page");
+    assert_eq!(resumed.0, 401);
+    let settled = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT COUNT(*), COALESCE(SUM(row_count), 0)
+         FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2",
+    )
+    .bind(batch_id)
+    .bind(&manifest_sha256)
+    .fetch_one(&pool)
+    .await
+    .expect("load rebuilt Summary pages");
+    assert_eq!(settled, (2, 401));
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows convert after non-prefix page rebuild"),
+        0
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_task_local_rebuilds_published_live_copy_and_cleans_failed_work() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("task-local-failed-reselection").await;

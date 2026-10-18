@@ -189,10 +189,14 @@ pub(crate) struct SummaryArchiveSnapshotPage {
 
 impl SummaryArchiveSnapshotPage {
     pub(crate) fn snapshot_sha256(&self) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(&self.payload);
-        format!("{:x}", hasher.finalize())
+        summary_archive_snapshot_payload_sha256(&self.payload)
     }
+}
+
+pub(crate) fn summary_archive_snapshot_payload_sha256(payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(payload);
+    format!("{:x}", hasher.finalize())
 }
 
 pub(crate) async fn store_summary_archive_snapshot_page_tx(

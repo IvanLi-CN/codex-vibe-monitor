@@ -1469,8 +1469,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
             }
             batch_observation.complete();
         }
-        // Normal task scope is fixed at selection. The next scheduled run reselects live
-        // rows; it never resumes this run's file/cursor. Direct fixture helpers may drain.
+        // Normal task scope is fixed at selection. The next scheduled run reselects live rows
+        // and rebuilds the file; a published monthly Summary artifact may resume its durable
+        // page prefix by manifest SHA, but source deletion never resumes a prior transaction.
+        // Direct fixture helpers may drain.
         if retention_run_remaining_budget().is_some() {
             break;
         }

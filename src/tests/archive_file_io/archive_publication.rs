@@ -1,7 +1,7 @@
 use super::*;
 use crate::maintenance::{
-    PublicationTestPhase, PublicationTestProbe, RETENTION_PUBLICATION_TEST_PROBE,
-    replace_legacy_archive_file_for_test,
+    ArchiveReplacement, PublicationTestPhase, PublicationTestProbe,
+    RETENTION_PUBLICATION_TEST_PROBE, replace_legacy_archive_file_for_test,
 };
 
 struct PublicationFixture {
@@ -87,7 +87,10 @@ impl PublicationFixture {
                 &self.temporary_path,
                 &self.final_path,
                 self.previous_sha.as_deref(),
-                &self.next_sha,
+                ArchiveReplacement {
+                    row_count: None,
+                    sha256: &self.next_sha,
+                },
             ),
         )
         .await

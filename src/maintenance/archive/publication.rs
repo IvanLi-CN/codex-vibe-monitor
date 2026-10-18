@@ -39,6 +39,11 @@ async fn publication_test_phase(phase: PublicationTestPhase) -> Result<()> {
     Ok(())
 }
 
+pub(crate) struct ArchiveReplacement<'a> {
+    pub(crate) row_count: Option<i64>,
+    pub(crate) sha256: &'a str,
+}
+
 pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
     pool: &Pool<Sqlite>,
     dataset: &str,
@@ -46,7 +51,7 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
     temporary_file_path: &Path,
     final_file_path: &Path,
     expected_existing_sha256: Option<&str>,
-    replacement_sha256: &str,
+    replacement: ArchiveReplacement<'_>,
 ) -> Result<()> {
     const OPERATION: &str = "legacy_archive_file_publish";
     let prepared_bytes = temporary_file_path
@@ -116,12 +121,14 @@ pub(crate) async fn replace_legacy_archive_file_with_cleanup_serialization(
         }
         sqlx::query(
             "UPDATE archive_batches
-             SET cleanup_state = ?1, cleanup_source_safe_start_date = NULL, sha256 = ?2
-             WHERE dataset = ?3 AND month_key = ?4 AND file_path = ?5
-               AND cleanup_state IN (?6, ?7)",
+             SET cleanup_state = ?1, cleanup_source_safe_start_date = NULL,
+                 sha256 = ?2, row_count = COALESCE(?3, row_count)
+             WHERE dataset = ?4 AND month_key = ?5 AND file_path = ?6
+               AND cleanup_state IN (?7, ?8)",
         )
         .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
-        .bind(replacement_sha256)
+        .bind(replacement.sha256)
+        .bind(replacement.row_count)
         .bind(dataset)
         .bind(month_key)
         .bind(final_file_path.to_string_lossy().to_string())
