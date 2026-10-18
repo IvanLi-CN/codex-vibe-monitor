@@ -467,7 +467,7 @@ pub(crate) async fn stage_task_summary_archive_manifest(
     }
     resources.mark_transaction_finished();
     #[cfg(test)]
-    resources.observe_return_for_test("archive_snapshot_manifest");
+    resources.observe_return_for_test("archive_snapshot_manifest_stage");
     let archive_lock = resources
         .return_to_pool_retaining_archive_fence()
         .await

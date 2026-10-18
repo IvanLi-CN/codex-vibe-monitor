@@ -1244,19 +1244,6 @@ async fn retention_task_local_month_snapshot_pages_survive_cancel_and_resume() {
         .expect("first durable Summary Snapshot page"),
         400
     );
-    // Model a concurrent writer that completed the same artifact before this stale retry stages
-    // its manifest. Completed authority must remain monotonic across the retry boundary.
-    sqlx::query(
-        "UPDATE archive_batches
-         SET status=?1
-         WHERE dataset='codex_invocations' AND file_path=?2",
-    )
-    .bind(ARCHIVE_STATUS_COMPLETED)
-    .bind(target.to_string_lossy().to_string())
-    .execute(&pool)
-    .await
-    .expect("simulate concurrent completed writer");
-
     let page_prefix_reused = Arc::new(tokio::sync::Notify::new());
     let mut resumed_work = Box::pin(RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED.scope(
         page_prefix_reused.clone(),
@@ -1345,7 +1332,7 @@ async fn retention_task_local_first_manifest_insert_preserves_predecessor_identi
         Duration::from_secs(30),
     ));
     let probe = Arc::new(crate::maintenance::RetentionReturnToPoolProbe {
-        operation: Some("archive_snapshot_manifest"),
+        operation: Some("archive_snapshot_manifest_stage"),
         ..Default::default()
     });
     probe

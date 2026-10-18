@@ -41,7 +41,7 @@ impl PublicationFixture {
         sqlx::raw_sql(
             "CREATE TABLE archive_batches (
                 id INTEGER PRIMARY KEY, dataset TEXT, month_key TEXT, file_path TEXT,
-                sha256 TEXT, cleanup_state TEXT, cleanup_source_safe_start_date TEXT,
+                sha256 TEXT, row_count INTEGER, cleanup_state TEXT, cleanup_source_safe_start_date TEXT,
                 replacement_staged_path TEXT);
              CREATE TABLE retention_prepared_archives (
                 dataset TEXT, file_path TEXT, state TEXT, staged_file_path TEXT,
