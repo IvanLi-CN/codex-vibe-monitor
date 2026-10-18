@@ -1,10 +1,14 @@
-use super::archive_publication::replace_legacy_archive_file_with_cleanup_serialization;
+use super::archive_publication::{
+    ArchiveReplacement, replace_legacy_archive_file_with_cleanup_serialization,
+};
 use super::*;
 use anyhow::bail;
 use sqlx::FromRow;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode};
 use std::io::ErrorKind;
 use std::str::FromStr;
+#[cfg(test)]
+use tokio::sync::Notify;
 
 #[derive(Clone, Copy)]
 enum MonthlyWriterPhase {
@@ -82,6 +86,16 @@ impl Drop for MonthlyWriterObservation {
 #[cfg(test)]
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_TASK_ARCHIVE_PAUSE: Duration;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE: Duration;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED: Arc<Notify>;
+    pub(crate) static RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED: Arc<Notify>;
+}
+
+#[derive(Debug, Clone)]
+struct TaskArchiveSnapshotPageLoad {
+    pages: Vec<TaskArchiveSnapshotPage>,
+    fingerprints: Vec<super::super::retention::TaskArchiveSnapshotPageFingerprint>,
+    valid: bool,
 }
 
 pub(super) fn sync_published_archive_file(final_file_path: &Path) -> Result<()> {
@@ -766,7 +780,8 @@ pub(crate) async fn archive_rows_into_month_batch_at_path(
     ids: &[i64],
     final_path: PathBuf,
 ) -> Result<ArchiveBatchOutcome> {
-    archive_rows_into_month_batch_with_snapshots(pool, spec, month_key, ids, final_path, None).await
+    archive_rows_into_month_batch_with_snapshots(pool, spec, month_key, ids, final_path, None, None)
+        .await
 }
 
 pub(crate) async fn archive_rows_into_task_month_batch(
@@ -784,6 +799,10 @@ pub(crate) async fn archive_rows_into_task_month_batch(
         ids,
         archive_batch_file_path(config, spec.dataset, month_key)?,
         Some(snapshots),
+        Some(shanghai_archive_expiry_from_reference_timestamp(
+            &format_utc_iso(Utc::now()),
+            config.invocation_archive_ttl_days,
+        )?),
     )
     .await
 }
@@ -795,6 +814,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
     ids: &[i64],
     final_path: PathBuf,
     snapshots: Option<&mut Vec<TaskArchiveSnapshotPage>>,
+    archive_expires_at: Option<String>,
 ) -> Result<ArchiveBatchOutcome> {
     if ids.is_empty() {
         bail!("archive batch requires at least one row id");
@@ -868,6 +888,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
         let _ = fs::remove_file(&temp_gzip_path);
     }
 
+    let has_summary_pages = snapshots.is_some();
     writer_observation.advance(MonthlyWriterPhase::Inflate);
     if final_path.exists() {
         inflate_gzip_sqlite_file(&final_path, &work_path)?;
@@ -885,7 +906,7 @@ async fn archive_rows_into_month_batch_with_snapshots(
             let identity =
                 archive_table_source_identity_sha256(&mut connection, spec, "main", ids).await?;
             connection.close().await?;
-            Ok::<_, anyhow::Error>((count, activity, Some(identity)))
+            Ok::<_, anyhow::Error>((count, activity, Some(identity), false, None))
         }
         .await
     } else {
@@ -918,6 +939,17 @@ async fn archive_rows_into_month_batch_with_snapshots(
         } else if spec.dataset == "pool_upstream_request_attempts" {
             ensure_pool_upstream_request_attempts_archive_schema(&mut conn).await?;
         }
+        let predecessor_row_count = if has_summary_pages && existing_final_sha256.is_some() {
+            Some(
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT COUNT(*) FROM archive_db.codex_invocations",
+                )
+                .fetch_one(&mut conn)
+                .await?,
+            )
+        } else {
+            None
+        };
         #[cfg(test)]
         if let Ok(delay) = RETENTION_TEST_TASK_ARCHIVE_PAUSE.try_with(|delay| *delay) {
             tokio::time::sleep(delay).await;
@@ -960,27 +992,58 @@ async fn archive_rows_into_month_batch_with_snapshots(
             _ => bail!("unsupported task-local monthly archive dataset"),
         };
         let identity_mismatch = identity_columns.iter().map(|column| format!("a.{column} IS NOT s.{column}")).collect::<Vec<_>>().join(" OR ");
+        let ids_json = serde_json::to_string(ids)?;
         let collision: bool = sqlx::query_scalar(&format!(
             "SELECT EXISTS(SELECT 1 FROM archive_db.{} a JOIN main.{} s ON a.id=s.id WHERE s.id IN (SELECT value FROM json_each(?1)) AND ({identity_mismatch}))", spec.dataset, spec.dataset,
-        )).bind(serde_json::to_string(ids)?).fetch_one(&mut conn).await?;
+        )).bind(&ids_json).fetch_one(&mut conn).await?;
         if collision { bail!("monthly archive row identity collision"); }
-        let mut insert = QueryBuilder::<Sqlite>::new(format!(
-            "INSERT OR REPLACE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
-            spec.dataset, spec.columns, spec.columns, spec.dataset
-        ));
-        {
-            let mut separated = insert.separated(", ");
-            for id in ids {
-                separated.push_bind(id);
-            }
-        }
-        insert.push(")");
-        insert.build().execute(&mut conn).await.with_context(|| {
-            format!(
-                "failed to copy rows into archive batch for {}",
-                spec.dataset
+        let should_copy = if spec.dataset == "codex_invocations" {
+            let source_identity = super::super::retention::invocation_archive_source_identity_sha256(
+                &mut conn,
+                super::super::retention::InvocationArchiveIdentityDatabase::Main,
+                ids,
             )
-        })?;
+            .await?;
+            let archive_row_count = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM archive_db.codex_invocations
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&ids_json)
+            .fetch_one(&mut conn)
+            .await?;
+            if archive_row_count != ids.len() as i64 {
+                true
+            } else {
+                let archive_identity = super::super::retention::invocation_archive_source_identity_sha256(
+                    &mut conn,
+                    super::super::retention::InvocationArchiveIdentityDatabase::Archive,
+                    ids,
+                )
+                .await?;
+                archive_identity != source_identity
+            }
+        } else {
+            true
+        };
+        if should_copy {
+            let mut insert = QueryBuilder::<Sqlite>::new(format!(
+                "INSERT OR REPLACE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
+                spec.dataset, spec.columns, spec.columns, spec.dataset
+            ));
+            {
+                let mut separated = insert.separated(", ");
+                for id in ids {
+                    separated.push_bind(id);
+                }
+            }
+            insert.push(")");
+            insert.build().execute(&mut conn).await.with_context(|| {
+                format!(
+                    "failed to copy rows into archive batch for {}",
+                    spec.dataset
+                )
+            })?;
+        }
 
         let count_query = format!("SELECT COUNT(*) FROM archive_db.{}", spec.dataset);
         let row_count = sqlx::query_scalar::<_, i64>(&count_query)
@@ -1004,16 +1067,33 @@ async fn archive_rows_into_month_batch_with_snapshots(
             .await
             .context("failed to detach archive database")?;
         conn.close().await?;
-        Ok::<(i64, Vec<(i64, String)>, Option<String>), anyhow::Error>((
+        Ok::<
+            (
+                i64,
+                Vec<(i64, String)>,
+                Option<String>,
+                bool,
+                Option<i64>,
+            ),
+            anyhow::Error,
+        >((
             row_count,
             upstream_last_activity,
             source_identity_sha256,
+            has_summary_pages && !should_copy && existing_final_sha256.is_some(),
+            predecessor_row_count,
         ))
     }
         .await
     };
 
-    let (result, upstream_last_activity, source_identity_sha256) = match row_count {
+    let (
+        result,
+        upstream_last_activity,
+        source_identity_sha256,
+        archive_content_unchanged,
+        predecessor_row_count,
+    ) = match row_count {
         Ok(values) => values,
         Err(err) => {
             let _ = fs::remove_file(&work_path);
@@ -1021,6 +1101,10 @@ async fn archive_rows_into_month_batch_with_snapshots(
             return Err(err);
         }
     };
+    if has_summary_pages {
+        writer_observation.advance(MonthlyWriterPhase::SummaryPages);
+        prepare_task_month_snapshot_index(&work_path).await?;
+    }
     writer_observation.advance(MonthlyWriterPhase::Finalize);
     if let Err(err) = finalize_archive_sqlite_file(&work_path).await {
         let _ = fs::remove_file(&work_path);
@@ -1028,31 +1112,71 @@ async fn archive_rows_into_month_batch_with_snapshots(
         return Err(err);
     }
 
-    if let Some(snapshots) = snapshots {
-        writer_observation.advance(MonthlyWriterPhase::SummaryPages);
-        // The monthly target contains previous committed rows as well as this batch. Prepare
-        // its complete raw-free Summary proof outside the main write transaction, while the
-        // already-inflated task-local copy is available. Never overwrite it with page 0 of
-        // only the newly selected source rows.
-        *snapshots = prepare_task_month_snapshot_pages(&work_path).await?;
-        if snapshots
-            .iter()
-            .map(|page| i64::from(page.row_count))
-            .sum::<i64>()
-            != result
-        {
-            bail!("monthly archive Summary snapshot row count mismatch");
-        }
-    }
-
     writer_observation.advance(MonthlyWriterPhase::Deflate);
-    if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
+    if archive_content_unchanged {
+        if let Err(err) = fs::hard_link(&final_path, &temp_gzip_path).with_context(|| {
+            format!(
+                "failed to retain unchanged archive artifact {}",
+                final_path.display()
+            )
+        }) {
+            let _ = fs::remove_file(&work_path);
+            let _ = fs::remove_file(&temp_gzip_path);
+            return Err(err);
+        }
+    } else if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
     }
     writer_observation.advance(MonthlyWriterPhase::OutputDigest);
-    let sha256 = sha256_hex_file(&temp_gzip_path)?;
+    let sha256 = if archive_content_unchanged {
+        existing_final_sha256
+            .clone()
+            .context("unchanged archive artifact is missing its predecessor digest")?
+    } else {
+        sha256_hex_file(&temp_gzip_path)?
+    };
+    let mut outcome = ArchiveBatchOutcome {
+        dataset: spec.dataset,
+        month_key: month_key.to_string(),
+        day_key: None,
+        part_key: None,
+        file_path: final_path.to_string_lossy().to_string(),
+        sha256: sha256.clone(),
+        source_identity_sha256,
+        row_count: result,
+        upstream_last_activity,
+        coverage_start_at: None,
+        coverage_end_at: None,
+        archive_expires_at,
+        summary_source_kind: if has_summary_pages {
+            SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+        } else {
+            SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN
+        },
+        layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+        codec: ARCHIVE_FILE_CODEC_GZIP,
+        writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
+    };
+    let snapshot_batch_id = if has_summary_pages {
+        Some(
+            super::super::retention::stage_task_summary_archive_manifest(
+                pool,
+                &outcome,
+                existing_final_sha256.as_deref(),
+                predecessor_row_count,
+            )
+            .await?
+            .ok_or_else(|| {
+                super::super::retention::retention_write_deferred("archive_snapshot_manifest")
+            })?,
+        )
+    } else {
+        None
+    };
     writer_observation.advance(MonthlyWriterPhase::Publication);
     if let Err(err) = replace_legacy_archive_file_with_cleanup_serialization(
         pool,
@@ -1061,13 +1185,32 @@ async fn archive_rows_into_month_batch_with_snapshots(
         &temp_gzip_path,
         &final_path,
         existing_final_sha256.as_deref(),
-        &sha256,
+        ArchiveReplacement {
+            row_count: Some(result),
+            sha256: &sha256,
+        },
     )
     .await
     {
         let _ = fs::remove_file(&work_path);
         let _ = fs::remove_file(&temp_gzip_path);
         return Err(err);
+    }
+    if let (Some(batch_id), Some(snapshots)) = (snapshot_batch_id, snapshots) {
+        writer_observation.advance(MonthlyWriterPhase::SummaryPages);
+        // The monthly target contains previous committed rows as well as this batch. Persist
+        // each complete V2 page after the artifact is published, so cancellation leaves a
+        // resumable prefix without granting cleanup authority before final proof.
+        *snapshots =
+            prepare_task_month_snapshot_pages(pool, &work_path, &outcome, batch_id).await?;
+        if snapshots
+            .iter()
+            .map(|page| i64::from(page.row_count))
+            .sum::<i64>()
+            != result
+        {
+            bail!("monthly archive Summary snapshot row count mismatch");
+        }
     }
     writer_observation.advance(MonthlyWriterPhase::Cleanup);
     let cleanup_complete = match fs::remove_file(&work_path) {
@@ -1080,30 +1223,192 @@ async fn archive_rows_into_month_batch_with_snapshots(
         "stopped"
     });
 
-    Ok(ArchiveBatchOutcome {
-        dataset: spec.dataset,
-        month_key: month_key.to_string(),
-        day_key: None,
-        part_key: None,
-        file_path: final_path.to_string_lossy().to_string(),
-        sha256,
-        source_identity_sha256,
-        row_count: result,
-        upstream_last_activity,
-        coverage_start_at: None,
-        coverage_end_at: None,
-        archive_expires_at: None,
-        summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_UNKNOWN,
-        layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
-        codec: ARCHIVE_FILE_CODEC_GZIP,
-        writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
-        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
-        superseded_by: None,
+    outcome.sha256 = sha256;
+    Ok(outcome)
+}
+
+async fn prepare_task_month_snapshot_index(work_path: &Path) -> Result<()> {
+    let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
+    let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await?;
+    let result = sqlx::query("CREATE INDEX IF NOT EXISTS idx_retention_snapshot_time_id ON codex_invocations(julianday(occurred_at), id)")
+        .execute(&archive_pool)
+        .await
+        .map(|_| ());
+    archive_pool.close().await;
+    result.map_err(Into::into)
+}
+
+async fn load_task_month_snapshot_pages(
+    pool: &Pool<Sqlite>,
+    archive_pool: &Pool<Sqlite>,
+    first_page_query: &str,
+    next_page_query: &str,
+    batch_id: i64,
+    manifest_sha256: &str,
+) -> Result<TaskArchiveSnapshotPageLoad> {
+    let rows = sqlx::query_as::<_, (i64, String, String, i64, Vec<u8>, i64, String, i64)>(
+        "SELECT page_index, coverage_start, coverage_end, row_count, payload, format_version,
+                snapshot_sha256, payload_bytes
+         FROM summary_archive_snapshot
+         WHERE archive_batch_id=?1 AND manifest_sha256=?2
+         ORDER BY page_index ASC",
+    )
+    .bind(batch_id)
+    .bind(manifest_sha256)
+    .fetch_all(pool)
+    .await?;
+    let fingerprints = rows
+        .iter()
+        .map(
+            |(
+                page_index,
+                coverage_start,
+                coverage_end,
+                row_count,
+                payload,
+                format_version,
+                _snapshot_sha256,
+                payload_bytes,
+            )| super::super::retention::TaskArchiveSnapshotPageFingerprint {
+                page_index: *page_index,
+                coverage_start: coverage_start.clone(),
+                coverage_end: coverage_end.clone(),
+                row_count: *row_count,
+                payload_bytes: *payload_bytes,
+                payload_sha256:
+                    crate::summary_source_change::summary_archive_snapshot_payload_sha256(payload),
+                format_version: *format_version,
+            },
+        )
+        .collect::<Vec<_>>();
+    let mut pages = Vec::with_capacity(rows.len());
+    let mut previous_cursor = None;
+    for (
+        page_index,
+        coverage_start,
+        coverage_end,
+        row_count,
+        payload,
+        format_version,
+        _snapshot_sha256,
+        _payload_bytes,
+    ) in rows
+    {
+        if page_index != pages.len() as i64
+            || format_version != SUMMARY_ARCHIVE_SNAPSHOT_V2
+            || row_count <= 0
+        {
+            return Ok(TaskArchiveSnapshotPageLoad {
+                pages: Vec::new(),
+                fingerprints,
+                valid: false,
+            });
+        }
+        let records = match crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(
+            &payload,
+        ) {
+            Ok(records) => records,
+            Err(_) => {
+                return Ok(TaskArchiveSnapshotPageLoad {
+                    pages: Vec::new(),
+                    fingerprints,
+                    valid: false,
+                });
+            }
+        };
+        let expected_row_count = match usize::try_from(row_count) {
+            Ok(row_count) => row_count,
+            Err(_) => {
+                return Ok(TaskArchiveSnapshotPageLoad {
+                    pages: Vec::new(),
+                    fingerprints,
+                    valid: false,
+                });
+            }
+        };
+        if records.len() != expected_row_count {
+            return Ok(TaskArchiveSnapshotPageLoad {
+                pages: Vec::new(),
+                fingerprints,
+                valid: false,
+            });
+        }
+        let archive_rows = if let Some((occurred_at, row_id)) = previous_cursor.as_ref() {
+            sqlx::query_as::<_, InvocationHourlySourceRecord>(next_page_query)
+                .bind(occurred_at)
+                .bind(*row_id)
+                .bind(row_count)
+                .fetch_all(archive_pool)
+                .await?
+        } else {
+            sqlx::query_as::<_, InvocationHourlySourceRecord>(first_page_query)
+                .bind(row_count)
+                .fetch_all(archive_pool)
+                .await?
+        };
+        let record_ids = records.iter().map(|record| record.id).collect::<Vec<_>>();
+        let archive_ids = archive_rows.iter().map(|row| row.id).collect::<Vec<_>>();
+        if archive_ids != record_ids
+            || archive_rows
+                .first()
+                .is_none_or(|row| row.occurred_at != coverage_start)
+            || archive_rows
+                .last()
+                .is_none_or(|row| row.occurred_at != coverage_end)
+        {
+            return Ok(TaskArchiveSnapshotPageLoad {
+                pages: Vec::new(),
+                fingerprints,
+                valid: false,
+            });
+        }
+        let ids = archive_ids;
+        let ids_json = serde_json::to_string(&ids)?;
+        let invoke_ids = sqlx::query_as::<_, (i64, String)>(
+            "SELECT id, invoke_id FROM codex_invocations WHERE id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&ids_json)
+        .fetch_all(archive_pool)
+        .await?
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        if invoke_ids.len() != archive_rows.len()
+            || super::super::retention::encode_summary_archive_snapshot_v2_payload(
+                &archive_rows,
+                &invoke_ids,
+            )? != payload
+        {
+            return Ok(TaskArchiveSnapshotPageLoad {
+                pages: Vec::new(),
+                fingerprints,
+                valid: false,
+            });
+        }
+        previous_cursor = archive_rows
+            .last()
+            .map(|row| (row.occurred_at.clone(), row.id));
+        pages.push(TaskArchiveSnapshotPage {
+            coverage_start,
+            coverage_end,
+            row_count: u32::try_from(row_count)?,
+            payload,
+        });
+    }
+    Ok(TaskArchiveSnapshotPageLoad {
+        pages,
+        fingerprints,
+        valid: true,
     })
 }
 
 async fn prepare_task_month_snapshot_pages(
+    pool: &Pool<Sqlite>,
     work_path: &Path,
+    outcome: &ArchiveBatchOutcome,
+    batch_id: i64,
 ) -> Result<Vec<TaskArchiveSnapshotPage>> {
     let options = SqliteConnectOptions::from_str(&sqlite_url_for_path(work_path))?;
     let archive_pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -1112,10 +1417,8 @@ async fn prepare_task_month_snapshot_pages(
         .await?;
     let result = async {
         let columns = load_archive_table_columns(&archive_pool, "codex_invocations").await?;
-        // Install on the task copy, then retain it in the monthly SQLite artifact. Tuple
-        // keyset pagination must seek rather than sort/scan the month once per 400-row page.
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_retention_snapshot_time_id ON codex_invocations(julianday(occurred_at), id)")
-            .execute(&archive_pool).await?;
+        // Tuple keyset pagination must seek rather than sort/scan the month once per 400-row
+        // page. The index was installed before the artifact was compressed.
         let base = build_invocation_archive_rows_chunk_query(&columns);
         let first_query = base.replace(
             "WHERE id > ?1\n        ORDER BY id ASC\n        LIMIT ?2",
@@ -1125,9 +1428,48 @@ async fn prepare_task_month_snapshot_pages(
             "WHERE id > ?1\n        ORDER BY id ASC\n        LIMIT ?2",
             "WHERE (julianday(occurred_at), id) > (julianday(?1), ?2)\n        ORDER BY julianday(occurred_at), id\n        LIMIT ?3",
         );
-        let mut pages = Vec::new();
-        let mut occurred_at = None;
-        let mut row_id = 0;
+        let loaded_pages = load_task_month_snapshot_pages(
+            pool,
+            &archive_pool,
+            &first_query,
+            &next_query,
+            batch_id,
+            &outcome.sha256,
+        )
+        .await?;
+        let mut pages = if loaded_pages.valid {
+            loaded_pages.pages
+        } else {
+            if super::super::retention::clear_task_summary_snapshot_pages(
+                pool,
+                batch_id,
+                &outcome.sha256,
+                &loaded_pages.fingerprints,
+            )
+            .await?
+            .is_none()
+            {
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_snapshot_page_reset",
+                ));
+            }
+            Vec::new()
+        };
+        #[cfg(test)]
+        if !pages.is_empty()
+            && let Ok(notify) = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_REUSED.try_with(Arc::clone)
+        {
+            notify.notify_one();
+        }
+        let (mut occurred_at, mut row_id) = if let Some(page) = pages.last() {
+            let records = crate::summary_source_change::decode_summary_archive_snapshot_v2_payload(
+                &page.payload,
+            )?;
+            let last = records.last().expect("nonempty persisted snapshot page");
+            (Some(last.occurred_at.clone()), last.id)
+        } else {
+            (None, 0)
+        };
         loop {
             let rows = if let Some(cursor) = occurred_at.as_deref() {
                 sqlx::query_as::<_, InvocationHourlySourceRecord>(&next_query)
@@ -1149,19 +1491,50 @@ async fn prepare_task_month_snapshot_pages(
                 .fetch_all(&archive_pool).await?.into_iter().collect::<HashMap<_, _>>();
             let first = rows.first().expect("nonempty snapshot page");
             let last = rows.last().expect("nonempty snapshot page");
-            pages.push(TaskArchiveSnapshotPage {
+            let page = TaskArchiveSnapshotPage {
                 coverage_start: first.occurred_at.clone(),
                 coverage_end: last.occurred_at.clone(),
                 row_count: u32::try_from(rows.len())?,
                 payload: super::super::retention::encode_summary_archive_snapshot_v2_payload(
                     &rows, &invoke_ids,
                 )?,
-            });
+            };
+            let page_index = u32::try_from(pages.len())?;
+            if super::super::retention::store_task_summary_snapshot_page(
+                pool,
+                outcome,
+                batch_id,
+                page_index,
+                page.clone(),
+            )
+            .await?
+            .is_none()
+            {
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_snapshot_page",
+                ));
+            }
+            pages.push(page);
+            #[cfg(test)]
+            if pages.len() == 1 {
+                if let Ok(notify) = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_COMMITTED
+                    .try_with(Arc::clone)
+                {
+                    notify.notify_one();
+                }
+                if let Ok(delay) = RETENTION_TEST_TASK_ARCHIVE_SNAPSHOT_PAGE_PAUSE
+                    .try_with(|delay| *delay)
+                {
+                    tokio::time::sleep(delay).await;
+                }
+            }
             occurred_at = Some(last.occurred_at.clone());
             row_id = last.id;
             if super::super::retention::retention_run_remaining_budget()
                 .is_some_and(|remaining| remaining.is_zero()) {
-                bail!("monthly archive snapshot preparation exceeded the retention timeout");
+                return Err(super::super::retention::retention_write_deferred(
+                    "archive_snapshot_page",
+                ));
             }
         }
         Ok::<_, anyhow::Error>(pages)
@@ -1365,7 +1738,10 @@ pub(crate) async fn upsert_archive_batch_manifest(
     tx: &mut sqlx::SqliteConnection,
     batch: &ArchiveBatchOutcome,
 ) -> Result<()> {
-    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_COMPLETED).await
+    let archive_batch_id =
+        upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_COMPLETED, false)
+            .await?;
+    append_archive_batch_summary_descriptor(tx, batch, archive_batch_id).await
 }
 
 pub(crate) async fn stage_invocation_archive_batch_manifest(
@@ -1379,7 +1755,27 @@ pub(crate) async fn stage_invocation_archive_batch_manifest(
             "only an authoritative codex_invocations archive can enter Summary publication staging"
         );
     }
-    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_MATERIALIZING).await
+    let archive_batch_id =
+        upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_MATERIALIZING, false)
+            .await?;
+    append_archive_batch_summary_descriptor(tx, batch, archive_batch_id).await
+}
+
+pub(crate) async fn stage_invocation_archive_batch_manifest_for_summary_pages(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+) -> Result<i64> {
+    if batch.dataset != HOURLY_ROLLUP_DATASET_INVOCATIONS
+        || batch.summary_source_kind != SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE
+    {
+        bail!(
+            "only an authoritative codex_invocations archive can enter Summary publication staging"
+        );
+    }
+    // Keep the existing file identity until the publication transaction renames and commits the
+    // replacement. If cancellation occurs before that point, the next run must still accept the
+    // old final file as the predecessor rather than treating it as a manifest collision.
+    upsert_archive_batch_manifest_with_status(tx, batch, ARCHIVE_STATUS_MATERIALIZING, true).await
 }
 
 pub(crate) async fn finalize_invocation_archive_batch_publication_tx(
@@ -1392,14 +1788,15 @@ pub(crate) async fn finalize_invocation_archive_batch_publication_tx(
         SET status = ?1
         WHERE dataset = ?2
           AND file_path = ?3
-          AND status = ?4
-          AND summary_source_kind = ?5
+          AND status IN (?4, ?5)
+          AND summary_source_kind = ?6
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
     .bind(file_path)
     .bind(ARCHIVE_STATUS_MATERIALIZING)
+    .bind(ARCHIVE_STATUS_COMPLETED)
     .bind(SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE)
     .execute(&mut *tx)
     .await?;
@@ -1413,7 +1810,8 @@ async fn upsert_archive_batch_manifest_with_status(
     tx: &mut sqlx::SqliteConnection,
     batch: &ArchiveBatchOutcome,
     status: &str,
-) -> Result<()> {
+    preserve_existing_artifact_identity: bool,
+) -> Result<i64> {
     sqlx::query(
         r#"
         INSERT INTO archive_batches (
@@ -1440,9 +1838,22 @@ async fn upsert_archive_batch_manifest_with_status(
         ON CONFLICT(dataset, month_key, file_path) DO UPDATE SET
             day_key = excluded.day_key,
             part_key = excluded.part_key,
-            sha256 = excluded.sha256,
-            row_count = excluded.row_count,
-            status = excluded.status,
+            sha256 = CASE
+                WHEN ?18 THEN archive_batches.sha256
+                ELSE excluded.sha256
+            END,
+            row_count = CASE
+                WHEN ?18 THEN archive_batches.row_count
+                ELSE excluded.row_count
+            END,
+            -- A completed artifact is an authority fence: a stale retry may refresh its
+            -- metadata, but it must never reopen the manifest as materializing.
+            status = CASE
+                WHEN archive_batches.status = 'completed'
+                     AND excluded.status = 'materializing'
+                    THEN archive_batches.status
+                ELSE excluded.status
+            END,
             layout = excluded.layout,
             codec = excluded.codec,
             writer_version = excluded.writer_version,
@@ -1489,6 +1900,7 @@ async fn upsert_archive_batch_manifest_with_status(
     .bind(batch.coverage_end_at.as_deref())
     .bind(batch.archive_expires_at.as_deref())
     .bind(batch.summary_source_kind)
+    .bind(preserve_existing_artifact_identity)
     .execute(&mut *tx)
     .await?;
     let deduped_upstream_last_activity =
@@ -1515,24 +1927,35 @@ async fn upsert_archive_batch_manifest_with_status(
             &deduped_upstream_last_activity,
         )
         .await?;
-        let descriptor = SummarySourceChangeDescriptor::coverage_change(
-            u64::try_from(archive_batch_id).context("archive batch source revision overflow")?,
-            vec![SummarySourceChangeEntry {
-                row_id: archive_batch_id,
-                invoke_id: format!("archive:{}", batch.sha256),
-                occurred_at: batch
-                    .coverage_start_at
-                    .clone()
-                    .unwrap_or_else(|| batch.month_key.clone()),
-                upstream_account_id: None,
-                current_rank: None,
-            }],
-        )?;
-        append_summary_source_change_descriptor_tx(tx, &descriptor).await?;
     }
     if batch.dataset == "codex_invocations" && !deduped_upstream_last_activity.is_empty() {
         upsert_archived_upstream_last_activity(tx, &deduped_upstream_last_activity).await?;
     }
+    Ok(archive_batch_id)
+}
+
+async fn append_archive_batch_summary_descriptor(
+    tx: &mut sqlx::SqliteConnection,
+    batch: &ArchiveBatchOutcome,
+    archive_batch_id: i64,
+) -> Result<()> {
+    if batch.dataset != "codex_invocations" {
+        return Ok(());
+    }
+    let descriptor = SummarySourceChangeDescriptor::coverage_change(
+        u64::try_from(archive_batch_id).context("archive batch source revision overflow")?,
+        vec![SummarySourceChangeEntry {
+            row_id: archive_batch_id,
+            invoke_id: format!("archive:{}", batch.sha256),
+            occurred_at: batch
+                .coverage_start_at
+                .clone()
+                .unwrap_or_else(|| batch.month_key.clone()),
+            upstream_account_id: None,
+            current_rank: None,
+        }],
+    )?;
+    append_summary_source_change_descriptor_tx(tx, &descriptor).await?;
     Ok(())
 }
 
@@ -1727,6 +2150,7 @@ mod tests {
             tx.as_mut(),
             &authoritative,
             ARCHIVE_STATUS_MATERIALIZING,
+            false,
         )
         .await
         .expect("insert authoritative manifest");
@@ -1734,6 +2158,7 @@ mod tests {
             tx.as_mut(),
             &live_mirror,
             ARCHIVE_STATUS_MATERIALIZING,
+            false,
         )
         .await
         .expect("update manifest from live mirror");
@@ -1862,7 +2287,10 @@ mod tests {
             &missing_temp_path,
             &final_path,
             None,
-            "replacement-sha",
+            ArchiveReplacement {
+                row_count: None,
+                sha256: "replacement-sha",
+            },
         )
         .await
         .expect_err("missing replacement file must roll back pending reactivation");
@@ -1911,7 +2339,10 @@ mod tests {
             &temporary_path,
             &final_path,
             Some(&format!("{:x}", Sha256::digest(b"older archive"))),
-            "replacement-sha",
+            ArchiveReplacement {
+                row_count: None,
+                sha256: "replacement-sha",
+            },
         )
         .await
         .expect_err("stale baseline must not overwrite a newer archive");

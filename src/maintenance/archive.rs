@@ -4,7 +4,8 @@ use super::*;
 mod archive_publication;
 #[cfg(test)]
 pub(crate) use archive_publication::{
-    PublicationTestPhase, PublicationTestProbe, RETENTION_PUBLICATION_TEST_PROBE,
+    ArchiveReplacement, PublicationTestPhase, PublicationTestProbe,
+    RETENTION_PUBLICATION_TEST_PROBE,
     replace_legacy_archive_file_with_cleanup_serialization as replace_legacy_archive_file_for_test,
 };
 

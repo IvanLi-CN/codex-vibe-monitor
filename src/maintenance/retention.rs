@@ -22,7 +22,9 @@ pub(crate) use batch_plan::{
     BatchObservation, archive_sqlite_size_from_header, retention_test_with_batch_metrics,
 };
 pub(crate) use batch_plan::{
-    RetentionBatchMetrics, TaskArchiveSnapshotPage, archive_source_row_sizes,
+    RetentionBatchMetrics, TaskArchiveSnapshotPage, TaskArchiveSnapshotPageFingerprint,
+    archive_source_row_sizes, clear_task_summary_snapshot_pages,
+    stage_task_summary_archive_manifest, store_task_summary_snapshot_page,
 };
 use batch_plan::{archive_batch_can_start, archive_candidate_limit, select_archive_batch};
 pub(crate) use observability::record_backlog_observation;
@@ -1965,7 +1967,7 @@ pub(crate) struct ArchiveTableSpec {
     pub(crate) create_sql: &'static str,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct ArchiveBatchOutcome {
     pub(crate) dataset: &'static str,
     pub(crate) month_key: String,
