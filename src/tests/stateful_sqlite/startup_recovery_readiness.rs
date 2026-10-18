@@ -1,11 +1,17 @@
 use super::*;
 
 #[tokio::test]
-async fn business_routes_reject_before_readiness_while_health_remains_available() {
+async fn health_becomes_ready_before_pending_recovery_completes() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, total_tokens, payload, raw_response) VALUES ('pending-startup-recovery', '2026-10-18T00:00:00Z', 'proxy', 'running', 0, '{}', '{}')",
+    )
+    .execute(&state.pool)
+    .await
+    .expect("insert pending startup recovery fixture");
     state.startup_ready.store(false, Ordering::Release);
     let app = build_app_router(state.clone());
 
@@ -42,6 +48,24 @@ async fn business_routes_reject_before_readiness_while_health_remains_available(
             .await
             .expect("read health response body"),
         Bytes::from_static(b"starting")
+    );
+
+    state.startup_ready.store(true, Ordering::Release);
+    let ready_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .expect("build ready health request"),
+        )
+        .await
+        .expect("serve ready health request");
+    assert_eq!(ready_response.status(), StatusCode::OK);
+    assert_eq!(
+        axum::body::to_bytes(ready_response.into_body(), usize::MAX)
+            .await
+            .expect("read ready health response body"),
+        Bytes::from_static(b"ok")
     );
 }
 
