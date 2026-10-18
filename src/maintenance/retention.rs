@@ -783,6 +783,13 @@ pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
 }
 
 #[cfg(test)]
+pub(crate) fn retention_test_expire_work_budget() {
+    RETENTION_RUN_DEADLINE.with(|deadline| {
+        *deadline.borrow_mut() = Some(Instant::now());
+    });
+}
+
+#[cfg(test)]
 pub(crate) async fn retention_test_with_shutdown<F: Future>(
     shutdown: CancellationToken,
     work: F,
