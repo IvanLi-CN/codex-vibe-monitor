@@ -162,6 +162,248 @@ async fn speculative_preparation_is_bounded_existing_only_and_yields_to_demand()
 }
 
 #[tokio::test]
+async fn preparation_retains_owner_while_initialization_is_in_flight() {
+    use prompt_cache_conversations::invocation_ranges::PREPARATION_BEFORE_READ;
+    use tokio::sync::Notify;
+
+    let pool = fixture().await;
+    let key = "inflight-preparation-owner";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let entered = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let preparation = PREPARATION_BEFORE_READ.scope(
+        (entered.clone(), resume.clone()),
+        manager.test_prepare_key(&pool, key),
+    );
+    tokio::pin!(preparation);
+    tokio::select! {
+        result = &mut preparation => panic!("preparation skipped the read gate: {result}"),
+        _ = entered.notified() => {},
+    }
+
+    assert_eq!(
+        manager.test_prepare_keys(&pool, &[key]).await,
+        1,
+        "an in-flight initialization must remain eligible for a later preparation turn"
+    );
+
+    resume.notify_one();
+    assert!(preparation.await);
+    let ceiling: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ceiling, 63);
+}
+
+#[tokio::test]
+async fn deferred_preparation_retries_after_writer_pressure_without_duplicate_ranges() {
+    use crate::proxy_sqlite_write_coordinator::{
+        ProxySqliteWriteClass, proxy_sqlite_write_coordinator,
+    };
+
+    let pool = fixture().await;
+    let key = "writer-pressure-preparation-owner";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let foreground = proxy_sqlite_write_coordinator()
+        .acquire(ProxySqliteWriteClass::P1Terminal)
+        .await;
+
+    assert_eq!(manager.test_prepare_keys(&pool, &[key]).await, 1);
+    assert_eq!(manager.test_prepare_keys(&pool, &[key, key]).await, 1);
+    let before_retry: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        before_retry, -1,
+        "deferred preparation cannot publish a range"
+    );
+
+    drop(foreground);
+    assert_eq!(
+        manager.test_retry_preparations(&pool, Utc::now()).await,
+        0,
+        "pressure relief must drain the retained owner"
+    );
+    assert_eq!(manager.test_prepare_keys(&pool, &[key, key]).await, 0);
+    let after_retry: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_retry, 63, "retries publish only one committed range");
+}
+
+#[tokio::test]
+async fn deferred_preparation_retries_after_pool_pressure() {
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .unwrap();
+    ensure_schema(&pool).await.unwrap();
+    let key = "pool-pressure-preparation-owner";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let held_connection = pool.acquire().await.unwrap();
+
+    assert_eq!(manager.test_prepare_keys(&pool, &[key]).await, 1);
+    drop(held_connection);
+    assert_eq!(
+        manager.test_retry_preparations(&pool, Utc::now()).await,
+        0,
+        "a later turn must retry after a pool connection becomes available"
+    );
+    let ceiling: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(ceiling, 63);
+}
+
+#[tokio::test]
+async fn deferred_preparation_retries_after_memory_capacity_pressure() {
+    let pool = fixture().await;
+    let key = "capacity-pressure-preparation-owner";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    manager.test_set_preparation_target(0);
+
+    assert_eq!(manager.test_prepare_keys(&pool, &[key]).await, 1);
+    let before_retry: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_retry, -1, "capacity deferral cannot publish a range");
+
+    manager.test_set_preparation_target(128);
+    assert_eq!(
+        manager.test_retry_preparations(&pool, Utc::now()).await,
+        0,
+        "the retained owner must retry after memory capacity is restored"
+    );
+    let after_retry: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after_retry, 63);
+}
+
+#[tokio::test]
+async fn startup_retry_queue_is_bounded_and_reports_overflow() {
+    use crate::proxy_sqlite_write_coordinator::{
+        ProxySqliteWriteClass, proxy_sqlite_write_coordinator,
+    };
+    use prompt_cache_conversations::invocation_ranges::STARTUP_OWNER_LIMIT;
+
+    let pool = fixture().await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let owners: Vec<String> = (0..STARTUP_OWNER_LIMIT + 2)
+        .map(|number| format!("retry-capacity-owner-{number}"))
+        .collect();
+    for key in &owners {
+        existing_conversation(&pool, key).await;
+    }
+    let keys: Vec<&str> = owners.iter().map(String::as_str).collect();
+    let foreground = proxy_sqlite_write_coordinator()
+        .acquire(ProxySqliteWriteClass::P1Terminal)
+        .await;
+
+    assert_eq!(
+        manager.test_prepare_keys(&pool, &keys).await,
+        STARTUP_OWNER_LIMIT,
+        "queue overflow must not exceed the configured owner bound"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM prompt_cache_conversations WHERE last_invoke_sequence >= 0",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        0,
+        "owners deferred under writer pressure cannot publish ranges"
+    );
+    drop(foreground);
+}
+
+#[tokio::test]
+async fn startup_coordinator_retries_deferred_owners_on_its_periodic_turn() {
+    use crate::proxy_sqlite_write_coordinator::{
+        ProxySqliteWriteClass, proxy_sqlite_write_coordinator,
+    };
+
+    let pool = fixture().await;
+    let key = "periodic-coordinator-preparation-owner";
+    existing_conversation(&pool, key).await;
+    let manager = Arc::new(InvocationRangeManager::default());
+    let shutdown = CancellationToken::new();
+    let foreground = proxy_sqlite_write_coordinator()
+        .acquire(ProxySqliteWriteClass::P1Terminal)
+        .await;
+    manager.start_sizing(&pool, shutdown.clone());
+
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if manager.test_deferred_retry_count() > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the startup coordinator must retain the deferred owner");
+    let before_retry: i64 = sqlx::query_scalar(
+        "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+    )
+    .bind(key)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(before_retry, -1);
+
+    drop(foreground);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let ceiling: i64 = sqlx::query_scalar(
+                "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+            )
+            .bind(key)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if ceiling == 63 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the existing one-second coordinator must retry deferred work");
+    shutdown.cancel();
+}
+
+#[tokio::test]
 async fn refill_completion_drives_the_next_eligible_batch_without_new_requests() {
     let pool = fixture().await;
     let manager = Arc::new(InvocationRangeManager::default());
