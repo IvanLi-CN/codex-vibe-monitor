@@ -2,6 +2,10 @@ use super::*;
 use crate::sqlite_batch_writer::{
     BatchedTerminalInvocationWrite, SqliteBatchWrite, SqliteBatchWriter,
 };
+use crate::summary_source_change::{
+    SummarySourceChangeDescriptor, SummarySourceChangeEntry,
+    append_summary_source_change_descriptor_tx,
+};
 use std::cell::Cell;
 
 #[derive(Clone, Copy)]
@@ -44,9 +48,9 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
     )
     .await;
     let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
-    // Seed the historical source through the same durable terminal path as production so the
-    // Bootstrap fence observes a source row and descriptor from one committed transaction.
-    commit_fixture_terminal_at(&state, "summary-bootstrap-fence", &historical_at).await;
+    // Keep the source row and durable descriptor atomic, but leave the derived live cursor behind
+    // the source row so Bootstrap still has a historical live-coverage gap to reconcile.
+    commit_fixture_historical_source_at(&state, "summary-bootstrap-fence", &historical_at).await;
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
@@ -247,19 +251,53 @@ async fn refresh_with_hydration_count(state: &AppState) -> (Result<()>, usize) {
 }
 
 async fn commit_fixture_terminal(state: &AppState, invoke_id: &str) {
-    let occurred_at = db_occurred_at_lower_bound(Utc::now());
-    commit_fixture_terminal_at(state, invoke_id, &occurred_at).await;
-}
-
-async fn commit_fixture_terminal_at(state: &AppState, invoke_id: &str, occurred_at: &str) {
     SqliteBatchWriter::flush_for_test(
         &state.pool,
-        vec![SqliteBatchWrite::TerminalInvocation(fixture_terminal_at(
+        vec![SqliteBatchWrite::TerminalInvocation(fixture_terminal(
             invoke_id,
-            occurred_at,
         ))],
     )
     .await;
+}
+
+async fn commit_fixture_historical_source_at(state: &AppState, invoke_id: &str, occurred_at: &str) {
+    let mut tx = state
+        .pool
+        .begin()
+        .await
+        .expect("begin historical source fixture transaction");
+    let record = fixture_terminal_at(invoke_id, occurred_at).record;
+    let persisted = crate::persist_proxy_capture_runtime_record_tx(tx.as_mut(), record, false)
+        .await
+        .expect("persist historical source fixture without derived rollups")
+        .expect("historical source fixture must persist an invocation");
+    let descriptor = SummarySourceChangeDescriptor::terminal_batch(
+        0,
+        vec![SummarySourceChangeEntry {
+            row_id: persisted.id,
+            invoke_id: persisted.invoke_id,
+            occurred_at: persisted.occurred_at,
+            upstream_account_id: None,
+            current_rank: None,
+        }],
+    )
+    .expect("build historical source fixture descriptor");
+    append_summary_source_change_descriptor_tx(tx.as_mut(), &descriptor)
+        .await
+        .expect("persist historical source fixture descriptor");
+    tx.commit()
+        .await
+        .expect("commit historical source fixture transaction");
+    assert_eq!(
+        crate::load_hourly_rollup_live_progress(
+            &state.pool,
+            crate::HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        )
+        .await
+        .expect("load historical source fixture live cursor"),
+        0,
+        "historical source fixture must not advance the derived live cursor"
+    );
 }
 
 fn fixture_terminal(invoke_id: &str) -> BatchedTerminalInvocationWrite {
