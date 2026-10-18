@@ -290,6 +290,21 @@ async fn run_startup_recovery_batch(
             _ => unreachable!("startup recovery component is fixed"),
         });
     }
+    // Pool-attempt recovery shares ownership with the periodic orphan sweep. Acquire the
+    // dedicated gate before taking any database permits so a blocked recovery attempt does not
+    // hold a background slot or SQLite write admission while it waits.
+    let _pool_attempt_recovery_gate = if component == "pool_attempts" {
+        Some(
+            timeout(
+                STARTUP_RECOVERY_ADMISSION_BUDGET,
+                pool_attempt_recovery_gate().write(),
+            )
+            .await
+            .map_err(|_| anyhow!("startup pool attempt recovery gate exceeded 250ms"))?,
+        )
+    } else {
+        None
+    };
     let background_permit = crate::db_pressure::global_db_pressure_gate()
         .try_begin_background("startup_recovery")
         .map_err(|reason| anyhow!("startup recovery background slot unavailable: {reason}"))?;
