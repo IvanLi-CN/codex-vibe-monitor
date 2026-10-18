@@ -309,32 +309,34 @@ async fn demand_retries_when_an_inflight_preparation_owner_was_deleted() {
     let manager = Arc::new(InvocationRangeManager::default());
     let entered = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
-    let preparation = PREPARATION_BEFORE_READ.scope(
-        (entered.clone(), resume.clone()),
-        manager.test_prepare_key(&pool, key),
-    );
-    tokio::pin!(preparation);
-    tokio::select! {
-        result = &mut preparation => panic!("preparation skipped the read gate: {result}"),
-        _ = entered.notified() => {},
-    }
+    let preparation_manager = manager.clone();
+    let preparation_pool = pool.clone();
+    let preparation_key = key.to_owned();
+    let preparation = tokio::spawn(PREPARATION_BEFORE_READ.scope(
+        (entered.clone(), resume),
+        async move {
+            preparation_manager
+                .test_prepare_key(&preparation_pool, &preparation_key)
+                .await
+        },
+    ));
+    entered.notified().await;
     sqlx::query("DELETE FROM prompt_cache_conversations WHERE prompt_cache_key=?")
         .bind(key)
         .execute(&pool)
         .await
         .unwrap();
-    let demand = manager.allocate(&pool, Some(key));
-    tokio::pin!(demand);
-    // Poll real demand through promotion before allowing the stale seed read.
-    tokio::select! {
-        biased;
-        result = &mut demand => panic!("demand bypassed in-flight initialization: {result:?}"),
-        _ = std::future::ready(()) => {},
-    }
-    resume.notify_one();
-    let (prepared, invoke_id) = tokio::join!(preparation, demand);
-    assert!(!prepared, "a deleted seed owner is not prepared");
-    let invoke_id = invoke_id.expect("real demand retries normal committed initialization");
+    let invoke_id = tokio::time::timeout(
+        Duration::from_millis(150),
+        manager.allocate(&pool, Some(key)),
+    )
+    .await
+    .expect("live demand promotes before its 100ms budget")
+    .expect("real demand retries normal committed initialization");
+    assert!(
+        !preparation.await.unwrap(),
+        "a deleted seed owner is not prepared"
+    );
     assert_eq!(invoke_id.len(), 10);
     let ceiling: i64 = sqlx::query_scalar(
         "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
