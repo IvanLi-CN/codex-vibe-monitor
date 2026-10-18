@@ -83,6 +83,7 @@ struct Entry {
     failure: Option<String>,
     last_used: i64,
     notify: Arc<Notify>,
+    speculative_cancel: CancellationToken,
     namespace: Option<lifecycle::PrefixGuard>,
     speculative: bool,
 }
@@ -101,6 +102,7 @@ impl Entry {
             failure: None,
             last_used: Utc::now().timestamp_millis(),
             notify: Arc::new(Notify::new()),
+            speculative_cancel: CancellationToken::new(),
             namespace: None,
             speculative: false,
         }
@@ -285,6 +287,59 @@ impl InvocationRangeManager {
         match self.metrics.get().cloned().or_else(current_performance) {
             Some(metrics) => crate::observability::contention::spawn_performance(metrics, future),
             None => tokio::spawn(future),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn test_prepare_unkeyed_range(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+    ) -> Result<()> {
+        self.pool.get_or_init(|| pool.clone());
+        let owner = Owner::from_key(None);
+        // This fixture waits for a real committed range; it neither allocates an
+        // ID nor changes the production allocation deadline or retries a request.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        if let Some(generation) = self.admit(pool, &owner, deadline).await? {
+            let manager = self.clone();
+            let pool = pool.clone();
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                manager
+                    .initialize(&pool, owner, generation, None, false)
+                    .await;
+            });
+        }
+        let notify = self
+            .memory
+            .lock()
+            .expect("invocation range memory")
+            .entries
+            .get(&owner)
+            .expect("admitted fixture owner")
+            .notify
+            .clone();
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let memory = self.memory.lock().expect("invocation range memory");
+                let entry = memory.entries.get(&owner).expect("fixture owner retained");
+                if let Some(failure) = &entry.failure {
+                    bail!("fixture range initialization failed: {failure}");
+                }
+                if !entry.operation && entry.prefix.is_some() && entry.current.remaining() > 0 {
+                    anyhow::ensure!(
+                        owner == Owner::from_key(None),
+                        "fixture initialization crossed the UTC hour boundary"
+                    );
+                    return Ok(());
+                }
+            }
+            tokio::time::timeout_at(deadline, notified)
+                .await
+                .context("fixture committed range did not become ready within 5s")?;
         }
     }
 
@@ -630,11 +685,23 @@ impl InvocationRangeManager {
             if initialization.is_some() {
                 record_recovery(RecoveryDiagnostic::RangeFirstInitialization);
             }
-            let (notify, initialization, issued, trigger, initializing) = {
+            let (notify, initialization, issued, trigger, initializing, cancel_preparation) = {
                 let mut memory = self.memory.lock().expect("invocation range memory");
                 let Some(entry) = memory.entries.get_mut(&owner) else {
                     continue;
                 };
+                let cancel_preparation =
+                    if entry.prefix.is_none() && entry.operation && entry.speculative {
+                        info!(
+                            owner_type = owner.kind(),
+                            utc_hour = owner.hour(),
+                            generation = entry.generation,
+                            "invocation range demand promoted over speculative initialization"
+                        );
+                        Some(entry.speculative_cancel.clone())
+                    } else {
+                        None
+                    };
                 entry.speculative = false;
                 if let Some(failure) = entry.failure.clone() {
                     record_recovery(RecoveryDiagnostic::RangeUnavailable);
@@ -689,12 +756,22 @@ impl InvocationRangeManager {
                         .entry(id[..6].to_owned())
                         .or_default() += 1;
                 }
-                (notify, initialization, issued, trigger, initializing)
+                (
+                    notify,
+                    initialization,
+                    issued,
+                    trigger,
+                    initializing,
+                    cancel_preparation,
+                )
             };
             // Register notification before dispatch so a fast commit cannot be missed.
             let notified = notify.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+            if let Some(cancel) = cancel_preparation {
+                cancel.cancel();
+            }
             if let Some(generation) = initialization {
                 let manager = self.clone();
                 let pool = pool.clone();
@@ -757,16 +834,56 @@ impl InvocationRangeManager {
         existing_only: bool,
     ) -> preparation::PreparationOutcome {
         let started = Instant::now();
-        #[cfg(test)]
-        if existing_only
-            && let Ok((entered, resume)) = PREPARATION_BEFORE_READ.try_with(Clone::clone)
-        {
-            entered.notify_one();
-            resume.notified().await;
-        }
-        let result = self
-            .initialize_committed(pool, &owner, generation, permit, existing_only)
-            .await;
+        let initialize = async {
+            #[cfg(test)]
+            if existing_only
+                && let Ok((entered, resume)) = PREPARATION_BEFORE_READ.try_with(Clone::clone)
+            {
+                entered.notify_one();
+                resume.notified().await;
+            }
+            self.initialize_committed(pool, &owner, generation, permit, existing_only)
+                .await
+        };
+        let result = if existing_only {
+            let cancel = self
+                .memory
+                .lock()
+                .expect("invocation range memory")
+                .entries
+                .get(&owner)
+                .filter(|entry| entry.generation == generation)
+                .map(|entry| entry.speculative_cancel.clone());
+            let Some(cancel) = cancel else {
+                return preparation::PreparationOutcome::Deferred;
+            };
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => {
+                    // Cancellation drops the future, not native ownership: RangeTransaction
+                    // transfers active parts to its drain/finish owner, retaining the permit
+                    // through rollback and connection close before coordinated demand admission.
+                    let notify = {
+                        let mut memory = self.memory.lock().expect("invocation range memory");
+                        if memory.entries.get(&owner).is_some_and(|entry| {
+                            entry.generation == generation && entry.prefix.is_none()
+                        }) {
+                            memory.entries.remove(&owner).map(|entry| entry.notify)
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(notify) = notify {
+                        notify.notify_waiters();
+                    }
+                    self.admission.notify_waiters();
+                    return preparation::PreparationOutcome::Deferred;
+                }
+                result = initialize => result,
+            }
+        } else {
+            initialize.await
+        };
         let mut memory = self.memory.lock().expect("invocation range memory");
         let Some(entry) = memory
             .entries
@@ -775,6 +892,13 @@ impl InvocationRangeManager {
         else {
             return preparation::PreparationOutcome::Deferred;
         };
+        if existing_only && entry.speculative_cancel.is_cancelled() {
+            let notify = entry.notify.clone();
+            memory.entries.remove(&owner);
+            notify.notify_waiters();
+            self.admission.notify_waiters();
+            return preparation::PreparationOutcome::Deferred;
+        }
         entry.operation = false;
         let outcome = match result {
             Ok(Some((prefix, range))) => {

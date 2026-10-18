@@ -1,6 +1,23 @@
 use super::*;
 use crate::observability::contention::{RecoveryDiagnostic, record_recovery};
 
+#[cfg(test)]
+tokio::task_local! {
+    static BOOTSTRAP_TIMEOUT_ELAPSED: Cell<bool>;
+}
+
+#[cfg(test)]
+pub(super) async fn observe_bootstrap_timeout<T>(
+    future: impl std::future::Future<Output = T>,
+) -> (T, bool) {
+    BOOTSTRAP_TIMEOUT_ELAPSED
+        .scope(Cell::new(false), async move {
+            let result = future.await;
+            (result, BOOTSTRAP_TIMEOUT_ELAPSED.with(Cell::get))
+        })
+        .await
+}
+
 fn summary_snapshot_bootstrap_keys(default_limit: i64) -> impl Iterator<Item = SummarySnapshotKey> {
     [
         SummaryQuery {
@@ -1733,7 +1750,13 @@ async fn refresh_summary_snapshots_with_deadline(
         ) => await_summary_projection_all_time_build(state, build, deadline).await,
         (_, Some(deadline)) => tokio::time::timeout(deadline, build)
             .await
-            .map_err(|_| anyhow!("summary projection build exceeded {deadline:?}"))
+            .map_err(|_| {
+                #[cfg(test)]
+                if matches!(mode, SummaryProjectionBuildMode::Bootstrap) {
+                    let _ = BOOTSTRAP_TIMEOUT_ELAPSED.try_with(|elapsed| elapsed.set(true));
+                }
+                anyhow!("summary projection build exceeded {deadline:?}")
+            })
             .and_then(|result| result),
         (_, None) => build.await,
     };

@@ -9,7 +9,7 @@ async fn ranges_fixture() -> SqlitePool {
 const FIXTURE_ALLOCATION_TIMEOUT: &str = "invocation range allocation timed out after 100ms";
 const FIXTURE_ALLOCATION_MAX_ATTEMPTS: usize = 5;
 
-async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
+pub(super) async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
     mut allocate: F,
 ) -> anyhow::Result<String>
 where
@@ -296,7 +296,9 @@ async fn invocation_ranges_concurrent_cold_conversation_initialization_completes
         let pool = pool.clone();
         tasks.spawn(async move {
             let key = format!("concurrent-cold-{number}");
-            let result = manager.allocate(&pool, Some(&key)).await;
+            let result =
+                allocate_fixture_with_bounded_timeout_retry(|| manager.allocate(&pool, Some(&key)))
+                    .await;
             (key, result)
         });
     }
@@ -308,6 +310,61 @@ async fn invocation_ranges_concurrent_cold_conversation_initialization_completes
         assert!(ids.insert(id));
     }
     assert_eq!(ids.len(), 32);
+}
+
+#[tokio::test]
+async fn invocation_ranges_live_demand_promotes_inflight_speculative_initialization() {
+    use prompt_cache_conversations::invocation_ranges::PREPARATION_BEFORE_READ;
+    use tokio::sync::Notify;
+
+    let pool = ranges_fixture().await;
+    let key = "demand-promotes-preparation";
+    prompt_cache_conversations::ensure_prompt_cache_conversation_row(&pool, key)
+        .await
+        .unwrap();
+    let manager =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let entered = Arc::new(Notify::new());
+    let resume = Arc::new(Notify::new());
+    let preparation_manager = manager.clone();
+    let preparation_pool = pool.clone();
+    let preparation_key = key.to_owned();
+    let preparation = tokio::spawn(PREPARATION_BEFORE_READ.scope(
+        (entered.clone(), resume),
+        async move {
+            preparation_manager
+                .test_prepare_key(&preparation_pool, &preparation_key)
+                .await
+        },
+    ));
+    entered.notified().await;
+
+    let id = tokio::time::timeout(
+        Duration::from_millis(150),
+        manager.allocate(&pool, Some(key)),
+    )
+    .await
+    .expect("live demand must promote speculative initialization within its 100ms budget")
+    .expect("the existing owner receives a committed range");
+    assert_eq!(
+        &id[6..],
+        encode_prompt_cache_conversation_sequence(0).unwrap()
+    );
+    assert!(
+        !preparation.await.unwrap(),
+        "the superseded speculative initialization must not publish"
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key=?",
+        )
+        .bind(key)
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        63,
+        "the interactive path commits one 64-sequence range before publication"
+    );
 }
 
 #[tokio::test]
@@ -392,14 +449,36 @@ async fn invocation_ranges_final_partial_segment_never_wraps() {
 
 #[tokio::test]
 async fn invocation_ranges_failed_commit_cannot_publish() {
-    let pool = ranges_fixture().await;
+    let directory = make_temp_test_dir("invocation-range-failed-commit");
+    let options = sqlx::sqlite::SqliteConnectOptions::new()
+        .filename(directory.join("database.sqlite"))
+        .create_if_missing(true)
+        .foreign_keys(true);
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .unwrap();
+    ensure_schema(&pool).await.unwrap();
     let manager =
         Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
     let first = manager
         .allocate(&pool, Some("failed-refill"))
         .await
         .unwrap();
-    sqlx::query("CREATE TRIGGER reject_refill BEFORE UPDATE OF last_invoke_sequence ON prompt_cache_conversations WHEN NEW.last_invoke_sequence>63 BEGIN SELECT RAISE(ABORT,'refill unavailable'); END")
+    sqlx::query("PRAGMA foreign_keys=ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE invocation_range_commit_parent (id INTEGER PRIMARY KEY)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TABLE invocation_range_commit_child (parent_id INTEGER REFERENCES invocation_range_commit_parent(id) DEFERRABLE INITIALLY DEFERRED)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("CREATE TRIGGER reject_refill_at_commit AFTER UPDATE OF last_invoke_sequence ON prompt_cache_conversations WHEN NEW.last_invoke_sequence>63 BEGIN INSERT INTO invocation_range_commit_child(parent_id) VALUES(1); END")
         .execute(&pool).await.unwrap();
     for sequence in 1..64 {
         let id = manager
@@ -415,13 +494,34 @@ async fn invocation_ranges_failed_commit_cannot_publish() {
             )
         );
     }
+    let failure = manager
+        .allocate(&pool, Some("failed-refill"))
+        .await
+        .expect_err("the deferred constraint must reject reservation COMMIT");
     assert!(
-        manager
-            .allocate(&pool, Some("failed-refill"))
-            .await
-            .is_err()
+        failure
+            .to_string()
+            .contains("settle invocation reservation"),
+        "the failure must come from COMMIT, not the UPDATE: {failure:#}"
     );
+    sqlx::query("DROP TRIGGER reject_refill_at_commit")
+        .execute(&pool)
+        .await
+        .unwrap();
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT last_invoke_sequence FROM prompt_cache_conversations WHERE prompt_cache_key='failed-refill'").fetch_one(&pool).await.unwrap(), 63);
+    let restarted =
+        Arc::new(prompt_cache_conversations::invocation_ranges::InvocationRangeManager::default());
+    let next = restarted
+        .allocate(&pool, Some("failed-refill"))
+        .await
+        .unwrap();
+    assert_eq!(
+        &next[6..],
+        encode_prompt_cache_conversation_sequence(64).unwrap(),
+        "the rolled-back range was never published or consumed"
+    );
+    pool.close().await;
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[tokio::test]

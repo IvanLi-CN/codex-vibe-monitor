@@ -60,7 +60,7 @@ covers: VER-RUST-SOURCE-QUALITY-003
 
 ### REQ-RUST-SOURCE-QUALITY-004
 
-The policy MUST keep the current inventory as 34 explicit file entries: 17 production candidates above 2,500 lines and 17 test/helper candidates above 3,000 lines. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
+The policy MUST keep the current inventory as 33 explicit file entries: 16 production candidates above 2,500 lines and 17 test/helper candidates above 3,000 lines. The immutable preparation baseline retains its original candidate counts for checker compatibility. Each current entry MUST record its exact current budget, role, and either a specific next module workstream or a reasoned cohesive-module exception.
 
 covers: VER-RUST-SOURCE-QUALITY-004
 
@@ -81,6 +81,24 @@ the fixtures.
 
 covers: VER-RUST-SOURCE-QUALITY-006
 
+### REQ-RUST-SOURCE-QUALITY-007
+
+The admitted parallel-work baseline repair MUST reuse one borrowed SQLite connection across the complete cold load while retaining the existing row fence, data-version checks, SQL, pool capacity, acquisition deadline, retries, and public response shape. Auto mode MUST retain its typed materializer and buffered runtime replay; Legacy mode MUST retain its database JSON payload and runtime replay boundary. A builder holding its observer MUST NOT acquire another connection from the same pool.
+
+covers: VER-RUST-SOURCE-QUALITY-007
+
+### REQ-RUST-SOURCE-QUALITY-008
+
+The missing-pool-key terminalization fixture MAY prepare its real committed unkeyed invocation range before subscribing and issuing the original request. Preparation MUST remain test-only, allocate no ID, create no active lease, fail on initialization error or an hourly-owner transition, and retain a five-second Arrange bound. The production 100 ms allocation policy and every original HTTP, Running, terminal, identity, and in-flight assertion MUST remain unchanged. The startup pending-repair fixture MAY call the existing legacy account archive marker-repair routine after its original seeded-cursor and candidate-count assertions and before spawning bootstrap. This Arrange prerequisite covers only the three legacy account usage/hourly-stats/minute-stats markers bound to the current manifest SHA; it MUST NOT seed a usage-breakdown replay marker or advance/reset its repair cursor. Every original SQL literal and assertion, the five-second watchdog, 513 candidates, cursor transition from 64 to 320, deferred status, cancellation, one-second join, and execution slots MUST remain unchanged. This fixture accepts pending-cursor deferral with the legacy marker prerequisite prepared; it does not establish cold missing-marker backfill latency.
+
+covers: VER-RUST-SOURCE-QUALITY-008
+
+### REQ-RUST-SOURCE-QUALITY-009
+
+The cold Bootstrap fallback fixture MAY accept initial hydration completing before the `BeforeHistoricalLiveCoverage` hook notification only when the actual outer Tokio build timeout returned `Elapsed`, its one JoinHandle result succeeds, and the existing in-memory Bootstrap fallback fence is present. A narrow `cfg(test)` task-local observer MUST record expiry in the outer timeout error branch before inner build errors are flattened; error-string classification alone is insufficient. This explicitly replaces the hook-first panic, while preserving the original one-second deadline, all Arrange SQL, hook installation and pause/Notify mechanism, Projection assertion, and exact `current` count 1, `1d` count 0, and `7d` unavailable checks after SQLite closes. No retry, execution-slot change, fake clock, forced earlier hook, or production deadline change is permitted. The paged-boundary fixture retains its four-second production Rolling deadline and every original assertion.
+
+covers: VER-RUST-SOURCE-QUALITY-009
+
 ## Policy Shape
 
 The checked-in policy contains `schema_version`, baseline counts and commit,
@@ -89,7 +107,7 @@ Each file has `path`, `role`, and `line_budget`, followed by exactly one of
 `next_module_workstream` or `cohesive_exception.reason`. Suppression entries
 have `path`, `kind`, normalized `declaration`, and a narrow `reason`.
 
-The current inventory retains no cohesive-module exceptions: all 34 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
+The current inventory retains no cohesive-module exceptions: all 33 entries have specific next module workstreams. The schema and fixture harness retain the exception form for a future entry only when its reason is explicit and cohesive, never as an escape hatch for an unselected or growing file.
 
 The prompt-cache conversation query governance extraction removes the original parent from the selected inventory and assigns all 60 existing tests exactly once: 47 stateful SQLite cases across metadata/history, persisted statistics, activity/chart windows, pagination, the reused snapshots suite, and runtime/cache coordination; four in-memory response codec cases to lightweight; and nine file-backed metadata backfills to archive/file I/O. After rustfmt, the parent is 10 lines, the stateful children are 923, 1,536, 681, 903, 1,402, 617, and 16 lines, and the resource children are 85 and 591 lines; all affected files are below the 3,000-line test/helper target. The extraction preserves test identities, attributes, assertions, SQL, fixtures, timing, lock/task lifetimes, and cleanup, while consolidating only the three identical count-mode row inserters and moving the two private wrappers to `test_support.rs`; the final candidate also removes an unused archive-test import without changing behavior; immutable preparation counts remain 32/23 and suppression inventory remains 117.
 
@@ -219,6 +237,10 @@ The long-term statistics source is now a real `src/long_term_stats/` module dire
 
 The obsolete `src/long_term_stats.rs` entry is removed from the explicit policy inventory. The policy now contains 34 selected entries, with 17 production and 17 test/helper files; the immutable baseline remains 32 production and 23 test/helper candidates, and the 118-entry suppression inventory follows the moved refresh declarations.
 
+## Archive Cleanup Extraction
+
+The archive cleanup facade now delegates to explicit compression-backlog, deletion, historical-rollup, legacy-mirror, storage, Summary Snapshot, and test modules under `src/maintenance/archive/cleanup/`. The production coordinator, archive-file identity implementation, and `prune_archive_batches` orchestration remain in `cleanup.rs`; the 21 existing cleanup tests remain under the same `archive_cleanup::tests` module path. After rustfmt, every extracted production file is below the 2,500-line target and the test helper is below the 3,000-line target, so the obsolete `src/maintenance/archive/cleanup.rs` inventory entry is removed. Names, SQL, timing, file-identity checks, deletion transaction boundaries, proof state, test names, and resource classification remain unchanged; the current policy is 33 entries with 16 production and 17 test/helper candidates and 125 suppression entries.
+
 ## Later Module Rollout
 
 Refactor PRs may split one production or test/helper candidate at a time. Such
@@ -256,7 +278,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 17 production and 17 test/helper entries (34 total), with exact budgets and explicit workstreams or reasoned exceptions.
+Pass condition: the policy has 16 production and 17 test/helper entries (33 total), with exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
 
@@ -278,8 +300,25 @@ outcomes.
 
 covers: REQ-RUST-SOURCE-QUALITY-006
 
-No UI evidence or empirical runtime acceptance is applicable; all checks are
-deterministic repository-local checks.
+### VER-RUST-SOURCE-QUALITY-007
+
+Method: run the Auto and Legacy one-connection baseline regressions through the canonical lightweight backend runner, retaining the persisted-conversation and caller-level buffered-runtime assertions, together with the original unknown-account reconcile test and complete backend profiles. Pass condition: six real concurrent builders complete with one connection and preserve their mode-specific payload and replay boundaries; original assertions and all three backend profiles pass. Old-source RED and temporary-candidate observations remain diagnosis evidence and do not replace formal validation.
+
+covers: REQ-RUST-SOURCE-QUALITY-007
+
+### VER-RUST-SOURCE-QUALITY-008
+
+Method: run the original missing-pool-key terminalization test, the five preserved stateful fixture regressions with the canonical schema-template prerequisite, and all three complete backend profiles. Pass condition: the real range is committed before the original missing-key request, all original terminalization assertions pass, and the startup watchdog, cold-conversation, retention, and pruned-summary regressions pass without timeout, SQL, assertion, or slot relaxation. Preserve every failed run separately from later candidates and diagnostics. The startup fixture uses the admitted legacy-marker Arrange prerequisite while retaining all original SQL and assertions; its acceptance claim excludes cold legacy-marker completion.
+
+covers: REQ-RUST-SOURCE-QUALITY-008
+
+### VER-RUST-SOURCE-QUALITY-009
+
+Method: validate the cold Bootstrap fixture through the canonical lightweight runner with its mandatory schema-template prerequisite, original one-second deadline, and all-slots override; retain the complete candidate's required backend and source-quality gates. Pass condition: actual outer deadline expiry observed in the same spawned task, one successful hydration join, a published Bootstrap fallback fence, and every original Projection/current/1d/7d assertion pass. Static review MUST confirm that each select outcome consumes its JoinHandle result once and that the observer changes no production error, clock, admission, or retry behavior. A single pass does not establish execution of both select arms, the exact stage or underlying cause of the elapsed deadline, or resolution of the separate four-second Rolling failure. Preserve earlier failed formal runs and temporary observations independently.
+
+covers: REQ-RUST-SOURCE-QUALITY-009
+
+No owner-visible UI changes are part of this contract. Backend runtime regressions require the canonical tests above; temporary stress samples are supporting diagnosis rather than a separate performance acceptance claim.
 
 ## Related ADRs
 

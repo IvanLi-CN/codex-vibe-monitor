@@ -22,17 +22,21 @@ pub(crate) async fn load_parallel_work_stats_response_at(
         .map(|baseline| baseline.response)
 }
 
-pub(crate) async fn load_parallel_work_projection_baseline(
-    state: &Arc<AppState>,
-    params: ParallelWorkStatsQuery,
-) -> Result<ParallelWorkProjectionBaseline, ApiError> {
-    load_parallel_work_projection_baseline_at(state, params, Utc::now()).await
-}
-
 pub(crate) async fn load_parallel_work_projection_baseline_at(
     state: &Arc<AppState>,
     params: ParallelWorkStatsQuery,
     now: DateTime<Utc>,
+) -> Result<ParallelWorkProjectionBaseline, ApiError> {
+    let mut connection = state.pool.acquire().await?;
+    load_parallel_work_projection_baseline_at_on_connection(state, params, now, &mut connection)
+        .await
+}
+
+pub(crate) async fn load_parallel_work_projection_baseline_at_on_connection(
+    state: &Arc<AppState>,
+    params: ParallelWorkStatsQuery,
+    now: DateTime<Utc>,
+    connection: &mut SqliteConnection,
 ) -> Result<ParallelWorkProjectionBaseline, ApiError> {
     let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
@@ -86,7 +90,7 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
             .single()
             .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work rollup start epoch")))?;
         let mut bucket_keys = query_parallel_work_bucket_key_sets_from_hourly_rollups(
-            &state.pool,
+            &mut *connection,
             leading_full_bucket_start,
             range_window.end,
             bucket_seconds,
@@ -95,14 +99,14 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
             upstream_account_id,
         )
         .await?;
-        let mut tx = state.pool.begin().await?;
+        let mut tx = sqlx::Connection::begin(&mut *connection).await?;
         let snapshot_id = resolve_invocation_snapshot_id_tx(tx.as_mut(), source_scope).await?;
         let rollup_live_cursor = load_invocation_summary_rollup_live_cursor_tx(tx.as_mut()).await?;
         drop(tx);
         if fill_start < range_window.start && range_window.start < leading_full_bucket_start {
             let leading_exact_end = leading_full_bucket_start.min(range_window.end);
             let leading_bucket_keys = query_parallel_work_exact_key_sets(
-                &state.pool,
+                &mut *connection,
                 range_window.start,
                 leading_exact_end,
                 bucket_seconds,
@@ -118,7 +122,7 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
             }
         }
         let tail_bucket_keys = query_parallel_work_exact_key_sets(
-            &state.pool,
+            &mut *connection,
             range_window.start,
             range_window.end,
             bucket_seconds,
@@ -135,7 +139,7 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
         bucket_keys
     } else {
         query_parallel_work_exact_key_sets(
-            &state.pool,
+            &mut *connection,
             range_window.start,
             range_window.end,
             bucket_seconds,
@@ -155,7 +159,7 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
         .collect::<BTreeMap<_, _>>();
     let conversations = if range_window.duration <= ChronoDuration::hours(24) {
         query_parallel_work_conversation_spans(
-            &state.pool,
+            &mut *connection,
             range_window.start,
             range_window.end,
             bucket_seconds,
@@ -169,18 +173,17 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
     };
     let configured_full_detail_start_epoch =
         shanghai_retention_cutoff(state.config.invocation_success_full_days).timestamp();
-    let active_minute_stats = query_parallel_work_active_minute_stats(
-        &state.pool,
+    let full_detail_start_epoch = load_parallel_work_full_detail_start_epoch(&mut *connection)
+        .await?
+        .map(|persisted| persisted.max(configured_full_detail_start_epoch))
+        .unwrap_or(configured_full_detail_start_epoch);
+    let active_minute_stats = query_parallel_work_active_minute_stats_on_connection(
+        &mut *connection,
         range_window.start,
         range_window.end,
         source_scope,
         upstream_account_id,
-        Some(
-            load_parallel_work_full_detail_start_epoch(&state.pool)
-                .await?
-                .map(|persisted| persisted.max(configured_full_detail_start_epoch))
-                .unwrap_or(configured_full_detail_start_epoch),
-        ),
+        Some(full_detail_start_epoch),
     )
     .await?;
 
@@ -208,15 +211,18 @@ pub(crate) async fn load_parallel_work_projection_baseline_at(
     })
 }
 
-pub(crate) async fn query_parallel_work_conversation_spans(
-    pool: &Pool<Sqlite>,
+pub(crate) async fn query_parallel_work_conversation_spans<'e, E>(
+    pool: E,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
     bucket_seconds: i64,
     reporting_tz: Tz,
     source_scope: InvocationSourceScope,
     upstream_account_id: Option<i64>,
-) -> Result<Vec<ParallelWorkConversation>> {
+) -> Result<Vec<ParallelWorkConversation>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     let mut query = QueryBuilder::new("SELECT ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)

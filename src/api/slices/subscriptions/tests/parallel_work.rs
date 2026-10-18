@@ -1,4 +1,155 @@
 use super::*;
+
+#[tokio::test]
+async fn parallel_work_concurrent_baselines_complete_with_one_connection() {
+    assert_parallel_work_baselines_with_one_connection(RuntimeProjectionMode::Auto).await;
+}
+
+#[tokio::test]
+async fn parallel_work_legacy_baselines_retain_json_with_one_connection() {
+    assert_parallel_work_baselines_with_one_connection(RuntimeProjectionMode::Legacy).await;
+}
+
+async fn assert_parallel_work_baselines_with_one_connection(mode: RuntimeProjectionMode) {
+    let mut state = crate::tests::test_state_with_openai_base_and_runtime_projection_mode(
+        Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+        mode,
+    )
+    .await;
+    // The constructor returns the sole AppState owner. Reconnect to its existing
+    // shared in-memory database before dropping the ordinary four-connection pool.
+    let original_pool = state.pool.clone();
+    let constrained_pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .min_connections(1)
+        .max_connections(1)
+        .connect_with((*original_pool.connect_options()).clone())
+        .await
+        .expect("connect constrained pool to the seeded schema");
+    Arc::get_mut(&mut state)
+        .expect("test state has no other AppState owners before building")
+        .pool = constrained_pool;
+    drop(original_pool);
+
+    sqlx::query(
+        "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, payload, raw_response) VALUES (?1, ?2, ?3, 'success', ?4, '{}')",
+    )
+    .bind("one-connection-baseline")
+    .bind(format_naive(
+        (Utc::now() - ChronoDuration::minutes(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind(r#"{"promptCacheKey":"one-connection-key"}"#)
+    .execute(&state.pool)
+    .await
+    .expect("seed a persisted parallel-work conversation");
+    let topic = SubscriptionTopic::ParallelWorkCurrent {
+        range: "1d".to_string(),
+        time_zone: "UTC".to_string(),
+        bucket: Some("1m".to_string()),
+        upstream_account_id: None,
+    };
+    let hub = state.subscription_hub.clone();
+    let topic_key = topic.cache_key().expect("constrained-pool topic key");
+    let lease = hub
+        .register_topic_subscribers(std::slice::from_ref(&topic))
+        .await
+        .expect("register constrained-pool topic owner");
+    hub.schedule_parallel_work_topic_projection(
+        state.clone(),
+        topic.clone(),
+        &[SequencedRuntimeMutation {
+            sequence: 1,
+            mutation: RuntimeMutation::Invocation(RuntimeInvocationMutation {
+                identity: RuntimeInvocationIdentity::new(
+                    "one-connection-runtime",
+                    format_utc_iso(Utc::now()),
+                ),
+                kind: RuntimeMutationKind::RuntimeUpsert,
+                row_id: None,
+                is_terminal: false,
+                prompt_cache_key: Some("one-connection-runtime-key".to_string()),
+                sticky_key: None,
+                upstream_account_id: None,
+            }),
+        }],
+    )
+    .await
+    .expect("buffer a real runtime mutation before the cold baseline");
+    let builders =
+        (0..6).map(|_| hub.build_parallel_work_consistent_baseline(state.clone(), &topic));
+    // Preserve SQLx's original 30-second acquire deadline and all existing tests.
+    // One connection makes the old nested-acquire path fail without a timing hook.
+    let results = futures_util::future::join_all(builders).await;
+    for result in results {
+        let (payload, _) = result.expect("concurrent constrained-pool baseline completes");
+        let response = match payload {
+            BuiltSubscriptionTopicPayload::Dashboard(
+                DashboardTopicMaterializer::ParallelWork { base },
+            ) => {
+                assert_eq!(mode, RuntimeProjectionMode::Auto);
+                serde_json::to_value(
+                    &base
+                        .lock()
+                        .expect("parallel-work materializer state lock")
+                        .response,
+                )
+                .expect("serialize the typed baseline")
+            }
+            BuiltSubscriptionTopicPayload::Json(response) => {
+                assert_eq!(mode, RuntimeProjectionMode::Legacy);
+                response
+            }
+            _ => panic!("parallel-work baseline must preserve its mode-specific payload"),
+        };
+        let conversations = response["current"]["conversations"]
+            .as_array()
+            .expect("baseline conversation array");
+        let conversation = conversations
+            .iter()
+            .find(|conversation| conversation["conversationId"] == "one-connection-key")
+            .expect("every baseline retains the persisted conversation");
+        assert_eq!(conversation["requestCount"], 1);
+        assert!(!conversations.iter().any(|conversation| {
+            conversation["conversationId"] == "one-connection-runtime-key"
+        }));
+        assert!(
+            response["current"]["points"]
+                .as_array()
+                .expect("baseline points array")
+                .iter()
+                .any(|point| point["parallelCount"] == 1)
+        );
+    }
+    hub.prepare_connection(state.clone(), vec![topic.descriptor()], Vec::new())
+        .await
+        .expect("commit the constrained-pool baseline through the real caller");
+    let guard = hub.state.lock().await;
+    let cached = &guard.topics[&topic_key];
+    assert_eq!(
+        cached.dashboard_materializer.is_some(),
+        mode == RuntimeProjectionMode::Auto
+    );
+    let response: Value = serde_json::from_slice(cached.snapshot_frame.payload_bytes.as_ref())
+        .expect("decode the committed subscription snapshot");
+    let conversations = response["current"]["conversations"]
+        .as_array()
+        .expect("committed conversation array");
+    assert!(conversations.iter().any(|conversation| {
+        conversation["conversationId"] == "one-connection-key" && conversation["requestCount"] == 1
+    }));
+    assert_eq!(
+        conversations
+            .iter()
+            .any(|conversation| { conversation["conversationId"] == "one-connection-runtime-key" }),
+        mode == RuntimeProjectionMode::Auto,
+        "only the Auto materializer replays buffered runtime mutations"
+    );
+    drop(guard);
+    drop(lease);
+}
+
 fn parallel_work_projection_extends_rolling_window_with_live_bucket() {
     let current_bucket = Utc::now().timestamp().div_euclid(60) * 60;
     let initial_start = Utc

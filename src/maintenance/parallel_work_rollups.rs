@@ -69,9 +69,12 @@ async fn replace_parallel_work_minute_keys_for_hour_tx(
     Ok(true)
 }
 
-pub(crate) async fn load_parallel_work_full_detail_start_epoch(
-    pool: &Pool<Sqlite>,
-) -> Result<Option<i64>> {
+pub(crate) async fn load_parallel_work_full_detail_start_epoch<'e, E>(
+    pool: E,
+) -> Result<Option<i64>>
+where
+    E: sqlx::Executor<'e, Database = Sqlite>,
+{
     sqlx::query_scalar(
         "SELECT full_detail_start_epoch FROM parallel_work_rollup_coverage_state WHERE id = 1",
     )

@@ -1,6 +1,7 @@
 # These projection fixtures exercise real deadline and latency contracts. Give
 # each the profile's execution slots so concurrent SQLite/archive fixtures do not
-# turn resource contention into a timing failure; keep every original assertion.
+# turn resource contention into a timing failure. Preserve the fixture contracts;
+# the cold Bootstrap fixture observes real deadline expiry without a hook-first check.
 [[profile.default.overrides]]
 filter = 'test(/^(api::slices::invocations_and_summary::request_compression_query_tests::summary_(projection|handler)_)|(api::slices::error_distribution_and_sse::tests::dashboard_runtime_projection_update_p95_)/) | test(/^api::slices::invocations_and_summary::summary_projection_fallback_contention::/)'
 threads-required = "num-test-threads"

@@ -132,7 +132,12 @@ async fn invocation_ranges_timed_out_sql_drains_before_replacement_generation() 
     // database lock. Connection setup is not the return operation under test.
     let mut warm_connections = Vec::new();
     for _ in 0..4 {
-        warm_connections.push(pool.acquire().await.unwrap());
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query("SELECT COUNT(*) FROM prompt_cache_conversations")
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        warm_connections.push(connection);
     }
     drop(warm_connections);
     let manager = Arc::new(InvocationRangeManager::default());
