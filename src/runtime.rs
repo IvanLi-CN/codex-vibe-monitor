@@ -782,6 +782,35 @@ pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summ
 }
 
 #[cfg(test)]
+pub(crate) fn startup_recovery_fence_for_test(
+    invocation_max_id: i64,
+    pool_attempt_max_id: i64,
+) -> StartupRecoveryFence {
+    StartupRecoveryFence {
+        invocation_max_id,
+        pool_attempt_max_id,
+        captured: true,
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn publish_http_readiness_and_spawn_recovery_for_test(
+    state: Arc<AppState>,
+    startup_started_at: Instant,
+    fence: StartupRecoveryFence,
+    recovery_connect_options: SqliteConnectOptions,
+) -> JoinHandle<()> {
+    publish_http_readiness_and_spawn_hot_read_hydration_with_options(
+        state,
+        startup_started_at,
+        SUMMARY_PROJECTION_STARTUP_BUILD_DEADLINE,
+        None,
+        Some(fence),
+        Some(Arc::new(recovery_connect_options)),
+    )
+}
+
+#[cfg(test)]
 pub(crate) fn publish_http_readiness_and_spawn_hot_read_hydration_with_test_summary_delay(
     state: Arc<AppState>,
     startup_started_at: Instant,
