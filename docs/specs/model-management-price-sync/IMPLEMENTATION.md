@@ -7,7 +7,7 @@
 - Implementation: 原模型管理能力与价格审核改进均已实现；LiteLLM 单一来源、SHA-256 报价版本、完整多维费率、独立报价持久化、兼容 `entries` 请求和事务应用均已接入。
 - Lifecycle: active
 - Catalog note: LiteLLM is fetched only on explicit preview; local estimates remain user-reviewed.
-- Delivery: 本次实现从 `origin/main` 的 `th/litellm-price-catalog` 分支交付；视觉候选等待主人确认，正式审查按当前候选刷新。
+- Delivery: 本次生命周期过滤修复从 `origin/main` 的 `th/filter-expired-litellm-quotes` 分支交付；当前候选已完成本地视觉与功能验证，进入 PR、CI、审查和发布门禁。
 
 ## Implementation Coverage
 
@@ -18,7 +18,7 @@
 - `REQ-MODEL-MGMT-013`: the review compares normalized input, output, cache-read, cache-write, and reasoning prices while distinguishing zero from missing; changed prices have text and color cues, and missing local price is distinct from new-model discovery.
 - `REQ-MODEL-MGMT-014`: the review has a 560px desktop minimum when viewport height allows, a viewport-bounded short-screen layout, an independently scrolling model region, and a provider picker outside dialog clipping. The picker stacks above the dialog, sizes to Radix's available viewport area, and scrolls its provider list independently. Closing the dialog restores focus to its trigger. The batch toolbar stays on one row on desktop and short desktop viewports, and uses a compact two-row layout on mobile while retaining full accessible labels.
 - `REQ-MODEL-MGMT-015`: model select-all, invert, and select-none cover every eligible row in the current provider/status/model filters, including offscreen rows. Provider search and bulk actions operate on the provider result set.
-- `REQ-MODEL-MGMT-016`: the catalog parser preserves optional lifecycle status; explicitly deprecated quotes are hidden by default and excluded from apply until shown. Missing or other statuses remain visible.
+- `REQ-MODEL-MGMT-016`: the catalog parser preserves optional lifecycle status and date; explicitly deprecated or already expired quotes are hidden by default and excluded from apply until shown. Future, invalid, missing, and other lifecycle values remain visible.
 - `REQ-MODEL-MGMT-017`: unchanged quotes remain editable preferences but do not create writes. Apply counts show changed selected quotes, including those hidden by model search; the request contains only actual price changes.
 - `REQ-MODEL-MGMT-018`: price-application failures use localized text, keep raw transport details out of the shared Alert, and offer an in-Alert retry for the current applicable selection.
 - `REQ-MODEL-MGMT-020` through `REQ-MODEL-MGMT-022`: `src/api/slices/model_management.rs` reads the LiteLLM raw JSON, records a SHA-256 response version, normalizes complete rates into `PricingQuote`, and writes additive `pricing_model_quotes` rows. `quotes` is optional on settings and apply requests; omitted quotes preserve existing rows, while apply and delete update quote rows with the legacy projection atomically.
@@ -39,11 +39,11 @@
 - Persistence regression: `cargo test pricing_settings_api_preserves_quotes_when_legacy_request_omits_quotes -- --nocapture`, `cargo test quote_only_apply_restores_a_deleted_model_without_legacy_price -- --nocapture`, `cargo test litellm_apply_updates_only_selected_prices_and_marks_the_source -- --nocapture`, and `cargo test model_price_sync_and_delete_roll_back_if_catalog_snapshot_fails -- --nocapture` passed. These cover additive quote recovery, omitted-quote preservation, quote-only apply, selected-provider merging, explicit deletion, and transaction rollback.
 - Backend quality gates: `cargo fmt --all -- --check`, `cargo check --locked --all-targets --all-features`, and `cargo clippy --locked --all-targets --all-features -- -D warnings` passed locally. The full `stateful-sqlite` profile remains a CI gate for the current PR head.
 - Web quality gates: `SystemModelsPage.test.tsx` and `selection.test.ts` passed 37/37 tests, and the Demo handler suite passed 36/36 tests; `bun run typecheck:web`, `bun run lint:web`, and `cd web && bun run build` passed. Web lint reported 93 non-blocking repository warnings, and the production build retained the existing large-chunk advisory.
-- A new controlled mock-only visual candidate was captured after the quote-only row and detail-layout changes; canonical asset replacement remains pending owner confirmation. The runtime code candidate `62121e6e` was re-reviewed by all four read-only lanes; test follow-up `20ed638e` additionally asserts both GPT Image 2.5 model IDs and simultaneous quote apply in the deterministic fixture. Remaining owner gates are the visual confirmation and Step 5C decision card.
+- A controlled mock-only visual candidate covers the model page and LiteLLM quote review surface. The current incremental candidate additionally verifies that explicit `status=deprecated` and valid `deprecation_date` values on or before the current UTC date are hidden by default, while future, invalid, missing, and unknown lifecycle values remain visible.
 
 ## Remaining Delivery Gates
 
-- Owner confirmation of the controlled visual candidate and the Step 5C release decision card. Merge remains outside this implementation turn and requires the owner's confirmation of the decision card and predicted version.
+- Remaining Delivery Gates: current PR head CI, four-lane formal review, merge preflight, and post-merge release publication.
 
 ## References
 
