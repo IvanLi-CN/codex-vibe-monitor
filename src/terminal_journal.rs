@@ -155,6 +155,14 @@ pub(crate) struct TerminalJournalStats {
     pub(crate) deferred_rejected: u64,
 }
 
+pub(crate) fn terminal_journal_p1_reservation(stats: TerminalJournalStats) -> usize {
+    if stats.unavailable {
+        stats.deferred_records
+    } else {
+        stats.replay_count
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct JournalTerminalRecord {
     sequence: u64,
@@ -1689,6 +1697,11 @@ impl TerminalJournal {
         self.replay_count
     }
 
+    pub(crate) fn start_recovery_dispatch_p1_reservation(&mut self, max_writes: usize) -> usize {
+        self.start_recovery_dispatch(max_writes);
+        terminal_journal_p1_reservation(self.stats())
+    }
+
     pub(crate) fn queue_replay_for_dispatch(&mut self, max_writes: usize) {
         if max_writes == 0 || self.deferred_writes.len() >= max_writes {
             return;
@@ -2357,6 +2370,27 @@ pub(crate) use tests::test_attempt_snapshot;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_terminal_journal_reserves_only_deferred_p1_records() {
+        assert_eq!(
+            terminal_journal_p1_reservation(TerminalJournalStats {
+                replay_count: 4,
+                deferred_records: 1,
+                unavailable: true,
+                ..Default::default()
+            }),
+            1
+        );
+        assert_eq!(
+            terminal_journal_p1_reservation(TerminalJournalStats {
+                replay_count: 4,
+                deferred_records: 1,
+                ..Default::default()
+            }),
+            4
+        );
+    }
 
     pub(crate) fn test_attempt_snapshot() -> RuntimeAttemptSnapshot {
         RuntimeAttemptSnapshot {

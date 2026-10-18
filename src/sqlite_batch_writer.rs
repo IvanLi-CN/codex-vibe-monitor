@@ -1837,30 +1837,13 @@ impl SqliteBatchWriter {
             })
     }
 
-    fn terminal_journal_p1_reservation(stats: TerminalJournalStats) -> usize {
-        if stats.unavailable {
-            stats.deferred_records
-        } else {
-            stats.replay_count
-        }
-    }
-
     pub(crate) fn start_terminal_journal_recovery(&self) -> TerminalJournalStats {
-        let replay_count = self
-            .terminal_journal
-            .lock()
-            .ok()
-            .and_then(|mut journal| {
-                journal.as_mut().map(|journal| {
-                    journal.start_recovery_dispatch(SQLITE_BATCH_MAX_ROWS);
-                    let stats = journal.stats();
-                    // An unavailable journal cannot dispatch the remainder of its replay. Only
-                    // records already transferred to the deferred queue may reserve P1 priority;
-                    // counting the full replay obligation would starve P2 forever.
-                    Self::terminal_journal_p1_reservation(stats)
-                })
+        let stats = self.terminal_journal.lock().ok().and_then(|mut journal| {
+            journal.as_mut().map(|journal| {
+                journal.start_recovery_dispatch_p1_reservation(SQLITE_BATCH_MAX_ROWS)
             })
-            .unwrap_or_default();
+        });
+        let replay_count = stats.unwrap_or_default();
         self.queued_p1_count
             .fetch_add(replay_count, Ordering::SeqCst);
         self.terminal_journal_stats()
@@ -4815,30 +4798,6 @@ mod terminal_backfill_obligations;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unavailable_terminal_journal_reserves_only_deferred_p1_records() {
-        let unavailable = TerminalJournalStats {
-            replay_count: 4,
-            deferred_records: 1,
-            unavailable: true,
-            ..TerminalJournalStats::default()
-        };
-        assert_eq!(
-            SqliteBatchWriter::terminal_journal_p1_reservation(unavailable),
-            1
-        );
-
-        let available = TerminalJournalStats {
-            replay_count: 4,
-            deferred_records: 1,
-            ..TerminalJournalStats::default()
-        };
-        assert_eq!(
-            SqliteBatchWriter::terminal_journal_p1_reservation(available),
-            4
-        );
-    }
 
     #[test]
     fn p1_retry_backoff_is_bounded_and_new_work_does_not_reset_deadline() {
