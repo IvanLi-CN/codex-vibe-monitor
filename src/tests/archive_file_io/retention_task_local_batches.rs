@@ -623,7 +623,7 @@ async fn retention_task_local_commit_counters_survive_cancel_during_native_drain
 }
 
 #[tokio::test]
-async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing() {
+async fn retention_task_local_summary_page_rejects_stale_manifest_without_overwriting_page() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-stale-summary-manifest").await;
     config.retention_batch_rows = 1;
@@ -703,8 +703,8 @@ async fn retention_task_local_summary_page_rejects_stale_manifest_before_writing
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM summary_archive_snapshot")
             .fetch_one(&pool)
             .await
-            .expect("stale manifest has no staged page overwrite"),
-        0
+            .expect("stale manifest leaves the durable page intact"),
+        1
     );
     assert_eq!(
         sqlx::query_scalar::<_, String>(
