@@ -1266,10 +1266,25 @@ pub(super) async fn archive_old_invocations_with_source_max(
                         }
                     };
                     let summary_proof_started = Instant::now();
-                    let proof_result =
-                        batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
+                    let proof_future =
+                        batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages);
+                    let proof_result = if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, proof_future).await {
+                            Ok(result) => {
+                                result.context("prepare task-local monthly Summary proof")
+                            }
+                            Err(_) => {
+                                batch_observation
+                                    .summary_proof_finished(summary_proof_started.elapsed());
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
+                        }
+                    } else {
+                        proof_future
                             .await
-                            .context("prepare task-local monthly Summary proof");
+                            .context("prepare task-local monthly Summary proof")
+                    };
                     batch_observation.summary_proof_finished(summary_proof_started.elapsed());
                     let proof = match proof_result {
                         Ok(Some(proof)) => proof,
