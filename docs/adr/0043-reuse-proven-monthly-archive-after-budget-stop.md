@@ -13,6 +13,7 @@ ADR 0042 permits durable V2 page progress to be reused, but page progress alone 
 - After complete V2 Summary validation, persist the final proof in a short retention-admitted transaction while the matching manifest remains `materializing`. This proof is recovery evidence only; `materializing` continues to be excluded from Summary and cleanup authority.
 - A later task run may reuse the canonical final gzip only when the matching `materializing` manifest, non-empty archive SHA, durable final proof marker, manifest coverage matching that proof, the decompressed artifact's exact row count and selected source ID set, deterministic keyset coverage, and current live-source identity all validate together. The source-conversion path rechecks the file digest while holding the archive fence before it commits any deletion.
 - Reuse never resumes source candidate IDs, temporary SQLite files, cursors, accumulated values, or a source-deletion transaction. Missing or invalid proof, manifest, file, coverage, or source identity falls back to safe rebuild or deferral.
+- Budget exhaustion while inflating the identity-proof copy is a normal partial stop, not a proof failure; the incomplete copy is cleaned up and the next run may safely rebuild or retry.
 - Only the existing source-conversion commit may advance the manifest to `completed` and grant the established deletion and cleanup authority. A stale writer may not demote a completed manifest.
 - No schema, archive layout, page format, retention budget, or Summary reader contract changes.
 
@@ -20,7 +21,7 @@ ADR 0042 permits durable V2 page progress to be reused, but page progress alone 
 
 A budget stop after publication and proof now leaves a durable, identity-bound recovery point, allowing the next run to spend its budget on source conversion instead of recompressing the same month. Source rows remain live until the normal proof-and-delete transaction commits, and any identity mismatch remains fail-safe.
 
-The database can contain a durable proof for a `materializing` manifest. Readers and cleanup continue to require `completed`, so this additional recovery state does not expose an incomplete archive as authoritative. The implementation and regression test must cover both proof persistence after a zero-commit stop and rejection of reuse after a live-source identity change.
+The database can contain a durable proof for a `materializing` manifest. Readers and cleanup continue to require `completed`, so this additional recovery state does not expose an incomplete archive as authoritative. The implementation and regression test must cover proof persistence after a zero-commit stop, rejection after live-source or archive-content identity changes, exact archive ID-set validation, and budget-bounded proof-copy cleanup.
 
 ## References
 

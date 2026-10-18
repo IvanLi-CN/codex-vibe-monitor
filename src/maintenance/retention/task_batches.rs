@@ -239,6 +239,13 @@ struct ArchiveSourceIdentityProof {
     spec: ArchiveTableSpec,
 }
 
+fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
+    retention_run_budget_expired()
+        || error
+            .to_string()
+            .contains("retention archive identity proof inflate exceeded the task budget")
+}
+
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
         // The writer/publication path already proves the returned artifact digest. The first
@@ -252,6 +259,8 @@ impl ArchiveSourceIdentityProof {
         let work_owner_file =
             crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?;
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
+        #[cfg(test)]
+        batch_admission::pause_before_archive_identity_proof_inflate().await;
         if let Some(remaining) = retention_run_remaining_budget() {
             let complete = inflate_gzip_sqlite_file_with_budget(
                 path,
@@ -427,23 +436,23 @@ async fn reuse_task_month_archive_if_proven(
     let has_exact_ids = match identity_proof.has_exact_ids(ids, expected_row_count).await {
         Ok(has_exact_ids) => has_exact_ids,
         Err(_) => {
-            identity_proof.close().await?;
+            let _ = identity_proof.close().await;
             return Ok(None);
         }
     };
     if !has_exact_ids {
-        identity_proof.close().await?;
+        let _ = identity_proof.close().await;
         return Ok(None);
     }
     let archive_identity = match identity_proof.identity(ids).await {
         Ok(identity) => identity,
         Err(_) => {
-            identity_proof.close().await?;
+            let _ = identity_proof.close().await;
             return Ok(None);
         }
     };
     if archive_identity != source_identity_sha256 {
-        identity_proof.close().await?;
+        let _ = identity_proof.close().await;
         return Ok(None);
     }
     let proof =
@@ -452,7 +461,7 @@ async fn reuse_task_month_archive_if_proven(
         {
             Ok(proof) => proof,
             Err(_) => {
-                identity_proof.close().await?;
+                let _ = identity_proof.close().await;
                 return Ok(None);
             }
         };
@@ -766,6 +775,10 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        recovery_diagnostic.mark_budget();
+                        break;
+                    }
                     Err(error) => {
                         recovery_diagnostic.mark_proof_unavailable();
                         return Err(error);
@@ -1340,6 +1353,10 @@ pub(super) async fn archive_old_invocations_with_source_max(
                     .await
                     {
                         Ok(proof) => proof,
+                        Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            recovery_diagnostic.mark_budget();
+                            break;
+                        }
                         Err(error) => {
                             recovery_diagnostic.mark_proof_unavailable();
                             return Err(error);
@@ -1968,6 +1985,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        recovery_diagnostic.mark_budget();
+                        break;
+                    }
                     Err(error) => {
                         recovery_diagnostic.mark_proof_unavailable();
                         return Err(error);

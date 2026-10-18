@@ -20,6 +20,13 @@ pub(crate) struct ArchiveArtifactProbe {
 
 #[cfg(test)]
 #[derive(Default)]
+pub(crate) struct ArchiveIdentityProofProbe {
+    pub(crate) started: Notify,
+    pub(crate) resume: Notify,
+}
+
+#[cfg(test)]
+#[derive(Default)]
 pub(crate) struct ArchiveFileVerifyProbe {
     pub(crate) started: Notify,
     pub(crate) resume: Notify,
@@ -44,6 +51,7 @@ pub(crate) struct GateGenerationProbe {
 tokio::task_local! {
     pub(crate) static RETENTION_TEST_BATCH_COMMIT: Arc<BatchCommitProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_ARTIFACT: Arc<ArchiveArtifactProbe>;
+    pub(crate) static RETENTION_TEST_ARCHIVE_IDENTITY_PROOF: Arc<ArchiveIdentityProofProbe>;
     pub(crate) static RETENTION_TEST_ARCHIVE_FILE_VERIFY: Arc<ArchiveFileVerifyProbe>;
     pub(crate) static RETENTION_TEST_TRANSACTION_BEGIN: Arc<TransactionBeginProbe>;
     pub(crate) static RETENTION_TEST_GATE_GENERATION: Arc<GateGenerationProbe>;
@@ -79,6 +87,14 @@ pub(super) async fn prepare_commit_for_test(connection: &mut SqliteConnection) {
 pub(super) async fn pause_after_archive_artifact_verified() {
     if let Ok(probe) = RETENTION_TEST_ARCHIVE_ARTIFACT.try_with(Arc::clone) {
         probe.verified.notify_one();
+        probe.resume.notified().await;
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn pause_before_archive_identity_proof_inflate() {
+    if let Ok(probe) = RETENTION_TEST_ARCHIVE_IDENTITY_PROOF.try_with(Arc::clone) {
+        probe.started.notify_one();
         probe.resume.notified().await;
     }
 }

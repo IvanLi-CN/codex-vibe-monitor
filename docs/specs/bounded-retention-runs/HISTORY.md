@@ -1,5 +1,9 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## Monthly proof reuse boundary
+
+月度归档恢复现在把 proof 副本解压纳入剩余任务预算；预算耗尽记录为 partial/budget stop 并清理未完成副本，不再误记为 proof failure。复用前同时验证压缩归档的实际 row count、选定 ID 集和内容身份，任何不一致都保留 live source rows 并回到安全重建/延期路径。
+
 ## Maintenance contention boundary
 
 ADR 0040 and REQ-BRR-024 separate artifact preparation and post-commit cleanup from the admitted SQLite transaction without weakening source, archive or raw-link proof. The existing monthly file batch contract and long-term capacity goals remain; this boundary introduces no production deployment authorization or claim that historical capacity targets passed.

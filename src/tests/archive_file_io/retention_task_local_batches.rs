@@ -321,24 +321,30 @@ async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not
         .expect("first retention run reached the budget stop");
     assert_eq!(first.expect("first budget-limited run").0, 0);
 
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &month).expect("archive path");
+    let mutation_path = temp_dir.join("archive-id-set-mutation.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &mutation_path)
+        .expect("inflate archive for ID-set mutation");
+    let mutation_pool = SqlitePool::connect(&test_sqlite_url_for_path(&mutation_path))
+        .await
+        .expect("open archive ID-set mutation database");
     sqlx::query(
-        "DELETE FROM codex_invocations
+        "UPDATE codex_invocations SET id = 999999
          WHERE id = (SELECT MAX(id) FROM codex_invocations)",
     )
-    .execute(&pool)
+    .execute(&mutation_pool)
     .await
-    .expect("remove one source row after durable proof");
-    sqlx::query(
-        "UPDATE archive_batches
-         SET row_count = 400
-         WHERE dataset = 'codex_invocations' AND status = 'materializing'",
-    )
-    .execute(&pool)
-    .await
-    .expect("corrupt staged manifest row count");
+    .expect("mutate one archived source ID");
+    mutation_pool.close().await;
+    deflate_sqlite_file_to_gzip(&mutation_path, &archive_path)
+        .expect("rewrite archive after ID-set mutation");
+    fs::remove_file(&mutation_path).expect("remove archive ID-set mutation database");
+    retag_staged_archive_proof(&pool, &archive_path).await;
 
-    // The final gzip still contains 401 rows, while both the live source selection and corrupted
-    // manifest claim 400. The fallback writer is paused so reuse must inspect the archive itself.
+    // The final gzip still contains 401 rows, but its selected source ID set contains only 400
+    // live IDs. The fallback writer is paused so reuse must inspect the archive itself.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
@@ -354,7 +360,149 @@ async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not
             .fetch_one(&pool)
             .await
             .expect("source rows after rejected archive-id-set reuse"),
-        400
+        401
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_rejects_persisted_proof_after_archive_metadata_change() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-reject-archive-metadata").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let first_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                _ = probe.verified.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(30), first_work)
+        .await
+        .expect("first retention run reached the budget stop");
+    assert_eq!(first.expect("first budget-limited run").0, 0);
+
+    let month = shanghai_month_key_from_local_naive(&occurred_at).expect("month");
+    let archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &month).expect("archive path");
+    let mutation_path = temp_dir.join("archive-metadata-mutation.sqlite");
+    inflate_gzip_sqlite_file(&archive_path, &mutation_path)
+        .expect("inflate archive for metadata mutation");
+    let mutation_pool = SqlitePool::connect(&test_sqlite_url_for_path(&mutation_path))
+        .await
+        .expect("open archive metadata mutation database");
+    sqlx::query(
+        "UPDATE codex_invocations SET payload = '{\"archive_changed\":true}'
+         WHERE id = 1",
+    )
+    .execute(&mutation_pool)
+    .await
+    .expect("mutate archived source metadata");
+    mutation_pool.close().await;
+    deflate_sqlite_file_to_gzip(&mutation_path, &archive_path)
+        .expect("rewrite archive after metadata mutation");
+    fs::remove_file(&mutation_path).expect("remove archive metadata mutation database");
+    retag_staged_archive_proof(&pool, &archive_path).await;
+
+    // The archive keeps the same row count and IDs, but its content identity no longer matches
+    // the live source. The paused fallback proves reuse rejects that mismatch before deletion.
+    let resumed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(15),
+        RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
+            Duration::from_secs(60),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    )
+    .await
+    .expect("archive-metadata fallback run");
+    assert_eq!(resumed.0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after rejected archive metadata reuse"),
+        401
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_budget_stop_during_proof_reuse_defers_without_deletion() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-reuse-proof-budget").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+
+    let first_probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let first_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                first_probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                _ = first_probe.verified.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    first_probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(30), first_work)
+        .await
+        .expect("first retention run reached the budget stop");
+    assert_eq!(first.expect("first budget-limited run").0, 0);
+
+    let proof_probe = Arc::new(crate::maintenance::ArchiveIdentityProofProbe::default());
+    let second_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(
+                crate::maintenance::RETENTION_TEST_ARCHIVE_IDENTITY_PROOF.scope(
+                    proof_probe.clone(),
+                    archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+                ),
+            );
+            tokio::select! {
+                result = &mut archive => result,
+                _ = proof_probe.started.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    proof_probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let second = tokio::time::timeout(Duration::from_secs(30), second_work)
+        .await
+        .expect("proof reuse reached the budget stop");
+    assert_eq!(second.expect("proof reuse budget-limited run").0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after proof reuse budget stop"),
+        401
     );
     assert_no_task_work_files(&config.archive_dir);
     pool.close().await;
@@ -1383,6 +1531,45 @@ async fn seed_task_batch(pool: &SqlitePool, occurred_at: &str, start: i64, rows:
          INSERT INTO codex_invocations(invoke_id,occurred_at,source,status,total_tokens,cost,payload,raw_response)
          SELECT 'task-local-'||i,?3,'proxy','success',7,0.07,'{}','{}' FROM n",
     ).bind(start).bind(rows).bind(occurred_at).execute(pool).await.expect("seed task-local batch");
+}
+
+async fn retag_staged_archive_proof(pool: &SqlitePool, archive_path: &Path) {
+    let archive_path = archive_path.to_string_lossy().to_string();
+    let sha256 = crate::maintenance::sha256_hex_file(Path::new(&archive_path))
+        .expect("hash mutated staged archive");
+    sqlx::query(
+        "UPDATE archive_batches SET sha256=?1
+         WHERE dataset='codex_invocations' AND file_path=?2 AND status='materializing'",
+    )
+    .bind(&sha256)
+    .bind(&archive_path)
+    .execute(pool)
+    .await
+    .expect("retag staged archive manifest");
+    sqlx::query(
+        "UPDATE summary_archive_snapshot SET manifest_sha256=?1
+         WHERE archive_batch_id IN (
+             SELECT id FROM archive_batches
+             WHERE dataset='codex_invocations' AND file_path=?2 AND status='materializing'
+         )",
+    )
+    .bind(&sha256)
+    .bind(&archive_path)
+    .execute(pool)
+    .await
+    .expect("retag staged Summary pages");
+    sqlx::query(
+        "UPDATE summary_archive_snapshot_v2_proof SET manifest_sha256=?1
+         WHERE archive_batch_id IN (
+             SELECT id FROM archive_batches
+             WHERE dataset='codex_invocations' AND file_path=?2 AND status='materializing'
+         )",
+    )
+    .bind(sha256)
+    .bind(archive_path)
+    .execute(pool)
+    .await
+    .expect("retag staged Summary proof");
 }
 
 fn assert_no_task_work_files(directory: &Path) {
