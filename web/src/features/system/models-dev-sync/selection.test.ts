@@ -80,10 +80,10 @@ function quote(model: string, value = 5): PricingQuote {
   };
 }
 
-describe("models.dev price selection", () => {
+describe("LiteLLM price selection", () => {
   it("filters deprecated quotes before grouping while preserving unknown statuses", () => {
     const candidates = [
-      candidate("same-model", "old", { status: "deprecated" }),
+      candidate("same-model", "old", { status: " Deprecated " }),
       candidate("same-model", "active", { status: "alpha" }),
       candidate("missing-status", "new", { status: null }),
     ];
@@ -95,6 +95,32 @@ describe("models.dev price selection", () => {
         ?.candidates.map((item) => item.providerId),
     ).toEqual(["active"]);
     expect(groups.some((group) => group.model === "missing-status")).toBe(true);
+  });
+
+  it("filters expired deprecation dates but keeps future and invalid dates visible", () => {
+    const candidates = [
+      candidate("expired", "provider-a", { deprecationDate: "2026-07-23" }),
+      candidate("today", "provider-a", { deprecationDate: "2026-10-18" }),
+      candidate("future", "provider-a", { deprecationDate: "2026-10-19" }),
+      candidate("invalid", "provider-a", { deprecationDate: "2026-02-30" }),
+      candidate("missing", "provider-a", { deprecationDate: null }),
+    ];
+
+    const visible = buildModelCandidateGroups(
+      candidates,
+      new Set(["provider-a"]),
+      false,
+      new Date("2026-10-18T12:00:00Z"),
+    );
+    expect(visible.map((group) => group.model)).toEqual(["future", "invalid", "missing"]);
+
+    const withDeprecated = buildModelCandidateGroups(
+      candidates,
+      new Set(["provider-a"]),
+      true,
+      new Date("2026-10-18T12:00:00Z"),
+    );
+    expect(withDeprecated).toHaveLength(candidates.length);
   });
 
   it("does not replace an unavailable remembered quote with a sole alternative", () => {

@@ -18,7 +18,7 @@
 - `applicable sync changes`: 当前供应商与状态范围中，已勾选且有明确、可导入报价，会新增或改变本地价格的模型集合。
 - `first-discovered catalog model`: 初始基线建立后，在完整价格同步候选目录中首次出现的模型 ID；与本地是否有价格、市场发布日期及供应商数量无关。
 - `unviewed new model`: 首次发现但其模型行尚未实际进入审阅可视区域的模型。
-- `deprecated quote`: LiteLLM 在供应商模型条目上明确标记为 `status=deprecated` 的报价；状态缺失或未知不代表实时可用或已下架。
+- `deprecated quote`: LiteLLM 在供应商模型条目上明确标记为 `status=deprecated`，或 `deprecation_date` 为当天及以前日期的报价；未来日期、缺失日期和未知状态不代表已下架。
 - `quote rate`: 报价中的一个原始数值及其来源键、单位、模态、处理档位和上下文阈值；零是有效值，缺失不补零。
 - `quote version`: LiteLLM 原始响应正文的 SHA-256 摘要，随获取时间保存，用于审计当前报价快照。
 - Interface: `/system/models` 页面；`/api/settings`、`/api/settings/proxy`、`/api/settings/pricing` 与模型目录同步、应用和删除 API；代理公开的 `GET /v1/models`。
@@ -149,10 +149,10 @@
 
 ### REQ-MODEL-MGMT-016
 
-- The normalized preview MUST preserve LiteLLM lifecycle status for each provider quote. Each new review MUST hide quotes explicitly marked `status=deprecated` by default and provide a show-deprecated switch. Missing, unknown, alpha, and beta statuses MUST remain included; the system MUST NOT infer deprecation from model names, release dates, local price presence, or a different provider's status for the same model ID. When deprecated quotes are shown, their source-reported status MUST be identifiable.
+- The normalized preview MUST preserve LiteLLM lifecycle status and deprecation date for each provider quote. Each new review MUST hide quotes explicitly marked `status=deprecated` or whose valid `deprecation_date` is today or earlier by default, and provide a show-deprecated switch. Future dates, missing dates, unknown, alpha, and beta statuses MUST remain included; the system MUST NOT infer deprecation from model names, release dates, local price presence, or a different provider's status for the same model ID. When deprecated quotes are shown, their source-reported status or date MUST be identifiable.
 - Deprecation filtering MUST operate on provider quotes before model-ID grouping and MUST exclude hidden deprecated quotes from the current price-apply scope. Hiding a quote MUST NOT erase its saved selections, discovery history, local price, or preset state, and MUST NOT silently substitute a different provider quote. Complete-catalog discovery tracking remains independent of this display/apply filter.
-- Inputs: provider-scoped model statuses, the show-deprecated switch, and saved selections.
-- Outputs: a default review/apply scope excluding explicitly deprecated quotes, with an explicit way to include and inspect them.
+- Inputs: provider-scoped model statuses and dates, the current date, the show-deprecated switch, and saved selections.
+- Outputs: a default review/apply scope excluding explicitly deprecated or expired quotes, with an explicit way to include and inspect them.
 
 ### REQ-MODEL-MGMT-017
 
@@ -253,7 +253,7 @@
 
 - Method: lifecycle parser fixtures and preview/apply-scope scenarios for deprecated, missing, unknown, alpha, and beta statuses, including a model ID shared by deprecated and non-deprecated providers.
 - covers: `REQ-MODEL-MGMT-005`, `REQ-MODEL-MGMT-012`, `REQ-MODEL-MGMT-015`, `REQ-MODEL-MGMT-016`
-- Pass condition: source status survives normalization; only explicitly deprecated quotes are hidden by default and excluded from apply; the switch reveals them with their status and preserves saved choices; one provider's deprecation does not hide another provider's quote for the same ID; unknown/missing statuses and old release dates alone do not hide a quote; hidden quotes still participate in complete-catalog discovery but are not marked viewed or changed by visible-list bulk actions.
+- Pass condition: source status and dates survive normalization; explicitly deprecated or already expired quotes are hidden by default and excluded from apply; the switch reveals them with their source metadata and preserves saved choices; one provider's lifecycle state does not hide another provider's quote for the same ID; future, invalid, missing, unknown, alpha, and beta lifecycle values remain visible; hidden quotes still participate in complete-catalog discovery but are not marked viewed or changed by visible-list bulk actions.
 
 ### VER-MODEL-MGMT-012
 

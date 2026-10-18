@@ -24,15 +24,31 @@ export function modelProviderKey(model: string, providerId: string): string {
   return JSON.stringify([model, providerId]);
 }
 
+export function isDeprecatedCandidate(
+  candidate: ModelsDevPriceCandidate,
+  now: Date = new Date(),
+): boolean {
+  if (candidate.status?.trim().toLocaleLowerCase() === "deprecated") return true;
+
+  const deprecationDate = candidate.deprecationDate?.trim();
+  if (!deprecationDate || !/^\d{4}-\d{2}-\d{2}$/.test(deprecationDate)) return false;
+  const parsed = Date.parse(`${deprecationDate}T00:00:00Z`);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString().slice(0, 10) !== deprecationDate) {
+    return false;
+  }
+  return deprecationDate <= now.toISOString().slice(0, 10);
+}
+
 export function buildModelCandidateGroups(
   candidates: ModelsDevPriceCandidate[],
   selectedProviders: ReadonlySet<string>,
   showDeprecated: boolean,
+  now: Date = new Date(),
 ): ModelCandidateGroup[] {
   const groups = new Map<string, ModelsDevPriceCandidate[]>();
   for (const candidate of candidates) {
     if (!selectedProviders.has(candidate.providerId)) continue;
-    if (!showDeprecated && candidate.status === "deprecated") continue;
+    if (!showDeprecated && isDeprecatedCandidate(candidate, now)) continue;
     const group = groups.get(candidate.model) ?? [];
     group.push(candidate);
     groups.set(candidate.model, group);
