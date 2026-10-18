@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "kind": "live-litellm-openai-coverage",
-  "candidate_sha": "62121e6eb261ba40a7c0a655bdf47eedf5387bc0",
-  "checked_at": "2026-10-16T03:36:54Z",
+  "candidate_sha": "a7b85571b5080cc95b3af26d2d2a628ee2e44759",
+  "checked_at": "2026-10-18T07:55:50Z",
   "source": {
     "url": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-    "bytes": 2876609,
-    "sha256": "83af88edfe2f22f65c7c57c4e91c0c0575d7dfd7510d4f837c96695272acc7bd"
+    "bytes": 2919247,
+    "sha256": "fdf7f01ddc8e96a7c792f8fa49960660d59027d125c0d888beb5ad47c09f0e65"
   },
   "official_reference": "https://developers.openai.com/api/docs/pricing",
   "official_model_ids": [
