@@ -4,7 +4,7 @@
 
 ## Current Status
 
-- Implementation: Materialization, long-wait isolation, allocation-range correction, and PR2 public API/frontend integration implemented
+- Implementation: Materialization, long-wait isolation, allocation-range correction, bounded invocation-range preparation, live-demand promotion, and PR2 public API/frontend integration implemented
 - Lifecycle: active
 - Catalog note: Durable backend identity, allocation, persistence, and retention contract.
 
@@ -33,6 +33,7 @@ Current candidate quality and performance evidence must be refreshed after mainl
 - `REQ-PII-008`: Aggregate publication no longer updates `last_invoke_sequence`. The unified range manager initializes 64-sequence ranges, combines eligible conversation/hour owners into one commit, and publishes at most one standby per owner after commit. Idle retirement conditionally returns only the unissued tail within 100 ms, keeping the generation fenced until an owned SQLite connection has drained an uncertain operation.
 - `REQ-PII-009`: Capacity starts at 128, is seeded once asynchronously by a covering-index read capped at 4096 rows, and is recalculated hourly only from an independent bounded memory activity index. Live and seed timestamps merge by maximum; eviction keeps activity history. The captured UTC cutoff is serialized in the master's existing Shanghai-local timestamp representation for the indexed read. A single retirement worker bounds tail-return pressure; an unrelated cold owner reserves an available slot below the 4096 maximum while retirement catches up. Saturation and retiring-owner admission have one 100 ms deadline.
 - `REQ-PII-010`: Schema setup atomically installs `hourly_invoke_prefixes` and the immutable `invocation_range_ownership_v1` marker. Hourly initialization recovers the same prefix and skips committed reservations across restart. HTTP cancellation guards and the terminal journal's recovered/pending identity registry protect active and pending owners. Retention fences a cache generation before deleting eligible conversation/hourly rows; uncertain SQL drains on an owned connection before the fence is released.
+- `REQ-PII-012`: Background preparation retains eligible existing owners in a bounded, deduplicated retry queue capped at the existing 128-owner startup limit. Pool, P2 admission, capacity, and in-flight deferrals use capped one-to-sixty-second backoff and warning classifications. Live demand promotes an in-flight speculative owner, cancels only the unpublished preparation path, retains native transaction ownership through drain, and uses the existing InteractiveProxy reservation path; 100 ms allocation admission and commit-before-publication remain unchanged.
 - Terminal reconciliation removes the allocator's active identity before releasing journal pending protection. HTTP guard callbacks carry a scoped namespace reference until the callback drains, so legitimate prefix reuse cannot race a late callback from the old lifetime. Ended-hour cleanup scans bounded primary-key pages in the durable `invocation_hour_prefixes` cleanup scope, committing deletion and the real cursor atomically; dry-run uses a local cursor. Protected older hours do not prevent later eligible rows from progressing.
 - Upstream URL validation failures issue an unleased ID because they return without a terminal persistence record. They preserve the existing error response and sequence advancement while allowing the ended hourly owner to be released; calls that enter persistence retain their active identity protection.
 - Request cleanup guards, orphan persistence reconciliation and terminal journal identity tracking live in focused `invocation_identity` child modules. The existing parent modules retain their call contracts and remain within the repository's explicit source-line budgets. The retired WebSocket entrypoint and its allocation helper stay removed; retained WebSocket identities remain readable through historical records.
@@ -66,6 +67,7 @@ Retention ownership validation and current candidate results are linked from [re
 - `cargo test stale_prompt_cache_disable_schedule_cannot_erase_a_resume_wake -- --nocapture`
 - `cargo test prompt_cache_materialization_fixed_400_vs_adaptive_representative_scale -- --ignored --nocapture --test-threads=1`
 - `bash .github/scripts/run-backend-tests.sh --profile stateful-sqlite`
+- Candidate `70c6590a` GitHub CI passed the lightweight, stateful SQLite shards, representative-scale, and archive/file-I/O profiles; the longest backend profile was under five minutes and every profile stayed below the 15-minute resource-bucket limit. The focused regressions cover deferred preparation after pool, writer, and capacity pressure, queue bounds, periodic retry, live-demand promotion, commit rollback, restart floor, and uniqueness. No local or Agent VM pressure test is used as evidence.
 - Focused stateful SQLite tests in `src/tests/stateful_sqlite/proxy_long_wait_allocation_and_index.rs`, `src/tests/stateful_sqlite/prompt_cache_materialization_control.rs`, and `src/tests/stateful_sqlite/prompt_cache_working_set_trigger.rs`. The working-set tests invoke the actual terminal persistence core with a redundant-update sentinel, compare business mutations against a source rebuild, and interrupt completion-marker insertion to verify transactional DDL rollback and startup reentry without touching live rows.
 - The long-wait workload is a required Linux shared-testbox acceptance run; its candidate SHA, run directory, and per-round gate results are recorded with the delivery evidence.
 - `scripts/shared-testbox-proxy-runtime-acceptance --scenario prompt-cache-control --duration 300 --rounds 3 --rate 4` owns the service-process task-control replay. Its pressure-log mount and all progress, permission, timing, and completion assertions are preserved.
@@ -168,6 +170,7 @@ aggregate statistics. Production deployment and acceptance remain outside this l
 - `docs/adr/0030-durable-hourly-invocation-prefixes.md`
 - `docs/adr/0031-prompt-cache-event-wake-priority.md`
 - `docs/adr/0033-prompt-cache-live-read-materialization-overlay.md`
+- `docs/adr/0043-invocation-range-preparation-priority.md`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-migration-record.json`
 - `docs/specs/proxy-invocation-identity/assets/allocation-range-version-impact-record.json`
 - `docs/specs/proxy-invocation-identity/assets/pr2-version-impact-record.json`
