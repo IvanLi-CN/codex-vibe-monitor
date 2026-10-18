@@ -1834,14 +1834,13 @@ impl TerminalJournal {
             let mut produced = None;
             loop {
                 let stream_start = cursor.byte_offset;
-                let parsed = {
+                let mut raw_line = Vec::new();
+                let read_bytes = {
                     let mut budget_reader = ReplayBudgetReader {
                         reader: &mut reader,
                         remaining: TERMINAL_JOURNAL_REPLAY_MAX_BYTES,
                     };
-                    let mut stream = serde_json::Deserializer::from_reader(&mut budget_reader)
-                        .into_iter::<JournalLine>();
-                    stream.next()
+                    budget_reader.read_until(b'\n', &mut raw_line)
                 };
                 let stream_end = match reader.stream_position() {
                     Ok(stream_end) => stream_end,
@@ -1851,29 +1850,55 @@ impl TerminalJournal {
                         break;
                     }
                 };
-                if stream_end == stream_start {
+                let Ok(read_bytes) = read_bytes else {
+                    cursor.byte_offset = stream_start;
+                    self.replay_blocked = true;
+                    warn!(
+                        replay_offset = stream_start,
+                        "terminal journal replay exceeded the bounded record input budget; preserving the cursor for recovery"
+                    );
+                    break;
+                };
+                if read_bytes == 0 || stream_end == stream_start {
                     reached_end = true;
                     break;
                 }
-                let Some(parsed) = parsed else {
-                    cursor.byte_offset = stream_end;
-                    reached_end = true;
+                if raw_line.last().copied() != Some(b'\n') {
+                    cursor.byte_offset = stream_start;
+                    self.replay_blocked = true;
+                    warn!(
+                        replay_offset = stream_start,
+                        "terminal journal replay stopped at an incomplete entry; preserving the cursor for recovery"
+                    );
                     break;
-                };
+                }
                 scanned_bytes = scanned_bytes.saturating_add(
                     stream_end
                         .saturating_sub(stream_start)
                         .min(usize::MAX as u64) as usize,
                 );
                 scanned_lines = scanned_lines.saturating_add(1);
-                let Ok(parsed) = parsed else {
-                    cursor.byte_offset = stream_start;
-                    self.replay_blocked = true;
-                    warn!(
-                        replay_offset = stream_start,
-                        "terminal journal replay stopped at an unparseable entry; preserving the cursor for recovery"
-                    );
-                    break;
+                if raw_line.iter().all(u8::is_ascii_whitespace) {
+                    cursor.byte_offset = stream_end;
+                    if scanned_bytes >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_BYTES
+                        || scanned_lines >= TERMINAL_JOURNAL_REPLAY_SCAN_MAX_LINES
+                    {
+                        break;
+                    }
+                    continue;
+                }
+                let parsed = match segment_recovery::verified_frame(&raw_line) {
+                    Ok(parsed) => parsed,
+                    Err(reason) => {
+                        cursor.byte_offset = stream_start;
+                        self.replay_blocked = true;
+                        warn!(
+                            replay_offset = stream_start,
+                            reason,
+                            "terminal journal replay stopped at an invalid entry; preserving the cursor for recovery"
+                        );
+                        break;
+                    }
                 };
                 cursor.byte_offset = stream_end;
                 let Some(entry) = parsed.entry else {
@@ -2100,6 +2125,25 @@ impl Read for ReplayBudgetReader<'_> {
         let read = self.reader.read(&mut buffer[..limit])?;
         self.remaining = self.remaining.saturating_sub(read);
         Ok(read)
+    }
+}
+
+impl std::io::BufRead for ReplayBudgetReader<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        let available = self.reader.fill_buf()?;
+        if self.remaining == 0 && !available.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "terminal journal replay record exceeds the bounded input budget",
+            ));
+        }
+        Ok(&available[..available.len().min(self.remaining)])
+    }
+
+    fn consume(&mut self, amount: usize) {
+        let bounded = amount.min(self.remaining);
+        self.reader.consume(bounded);
+        self.remaining = self.remaining.saturating_sub(bounded);
     }
 }
 
@@ -2729,6 +2773,54 @@ mod tests {
             TerminalJournalDurabilityMode::MemoryOverflow
         );
         assert!(journal.sequence_is_synced(1).is_err());
+        fs::remove_dir_all(root).expect("remove journal test directory");
+    }
+
+    #[test]
+    fn replay_revalidates_checksum_after_journal_open() {
+        let root = std::env::temp_dir().join(format!(
+            "terminal-journal-replay-checksum-{}",
+            nanoid::nanoid!()
+        ));
+        fs::create_dir_all(&root).expect("create journal test directory");
+        let database_path = root.join("monitor.db");
+        let record = crate::tests::test_proxy_capture_record(
+            "journal-replay-checksum",
+            "2026-07-29T00:00:00Z",
+        );
+        let mut journal = TerminalJournal::open(&database_path).expect("open journal");
+        journal.append(&record, false, None);
+        journal.force_sync().expect("sync journal");
+        drop(journal);
+
+        let mut reopened = TerminalJournal::open(&database_path).expect("reopen journal");
+        let segment_path = reopened
+            .segments
+            .values()
+            .find(|segment| !segment.current && segment.bytes > 0)
+            .or_else(|| reopened.segments.values().find(|segment| segment.bytes > 0))
+            .expect("replay segment")
+            .path
+            .clone();
+        let mut bytes = fs::read(&segment_path).expect("read replay segment");
+        let marker = b"\"checksum\":\"";
+        let checksum_offset = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .map(|offset| offset + marker.len())
+            .expect("checksum field");
+        bytes[checksum_offset] = if bytes[checksum_offset] == b'0' {
+            b'1'
+        } else {
+            b'0'
+        };
+        fs::write(&segment_path, bytes).expect("tamper replay checksum");
+
+        assert!(reopened.take_replay().is_empty());
+        let stats = reopened.stats();
+        assert!(stats.unavailable);
+        assert_eq!(stats.replay_count, 1);
+        drop(reopened);
         fs::remove_dir_all(root).expect("remove journal test directory");
     }
 
