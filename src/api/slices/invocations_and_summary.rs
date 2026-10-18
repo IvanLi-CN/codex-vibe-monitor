@@ -36849,25 +36849,34 @@ mod request_compression_query_tests {
         );
         let initial_state = state.clone();
         let initial = tokio::spawn(async move {
-            hydrate_summary_snapshots_with_deadline(initial_state.as_ref(), Duration::from_secs(1))
-                .await
+            summary_projection_lifecycle::observe_bootstrap_timeout(
+                hydrate_summary_snapshots_with_deadline(
+                    initial_state.as_ref(),
+                    Duration::from_secs(1),
+                ),
+            )
+            .await
         });
         tokio::pin!(initial);
-        tokio::select! {
-            _ = initial_interleave.wait_for_writer() => {}
-            result = &mut initial => {
-                clear_summary_projection_test_interleave();
-                result
-                    .expect("join cold Bootstrap timeout")
-                    .expect("Bootstrap timeout must publish its bounded fallback");
-                panic!("cold Bootstrap must reach the deterministic timeout stage");
-            }
-        }
-        initial
-            .await
-            .expect("join timed-out Bootstrap")
-            .expect("timed-out Bootstrap must publish its bounded fallback");
+        let initial_result = tokio::select! {
+            _ = initial_interleave.wait_for_writer() => initial.await,
+            result = &mut initial => result,
+        };
         clear_summary_projection_test_interleave();
+        let (initial_result, timed_out) = initial_result.expect("join timed-out Bootstrap");
+        initial_result.expect("timed-out Bootstrap must publish its bounded fallback");
+        assert!(
+            timed_out,
+            "cold Bootstrap must hit its actual build deadline"
+        );
+        let fallback_fence = state
+            .subscription_hub
+            .summary_bootstrap_fallback_fence()
+            .await;
+        assert!(
+            fallback_fence.is_some(),
+            "cold Bootstrap must have published its bounded fallback"
+        );
         assert!(
             state.subscription_hub.summary_projection().await.is_some(),
             "a timed-out Bootstrap must publish a bounded Projection"

@@ -15,7 +15,7 @@ mod queries;
 pub(crate) use materialization::TimeseriesTopicMaterializedBase;
 
 pub(crate) use parallel_work::{
-    ParallelWorkProjectionBaseline, load_parallel_work_projection_baseline,
+    ParallelWorkProjectionBaseline, load_parallel_work_projection_baseline_at_on_connection,
     load_parallel_work_stats_response,
 };
 

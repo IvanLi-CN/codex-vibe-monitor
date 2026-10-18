@@ -9,7 +9,7 @@ async fn ranges_fixture() -> SqlitePool {
 const FIXTURE_ALLOCATION_TIMEOUT: &str = "invocation range allocation timed out after 100ms";
 const FIXTURE_ALLOCATION_MAX_ATTEMPTS: usize = 5;
 
-async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
+pub(super) async fn allocate_fixture_with_bounded_timeout_retry<F, Fut>(
     mut allocate: F,
 ) -> anyhow::Result<String>
 where
@@ -296,7 +296,9 @@ async fn invocation_ranges_concurrent_cold_conversation_initialization_completes
         let pool = pool.clone();
         tasks.spawn(async move {
             let key = format!("concurrent-cold-{number}");
-            let result = manager.allocate(&pool, Some(&key)).await;
+            let result =
+                allocate_fixture_with_bounded_timeout_retry(|| manager.allocate(&pool, Some(&key)))
+                    .await;
             (key, result)
         });
     }

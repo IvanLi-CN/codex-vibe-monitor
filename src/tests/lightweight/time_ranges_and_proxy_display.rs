@@ -256,6 +256,17 @@ async fn proxy_openai_v1_invalid_pool_key_bypasses_admission_backpressure() {
 #[tokio::test]
 async fn proxy_openai_v1_missing_pool_key_terminalizes_admitted_running_shell() {
     let state = test_state_from_config(test_config(), true).await;
+    let range_manager = state
+        .prompt_cache_conversation_cache
+        .lock()
+        .await
+        .identity_cache
+        .range_manager
+        .clone();
+    range_manager
+        .test_prepare_unkeyed_range(&state.pool)
+        .await
+        .expect("missing-key fixture has a real committed invocation range");
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
     let mut rx = state.broadcaster.subscribe();
 

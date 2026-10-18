@@ -290,6 +290,59 @@ impl InvocationRangeManager {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_prepare_unkeyed_range(
+        self: &Arc<Self>,
+        pool: &Pool<Sqlite>,
+    ) -> Result<()> {
+        self.pool.get_or_init(|| pool.clone());
+        let owner = Owner::from_key(None);
+        // This fixture waits for a real committed range; it neither allocates an
+        // ID nor changes the production allocation deadline or retries a request.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        if let Some(generation) = self.admit(pool, &owner, deadline).await? {
+            let manager = self.clone();
+            let pool = pool.clone();
+            let owner = owner.clone();
+            tokio::spawn(async move {
+                manager
+                    .initialize(&pool, owner, generation, None, false)
+                    .await;
+            });
+        }
+        let notify = self
+            .memory
+            .lock()
+            .expect("invocation range memory")
+            .entries
+            .get(&owner)
+            .expect("admitted fixture owner")
+            .notify
+            .clone();
+        loop {
+            let notified = notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let memory = self.memory.lock().expect("invocation range memory");
+                let entry = memory.entries.get(&owner).expect("fixture owner retained");
+                if let Some(failure) = &entry.failure {
+                    bail!("fixture range initialization failed: {failure}");
+                }
+                if !entry.operation && entry.prefix.is_some() && entry.current.remaining() > 0 {
+                    anyhow::ensure!(
+                        owner == Owner::from_key(None),
+                        "fixture initialization crossed the UTC hour boundary"
+                    );
+                    return Ok(());
+                }
+            }
+            tokio::time::timeout_at(deadline, notified)
+                .await
+                .context("fixture committed range did not become ready within 5s")?;
+        }
+    }
+
     pub(crate) fn occupancy(&self) -> usize {
         self.memory
             .lock()

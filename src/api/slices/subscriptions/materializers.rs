@@ -512,12 +512,14 @@ pub(crate) async fn build_dashboard_parallel_work_materializer_state(
             sqlx::query_scalar::<_, i64>("SELECT COALESCE(MAX(id), 0) FROM codex_invocations")
                 .fetch_one(&mut *observer)
                 .await?;
-        let materializer = build_dashboard_parallel_work_materializer_state_at_baseline(
-            state,
-            query.clone(),
-            baseline_row_id,
-        )
-        .await?;
+        let materializer =
+            build_dashboard_parallel_work_materializer_state_at_baseline_on_connection(
+                state,
+                query.clone(),
+                baseline_row_id,
+                &mut observer,
+            )
+            .await?;
         let version_after = sqlx::query_scalar::<_, i64>("PRAGMA data_version")
             .fetch_one(&mut *observer)
             .await?;
@@ -530,16 +532,23 @@ pub(crate) async fn build_dashboard_parallel_work_materializer_state(
     )))
 }
 
-pub(crate) async fn build_dashboard_parallel_work_materializer_state_at_baseline(
+pub(crate) async fn build_dashboard_parallel_work_materializer_state_at_baseline_on_connection(
     state: &Arc<AppState>,
     query: ParallelWorkStatsQuery,
     baseline_row_id: i64,
+    connection: &mut SqliteConnection,
 ) -> Result<DashboardParallelWorkMaterializerState, ApiError> {
     let ParallelWorkProjectionBaseline {
         response,
         bucket_keys,
         active_minute_stats,
-    } = load_parallel_work_projection_baseline(state, query.clone()).await?;
+    } = load_parallel_work_projection_baseline_at_on_connection(
+        state,
+        query.clone(),
+        Utc::now(),
+        &mut *connection,
+    )
+    .await?;
     let current = &response.current;
     let range_start = parse_to_utc_datetime(&current.range_start)
         .ok_or_else(|| ApiError::from(anyhow!("invalid parallel-work range start")))?;
@@ -553,7 +562,7 @@ pub(crate) async fn build_dashboard_parallel_work_materializer_state_at_baseline
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let range_start_epoch = range_start.timestamp();
     let minute_keys = query_parallel_work_exact_key_sets(
-        &state.pool,
+        &mut *connection,
         range_start,
         range_end,
         60,
