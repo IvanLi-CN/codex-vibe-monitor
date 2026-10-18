@@ -44,15 +44,9 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
     )
     .await;
     let historical_at = db_occurred_at_lower_bound(Utc::now() - ChronoDuration::days(3));
-    sqlx::query(
-        "INSERT INTO codex_invocations \
-         (invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response, detail_level) \
-         VALUES ('summary-bootstrap-fence', ?1, 'proxy', 'success', 17, 1.25, '{}', '', 'full')",
-    )
-    .bind(historical_at)
-    .execute(&state.pool)
-    .await
-    .expect("seed historical source");
+    // Seed the historical source through the same durable terminal path as production so the
+    // Bootstrap fence observes a source row and descriptor from one committed transaction.
+    commit_fixture_terminal_at(&state, "summary-bootstrap-fence", &historical_at).await;
     sqlx::query("CREATE TABLE summary_projection_test_interleave_gate (id INTEGER PRIMARY KEY)")
         .execute(&state.pool)
         .await
@@ -96,8 +90,8 @@ async fn assert_bootstrap_fallback_reopens_only_for_coverage_changes(fixture: Ta
         "unchanged fallback fence must skip hydration"
     );
 
-    // A normal terminal commits its source descriptor in the same transaction. A raw SQL
-    // INSERT deliberately lacks that proof and must remain unavailable during tail recovery.
+    // A normal terminal changes the source fence by committing its descriptor in the same
+    // transaction as the live source row.
     commit_fixture_terminal(state.as_ref(), "summary-bootstrap-fence-new").await;
     if matches!(fixture, TailRecoveryFixture::Compacted) {
         let cursor = crate::summary_source_change::summary_source_change_cursor(&state.pool)
@@ -253,18 +247,28 @@ async fn refresh_with_hydration_count(state: &AppState) -> (Result<()>, usize) {
 }
 
 async fn commit_fixture_terminal(state: &AppState, invoke_id: &str) {
+    let occurred_at = db_occurred_at_lower_bound(Utc::now());
+    commit_fixture_terminal_at(state, invoke_id, &occurred_at).await;
+}
+
+async fn commit_fixture_terminal_at(state: &AppState, invoke_id: &str, occurred_at: &str) {
     SqliteBatchWriter::flush_for_test(
         &state.pool,
-        vec![SqliteBatchWrite::TerminalInvocation(fixture_terminal(
+        vec![SqliteBatchWrite::TerminalInvocation(fixture_terminal_at(
             invoke_id,
+            occurred_at,
         ))],
     )
     .await;
 }
 
 fn fixture_terminal(invoke_id: &str) -> BatchedTerminalInvocationWrite {
-    let mut record =
-        crate::tests::test_proxy_capture_record(invoke_id, &db_occurred_at_lower_bound(Utc::now()));
+    let occurred_at = db_occurred_at_lower_bound(Utc::now());
+    fixture_terminal_at(invoke_id, &occurred_at)
+}
+
+fn fixture_terminal_at(invoke_id: &str, occurred_at: &str) -> BatchedTerminalInvocationWrite {
+    let mut record = crate::tests::test_proxy_capture_record(invoke_id, occurred_at);
     record.payload = Some("{}".to_string());
     record.usage.input_tokens = Some(16);
     record.usage.cache_input_tokens = Some(0);
