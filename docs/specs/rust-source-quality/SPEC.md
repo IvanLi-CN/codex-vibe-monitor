@@ -280,7 +280,7 @@ covers: REQ-RUST-SOURCE-QUALITY-003
 ### VER-RUST-SOURCE-QUALITY-004
 
 Method: inspect and validate the checked-in policy baseline.
-Pass condition: the policy has 16 production and 17 test/helper entries (33 total), with exact budgets and explicit workstreams or reasoned exceptions.
+Pass condition: the policy has 15 production and 17 test/helper entries (32 total), with exact budgets and explicit workstreams or reasoned exceptions.
 
 covers: REQ-RUST-SOURCE-QUALITY-004
 
