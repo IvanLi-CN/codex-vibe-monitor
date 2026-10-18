@@ -422,6 +422,70 @@ async fn retention_task_local_rejects_persisted_proof_when_final_marker_is_missi
 }
 
 #[tokio::test]
+async fn retention_task_local_rejects_persisted_proof_when_manifest_coverage_changes() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-reject-coverage-change").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let first_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                _ = probe.verified.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(30), first_work)
+        .await
+        .expect("first retention run reached the budget stop");
+    assert_eq!(first.expect("first budget-limited run").0, 0);
+
+    sqlx::query(
+        "UPDATE archive_batches
+         SET coverage_start_at = '2099-01-01 00:00:00'
+         WHERE dataset = 'codex_invocations' AND status = 'materializing'",
+    )
+    .execute(&pool)
+    .await
+    .expect("corrupt staged manifest coverage");
+
+    // The proof pages remain valid, but their coverage no longer matches the manifest. The paused
+    // fallback proves that reuse is rejected before source conversion can report a late error.
+    let resumed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(15),
+        RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
+            Duration::from_secs(60),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    )
+    .await
+    .expect("coverage-mismatch fallback run");
+    assert_eq!(resumed.0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after rejected coverage reuse"),
+        401
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archive_selection_defers_large_payload_materialization() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("archive-selection-metadata").await;

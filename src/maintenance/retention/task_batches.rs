@@ -252,7 +252,20 @@ impl ArchiveSourceIdentityProof {
         let work_owner_file =
             crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?;
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
-        inflate_gzip_sqlite_file(path, &proof_path)?;
+        if let Some(remaining) = retention_run_remaining_budget() {
+            let complete = inflate_gzip_sqlite_file_with_budget(
+                path,
+                &proof_path,
+                Instant::now(),
+                Some(remaining),
+            )
+            .await?;
+            if !complete {
+                bail!("retention archive identity proof inflate exceeded the task budget");
+            }
+        } else {
+            inflate_gzip_sqlite_file(path, &proof_path)?;
+        }
         let connection = open_archive_sqlite_connection(&proof_path).await?;
         Ok(Self {
             cleanup,
@@ -381,6 +394,27 @@ async fn reuse_task_month_archive_if_proven(
         )
         .await?
     {
+        return Ok(None);
+    }
+    let manifest_coverage_matches_proof: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM archive_batches AS manifest
+             JOIN summary_archive_snapshot_v2_proof AS proof
+               ON proof.archive_batch_id = manifest.id
+              AND proof.manifest_sha256 = manifest.sha256
+             WHERE manifest.id = ?1 AND manifest.sha256 = ?2
+               AND ((manifest.coverage_start_at IS NULL AND proof.coverage_start IS NULL)
+                    OR manifest.coverage_start_at = proof.coverage_start)
+               AND ((manifest.coverage_end_at IS NULL AND proof.coverage_end IS NULL)
+                    OR manifest.coverage_end_at = proof.coverage_end)
+         )",
+    )
+    .bind(archive_batch_id)
+    .bind(&sha256)
+    .fetch_one(pool)
+    .await?;
+    if !manifest_coverage_matches_proof {
         return Ok(None);
     }
 
