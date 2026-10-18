@@ -34,6 +34,7 @@ async fn health_becomes_ready_before_pending_recovery_completes() {
     );
 
     let health_response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/health")
