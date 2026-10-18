@@ -116,6 +116,21 @@ than their snapshot boundary while retaining the stable conversation identity.
 - A snapshot MUST NOT publish durable aggregate fields whose last materialized invocation is newer
   than the snapshot boundary. The stable conversation identity MAY remain visible independently.
 
+### REQ-PII-012
+
+- Background invocation-range preparation MUST retain eligible existing owners in a bounded,
+  owner/generation/hour-deduplicated in-memory queue when pool, SQLite write admission, cache
+  capacity, or an in-flight operation defers preparation. The queue MUST remain bounded by the
+  existing startup preparation limit and MUST use capped retry timing.
+- A live allocation request for an existing owner MUST take priority over speculative preparation.
+  It MAY use a committed current or standby range immediately, or initiate the normal interactive
+  reservation path; it MUST NOT wait on speculative preparation beyond the existing 100 ms empty
+  range budget. A genuinely new owner that cannot obtain durable reservation authority retains the
+  existing bounded failure behavior.
+- Durable reservation, owner generations, sequence ceilings, cancellation drain, and
+  commit-before-memory-publication MUST remain unchanged. Deferred preparation MUST be observable
+  as a bounded retry outcome without logging raw prompt-cache keys.
+
 ## Verification
 
 ### VER-PII-001
@@ -192,6 +207,16 @@ than their snapshot boundary while retaining the stable conversation identity.
 - Pass condition: Materialized identity and aggregate fields serialize in the public response, delayed
   fields remain optional, count-mode ordering uses the durable first timestamp, the table renders
   the breakdown on desktop and mobile, and snapshot boundaries do not publish newer statistics.
+
+### VER-PII-012
+
+- Method: Focused stateful SQLite preparation, concurrent allocation, admission-pressure, commit-failure,
+  cancellation, and restart regressions.
+- covers: `REQ-PII-005`, `REQ-PII-008`, `REQ-PII-009`, `REQ-PII-012`
+- Pass condition: Deferred existing owners remain in a bounded deduplicated queue and retry after
+  pressure, demand is not held behind speculative work, committed ranges publish only after durable
+  commit, genuinely unavailable new owners still fail at 100 ms, and concurrent/restarted allocation
+  never duplicates or reuses an issued sequence.
 
 ## Related ADRs
 
