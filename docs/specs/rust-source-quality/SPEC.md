@@ -93,6 +93,12 @@ The missing-pool-key terminalization fixture MAY prepare its real committed unke
 
 covers: VER-RUST-SOURCE-QUALITY-008
 
+### REQ-RUST-SOURCE-QUALITY-009
+
+The cold Bootstrap fallback fixture MAY accept initial hydration completing before the `BeforeHistoricalLiveCoverage` hook notification only when the actual outer Tokio build timeout returned `Elapsed`, its one JoinHandle result succeeds, and the existing in-memory Bootstrap fallback fence is present. A narrow `cfg(test)` task-local observer MUST record expiry in the outer timeout error branch before inner build errors are flattened; error-string classification alone is insufficient. This explicitly replaces the hook-first panic, while preserving the original one-second deadline, all Arrange SQL, hook installation and pause/Notify mechanism, Projection assertion, and exact `current` count 1, `1d` count 0, and `7d` unavailable checks after SQLite closes. No retry, execution-slot change, fake clock, forced earlier hook, or production deadline change is permitted. The paged-boundary fixture retains its four-second production Rolling deadline and every original assertion.
+
+covers: VER-RUST-SOURCE-QUALITY-009
+
 ## Policy Shape
 
 The checked-in policy contains `schema_version`, baseline counts and commit,
@@ -305,6 +311,12 @@ covers: REQ-RUST-SOURCE-QUALITY-007
 Method: run the original missing-pool-key terminalization test, the five preserved stateful fixture regressions with the canonical schema-template prerequisite, and all three complete backend profiles. Pass condition: the real range is committed before the original missing-key request, all original terminalization assertions pass, and the startup watchdog, cold-conversation, retention, and pruned-summary regressions pass without timeout, SQL, assertion, or slot relaxation. Preserve every failed run separately from later candidates and diagnostics. The startup fixture uses the admitted legacy-marker Arrange prerequisite while retaining all original SQL and assertions; its acceptance claim excludes cold legacy-marker completion.
 
 covers: REQ-RUST-SOURCE-QUALITY-008
+
+### VER-RUST-SOURCE-QUALITY-009
+
+Method: validate the cold Bootstrap fixture through the canonical lightweight runner with its mandatory schema-template prerequisite, original one-second deadline, and all-slots override; retain the complete candidate's required backend and source-quality gates. Pass condition: actual outer deadline expiry observed in the same spawned task, one successful hydration join, a published Bootstrap fallback fence, and every original Projection/current/1d/7d assertion pass. Static review MUST confirm that each select outcome consumes its JoinHandle result once and that the observer changes no production error, clock, admission, or retry behavior. A single pass does not establish execution of both select arms, the exact stage or underlying cause of the elapsed deadline, or resolution of the separate four-second Rolling failure. Preserve earlier failed formal runs and temporary observations independently.
+
+covers: REQ-RUST-SOURCE-QUALITY-009
 
 No owner-visible UI changes are part of this contract. Backend runtime regressions require the canonical tests above; temporary stress samples are supporting diagnosis rather than a separate performance acceptance claim.
 

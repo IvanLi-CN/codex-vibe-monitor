@@ -305,7 +305,9 @@ impl InvocationRangeManager {
             let pool = pool.clone();
             let owner = owner.clone();
             tokio::spawn(async move {
-                manager.initialize(&pool, owner, generation).await;
+                manager
+                    .initialize(&pool, owner, generation, None, false)
+                    .await;
             });
         }
         let notify = self

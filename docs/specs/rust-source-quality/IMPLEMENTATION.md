@@ -369,6 +369,12 @@ The separate missing-pool-key Arrange helper is restricted to test builds and th
 
 The expanded candidate contains the original 14 paths and these nine admitted files. Its complete formal validation must be recorded independently: canonical stateful five-fixture and lightweight cleanup/mode regressions, all three backend profiles, the source-quality runner and fixture harness, all-target checking, and documentation contracts. The earlier formal lightweight result of 1,342 passes and two failures remains a failed historical run. Temporary diagnosis produced two old-source constrained failures, 24 candidate passes, and a separate cold-fixture batch with four passes and one startup failure; standard-template startup controls also failed on old production. Those samples and the partial, timing-perturbed debugger observation do not establish complete fixture acceptance or replace the expanded candidate's formal gates.
 
+## Cold Bootstrap Timeout Fixture Contract
+
+The proposed cold Bootstrap fixture replaces its hook-first panic with a narrow test-only observation of the actual outer Tokio timeout returning Elapsed. The task-local boolean is scoped inside the existing spawned hydration task and set only for Bootstrap in the outer timeout error branch, before inner errors are flattened. Either select result is joined once, then the fixture requires successful hydration, observed deadline expiry, and the existing published fallback fence. Its one-second deadline, Arrange SQL, hook implementation, Projection assertion, and closed-pool current/1d/7d assertions remain unchanged. This is an explicit fixture-contract change, with no production budget, clock, retry, SQL, or publication change.
+
+Formal validation of this proposed contract remains pending. Formal25's full lightweight result remains FAILED with 1,344 passes and two failures. The frozen diagnostic observation retained one paged-boundary pass and one cold Bootstrap failure, with real timeout and fallback publication before the target hook; it did not execute this proposal. The separate paged-boundary four-second Rolling failure remains unresolved. Historical build/runner counts and evidence bindings remain unchanged.
+
 ## Inventory Contract
 
 The policy has 16 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
