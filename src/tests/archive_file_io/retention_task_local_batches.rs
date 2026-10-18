@@ -570,7 +570,7 @@ async fn retention_task_local_rejects_persisted_proof_when_final_marker_is_missi
 }
 
 #[tokio::test]
-async fn retention_task_local_rejects_persisted_proof_when_manifest_coverage_changes() {
+async fn retention_task_local_rejects_persisted_proof_when_proof_coverage_changes() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("task-local-reject-coverage-change").await;
     config.retention_batch_rows = 1_000;
@@ -601,16 +601,16 @@ async fn retention_task_local_rejects_persisted_proof_when_manifest_coverage_cha
     assert_eq!(first.expect("first budget-limited run").0, 0);
 
     sqlx::query(
-        "UPDATE archive_batches
-         SET coverage_start_at = '2099-01-01 00:00:00'
-         WHERE dataset = 'codex_invocations' AND status = 'materializing'",
+        "UPDATE summary_archive_snapshot_v2_proof
+         SET coverage_start = '2099-01-01 00:00:00'",
     )
     .execute(&pool)
     .await
-    .expect("corrupt staged manifest coverage");
+    .expect("corrupt staged proof coverage");
 
-    // The proof pages remain valid, but their coverage no longer matches the manifest. The paused
-    // fallback proves that reuse is rejected before source conversion can report a late error.
+    // The proof marker remains present, but its coverage no longer matches the manifest. The
+    // paused fallback proves that reuse is rejected before source conversion can report a late
+    // error.
     let resumed = crate::maintenance::retention_test_with_work_budget(
         Duration::from_secs(15),
         RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
@@ -1537,6 +1537,40 @@ async fn retag_staged_archive_proof(pool: &SqlitePool, archive_path: &Path) {
     let archive_path = archive_path.to_string_lossy().to_string();
     let sha256 = crate::maintenance::sha256_hex_file(Path::new(&archive_path))
         .expect("hash mutated staged archive");
+    let (
+        archive_batch_id,
+        _old_manifest_sha256,
+        page_count,
+        row_count,
+        coverage_start,
+        coverage_end,
+        semantic_sha256,
+        verified_at,
+    ) = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        ),
+    >(
+        "SELECT proof.archive_batch_id, proof.manifest_sha256, proof.page_count, proof.row_count,
+                proof.coverage_start, proof.coverage_end, proof.semantic_sha256, proof.verified_at
+         FROM summary_archive_snapshot_v2_proof AS proof
+         JOIN archive_batches AS manifest ON manifest.id = proof.archive_batch_id
+         WHERE manifest.dataset='codex_invocations' AND manifest.file_path=?1
+           AND manifest.status='materializing'
+         LIMIT 1",
+    )
+    .bind(&archive_path)
+    .fetch_one(pool)
+    .await
+    .expect("load staged archive proof before retag");
     sqlx::query(
         "UPDATE archive_batches SET sha256=?1
          WHERE dataset='codex_invocations' AND file_path=?2 AND status='materializing'",
@@ -1565,11 +1599,29 @@ async fn retag_staged_archive_proof(pool: &SqlitePool, archive_path: &Path) {
              WHERE dataset='codex_invocations' AND file_path=?2 AND status='materializing'
          )",
     )
-    .bind(sha256)
-    .bind(archive_path)
+    .bind(&sha256)
+    .bind(&archive_path)
     .execute(pool)
     .await
     .expect("retag staged Summary proof");
+    let inserted = sqlx::query(
+        "INSERT INTO summary_archive_snapshot_v2_proof
+            (archive_batch_id, manifest_sha256, page_count, row_count, coverage_start,
+             coverage_end, semantic_sha256, verified_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )
+    .bind(archive_batch_id)
+    .bind(&sha256)
+    .bind(page_count)
+    .bind(row_count)
+    .bind(coverage_start)
+    .bind(coverage_end)
+    .bind(semantic_sha256)
+    .bind(verified_at)
+    .execute(pool)
+    .await
+    .expect("restore staged Summary proof after retag");
+    assert_eq!(inserted.rows_affected(), 1);
 }
 
 fn assert_no_task_work_files(directory: &Path) {
