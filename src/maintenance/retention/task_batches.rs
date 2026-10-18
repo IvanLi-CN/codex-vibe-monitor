@@ -279,6 +279,25 @@ impl ArchiveSourceIdentityProof {
         }
     }
 
+    async fn contains_all_ids(&mut self, ids: &[i64]) -> Result<bool> {
+        let expected_count =
+            i64::try_from(ids.len()).context("count retention archive source ids")?;
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let connection = self
+            .connection
+            .as_mut()
+            .context("archive source identity proof connection is closed")?;
+        let selected_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM main.codex_invocations
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(ids_json)
+        .fetch_one(&mut *connection)
+        .await
+        .context("count selected rows in archive source identity proof")?;
+        Ok(selected_count == expected_count)
+    }
+
     async fn close(mut self) -> Result<()> {
         if let Some(connection) = self.connection.take() {
             connection.close().await?;
@@ -349,12 +368,36 @@ async fn reuse_task_month_archive_if_proven(
         return Ok(None);
     };
 
+    let expected_row_count =
+        i64::try_from(ids.len()).context("count retention archive source ids")?;
+    if row_count != expected_row_count
+        || !crate::summary_archive_snapshot_has_final_proof_read_only(
+            pool,
+            archive_batch_id,
+            &sha256,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+
     // A durable Summary proof makes the published artifact reusable. The source admission
     // below still rechecks the file digest while holding the archive fence before deletion.
     let mut identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
         Ok(proof) => proof,
         Err(_) => return Ok(None),
     };
+    let contains_all_ids = match identity_proof.contains_all_ids(ids).await {
+        Ok(contains_all_ids) => contains_all_ids,
+        Err(_) => {
+            identity_proof.close().await?;
+            return Ok(None);
+        }
+    };
+    if !contains_all_ids {
+        identity_proof.close().await?;
+        return Ok(None);
+    }
     let archive_identity = match identity_proof.identity(ids).await {
         Ok(identity) => identity,
         Err(_) => {

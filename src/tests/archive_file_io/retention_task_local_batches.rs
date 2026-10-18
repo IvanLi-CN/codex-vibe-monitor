@@ -291,6 +291,129 @@ async fn retention_task_local_rejects_persisted_proof_after_source_change() {
 }
 
 #[tokio::test]
+async fn retention_task_local_rejects_persisted_proof_when_archive_id_set_is_not_exact() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-reject-archive-id-set").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let first_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                _ = probe.verified.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(30), first_work)
+        .await
+        .expect("first retention run reached the budget stop");
+    assert_eq!(first.expect("first budget-limited run").0, 0);
+
+    sqlx::query(
+        "DELETE FROM codex_invocations
+         WHERE id = (SELECT MAX(id) FROM codex_invocations)",
+    )
+    .execute(&pool)
+    .await
+    .expect("remove one source row after durable proof");
+
+    // The final gzip contains 401 rows, while the live source selection now contains 400. The
+    // fallback writer is paused so this test can only pass when reuse is rejected before deletion.
+    let resumed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(15),
+        RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
+            Duration::from_secs(60),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    )
+    .await
+    .expect("archive-id-set fallback run");
+    assert_eq!(resumed.0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after rejected archive-id-set reuse"),
+        400
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_task_local_rejects_persisted_proof_when_final_marker_is_missing() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("task-local-reject-missing-final-proof").await;
+    config.retention_batch_rows = 1_000;
+    config.invocation_success_full_days = config.invocation_max_days;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let occurred_at = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 12, 0, 0);
+    seed_task_batch(&pool, &occurred_at, 0, 401).await;
+
+    let probe = Arc::new(crate::maintenance::ArchiveArtifactProbe::default());
+    let first_work =
+        crate::maintenance::retention_test_with_work_budget(Duration::from_secs(60), async {
+            let mut archive = Box::pin(crate::maintenance::RETENTION_TEST_ARCHIVE_ARTIFACT.scope(
+                probe.clone(),
+                archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+            ));
+            tokio::select! {
+                result = &mut archive => result,
+                _ = probe.verified.notified() => {
+                    crate::maintenance::retention_test_expire_work_budget();
+                    probe.resume.notify_one();
+                    archive.await
+                }
+            }
+        });
+    let first = tokio::time::timeout(Duration::from_secs(30), first_work)
+        .await
+        .expect("first retention run reached the budget stop");
+    assert_eq!(first.expect("first budget-limited run").0, 0);
+
+    sqlx::query("DELETE FROM summary_archive_snapshot_v2_proof")
+        .execute(&pool)
+        .await
+        .expect("remove final Summary proof marker");
+
+    // Valid pages without the final marker are recovery data, not a reusable proof. The paused
+    // fallback prevents this test from succeeding through a fresh archive rebuild.
+    let resumed = crate::maintenance::retention_test_with_work_budget(
+        Duration::from_secs(15),
+        RETENTION_TEST_TASK_ARCHIVE_PAUSE.scope(
+            Duration::from_secs(60),
+            archive_old_invocations(&pool, &config, config.database_path.parent(), false),
+        ),
+    )
+    .await
+    .expect("missing-final-proof fallback run");
+    assert_eq!(resumed.0, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM codex_invocations")
+            .fetch_one(&pool)
+            .await
+            .expect("source rows after rejected missing-proof reuse"),
+        401
+    );
+    assert_no_task_work_files(&config.archive_dir);
+    pool.close().await;
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archive_selection_defers_large_payload_materialization() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("archive-selection-metadata").await;
