@@ -314,11 +314,11 @@ async fn startup_retry_queue_is_bounded_and_reports_overflow() {
     use crate::proxy_sqlite_write_coordinator::{
         ProxySqliteWriteClass, proxy_sqlite_write_coordinator,
     };
-    use prompt_cache_conversations::invocation_ranges::STARTUP_OWNER_LIMIT;
+    const RETRY_QUEUE_LIMIT: usize = 128;
 
     let pool = fixture().await;
     let manager = Arc::new(InvocationRangeManager::default());
-    let owners: Vec<String> = (0..STARTUP_OWNER_LIMIT + 2)
+    let owners: Vec<String> = (0..RETRY_QUEUE_LIMIT + 2)
         .map(|number| format!("retry-capacity-owner-{number}"))
         .collect();
     for key in &owners {
@@ -331,7 +331,7 @@ async fn startup_retry_queue_is_bounded_and_reports_overflow() {
 
     assert_eq!(
         manager.test_prepare_keys(&pool, &keys).await,
-        STARTUP_OWNER_LIMIT,
+        RETRY_QUEUE_LIMIT,
         "queue overflow must not exceed the configured owner bound"
     );
     assert_eq!(
