@@ -452,7 +452,7 @@ async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
         .await
         .context("load bounded unpromoted Summary Snapshot identities")?;
         let Some(last_identity) = identities.last() else {
-            return Ok((Vec::new(), 0));
+            return Ok((Vec::new(), cursor_id));
         };
         cursor_id = last_identity.id;
         let candidates = load_summary_archive_snapshot_backfill_candidate_rows(

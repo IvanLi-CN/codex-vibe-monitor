@@ -434,19 +434,17 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
         })?;
         for row_id in rows {
             summary.scanned += 1;
-            let updated = assign_pool_upstream_request_attempt_public_id_if_missing(
-                &mut *transaction,
-                row_id,
-            )
-            .await
-            .map_err(|error| {
-                anyhow::Error::new(crate::BackfillPartialFailure {
-                    source: error,
-                    next_cursor_id: committed_cursor_id,
-                    scanned: committed_scanned,
-                    updated: committed_updated,
-                })
-            })?;
+            let updated =
+                assign_pool_upstream_request_attempt_public_id_if_missing(&mut transaction, row_id)
+                    .await
+                    .map_err(|error| {
+                        anyhow::Error::new(crate::BackfillPartialFailure {
+                            source: error,
+                            next_cursor_id: committed_cursor_id,
+                            scanned: committed_scanned,
+                            updated: committed_updated,
+                        })
+                    })?;
             if updated {
                 summary.updated += 1;
                 push_backfill_sample(&mut samples, format!("id={row_id}"));
