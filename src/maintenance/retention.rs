@@ -60,10 +60,10 @@ mod batch_admission;
 pub(crate) use batch_admission::acquire_retention_batch_write_connection;
 #[cfg(test)]
 pub(crate) use batch_admission::{
-    ArchiveArtifactProbe, ArchiveFileVerifyProbe, BatchCommitProbe, GateGenerationProbe,
-    RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
-    RETENTION_TEST_BATCH_COMMIT, RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN,
-    TransactionBeginProbe,
+    ArchiveArtifactProbe, ArchiveFileVerifyProbe, ArchiveIdentityProofProbe, BatchCommitProbe,
+    GateGenerationProbe, RETENTION_TEST_ARCHIVE_ARTIFACT, RETENTION_TEST_ARCHIVE_FILE_VERIFY,
+    RETENTION_TEST_ARCHIVE_IDENTITY_PROOF, RETENTION_TEST_BATCH_COMMIT,
+    RETENTION_TEST_GATE_GENERATION, RETENTION_TEST_TRANSACTION_BEGIN, TransactionBeginProbe,
 };
 
 pub(crate) use workload::run_data_retention_maintenance_with_circuit_and_prompt_cache;
@@ -780,6 +780,13 @@ pub(crate) async fn retention_test_with_work_budget<F: std::future::Future>(
     RETENTION_RUN_DEADLINE
         .scope(RefCell::new(Some(Instant::now() + budget)), work)
         .await
+}
+
+#[cfg(test)]
+pub(crate) fn retention_test_expire_work_budget() {
+    RETENTION_RUN_DEADLINE.with(|deadline| {
+        *deadline.borrow_mut() = Some(Instant::now());
+    });
 }
 
 #[cfg(test)]

@@ -239,6 +239,13 @@ struct ArchiveSourceIdentityProof {
     spec: ArchiveTableSpec,
 }
 
+fn archive_identity_proof_load_exhausted_budget(error: &anyhow::Error) -> bool {
+    retention_run_budget_expired()
+        || error
+            .to_string()
+            .contains("retention archive identity proof inflate exceeded the task budget")
+}
+
 impl ArchiveSourceIdentityProof {
     async fn load(path: &Path, spec: ArchiveTableSpec) -> Result<Self> {
         // The writer/publication path already proves the returned artifact digest. The first
@@ -252,7 +259,22 @@ impl ArchiveSourceIdentityProof {
         let work_owner_file =
             crate::maintenance::archive::create_retention_identity_work_file(path, &proof_path)?;
         let cleanup = TempSqliteCleanup::new(proof_path.clone());
-        inflate_gzip_sqlite_file(path, &proof_path)?;
+        #[cfg(test)]
+        batch_admission::pause_before_archive_identity_proof_inflate().await;
+        if let Some(remaining) = retention_run_remaining_budget() {
+            let complete = inflate_gzip_sqlite_file_with_budget(
+                path,
+                &proof_path,
+                Instant::now(),
+                Some(remaining),
+            )
+            .await?;
+            if !complete {
+                bail!("retention archive identity proof inflate exceeded the task budget");
+            }
+        } else {
+            inflate_gzip_sqlite_file(path, &proof_path)?;
+        }
         let connection = open_archive_sqlite_connection(&proof_path).await?;
         Ok(Self {
             cleanup,
@@ -279,6 +301,28 @@ impl ArchiveSourceIdentityProof {
         }
     }
 
+    async fn has_exact_ids(&mut self, ids: &[i64], expected_count: i64) -> Result<bool> {
+        let ids_json = serde_json::to_string(ids).context("encode retention archive source ids")?;
+        let connection = self
+            .connection
+            .as_mut()
+            .context("archive source identity proof connection is closed")?;
+        let archive_row_count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM main.codex_invocations")
+                .fetch_one(&mut *connection)
+                .await
+                .context("count rows in archive source identity proof")?;
+        let selected_count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM main.codex_invocations
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(ids_json)
+        .fetch_one(&mut *connection)
+        .await
+        .context("count selected rows in archive source identity proof")?;
+        Ok(archive_row_count == expected_count && selected_count == expected_count)
+    }
+
     async fn close(mut self) -> Result<()> {
         if let Some(connection) = self.connection.take() {
             connection.close().await?;
@@ -286,6 +330,165 @@ impl ArchiveSourceIdentityProof {
         let _ = &self.cleanup;
         Ok(())
     }
+}
+
+struct ReusableTaskMonthArchive {
+    outcome: ArchiveBatchOutcome,
+    proof: crate::VerifiedSummaryArchiveSnapshot,
+    identity_proof: ArchiveSourceIdentityProof,
+}
+
+async fn reuse_task_month_archive_if_proven(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    month_key: &str,
+    ids: &[i64],
+    source_identity_sha256: &str,
+) -> Result<Option<ReusableTaskMonthArchive>> {
+    if spec.dataset != "codex_invocations" {
+        return Ok(None);
+    }
+    let final_path = archive_batch_file_path(config, spec.dataset, month_key)?;
+    if !final_path.is_file() {
+        return Ok(None);
+    }
+    let manifest = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        "SELECT id, sha256, row_count, coverage_start_at, coverage_end_at, archive_expires_at
+         FROM archive_batches
+         WHERE dataset = ?1
+           AND month_key = ?2
+           AND file_path = ?3
+           AND status = 'materializing'
+           AND summary_source_kind = 'authoritative'
+           AND sha256 IS NOT NULL
+           AND TRIM(sha256) <> ''
+         ORDER BY id DESC
+         LIMIT 1",
+    )
+    .bind(spec.dataset)
+    .bind(month_key)
+    .bind(final_path.to_string_lossy().to_string())
+    .fetch_optional(pool)
+    .await?;
+    let Some((
+        archive_batch_id,
+        sha256,
+        row_count,
+        coverage_start_at,
+        coverage_end_at,
+        archive_expires_at,
+    )) = manifest
+    else {
+        return Ok(None);
+    };
+
+    let expected_row_count =
+        i64::try_from(ids.len()).context("count retention archive source ids")?;
+    if row_count != expected_row_count
+        || !crate::summary_archive_snapshot_has_final_proof_read_only(
+            pool,
+            archive_batch_id,
+            &sha256,
+        )
+        .await?
+    {
+        return Ok(None);
+    }
+    let manifest_coverage_matches_proof: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM archive_batches AS manifest
+             JOIN summary_archive_snapshot_v2_proof AS proof
+               ON proof.archive_batch_id = manifest.id
+              AND proof.manifest_sha256 = manifest.sha256
+             WHERE manifest.id = ?1 AND manifest.sha256 = ?2
+               AND ((manifest.coverage_start_at IS NULL AND proof.coverage_start IS NULL)
+                    OR manifest.coverage_start_at = proof.coverage_start)
+               AND ((manifest.coverage_end_at IS NULL AND proof.coverage_end IS NULL)
+                    OR manifest.coverage_end_at = proof.coverage_end)
+         )",
+    )
+    .bind(archive_batch_id)
+    .bind(&sha256)
+    .fetch_one(pool)
+    .await?;
+    if !manifest_coverage_matches_proof {
+        return Ok(None);
+    }
+
+    // A durable Summary proof makes the published artifact reusable. The source admission
+    // below still rechecks the file digest while holding the archive fence before deletion.
+    let mut identity_proof = match ArchiveSourceIdentityProof::load(&final_path, spec).await {
+        Ok(proof) => proof,
+        Err(_) => return Ok(None),
+    };
+    let has_exact_ids = match identity_proof.has_exact_ids(ids, expected_row_count).await {
+        Ok(has_exact_ids) => has_exact_ids,
+        Err(_) => {
+            let _ = identity_proof.close().await;
+            return Ok(None);
+        }
+    };
+    if !has_exact_ids {
+        let _ = identity_proof.close().await;
+        return Ok(None);
+    }
+    let archive_identity = match identity_proof.identity(ids).await {
+        Ok(identity) => identity,
+        Err(_) => {
+            let _ = identity_proof.close().await;
+            return Ok(None);
+        }
+    };
+    if archive_identity != source_identity_sha256 {
+        let _ = identity_proof.close().await;
+        return Ok(None);
+    }
+    let proof =
+        match crate::prepare_verified_summary_archive_snapshot(pool, archive_batch_id, &sha256)
+            .await
+        {
+            Ok(proof) => proof,
+            Err(_) => {
+                let _ = identity_proof.close().await;
+                return Ok(None);
+            }
+        };
+    Ok(Some(ReusableTaskMonthArchive {
+        outcome: ArchiveBatchOutcome {
+            dataset: spec.dataset,
+            month_key: month_key.to_string(),
+            day_key: None,
+            part_key: None,
+            file_path: final_path.to_string_lossy().to_string(),
+            sha256,
+            source_identity_sha256: Some(source_identity_sha256.to_string()),
+            row_count,
+            upstream_last_activity: Vec::new(),
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            summary_source_kind: SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
+        },
+        proof,
+        identity_proof,
+    }))
 }
 
 struct RetentionBatchCommit {
@@ -572,6 +775,10 @@ pub(crate) async fn prune_old_invocation_details(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        recovery_diagnostic.mark_budget();
+                        break;
+                    }
                     Err(error) => {
                         recovery_diagnostic.mark_proof_unavailable();
                         return Err(error);
@@ -1029,112 +1236,176 @@ pub(super) async fn archive_old_invocations_with_source_max(
                 break;
             }
             let prepare_started = Instant::now();
-            let mut snapshot_pages = Vec::new();
             let prepare_phase = batch_observation.phase(RetentionPhase::Prepare);
-            let archive_future = archive_rows_into_task_month_batch(
-                pool,
-                config,
-                spec,
-                &group_key,
-                &ids,
-                &mut snapshot_pages,
-            );
-            let archive_writer_started = Instant::now();
-            let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
-                match tokio::time::timeout(remaining, archive_future).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        batch_observation.archive_writer_finished(archive_writer_started.elapsed());
-                        recovery_diagnostic.mark_budget();
-                        break;
+            let reusable_archive = {
+                let reuse_future = reuse_task_month_archive_if_proven(
+                    pool,
+                    config,
+                    spec,
+                    &group_key,
+                    &ids,
+                    &source_identity_sha256,
+                );
+                if let Some(remaining) = retention_run_remaining_budget() {
+                    match tokio::time::timeout(remaining, reuse_future).await {
+                        Ok(result) => result?,
+                        Err(_) => {
+                            recovery_diagnostic.mark_budget();
+                            break;
+                        }
                     }
+                } else {
+                    reuse_future.await?
                 }
-            } else {
-                archive_future.await
             };
-            batch_observation.archive_writer_finished(archive_writer_started.elapsed());
-            let Some(mut archive_outcome) = (match archive_result {
-                Ok(outcome) => Some(outcome),
-                Err(error) if is_retention_write_deferred(&error) => {
-                    retention_recovery_record_deferred("preparing");
-                    recovery_diagnostic.mark_stop();
-                    return Ok((
-                        rows_archived,
-                        archive_batches,
-                        raw_files_removed,
-                        prompt_cache_keys,
-                    ));
-                }
-                Err(error) => {
-                    mark_error(&mut recovery_diagnostic, &error);
-                    return Err(error.context("prepare task-local invocation month file"));
-                }
-            }) else {
-                recovery_diagnostic.mark_stop();
-                return Ok((
-                    rows_archived,
-                    archive_batches,
-                    raw_files_removed,
-                    prompt_cache_keys,
-                ));
-            };
-            if archive_outcome.source_identity_sha256.as_deref()
-                != Some(source_identity_sha256.as_str())
-            {
-                recovery_diagnostic.mark_proof_unavailable();
-                bail!("retention task-local archive source identity verification failed");
-            }
-            set_archive_batch_coverage_from_local_rows(
-                &mut archive_outcome,
-                group.iter().map(|candidate| candidate.occurred_at.as_str()),
-                None,
-            )?;
-            archive_outcome.coverage_start_at = snapshot_pages
-                .first()
-                .map(|page| page.coverage_start.clone());
-            archive_outcome.coverage_end_at =
-                snapshot_pages.last().map(|page| page.coverage_end.clone());
-            archive_outcome.archive_expires_at =
-                Some(shanghai_archive_expiry_from_reference_timestamp(
-                    &format_utc_iso(Utc::now()),
-                    config.invocation_archive_ttl_days,
-                )?);
-            archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
-            let prepare_elapsed = prepare_started.elapsed();
-            batch_observation.file_prepared(prepare_elapsed);
-            drop(prepare_phase);
-            let mut archive_identity_proof =
-                match ArchiveSourceIdentityProof::load(Path::new(&archive_outcome.file_path), spec)
-                    .await
-                {
-                    Ok(proof) => proof,
-                    Err(error) => {
+            let (archive_outcome, proof, mut archive_identity_proof, prepare_elapsed) =
+                if let Some(reusable_archive) = reusable_archive {
+                    let elapsed = prepare_started.elapsed();
+                    batch_observation.archive_writer_finished(elapsed);
+                    batch_observation.file_prepared(elapsed);
+                    batch_observation.summary_proof_finished(elapsed);
+                    drop(prepare_phase);
+                    (
+                        reusable_archive.outcome,
+                        reusable_archive.proof,
+                        reusable_archive.identity_proof,
+                        elapsed,
+                    )
+                } else {
+                    let mut snapshot_pages = Vec::new();
+                    let archive_future = archive_rows_into_task_month_batch(
+                        pool,
+                        config,
+                        spec,
+                        &group_key,
+                        &ids,
+                        &mut snapshot_pages,
+                    );
+                    let archive_writer_started = Instant::now();
+                    let archive_result = if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, archive_future).await {
+                            Ok(result) => result,
+                            Err(_) => {
+                                batch_observation
+                                    .archive_writer_finished(archive_writer_started.elapsed());
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
+                        }
+                    } else {
+                        archive_future.await
+                    };
+                    batch_observation.archive_writer_finished(archive_writer_started.elapsed());
+                    let Some(mut archive_outcome) = (match archive_result {
+                        Ok(outcome) => Some(outcome),
+                        Err(error) if is_retention_write_deferred(&error) => {
+                            retention_recovery_record_deferred("preparing");
+                            recovery_diagnostic.mark_stop();
+                            return Ok((
+                                rows_archived,
+                                archive_batches,
+                                raw_files_removed,
+                                prompt_cache_keys,
+                            ));
+                        }
+                        Err(error) => {
+                            mark_error(&mut recovery_diagnostic, &error);
+                            return Err(error.context("prepare task-local invocation month file"));
+                        }
+                    }) else {
+                        recovery_diagnostic.mark_stop();
+                        return Ok((
+                            rows_archived,
+                            archive_batches,
+                            raw_files_removed,
+                            prompt_cache_keys,
+                        ));
+                    };
+                    if archive_outcome.source_identity_sha256.as_deref()
+                        != Some(source_identity_sha256.as_str())
+                    {
                         recovery_diagnostic.mark_proof_unavailable();
-                        return Err(error);
+                        bail!("retention task-local archive source identity verification failed");
                     }
-                };
-            let summary_proof_started = Instant::now();
-            let proof_result =
-                batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages)
+                    set_archive_batch_coverage_from_local_rows(
+                        &mut archive_outcome,
+                        group.iter().map(|candidate| candidate.occurred_at.as_str()),
+                        None,
+                    )?;
+                    archive_outcome.coverage_start_at = snapshot_pages
+                        .first()
+                        .map(|page| page.coverage_start.clone());
+                    archive_outcome.coverage_end_at =
+                        snapshot_pages.last().map(|page| page.coverage_end.clone());
+                    archive_outcome.archive_expires_at =
+                        Some(shanghai_archive_expiry_from_reference_timestamp(
+                            &format_utc_iso(Utc::now()),
+                            config.invocation_archive_ttl_days,
+                        )?);
+                    archive_outcome.summary_source_kind = SUMMARY_ARCHIVE_SOURCE_KIND_AUTHORITATIVE;
+                    let prepare_elapsed = prepare_started.elapsed();
+                    batch_observation.file_prepared(prepare_elapsed);
+                    drop(prepare_phase);
+                    let archive_identity_proof = match ArchiveSourceIdentityProof::load(
+                        Path::new(&archive_outcome.file_path),
+                        spec,
+                    )
                     .await
-                    .context("prepare task-local monthly Summary proof");
-            batch_observation.summary_proof_finished(summary_proof_started.elapsed());
-            let proof = match proof_result {
-                Ok(Some(proof)) => proof,
-                Ok(None) => {
-                    recovery_diagnostic.mark_proof_unavailable();
-                    return Ok((
-                        rows_archived,
-                        archive_batches,
-                        raw_files_removed,
-                        prompt_cache_keys,
-                    ));
-                }
-                Err(error) => {
-                    recovery_diagnostic.mark_proof_unavailable();
-                    return Err(error);
-                }
-            };
+                    {
+                        Ok(proof) => proof,
+                        Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                            recovery_diagnostic.mark_budget();
+                            break;
+                        }
+                        Err(error) => {
+                            recovery_diagnostic.mark_proof_unavailable();
+                            return Err(error);
+                        }
+                    };
+                    let summary_proof_started = Instant::now();
+                    let proof_future =
+                        batch_plan::prepare_summary_proof(pool, &archive_outcome, snapshot_pages);
+                    let proof_result = if let Some(remaining) = retention_run_remaining_budget() {
+                        match tokio::time::timeout(remaining, proof_future).await {
+                            Ok(result) => {
+                                result.context("prepare task-local monthly Summary proof")
+                            }
+                            Err(_) => {
+                                batch_observation
+                                    .summary_proof_finished(summary_proof_started.elapsed());
+                                recovery_diagnostic.mark_budget();
+                                break;
+                            }
+                        }
+                    } else {
+                        proof_future
+                            .await
+                            .context("prepare task-local monthly Summary proof")
+                    };
+                    batch_observation.summary_proof_finished(summary_proof_started.elapsed());
+                    let proof = match proof_result {
+                        Ok(Some(proof)) => proof,
+                        Ok(None) => {
+                            recovery_diagnostic.mark_proof_unavailable();
+                            return Ok((
+                                rows_archived,
+                                archive_batches,
+                                raw_files_removed,
+                                prompt_cache_keys,
+                            ));
+                        }
+                        Err(error) => {
+                            recovery_diagnostic.mark_proof_unavailable();
+                            return Err(error);
+                        }
+                    };
+                    (
+                        archive_outcome,
+                        proof,
+                        archive_identity_proof,
+                        prepare_elapsed,
+                    )
+                };
             #[cfg(test)]
             batch_admission::pause_after_archive_artifact_verified().await;
             let mut committed_rows = 0;
@@ -1714,6 +1985,10 @@ pub(crate) async fn archive_timestamped_dataset(
                     .await
                 {
                     Ok(proof) => proof,
+                    Err(error) if archive_identity_proof_load_exhausted_budget(&error) => {
+                        recovery_diagnostic.mark_budget();
+                        break;
+                    }
                     Err(error) => {
                         recovery_diagnostic.mark_proof_unavailable();
                         return Err(error);

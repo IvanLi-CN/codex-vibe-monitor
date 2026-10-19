@@ -844,8 +844,52 @@ pub(super) async fn prepare_summary_proof(
         bail!("summary archive artifact changed before semantic proof");
     }
     let proof = prepare_verified_summary_archive_snapshot(pool, batch_id, &outcome.sha256).await?;
+    if persist_summary_proof(pool, &proof).await?.is_none() {
+        drop(archive_lock);
+        return Ok(None);
+    }
     drop(archive_lock);
     Ok(Some(proof))
+}
+
+async fn persist_summary_proof(
+    pool: &Pool<Sqlite>,
+    proof: &crate::VerifiedSummaryArchiveSnapshot,
+) -> Result<Option<()>> {
+    let Some((connection, admission)) =
+        acquire_retention_batch_write_connection(pool, "archive_snapshot_proof").await?
+    else {
+        return Ok(None);
+    };
+    let mut resources = RetentionTransactionResources::without_archive_fence(connection, admission);
+    resources.mark_transaction_started();
+    let result: Result<()> = async {
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(resources.connection_mut())
+            .await?;
+        crate::store_verified_summary_archive_snapshot_tx(resources.connection_mut(), proof)
+            .await?;
+        sqlx::query("COMMIT")
+            .execute(resources.connection_mut())
+            .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(error) = result {
+        let cleanup_error = resources.rollback_and_close().await;
+        if let Err(cleanup_error) = cleanup_error {
+            return Err(error.context(format!(
+                "summary proof transaction rollback and close failed: {cleanup_error}"
+            )));
+        }
+        return Err(error);
+    }
+    resources.mark_transaction_finished();
+    resources
+        .return_to_pool()
+        .await
+        .context("return summary proof transaction connection to pool")?;
+    Ok(Some(()))
 }
 
 #[cfg(test)]

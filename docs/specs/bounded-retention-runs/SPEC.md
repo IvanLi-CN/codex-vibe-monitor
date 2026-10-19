@@ -125,7 +125,7 @@
 
 每次运行 MUST 从 live rows 选择本轮固定候选范围，按数据集及月份合并候选，并在本轮完成文件准备、摘要与源身份校验、manifest 发布和对应源记录转换。月份是目标文件分组键，不是任务完成边界；一个运行无需处理完整月份。正常负载且候选充足时文件批次至少 512 行，目标约 1000 行；配置上限、剩余尾批、空间或 payload 边界导致的小批须可解释，不能将 50 行当作吞吐目标。
 
-临时文件、未完成 prepared/staging、续作 cursor 或未完成累计值 MUST NOT 成为下一次运行的正常输入。成功、超时及失败出口清理本轮临时文件；进程中断留下的临时文件只可丢弃，不可继续写入。后续运行重新选择仍在线的源记录；只有绑定同一 `archive_batch_id` 与 manifest SHA、且 ID/coverage 与归档实际 keyset 页一致并可从当前归档行逐字节重编码的连续有效 V2 Summary 页可以作为无删除权的进度证据被复用，不能恢复源候选 ID、临时文件或源删除事务。已完成的 manifest 是单调权威边界，过期 writer 不得将其降回 `materializing`；坏页清理必须以观测到的页指纹为条件，遇到并发修复则延期重试。已完成的独立批次保持成功事实，一个月份失败不得破坏其他已完成批次。基础任务内批次方案不要求新增主库结构；当前增量恢复扩展明确替换该边界，允许幂等新增 `archive_sha256`、repair progress/deferred 状态及 `pending_generation`，并须保留旧状态的未验证语义、前向修复和兼容回滚路径。
+临时文件、未完成 prepared/staging、续作 cursor 或未完成累计值 MUST NOT 成为下一次运行的正常输入。成功、超时及失败出口清理本轮临时文件；进程中断留下的临时文件只可丢弃，不可继续写入。后续运行重新选择仍在线的源记录；绑定同一 `archive_batch_id` 与 manifest SHA、已发布在规范目标上的 gzip 文件，以及完整、持久的 V2 Summary proof，且 manifest/file/coverage/keyset 与当前 live source identity 重新验证一致时，可以复用该已发布文件作为无删除权的恢复证据，不能恢复源候选 ID、临时文件、候选游标或源删除事务。proof 可以在 manifest 仍为 `materializing` 时持久化，但该状态永远不是 Summary 或 cleanup 的权威来源；只有正常源转换事务完成后才可转为 `completed`。任一文件、manifest、proof 或源身份复核失败都必须回到安全重建/延期路径。已完成的 manifest 是单调权威边界，过期 writer 不得将其降回 `materializing`；坏页清理必须以观测到的页指纹为条件，遇到并发修复则延期重试。已完成的独立批次保持成功事实，一个月份失败不得破坏其他已完成批次。基础任务内批次方案不要求新增主库结构；当前增量恢复扩展明确替换该边界，允许幂等新增 `archive_sha256`、repair progress/deferred 状态及 `pending_generation`，并须保留旧状态的未验证语义、前向修复和兼容回滚路径。
 
 发布用 staging 与恢复读取副本 MUST 分开管理。恢复读取可在预算耗尽时保留已完整解压且绑定当前 manifest SHA 的只读 SQLite 副本，路径按来源固定；来源被拒绝、部分解压、读取失败或恢复完成时清理副本及 sidecar。副本不可作为未完成归档写入的续作输入。重建最后有效统计前 MUST 非阻塞取得所有来源目录的发布围栏，同一目录只持有一次；目录忙时保留统计并延后，围栏保持到恢复事务提交或回滚。
 
@@ -211,7 +211,7 @@
 
 - covers: `REQ-BRR-002`, `REQ-BRR-004`, `REQ-BRR-022`, `REQ-BRR-023`
 - 方法：同月多次任务、迟到记录、重复身份、文件摘要失败、准入拒绝、超时及进程中断夹具；检查目标路径、源记录/raw link、临时文件和未新增主库结构。发布构建使用同种子百万级 cohort、30,000/day invocation、1.2 倍 attempt 与在线读写进行基线/候选各三次实测。
-- 通过条件：任务内闭环且下轮从 live rows 重选，合法同 SHA Summary 页前缀可幂等复用；失败未证明源行不转换，不依赖旧 staging/cursor；同月只使用规范目标且重复记录不计数；正常批次达到数百到约千行，两个数据集达到规定服务速率并在 24 小时内消化固定 cohort；超时/空间/锁等待可观测，在线 p95/p99 不劣于基线。
+- 通过条件：任务内闭环且下轮从 live rows 重选；只有重新通过 manifest、文件、coverage、keyset、durable proof 和当前 source identity 校验的同月已发布 artifact 可幂等复用；失败未证明源行不转换，不依赖旧 staging/cursor；同月只使用规范目标且重复记录不计数；正常批次达到数百到约千行，两个数据集达到规定服务速率并在 24 小时内消化固定 cohort；超时/空间/锁等待可观测，在线 p95/p99 不劣于基线。
 
 ### VER-BRR-013
 
@@ -227,8 +227,9 @@
 - [Retention core and conversation derived maintenance](../../adr/0025-retention-core-and-conversation-derived-maintenance.md)
 - [Retention catch-up independent of inspection schedules](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md)
 - [Retention task-local batches and monthly archive targets](../../adr/0032-retention-task-local-batches-and-monthly-archive-targets.md)
-- [Monthly Summary page checkpoints](../../adr/0042-monthly-summary-page-checkpoints.md)
 - [Bounded maintenance contention](../../adr/0040-bounded-maintenance-contention.md)
+- [Monthly Summary page checkpoints](../../adr/0042-monthly-summary-page-checkpoints.md)
+- [Reuse proven monthly archive after budget stop](../../adr/0043-reuse-proven-monthly-archive-after-budget-stop.md)
 
 ## References
 
