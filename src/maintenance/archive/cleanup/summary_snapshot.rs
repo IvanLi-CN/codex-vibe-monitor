@@ -8,6 +8,7 @@ use sha2_resumable::{
 };
 
 pub(super) const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE: &str = "summary-global";
+const SUMMARY_ARCHIVE_SNAPSHOT_DUE_SCOPE: &str = "summary-global:due";
 const SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT: i64 = 64;
 const SUMMARY_ARCHIVE_SNAPSHOT_IDENTITY_WINDOW: i64 = 256;
 const SUMMARY_ARCHIVE_SNAPSHOT_MAX_IDENTITY_WINDOWS: usize = 4;
@@ -195,7 +196,32 @@ async fn load_summary_archive_snapshot_backfill_candidate_rows(
         return Ok(Vec::new());
     }
 
-    let mut query = QueryBuilder::<Sqlite>::new("WITH candidate(id, manifest_sha256) AS (VALUES ");
+    crate::observability::contention::observe_query(
+        crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
+        build_summary_archive_snapshot_backfill_candidate_query(
+            identities, limit, due_queue, promotion, false,
+        )
+        .build_query_as::<HistoricalRollupStartupCandidateRow>()
+        .fetch_all(pool),
+    )
+    .await
+    .context("load bounded Summary Snapshot candidate facts")
+}
+
+fn build_summary_archive_snapshot_backfill_candidate_query<'args>(
+    identities: &'args [SummaryArchiveSnapshotCandidateIdentity],
+    limit: i64,
+    due_queue: bool,
+    promotion: bool,
+    explain: bool,
+) -> QueryBuilder<'args, Sqlite> {
+    let mut query = if explain {
+        QueryBuilder::<Sqlite>::new(
+            "EXPLAIN QUERY PLAN WITH candidate(id, manifest_sha256) AS (VALUES ",
+        )
+    } else {
+        QueryBuilder::<Sqlite>::new("WITH candidate(id, manifest_sha256) AS (VALUES ")
+    };
     for (index, identity) in identities.iter().enumerate() {
         if index > 0 {
             query.push(", ");
@@ -227,14 +253,33 @@ async fn load_summary_archive_snapshot_backfill_candidate_rows(
         query.push(" ORDER BY batches.id ASC LIMIT ");
     }
     query.push_bind(limit.max(1));
-    crate::observability::contention::observe_query(
-        crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
-        query
-            .build_query_as::<HistoricalRollupStartupCandidateRow>()
-            .fetch_all(pool),
+    query
+}
+
+#[cfg(test)]
+pub(super) async fn explain_summary_archive_snapshot_backfill_candidate_query(
+    pool: &Pool<Sqlite>,
+    archive_batch_id: i64,
+    manifest_sha256: &str,
+    limit: i64,
+    due_queue: bool,
+    promotion: bool,
+) -> Result<Vec<(i64, i64, i64, String)>> {
+    let identity = SummaryArchiveSnapshotCandidateIdentity {
+        id: archive_batch_id,
+        sha256: manifest_sha256.to_owned(),
+    };
+    build_summary_archive_snapshot_backfill_candidate_query(
+        std::slice::from_ref(&identity),
+        limit,
+        due_queue,
+        promotion,
+        true,
     )
+    .build_query_as::<(i64, i64, i64, String)>()
+    .fetch_all(pool)
     .await
-    .context("load bounded Summary Snapshot candidate facts")
+    .context("explain bounded Summary Snapshot candidate facts")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,11 +388,22 @@ fn summary_archive_snapshot_candidate_intersects_current_30d(
 async fn load_summary_archive_snapshot_backfill_checkpoint(
     pool: &Pool<Sqlite>,
 ) -> Result<(i64, i64, bool)> {
+    load_summary_archive_snapshot_backfill_checkpoint_for_scope(
+        pool,
+        SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE,
+    )
+    .await
+}
+
+async fn load_summary_archive_snapshot_backfill_checkpoint_for_scope(
+    pool: &Pool<Sqlite>,
+    scope: &str,
+) -> Result<(i64, i64, bool)> {
     Ok(sqlx::query_as::<_, (i64, i64, bool)>(
         "SELECT next_archive_batch_id, manifest_high_watermark_id, completed \
          FROM summary_archive_snapshot_backfill_checkpoint WHERE scope = ?1",
     )
-    .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE)
+    .bind(scope)
     .fetch_optional(pool)
     .await?
     .unwrap_or((0, 0, false)))
@@ -355,6 +411,23 @@ async fn load_summary_archive_snapshot_backfill_checkpoint(
 
 pub(super) async fn store_summary_archive_snapshot_backfill_checkpoint(
     pool: &Pool<Sqlite>,
+    next_archive_batch_id: i64,
+    manifest_high_watermark_id: i64,
+    completed: bool,
+) -> Result<()> {
+    store_summary_archive_snapshot_backfill_checkpoint_for_scope(
+        pool,
+        SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE,
+        next_archive_batch_id,
+        manifest_high_watermark_id,
+        completed,
+    )
+    .await
+}
+
+async fn store_summary_archive_snapshot_backfill_checkpoint_for_scope(
+    pool: &Pool<Sqlite>,
+    scope: &str,
     next_archive_batch_id: i64,
     manifest_high_watermark_id: i64,
     completed: bool,
@@ -376,7 +449,7 @@ pub(super) async fn store_summary_archive_snapshot_backfill_checkpoint(
            manifest_high_watermark_id = excluded.manifest_high_watermark_id, \
            completed = excluded.completed, updated_at = excluded.updated_at",
     )
-    .bind(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_SCOPE)
+    .bind(scope)
     .bind(next_archive_batch_id.max(0))
     .bind(manifest_high_watermark_id.max(0))
     .bind(i64::from(completed))
@@ -384,6 +457,30 @@ pub(super) async fn store_summary_archive_snapshot_backfill_checkpoint(
     .await?;
     drop(admission);
     Ok(())
+}
+
+async fn load_summary_archive_snapshot_due_cursor(pool: &Pool<Sqlite>) -> Result<i64> {
+    Ok(load_summary_archive_snapshot_backfill_checkpoint_for_scope(
+        pool,
+        SUMMARY_ARCHIVE_SNAPSHOT_DUE_SCOPE,
+    )
+    .await?
+    .0
+    .max(0))
+}
+
+async fn store_summary_archive_snapshot_due_cursor(
+    pool: &Pool<Sqlite>,
+    cursor_id: i64,
+) -> Result<()> {
+    store_summary_archive_snapshot_backfill_checkpoint_for_scope(
+        pool,
+        SUMMARY_ARCHIVE_SNAPSHOT_DUE_SCOPE,
+        cursor_id,
+        0,
+        false,
+    )
+    .await
 }
 
 pub(super) async fn load_summary_archive_snapshot_backfill_candidates(
@@ -1343,11 +1440,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     high_watermark_id = high_watermark_id.max(observed_high_watermark);
     // Recent coverage and due retries must progress independently of the sweep cursor. The
     // sweep only services never-seen backlog entries after the due queue has had a bounded turn.
-    let (mut candidates, _due_cursor_id) =
+    let due_cursor_id = load_summary_archive_snapshot_due_cursor(pool).await?;
+    let (mut candidates, due_cursor_after_scan) =
         load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
             pool,
             SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
-            0,
+            due_cursor_id,
         )
         .await?;
     let candidates_from_due_queue = !candidates.is_empty();
@@ -1512,6 +1610,14 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             )
             .await?;
         }
+    }
+    if !result.hit_budget {
+        let next_due_cursor_id = if due_cursor_after_scan == 0 && due_cursor_id > 0 {
+            0
+        } else {
+            due_cursor_after_scan
+        };
+        store_summary_archive_snapshot_due_cursor(pool, next_due_cursor_id).await?;
     }
     if candidate_count == 0
         && !(checkpoint_completed && cursor_id == 0 && high_watermark_id == observed_high_watermark)

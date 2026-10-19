@@ -288,6 +288,86 @@ async fn summary_archive_snapshot_backfill_due_queue_bypasses_id_sweep_cursor() 
 }
 
 #[tokio::test]
+async fn summary_archive_snapshot_backfill_due_cursor_advances_past_ineligible_window() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    for id in 1..=2047_i64 {
+        let sha256 = format!("settled-{id}");
+        sqlx::query(
+            "INSERT INTO archive_batches \
+                 (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+                  coverage_start_at, coverage_end_at) \
+                 VALUES (?1, 'codex_invocations', '2026-08', ?2, ?3, 1, \
+                         'completed', 'unknown', '2026-01-01 00:00:00', '2026-01-01 01:00:00')",
+        )
+        .bind(id)
+        .bind(format!("/legacy/settled-{id}.sqlite.gz"))
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled archive batch");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_backfill_outcome \
+                 (archive_batch_id, manifest_sha256, disposition, failure_kind, next_probe_at) \
+                 VALUES (?1, ?2, 'complete', '', datetime('now'))",
+        )
+        .bind(id)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled outcome");
+    }
+    sqlx::query(
+        "INSERT INTO archive_batches \
+             (id, dataset, month_key, file_path, sha256, row_count, status, summary_source_kind, \
+              coverage_start_at, coverage_end_at) \
+             VALUES (2048, 'codex_invocations', '2026-08', \
+                     '/legacy/due-after-window.sqlite.gz', 'due-after-window', 1, \
+                     'completed', 'unknown', datetime('now', '-2 days'), datetime('now', '-1 day'))",
+    )
+    .execute(&pool)
+    .await
+    .expect("seed due archive batch after window");
+
+    let first = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run first bounded Summary Snapshot backfill");
+    assert_eq!(first.scanned_archive_batches, 0);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT next_archive_batch_id FROM summary_archive_snapshot_backfill_checkpoint \
+                 WHERE scope = 'summary-global:due'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("load due cursor after first window"),
+        1024
+    );
+
+    let second = backfill_summary_archive_snapshots_v2_window(&pool, Duration::from_secs(1))
+        .await
+        .expect("run second bounded Summary Snapshot backfill");
+    assert_eq!(second.scanned_archive_batches, 1);
+    assert_eq!(
+        sqlx::query_scalar::<_, String>(
+            "SELECT failure_kind FROM summary_archive_snapshot_backfill_outcome \
+                 WHERE archive_batch_id = 2048 AND manifest_sha256 = 'due-after-window'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("due outcome after cursor advance"),
+        "missing_source"
+    );
+}
+
+#[tokio::test]
 async fn summary_archive_snapshot_backfill_persists_deadline_defer() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
         .max_connections(1)
@@ -1126,6 +1206,45 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
     );
     assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("proof"));
     assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("outcome"));
+}
+
+#[tokio::test]
+async fn summary_snapshot_v2_candidate_facts_use_bounded_values_plan() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    let plan = summary_snapshot::explain_summary_archive_snapshot_backfill_candidate_query(
+        &pool,
+        1,
+        "candidate-plan",
+        1,
+        false,
+        true,
+    )
+    .await
+    .expect("explain phase-two candidate facts query");
+    let details = plan
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains("SEARCH batches USING INTEGER PRIMARY KEY")),
+        "phase-two candidate facts must join archive batches by the bounded VALUES identity: {details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("SCAN batches")),
+        "phase-two candidate facts must not scan archive batches: {details:?}"
+    );
 }
 
 #[tokio::test]

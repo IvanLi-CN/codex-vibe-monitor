@@ -254,6 +254,72 @@ async fn backfill_proxy_requested_service_tiers_updates_payload_and_is_idempoten
 }
 
 #[tokio::test]
+async fn metadata_backfill_failure_keeps_cursor_before_uncommitted_window() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let temp_dir = make_temp_test_dir("proxy-metadata-backfill-partial-failure");
+    let request_path = temp_dir.join("request.json");
+    write_backfill_request_payload_with_requested_service_tier(
+        &request_path,
+        Some("priority"),
+        ProxyCaptureTarget::Responses,
+    );
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-metadata-partial-1",
+        &request_path,
+        r#"{"endpoint":"/v1/responses"}"#,
+    )
+    .await;
+    insert_proxy_prompt_cache_backfill_row(
+        &pool,
+        "proxy-metadata-partial-2",
+        &request_path,
+        r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority"}"#,
+    )
+    .await;
+    sqlx::query(
+        "CREATE TRIGGER fail_metadata_backfill BEFORE UPDATE OF payload ON codex_invocations \
+         WHEN OLD.invoke_id = 'proxy-metadata-partial-1' \
+         BEGIN SELECT RAISE(ABORT, 'synthetic metadata backfill failure'); END",
+    )
+    .execute(&pool)
+    .await
+    .expect("install metadata backfill failure trigger");
+
+    let error = backfill_proxy_requested_service_tiers_from_cursor(&pool, 0, None, None, None)
+        .await
+        .expect_err("synthetic transaction failure should be returned");
+    let partial = error
+        .downcast_ref::<BackfillPartialFailure>()
+        .expect("error should preserve partial backfill progress");
+    assert_eq!(partial.next_cursor_id, 0);
+    assert_eq!(partial.updated, 0);
+
+    sqlx::query("DROP TRIGGER fail_metadata_backfill")
+        .execute(&pool)
+        .await
+        .expect("remove metadata backfill failure trigger");
+    let resumed = backfill_proxy_requested_service_tiers_from_cursor(
+        &pool,
+        partial.next_cursor_id,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("backfill should resume from the uncommitted window");
+    assert_eq!(resumed.summary.updated, 1);
+
+    let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
 async fn backfill_proxy_requested_service_tiers_tracks_skip_counters() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
