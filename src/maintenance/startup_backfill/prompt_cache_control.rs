@@ -1,3 +1,5 @@
+#[cfg(test)]
+use super::task_runner::run_startup_backfill_task_with_pressure;
 use super::*;
 
 pub(super) fn prompt_cache_materialization_failed_outcome(

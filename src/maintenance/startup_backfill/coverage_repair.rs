@@ -134,7 +134,8 @@ where
     let child_key = "startup_backfill.account_activity_v2_coverage";
     let child_title = crate::maintenance_store::task_title_for_observation(child_key);
     observation.set_child(child_key, &child_title);
-    let _child_observation_guard = TaskObservationChildGuard(observation.clone());
+    let _child_observation_guard =
+        super::task_runner::TaskObservationChildGuard(observation.clone());
     let mut workload_observation = observation.begin_subtask_workload(child_key);
     let on_bucket_committed = workload_observation.processed_work_recorder();
 
