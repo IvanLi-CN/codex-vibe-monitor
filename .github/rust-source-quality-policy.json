@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 33,
+    "inventory_entries": 32,
     "suppression_entries": 125
   },
   "loc_targets": {
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/maintenance/archive/hourly_rollups.rs",
-      "role": "production",
-      "line_budget": 7079,
-      "next_module_workstream": "Split archive hourly rollup entry, account activity, network, replay, and retention."
     },
     {
       "path": "src/maintenance/hourly_rollups.rs",

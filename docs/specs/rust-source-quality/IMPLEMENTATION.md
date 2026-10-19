@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 33 current explicit file budgets (16 production and 17 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 32 current explicit file budgets (15 production and 17 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -377,8 +377,8 @@ Formal validation of this proposed contract remains pending. Formal25's full lig
 
 ## Inventory Contract
 
-The policy has 16 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
-The checker only reads those 33 paths; a long path absent from the inventory is
+The policy has 15 `production` entries above the 2,500-line destination target and 17 `test_helper` entries above the 3,000-line destination target. Each `line_budget` is the exact current physical line count from the verified base.
+The checker only reads those 32 paths; a long path absent from the inventory is
 not rejected by a global threshold.
 
 Every current entry has a concrete next module workstream. There are no
@@ -390,6 +390,10 @@ Suppression matching is exact after whitespace normalization and uses a
 multiset, so duplicate declarations remain distinguishable. Moving a
 declaration without changing its path or content does not create churn; adding,
 removing, or materially changing one does.
+
+## Archive Hourly Rollup Extraction
+
+The archive hourly-rollup extraction delegates production responsibilities to `entry.rs`, `invocation_replay.rs`, `account_activity.rs`, `network.rs`, and `retention.rs` under `src/maintenance/archive/hourly_rollups/`. The parent retains both complete inline test modules and the existing progress/support module paths, using crate-visible compatibility exports and parent-scoped helper visibility. After rustfmt, the parent is 1,884 lines and the children are respectively 1,129, 2,041, 886, 358, and 809 lines; every file is below the 2,500-line production target. The parent is removed from the canonical inventory, leaving 32 entries: 15 production and 17 test/helper candidates. Immutable candidate counts remain 32/23 and suppression entries remain 125. This extraction changes no runtime/API/SQL behavior, transaction boundaries, timing, concurrency, caching, assertions, or resource classification.
 
 ## CI Contract
 
