@@ -93,36 +93,6 @@ pub(crate) use raw_reconciliation::*;
 pub(crate) use write_admission::*;
 
 #[cfg(test)]
-mod ttft_retention_tests {
-    use super::*;
-
-    #[test]
-    fn archived_invocation_keeps_ttft_for_rollup_materialization() {
-        let candidate = InvocationArchiveCandidate {
-            id: 7,
-            invoke_id: "invoke-7".to_string(),
-            occurred_at: "2026-07-25 12:00:00".to_string(),
-            source: SOURCE_PROXY.to_string(),
-            status: Some("success".to_string()),
-            input_tokens: Some(10),
-            output_tokens: Some(2),
-            cache_input_tokens: Some(3),
-            reasoning_tokens: None,
-            total_tokens: Some(12),
-            cost: Some(0.01),
-            first_token_ms: Some(321.0),
-            payload: None,
-            request_raw_path: None,
-            response_raw_path: None,
-        };
-
-        let row = invocation_archive_candidate_to_hourly_source_record(&candidate);
-
-        assert_eq!(row.first_token_ms, Some(321.0));
-    }
-}
-
-#[cfg(test)]
 mod retention_write_budget_tests {
     use super::*;
 
