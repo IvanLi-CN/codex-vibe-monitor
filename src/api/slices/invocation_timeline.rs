@@ -1268,81 +1268,77 @@ async fn materialize_timeline_snapshot(
         Vec::new()
     };
     let mut cursor = None;
-    loop {
-        let Some((page, has_more, next_cursor)) = ({
-            let mut source_transaction = state.pool.begin().await?;
-            let mut query = build_invocation_select_query();
-            append_timeline_db_predicates(
-                &mut query,
-                &persisted_filters,
-                source_scope,
-                snapshot_id,
-                attempt_snapshot_id,
-                upstream_account_id,
-                start_bound,
-                overlap_start_bound,
-                end_bound,
-                include_live,
-                cursor.as_ref(),
-            );
-            query
+    while let Some((page, has_more, next_cursor)) = ({
+        let mut source_transaction = state.pool.begin().await?;
+        let mut query = build_invocation_select_query();
+        append_timeline_db_predicates(
+            &mut query,
+            &persisted_filters,
+            source_scope,
+            snapshot_id,
+            attempt_snapshot_id,
+            upstream_account_id,
+            start_bound,
+            overlap_start_bound,
+            end_bound,
+            include_live,
+            cursor.as_ref(),
+        );
+        query
                 .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
                 .push_bind(snapshot_id)
                 .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
                 .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-            let mut page = observe_query(
-                StatsQuery::InvocationTimeline,
-                query
-                    .build_query_as::<ApiInvocation>()
-                    .fetch_all(&mut *source_transaction),
+        let mut page = observe_query(
+            StatsQuery::InvocationTimeline,
+            query
+                .build_query_as::<ApiInvocation>()
+                .fetch_all(&mut *source_transaction),
+        )
+        .await?;
+        if page.is_empty() {
+            source_transaction.commit().await?;
+            None
+        } else {
+            let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
+            page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
+            let next_cursor = page.last().cloned().map(|last| TimelineCursor {
+                as_of: snapshot_token.to_string(),
+                occurred_at: Some(last.occurred_at),
+                invoke_id: Some(last.invoke_id),
+            });
+            for record in &mut page {
+                hydrate_api_invocation_blocked_binding(record);
+            }
+            hydrate_timeline_accounts_on_connection(
+                &mut source_transaction,
+                &mut page,
+                source_scope,
+                snapshot_id,
+                attempt_snapshot_id,
+                false,
             )
             .await?;
-            let page_result = if page.is_empty() {
-                source_transaction.commit().await?;
-                None
-            } else {
-                let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
-                page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-                let next_cursor = page.last().cloned().map(|last| TimelineCursor {
-                    as_of: snapshot_token.to_string(),
-                    occurred_at: Some(last.occurred_at),
-                    invoke_id: Some(last.invoke_id),
-                });
-                for record in &mut page {
-                    hydrate_api_invocation_blocked_binding(record);
-                }
-                hydrate_timeline_accounts_on_connection(
-                    &mut source_transaction,
-                    &mut page,
-                    source_scope,
-                    snapshot_id,
-                    attempt_snapshot_id,
-                    false,
-                )
-                .await?;
-                let mut materialized_page = Vec::new();
-                for record in page
-                    .iter()
-                    .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
-                {
-                    let timeline_record = timeline_record_from_api(record, false);
-                    reserve_timeline_snapshot_budget(
-                        &mut materialized_row_count,
-                        &mut materialized_byte_count,
-                        cache_row_base,
-                        cache_byte_base,
-                        &timeline_record,
-                        None,
-                    )?;
-                    materialized_page.push(timeline_record);
-                }
-                source_transaction.commit().await?;
-                next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
-            };
-            page_result
-        }) else {
-            break;
-        };
+            let mut materialized_page = Vec::new();
+            for record in page
+                .iter()
+                .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
+            {
+                let timeline_record = timeline_record_from_api(record, false);
+                reserve_timeline_snapshot_budget(
+                    &mut materialized_row_count,
+                    &mut materialized_byte_count,
+                    cache_row_base,
+                    cache_byte_base,
+                    &timeline_record,
+                    None,
+                )?;
+                materialized_page.push(timeline_record);
+            }
+            source_transaction.commit().await?;
+            next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
+        }
+    }) {
         for timeline_record in page {
             materialized_records.push(timeline_record);
             materialized_sources.push(false);
