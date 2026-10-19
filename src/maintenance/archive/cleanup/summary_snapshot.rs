@@ -992,10 +992,26 @@ fn summary_archive_backfill_failure_is_terminal(failure_kind: &str) -> bool {
 pub(super) fn classify_summary_archive_snapshot_backfill_error(
     error: &anyhow::Error,
 ) -> &'static str {
-    let message = error.to_string().to_ascii_lowercase();
-    if message.contains("busy") || message.contains("locked") {
+    let is_sqlite_lock = error.chain().any(|cause| {
+        let Some(sqlx_error) = cause.downcast_ref::<sqlx::Error>() else {
+            return false;
+        };
+        let sqlx::Error::Database(database_error) = sqlx_error else {
+            return false;
+        };
+        database_error.code().as_deref().is_some_and(|code| {
+            matches!(code, "SQLITE_BUSY" | "SQLITE_LOCKED")
+                || code
+                    .parse::<i32>()
+                    .is_ok_and(|code| matches!(code & 0xff, 5 | 6))
+        })
+    });
+    if is_sqlite_lock {
         "deferred:sqlite_busy_or_locked"
-    } else if message.contains("budget") || message.contains("deadline") {
+    } else if error.chain().any(|cause| {
+        let message = cause.to_string().to_ascii_lowercase();
+        message.contains("budget") || message.contains("deadline")
+    }) {
         "deferred:budget"
     } else if let Some(error) = error.downcast_ref::<SummaryArchiveSnapshotVerificationError>() {
         match error.kind {

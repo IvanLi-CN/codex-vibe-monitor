@@ -4,7 +4,47 @@ use sha2_resumable::{
     Sha256 as ResumableSha256,
     digest::{Digest as ResumableDigest, common::hazmat::SerializableState},
 };
-use std::{thread, time::Duration};
+use std::{borrow::Cow, thread, time::Duration};
+
+#[derive(Debug)]
+struct FakeSummarySnapshotDatabaseError {
+    message: &'static str,
+    code: &'static str,
+}
+
+impl std::fmt::Display for FakeSummarySnapshotDatabaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.message)
+    }
+}
+
+impl std::error::Error for FakeSummarySnapshotDatabaseError {}
+
+impl sqlx::error::DatabaseError for FakeSummarySnapshotDatabaseError {
+    fn message(&self) -> &str {
+        self.message
+    }
+
+    fn code(&self) -> Option<Cow<'_, str>> {
+        Some(Cow::Borrowed(self.code))
+    }
+
+    fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
+        self
+    }
+
+    fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
+        self
+    }
+
+    fn kind(&self) -> sqlx::error::ErrorKind {
+        sqlx::error::ErrorKind::Other
+    }
+}
 
 #[test]
 fn historical_rollup_materialization_remaining_budget_clamps_to_zero_when_elapsed() {
@@ -123,9 +163,26 @@ fn summary_snapshot_storage_errors_are_not_misclassified_as_terminal_verificatio
         "unavailable:source_read_failed"
     );
 
+    let misleading_message = anyhow!("permanent failure in locked archive path");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&misleading_message),
+        "unavailable:source_read_failed"
+    );
+
+    let sqlite_busy = anyhow::Error::new(sqlx::Error::Database(Box::new(
+        FakeSummarySnapshotDatabaseError {
+            message: "driver failure with an unrelated busy word",
+            code: "5",
+        },
+    )));
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&sqlite_busy),
+        "deferred:sqlite_busy_or_locked"
+    );
+
     let verification_error = anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
         "row_count_mismatch",
-        "Summary Snapshot V2 row count mismatch",
+        "Summary Snapshot V2 row count mismatch while checking a locked source",
     ));
     assert_eq!(
         classify_summary_archive_snapshot_backfill_error(&verification_error),
