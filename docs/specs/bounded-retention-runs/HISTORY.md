@@ -1,5 +1,9 @@
 # 有预算、可恢复的 Retention：主题关系与兼容性
 
+## Monthly proof reuse boundary
+
+月度归档恢复现在把 proof 副本解压纳入剩余任务预算；预算耗尽记录为 partial/budget stop 并清理未完成副本，不再误记为 proof failure。复用前同时验证压缩归档的实际 row count、选定 ID 集和内容身份，任何不一致都保留 live source rows 并回到安全重建/延期路径。
+
 ## Maintenance contention boundary
 
 ADR 0040 and REQ-BRR-024 separate artifact preparation and post-commit cleanup from the admitted SQLite transaction without weakening source, archive or raw-link proof. The existing monthly file batch contract and long-term capacity goals remain; this boundary introduces no production deployment authorization or claim that historical capacity targets passed.
@@ -37,6 +41,8 @@ ADR 0032 将归档文件批次与主库写批次区分，规定月份只决定�
 - [ADR 0027](../../adr/0027-retention-catchup-independent-of-inspection-schedule.md) 明确 retention 的自定义计划控制巡检而非限制恢复窗口，补充 ADR 0024 的有效计划展示；不改变其他 Managed Task 的计划语义。既有覆盖值保留，界面须展示该语义及独立追赶资格，禁用仍是阻止后续追赶的控制。
 
 ## Related Changes
+
+- 当 120 秒预算在月度文件发布和完整 Summary proof 之后、首个源转换之前耗尽时，最终 gzip 与持久 proof 现在保留为可恢复事实；后续运行只有在重新验证 `materializing` manifest、文件摘要、最终 proof marker 与 manifest coverage 一致、解压归档实际 row count/selected ID set、coverage/keyset、proof 和当前 live source identity 后才复用该文件。Summary proof validation、proof 写事务和归档 proof 副本解压本身也受剩余工作预算约束，超时通过既有 native cleanup 释放已启动事务。`materializing` 仍不具备 Summary 或 cleanup 权威，源转换事务仍负责最终删除授权。
 
 - 已授权完成度修正补齐零提交超时组合：预算耗尽优先判为 overall partial，fatal 优先级和未超时纯准入 deferred 不变。确定性轻量回归验证标志组合；不改主库结构、归档提交、核心完成度或吞吐指标，不在本地运行 stateful profile 或性能验证。
 
