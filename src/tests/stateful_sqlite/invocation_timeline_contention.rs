@@ -60,7 +60,7 @@ async fn timeline_source_page_releases_connection_before_next_page() {
             to: crate::format_utc_iso(range_end),
             upstream_account_id: Some(42),
             include_live: Some(false),
-            limit: Some(1),
+            limit: Some(600),
             cursor: None,
             as_of: None,
             ..Default::default()
@@ -77,11 +77,14 @@ async fn timeline_source_page_releases_connection_before_next_page() {
             _ => false,
         };
     release.notify_one();
-    task.await
+    let response = task
+        .await
         .expect("timeline fetch task should finish")
         .expect("timeline fetch should succeed");
     drop(held_connections);
 
+    assert_eq!(response.0.total, 501);
+    assert_eq!(response.0.records.len(), 501);
     assert!(
         page_connection_available,
         "a completed source page must release its pool connection before the next page"

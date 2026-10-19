@@ -1297,16 +1297,16 @@ async fn materialize_timeline_snapshot(
                     .fetch_all(&mut *source_transaction),
             )
             .await?;
-            if page.is_empty() {
+            let page_result = if page.is_empty() {
                 source_transaction.commit().await?;
                 None
             } else {
                 let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
                 page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-                let next_cursor = page.last().map(|last| TimelineCursor {
+                let next_cursor = page.last().cloned().map(|last| TimelineCursor {
                     as_of: snapshot_token.to_string(),
-                    occurred_at: Some(last.occurred_at.clone()),
-                    invoke_id: Some(last.invoke_id.clone()),
+                    occurred_at: Some(last.occurred_at),
+                    invoke_id: Some(last.invoke_id),
                 });
                 for record in &mut page {
                     hydrate_api_invocation_blocked_binding(record);
@@ -1337,12 +1337,9 @@ async fn materialize_timeline_snapshot(
                     materialized_page.push(timeline_record);
                 }
                 source_transaction.commit().await?;
-                Some((
-                    materialized_page,
-                    has_more,
-                    next_cursor.expect("non-empty page cursor"),
-                ))
-            }
+                next_cursor.map(|next_cursor| (materialized_page, has_more, next_cursor))
+            };
+            page_result
         }) else {
             break;
         };
