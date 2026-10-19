@@ -2,10 +2,12 @@
 
 ## Lifecycle
 
+The archive hourly-rollup extraction starts from `2b0b1477e753291876475f809e5c6906f644f8b4`, after the archive-cleanup extraction. It completes governance of the original 7,079-line `src/maintenance/archive/hourly_rollups.rs` in one PR, preserving the existing test module boundaries and progress/support files while extracting five named production responsibilities. The parent leaves the canonical candidate inventory; no remaining split of this parent is deferred. The current inventory decreases from 33 to 32 entries, with 15 production and 17 test/helper candidates and unchanged 125 suppression entries.
+
 - The topic begins with an executable preparation contract rather than a
   production-module refactor.
 - The current policy is anchored to the verified mainline baseline and keeps
-  its 33 large-file entries explicit.
+  its 32 large-file entries explicit.
 - Later module-oriented refactor PRs consume this contract one bounded source
   or test/helper area at a time.
 
