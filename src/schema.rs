@@ -1963,6 +1963,35 @@ pub(crate) async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     ensure_invocation_raw_codec_backfill(pool).await?;
 
+    // Timeline snapshots are request-scoped read models. Create their storage with the
+    // application schema so request handling never performs DDL or competes for a schema lock.
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS invocation_timeline_snapshot_rows (
+            snapshot_token TEXT NOT NULL,
+            invoke_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            record_id INTEGER NOT NULL,
+            is_runtime INTEGER NOT NULL,
+            is_in_flight INTEGER NOT NULL,
+            payload TEXT NOT NULL,
+            PRIMARY KEY (snapshot_token, invoke_id, occurred_at)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation timeline snapshot table")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS invocation_timeline_snapshot_rows_order
+        ON invocation_timeline_snapshot_rows (snapshot_token, occurred_at, invoke_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure invocation timeline snapshot index")?;
+
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
         r#"

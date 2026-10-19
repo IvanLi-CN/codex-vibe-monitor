@@ -2218,6 +2218,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_work_runs_task_attempted
           ON managed_task_work_runs(task_key,attempted_at DESC,execution_uid DESC);
+        CREATE INDEX IF NOT EXISTS idx_managed_task_work_runs_managed_run_id
+          ON managed_task_work_runs(managed_run_id);
         CREATE TABLE IF NOT EXISTS task_timeline_segments (
           segment_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL,
           task_key TEXT NOT NULL, title TEXT NOT NULL, started_at TEXT NOT NULL,
@@ -2236,6 +2238,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_started
           ON managed_task_runs(task_key, started_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_actual_started
+          ON managed_task_runs(task_key, COALESCE(actual_started_at, started_at) DESC, id DESC);
         CREATE TABLE IF NOT EXISTS maintenance_metadata (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -3312,6 +3316,14 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
+        let has_requested_run: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM managed_task_runs WHERE status='requested')",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        if !has_requested_run {
+            return Ok(None);
+        }
         let (claim, retired_requested_runs) = observe_store_write_with_outcome(
             StoreOperation::Run,
             self.claim_requested_run_inner(),
@@ -3349,6 +3361,12 @@ impl MaintenanceStore {
                    )
                    AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=?)
                      OR (next_catchup_at IS NOT NULL AND next_catchup_at<=?))
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM managed_task_runs active
+                       WHERE active.task_key=managed_tasks.task_key
+                         AND active.status IN ('running','requested')
+                   )
              )",
         )
         .bind(&now_text)
@@ -3926,7 +3944,6 @@ impl MaintenanceStore {
     async fn enqueue_due_runs_inner(&self) -> Result<u64> {
         let now = Utc::now();
         let now_text = format_utc_iso_millis(now);
-        let mut transaction = self.pool.begin().await?;
         let due_tasks = sqlx::query_as::<
             _,
             (
@@ -3944,13 +3961,23 @@ impl MaintenanceStore {
                AND NOT EXISTS(SELECT 1 FROM maintenance_owner_retry_state retry WHERE retry.task_key=managed_tasks.task_key AND retry.next_eligible_at>?)
                AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
                  OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))
+               AND NOT EXISTS(
+                   SELECT 1
+                   FROM managed_task_runs active
+                   WHERE active.task_key=managed_tasks.task_key
+                     AND active.status IN ('running','requested')
+               )
              ORDER BY COALESCE(next_catchup_at,next_trigger_at), task_key",
         )
         .bind(&now_text)
         .bind(&now_text)
         .bind(&now_text)
-        .fetch_all(&mut *transaction)
+        .fetch_all(&self.pool)
         .await?;
+        if due_tasks.is_empty() {
+            return Ok(0);
+        }
+        let mut transaction = self.pool.begin().await?;
         let mut enqueued = 0_u64;
         for (task_key, interval_secs, cron_expr, current_trigger_at, current_catchup_at) in
             due_tasks

@@ -814,6 +814,7 @@ fn reserve_timeline_snapshot_budget(
     Ok(())
 }
 
+#[cfg(test)]
 async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiError> {
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (\
@@ -1248,7 +1249,6 @@ async fn materialize_timeline_snapshot(
     upstream_account_id: Option<i64>,
     include_live: bool,
 ) -> Result<(), ApiError> {
-    ensure_timeline_snapshot_table(&state.pool).await?;
     sqlx::query(&format!(
         "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
     ))
@@ -1443,14 +1443,16 @@ async fn materialize_timeline_snapshot(
         .iter()
         .map(|(record, is_runtime)| encode_timeline_snapshot_insert_row(record, *is_runtime))
         .collect::<Result<Vec<_>, _>>()?;
-    let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
-    insert_timeline_snapshot_records_on_connection(
-        &mut publish_transaction,
-        snapshot_token,
-        &published_rows,
-    )
-    .await?;
-    publish_transaction.commit().await?;
+    for batch in published_rows.chunks(INVOCATION_TIMELINE_PUBLISH_BATCH_SIZE) {
+        let mut publish_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+        insert_timeline_snapshot_records_on_connection(
+            &mut publish_transaction,
+            snapshot_token,
+            batch,
+        )
+        .await?;
+        publish_transaction.commit().await?;
+    }
     set_timeline_snapshot_usage(
         snapshot_token,
         materialized_row_count,
@@ -1552,7 +1554,7 @@ pub(crate) async fn fetch_timeline(
     let overlap_start_bound = crate::db_occurred_at_lower_bound(overlap_start);
     let end_bound = crate::db_occurred_at_upper_bound(range_end);
     let mut cleanup_guard: Option<TimelineSnapshotCleanupGuard> = None;
-    let (as_of, _snapshot) = if let Some(as_of) = params.as_of.as_deref() {
+    let (as_of, snapshot) = if let Some(as_of) = params.as_of.as_deref() {
         if let Some(cursor) = cursor.as_ref()
             && cursor.as_of != as_of
         {
@@ -1635,7 +1637,6 @@ pub(crate) async fn fetch_timeline(
         .await;
         (as_of.clone(), snapshot)
     };
-    ensure_timeline_snapshot_table(&state.pool).await?;
     let mut page_query = QueryBuilder::<Sqlite>::new(&format!(
         "SELECT invoke_id, occurred_at, payload FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = "
     ));
@@ -1661,12 +1662,7 @@ pub(crate) async fn fetch_timeline(
         .await?;
     let has_more = rows.len() as i64 > page_size;
     rows.truncate(page_size as usize);
-    let total = sqlx::query_scalar::<_, i64>(&format!(
-        "SELECT COUNT(*) FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-    ))
-    .bind(as_of.clone())
-    .fetch_one(&state.pool)
-    .await?;
+    let total = i64::try_from(snapshot.row_count).unwrap_or(i64::MAX);
     let next_cursor = if has_more {
         rows.last()
             .map(|row| {

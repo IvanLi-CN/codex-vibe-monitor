@@ -374,7 +374,6 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
             SELECT id
             FROM pool_upstream_request_attempts
             WHERE id > ?1
-              AND TRIM(COALESCE(attempt_public_id, '')) = ''
             ORDER BY id ASC
             LIMIT ?2
             "#,

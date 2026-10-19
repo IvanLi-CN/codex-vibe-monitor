@@ -1119,7 +1119,20 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         }),
         "archive identity/order must use the existing bounded seek index: {details:?}"
     );
-    for alias in ["snapshot", "proof", "outcome"] {
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("SCAN batches"))
+    );
+    assert!(
+        !SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
+            .contains("summary_archive_snapshot_v2_proof")
+    );
+    assert!(
+        !SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
+            .contains("summary_archive_snapshot_backfill_outcome")
+    );
+    for alias in ["snapshot"] {
         assert!(
             details
                 .iter()

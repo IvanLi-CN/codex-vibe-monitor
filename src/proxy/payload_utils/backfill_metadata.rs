@@ -1,5 +1,22 @@
 use super::*;
 
+fn payload_field_is_missing(payload: Option<&str>, field: &str) -> bool {
+    let Some(payload) = payload else {
+        return true;
+    };
+    let Ok(payload) = serde_json::from_str::<Value>(payload) else {
+        return true;
+    };
+    let Some(value) = payload.get(field) else {
+        return true;
+    };
+    match value {
+        Value::Null => true,
+        Value::String(value) => value.trim().is_empty(),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 pub(crate) async fn backfill_proxy_missing_costs(
     pool: &Pool<Sqlite>,
@@ -104,17 +121,11 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
 
             let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
                 r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
               AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.promptCacheKey') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
-              )
             ORDER BY id ASC
             LIMIT ?3
             "#,
@@ -133,6 +144,10 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             for candidate in candidates {
                 last_seen_id = candidate.id;
                 summary.scanned += 1;
+
+                if !payload_field_is_missing(candidate.payload.as_deref(), "promptCacheKey") {
+                    continue;
+                }
 
                 let raw_request =
                     match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root)
@@ -289,17 +304,11 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
 
         let candidates = sqlx::query_as::<_, ProxyRequestedServiceTierBackfillCandidate>(
             r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
               AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.requestedServiceTier') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.requestedServiceTier') AS TEXT)) = ''
-              )
             ORDER BY id ASC
             LIMIT ?3
             "#,
@@ -325,6 +334,13 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
+
+            if !payload_field_is_missing(candidate.payload.as_deref(), "requestedServiceTier") {
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
+                continue;
+            }
+
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,
@@ -457,17 +473,11 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
 
         let candidates = sqlx::query_as::<_, ProxyReasoningEffortBackfillCandidate>(
             r#"
-            SELECT id, request_raw_path
+            SELECT id, request_raw_path, payload
             FROM codex_invocations
             WHERE source = ?1
               AND request_raw_path IS NOT NULL
               AND id > ?2
-              AND (
-                payload IS NULL
-                OR NOT json_valid(payload)
-                OR json_extract(payload, '$.reasoningEffort') IS NULL
-                OR TRIM(CAST(json_extract(payload, '$.reasoningEffort') AS TEXT)) = ''
-              )
             ORDER BY id ASC
             LIMIT ?3
             "#,
@@ -493,6 +503,13 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
+
+            if !payload_field_is_missing(candidate.payload.as_deref(), "reasoningEffort") {
+                committed_cursor_id = candidate.id;
+                committed_scanned = summary.scanned;
+                continue;
+            }
+
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
                     Ok(content) => content,

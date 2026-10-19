@@ -1648,18 +1648,21 @@ pub(crate) struct ProxyCostBackfillCandidate {
 pub(crate) struct ProxyPromptCacheKeyBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) request_raw_path: String,
+    pub(crate) payload: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ProxyRequestedServiceTierBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) request_raw_path: String,
+    pub(crate) payload: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ProxyReasoningEffortBackfillCandidate {
     pub(crate) id: i64,
     pub(crate) request_raw_path: String,
+    pub(crate) payload: Option<String>,
 }
 
 #[derive(Debug)]
