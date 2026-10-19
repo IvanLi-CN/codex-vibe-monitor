@@ -1099,9 +1099,9 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         .expect("current schema");
 
     let explain_sql =
-        format!("EXPLAIN QUERY PLAN {SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL}");
+        format!("EXPLAIN QUERY PLAN {SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL}");
     let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain_sql)
-        .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+        .bind(0_i64)
         .bind(1_i64)
         .fetch_all(&pool)
         .await
@@ -1124,41 +1124,8 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
             .iter()
             .all(|detail| !detail.contains("SCAN batches"))
     );
-    assert!(
-        SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
-            .contains("summary_archive_snapshot_v2_proof")
-    );
-    assert!(
-        SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
-            .contains("summary_archive_snapshot_backfill_outcome")
-    );
-    for alias in ["proof", "outcome"] {
-        assert!(
-            details
-                .iter()
-                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
-            "{alias} must use its identity index: {details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
-            "{alias} must not be scanned: {details:?}"
-        );
-    }
-    let alias = "snapshot";
-    assert!(
-        details
-            .iter()
-            .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
-        "{alias} must use a bounded correlated lookup: {details:?}"
-    );
-    assert!(
-        details
-            .iter()
-            .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
-        "{alias} must not be scanned for each promotion pass: {details:?}"
-    );
+    assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("proof"));
+    assert!(!SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_IDENTITY_SQL.contains("outcome"));
 }
 
 #[tokio::test]

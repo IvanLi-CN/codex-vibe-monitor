@@ -4066,7 +4066,14 @@ impl MaintenanceStore {
                 .await?;
             }
         }
-        transaction.commit().await?;
+        if enqueued > 0 {
+            transaction.commit().await?;
+        } else {
+            // A preflight candidate may become ineligible before the in-transaction
+            // revalidation. Roll back the deferred transaction so this race does not
+            // turn into an observable no-op write commit.
+            transaction.rollback().await?;
+        }
         if enqueued > 0 {
             self.sync_retention_progress_schedule().await?;
         }
