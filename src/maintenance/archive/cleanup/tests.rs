@@ -1132,20 +1132,19 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         !SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
             .contains("summary_archive_snapshot_backfill_outcome")
     );
-    for alias in ["snapshot"] {
-        assert!(
-            details
-                .iter()
-                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
-            "{alias} must use a bounded correlated lookup: {details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
-            "{alias} must not be scanned for each promotion pass: {details:?}"
-        );
-    }
+    let alias = "snapshot";
+    assert!(
+        details
+            .iter()
+            .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
+        "{alias} must use a bounded correlated lookup: {details:?}"
+    );
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
+        "{alias} must not be scanned for each promotion pass: {details:?}"
+    );
 }
 
 #[tokio::test]

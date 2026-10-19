@@ -167,10 +167,9 @@ async fn load_summary_archive_snapshot_candidate_identities(
     prioritize_recent: bool,
 ) -> Result<Vec<SummaryArchiveSnapshotCandidateIdentity>> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT batches.id, batches.sha256 FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek WHERE batches.dataset = 'codex_invocations' AND batches.status = ",
+        "SELECT batches.id, batches.sha256 FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek WHERE batches.dataset = 'codex_invocations' AND batches.status = 'completed'",
     );
     query
-        .push_bind(ARCHIVE_STATUS_COMPLETED)
         .push(" AND batches.sha256 IS NOT NULL AND TRIM(batches.sha256) <> ''")
         .push(" AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'")
         .push(" AND batches.id > ")
@@ -205,16 +204,18 @@ async fn load_summary_archive_snapshot_backfill_candidate_rows(
     }
 
     let mut query = QueryBuilder::<Sqlite>::new("WITH candidate(id, manifest_sha256) AS (VALUES ");
-    let mut values = query.separated(", ");
-    for identity in identities {
-        values
+    for (index, identity) in identities.iter().enumerate() {
+        if index > 0 {
+            query.push(", ");
+        }
+        query
             .push("(")
             .push_bind(identity.id)
             .push(", ")
             .push_bind(&identity.sha256)
             .push(")");
     }
-    values.push_unseparated(") ");
+    query.push(") ");
     query.push(
         "SELECT batches.id, batches.dataset, batches.file_path, batches.sha256, batches.row_count, COALESCE(batches.summary_source_kind, 'unknown') AS summary_source_kind, batches.coverage_start_at, batches.coverage_end_at FROM candidate JOIN archive_batches AS batches ON batches.id = candidate.id AND batches.sha256 = candidate.manifest_sha256 WHERE ",
     );
@@ -442,16 +443,18 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
     }
 
     let mut query = QueryBuilder::<Sqlite>::new("WITH candidate(id, manifest_sha256) AS (VALUES ");
-    let mut values = query.separated(", ");
-    for identity in &identities {
-        values
+    for (index, identity) in identities.iter().enumerate() {
+        if index > 0 {
+            query.push(", ");
+        }
+        query
             .push("(")
             .push_bind(identity.id)
             .push(", ")
             .push_bind(&identity.sha256)
             .push(")");
     }
-    values.push_unseparated(") ");
+    query.push(") ");
     query.push(
         "SELECT batches.id, batches.sha256 FROM candidate JOIN archive_batches AS batches ON batches.id = candidate.id AND batches.sha256 = candidate.manifest_sha256 WHERE ",
     );

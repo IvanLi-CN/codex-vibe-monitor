@@ -104,6 +104,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyPromptCacheKeyBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyPromptCacheKeyBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -113,8 +114,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
 
     let result = async {
         loop {
-            if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed)
-            {
+            if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
                 hit_budget = true;
                 break;
             }
@@ -132,7 +132,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             )
             .bind(SOURCE_PROXY)
             .bind(last_seen_id)
-            .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+            .bind(startup_backfill_query_limit(examined, scan_limit))
             .fetch_all(pool)
             .await?;
 
@@ -143,11 +143,14 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
             let mut updates = Vec::new();
             for candidate in candidates {
                 last_seen_id = candidate.id;
-                summary.scanned += 1;
+                examined += 1;
 
                 if !payload_field_is_missing(candidate.payload.as_deref(), "promptCacheKey") {
+                    committed_cursor_id = candidate.id;
+                    committed_scanned = summary.scanned;
                     continue;
                 }
+                summary.scanned += 1;
 
                 let raw_request =
                     match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root)
@@ -289,6 +292,7 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyRequestedServiceTierBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyRequestedServiceTierBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -297,7 +301,7 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
     let mut samples = Vec::new();
 
     loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
+        if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
         }
@@ -315,7 +319,7 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+        .bind(startup_backfill_query_limit(examined, scan_limit))
         .fetch_all(pool)
         .await
         .map_err(|error| {
@@ -333,13 +337,14 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
 
         for candidate in candidates {
             last_seen_id = candidate.id;
-            summary.scanned += 1;
+            examined += 1;
 
             if !payload_field_is_missing(candidate.payload.as_deref(), "requestedServiceTier") {
                 committed_cursor_id = candidate.id;
                 committed_scanned = summary.scanned;
                 continue;
             }
+            summary.scanned += 1;
 
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
@@ -458,6 +463,7 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
 ) -> Result<BackfillBatchOutcome<ProxyReasoningEffortBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = ProxyReasoningEffortBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -466,7 +472,7 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
     let mut samples = Vec::new();
 
     loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
+        if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
         }
@@ -484,7 +490,7 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+        .bind(startup_backfill_query_limit(examined, scan_limit))
         .fetch_all(pool)
         .await
         .map_err(|error| {
@@ -502,13 +508,14 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
 
         for candidate in candidates {
             last_seen_id = candidate.id;
-            summary.scanned += 1;
+            examined += 1;
 
             if !payload_field_is_missing(candidate.payload.as_deref(), "reasoningEffort") {
                 committed_cursor_id = candidate.id;
                 committed_scanned = summary.scanned;
                 continue;
             }
+            summary.scanned += 1;
 
             let raw_request =
                 match read_proxy_raw_bytes(&candidate.request_raw_path, raw_path_fallback_root) {
