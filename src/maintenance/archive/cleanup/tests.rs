@@ -1199,20 +1199,12 @@ async fn summary_archive_snapshot_due_candidates_filter_before_limit_and_use_see
         }),
         "due archive identities must use the bounded seek index: {details:?}"
     );
-    for alias in ["proof", "obligation", "outcome"] {
-        assert!(
-            details
-                .iter()
-                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
-            "due {alias} lookup must use an identity index: {details:?}"
-        );
-        assert!(
-            details
-                .iter()
-                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
-            "due {alias} lookup must not scan: {details:?}"
-        );
-    }
+    assert!(
+        details
+            .iter()
+            .all(|detail| !detail.contains("proof") && !detail.contains("outcome")),
+        "phase-one due identity lookup must defer proof and outcome checks: {details:?}"
+    );
 }
 
 #[tokio::test]
