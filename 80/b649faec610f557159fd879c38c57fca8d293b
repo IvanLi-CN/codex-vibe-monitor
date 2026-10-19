@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "4.9.7",
+  "base_stable_version": "4.9.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-10-19T02:20:36Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "4.9.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "53af646e8430f1313f327e7bfb37bef291a995cd",
+  "pr_number": 1137,
+  "pr_title": "fix(retention): reuse proven archive after budget stop",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v4.9.7",
+  "schema_version": 1,
+  "snapshot_source": "merged-pr",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v4.9.7",
+  "target_sha": "80b649faec610f557159fd879c38c57fca8d293b",
+  "type_label": "type:patch"
+}
