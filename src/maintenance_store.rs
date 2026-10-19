@@ -2205,6 +2205,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
           execution_uid TEXT, actual_started_at TEXT, actual_finished_at TEXT,
           actual_duration_ms INTEGER
         );
+        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_requested_status
+          ON managed_task_runs(id)
+          WHERE status='requested';
+        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_status
+          ON managed_task_runs(task_key,status,id);
         CREATE TABLE IF NOT EXISTS managed_task_work_runs (
           execution_uid TEXT NOT NULL,
           task_key TEXT NOT NULL,

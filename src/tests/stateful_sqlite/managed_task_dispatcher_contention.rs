@@ -96,6 +96,36 @@ async fn dispatcher_probe_ignores_due_task_with_active_run() {
 }
 
 #[tokio::test]
+async fn dispatcher_requested_probe_uses_status_index() {
+    let pool = sqlx::SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect maintenance test pool");
+    let store = MaintenanceStore::from_pool(pool);
+    store
+        .initialize_schema_for_test()
+        .await
+        .expect("initialize maintenance store schema");
+
+    let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        "EXPLAIN QUERY PLAN
+         SELECT 1 FROM managed_task_runs WHERE status='requested' LIMIT 1",
+    )
+    .fetch_all(&store.pool)
+    .await
+    .expect("explain requested probe");
+    let details = plan
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details
+            .iter()
+            .any(|detail| { detail.contains("idx_managed_task_runs_requested_status") }),
+        "requested probe must use the partial status index: {details:?}"
+    );
+}
+
+#[tokio::test]
 async fn events_history_query_uses_bounded_history_indexes() {
     let pool = sqlx::SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

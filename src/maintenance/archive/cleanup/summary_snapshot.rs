@@ -424,9 +424,21 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
     pool: &Pool<Sqlite>,
     limit: i64,
 ) -> Result<Vec<(i64, String)>> {
+    Ok(
+        load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(pool, limit, 0)
+            .await?
+            .0,
+    )
+}
+
+async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+    start_after_id: i64,
+) -> Result<(Vec<(i64, String)>, i64)> {
     let limit = limit.max(1);
     let window_limit = SUMMARY_ARCHIVE_SNAPSHOT_IDENTITY_WINDOW.max(limit);
-    let mut cursor_id = 0_i64;
+    let mut cursor_id = start_after_id.max(0);
     for _ in 0..SUMMARY_ARCHIVE_SNAPSHOT_MAX_IDENTITY_WINDOWS {
         let identities = crate::observability::contention::observe_query(
             crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
@@ -440,7 +452,7 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
         .await
         .context("load bounded unpromoted Summary Snapshot identities")?;
         let Some(last_identity) = identities.last() else {
-            break;
+            return Ok((Vec::new(), 0));
         };
         cursor_id = last_identity.id;
         let candidates = load_summary_archive_snapshot_backfill_candidate_rows(
@@ -452,26 +464,39 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
         )
         .await?;
         if !candidates.is_empty() {
-            return Ok(candidates
-                .into_iter()
-                .map(|candidate| (candidate.id, candidate.sha256))
-                .collect());
+            return Ok((
+                candidates
+                    .into_iter()
+                    .map(|candidate| (candidate.id, candidate.sha256))
+                    .collect(),
+                cursor_id,
+            ));
         }
         if identities.len() < usize::try_from(window_limit).unwrap_or(usize::MAX) {
             break;
         }
     }
-    Ok(Vec::new())
+    Ok((Vec::new(), cursor_id))
 }
 
 async fn promote_verified_summary_snapshot_page_sets(
     pool: &Pool<Sqlite>,
     limit: i64,
+    start_after_id: i64,
     started_at: Instant,
     max_elapsed: Duration,
-) -> Result<usize> {
-    let candidates = load_summary_archive_snapshot_v2_promotion_candidates(pool, limit).await?;
+) -> Result<(usize, i64)> {
+    let (candidates, next_cursor_id) =
+        load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
+            pool,
+            limit,
+            start_after_id,
+        )
+        .await?;
+    let had_candidates = !candidates.is_empty();
     let mut promoted = 0;
+    let mut processed_any = false;
+    let mut processed_cursor_id = start_after_id.max(0);
     for (archive_batch_id, manifest_sha256) in candidates {
         if started_at.elapsed() >= max_elapsed {
             break;
@@ -506,6 +531,8 @@ async fn promote_verified_summary_snapshot_page_sets(
             .context("record promoted Summary Snapshot V2 outcome")?;
             promoted += 1;
         }
+        processed_any = true;
+        processed_cursor_id = archive_batch_id;
         drop(admission);
     }
     if promoted > 0 {
@@ -515,17 +542,38 @@ async fn promote_verified_summary_snapshot_page_sets(
             "promoted verified Summary Snapshot V2 page sets before backfill selection"
         );
     }
-    Ok(promoted)
+    let cursor_id = if !had_candidates {
+        next_cursor_id
+    } else if !processed_any {
+        start_after_id.max(0)
+    } else if started_at.elapsed() >= max_elapsed {
+        processed_cursor_id
+    } else {
+        next_cursor_id
+    };
+    Ok((promoted, cursor_id))
 }
 
 pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
     pool: &Pool<Sqlite>,
     limit: i64,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
+    Ok(
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(pool, limit, 0)
+            .await?
+            .0,
+    )
+}
+
+async fn load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
+    pool: &Pool<Sqlite>,
+    limit: i64,
+    start_after_id: i64,
+) -> Result<(Vec<HistoricalRollupStartupCandidateRow>, i64)> {
     let limit = limit.max(1);
     let window_limit = SUMMARY_ARCHIVE_SNAPSHOT_IDENTITY_WINDOW.max(limit);
     let identity_sql = summary_archive_snapshot_backfill_due_identity_sql();
-    let mut cursor_id = 0_i64;
+    let mut cursor_id = start_after_id.max(0);
     for _ in 0..SUMMARY_ARCHIVE_SNAPSHOT_MAX_IDENTITY_WINDOWS {
         let identities = crate::observability::contention::observe_query(
             crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
@@ -537,7 +585,7 @@ pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
         .await
         .context("load due Summary Snapshot archive identities")?;
         let Some(last_identity) = identities.last() else {
-            break;
+            return Ok((Vec::new(), 0));
         };
         cursor_id = last_identity.id;
         let candidates = load_summary_archive_snapshot_backfill_candidate_rows(
@@ -549,13 +597,13 @@ pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
         )
         .await?;
         if !candidates.is_empty() {
-            return Ok(candidates);
+            return Ok((candidates, cursor_id));
         }
         if identities.len() < usize::try_from(window_limit).unwrap_or(usize::MAX) {
             break;
         }
     }
-    Ok(Vec::new())
+    Ok((Vec::new(), cursor_id))
 }
 
 async fn load_summary_archive_snapshot_backfill_progress(
@@ -1274,15 +1322,17 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     max_elapsed: Duration,
 ) -> Result<SummaryArchiveSnapshotBackfillWindowResult> {
     let started_at = Instant::now();
-    let promoted_page_sets = promote_verified_summary_snapshot_page_sets(
+    let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
+        load_summary_archive_snapshot_backfill_checkpoint(pool).await?;
+    let (promoted_page_sets, promotion_cursor_id) = promote_verified_summary_snapshot_page_sets(
         pool,
         SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
+        cursor_id,
         started_at,
         max_elapsed,
     )
     .await?;
-    let (mut cursor_id, mut high_watermark_id, checkpoint_completed) =
-        load_summary_archive_snapshot_backfill_checkpoint(pool).await?;
+    cursor_id = promotion_cursor_id;
     let observed_high_watermark = sqlx::query_scalar::<_, i64>(
         "SELECT COALESCE(MAX(id), 0) FROM archive_batches \
          WHERE dataset = 'codex_invocations' AND status = ?1",
@@ -1293,11 +1343,13 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     high_watermark_id = high_watermark_id.max(observed_high_watermark);
     // Recent coverage and due retries must progress independently of the sweep cursor. The
     // sweep only services never-seen backlog entries after the due queue has had a bounded turn.
-    let mut candidates = load_summary_archive_snapshot_backfill_due_candidates(
-        pool,
-        SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
-    )
-    .await?;
+    let (mut candidates, _due_cursor_id) =
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
+            pool,
+            SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CANDIDATE_LIMIT,
+            0,
+        )
+        .await?;
     let candidates_from_due_queue = !candidates.is_empty();
     let mut sweep_cursor_after_scan = None;
     if candidates.is_empty() {
@@ -1312,7 +1364,9 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         sweep_cursor_after_scan = next_cursor_id;
     }
     let mut wrapped = false;
+    let mut attempted_wrap = false;
     if candidates.is_empty() && cursor_id > 0 && sweep_cursor_after_scan.is_none() {
+        attempted_wrap = true;
         candidates = load_summary_archive_snapshot_backfill_candidates(
             pool,
             0,
@@ -1462,8 +1516,22 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
     if candidate_count == 0
         && !(checkpoint_completed && cursor_id == 0 && high_watermark_id == observed_high_watermark)
     {
-        store_summary_archive_snapshot_backfill_checkpoint(pool, 0, high_watermark_id, true)
-            .await?;
+        let checkpoint_cursor_id = if attempted_wrap { 0 } else { cursor_id };
+        store_summary_archive_snapshot_backfill_checkpoint(
+            pool,
+            checkpoint_cursor_id,
+            high_watermark_id,
+            checkpoint_cursor_id == 0 && attempted_wrap,
+        )
+        .await?;
+    } else if candidates_from_due_queue {
+        store_summary_archive_snapshot_backfill_checkpoint(
+            pool,
+            cursor_id,
+            high_watermark_id,
+            false,
+        )
+        .await?;
     }
     Ok(result)
 }

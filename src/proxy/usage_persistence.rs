@@ -356,6 +356,7 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
 ) -> Result<BackfillBatchOutcome<PoolAttemptPublicIdBackfillSummary>> {
     let started_at = Instant::now();
     let mut summary = PoolAttemptPublicIdBackfillSummary::default();
+    let mut examined = 0_u64;
     let mut last_seen_id = start_after_id;
     let mut committed_cursor_id = start_after_id;
     let mut committed_scanned = 0_u64;
@@ -364,23 +365,47 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
     let mut samples = Vec::new();
 
     loop {
-        if startup_backfill_budget_reached(started_at, summary.scanned, scan_limit, max_elapsed) {
+        if startup_backfill_budget_reached(started_at, examined, scan_limit, max_elapsed) {
             hit_budget = true;
             break;
         }
+
+        let window_start_id = last_seen_id;
+        let window_ids = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM pool_upstream_request_attempts WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+        )
+        .bind(window_start_id)
+        .bind(startup_backfill_query_limit(examined, scan_limit))
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
+        let Some(window_end_id) = window_ids.last().copied() else {
+            break;
+        };
+        examined = examined.saturating_add(window_ids.len() as u64);
+        last_seen_id = window_end_id;
 
         let rows = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT id
             FROM pool_upstream_request_attempts
             WHERE id > ?1
+              AND id <= ?2
               AND TRIM(COALESCE(attempt_public_id, '')) = ''
             ORDER BY id ASC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
-        .bind(last_seen_id)
-        .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
+        .bind(window_start_id)
+        .bind(window_end_id)
+        .bind(window_ids.len() as i64)
         .fetch_all(&mut *conn)
         .await
         .map_err(|error| {
@@ -393,30 +418,51 @@ pub(crate) async fn backfill_pool_upstream_request_attempt_public_ids_on_connect
         })?;
 
         if rows.is_empty() {
-            break;
+            committed_cursor_id = window_end_id;
+            committed_scanned = summary.scanned;
+            committed_updated = summary.updated;
+            continue;
         }
 
+        let mut transaction = conn.begin().await.map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
         for row_id in rows {
-            last_seen_id = row_id;
             summary.scanned += 1;
-            let updated = assign_pool_upstream_request_attempt_public_id_if_missing(conn, row_id)
-                .await
-                .map_err(|error| {
-                    anyhow::Error::new(crate::BackfillPartialFailure {
-                        source: error,
-                        next_cursor_id: committed_cursor_id,
-                        scanned: committed_scanned,
-                        updated: committed_updated,
-                    })
-                })?;
+            let updated = assign_pool_upstream_request_attempt_public_id_if_missing(
+                &mut *transaction,
+                row_id,
+            )
+            .await
+            .map_err(|error| {
+                anyhow::Error::new(crate::BackfillPartialFailure {
+                    source: error,
+                    next_cursor_id: committed_cursor_id,
+                    scanned: committed_scanned,
+                    updated: committed_updated,
+                })
+            })?;
             if updated {
                 summary.updated += 1;
                 push_backfill_sample(&mut samples, format!("id={row_id}"));
             }
-            committed_cursor_id = row_id;
-            committed_scanned = summary.scanned;
-            committed_updated = summary.updated;
         }
+        transaction.commit().await.map_err(|error| {
+            anyhow::Error::new(crate::BackfillPartialFailure {
+                source: error.into(),
+                next_cursor_id: committed_cursor_id,
+                scanned: committed_scanned,
+                updated: committed_updated,
+            })
+        })?;
+        committed_cursor_id = window_end_id;
+        committed_scanned = summary.scanned;
+        committed_updated = summary.updated;
     }
 
     Ok(BackfillBatchOutcome {
