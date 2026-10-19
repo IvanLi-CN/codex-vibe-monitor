@@ -7,7 +7,7 @@ The contract is implemented by the following checked-in surfaces:
 - `.github/scripts/run-rust-source-quality.sh` is the canonical ordered runner.
 - `.github/scripts/check_rust_source_quality.py` uses only the Python standard
   library and checks selected budgets, `include!`, and suppression inventory.
-- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 32 current explicit file budgets (15 production and 17 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
+- `.github/rust-source-quality-policy.json` records the base commit `edb6d8624b1713619c32caa050e397f0aded79b4`, 31 current explicit file budgets (14 production and 17 test/helper), and 125 standalone suppression declarations. The immutable preparation production/test-helper counts remain 32 and 23.
 - `.github/scripts/test-rust-source-quality.sh` runs the repository-local
   fixture harness without compiling fixture Rust.
 - `package.json`, `.github/workflows/ci-pr.yml`, and
@@ -394,6 +394,10 @@ removing, or materially changing one does.
 ## Archive Hourly Rollup Extraction
 
 The archive hourly-rollup extraction delegates production responsibilities to `entry.rs`, `invocation_replay.rs`, `account_activity.rs`, `network.rs`, and `retention.rs` under `src/maintenance/archive/hourly_rollups/`. The parent retains both complete inline test modules and the existing progress/support module paths, using crate-visible compatibility exports and parent-scoped helper visibility. After rustfmt, the parent is 1,884 lines and the children are respectively 1,129, 2,041, 886, 358, and 809 lines; every file is below the 2,500-line production target. The parent is removed from the canonical inventory, leaving 32 entries: 15 production and 17 test/helper candidates. Immutable candidate counts remain 32/23 and suppression entries remain 125. This extraction changes no runtime/API/SQL behavior, transaction boundaries, timing, concurrency, caching, assertions, or resource classification.
+
+## Live Hourly Rollup Extraction
+
+The live hourly-rollup source is now a facade over explicit `live_repair.rs`, `archive_replay.rs`, `archive_backfill.rs`, and `bootstrap.rs` modules. The parent retains its route, static, HTTP server, schema, compatibility wrapper, archive-support, and existing inline test responsibilities; the extracted children are 1,949, 2,232, 299, and 307 lines after rustfmt, all below the 2,500-line production target. Existing public/crate-visible names, SQL, transactions, timing, retry and cancellation behavior, locks, cache state, test names, assertions, fixtures, and resource buckets remain unchanged, with no `include!` composition. The canonical policy removes the parent entry and now has 31 explicit files: 14 production and 17 test/helper entries; immutable candidate counts remain 32/23 and suppression entries remain 125.
 
 ## CI Contract
 
