@@ -1540,6 +1540,7 @@ pub(crate) struct ProxyCostBackfillSummary {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ProxyPromptCacheKeyBackfillSummary {
+    pub(crate) examined: u64,
     pub(crate) scanned: u64,
     pub(crate) updated: u64,
     pub(crate) skipped_missing_file: u64,
@@ -1549,6 +1550,7 @@ pub(crate) struct ProxyPromptCacheKeyBackfillSummary {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ProxyRequestedServiceTierBackfillSummary {
+    pub(crate) examined: u64,
     pub(crate) scanned: u64,
     pub(crate) updated: u64,
     pub(crate) skipped_missing_file: u64,
@@ -1566,6 +1568,7 @@ pub(crate) struct InvocationServiceTierBackfillSummary {
 
 #[derive(Debug, Default, Clone, Copy)]
 pub(crate) struct ProxyReasoningEffortBackfillSummary {
+    pub(crate) examined: u64,
     pub(crate) scanned: u64,
     pub(crate) updated: u64,
     pub(crate) skipped_missing_file: u64,

@@ -1008,11 +1008,6 @@ pub(super) fn classify_summary_archive_snapshot_backfill_error(
     });
     if is_sqlite_lock {
         "deferred:sqlite_busy_or_locked"
-    } else if error.chain().any(|cause| {
-        let message = cause.to_string().to_ascii_lowercase();
-        message.contains("budget") || message.contains("deadline")
-    }) {
-        "deferred:budget"
     } else if let Some(error) = error.downcast_ref::<SummaryArchiveSnapshotVerificationError>() {
         match error.kind {
             "manifest_sha_mismatch" => "unavailable:manifest_sha_mismatch",

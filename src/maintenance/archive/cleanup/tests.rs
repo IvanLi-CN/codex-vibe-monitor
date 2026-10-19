@@ -168,6 +168,11 @@ fn summary_snapshot_storage_errors_are_not_misclassified_as_terminal_verificatio
         classify_summary_archive_snapshot_backfill_error(&misleading_message),
         "unavailable:source_read_failed"
     );
+    let budget_word_in_message = anyhow!("permanent storage failure after deadline budget");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&budget_word_in_message),
+        "unavailable:source_read_failed"
+    );
 
     let sqlite_busy = anyhow::Error::new(sqlx::Error::Database(Box::new(
         FakeSummarySnapshotDatabaseError {

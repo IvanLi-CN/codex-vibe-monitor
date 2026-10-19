@@ -144,6 +144,7 @@ pub(crate) async fn backfill_proxy_prompt_cache_keys_from_cursor(
                 break;
             };
             examined = examined.saturating_add(window_ids.len() as u64);
+            summary.examined = examined;
             last_seen_id = window_end_id;
             let candidates = sqlx::query_as::<_, ProxyPromptCacheKeyBackfillCandidate>(
                 r#"
@@ -350,6 +351,7 @@ pub(crate) async fn backfill_proxy_requested_service_tiers_from_cursor(
             break;
         };
         examined = examined.saturating_add(window_ids.len() as u64);
+        summary.examined = examined;
         last_seen_id = window_end_id;
         let candidates = sqlx::query_as::<_, ProxyRequestedServiceTierBackfillCandidate>(
             r#"
@@ -557,6 +559,7 @@ pub(crate) async fn backfill_proxy_reasoning_efforts_from_cursor(
             break;
         };
         examined = examined.saturating_add(window_ids.len() as u64);
+        summary.examined = examined;
         last_seen_id = window_end_id;
         let candidates = sqlx::query_as::<_, ProxyReasoningEffortBackfillCandidate>(
             r#"
