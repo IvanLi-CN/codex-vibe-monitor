@@ -1,4 +1,4 @@
-use super::*;
+use crate::maintenance_store::MaintenanceStore;
 
 #[tokio::test]
 async fn dispatcher_probe_reports_only_due_or_requested_work() {

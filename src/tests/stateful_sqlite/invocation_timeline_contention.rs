@@ -4,7 +4,7 @@ use chrono::{DateTime, TimeZone, Utc};
 use std::time::Duration;
 use url::Url;
 
-use crate::api::slices::invocation_timeline::{
+use crate::api::{
     InvocationTimelineQuery, fetch_timeline, install_timeline_source_page_pause_for_test,
 };
 
