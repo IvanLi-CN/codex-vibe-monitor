@@ -22,6 +22,9 @@ const INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
+// Filtering is applied after the indexed source page is read. Keep sparse or highly selective
+// requests from turning a bounded snapshot into an unbounded historical scan.
+const INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS: usize = 400_000;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -1261,6 +1264,7 @@ async fn materialize_timeline_snapshot(
     let mut materialized_sources = Vec::new();
     let mut materialized_row_count = 0;
     let mut materialized_byte_count = 0;
+    let mut scanned_source_rows = 0_usize;
     let mut runtime_records = if include_live {
         runtime_overlay_snapshot(state)
     } else {
@@ -1299,6 +1303,18 @@ async fn materialize_timeline_snapshot(
             source_transaction.commit().await?;
             None
         } else {
+            scanned_source_rows = scanned_source_rows.saturating_add(page.len());
+            if scanned_source_rows > INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS {
+                tracing::warn!(
+                    snapshot_token,
+                    scanned_source_rows,
+                    max_source_scan_rows = INVOCATION_TIMELINE_MAX_SOURCE_SCAN_ROWS,
+                    "invocation timeline source scan budget exhausted"
+                );
+                return Err(ApiError::unavailable(anyhow!(
+                    "invocation timeline source scan budget exhausted"
+                )));
+            }
             let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
             page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
             let next_cursor = page.last().cloned().map(|last| TimelineCursor {

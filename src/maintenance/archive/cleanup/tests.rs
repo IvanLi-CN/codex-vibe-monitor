@@ -115,6 +115,24 @@ fn summary_snapshot_hash_state_restarts_on_source_fingerprint_change() {
     fs::remove_file(&path).expect("remove synthetic archive source");
 }
 
+#[test]
+fn summary_snapshot_storage_errors_are_not_misclassified_as_terminal_verification() {
+    let error = anyhow!("failed to persist Summary Snapshot page: disk I/O error");
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&error),
+        "unavailable:source_read_failed"
+    );
+
+    let verification_error = anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
+        "row_count_mismatch",
+        "Summary Snapshot V2 row count mismatch",
+    ));
+    assert_eq!(
+        classify_summary_archive_snapshot_backfill_error(&verification_error),
+        "unavailable:row_count_mismatch"
+    );
+}
+
 #[tokio::test]
 async fn startup_candidates_include_materialized_invocation_archive_missing_global_summary_proof() {
     let pool = sqlx::sqlite::SqlitePoolOptions::new()
@@ -375,6 +393,74 @@ async fn summary_archive_snapshot_backfill_due_cursor_advances_past_ineligible_w
         .await
         .expect("due outcome after cursor advance"),
         "missing_source"
+    );
+}
+
+#[tokio::test]
+async fn summary_archive_snapshot_due_cursor_keeps_full_fact_window_fair() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    for id in 1..=256_i64 {
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (?1, 'codex_invocations', '2026-09', ?2, ?3, 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .bind(id)
+        .bind(format!("/missing/fair-{id}.sqlite.gz"))
+        .bind(format!("fair-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed fair archive batch");
+    }
+
+    let (first, first_cursor) =
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(&pool, 64, 0)
+            .await
+            .expect("load first fair due batch");
+    assert_eq!(first.len(), 64);
+    assert_eq!(
+        first_cursor, 0,
+        "a full fact batch must retain the window cursor"
+    );
+
+    for candidate in &first {
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof
+             (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+             VALUES (?1, ?2, 1, 1, ?3)",
+        )
+        .bind(candidate.id)
+        .bind(&candidate.sha256)
+        .bind(format!("proof-{}", candidate.id))
+        .execute(&pool)
+        .await
+        .expect("settle first fair due batch");
+    }
+
+    let (second, second_cursor) =
+        load_summary_archive_snapshot_backfill_due_candidates_with_cursor(&pool, 64, first_cursor)
+            .await
+            .expect("load second fair due batch");
+    assert_eq!(
+        second
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        (65_i64..=128).collect::<Vec<_>>()
+    );
+    assert_eq!(
+        second_cursor, 0,
+        "a second full batch still retains the window cursor"
     );
 }
 

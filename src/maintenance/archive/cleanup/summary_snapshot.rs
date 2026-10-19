@@ -528,7 +528,7 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
     )
 }
 
-async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
+pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
     pool: &Pool<Sqlite>,
     limit: i64,
     start_after_id: i64,
@@ -548,10 +548,11 @@ async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
         )
         .await
         .context("load bounded unpromoted Summary Snapshot identities")?;
+        let window_start_cursor = cursor_id;
         let Some(last_identity) = identities.last() else {
             return Ok((Vec::new(), cursor_id));
         };
-        cursor_id = last_identity.id;
+        let window_end_cursor = last_identity.id;
         let candidates = load_summary_archive_snapshot_backfill_candidate_rows(
             pool,
             &identities,
@@ -561,14 +562,24 @@ async fn load_summary_archive_snapshot_v2_promotion_candidates_with_cursor(
         )
         .await?;
         if !candidates.is_empty() {
+            // A full fact batch does not prove that the rest of this identity window was
+            // ineligible. Keep the window cursor in place so the next turn can consume the
+            // remaining candidates after this batch changes their durable outcome.
+            let next_cursor_id = if candidates.len() >= usize::try_from(limit).unwrap_or(usize::MAX)
+            {
+                window_start_cursor
+            } else {
+                window_end_cursor
+            };
             return Ok((
                 candidates
                     .into_iter()
                     .map(|candidate| (candidate.id, candidate.sha256))
                     .collect(),
-                cursor_id,
+                next_cursor_id,
             ));
         }
+        cursor_id = window_end_cursor;
         if identities.len() < usize::try_from(window_limit).unwrap_or(usize::MAX) {
             break;
         }
@@ -662,7 +673,7 @@ pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
     )
 }
 
-async fn load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
+pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
     pool: &Pool<Sqlite>,
     limit: i64,
     start_after_id: i64,
@@ -681,10 +692,11 @@ async fn load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
         )
         .await
         .context("load due Summary Snapshot archive identities")?;
+        let window_start_cursor = cursor_id;
         let Some(last_identity) = identities.last() else {
             return Ok((Vec::new(), 0));
         };
-        cursor_id = last_identity.id;
+        let window_end_cursor = last_identity.id;
         let candidates = load_summary_archive_snapshot_backfill_candidate_rows(
             pool,
             &identities,
@@ -694,8 +706,18 @@ async fn load_summary_archive_snapshot_backfill_due_candidates_with_cursor(
         )
         .await?;
         if !candidates.is_empty() {
-            return Ok((candidates, cursor_id));
+            // Due candidates are ordered by recency before id. When the bounded fact query fills
+            // its limit, it is not safe to advance past the identity window: older candidates
+            // in the same window must remain eligible on the next turn.
+            let next_cursor_id = if candidates.len() >= usize::try_from(limit).unwrap_or(usize::MAX)
+            {
+                window_start_cursor
+            } else {
+                window_end_cursor
+            };
+            return Ok((candidates, next_cursor_id));
         }
+        cursor_id = window_end_cursor;
         if identities.len() < usize::try_from(window_limit).unwrap_or(usize::MAX) {
             break;
         }
@@ -864,21 +886,11 @@ async fn record_summary_archive_snapshot_backfill_outcome_preserving_progress_wi
     Ok(())
 }
 
-async fn record_summary_coverage_obligation_terminal_gap(
-    pool: &Pool<Sqlite>,
+async fn record_summary_coverage_obligation_terminal_gap_tx(
+    connection: &mut SqliteConnection,
     candidate: &HistoricalRollupStartupCandidateRow,
     reason: &str,
 ) -> Result<()> {
-    let Some(admission) = super::super::retention::acquire_retention_write_admission(
-        "summary_snapshot_coverage_obligation",
-    )
-    .await
-    else {
-        return Err(super::super::retention::retention_write_deferred(
-            "summary_snapshot_coverage_obligation",
-        ));
-    };
-    let mut tx = pool.begin().await?;
     sqlx::query(
         "INSERT OR IGNORE INTO summary_coverage_obligation \
          (archive_batch_id, manifest_sha256, coverage_start, coverage_end, state) \
@@ -888,7 +900,7 @@ async fn record_summary_coverage_obligation_terminal_gap(
     .bind(&candidate.sha256)
     .bind(candidate.coverage_start_at.as_deref())
     .bind(candidate.coverage_end_at.as_deref())
-    .execute(tx.as_mut())
+    .execute(&mut *connection)
     .await
     .context("ensure Summary coverage obligation for terminal gap")?;
     sqlx::query(
@@ -899,13 +911,72 @@ async fn record_summary_coverage_obligation_terminal_gap(
     .bind(candidate.id)
     .bind(&candidate.sha256)
     .bind(reason)
-    .execute(tx.as_mut())
+    .execute(&mut *connection)
     .await
     .context("persist Summary coverage terminal gap")?;
+    Ok(())
+}
+
+async fn record_summary_archive_snapshot_terminal_gap(
+    pool: &Pool<Sqlite>,
+    candidate: &HistoricalRollupStartupCandidateRow,
+    reason: &str,
+    progress: SummaryArchiveSnapshotBackfillProgress,
+) -> Result<()> {
+    let Some(admission) =
+        super::super::retention::acquire_retention_write_admission("summary_snapshot_terminal_gap")
+            .await
+    else {
+        return Err(super::super::retention::retention_write_deferred(
+            "summary_snapshot_terminal_gap",
+        ));
+    };
+    let mut tx = pool.begin().await?;
+    let progress = SummaryArchiveSnapshotBackfillProgress {
+        cursor_version: progress
+            .cursor_version
+            .max(SUMMARY_ARCHIVE_SNAPSHOT_BACKFILL_CURSOR_VERSION),
+        retry_attempt: progress.retry_attempt.saturating_add(1),
+        ..progress
+    };
+    // The durable outcome and its fail-closed obligation are one fact. Keeping them in the same
+    // transaction prevents a crash from suppressing retries while leaving a pending obligation.
+    record_summary_archive_snapshot_backfill_outcome_tx(
+        tx.as_mut(),
+        candidate,
+        "unavailable",
+        reason,
+        &progress,
+    )
+    .await?;
+    record_summary_coverage_obligation_terminal_gap_tx(tx.as_mut(), candidate, reason).await?;
     tx.commit().await?;
     drop(admission);
     Ok(())
 }
+
+#[derive(Debug)]
+pub(super) struct SummaryArchiveSnapshotVerificationError {
+    kind: &'static str,
+    message: String,
+}
+
+impl SummaryArchiveSnapshotVerificationError {
+    pub(super) fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SummaryArchiveSnapshotVerificationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SummaryArchiveSnapshotVerificationError {}
 
 fn summary_archive_backfill_failure_is_terminal(failure_kind: &str) -> bool {
     matches!(
@@ -918,19 +989,22 @@ fn summary_archive_backfill_failure_is_terminal(failure_kind: &str) -> bool {
     )
 }
 
-fn classify_summary_archive_snapshot_backfill_error(error: &anyhow::Error) -> &'static str {
+pub(super) fn classify_summary_archive_snapshot_backfill_error(
+    error: &anyhow::Error,
+) -> &'static str {
     let message = error.to_string().to_ascii_lowercase();
     if message.contains("busy") || message.contains("locked") {
         "deferred:sqlite_busy_or_locked"
     } else if message.contains("budget") || message.contains("deadline") {
         "deferred:budget"
-    } else if message.contains("invalid")
-        || message.contains("mismatch")
-        || message.contains("proof")
-        || message.contains("semantic")
-        || message.contains("page")
-    {
-        "unavailable:verification_failed"
+    } else if let Some(error) = error.downcast_ref::<SummaryArchiveSnapshotVerificationError>() {
+        match error.kind {
+            "manifest_sha_mismatch" => "unavailable:manifest_sha_mismatch",
+            "invalid_timestamp" => "unavailable:invalid_timestamp",
+            "row_count_mismatch" => "unavailable:row_count_mismatch",
+            "empty_archive" => "unavailable:empty_archive",
+            _ => "unavailable:verification_failed",
+        }
     } else {
         "unavailable:source_read_failed"
     }
@@ -1048,10 +1122,18 @@ pub(super) fn resumable_summary_archive_sha256(
             .hash_state
             .as_deref()
             .expect("resumable hash state checked above");
-        let serialized = <&SerializedState<ResumableSha256>>::try_from(state)
-            .map_err(|_| anyhow!("invalid persisted Summary archive SHA-256 state"))?;
-        ResumableSha256::deserialize(serialized)
-            .map_err(|_| anyhow!("cannot deserialize persisted Summary archive SHA-256 state"))?
+        let serialized = <&SerializedState<ResumableSha256>>::try_from(state).map_err(|_| {
+            SummaryArchiveSnapshotVerificationError::new(
+                "verification_failed",
+                "invalid persisted Summary archive SHA-256 state",
+            )
+        })?;
+        ResumableSha256::deserialize(serialized).map_err(|_| {
+            SummaryArchiveSnapshotVerificationError::new(
+                "verification_failed",
+                "cannot deserialize persisted Summary archive SHA-256 state",
+            )
+        })?
     } else {
         progress.hash_byte_offset = 0;
         ResumableSha256::new()
@@ -1323,7 +1405,12 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 rows.last().map(|row| row.occurred_at.clone())
             };
             let (Some(coverage_start), Some(coverage_end)) = (coverage_start, coverage_end) else {
-                bail!("Summary Snapshot source page is missing coverage");
+                return Err(anyhow::Error::new(
+                    SummaryArchiveSnapshotVerificationError::new(
+                        "verification_failed",
+                        "Summary Snapshot source page is missing coverage",
+                    ),
+                ));
             };
             let invoke_ids_by_row_id = if archive_columns.contains("invoke_id") {
                 let mut query = QueryBuilder::<Sqlite>::new(
@@ -1353,8 +1440,12 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
                 page_index: progress.page_index,
                 coverage_start,
                 coverage_end,
-                row_count: u32::try_from(rows.len())
-                    .context("Summary Snapshot V2 page row count overflow")?,
+                row_count: u32::try_from(rows.len()).map_err(|_| {
+                    anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
+                        "verification_failed",
+                        "Summary Snapshot V2 page row count overflow",
+                    ))
+                })?,
                 payload,
             };
             if summary_archive_source_fingerprint(archive_path)? != source_fingerprint {
@@ -1383,10 +1474,12 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             .await?;
             tx.commit().await?;
             total_rows = total_rows.saturating_add(i64::try_from(rows.len())?);
-            progress.next_row_id = rows
-                .last()
-                .map(|row| row.id)
-                .ok_or_else(|| anyhow!("Summary Snapshot page is missing row id"))?;
+            progress.next_row_id = rows.last().map(|row| row.id).ok_or_else(|| {
+                anyhow::Error::new(SummaryArchiveSnapshotVerificationError::new(
+                    "verification_failed",
+                    "Summary Snapshot page is missing row id",
+                ))
+            })?;
             progress.next_occurred_at = rows.last().map(|row| row.occurred_at.clone());
             progress.page_index = progress.page_index.saturating_add(1);
             if !has_more {
@@ -1394,16 +1487,25 @@ async fn backfill_summary_archive_snapshot_v2_candidate(
             }
         }
         if total_rows != candidate.row_count {
-            bail!(
-                "Summary Snapshot V2 row count mismatch: expected {}, got {}",
-                candidate.row_count,
-                total_rows
-            );
+            return Err(anyhow::Error::new(
+                SummaryArchiveSnapshotVerificationError::new(
+                    "row_count_mismatch",
+                    format!(
+                        "Summary Snapshot V2 row count mismatch: expected {}, got {}",
+                        candidate.row_count, total_rows
+                    ),
+                ),
+            ));
         }
         if !ensure_summary_archive_snapshot_v2_final_proof(pool, candidate.id, &candidate.sha256)
             .await?
         {
-            bail!("Summary Snapshot V2 proof validation failed after backfill");
+            return Err(anyhow::Error::new(
+                SummaryArchiveSnapshotVerificationError::new(
+                    "verification_failed",
+                    "Summary Snapshot V2 proof validation failed after backfill",
+                ),
+            ));
         }
         Ok("complete")
     }
@@ -1584,17 +1686,23 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
             }
             let progress =
                 load_summary_archive_snapshot_backfill_progress(pool, &candidate).await?;
-            record_summary_archive_snapshot_backfill_outcome_preserving_progress(
-                pool,
-                &candidate,
-                disposition,
-                failure_kind,
-                progress,
-            )
-            .await?;
             if summary_archive_backfill_failure_is_terminal(failure_kind) {
-                record_summary_coverage_obligation_terminal_gap(pool, &candidate, failure_kind)
-                    .await?;
+                record_summary_archive_snapshot_terminal_gap(
+                    pool,
+                    &candidate,
+                    failure_kind,
+                    progress,
+                )
+                .await?;
+            } else {
+                record_summary_archive_snapshot_backfill_outcome_preserving_progress(
+                    pool,
+                    &candidate,
+                    disposition,
+                    failure_kind,
+                    progress,
+                )
+                .await?;
             }
             result.unavailable_archive_batches += 1;
         } else {
