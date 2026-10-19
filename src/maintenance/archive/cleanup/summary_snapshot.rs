@@ -1529,6 +1529,12 @@ pub(crate) async fn backfill_summary_archive_snapshots_v2_window(
         && let Some(next_cursor_id) = sweep_cursor_after_scan
     {
         result.next_cursor_id = next_cursor_id;
+        let next_due_cursor_id = if due_cursor_after_scan == 0 && due_cursor_id > 0 {
+            0
+        } else {
+            due_cursor_after_scan
+        };
+        store_summary_archive_snapshot_due_cursor(pool, next_due_cursor_id).await?;
         store_summary_archive_snapshot_backfill_checkpoint(
             pool,
             next_cursor_id,
