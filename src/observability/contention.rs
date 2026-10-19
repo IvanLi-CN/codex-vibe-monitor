@@ -110,7 +110,13 @@ labels!(SummaryReason {
     CurrentRankUnproven => "current_rank_unproven", HistoricalCoverage => "historical_coverage",
     Other => "other"
 });
-labels!(StatsQuery { Summary => "summary", PromptCacheStatistics => "prompt_cache_statistics", LongTermOverlap => "long_term_overlap" });
+labels!(StatsQuery {
+    Summary => "summary",
+    PromptCacheStatistics => "prompt_cache_statistics",
+    LongTermOverlap => "long_term_overlap",
+    InvocationTimeline => "invocation_timeline",
+    SummarySnapshotCandidates => "summary_snapshot_candidates"
+});
 labels!(QueryOutcome { Success => "success", Error => "error", Cancelled => "cancelled" });
 labels!(StatsProjection {
     SummaryRecent => "summary_recent", SummaryHistorical => "summary_historical",
@@ -135,7 +141,9 @@ labels!(RecoveryDiagnostic {
     StatisticsLiveTail => "live_tail", StatisticsHistoricalCoverage => "historical_coverage",
     StatisticsPublicationConflict => "publication_conflict",
     QueryPlanIndexed => "query_plan_indexed", QueryPlanFallback => "query_plan_fallback",
-    QueryPlanUnavailable => "query_plan_unavailable"
+    QueryPlanUnavailable => "query_plan_unavailable",
+    SummaryReorderBuffered => "summary_reorder_buffered",
+    SummaryReorderAdvanced => "summary_reorder_advanced"
 });
 impl RecoveryDiagnostic {
     fn operation(self) -> &'static str {
@@ -148,6 +156,7 @@ impl RecoveryDiagnostic {
             | Self::RangeUnavailable
             | Self::RangePrewarmReady
             | Self::RangePrewarmDeferred => "invocation_range",
+            Self::SummaryReorderBuffered | Self::SummaryReorderAdvanced => "summary",
             Self::RetentionNoWork
             | Self::RetentionBudgetExhausted
             | Self::RetentionPressureDeferred
