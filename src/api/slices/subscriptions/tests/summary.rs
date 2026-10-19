@@ -1395,6 +1395,95 @@ async fn summary_delta_journal_conflicting_ack_records_gap() {
     );
     assert_eq!(journal.overflowed_through_sequence, Some(3));
 }
+
+#[tokio::test]
+async fn summary_delta_journal_buffers_committed_high_sequence_until_prefix_arrives() {
+    let state = crate::tests::test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+    record.id = 9_100_010;
+    record.invoke_id = "summary-delta-reorder-first".to_string();
+    record.status = Some("success".to_string());
+    record.live_phase = None;
+    let mut first = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+        .await
+        .terminal_delta
+        .expect("materialize first terminal delta");
+    first.terminal_sequence = 1;
+    first.persisted_row_id = Some(record.id);
+
+    let mut second = first.clone();
+    second.terminal_sequence = 2;
+    second.persisted_row_id = Some(record.id + 1);
+    second.invoke_id = "summary-delta-reorder-second".to_string();
+
+    let hub = state.subscription_hub.clone();
+    hub.register_summary_delta_pending(second.clone()).await;
+    hub.acknowledge_summary_delta(second).await;
+    assert!(
+        hub.summary_delta_journal_unabsorbed_deltas()
+            .await
+            .is_empty(),
+        "a committed high sequence must stay out of the exact rolling overlay"
+    );
+
+    hub.register_summary_delta_pending(first.clone()).await;
+    hub.acknowledge_summary_delta(first).await;
+    let deltas = hub.summary_delta_journal_unabsorbed_deltas().await;
+    assert_eq!(
+        deltas
+            .iter()
+            .map(|delta| delta.terminal_sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2],
+        "the predecessor ACK must promote the newly contiguous committed prefix"
+    );
+}
+
+#[tokio::test]
+async fn summary_delta_journal_rolls_back_missing_predecessor_before_promoting_tail() {
+    let state = crate::tests::test_state_with_openai_base(
+        Url::parse("http://127.0.0.1:9").expect("valid test URL"),
+    )
+    .await;
+    let occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let mut record = dashboard_runtime_topology_live_record(&occurred_at);
+    record.id = 9_100_020;
+    record.invoke_id = "summary-delta-rollback-first".to_string();
+    record.status = Some("success".to_string());
+    record.live_phase = None;
+    let mut first = apply_dashboard_activity_terminal_record(state.as_ref(), &record)
+        .await
+        .terminal_delta
+        .expect("materialize first terminal delta");
+    first.terminal_sequence = 1;
+    first.persisted_row_id = Some(record.id);
+
+    let mut second = first.clone();
+    second.terminal_sequence = 2;
+    second.persisted_row_id = Some(record.id + 1);
+    second.invoke_id = "summary-delta-rollback-second".to_string();
+
+    let hub = state.subscription_hub.clone();
+    hub.register_summary_delta_pending(second.clone()).await;
+    hub.acknowledge_summary_delta(second).await;
+    hub.register_summary_delta_pending(first).await;
+    hub.rollback_summary_delta_pending(Some(1)).await;
+
+    let deltas = hub.summary_delta_journal_unabsorbed_deltas().await;
+    assert_eq!(
+        deltas
+            .iter()
+            .map(|delta| delta.terminal_sequence)
+            .collect::<Vec<_>>(),
+        vec![2],
+        "a rollback is a known skipped predecessor for the committed tail"
+    );
+}
+
 #[test]
 fn summary_delta_source_cursor_gap_does_not_advance_terminal_cursor() {
     let mut journal = SummaryDeltaJournal::default();

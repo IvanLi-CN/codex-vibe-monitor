@@ -155,6 +155,10 @@ pub(crate) struct SummaryDeltaJournal {
     pub(crate) pending: BTreeMap<u64, DashboardActivityTerminalDelta>,
     pub(crate) pending_bytes: usize,
     pub(crate) rolled_back_sequences: BTreeSet<u64>,
+    // A committed terminal can arrive before its predecessor when independent SQLite batches
+    // finish out of order. Keep it bounded and invisible to Summary reads until the prefix closes.
+    pub(crate) committed_reorder: BTreeMap<u64, DashboardActivityTerminalDelta>,
+    pub(crate) committed_reorder_bytes: usize,
     pub(crate) entries: VecDeque<SummaryDeltaEntry>,
     pub(crate) bytes: usize,
     // A terminal-journal replay can commit after Bootstrap has published. Its source row is
@@ -196,11 +200,35 @@ impl SummaryDeltaJournal {
         self.pending
             .values()
             .chain(self.entries.iter().map(|entry| &entry.delta))
+            .chain(self.committed_reorder.values())
             .chain(self.replayed_entries.iter())
             .any(|existing| {
                 existing.persisted_row_id == Some(row_id)
                     && !Self::contains_same_identity(existing, delta)
             })
+    }
+
+    fn resident_delta_count(&self) -> usize {
+        self.entries
+            .len()
+            .saturating_add(self.replayed_entries.len())
+            .saturating_add(self.pending.len())
+            .saturating_add(self.committed_reorder.len())
+    }
+
+    fn resident_delta_bytes(&self) -> usize {
+        self.bytes
+            .saturating_add(self.replayed_bytes)
+            .saturating_add(self.pending_bytes)
+            .saturating_add(self.committed_reorder_bytes)
+    }
+
+    fn has_capacity_for(&self, delta: &DashboardActivityTerminalDelta) -> bool {
+        self.resident_delta_count() < SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS
+            && self
+                .resident_delta_bytes()
+                .saturating_add(delta.estimated_bytes)
+                <= SUMMARY_TERMINAL_OVERLAY_MAX_BYTES
     }
 
     pub(crate) fn compatible_pending_identity(
@@ -220,6 +248,8 @@ impl SummaryDeltaJournal {
         }
         self.entries
             .retain(|entry| !Self::contains_same_identity(&entry.delta, delta));
+        self.committed_reorder
+            .retain(|_, entry| !Self::contains_same_identity(entry, delta));
         self.replayed_entries
             .retain(|entry| !Self::contains_same_identity(entry, delta));
         self.bytes = self
@@ -232,6 +262,11 @@ impl SummaryDeltaJournal {
             .iter()
             .map(|entry| entry.estimated_bytes)
             .sum();
+        self.committed_reorder_bytes = self
+            .committed_reorder
+            .values()
+            .map(|entry| entry.estimated_bytes)
+            .sum();
         self.cursor = self.cursor.max(SummaryDeltaCursor(delta.terminal_sequence));
         self.base_cursor = self
             .base_cursor
@@ -239,6 +274,7 @@ impl SummaryDeltaJournal {
         self.last_reconciled_terminal_watermark = self
             .last_reconciled_terminal_watermark
             .max(delta.terminal_sequence);
+        self.drain_committed_reorder();
     }
 
     // Registration happens before the asynchronous SQLite enqueue. Pending entries establish
@@ -259,6 +295,15 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
+        if let Some(existing) = self.committed_reorder.get(&sequence) {
+            if Self::contains_same_identity(existing, &delta) {
+                return true;
+            }
+            self.overflowed_through_sequence = Some(sequence);
+            self.note_unknown_terminal_gap(sequence);
+            self.note_gap(&delta);
+            return false;
+        }
         if self
             .entries
             .iter()
@@ -270,19 +315,7 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
-        let exceeds_count = self
-            .entries
-            .len()
-            .saturating_add(self.replayed_entries.len())
-            .saturating_add(self.pending.len())
-            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-        let exceeds_bytes = self
-            .bytes
-            .saturating_add(self.replayed_bytes)
-            .saturating_add(self.pending_bytes)
-            .saturating_add(delta.estimated_bytes)
-            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-        if exceeds_count || exceeds_bytes {
+        if !self.has_capacity_for(&delta) {
             self.overflowed_through_sequence = Some(sequence);
             self.note_gap(&delta);
             return false;
@@ -299,21 +332,21 @@ impl SummaryDeltaJournal {
         if let Some(delta) = self.pending.remove(&sequence) {
             self.pending_bytes = self.pending_bytes.saturating_sub(delta.estimated_bytes);
         }
-        let mut known_through = self.cursor.max(self.base_cursor).0;
+        let known_through = self.cursor.max(self.base_cursor).0;
         if sequence <= known_through {
             return;
         }
         self.rolled_back_sequences.insert(sequence);
-        while self
-            .rolled_back_sequences
-            .remove(&known_through.saturating_add(1))
-        {
-            known_through = known_through.saturating_add(1);
-        }
-        self.cursor = self.cursor.max(SummaryDeltaCursor(known_through));
+        self.advance_rolled_back_prefix();
+        self.drain_committed_reorder();
     }
 
     pub(crate) fn commit_skipped_sequences(&mut self) {
+        self.advance_rolled_back_prefix();
+        self.drain_committed_reorder();
+    }
+
+    fn advance_rolled_back_prefix(&mut self) {
         let mut known_through = self.cursor.max(self.base_cursor).0;
         while self
             .rolled_back_sequences
@@ -341,6 +374,36 @@ impl SummaryDeltaJournal {
         }
         self.commit_skipped_sequences();
         self.append(delta.clone(), delta.terminal_sequence)
+    }
+
+    fn drain_committed_reorder(&mut self) -> usize {
+        if self.overflowed_through_sequence.is_some() {
+            return 0;
+        }
+        self.advance_rolled_back_prefix();
+        let mut advanced = 0;
+        loop {
+            let expected_next = self.cursor.max(self.base_cursor).0.saturating_add(1);
+            let Some(delta) = self.committed_reorder.remove(&expected_next) else {
+                break;
+            };
+            self.committed_reorder_bytes = self
+                .committed_reorder_bytes
+                .saturating_sub(delta.estimated_bytes);
+            self.bytes = self.bytes.saturating_add(delta.estimated_bytes);
+            self.cursor = SummaryDeltaCursor(expected_next);
+            self.entries.push_back(SummaryDeltaEntry {
+                cursor: SummaryDeltaCursor(expected_next),
+                delta,
+            });
+            advanced += 1;
+        }
+        if advanced > 0 {
+            crate::observability::contention::record_recovery(
+                crate::observability::contention::RecoveryDiagnostic::SummaryReorderAdvanced,
+            );
+        }
+        advanced
     }
 
     pub(crate) fn note_unknown_terminal_gap(&mut self, cursor: u64) {
@@ -442,6 +505,7 @@ impl SummaryDeltaJournal {
             .entries
             .iter()
             .map(|entry| &entry.delta)
+            .chain(self.committed_reorder.values())
             .chain(self.replayed_entries.iter())
             .any(|entry| Self::contains_same_identity(entry, &delta))
         {
@@ -451,19 +515,7 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
-        let exceeds_count = self
-            .entries
-            .len()
-            .saturating_add(self.replayed_entries.len())
-            .saturating_add(self.pending.len())
-            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-        let exceeds_bytes = self
-            .bytes
-            .saturating_add(self.replayed_bytes)
-            .saturating_add(self.pending_bytes)
-            .saturating_add(delta.estimated_bytes)
-            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-        if exceeds_count || exceeds_bytes {
+        if !self.has_capacity_for(&delta) {
             self.overflowed_through_sequence = Some(delta.terminal_sequence);
             self.note_gap(&delta);
             return false;
@@ -509,6 +561,15 @@ impl SummaryDeltaJournal {
             self.note_gap(&delta);
             return false;
         }
+        if let Some(existing) = self.committed_reorder.get(&delta.terminal_sequence) {
+            if Self::contains_same_identity(existing, &delta) {
+                return true;
+            }
+            self.overflowed_through_sequence = Some(slice_high_watermark);
+            self.note_unknown_terminal_gap(slice_high_watermark);
+            self.note_gap(&delta);
+            return false;
+        }
         if self.overflowed_through_sequence.is_some() {
             self.overflowed_through_sequence = Some(
                 self.overflowed_through_sequence
@@ -541,23 +602,29 @@ impl SummaryDeltaJournal {
             return false;
         }
         let expected_next = known_through.0.saturating_add(1);
-        if delta.terminal_sequence != expected_next {
+        if delta.terminal_sequence > expected_next {
+            if !self.has_capacity_for(&delta) {
+                self.overflowed_through_sequence = Some(slice_high_watermark);
+                self.note_gap(&delta);
+                return false;
+            }
+            self.committed_reorder_bytes = self
+                .committed_reorder_bytes
+                .saturating_add(delta.estimated_bytes);
+            self.committed_reorder
+                .insert(delta.terminal_sequence, delta);
+            crate::observability::contention::record_recovery(
+                crate::observability::contention::RecoveryDiagnostic::SummaryReorderBuffered,
+            );
+            return true;
+        }
+        if delta.terminal_sequence < expected_next {
             self.overflowed_through_sequence = Some(slice_high_watermark);
             self.note_unknown_terminal_gap(slice_high_watermark);
             self.note_gap(&delta);
             return false;
         }
-        let exceeds_count = self
-            .entries
-            .len()
-            .saturating_add(self.replayed_entries.len())
-            >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-        let exceeds_bytes = self
-            .bytes
-            .saturating_add(self.replayed_bytes)
-            .saturating_add(delta.estimated_bytes)
-            > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-        if exceeds_count || exceeds_bytes {
+        if !self.has_capacity_for(&delta) {
             self.overflowed_through_sequence = Some(slice_high_watermark);
             self.note_gap(&delta);
             return false;
@@ -568,6 +635,7 @@ impl SummaryDeltaJournal {
             cursor: SummaryDeltaCursor(delta.terminal_sequence),
             delta,
         });
+        self.drain_committed_reorder();
         true
     }
 
@@ -592,24 +660,13 @@ impl SummaryDeltaJournal {
                 .entries
                 .iter()
                 .map(|entry| &entry.delta)
+                .chain(self.committed_reorder.values())
                 .chain(self.replayed_entries.iter())
                 .any(|entry| Self::contains_same_identity(entry, delta))
             {
                 continue;
             }
-            let exceeds_count = self
-                .entries
-                .len()
-                .saturating_add(self.replayed_entries.len())
-                .saturating_add(self.pending.len())
-                >= SUMMARY_TERMINAL_OVERLAY_MAX_DELTAS;
-            let exceeds_bytes = self
-                .bytes
-                .saturating_add(self.replayed_bytes)
-                .saturating_add(self.pending_bytes)
-                .saturating_add(delta.estimated_bytes)
-                > SUMMARY_TERMINAL_OVERLAY_MAX_BYTES;
-            if exceeds_count || exceeds_bytes {
+            if !self.has_capacity_for(delta) {
                 self.overflowed_through_sequence = Some(
                     self.overflowed_through_sequence
                         .unwrap_or_default()
