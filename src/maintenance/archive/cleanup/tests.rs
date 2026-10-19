@@ -1132,6 +1132,20 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
         SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL
             .contains("summary_archive_snapshot_backfill_outcome")
     );
+    for alias in ["proof", "outcome"] {
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
+            "{alias} must use its identity index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
+            "{alias} must not be scanned: {details:?}"
+        );
+    }
     let alias = "snapshot";
     assert!(
         details
@@ -1145,6 +1159,93 @@ async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_p
             .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
         "{alias} must not be scanned for each promotion pass: {details:?}"
     );
+}
+
+#[tokio::test]
+async fn summary_archive_snapshot_due_candidates_filter_before_limit_and_use_seek_plan() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+    for id in 1_i64..=257 {
+        sqlx::query(
+            "INSERT INTO archive_batches
+             (id, dataset, month_key, file_path, sha256, row_count, status,
+              summary_source_kind, coverage_start_at, coverage_end_at)
+             VALUES (?1, 'codex_invocations', '2026-09', ?2, ?3, 1,
+                     'completed', 'unknown', datetime('now', '-1 day'), datetime('now'))",
+        )
+        .bind(id)
+        .bind(format!("/missing/due-{id}.sqlite.gz"))
+        .bind(format!("due-{id}"))
+        .execute(&pool)
+        .await
+        .expect("seed due archive");
+        if id <= 256 {
+            sqlx::query(
+                "INSERT INTO summary_archive_snapshot_v2_proof
+                 (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256)
+                 VALUES (?1, ?2, 1, 1, ?3)",
+            )
+            .bind(id)
+            .bind(format!("due-{id}"))
+            .bind(format!("proof-{id}"))
+            .execute(&pool)
+            .await
+            .expect("seed completed proof");
+        }
+    }
+
+    let candidates = load_summary_archive_snapshot_backfill_due_candidates(&pool, 1)
+        .await
+        .expect("load due candidates");
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+        [257]
+    );
+
+    let explain_sql = format!(
+        "EXPLAIN QUERY PLAN {}",
+        summary_archive_snapshot_backfill_due_identity_sql()
+    );
+    let details = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain_sql)
+        .bind(0_i64)
+        .bind(1_i64)
+        .fetch_all(&pool)
+        .await
+        .expect("explain due candidate query")
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains(
+                "SEARCH batches USING INDEX idx_archive_batches_summary_rollup_repair_seek",
+            )
+        }),
+        "due archive identities must use the bounded seek index: {details:?}"
+    );
+    for alias in ["proof", "obligation", "outcome"] {
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
+            "due {alias} lookup must use an identity index: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
+            "due {alias} lookup must not scan: {details:?}"
+        );
+    }
 }
 
 #[tokio::test]

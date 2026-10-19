@@ -188,7 +188,6 @@ async fn load_summary_archive_snapshot_candidate_identities(
     limit: i64,
     require_snapshot: bool,
     format_version: Option<i64>,
-    prioritize_recent: bool,
 ) -> Result<Vec<SummaryArchiveSnapshotCandidateIdentity>> {
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT batches.id, batches.sha256 FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek WHERE batches.dataset = 'codex_invocations' AND batches.status = 'completed'",
@@ -204,17 +203,34 @@ async fn load_summary_archive_snapshot_candidate_identities(
             .push_bind(format_version.unwrap_or(SUMMARY_ARCHIVE_SNAPSHOT_V2))
             .push(")");
     }
-    if prioritize_recent {
-        query.push(" ORDER BY CASE WHEN batches.coverage_end_at IS NOT NULL AND batches.coverage_end_at >= datetime('now', '-30 days') AND (batches.coverage_start_at IS NULL OR batches.coverage_start_at <= datetime('now')) THEN 0 ELSE 1 END, batches.id ASC LIMIT ");
-    } else {
-        query.push(" ORDER BY batches.id ASC LIMIT ");
-    }
+    query.push(" ORDER BY batches.id ASC LIMIT ");
     query.push_bind(limit.max(1));
-    query
-        .build_query_as::<SummaryArchiveSnapshotCandidateIdentity>()
-        .fetch_all(pool)
-        .await
-        .context("load bounded Summary Snapshot archive identities")
+    crate::observability::contention::observe_query(
+        crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
+        query
+            .build_query_as::<SummaryArchiveSnapshotCandidateIdentity>()
+            .fetch_all(pool),
+    )
+    .await
+    .context("load bounded Summary Snapshot archive identities")
+}
+
+pub(crate) fn summary_archive_snapshot_backfill_due_identity_sql() -> String {
+    format!(
+        "SELECT batches.id, batches.sha256
+         FROM archive_batches AS batches INDEXED BY idx_archive_batches_summary_rollup_repair_seek
+         WHERE batches.dataset = 'codex_invocations'
+           AND batches.status = 'completed'
+           AND batches.sha256 IS NOT NULL
+           AND TRIM(batches.sha256) <> ''
+           AND COALESCE(batches.summary_source_kind, 'unknown') <> 'live_mirror'
+           AND batches.id > ?1
+           AND {SUMMARY_ARCHIVE_SNAPSHOT_DUE_ELIGIBILITY_SQL}
+           {SUMMARY_ARCHIVE_SNAPSHOT_SWEEP_ELIGIBILITY_SQL}
+           {SUMMARY_ARCHIVE_SNAPSHOT_DUE_ELIGIBILITY_SUFFIX_SQL}
+         ORDER BY batches.id ASC
+         LIMIT ?2"
+    )
 }
 
 async fn load_summary_archive_snapshot_backfill_candidate_rows(
@@ -433,10 +449,9 @@ async fn load_summary_archive_snapshot_backfill_candidates_with_cursor(
     cursor_id: i64,
     limit: i64,
 ) -> Result<(Vec<HistoricalRollupStartupCandidateRow>, Option<i64>)> {
-    let identities = load_summary_archive_snapshot_candidate_identities(
-        pool, cursor_id, limit, false, None, false,
-    )
-    .await?;
+    let identities =
+        load_summary_archive_snapshot_candidate_identities(pool, cursor_id, limit, false, None)
+            .await?;
     let next_cursor_id = identities.last().map(|identity| identity.id);
     let candidates =
         load_summary_archive_snapshot_backfill_candidate_rows(pool, &identities, limit, false)
@@ -553,15 +568,16 @@ pub(super) async fn load_summary_archive_snapshot_backfill_due_candidates(
     limit: i64,
 ) -> Result<Vec<HistoricalRollupStartupCandidateRow>> {
     let window_limit = limit.max(1).saturating_mul(4).min(256);
-    let identities = load_summary_archive_snapshot_candidate_identities(
-        pool,
-        0,
-        window_limit,
-        false,
-        None,
-        true,
+    let identity_sql = summary_archive_snapshot_backfill_due_identity_sql();
+    let identities = crate::observability::contention::observe_query(
+        crate::observability::contention::StatsQuery::SummarySnapshotCandidates,
+        sqlx::query_as::<_, SummaryArchiveSnapshotCandidateIdentity>(&identity_sql)
+            .bind(0_i64)
+            .bind(window_limit)
+            .fetch_all(pool),
     )
-    .await?;
+    .await
+    .context("load due Summary Snapshot archive identities")?;
     load_summary_archive_snapshot_backfill_candidate_rows(pool, &identities, limit, true).await
 }
 

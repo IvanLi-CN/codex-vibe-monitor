@@ -824,6 +824,7 @@ pub(crate) async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Resul
             is_runtime INTEGER NOT NULL,\
             is_in_flight INTEGER NOT NULL,\
             payload TEXT NOT NULL,\
+            published INTEGER NOT NULL DEFAULT 0,\
             PRIMARY KEY (snapshot_token, invoke_id, occurred_at)\
         )"
     ))
@@ -1452,6 +1453,16 @@ async fn materialize_timeline_snapshot(
         .await?;
         publish_transaction.commit().await?;
     }
+    // Rows are durable in short batches, but remain invisible until the complete snapshot has
+    // been written. This marker makes cancellation or a failed later batch safe to clean up.
+    let mut publication_transaction = state.pool.begin_with("BEGIN IMMEDIATE").await?;
+    sqlx::query(&format!(
+        "UPDATE {INVOCATION_TIMELINE_SNAPSHOT_TABLE} SET published = 1 WHERE snapshot_token = ?1"
+    ))
+    .bind(snapshot_token)
+    .execute(&mut *publication_transaction)
+    .await?;
+    publication_transaction.commit().await?;
     set_timeline_snapshot_usage(
         snapshot_token,
         materialized_row_count,
@@ -1640,6 +1651,7 @@ pub(crate) async fn fetch_timeline(
         "SELECT invoke_id, occurred_at, payload FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = "
     ));
     page_query.push_bind(as_of.clone());
+    page_query.push(" AND published = 1");
     if let Some(cursor) = cursor.as_ref()
         && let (Some(occurred_at), Some(invoke_id)) = (&cursor.occurred_at, &cursor.invoke_id)
     {

@@ -3983,9 +3983,32 @@ impl MaintenanceStore {
         }
         let mut transaction = self.pool.begin().await?;
         let mut enqueued = 0_u64;
-        for (task_key, interval_secs, cron_expr, current_trigger_at, current_catchup_at) in
-            due_tasks
-        {
+        for (task_key, _, _, _, _) in due_tasks {
+            // The read-only preflight is only an admission hint. Re-read the task inside the
+            // write transaction so disable/reschedule changes cannot turn into stale runs.
+            let Some((interval_secs, cron_expr, current_trigger_at, current_catchup_at)) =
+                sqlx::query_as::<_, (Option<i64>, Option<String>, Option<String>, Option<String>)>(
+                    "SELECT interval_secs,cron_expr,next_trigger_at,next_catchup_at
+                 FROM managed_tasks
+                 WHERE task_key=? AND enabled=1 AND is_manual=0
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM maintenance_owner_retry_state retry
+                       WHERE retry.task_key=managed_tasks.task_key
+                         AND retry.next_eligible_at>?
+                   )
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at <= ?)
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at <= ?))",
+                )
+                .bind(&task_key)
+                .bind(&now_text)
+                .bind(&now_text)
+                .bind(&now_text)
+                .fetch_optional(&mut *transaction)
+                .await?
+            else {
+                continue;
+            };
             let inspection_due = current_trigger_at
                 .as_deref()
                 .is_some_and(|value| value <= now_text.as_str());
