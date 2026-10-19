@@ -1890,6 +1890,16 @@ fn spawn_managed_task_dispatcher(state: Arc<AppState>) -> JoinHandle<()> {
                 );
                 pending_finishes.push_back(finish);
             }
+            let has_dispatch_work = match store.probe_due_or_requested_runs().await {
+                Ok(has_work) => has_work,
+                Err(error) => {
+                    warn!(error = %error, "managed task dispatcher failed to probe for work");
+                    continue;
+                }
+            };
+            if !has_dispatch_work {
+                continue;
+            }
             if let Err(error) = store.enqueue_due_runs().await {
                 warn!(error = %error, "managed task dispatcher failed to enqueue scheduled runs");
             }

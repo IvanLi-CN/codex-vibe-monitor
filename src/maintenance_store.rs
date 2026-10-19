@@ -83,6 +83,14 @@ pub(crate) async fn observe_store_write<T>(
     operation: StoreOperation,
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<T> {
+    observe_store_write_with_outcome(operation, future, |_| WakeOutcome::Committed).await
+}
+
+pub(crate) async fn observe_store_write_with_outcome<T>(
+    operation: StoreOperation,
+    future: impl std::future::Future<Output = Result<T>>,
+    classify_success: impl FnOnce(&T) -> WakeOutcome,
+) -> Result<T> {
     let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) else {
         return future.await;
     };
@@ -95,9 +103,16 @@ pub(crate) async fn observe_store_write<T>(
     let result = future.await;
     observation.outcome = result
         .as_ref()
-        .map(|_| WakeOutcome::Committed)
+        .map(classify_success)
         .unwrap_or_else(store_write_outcome);
     result
+}
+
+fn record_store_write_event(operation: StoreOperation, outcome: WakeOutcome) {
+    let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) else {
+        return;
+    };
+    metrics.count_performance(PerformanceCounter::StoreWrite(operation, outcome), 1);
 }
 
 struct StoreWriteObservation {
@@ -3297,13 +3312,59 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
-        observe_store_write(StoreOperation::Run, self.claim_requested_run_inner()).await
+        let (claim, retired_requested_runs) = observe_store_write_with_outcome(
+            StoreOperation::Run,
+            self.claim_requested_run_inner(),
+            |(claim, _)| {
+                if claim.is_some() {
+                    WakeOutcome::Committed
+                } else {
+                    WakeOutcome::Noop
+                }
+            },
+        )
+        .await?;
+        if retired_requested_runs {
+            record_store_write_event(StoreOperation::Cleanup, WakeOutcome::Committed);
+        }
+        Ok(claim)
     }
 
-    async fn claim_requested_run_inner(&self) -> Result<Option<(i64, String, String, String)>> {
+    pub(crate) async fn probe_due_or_requested_runs(&self) -> Result<bool> {
+        let now_text = format_utc_iso_millis(Utc::now());
+        let has_work = sqlx::query_scalar::<_, i64>(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM managed_task_runs
+                 WHERE status='requested'
+                 UNION ALL
+                 SELECT 1
+                 FROM managed_tasks
+                 WHERE enabled=1 AND is_manual=0
+                   AND NOT EXISTS(
+                       SELECT 1
+                       FROM maintenance_owner_retry_state retry
+                       WHERE retry.task_key=managed_tasks.task_key
+                         AND retry.next_eligible_at>?
+                   )
+                   AND ((next_trigger_at IS NOT NULL AND next_trigger_at<=?)
+                     OR (next_catchup_at IS NOT NULL AND next_catchup_at<=?))
+             )",
+        )
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(&now_text)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(has_work != 0)
+    }
+
+    async fn claim_requested_run_inner(
+        &self,
+    ) -> Result<(Option<(i64, String, String, String)>, bool)> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
-        sqlx::query(
+        let retired_requested_runs = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
@@ -3315,7 +3376,9 @@ impl MaintenanceStore {
         )
         .bind(&finished_at)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected()
+            > 0;
         let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
             "UPDATE managed_task_runs
              SET status='running'
@@ -3335,10 +3398,13 @@ impl MaintenanceStore {
         .await?;
         let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
-            return Ok(None);
+            return Ok((None, retired_requested_runs));
         };
         transaction.commit().await?;
-        Ok(Some((id, task_key, started_at, trigger_kind)))
+        Ok((
+            Some((id, task_key, started_at, trigger_kind)),
+            retired_requested_runs,
+        ))
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
@@ -3843,7 +3909,18 @@ impl MaintenanceStore {
     }
 
     pub(crate) async fn enqueue_due_runs(&self) -> Result<u64> {
-        observe_store_write(StoreOperation::Wake, self.enqueue_due_runs_inner()).await
+        observe_store_write_with_outcome(
+            StoreOperation::Wake,
+            self.enqueue_due_runs_inner(),
+            |enqueued| {
+                if *enqueued > 0 {
+                    WakeOutcome::Committed
+                } else {
+                    WakeOutcome::Noop
+                }
+            },
+        )
+        .await
     }
 
     async fn enqueue_due_runs_inner(&self) -> Result<u64> {
