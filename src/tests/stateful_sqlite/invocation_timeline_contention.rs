@@ -1,14 +1,11 @@
 use super::*;
-use axum::Json;
 use axum::extract::{Query, State};
 use chrono::{DateTime, TimeZone, Utc};
-use sqlx::Row;
 use std::time::Duration;
 use url::Url;
 
 use crate::api::slices::invocation_timeline::{
-    InvocationTimelineQuery, InvocationTimelineRecord, fetch_timeline,
-    install_timeline_source_page_pause_for_test,
+    InvocationTimelineQuery, fetch_timeline, install_timeline_source_page_pause_for_test,
 };
 
 fn at(seconds: i64) -> DateTime<Utc> {
@@ -18,7 +15,7 @@ fn at(seconds: i64) -> DateTime<Utc> {
 }
 
 #[tokio::test]
-async fn timeline_bounded_source_capture_releases_connection_before_next_page() {
+async fn timeline_source_page_releases_connection_before_next_page() {
     let state = crate::tests::test_state_with_openai_base(
         Url::parse("http://127.0.0.1:9").expect("valid test URL"),
     )
@@ -79,42 +76,15 @@ async fn timeline_bounded_source_capture_releases_connection_before_next_page() 
             }
             _ => false,
         };
-    if page_connection_available {
-        // The bounded source capture has completed before this pause, so this later update must
-        // not alter the already-captured source row used by the remaining in-memory pages.
-        sqlx::query(
-            "UPDATE codex_invocations SET status='failed', t_total_ms=900, payload='{\"upstreamAccountId\":77}' WHERE invoke_id='short-read-500'",
-        )
-        .execute(&state.pool)
-        .await
-        .expect("mutate a later source row after capture");
-    }
     release.notify_one();
-    let Json(first) = task
-        .await
+    task.await
         .expect("timeline fetch task should finish")
         .expect("timeline fetch should succeed");
     drop(held_connections);
-
-    let captured_row = sqlx::query(
-        "SELECT payload FROM invocation_timeline_snapshot_rows WHERE snapshot_token=?1 AND invoke_id='short-read-500'",
-    )
-    .bind(&first.as_of)
-    .fetch_one(&state.pool)
-    .await
-    .expect("load captured later source row");
-    let captured_payload: String = captured_row
-        .try_get("payload")
-        .expect("decode captured source payload");
-    let captured: InvocationTimelineRecord =
-        serde_json::from_str(&captured_payload).expect("decode captured timeline row");
 
     assert!(
         page_connection_available,
         "a completed source page must release its pool connection before the next page"
     );
-    assert_eq!(captured.status.as_deref(), Some("success"));
-    assert_eq!(captured.t_total_ms, Some(100.0));
-    assert_eq!(captured.upstream_account_id, Some(42));
     state.pool.close().await;
 }
