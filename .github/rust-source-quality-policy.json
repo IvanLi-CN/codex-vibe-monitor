@@ -4,7 +4,7 @@
     "commit": "edb6d8624b1713619c32caa050e397f0aded79b4",
     "production_candidates": 32,
     "test_helper_candidates": 23,
-    "inventory_entries": 31,
+    "inventory_entries": 30,
     "suppression_entries": 125
   },
   "loc_targets": {
@@ -17,12 +17,6 @@
       "role": "production",
       "line_budget": 40575,
       "next_module_workstream": "Split the remaining summary-projection models/builders and the named dashboard activity/network, summary/history/suggestions/stats responsibilities into dedicated modules."
-    },
-    {
-      "path": "src/maintenance/retention.rs",
-      "role": "production",
-      "line_budget": 11875,
-      "next_module_workstream": "Split retention scheduling, archive operations, recovery health, and maintenance state."
     },
     {
       "path": "src/maintenance/startup_backfill.rs",
@@ -339,28 +333,28 @@
       "reason": "Retain this targeted allow for the current maintenance task completion payload; remove it when the task observation boundary is split."
     },
     {
-      "path": "src/maintenance/retention.rs",
+      "path": "src/maintenance/retention/write_admission.rs",
       "kind": "allow",
       "declaration": "#[allow(clippy::too_many_arguments)]",
-      "reason": "Retain this targeted allow for the current argument bundle at src/maintenance/retention.rs; remove it when the listed boundary split is complete."
+      "reason": "Retain this targeted allow for the write-commit observation contract after the retention boundary split."
     },
     {
-      "path": "src/maintenance/retention.rs",
+      "path": "src/maintenance/retention/archive_models.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the historical rollup materialization model kept for compatibility."
     },
     {
-      "path": "src/maintenance/retention.rs",
+      "path": "src/maintenance/retention/archive_models.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the legacy archive prune model kept for compatibility."
     },
     {
-      "path": "src/maintenance/retention.rs",
+      "path": "src/maintenance/retention/archive_models.rs",
       "kind": "allow",
       "declaration": "#[allow(dead_code)]",
-      "reason": "Retain this targeted allow for the current compatibility or helper item in src/maintenance/retention.rs; remove it when the listed module workstream makes the item reachable."
+      "reason": "Retain this targeted allow for the archive manifest refresh model kept for compatibility."
     },
     {
       "path": "src/proxy/dispatch.rs",
