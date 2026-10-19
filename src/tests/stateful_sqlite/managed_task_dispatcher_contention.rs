@@ -140,7 +140,7 @@ async fn events_history_query_uses_bounded_history_indexes() {
         "EXPLAIN QUERY PLAN
          SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,
                 duration_ms,actual_duration_ms,status,error_detail,execution_uid
-         FROM managed_task_runs
+         FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_actual_started
          WHERE task_key=? AND status NOT IN ('requested','queued')
            AND NOT EXISTS (
                SELECT 1 FROM managed_task_work_runs wr
@@ -185,7 +185,7 @@ async fn events_history_query_with_time_window_uses_bounded_history_indexes() {
         "EXPLAIN QUERY PLAN
          SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,
                 duration_ms,actual_duration_ms,status,error_detail,execution_uid
-         FROM managed_task_runs
+         FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_actual_started
          WHERE task_key=? AND status NOT IN ('requested','queued')
            AND started_at>=? AND started_at<=?
            AND NOT EXISTS (

@@ -1634,7 +1634,7 @@ async fn recent_runs_for_workload_compatibility(
     let mut query = if window.is_some() {
         sqlx::query_as::<_, TaskWorkloadLegacyRun>(
             "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
-             FROM managed_task_runs
+             FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_actual_started
              WHERE task_key=? AND status NOT IN ('requested','queued')
                AND started_at>=? AND started_at<=?
                AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
@@ -1644,7 +1644,7 @@ async fn recent_runs_for_workload_compatibility(
     } else {
         sqlx::query_as::<_, TaskWorkloadLegacyRun>(
             "SELECT id,trigger_kind,started_at,actual_started_at,finished_at,actual_finished_at,duration_ms,actual_duration_ms,status,error_detail,execution_uid
-             FROM managed_task_runs
+             FROM managed_task_runs INDEXED BY idx_managed_task_runs_task_actual_started
              WHERE task_key=? AND status NOT IN ('requested','queued')
                AND NOT EXISTS (SELECT 1 FROM managed_task_work_runs wr WHERE wr.managed_run_id=managed_task_runs.id)
              ORDER BY COALESCE(actual_started_at,started_at) DESC,id DESC LIMIT 200",

@@ -323,6 +323,17 @@ async fn summary_archive_snapshot_backfill_due_cursor_advances_past_ineligible_w
         .execute(&pool)
         .await
         .expect("seed settled outcome");
+        sqlx::query(
+            "INSERT INTO summary_archive_snapshot_v2_proof \
+                 (archive_batch_id, manifest_sha256, page_count, row_count, semantic_sha256) \
+                 VALUES (?1, ?2, 1, 1, ?3)",
+        )
+        .bind(id)
+        .bind(&sha256)
+        .bind(&sha256)
+        .execute(&pool)
+        .await
+        .expect("seed settled proof");
     }
     sqlx::query(
         "INSERT INTO archive_batches \
