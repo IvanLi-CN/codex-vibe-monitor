@@ -2238,8 +2238,6 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_started
           ON managed_task_runs(task_key, started_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_actual_started
-          ON managed_task_runs(task_key, COALESCE(actual_started_at, started_at) DESC, id DESC);
         CREATE TABLE IF NOT EXISTS maintenance_metadata (
           key TEXT PRIMARY KEY,
           value TEXT NOT NULL,
@@ -2298,6 +2296,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             .await?;
         }
     }
+    sqlx::query(
+        "CREATE INDEX IF NOT EXISTS idx_managed_task_runs_task_actual_started ON managed_task_runs(task_key, COALESCE(actual_started_at, started_at) DESC, id DESC)",
+    )
+    .execute(pool)
+    .await?;
     sqlx::query(
         "CREATE INDEX IF NOT EXISTS idx_managed_task_runs_execution_uid ON managed_task_runs(execution_uid)",
     )
@@ -3322,6 +3325,7 @@ impl MaintenanceStore {
         .fetch_one(&self.pool)
         .await?;
         if !has_requested_run {
+            record_store_write_event(StoreOperation::Run, WakeOutcome::Noop);
             return Ok(None);
         }
         let (claim, retired_requested_runs) = observe_store_write_with_outcome(

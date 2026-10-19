@@ -814,8 +814,7 @@ fn reserve_timeline_snapshot_budget(
     Ok(())
 }
 
-#[cfg(test)]
-async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<(), ApiError> {
+pub(crate) async fn ensure_timeline_snapshot_table(pool: &Pool<Sqlite>) -> Result<()> {
     sqlx::query(&format!(
         "CREATE TABLE IF NOT EXISTS {INVOCATION_TIMELINE_SNAPSHOT_TABLE} (\
             snapshot_token TEXT NOT NULL,\

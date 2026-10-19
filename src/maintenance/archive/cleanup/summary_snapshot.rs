@@ -106,7 +106,7 @@ const SUMMARY_ARCHIVE_SNAPSHOT_PROMOTION_ELIGIBILITY_SQL: &str = r#"
         FROM summary_archive_snapshot AS snapshot
         WHERE snapshot.archive_batch_id = batches.id
           AND snapshot.manifest_sha256 = batches.sha256
-          AND snapshot.format_version = ?
+          AND snapshot.format_version = 2
     )
     AND NOT EXISTS (
         SELECT 1
@@ -460,7 +460,6 @@ pub(super) async fn load_summary_archive_snapshot_v2_promotion_candidates(
     );
     query
         .push(SUMMARY_ARCHIVE_SNAPSHOT_PROMOTION_ELIGIBILITY_SQL)
-        .push_bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
         .push(" ORDER BY batches.id ASC LIMIT ")
         .push_bind(limit.max(1));
     crate::observability::contention::observe_query(

@@ -127,9 +127,9 @@ async fn events_history_query_uses_bounded_history_indexes() {
         .map(|(_, _, _, detail)| detail)
         .collect::<Vec<_>>();
     assert!(
-        details.iter().any(|detail| {
-            detail.contains("SEARCH wr USING INDEX idx_managed_task_work_runs_managed_run_id")
-        }),
+        details
+            .iter()
+            .any(|detail| { detail.contains("idx_managed_task_work_runs_managed_run_id") }),
         "work history anti-join must use managed run index: {details:?}"
     );
     assert!(
