@@ -1050,6 +1050,18 @@ async fn terminal_verification_failure_skips_v2_promotion_until_manifest_sha_cha
     .execute(&pool)
     .await
     .expect("seed invalid V2 page");
+    sqlx::query(
+        "INSERT INTO summary_archive_snapshot
+             (archive_batch_id, manifest_sha256, page_index, coverage_start, coverage_end,
+              row_count, payload, payload_bytes, snapshot_sha256, format_version)
+             VALUES (999, 'orphan-manifest', 0, datetime('now', '-1 day'), datetime('now'),
+                     1, ?1, 1, 'orphan-page-hash', ?2)",
+    )
+    .bind(vec![0_u8])
+    .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+    .execute(&pool)
+    .await
+    .expect("seed orphan V2 page");
 
     let candidates = load_summary_archive_snapshot_v2_promotion_candidates(&pool, 1)
         .await
@@ -1073,6 +1085,54 @@ async fn terminal_verification_failure_skips_v2_promotion_until_manifest_sha_cha
         .expect("load replacement manifest candidate");
     assert_eq!(candidates.len(), 1);
     assert_eq!(candidates[0].1, "replacement-proof");
+}
+
+#[tokio::test]
+async fn summary_snapshot_v2_promotion_candidates_use_bounded_archive_identity_plan() {
+    let pool = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect("sqlite::memory:")
+        .await
+        .expect("memory pool");
+    crate::schema::ensure_schema(&pool)
+        .await
+        .expect("current schema");
+
+    let explain_sql =
+        format!("EXPLAIN QUERY PLAN {SUMMARY_ARCHIVE_SNAPSHOT_V2_PROMOTION_CANDIDATES_SQL}");
+    let plan = sqlx::query_as::<_, (i64, i64, i64, String)>(&explain_sql)
+        .bind(SUMMARY_ARCHIVE_SNAPSHOT_V2)
+        .bind(1_i64)
+        .fetch_all(&pool)
+        .await
+        .expect("explain promotion candidate query");
+    let details = plan
+        .into_iter()
+        .map(|(_, _, _, detail)| detail)
+        .collect::<Vec<_>>();
+
+    assert!(
+        details.iter().any(|detail| {
+            detail.contains(
+                "SEARCH batches USING INDEX idx_archive_batches_summary_rollup_repair_seek",
+            )
+        }),
+        "archive identity/order must use the existing bounded seek index: {details:?}"
+    );
+    for alias in ["snapshot", "proof", "outcome"] {
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains(&format!("SEARCH {alias}"))),
+            "{alias} must use a bounded correlated lookup: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .all(|detail| !detail.contains(&format!("SCAN {alias}"))),
+            "{alias} must not be scanned for each promotion pass: {details:?}"
+        );
+    }
 }
 
 #[tokio::test]

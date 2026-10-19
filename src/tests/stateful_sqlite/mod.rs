@@ -172,6 +172,7 @@ mod startup_bootstrap_cancellation;
 mod startup_rebuild_and_retention_basics;
 mod startup_recovery_readiness;
 mod statistics_recovery;
+mod summary_terminal_ordering;
 mod system_status_and_account_roster;
 mod task_workload_coverage;
 
