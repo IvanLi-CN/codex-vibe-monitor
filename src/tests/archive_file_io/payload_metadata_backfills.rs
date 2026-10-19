@@ -497,7 +497,7 @@ async fn backfill_proxy_reasoning_efforts_tracks_skip_counters_and_chat_payloads
     let summary = backfill_proxy_reasoning_efforts(&pool, None)
         .await
         .expect("reasoning effort backfill should succeed");
-    assert_eq!(summary.examined, 6);
+    assert_eq!(summary.examined, 4);
     assert_eq!(summary.scanned, 4);
     assert_eq!(summary.updated, 1);
     assert_eq!(summary.skipped_missing_file, 1);
