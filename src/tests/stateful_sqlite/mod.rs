@@ -114,6 +114,8 @@ mod gpt6_usage_integrity;
 mod invocation_query_filters_and_schema_migrations;
 mod invocation_range_recovery;
 mod invocation_ranges;
+mod invocation_timeline_contention;
+mod managed_task_dispatcher_contention;
 mod models_dev_sync_memory;
 mod network_traffic_projection;
 mod oauth_route_body_rewrite_and_timeout;

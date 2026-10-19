@@ -108,6 +108,13 @@ pub(crate) async fn observe_store_write_with_outcome<T>(
     result
 }
 
+fn record_store_write_event(operation: StoreOperation, outcome: WakeOutcome) {
+    let Some(metrics) = current_performance().filter(|metrics| metrics.enabled) else {
+        return;
+    };
+    metrics.count_performance(PerformanceCounter::StoreWrite(operation, outcome), 1);
+}
+
 struct StoreWriteObservation {
     metrics: Arc<crate::observability::ObservabilityRuntime>,
     operation: StoreOperation,
@@ -3305,10 +3312,10 @@ impl MaintenanceStore {
     pub(crate) async fn claim_requested_run(
         &self,
     ) -> Result<Option<(i64, String, String, String)>> {
-        observe_store_write_with_outcome(
+        let (claim, retired_requested_runs) = observe_store_write_with_outcome(
             StoreOperation::Run,
             self.claim_requested_run_inner(),
-            |claim| {
+            |(claim, _)| {
                 if claim.is_some() {
                     WakeOutcome::Committed
                 } else {
@@ -3316,7 +3323,11 @@ impl MaintenanceStore {
                 }
             },
         )
-        .await
+        .await?;
+        if retired_requested_runs {
+            record_store_write_event(StoreOperation::Cleanup, WakeOutcome::Committed);
+        }
+        Ok(claim)
     }
 
     pub(crate) async fn probe_due_or_requested_runs(&self) -> Result<bool> {
@@ -3348,10 +3359,12 @@ impl MaintenanceStore {
         Ok(has_work != 0)
     }
 
-    async fn claim_requested_run_inner(&self) -> Result<Option<(i64, String, String, String)>> {
+    async fn claim_requested_run_inner(
+        &self,
+    ) -> Result<(Option<(i64, String, String, String)>, bool)> {
         let mut transaction = self.pool.begin().await?;
         let finished_at = format_utc_iso_millis(Utc::now());
-        sqlx::query(
+        let retired_requested_runs = sqlx::query(
             "UPDATE managed_task_runs
              SET status='failed', finished_at=?, duration_ms=0,
                  summary='任务已停用，未执行', error_detail=NULL
@@ -3363,7 +3376,9 @@ impl MaintenanceStore {
         )
         .bind(&finished_at)
         .execute(&mut *transaction)
-        .await?;
+        .await?
+        .rows_affected()
+            > 0;
         let claimed = sqlx::query_as::<_, (i64, String, String, String)>(
             "UPDATE managed_task_runs
              SET status='running'
@@ -3383,10 +3398,13 @@ impl MaintenanceStore {
         .await?;
         let Some((id, task_key, started_at, trigger_kind)) = claimed else {
             transaction.commit().await?;
-            return Ok(None);
+            return Ok((None, retired_requested_runs));
         };
         transaction.commit().await?;
-        Ok(Some((id, task_key, started_at, trigger_kind)))
+        Ok((
+            Some((id, task_key, started_at, trigger_kind)),
+            retired_requested_runs,
+        ))
     }
 
     pub(crate) async fn recover_incomplete_runs(&self) -> Result<u64> {
@@ -7139,59 +7157,6 @@ mod tests {
             .await
             .expect("manual task should allow run-now while disabled");
         assert!(run_id > 0);
-    }
-
-    #[tokio::test]
-    async fn dispatcher_probe_reports_only_due_or_requested_work() {
-        let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
-            .await
-            .expect("connect maintenance test pool");
-        ensure_schema(&pool)
-            .await
-            .expect("create maintenance schema");
-        seed_tasks(&pool).await.expect("seed maintenance tasks");
-        let store = MaintenanceStore::from_pool(pool);
-
-        assert!(
-            !store
-                .probe_due_or_requested_runs()
-                .await
-                .expect("probe idle dispatcher")
-        );
-
-        sqlx::query(
-            "UPDATE managed_tasks
-             SET next_trigger_at='2000-01-01T00:00:00.000Z'
-             WHERE task_key='invocation_timeline_snapshot'",
-        )
-        .execute(&store.pool)
-        .await
-        .expect("seed due task");
-        assert!(
-            store
-                .probe_due_or_requested_runs()
-                .await
-                .expect("probe due dispatcher")
-        );
-
-        sqlx::query(
-            "UPDATE managed_tasks
-             SET next_trigger_at=NULL
-             WHERE task_key='invocation_timeline_snapshot'",
-        )
-        .execute(&store.pool)
-        .await
-        .expect("clear due task");
-        store
-            .request_run("raw_compression")
-            .await
-            .expect("queue manual task");
-        assert!(
-            store
-                .probe_due_or_requested_runs()
-                .await
-                .expect("probe requested dispatcher")
-        );
     }
 
     #[tokio::test]

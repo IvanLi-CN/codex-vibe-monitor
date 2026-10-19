@@ -22,6 +22,7 @@ const INVOCATION_TIMELINE_MAX_CROSS_DAY_LOOKBACK_MS: i64 = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMELINE_SNAPSHOT_TTL: Duration = Duration::from_secs(30 * 60);
 const INVOCATION_TIMELINE_SNAPSHOT_CACHE_LIMIT: usize = 256;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS: usize = 100_000;
+const INVOCATION_TIMELINE_SOURCE_CAPTURE_LIMIT: usize = INVOCATION_TIMELINE_MAX_SNAPSHOT_ROWS + 1;
 const INVOCATION_TIMELINE_MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
 const INVOCATION_TIMELINE_MAX_CACHE_ROWS: usize = 500_000;
 const INVOCATION_TIMELINE_MAX_CACHE_BYTES: usize = 256 * 1024 * 1024;
@@ -349,6 +350,20 @@ struct TimelineSourcePagePause {
 static INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE: once_cell::sync::Lazy<
     StdMutex<Option<TimelineSourcePagePause>>,
 > = once_cell::sync::Lazy::new(|| StdMutex::new(None));
+
+#[cfg(test)]
+pub(crate) fn install_timeline_source_page_pause_for_test()
+-> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let pause = TimelineSourcePagePause {
+        entered: Arc::new(tokio::sync::Notify::new()),
+        release: Arc::new(tokio::sync::Notify::new()),
+    };
+    let handles = (pause.entered.clone(), pause.release.clone());
+    *INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause);
+    handles
+}
 
 #[cfg(test)]
 async fn pause_after_timeline_source_page() {
@@ -1253,66 +1268,52 @@ async fn materialize_timeline_snapshot(
     } else {
         Vec::new()
     };
-    let mut cursor = None;
-    loop {
-        let Some((page, has_more, next_cursor)) = ({
-            let mut source_transaction = state.pool.begin().await?;
-            let mut query = build_invocation_select_query();
-            append_timeline_db_predicates(
-                &mut query,
-                &persisted_filters,
-                source_scope,
-                snapshot_id,
-                attempt_snapshot_id,
-                upstream_account_id,
-                start_bound,
-                overlap_start_bound,
-                end_bound,
-                include_live,
-                cursor.as_ref(),
-            );
+    // Capture only the bounded snapshot candidate set. Budget accounting and source hydration
+    // finish before this transaction is released; later page materialization is memory-only.
+    let captured_source_records = {
+        let mut source_transaction = state.pool.begin().await?;
+        let mut query = build_invocation_select_query();
+        append_timeline_db_predicates(
+            &mut query,
+            &persisted_filters,
+            source_scope,
+            snapshot_id,
+            attempt_snapshot_id,
+            upstream_account_id,
+            start_bound,
+            overlap_start_bound,
+            end_bound,
+            include_live,
+            None,
+        );
+        query
+            .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
+            .push_bind(snapshot_id)
+            .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
+            // The sentinel bounds this source fetch; the shared reservation below remains the
+            // authority for row, byte, and aggregate cache budgets.
+            .push_bind(INVOCATION_TIMELINE_SOURCE_CAPTURE_LIMIT as i64);
+        let mut records = observe_query(
+            StatsQuery::InvocationTimeline,
             query
-                .push(" AND NOT EXISTS (SELECT 1 FROM codex_invocations AS duplicate WHERE duplicate.invoke_id = codex_invocations.invoke_id AND duplicate.occurred_at = codex_invocations.occurred_at AND duplicate.id > codex_invocations.id AND duplicate.id <= ")
-                .push_bind(snapshot_id)
-                .push(") ORDER BY occurred_at ASC, invoke_id ASC, id ASC LIMIT ")
-                .push_bind(INVOCATION_TIMELINE_PAGE_SIZE + 1);
-            let mut page = observe_query(
-                StatsQuery::InvocationTimeline,
-                query
-                    .build_query_as::<ApiInvocation>()
-                    .fetch_all(&mut *source_transaction),
-            )
-            .await?;
-            let has_more = page.len() as i64 > INVOCATION_TIMELINE_PAGE_SIZE;
-            page.truncate(INVOCATION_TIMELINE_PAGE_SIZE as usize);
-            let next_cursor = page.last().map(|last| TimelineCursor {
-                as_of: snapshot_token.to_string(),
-                occurred_at: Some(last.occurred_at.clone()),
-                invoke_id: Some(last.invoke_id.clone()),
-            });
-            if let Some(next_cursor) = next_cursor {
-                for record in &mut page {
-                    hydrate_api_invocation_blocked_binding(record);
-                }
-                hydrate_timeline_accounts_on_connection(
-                    &mut source_transaction,
-                    &mut page,
-                    source_scope,
-                    snapshot_id,
-                    attempt_snapshot_id,
-                    false,
-                )
-                .await?;
-                source_transaction.commit().await?;
-                Some((page, has_more, next_cursor))
-            } else {
-                source_transaction.commit().await?;
-                None
-            }
-        }) else {
-            break;
-        };
-        for record in page
+                .build_query_as::<ApiInvocation>()
+                .fetch_all(&mut *source_transaction),
+        )
+        .await?;
+        for record in &mut records {
+            hydrate_api_invocation_blocked_binding(record);
+        }
+        hydrate_timeline_accounts_on_connection(
+            &mut source_transaction,
+            &mut records,
+            source_scope,
+            snapshot_id,
+            attempt_snapshot_id,
+            false,
+        )
+        .await?;
+        let mut captured_records = Vec::new();
+        for record in records
             .iter()
             .filter(|record| runtime_record_matches_filters(record, filters, source_scope))
         {
@@ -1325,14 +1326,20 @@ async fn materialize_timeline_snapshot(
                 &timeline_record,
                 None,
             )?;
-            materialized_records.push(timeline_record);
-            materialized_sources.push(false);
+            captured_records.push(timeline_record);
         }
-        if !has_more {
-            break;
+        source_transaction.commit().await?;
+        captured_records
+    };
+    let source_record_count = captured_source_records.len();
+    for (index, timeline_record) in captured_source_records.into_iter().enumerate() {
+        materialized_records.push(timeline_record);
+        materialized_sources.push(false);
+        if (index + 1) % INVOCATION_TIMELINE_PAGE_SIZE as usize == 0
+            && index + 1 < source_record_count
+        {
+            pause_after_timeline_source_page().await;
         }
-        pause_after_timeline_source_page().await;
-        cursor = Some(next_cursor);
     }
 
     let mut runtime_filters = filters.clone();
@@ -3101,90 +3108,6 @@ mod tests {
                     record.invoke_id != "runtime-nonpositive-fallback"
                         && record.invoke_id != "runtime-fractional-fallback"
                 })
-        );
-        state.pool.close().await;
-    }
-
-    #[tokio::test]
-    async fn timeline_source_page_releases_pool_connection_before_next_page() {
-        let state = crate::tests::test_state_with_openai_base(
-            url::Url::parse("http://127.0.0.1:9").expect("valid test URL"),
-        )
-        .await;
-        let range_start = at(30_000);
-        let range_end = at(31_000);
-        for index in 0..501_i64 {
-            sqlx::query(
-                "INSERT INTO codex_invocations (invoke_id, occurred_at, source, status, t_total_ms, payload, raw_response, detail_level) VALUES (?1, ?2, 'proxy', 'success', 100, '{\"upstreamAccountId\":42}', '', 'full')",
-            )
-            .bind(format!("short-read-{index:03}"))
-            .bind(db_occurred_at_lower_bound(
-                range_start + chrono::Duration::seconds(index),
-            ))
-            .execute(&state.pool)
-            .await
-            .expect("insert short-read timeline fixture");
-        }
-
-        let held_connections = vec![
-            state
-                .pool
-                .acquire()
-                .await
-                .expect("hold pool connection one"),
-            state
-                .pool
-                .acquire()
-                .await
-                .expect("hold pool connection two"),
-            state
-                .pool
-                .acquire()
-                .await
-                .expect("hold pool connection three"),
-        ];
-        let pause = TimelineSourcePagePause {
-            entered: Arc::new(tokio::sync::Notify::new()),
-            release: Arc::new(tokio::sync::Notify::new()),
-        };
-        *INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pause.clone());
-        let task = tokio::spawn(fetch_timeline(
-            State(state.clone()),
-            Query(InvocationTimelineQuery {
-                from: format_utc_iso(range_start),
-                to: format_utc_iso(range_end),
-                upstream_account_id: Some(42),
-                include_live: Some(false),
-                limit: Some(1),
-                cursor: None,
-                as_of: None,
-                ..Default::default()
-            }),
-        ));
-        pause.entered.notified().await;
-
-        let page_connection_available =
-            match tokio::time::timeout(Duration::from_millis(100), state.pool.acquire()).await {
-                Ok(Ok(connection)) => {
-                    drop(connection);
-                    true
-                }
-                _ => false,
-            };
-        pause.release.notify_one();
-        task.await
-            .expect("timeline fetch task should finish")
-            .expect("timeline fetch should succeed");
-        *INVOCATION_TIMELINE_TEST_SOURCE_PAGE_PAUSE
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-        drop(held_connections);
-
-        assert!(
-            page_connection_available,
-            "a completed source page must release its pool connection before the next page"
         );
         state.pool.close().await;
     }

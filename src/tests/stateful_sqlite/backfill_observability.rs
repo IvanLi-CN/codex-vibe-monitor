@@ -110,6 +110,49 @@ async fn managed_dispatcher_noop_writes_record_noop_outcomes() {
             "cvm_maintenance_store_writes_total{operation=\"run\",outcome=\"committed\"}"
         )
     );
+
+    store
+        .set_enabled("startup_backfill.proxy_usage", true)
+        .await
+        .expect("enable scheduled task for retirement fixture");
+    store
+        .request_run("startup_backfill.proxy_usage")
+        .await
+        .expect("queue scheduled task for retirement fixture");
+    store
+        .set_enabled("startup_backfill.proxy_usage", false)
+        .await
+        .expect("disable scheduled task for retirement fixture");
+
+    crate::observability::contention::with_performance(runtime.clone(), async {
+        assert!(
+            store
+                .claim_requested_run()
+                .await
+                .expect("retire requested run")
+                .is_none()
+        );
+    })
+    .await;
+
+    let text = runtime.render();
+    assert!(
+        text.contains("cvm_maintenance_store_writes_total{operation=\"run\",outcome=\"noop\"} 2")
+    );
+    assert!(text.contains(
+        "cvm_maintenance_store_writes_total{operation=\"cleanup\",outcome=\"committed\"} 1"
+    ));
+    assert!(
+        !text
+            .contains("cvm_maintenance_store_writes_total{operation=\"cleanup\",outcome=\"noop\"}")
+    );
+    let retired_status: String = sqlx::query_scalar(
+        "SELECT status FROM managed_task_runs WHERE task_key='startup_backfill.proxy_usage'",
+    )
+    .fetch_one(&store.pool)
+    .await
+    .expect("load retired requested run status");
+    assert_eq!(retired_status, "failed");
 }
 
 #[tokio::test]
