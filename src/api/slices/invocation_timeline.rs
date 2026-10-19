@@ -1251,12 +1251,6 @@ async fn materialize_timeline_snapshot(
     upstream_account_id: Option<i64>,
     include_live: bool,
 ) -> Result<(), ApiError> {
-    sqlx::query(&format!(
-        "DELETE FROM {INVOCATION_TIMELINE_SNAPSHOT_TABLE} WHERE snapshot_token = ?1"
-    ))
-    .bind(snapshot_token)
-    .execute(&state.pool)
-    .await?;
     let mut persisted_filters = filters.clone();
     persisted_filters.upstream_account_id = None;
     let (cache_row_base, cache_byte_base) = timeline_snapshot_cache_usage(snapshot_token);
